@@ -371,6 +371,23 @@ pub(super) fn run_local_qemu_resume_workflow(
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU resume requires a resolved backend"))?;
     let evidence = resume_handle_evidence(resume_plan)?;
+    if guarded_campaign_resume_eligible(resume_plan, &evidence) {
+        let report = run_local_qemu_campaign_resume_workflow(backend, resume_plan, &evidence)?;
+        let mut outcome = finish_resume_workflow_outcome(
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+            resume_plan,
+            report,
+        )?;
+        append_qemu_control_plane_execution_proof(
+            &mut outcome,
+            backend,
+            "resume-campaign-default-path",
+        );
+        return Ok(outcome);
+    }
+
     let config = production_qemu_lifecycle_config(backend)?.with_logical_replay_boundary(
         evidence.configuration.clone(),
         evidence.checkpoint.virtual_time,

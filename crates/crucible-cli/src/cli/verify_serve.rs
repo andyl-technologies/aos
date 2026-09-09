@@ -34,6 +34,22 @@ pub(crate) fn guarded_campaign_save_eligible(plan: &SaveInvocationPlan) -> bool 
     legacy_campaign::guarded_campaign_save_eligible(plan)
 }
 
+pub(crate) fn guarded_campaign_resume_eligible(
+    plan: &ResumeInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> bool {
+    legacy_campaign::guarded_campaign_resume_eligible(plan, evidence)
+}
+
+// crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated legacy checkpoint evidence to the daemon owner and only renders its accepted result.
+pub(crate) fn run_local_qemu_campaign_resume_workflow(
+    backend: &ResolvedLocalBackend,
+    resume_plan: &ResumeInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> Result<ResumeWorkflowReport, CliError> {
+    legacy_campaign::run_local_qemu_campaign_resume_workflow(backend, resume_plan, evidence)
+}
+
 // crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated inputs to the daemon owner and only renders its accepted result.
 pub(crate) fn run_local_qemu_campaign_save_workflow(
     backend: &ResolvedLocalBackend,

@@ -53,6 +53,9 @@ struct TerminalLifecycle {
     node: NodeId,
     event_log: EventLog,
     mode: TerminalLifecycleMode,
+    replay_target: Option<Schedule>,
+    pending: Vec<crucible_qemu::QemuNodeSelectablePendingRequest>,
+    pending_after_frontier: Option<u64>,
     frontier: VirtualTime,
     completed_quanta: u64,
     configuration: Option<Configuration>,
@@ -61,7 +64,13 @@ struct TerminalLifecycle {
 #[derive(Clone, Copy)]
 enum TerminalLifecycleMode {
     Terminal,
-    VirtualTime { quantum_nanoseconds: u64 },
+    VirtualTime {
+        quantum_nanoseconds: u64,
+    },
+    Resume {
+        source_frontier: u64,
+        terminal_frontier: u64,
+    },
 }
 
 impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
@@ -81,6 +90,18 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
             TerminalLifecycleMode::VirtualTime {
                 quantum_nanoseconds,
             } => self.frontier.ticks.saturating_add(quantum_nanoseconds),
+            TerminalLifecycleMode::Resume {
+                source_frontier,
+                terminal_frontier,
+            } => {
+                if self.frontier.ticks < source_frontier {
+                    source_frontier
+                } else if self.frontier.ticks == source_frontier {
+                    source_frontier.saturating_add(1)
+                } else {
+                    terminal_frontier
+                }
+            }
         };
         let append = self
             .event_log
@@ -91,9 +112,20 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
                 self.node.clone(),
                 MarkerId::from_name("guarded-default-run-quantum"),
             )])?;
-        self.configuration = Some(request.configuration.clone());
+        let mut configuration = request.configuration;
+        if let Some(target) = &self.replay_target
+            && configuration.schedule.len() < target.len()
+        {
+            configuration.schedule =
+                target
+                    .prefix(configuration.schedule.len() + 1)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: error.to_string(),
+                    })?;
+        }
+        self.configuration = Some(configuration.clone());
         Ok(QuantumOutcome {
-            configuration: request.configuration,
+            configuration,
             frontier: self.frontier,
             advanced_node: None,
             resolved_events: Vec::new(),
@@ -113,8 +145,15 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
-        matches!(self.mode, TerminalLifecycleMode::Terminal)
-            .then_some(QuantumTerminalVerdict::Passed)
+        match self.mode {
+            TerminalLifecycleMode::Terminal => Some(QuantumTerminalVerdict::Passed),
+            TerminalLifecycleMode::VirtualTime { .. } => None,
+            TerminalLifecycleMode::Resume {
+                terminal_frontier, ..
+            } => {
+                (self.frontier.ticks >= terminal_frontier).then_some(QuantumTerminalVerdict::Passed)
+            }
+        }
     }
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
@@ -124,7 +163,13 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
     fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
-        Ok(Vec::new())
+        if self
+            .pending_after_frontier
+            .is_some_and(|frontier| self.frontier.ticks < frontier)
+        {
+            return Ok(Vec::new());
+        }
+        Ok(std::mem::take(&mut self.pending))
     }
 
     fn apply_selectable_reply(
@@ -148,9 +193,22 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from("checkpoint requested before a completed quantum"),
                 })?;
+        let parent = if configuration.schedule.is_empty() {
+            None
+        } else {
+            Some(Configuration {
+                def: configuration.def.clone(),
+                schedule: configuration
+                    .schedule
+                    .prefix(configuration.schedule.len() - 1)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: error.to_string(),
+                    })?,
+            })
+        };
         let checkpoint = Checkpoint::from_recorded_configuration(
             configuration,
-            None,
+            parent.as_ref(),
             self.frontier,
             BTreeMap::new(),
             CheckpointKind::Fat,
@@ -195,12 +253,21 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        if matches!(self.mode, TerminalLifecycleMode::VirtualTime { .. }) {
+        let terminal = match self.mode {
+            TerminalLifecycleMode::Terminal => true,
+            TerminalLifecycleMode::VirtualTime { .. } => false,
+            TerminalLifecycleMode::Resume {
+                terminal_frontier, ..
+            } => self.frontier.ticks >= terminal_frontier,
+        };
+        if !terminal {
             return Ok(Vec::new());
         }
         self.event_log
             .append_observable_events([ObservableEvent::guest_marker(
-                Icount { retired: 8 },
+                Icount {
+                    retired: self.frontier.ticks.saturating_add(1),
+                },
                 self.node.clone(),
                 MarkerId::from_name("guarded-default-run-final-drain"),
             )])
@@ -397,6 +464,9 @@ impl QemuFreshAttemptLifecycleFactory for TerminalLifecycleFactory {
             node: self.node.clone(),
             event_log: EventLog::new(),
             mode: self.mode,
+            replay_target: None,
+            pending: Vec::new(),
+            pending_after_frontier: None,
             frontier: VirtualTime::default(),
             completed_quanta: 0,
             configuration: None,
@@ -433,6 +503,56 @@ impl QemuFreshAttemptLifecycleFactory for ReplayLifecycleFactory {
                     self.replay_quantum_nanoseconds
                 },
             },
+            replay_target: None,
+            pending: Vec::new(),
+            pending_after_frontier: None,
+            frontier: VirtualTime::default(),
+            completed_quanta: 0,
+            configuration: None,
+        })
+    }
+}
+
+struct ResumeLifecycleFactory {
+    node: NodeId,
+    starts: Arc<AtomicUsize>,
+    mode: TerminalLifecycleMode,
+    offer_continuation_choice: bool,
+}
+
+impl QemuFreshAttemptLifecycleFactory for ResumeLifecycleFactory {
+    type Lifecycle = TerminalLifecycle;
+    type Error = io::Error;
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        _scenario: &ScenarioDef,
+        _source: &ScenarioDefForm,
+        start_configuration: &Configuration,
+        _signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
+        _context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        let incarnation = self.starts.fetch_add(1, Ordering::Relaxed);
+        Ok(TerminalLifecycle {
+            node: self.node.clone(),
+            event_log: EventLog::new(),
+            mode: self.mode,
+            replay_target: Some(start_configuration.schedule.clone()),
+            pending: if self.offer_continuation_choice && incarnation >= 2 {
+                vec![pending_guest_request(self.node.clone())]
+            } else {
+                Vec::new()
+            },
+            pending_after_frontier: (self.offer_continuation_choice && incarnation >= 2).then_some(
+                match self.mode {
+                    TerminalLifecycleMode::Resume {
+                        source_frontier, ..
+                    } => source_frontier.saturating_add(1),
+                    TerminalLifecycleMode::Terminal | TerminalLifecycleMode::VirtualTime { .. } => {
+                        0
+                    }
+                },
+            ),
             frontier: VirtualTime::default(),
             completed_quanta: 0,
             configuration: None,
@@ -681,6 +801,319 @@ fn virtual_time_savepoint_capture_replays_and_authenticates_the_same_boundary() 
             .child()
             .as_hash()
             .as_bytes()
+    );
+}
+
+#[test]
+fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
+    let source_frontier = VirtualTime { ticks: 5 };
+    let schedule = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
+        crucible::DeliveryOrderDecision {
+            at: VirtualTime { ticks: 10 },
+            order: Vec::new(),
+        },
+    )]);
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = request();
+    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
+        .expect("selection-free replay closure");
+    let request = request
+        .with_selection_free_resume_source(
+            schedule,
+            closure,
+            checkpoint.clone(),
+            StopCondition::Terminal,
+            Arc::clone(&checkpoints),
+        )
+        .with_watch_frames();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(ResumeLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            mode: TerminalLifecycleMode::Resume {
+                source_frontier: source_frontier.ticks,
+                terminal_frontier: 9,
+            },
+            offer_continuation_choice: false,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect("selection-free legacy resume should complete");
+    let resume = completed.resume().expect("authenticated resume proof");
+    let source_savepoint = resume
+        .source_savepoint()
+        .expect("resume source exact savepoint");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 3);
+    assert_eq!(resume.source_checkpoint(), checkpoint.id);
+    assert_eq!(resume.source_frontier(), source_frontier);
+    assert_eq!(
+        resume.source_configuration(),
+        completed.observations()[0].observation().child()
+    );
+    assert_eq!(
+        resume.source_observation(),
+        completed.observations()[0].id()
+    );
+    assert!(resume.ready().is_some());
+    assert!(resume.selection().is_some());
+    assert!(resume.continuation().is_some());
+    assert_eq!(completed.observations().len(), 2);
+    assert_eq!(
+        completed.observations()[0].observation().stop(),
+        &StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(source_frontier.ticks))
+    );
+    assert_eq!(
+        completed.terminal().observation().stop(),
+        &StopOutcome::TerminalSuccess
+    );
+    assert_eq!(completed.evidence().frontier(), VirtualTime { ticks: 9 });
+    assert_eq!(source_savepoint.evidence().frontier(), source_frontier);
+    assert_eq!(
+        source_savepoint.configuration(),
+        resume.source_configuration()
+    );
+    assert_eq!(
+        checkpoints
+            .load_attempt_checkpoint(source_savepoint.checkpoint())
+            .expect("load resume source checkpoint")
+            .root(),
+        source_savepoint.checkpoint()
+    );
+
+    let watched_observations = completed
+        .watch_frames()
+        .iter()
+        .filter_map(GuardedDefaultCampaignWatchFrame::observation)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        watched_observations,
+        vec![resume.source_observation(), completed.terminal().id()]
+    );
+}
+
+#[test]
+fn selection_free_resume_terminal_at_source_needs_no_continuation() {
+    let source_frontier = VirtualTime { ticks: 7 };
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = request();
+    let schedule = Schedule::empty();
+    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
+        .expect("selection-free replay closure");
+    let request = request.with_selection_free_resume_source(
+        schedule,
+        closure,
+        checkpoint,
+        StopCondition::Terminal,
+        checkpoints,
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(ResumeLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            mode: TerminalLifecycleMode::Terminal,
+            offer_continuation_choice: false,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect("terminal source should complete without fabrication");
+    let resume = completed.resume().expect("authenticated terminal source");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    assert!(resume.source_savepoint().is_none());
+    assert!(resume.ready().is_none());
+    assert!(resume.selection().is_none());
+    assert!(resume.continuation().is_none());
+    assert_eq!(completed.observations().len(), 1);
+    assert_eq!(completed.terminal().id(), resume.source_observation());
+}
+
+#[test]
+fn selection_free_resume_rejects_terminal_before_the_source_boundary() {
+    let source_frontier = VirtualTime { ticks: 8 };
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = request();
+    let schedule = Schedule::empty();
+    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
+        .expect("selection-free replay closure");
+    let request = request.with_selection_free_resume_source(
+        schedule,
+        closure,
+        checkpoint,
+        StopCondition::Terminal,
+        checkpoints,
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(ResumeLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            mode: TerminalLifecycleMode::Terminal,
+            offer_continuation_choice: false,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let error = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect_err("terminal before the source frontier must fail closed");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        error,
+        GuardedDefaultCampaignRunError::Invariant(
+            GuardedDefaultCampaignInvariantError::ResumeSourceBoundaryMismatch
+        )
+    ));
+}
+
+#[test]
+fn selection_free_resume_rejects_a_checkpoint_for_another_configuration() {
+    let source_frontier = VirtualTime { ticks: 5 };
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = request();
+    let checkpoint = legacy_resume_checkpoint(&request, &Schedule::empty(), source_frontier);
+    let schedule = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
+        crucible::DeliveryOrderDecision {
+            at: VirtualTime { ticks: 10 },
+            order: Vec::new(),
+        },
+    )]);
+    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
+        .expect("selection-free replay closure");
+    let request = request.with_selection_free_resume_source(
+        schedule,
+        closure,
+        checkpoint,
+        StopCondition::Terminal,
+        checkpoints,
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(ResumeLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            mode: TerminalLifecycleMode::Resume {
+                source_frontier: source_frontier.ticks,
+                terminal_frontier: 9,
+            },
+            offer_continuation_choice: false,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let error = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect_err("a checkpoint for another configuration must fail before execution");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 0);
+    assert!(matches!(
+        error,
+        GuardedDefaultCampaignRunError::Invariant(
+            GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch
+        )
+    ));
+}
+
+#[test]
+fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() {
+    let source_frontier = VirtualTime { ticks: 5 };
+    let final_stop = StopCondition::VirtualTimeNanoseconds(3);
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = request();
+    let schedule = Schedule::empty();
+    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
+        .expect("selection-free replay closure");
+    let request = request.with_selection_free_resume_source(
+        schedule,
+        closure,
+        checkpoint,
+        final_stop.clone(),
+        checkpoints,
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(ResumeLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            mode: TerminalLifecycleMode::Resume {
+                source_frontier: source_frontier.ticks,
+                terminal_frontier: 9,
+            },
+            offer_continuation_choice: false,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect("earlier final stop should apply only to the continuation");
+    let resume = completed.resume().expect("authenticated resume proof");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 3);
+    assert!(resume.source_savepoint().is_some());
+    assert!(resume.continuation().is_some());
+    assert_eq!(completed.observations().len(), 2);
+    assert_eq!(
+        completed.observations()[0].virtual_time_ticks(),
+        source_frontier.ticks
+    );
+    assert_eq!(
+        completed.terminal().observation().stop(),
+        &StopOutcome::Reached(final_stop)
+    );
+    assert_eq!(completed.evidence().frontier(), source_frontier);
+}
+
+#[test]
+fn selection_free_resume_completes_at_the_requested_next_choice() {
+    let source_frontier = VirtualTime { ticks: 5 };
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = selectable_request();
+    let schedule = Schedule::empty();
+    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
+        .expect("selection-free replay closure");
+    let request = request.with_selection_free_resume_source(
+        schedule,
+        closure,
+        checkpoint,
+        StopCondition::NextChoice,
+        checkpoints,
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(ResumeLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            mode: TerminalLifecycleMode::Resume {
+                source_frontier: source_frontier.ticks,
+                terminal_frontier: 9,
+            },
+            offer_continuation_choice: true,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect("resume should stop at the first continuation choice");
+    let resume = completed.resume().expect("authenticated resume proof");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 3);
+    assert!(resume.source_savepoint().is_some());
+    assert!(resume.continuation().is_some());
+    assert_eq!(completed.observations().len(), 2);
+    assert_eq!(completed.branch_request_count(), 0);
+    assert_eq!(
+        completed.terminal().observation().stop(),
+        &StopOutcome::Reached(StopCondition::NextChoice)
     );
 }
 
@@ -1170,6 +1603,37 @@ fn exact_checkpoint_store(directory: &tempfile::TempDir) -> Arc<ExactCheckpointS
     Arc::new(
         ExactCheckpointStore::new(backend, 1024 * 1024).expect("durable exact checkpoint store"),
     )
+}
+
+fn legacy_resume_checkpoint(
+    request: &GuardedDefaultCampaignRunRequest,
+    schedule: &Schedule,
+    frontier: VirtualTime,
+) -> Checkpoint {
+    let configuration = Configuration {
+        def: request.scenario.scenario_def(),
+        schedule: schedule.clone(),
+    };
+    let parent = if schedule.is_empty() {
+        None
+    } else {
+        Some(Configuration {
+            def: configuration.def.clone(),
+            schedule: schedule
+                .prefix(schedule.len() - 1)
+                .expect("legacy resume parent schedule"),
+        })
+    };
+
+    Checkpoint::from_recorded_configuration(
+        &configuration,
+        parent.as_ref(),
+        frontier,
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("legacy resume logical checkpoint")
 }
 
 fn selectable_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {

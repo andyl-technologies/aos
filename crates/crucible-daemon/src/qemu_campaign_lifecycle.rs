@@ -396,8 +396,8 @@ pub use legacy_run::test_support::run_guarded_default_campaign_test_fixture;
 pub use legacy_run::{
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
-    GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignRun,
-    GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
+    GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignResumeProof,
+    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
     GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignSupervisorError,
     GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
 };
