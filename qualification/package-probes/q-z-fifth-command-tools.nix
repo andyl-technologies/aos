@@ -61,13 +61,70 @@
   workerdProbe = package:
     mkCommandProbe {
       inherit package;
-      primaryInput = "The installed workerd runtime build identity.";
-      primaryOperation = "Read the runtime version without starting a service or opening a network socket.";
-      primaryExpected = "Workerd reports its pinned 2024-09-09 release identity.";
+      primaryInput = "A local Worker module and an HTTP POST containing the number 40.";
+      primaryOperation = "Start the runtime on an inherited loopback socket, execute the Worker through HTTP, and stop the service.";
+      primaryExpected = "The Worker computes and returns the JSON result 42 with HTTP status 200.";
+      primaryFiles = {
+        "worker.capnp" = ''
+          using Workerd = import "/workerd/workerd.capnp";
+          const config :Workerd.Config = (
+            services = [(name = "main", worker = (
+              modules = [(name = "worker", esModule = embed "worker.js")],
+              compatibilityDate = "2024-09-09"
+            ))],
+            sockets = [(name = "http", http = (), service = "main")]
+          );
+        '';
+        "worker.js" = ''
+          export default {
+            async fetch(request) {
+              const result = Number(await request.text()) + 2;
+              return new Response(JSON.stringify({ result }), {
+                headers: { "content-type": "application/json" }
+              });
+            }
+          };
+        '';
+      };
       primaryScript = ''
-        import subprocess
-        result = subprocess.run(["@out@/bin/workerd", "--version"], capture_output=True, text=True)
-        assert result.returncode == 0 and result.stdout.strip() == "workerd 2024-09-09"
+        import http.client, json, socket, subprocess, tempfile, time
+
+        with socket.socket() as listener, tempfile.TemporaryFile() as log:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            command = ["@out@/bin/workerd", "serve", "worker.capnp",
+                       "--socket-fd", f"http={listener.fileno()}"]
+            process = subprocess.Popen(command, pass_fds=(listener.fileno(),),
+                                       stdout=log, stderr=log)
+            try:
+                deadline = time.monotonic() + 20
+                while True:
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        log.seek(0)
+                        raise AssertionError(log.read().decode(errors="replace"))
+
+                    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                    try:
+                        connection.request("POST", "/qualification", body="40")
+                        response = connection.getresponse()
+                        body = response.read()
+                        assert response.status == 200, (response.status, body)
+                        assert response.getheader("content-type") == "application/json"
+                        assert json.loads(body) == {"result": 42}, body
+                        break
+                    except (OSError, http.client.HTTPException):
+                        time.sleep(0.1)
+                    finally:
+                        connection.close()
+            finally:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+
         print("${package} operation passed")
       '';
       badInput = "A service configuration containing bytes that are not valid Cap'n Proto source.";
@@ -76,7 +133,7 @@
       badFiles."invalid.capnp" = "this is not capnp\n";
       badScript = reject package ''
         import subprocess
-        result = subprocess.run(["@out@/bin/workerd", "serve", "invalid.capnp"], capture_output=True, text=True)
+        result = subprocess.run(["@out@/bin/workerd", "serve", "invalid.capnp"], capture_output=True, text=True, timeout=10)
         output = result.stdout + result.stderr
         assert result.returncode != 0 and ("error" in output.lower() or "failed" in output.lower())
       '';
