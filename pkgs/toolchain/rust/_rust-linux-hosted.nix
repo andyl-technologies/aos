@@ -459,7 +459,21 @@ in
               }
             ''
             + (
-              if isFinal
+              if builtins.elem version ["1.86.0" "1.87.0"]
+              then ''
+                # These bootstrap releases derive LLD's CMake package prefix
+                # from the llvm-config wrapper's parent rather than querying it.
+                # Bind that derived location to target libraries; only TableGen
+                # executes on the scheduler.
+                mkdir -p lib/cmake
+                ln -s ${targetLlvmPackage}/lib/cmake/llvm lib/cmake/llvm
+                ln -s ${nativeLlvm}/bin/llvm-tblgen .aos-build-tools/llvm-tblgen
+                export CMAKE_PREFIX_PATH_${hostTripleEnv}="${zlib}:${targetLlvmPackage}"
+              ''
+              else ""
+            )
+            + (
+              if isFinal || builtins.compareVersions version "1.90.0" >= 0
               then ''
                 # Bootstrap locates distributed LLVM utilities beside the target
                 # llvm-config wrapper without executing them on the scheduler.
