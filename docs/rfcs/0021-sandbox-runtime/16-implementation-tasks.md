@@ -5987,14 +5987,39 @@ their domain-separated protected-authority authentication is not integrated
 yet. Focused validation passed all 17 transition tests, the migration test, the
 Apply/Query carrier matrix, and the authenticated-reopen tamper test.
 
+Commit `fe8b6f661` preserves the six public Guardian authority descriptors from
+the exact opens used to construct protected Host authority. The retained typed
+set excludes `journal-mac-key` and records device, inode, mode, owner, link
+count, size, modification/change timestamps, and the exact repeated-read
+SHA-256 content snapshot. Its all-or-nothing borrowed accessor revalidates
+those properties and content before a future handoff. Directly constructed
+test authority deliberately has no descriptor custody. Journal namespace 36
+is appended as `HostExecution`; the Host adapter seals nonempty execution
+payloads under the fixed `AOSHOSTEXECV0001` domain and exact nonzero 16-byte
+request key, with the existing authenticated-record bounds. Tamper, request
+relocation, domain substitution, zero identity, empty payload, and oversized
+payload fail closed.
+
+The pinned development shell passed the production Broker/Host library and
+Host binary check, all 24 Broker and 118 Host library tests, and focused runs
+of eight protected-configuration tests, the namespace compatibility test, and
+three Host custody/MAC tests. The retained-FD regressions use actual
+descriptors with successful positive controls, then reject an equal-length
+in-place rewrite and atomic replacement that drops the retained inode's link
+count to zero. Their ordinary cargo-test hook uses unprivileged metadata
+inspection in place of the protected-object gate; it still exercises retained
+descriptors, repeated reads, `fstat`, and original-snapshot comparison. This is
+not a root-provisioned or VM transfer test.
+
 This remains controller and source-level Host progress. The signing hook
 defaults to unavailable and has no production controller authority adapter.
-The Host 1.5 carrier guard remains closed: Host does not yet retain the static
-protected descriptors, independently verify and seal an authenticated
-execution record, assemble and transfer the dynamic credentials, start the
-exact Guardian before the payload, observe manager-retained launch bindings,
-or perform the final protected before-effect checks for both starts. Live
-exact-unit retry and compensation, composite Stop integration, renewal, early
-freeze, Network default-drop coupling, and a VM test proving expiry or Guardian
-death contains the payload also remain open. No `SBX-GUARD-01` or end-to-end
-Host task is closed by these slices.
+The Host 1.5 carrier guard and format-4 live reopen gate remain closed. Host now
+retains and can revalidate the static protected descriptors and can authenticate
+a bounded execution record, but no live path consumes either foundation,
+assembles and transfers the dynamic credentials, starts the exact Guardian
+before the payload, observes manager-retained launch bindings, or performs the
+final protected before-effect checks for both starts. Live exact-unit retry and
+compensation, composite Stop integration, renewal, early freeze, Network
+default-drop coupling, and a VM test proving expiry or Guardian death contains
+the payload also remain open. No `SBX-GUARD-01` or end-to-end Host task is
+closed by these slices.

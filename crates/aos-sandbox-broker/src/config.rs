@@ -873,9 +873,9 @@ mod tests {
         assert_eq!(rewritten.len(), b"original".len());
         fs::write(&path, rewritten).unwrap();
 
-        // The test hook skips only the root-owner/mode gate unavailable to an
-        // ordinary cargo test. It exercises the production retained FD,
-        // repeated read, fstat, and original-snapshot comparison path.
+        // An ordinary cargo test substitutes unprivileged metadata inspection
+        // for protected-object validation. It still exercises the production
+        // retained FD, repeated read, fstat, and original-snapshot comparison.
         assert!(
             credential
                 .revalidate_with(PLAN_POLICY_FILE, 8, inspect_unprotected_descriptor)
