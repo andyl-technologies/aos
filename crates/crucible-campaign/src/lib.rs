@@ -252,10 +252,14 @@ pub use repository::{
     SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
 };
 pub use statistics::{
-    SequentialMonteCarloEstimateReport, SmcEstimateLabel, SmcSupportValidation,
-    SmcUncertaintyStatement, StatisticalEndpointEstimate, StatisticalEstimateReport,
-    StatisticalGeneration, StatisticalParticleOutcome, StatisticalParticleSlot,
-    StatisticalRational, StatisticalWeightDiagnostics,
+    FiniteStatisticalEvidence, SequentialMonteCarloEstimateReport, SequentialMonteCarloEvidence,
+    SmcEstimateLabel, SmcSupportValidation, SmcTransitionEvidence, SmcUncertaintyStatement,
+    StatisticalChoiceEvidence, StatisticalDrawEvidence, StatisticalEndpointEstimate,
+    StatisticalEstimateReport, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
+    StatisticalGeneration, StatisticalOpportunityEvidence, StatisticalParticleOutcome,
+    StatisticalParticleSlot, StatisticalRational, StatisticalRoot, StatisticalRootLookup,
+    StatisticalWeightDiagnostics, verify_finite_statistical_evidence,
+    verify_sequential_monte_carlo_evidence,
 };
 
 #[cfg(test)]
