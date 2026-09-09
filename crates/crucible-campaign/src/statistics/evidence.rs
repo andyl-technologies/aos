@@ -5,6 +5,13 @@
 //! [`FiniteStatisticalEvidence::required_root_lookups`] or
 //! [`SequentialMonteCarloEvidence::required_root_lookups`] before calling the
 //! pure verifiers in this module.
+//!
+//! Replay checks the statistical design, selected values, execution basis,
+//! observations, paths, selectors, and exact estimator arithmetic. A rooted
+//! proposal authenticates its historical guidance and planner-invocation
+//! identities through its content-addressed envelope. This evidence does not
+//! carry the historical snapshots needed to replay how those proposals were
+//! ranked, because ranking history is outside the estimator calculation.
 
 use std::collections::BTreeMap;
 
@@ -20,9 +27,16 @@ use crate::{
 
 mod verify;
 
+pub(crate) use verify::verify_initial_smc_statistical_evidence;
+#[cfg(test)]
+pub(crate) use verify::verify_smc_source_selector;
 pub use verify::{verify_finite_statistical_evidence, verify_sequential_monte_carlo_evidence};
 
-const MAX_EVIDENCE_ITEMS: usize = 65_536;
+/// Maximum draws or transitions accepted in one statistical evidence bundle.
+pub const MAX_STATISTICAL_EVIDENCE_ITEMS: usize = 65_536;
+
+/// Maximum canonical bytes accepted for one aggregate statistical evidence bundle.
+pub const MAX_STATISTICAL_EVIDENCE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Identifies one snapshot root used by statistical evidence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -414,7 +428,7 @@ impl Canonical for StatisticalExecutionEvidence {
             Observation::decode(decoder)?,
             ConfigurationArtifact::decode(decoder)?,
             decoder.sequence_bounded(
-                MAX_EVIDENCE_ITEMS,
+                MAX_STATISTICAL_EVIDENCE_ITEMS,
                 "statistical-discovered-opportunity-count",
                 StatisticalOpportunityEvidence::decode,
             )?,
@@ -516,7 +530,7 @@ impl FiniteStatisticalEvidence {
     pub const fn snapshot(&self) -> &CampaignSnapshot {
         &self.snapshot
     }
-    /// Returns the planning view bound into proposals.
+    /// Returns the planning view embedded in the pinned snapshot.
     #[must_use]
     pub const fn planning_view(&self) -> &CampaignPlanningView {
         &self.planning_view
@@ -535,6 +549,28 @@ impl FiniteStatisticalEvidence {
     #[must_use]
     pub fn draws(&self) -> &[StatisticalDrawEvidence] {
         &self.draws
+    }
+
+    /// Returns the strict canonical evidence bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        crate::codec::encode(self)
+    }
+
+    /// Decodes one aggregate after enforcing its byte bound before allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for oversized, malformed, noncanonical,
+    /// or structurally invalid record encodings. Cross-record semantics require
+    /// [`verify_finite_statistical_evidence`] after root authentication.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        if bytes.len() > MAX_STATISTICAL_EVIDENCE_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "finite-statistical-evidence-bytes",
+            });
+        }
+        crate::codec::decode(bytes)
     }
 
     /// Derives all required snapshot-root memberships from the evidence bodies.
@@ -573,7 +609,7 @@ impl Canonical for FiniteStatisticalEvidence {
             CampaignPolicy::decode(decoder)?,
             CampaignLineage::decode(decoder)?,
             decoder.sequence_bounded(
-                MAX_EVIDENCE_ITEMS,
+                MAX_STATISTICAL_EVIDENCE_ITEMS,
                 "finite-statistical-evidence-draw-count",
                 StatisticalDrawEvidence::decode,
             )?,
@@ -681,6 +717,28 @@ impl SequentialMonteCarloEvidence {
         &self.transitions
     }
 
+    /// Returns the strict canonical evidence bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        crate::codec::encode(self)
+    }
+
+    /// Decodes one aggregate after enforcing its byte bound before allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for oversized, malformed, noncanonical,
+    /// or structurally invalid record encodings. Cross-record semantics require
+    /// [`verify_sequential_monte_carlo_evidence`] after root authentication.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        if bytes.len() > MAX_STATISTICAL_EVIDENCE_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "SMC-evidence-bytes",
+            });
+        }
+        crate::codec::decode(bytes)
+    }
+
     /// Derives all required snapshot-root memberships from the evidence bodies.
     ///
     /// # Errors
@@ -719,7 +777,7 @@ impl Canonical for SequentialMonteCarloEvidence {
         Ok(Self::new(
             FiniteStatisticalEvidence::decode(decoder)?,
             decoder.sequence_bounded(
-                MAX_EVIDENCE_ITEMS,
+                MAX_STATISTICAL_EVIDENCE_ITEMS,
                 "SMC-evidence-transition-count",
                 SmcTransitionEvidence::decode,
             )?,
@@ -939,4 +997,26 @@ fn branch_point_opportunity_key(
     bytes.extend_from_slice(&branch_point.as_hash().as_bytes());
     bytes.extend_from_slice(opportunity.content_id().encode().as_bytes());
     CampaignHash::derive("crucible.campaign-branch-point-opportunity.v1", &bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_decoders_reject_oversized_input_before_nested_decoding() {
+        let oversized = vec![0_u8; MAX_STATISTICAL_EVIDENCE_BYTES + 1];
+        assert!(matches!(
+            FiniteStatisticalEvidence::from_canonical_bytes(&oversized),
+            Err(CampaignCodecError::LimitExceeded {
+                limit: "finite-statistical-evidence-bytes"
+            })
+        ));
+        assert!(matches!(
+            SequentialMonteCarloEvidence::from_canonical_bytes(&oversized),
+            Err(CampaignCodecError::LimitExceeded {
+                limit: "SMC-evidence-bytes"
+            })
+        ));
+    }
 }
