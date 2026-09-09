@@ -110,7 +110,7 @@ pub fn systemd_manager_interface() -> Result<InterfaceDocument> {
             methods,
             lifecycle: LifecycleSemantics {
                 stable_resource_identity: true,
-                releases_ephemeral_on_disable: true,
+                releases_ephemeral_on_disable: false,
                 retains_persistent_by_default: true,
                 persistent_delete_method: None,
             },
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(
             key.descriptor,
             Sha256Digest::parse(
-                "sha256:95d1aa8a17557b49b48733cafb9cc19faf231ca1021cbe8221b7cbeac9f9c025"
+                "sha256:d7dcc31e3da49efad1ff728d86b107d0d2b33f558238d60e7babf65700f32004"
             )
             .unwrap()
         );
