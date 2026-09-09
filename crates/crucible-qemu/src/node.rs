@@ -2019,6 +2019,7 @@ impl QemuNode {
             lifecycle_state: &mut self.lifecycle_state,
             shutdown_policy: self.shutdown_policy,
         };
+        let horizon = ExecutionHorizon { icount: ceiling };
         let resume_selectable = self.selectable_resume_pending;
         let report = if resume_selectable {
             run_bounded_qemu_node_step_with_start_hook(
@@ -2026,7 +2027,7 @@ impl QemuNode {
                 self.host_io_runtime.as_mut(),
                 self.async_policy,
                 &self.crash_detector,
-                ExecutionHorizon { icount: ceiling },
+                horizon,
                 |target, _pending| {
                     target
                         .channels
@@ -2040,7 +2041,7 @@ impl QemuNode {
                 self.host_io_runtime.as_mut(),
                 self.async_policy,
                 &self.crash_detector,
-                ExecutionHorizon { icount: ceiling },
+                horizon,
             )
         }
         .map_err(QemuNodeError::from_async_driver)?;
