@@ -114,8 +114,7 @@ fn verify_store_object(
 pub(crate) fn run_store_check(store_path: &str, arguments: &[&str]) -> anyhow::Result<()> {
     use anyhow::{Context as _, bail};
 
-    let status = Command::new("nix-store")
-        .envs(aos_nix_env())
+    let status = live_store_command()
         .args(arguments)
         .arg(store_path)
         .stdout(Stdio::null())
@@ -192,8 +191,7 @@ pub(crate) fn query_reference_hashes(store_path: &str) -> anyhow::Result<Vec<Str
 fn run_store_query(store_path: &str, arguments: &[&str]) -> anyhow::Result<String> {
     use anyhow::{Context as _, bail};
 
-    let mut child = Command::new("nix-store")
-        .envs(aos_nix_env())
+    let mut child = live_store_command()
         .args(arguments)
         .arg(store_path)
         .stdout(Stdio::piped())
@@ -224,8 +222,7 @@ fn run_store_query(store_path: &str, arguments: &[&str]) -> anyhow::Result<Strin
 pub(crate) fn dump_store_path_identity(store_path: &str) -> anyhow::Result<(Sha256Digest, u64)> {
     use anyhow::{Context as _, bail};
 
-    let mut child = Command::new("nix-store")
-        .envs(aos_nix_env())
+    let mut child = live_store_command()
         .args(["--dump", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -266,6 +263,28 @@ pub(crate) fn dump_store_path_identity(store_path: &str) -> anyhow::Result<(Sha2
     }
     let digest = Sha256Digest::from_bytes(digest.into());
     Ok((digest, size))
+}
+
+fn live_store_command() -> Command {
+    let mut command = Command::new("nix-store");
+    command.envs(aos_nix_env());
+
+    // The hermetic package test seeds a private Nix database from Nix's own
+    // realized reference graph. Scope that database to this verifier's child
+    // processes so parallel tests cannot change process-global store routing.
+    #[cfg(test)]
+    for (source, target) in [
+        ("AOS_TEST_ABILITY_NIX_STORE_DIR", "NIX_STORE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_STATE_DIR", "NIX_STATE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_LOG_DIR", "NIX_LOG_DIR"),
+        ("AOS_TEST_ABILITY_NIX_REMOTE", "NIX_REMOTE"),
+    ] {
+        if let Some(value) = std::env::var_os(source) {
+            command.env(target, value);
+        }
+    }
+
+    command
 }
 
 #[allow(
