@@ -6383,11 +6383,11 @@ remains open.
 
 ### Host manager-reference policy and enforcing-MAC gap (in progress)
 
-The systemd manager-reference hardening increment is still qualification
-evidence, not readiness. Its four-file boundary consists of the systemd package
-integration, the downstream patch that narrows unit-reference methods, the
-direct `sd-bus` policy probe, and its fleet VM. The probe exercises all 16
-subject/method combinations: UIDs 811 and 812 must both receive
+Commit `41bb8ac5a` records the qualified systemd manager-reference hardening
+boundary. Its four files are the systemd package integration, the downstream
+patch that narrows unit-reference methods, the direct `sd-bus` policy probe,
+and its fleet VM. The probe exercises all 16 subject/method combinations: UIDs
+811 and 812 must both receive
 `AccessDenied` for manager `RefUnit`/`UnrefUnit`, unit `Ref`/`Unref`, and
 manager `StartUnit`, `RestartUnit`, `StopUnit`, and `StartTransientUnit`. A
 separate root-side positive verifies reference-held collection and release. No
@@ -6417,9 +6417,15 @@ exports the exact probe as closure 6, and the generated test remains
 `/nix/store/792gxxj3g06khbb4csrcx3ykfj1i8sq1-aos-fleet-test-systemd-unit-reference-policy-test.py.drv`.
 The sole approved realization of repaired policy derivation
 `/nix/store/bf91rlvwsksiv7a7hirrf91z82v351y5-aos-fleet-test-systemd-unit-reference-policy-0.drv`
-is in progress with one build job and two cores. Until it terminates
-successfully, the four-file policy boundary remains uncommitted and every
-dependent readiness claim remains open.
+used one build job and two cores. Its packaged Rust check passed 4,881 of 4,881
+tests, with one leaky test and nine skipped. The rebuilt rootfs contained 242
+store paths. The VM booted with KVM, reached a running system, passed the probe
+preflight, observed all 16 required `AccessDenied` results, and printed
+`ROOT_REFERENCE_COLLECTION_OK` for the root-side positive. The driver reported
+all tests passed and the derivation exited zero at
+`/nix/store/mqxcbm2cfj3aa6dvvlcw2jp6s8id0a5p-aos-fleet-test-systemd-unit-reference-policy-0`.
+This qualifies that exact x86_64 D-Bus policy boundary; every broader Host,
+enforcing-MAC, and cross-architecture readiness claim remains open.
 
 The separate production SELinux gap is also explicit. The immutable stage-0
 path is designed to admit policy and hand off to `init_t` inside its labeled
