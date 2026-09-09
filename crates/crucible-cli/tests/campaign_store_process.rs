@@ -10,25 +10,38 @@
 // crucible-lint: allow panic-shortcut -- assertions localize failures in a single hermetic operator flight.
 #![allow(clippy::disallowed_methods, clippy::expect_used, clippy::unwrap_used)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crucible_cas::content_store::{
-    BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, ObjectKind,
+use crucible_campaign::{
+    CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler, CampaignPolicy,
 };
+use crucible_cas::content_store::{
+    BlobHandle, CompressedDirectoryBlobBackend, ContentId, DirectoryBlobBackend,
+    ImmutableBlobBackend, ObjectKind, StoreGraph, StoreGraphKeyring,
+    StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
+    StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
+    WriteBackRetentionAdmin,
+};
+use crucible_daemon::DirectoryCampaignGcJournal;
 use serde_json::Value;
 use tempfile::TempDir;
 
 const CAMPAIGN: &str = "worked-network";
 const PRINCIPAL: &str = "operator";
 const START_COMMAND: &str = "4242424242424242424242424242424242424242424242424242424242424242";
+const MAXIMUM_LOGICAL_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
+const MAXIMUM_PENDING_OBJECTS: u64 = 65_536;
+const MAXIMUM_PENDING_BYTES: u64 = 512 * 1024 * 1024;
 
 #[path = "support/campaign_packaged_process.rs"]
 mod packaged;
@@ -157,6 +170,190 @@ fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), 
     let reopened_head = campaign_status(&fixture)?;
     assert_eq!(reopened_head["snapshot"], live_snapshot);
     assert_eq!(reopened_head["state"], "running");
+    restarted.stop()?;
+
+    Ok(())
+}
+
+#[test]
+fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<(), Box<dyn Error>>
+{
+    let fixture = ComposedFlightFixture::new()?;
+    let generated = run_json(
+        command(&[
+            "--format",
+            "jsonl",
+            "campaign",
+            "fixture",
+            "worked-network",
+            "--output",
+        ])
+        .arg(&fixture.base.fixture),
+        "generate composed-store fixture",
+    )?;
+    let manifest = json_path(&generated, "manifest")?;
+    let lineage = json_path(&generated, "lineage")?;
+    let policy_path = json_path(&generated, "policy")?;
+    let scenario = ContentId::parse(&typed_content_id(&json_string(&generated, "scenario")?)?)?;
+    let policy = CampaignPolicy::from_canonical_bytes(&fs::read(&policy_path)?)?
+        .id()?
+        .content_id();
+
+    let mut service = fixture.base.start_service(Some(&manifest))?;
+    run_json(
+        connected_campaign(&fixture.base)
+            .args(["create", CAMPAIGN, "--lineage"])
+            .arg(&lineage)
+            .arg("--policy")
+            .arg(&policy_path)
+            .args(["--start-command", START_COMMAND]),
+        "create campaign through composed store",
+    )?;
+    let live_head = campaign_status(&fixture.base)?;
+    let live_snapshot = json_string(&live_head, "snapshot")?;
+
+    let store_status = run_json(
+        command(&["--format", "jsonl", "store", "status"]).arg(&fixture.base.store),
+        "inspect composed store graph",
+    )?;
+    assert_eq!(store_status["root"], "profile");
+    let node_kinds = store_status["nodes"]
+        .as_array()
+        .ok_or("store status omitted node descriptions")?
+        .iter()
+        .map(|node| Ok((json_string(node, "id")?, json_string(node, "kind")?)))
+        .collect::<Result<BTreeMap<_, _>, Box<dyn Error>>>()?;
+    assert_eq!(
+        node_kinds,
+        BTreeMap::from([
+            (String::from("profile"), String::from("profile-validated")),
+            (
+                String::from("read-cache"),
+                String::from("compressed-directory")
+            ),
+            (String::from("read-source"), String::from("directory")),
+            (String::from("read-through"), String::from("read-through")),
+            (String::from("routed"), String::from("routed")),
+            (String::from("verified"), String::from("verified")),
+            (String::from("write-back"), String::from("write-back")),
+            (String::from("write-destination"), String::from("directory"),),
+            (
+                String::from("write-staging"),
+                String::from("compressed-directory"),
+            ),
+        ])
+    );
+
+    let scenario_text = scenario.encode();
+    let ensured = run_json(
+        command(&[
+            "--format",
+            "jsonl",
+            "store",
+            "ensure",
+            &scenario_text,
+            "--in",
+        ])
+        .arg(&fixture.base.store),
+        "promote scenario through read-through cache",
+    )?;
+    assert_eq!(ensured["authenticated"], true);
+    assert!(fixture.read_source().contains(scenario)?);
+    assert!(fixture.read_cache()?.contains(scenario)?);
+    service.stop()?;
+
+    let pending_before_gc = fixture.pending_write_back_roots()?;
+    assert!(!pending_before_gc.is_empty());
+    assert!(
+        pending_before_gc
+            .iter()
+            .all(|(node, _id)| node == "write-back")
+    );
+    assert!(pending_before_gc.contains(&(String::from("write-back"), policy)));
+
+    let planned = run_json(
+        &mut fixture.base.gc_command_at("plan", &fixture.base.journal),
+        "plan composed-store GC",
+    )?;
+    assert_eq!(planned["schema"], "crucible.cli.campaign-store-gc.v2");
+    assert_eq!(planned["plan_version"], "v2");
+    assert!(json_u64(&planned, "reachable_cache_candidates")? >= 1);
+    assert!(
+        planned["cache_required_copies"]
+            .as_array()
+            .is_some_and(|copies| copies.iter().any(|copy| {
+                copy["candidate_backend"] == "read-cache"
+                    && copy["required_backend"] == "read-source"
+                    && copy["content"] == scenario_text
+            }))
+    );
+    {
+        let journal = DirectoryCampaignGcJournal::open(&fixture.base.journal)?;
+        assert!(journal.roots().iter().any(|root| root == policy));
+    }
+
+    let applied = run_json(
+        &mut fixture.base.gc_command_at("apply", &fixture.base.journal),
+        "apply composed-store GC",
+    )?;
+    assert_eq!(applied["plan"], planned["plan"]);
+    assert_eq!(applied["apply_status"], "applied");
+    assert!(!fixture.read_cache()?.contains(scenario)?);
+    assert!(fixture.read_source().contains(scenario)?);
+    assert!(
+        fixture
+            .pending_write_back_roots()?
+            .contains(&(String::from("write-back"), policy))
+    );
+
+    let mut maintained = fixture.start_service_with_maintenance()?;
+    fixture.wait_until_write_back_root_absent(policy, Duration::from_secs(20))?;
+    assert!(fixture.write_destination().contains(policy)?);
+    maintained.stop()?;
+    assert!(
+        !fixture
+            .pending_write_back_roots()?
+            .contains(&(String::from("write-back"), policy))
+    );
+
+    let after_maintenance = run_json(
+        &mut fixture
+            .base
+            .gc_command_at("plan", &fixture.after_maintenance_gc_journal),
+        "plan GC after write-back maintenance",
+    )?;
+    assert_eq!(after_maintenance["plan_version"], "v2");
+    {
+        let journal = DirectoryCampaignGcJournal::open(&fixture.after_maintenance_gc_journal)?;
+        assert!(!journal.roots().iter().any(|root| root == policy));
+    }
+
+    let mut restarted = fixture.base.start_service(None)?;
+    let reopened_head = campaign_status(&fixture.base)?;
+    assert_eq!(reopened_head["snapshot"], live_snapshot);
+    let reopened_snapshot = run_json(
+        connected_campaign(&fixture.base).args([
+            "snapshot",
+            CAMPAIGN,
+            "--snapshot",
+            &live_snapshot,
+        ]),
+        "read canonical snapshot after composed-store restart",
+    )?;
+    assert_eq!(reopened_snapshot["snapshot"]["id"], live_snapshot);
+    let reauthenticated = run_json(
+        command(&[
+            "--format",
+            "jsonl",
+            "store",
+            "ensure",
+            &scenario_text,
+            "--in",
+        ])
+        .arg(&fixture.base.store),
+        "read canonical scenario after composed-store restart",
+    )?;
+    assert_eq!(reauthenticated["authenticated"], true);
     restarted.stop()?;
 
     Ok(())
@@ -319,6 +516,286 @@ struct FlightFixture {
     peer_policy: PathBuf,
     store: PathBuf,
     journal: PathBuf,
+}
+
+struct ComposedFlightFixture {
+    base: FlightFixture,
+    read_cache_root: PathBuf,
+    read_source_root: PathBuf,
+    write_staging_root: PathBuf,
+    write_destination_root: PathBuf,
+    write_back_journal: PathBuf,
+    after_maintenance_gc_journal: PathBuf,
+}
+
+impl ComposedFlightFixture {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        let base = FlightFixture::new()?;
+        let root = base._temporary.path();
+        let read_cache_root = secure_directory(root, "read-cache")?;
+        let read_source_root = secure_directory(root, "read-source")?;
+        let write_staging_root = secure_directory(root, "write-staging")?;
+        let write_destination_root = secure_directory(root, "write-destination")?;
+        let write_back_journal = secure_directory(root, "write-back-journal")?;
+        let after_maintenance_gc_journal = root.join("gc-journal-after-maintenance");
+        let refs = root.join("refs");
+
+        fs::write(
+            &base.store,
+            format!(
+                r#"schema = "crucible.campaign-repository-store"
+version = 1
+root = "profile"
+admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
+ref_directory = {refs:?}
+
+[[nodes]]
+id = "profile"
+[nodes.spec]
+kind = "profile-validated"
+child = "verified"
+policy = "crucible.campaign.object-profile.v1"
+
+[[nodes]]
+id = "verified"
+[nodes.spec]
+kind = "verified"
+child = "routed"
+
+[[nodes]]
+id = "routed"
+[nodes.spec]
+kind = "routed"
+[nodes.spec.routes]
+campaign-fact = "write-back"
+campaign-snapshot = "write-back"
+merkle-node = "write-back"
+scenario = "read-through"
+configuration = "write-back"
+policy = "write-back"
+exact-manifest = "write-back"
+ram-extent = "write-back"
+disk-extent = "write-back"
+device-state = "write-back"
+observation = "write-back"
+finding = "write-back"
+projection = "read-through"
+trace = "read-through"
+
+[[nodes]]
+id = "read-through"
+[nodes.spec]
+kind = "read-through"
+cache = "read-cache"
+source = "read-source"
+
+[[nodes]]
+id = "read-cache"
+[nodes.spec]
+kind = "compressed-directory"
+root = {read_cache_root:?}
+maximum_logical_object_bytes = {MAXIMUM_LOGICAL_OBJECT_BYTES}
+
+[[nodes]]
+id = "read-source"
+[nodes.spec]
+kind = "directory"
+root = {read_source_root:?}
+
+[[nodes]]
+id = "write-back"
+[nodes.spec]
+kind = "write-back"
+staging = "write-staging"
+destination = "write-destination"
+journal_root = {write_back_journal:?}
+maximum_pending_objects = {MAXIMUM_PENDING_OBJECTS}
+maximum_pending_bytes = {MAXIMUM_PENDING_BYTES}
+
+[[nodes]]
+id = "write-staging"
+[nodes.spec]
+kind = "compressed-directory"
+root = {write_staging_root:?}
+maximum_logical_object_bytes = {MAXIMUM_LOGICAL_OBJECT_BYTES}
+
+[[nodes]]
+id = "write-destination"
+[nodes.spec]
+kind = "directory"
+root = {write_destination_root:?}
+"#,
+            ),
+        )?;
+        fs::set_permissions(&base.store, fs::Permissions::from_mode(0o600))?;
+
+        Ok(Self {
+            base,
+            read_cache_root,
+            read_source_root,
+            write_staging_root,
+            write_destination_root,
+            write_back_journal,
+            after_maintenance_gc_journal,
+        })
+    }
+
+    fn start_service_with_maintenance(&self) -> Result<CampaignServiceChild, Box<dyn Error>> {
+        let mut command = self.base.service_command(None);
+        command.args([
+            "--campaign-maintenance-interval-ms",
+            "100",
+            "--campaign-maintenance-write-back-transfers",
+            "65536",
+        ]);
+        self.base
+            .start_service_command(command, Duration::from_secs(15))
+    }
+
+    fn read_cache(&self) -> Result<CompressedDirectoryBlobBackend, Box<dyn Error>> {
+        Ok(CompressedDirectoryBlobBackend::new(
+            "read-cache",
+            &self.read_cache_root,
+            MAXIMUM_LOGICAL_OBJECT_BYTES,
+        )?)
+    }
+
+    fn read_source(&self) -> DirectoryBlobBackend {
+        DirectoryBlobBackend::new("read-source", &self.read_source_root)
+    }
+
+    fn write_destination(&self) -> DirectoryBlobBackend {
+        DirectoryBlobBackend::new("write-destination", &self.write_destination_root)
+    }
+
+    fn pending_write_back_roots(&self) -> Result<BTreeSet<(String, ContentId)>, Box<dyn Error>> {
+        let graph = self.inspection_graph()?;
+        let mut fence = graph.acquire_write_back_retention_fence()?;
+        let mut roots = BTreeSet::new();
+        fence.visit_roots(&mut |root| {
+            roots.insert((root.node().to_owned(), root.id()));
+            Ok(())
+        })?;
+        Ok(roots)
+    }
+
+    fn wait_until_write_back_root_absent(
+        &self,
+        id: ContentId,
+        timeout: Duration,
+    ) -> Result<(), Box<dyn Error>> {
+        let expected = (String::from("write-back"), id);
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !self.pending_write_back_roots()?.contains(&expected) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "write-back maintenance did not acknowledge {id} before timeout"
+                )
+                .into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn inspection_graph(&self) -> Result<StoreGraph, Box<dyn Error>> {
+        let read_cache = node_id("read-cache")?;
+        let read_source = node_id("read-source")?;
+        let read_through = node_id("read-through")?;
+        let write_staging = node_id("write-staging")?;
+        let write_destination = node_id("write-destination")?;
+        let write_back = node_id("write-back")?;
+        let routed = node_id("routed")?;
+        let verified = node_id("verified")?;
+        let profile = node_id("profile")?;
+
+        let mut routes = all_campaign_object_kinds()
+            .into_iter()
+            .map(|kind| (kind, write_back.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for kind in [
+            ObjectKind::Scenario,
+            ObjectKind::Projection,
+            ObjectKind::Trace,
+        ] {
+            routes.insert(kind, read_through.clone());
+        }
+
+        let config = crucible_cas::content_store::StoreGraphConfig {
+            root: profile.clone(),
+            admitted_kinds: BTreeSet::from(all_campaign_object_kinds()),
+            nodes: BTreeMap::from([
+                (
+                    read_cache.clone(),
+                    StoreNodeSpec::CompressedDirectory {
+                        root: self.read_cache_root.clone(),
+                        maximum_logical_object_bytes: MAXIMUM_LOGICAL_OBJECT_BYTES,
+                    },
+                ),
+                (
+                    read_source.clone(),
+                    StoreNodeSpec::Directory {
+                        root: self.read_source_root.clone(),
+                    },
+                ),
+                (
+                    read_through,
+                    StoreNodeSpec::ReadThrough {
+                        cache: read_cache,
+                        source: read_source,
+                    },
+                ),
+                (
+                    write_staging.clone(),
+                    StoreNodeSpec::CompressedDirectory {
+                        root: self.write_staging_root.clone(),
+                        maximum_logical_object_bytes: MAXIMUM_LOGICAL_OBJECT_BYTES,
+                    },
+                ),
+                (
+                    write_destination.clone(),
+                    StoreNodeSpec::Directory {
+                        root: self.write_destination_root.clone(),
+                    },
+                ),
+                (
+                    write_back.clone(),
+                    StoreNodeSpec::WriteBack {
+                        staging: write_staging,
+                        destination: write_destination,
+                        journal_root: self.write_back_journal.clone(),
+                        maximum_pending_objects: MAXIMUM_PENDING_OBJECTS,
+                        maximum_pending_bytes: MAXIMUM_PENDING_BYTES,
+                    },
+                ),
+                (routed.clone(), StoreNodeSpec::Routed { routes }),
+                (verified.clone(), StoreNodeSpec::Verified { child: routed }),
+                (
+                    profile,
+                    StoreNodeSpec::ProfileValidated {
+                        child: verified,
+                        policy: StoreObjectProfilePolicyId::new(CAMPAIGN_OBJECT_PROFILE_POLICY_V1)?,
+                    },
+                ),
+            ]),
+        };
+        let mut profilers = StoreGraphObjectProfilers::new();
+        profilers.insert(
+            StoreObjectProfilePolicyId::new(CAMPAIGN_OBJECT_PROFILE_POLICY_V1)?,
+            Arc::new(CampaignObjectProfiler),
+        )?;
+
+        Ok(StoreGraph::build_with_all_capabilities(
+            config,
+            &StoreGraphKeyring::new(),
+            &StoreGraphNamespaceAuthorizers::new(),
+            &profilers,
+            &StoreGraphPhysicalQuotaBinders::new(),
+            &StoreGraphS3Clients::new(),
+        )?)
+    }
 }
 
 impl FlightFixture {
@@ -486,6 +963,10 @@ root = {objects:?}
     }
 
     fn gc_command(&self, operation: &str) -> Command {
+        self.gc_command_at(operation, &self.journal)
+    }
+
+    fn gc_command_at(&self, operation: &str, journal: &Path) -> Command {
         let mut command = command(&["--format", "jsonl", "store", "gc", "--state"]);
         command
             .arg(&self.state)
@@ -494,7 +975,7 @@ root = {objects:?}
             .arg("--store")
             .arg(&self.store)
             .arg("--journal")
-            .arg(&self.journal)
+            .arg(journal)
             .arg(operation);
         command
     }
@@ -632,6 +1113,29 @@ fn json_u64(value: &Value, field: &str) -> Result<u64, Box<dyn Error>> {
         .get(field)
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("JSON field `{field}` is not an unsigned integer").into())
+}
+
+fn node_id(value: &str) -> Result<StoreNodeId, Box<dyn Error>> {
+    Ok(StoreNodeId::new(value)?)
+}
+
+const fn all_campaign_object_kinds() -> [ObjectKind; 14] {
+    [
+        ObjectKind::CampaignFact,
+        ObjectKind::CampaignSnapshot,
+        ObjectKind::MerkleNode,
+        ObjectKind::Scenario,
+        ObjectKind::Configuration,
+        ObjectKind::Policy,
+        ObjectKind::ExactManifest,
+        ObjectKind::RamExtent,
+        ObjectKind::DiskExtent,
+        ObjectKind::DeviceState,
+        ObjectKind::Observation,
+        ObjectKind::Finding,
+        ObjectKind::Projection,
+        ObjectKind::Trace,
+    ]
 }
 
 fn secure_directory(root: &Path, name: &str) -> Result<PathBuf, Box<dyn Error>> {
