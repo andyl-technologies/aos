@@ -1906,6 +1906,39 @@ mod tests {
     }
 
     #[test]
+    fn payload_discovery_rejects_nonleader_process_churn() {
+        let leader = payload_candidate(41, 101);
+        let child = payload_candidate(42, 102);
+        let backend = payload_backend(
+            vec![vec![leader.clone(), child], vec![leader]],
+            vec![payload_evidence(41, 101, 1), payload_evidence(42, 102, 7)],
+        );
+
+        assert!(matches!(
+            discover_payload_leader(&backend, 40, (11, 12), (13, 14)),
+            Err(HostError::Worker(message))
+                if message == "payload cgroup changed during leader discovery"
+        ));
+    }
+
+    #[test]
+    fn payload_discovery_rejects_vanished_nonleader_without_resnapshot() {
+        let leader = payload_candidate(41, 101);
+        let child = payload_candidate(42, 102);
+        let snapshot = vec![leader.clone(), child];
+        let backend = payload_backend(
+            vec![snapshot.clone(), snapshot],
+            vec![payload_evidence(41, 101, 1)],
+        );
+
+        assert!(matches!(
+            discover_payload_leader(&backend, 40, (11, 12), (13, 14)),
+            Err(HostError::Worker(message)) if message == "fake payload pin failed"
+        ));
+        assert_eq!(backend.snapshots.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn payload_discovery_rejects_ambiguous_or_substituted_identity() {
         let snapshot = vec![payload_candidate(41, 101), payload_candidate(42, 102)];
         let ambiguous = payload_backend(
