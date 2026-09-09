@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+test-support = ["aos-ability-validate/test-support"]
+
 [dependencies]
 anyhow.workspace = true
 aos-ability-model.workspace = true
