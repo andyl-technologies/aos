@@ -6,7 +6,9 @@
 //! Semantic narrowing and reply selection stay outside the GPL-side process.
 
 use crucible_protocol::SelectionReply;
-use crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan;
+use crucible_protocol::selectable_catalog_plan::{
+    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectableCatalogPlan,
+};
 use crucible_protocol::selectable_transport::{
     SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
     WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING, WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,
@@ -22,8 +24,6 @@ use crate::{
     SelectableReplyDisposition, SelectableReplyService, WhiteboxGuestInputCapability,
     WhiteboxGuestInputWriter, handle_whitebox_selectable_callback,
 };
-
-const SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS: u64 = 1;
 
 /// Returns whether bytes claim the standalone selectable-v1 namespace.
 pub(super) fn is_message(payload: &[u8]) -> bool {
@@ -197,29 +197,31 @@ impl LiveSelectableState {
                 callback_error("selectable reply arrived without a pending request")
             })?;
         let trap_coordinate = pending.coordinate();
+        let stopped_icount = trap_coordinate
+            .icount()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+            .ok_or_else(|| callback_error("selectable stopped-boundary icount overflowed"))?;
         // The host binds its reply to the stopped request boundary. QEMU's
         // resume callback may report a later raw reservation boundary even
         // though no subsequent guest TB has executed, so the memory write can
-        // occur later while the authenticated catalog token remains sealed at
-        // the stop coordinate.
-        if entry.current_icount() != trap_coordinate.icount()
+        // occur later while the authenticated catalog token remains sealed
+        // against the stop derived from its retained trap coordinate.
+        if entry.current_icount() != stopped_icount
             || entry.vcpu_index() != trap_coordinate.vcpu_index()
         {
             return Err(callback_error(format!(
-                "selectable reply coordinate ({}, {}) differs from pending request boundary ({}, {})",
+                "selectable reply coordinate ({}, {}) differs from pending request stopped boundary ({stopped_icount}, {})",
                 entry.current_icount(),
                 entry.vcpu_index(),
-                trap_coordinate.icount(),
                 trap_coordinate.vcpu_index()
             )));
         }
         if vcpu_index != trap_coordinate.vcpu_index() {
             return Ok(None);
         }
-        if current_icount < trap_coordinate.icount() {
+        if current_icount < stopped_icount {
             return Err(callback_error(format!(
-                "selectable reply resume icount {current_icount} precedes stopped request boundary {}",
-                trap_coordinate.icount()
+                "selectable reply resume icount {current_icount} precedes stopped request boundary {stopped_icount}"
             )));
         }
         let consumed = self.reply_input.dequeue()?.ok_or_else(|| {
@@ -295,7 +297,7 @@ impl LiveSelectableState {
         Ok(())
     }
 
-    /// Rebinds the in-TB request coordinate to the deferred stop boundary.
+    /// Seals the in-TB request against the deferred stop boundary.
     pub(super) fn rebind_pending_boundary(
         &mut self,
         current_icount: u64,

@@ -57,7 +57,7 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_doorbell_marker_kind_vocabulary();
     assert_doorbell_marker_subvocabularies();
     assert_selectable_v1_golden_vectors();
-    assert_selectable_catalog_plan_v2_golden_vector();
+    assert_selectable_catalog_plan_v3_golden_vector();
     assert_selectable_pending_transport_v1_golden_vector();
     assert_plugin_setup_plan_v2_golden_vector();
     assert_doorbell_decoder_fuzz_corpus();
@@ -149,11 +149,11 @@ fn assert_plugin_setup_plan_v2_golden_vector() {
 }
 
 #[test]
-fn guest_selectable_catalog_plan_v2_golden_vector_matches_live_codec() {
-    assert_selectable_catalog_plan_v2_golden_vector();
+fn guest_selectable_catalog_plan_v3_golden_vector_matches_live_codec() {
+    assert_selectable_catalog_plan_v3_golden_vector();
 }
 
-fn assert_selectable_catalog_plan_v2_golden_vector() {
+fn assert_selectable_catalog_plan_v3_golden_vector() {
     let plan = SelectableCatalogPlan::new(
         SelectablePlanLimits::new(1, 1, 1)
             .unwrap_or_else(|error| panic!("catalog plan limits must validate: {error}")),

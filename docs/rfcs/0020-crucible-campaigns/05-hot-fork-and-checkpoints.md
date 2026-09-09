@@ -2191,7 +2191,7 @@ contains at most 4,096 objects and has this canonical body and child mapping:
 
 Version five added the strictly node-ordered selectable catalog plans to the
 bounded lifecycle-continuation object. Each plan remains the canonical
-`CRUCSCP2` process-neutral body, is at most 32 MiB, and must be frozen and bound
+`CRUCSCP3` process-neutral body, is at most 32 MiB, and must be frozen and bound
 to a live checkpoint target. The closure reader continues to accept a canonical
 version-four manifest as an exact legacy identity; such a closure has no
 selectable catalog plans and therefore cannot restore a selectable-bearing
