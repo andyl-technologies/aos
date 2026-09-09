@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+# Exposes same-stream peer construction solely for the integration harness.
+exact-unit-test-util = []
+
 [dependencies]
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -20,6 +24,9 @@ sha2.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 aos-sandbox-linux.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { workspace = true, features = ["event"] }
 
 [dev-dependencies]
 # p2p + bus-impl let the unit tests stand up an in-process FakeSystemd over a

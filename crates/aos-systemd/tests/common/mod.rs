@@ -9,9 +9,11 @@
 #![allow(clippy::disallowed_types)]
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "exact-unit-test-util")]
+use aos_systemd::ExactUnitClient;
 use aos_systemd::{ListUnitsEntry, SystemdClient};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -49,6 +51,26 @@ pub struct FakeState {
     discovery_calls: Arc<AtomicU32>,
     /// Optional hostile `Unit.Id` substitution.
     pub unit_id_override: Arc<Mutex<Option<String>>>,
+    /// Manager-retained service environment returned by the fake unit.
+    pub environment: Arc<Mutex<Vec<String>>>,
+    /// Current high-level activation state.
+    pub active_state: Arc<Mutex<String>>,
+    /// Current service-specific substate.
+    pub sub_state: Arc<Mutex<String>>,
+    /// Current service leader PID.
+    pub main_pid: Arc<AtomicU32>,
+    /// Net accepted `RefUnit` calls minus accepted `UnrefUnit` calls.
+    pub reference_balance: Arc<AtomicI32>,
+    /// Makes `GetUnit` return the authoritative systemd `NoSuchUnit` error.
+    pub unit_missing: Arc<AtomicBool>,
+    /// Holds an accepted `RefUnit` call before its method reply.
+    pub hold_ref_reply: Arc<AtomicBool>,
+    /// Holds an accepted `UnrefUnit` call before its method reply.
+    pub hold_unref_reply: Arc<AtomicBool>,
+    /// Set only after the fake's server-side socket observes peer shutdown.
+    pub disconnect_observed: Arc<AtomicBool>,
+    /// Records a poll failure instead of treating it as successful shutdown.
+    pub disconnect_error: Arc<Mutex<Option<String>>>,
     job_counter: Arc<AtomicU32>,
 }
 
@@ -66,13 +88,44 @@ impl FakeState {
             discovery_alternate: Arc::new(Mutex::new(None)),
             discovery_calls: Arc::new(AtomicU32::new(0)),
             unit_id_override: Arc::new(Mutex::new(None)),
+            environment: Arc::new(Mutex::new(Vec::new())),
+            active_state: Arc::new(Mutex::new("active".to_owned())),
+            sub_state: Arc::new(Mutex::new("running".to_owned())),
+            main_pid: Arc::new(AtomicU32::new(4242)),
+            reference_balance: Arc::new(AtomicI32::new(0)),
+            unit_missing: Arc::new(AtomicBool::new(false)),
+            hold_ref_reply: Arc::new(AtomicBool::new(false)),
+            hold_unref_reply: Arc::new(AtomicBool::new(false)),
+            disconnect_observed: Arc::new(AtomicBool::new(false)),
+            disconnect_error: Arc::new(Mutex::new(None)),
             job_counter: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    #[cfg(feature = "exact-unit-test-util")]
+    pub async fn wait_for_disconnect(&self) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            if let Some(error) = self.disconnect_error.lock().unwrap().clone() {
+                panic!("disconnect observer failed: {error}");
+            }
+            if self.disconnect_observed.load(Ordering::SeqCst) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("client socket shutdown was not observed");
     }
 }
 
 pub struct FakeSystemd {
     state: FakeState,
+}
+
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "org.freedesktop.systemd1")]
+enum FakeManagerError {
+    NoSuchUnit(String),
 }
 
 #[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
@@ -104,7 +157,30 @@ impl FakeSystemd {
         _mode: &str,
     ) -> OwnedObjectPath {
         self.record("stop_unit");
+        *self.state.active_state.lock().unwrap() = "inactive".to_owned();
+        *self.state.sub_state.lock().unwrap() = "dead".to_owned();
+        self.state.main_pid.store(0, Ordering::SeqCst);
         self.submit(&emitter, name).await
+    }
+
+    async fn ref_unit(&self, _name: &str) {
+        self.record("ref_unit");
+        self.state.reference_balance.fetch_add(1, Ordering::SeqCst);
+        if self.state.hold_ref_reply.load(Ordering::SeqCst) {
+            let accepted = PendingAcceptedReference {
+                balance: Arc::clone(&self.state.reference_balance),
+            };
+            std::future::pending::<()>().await;
+            drop(accepted);
+        }
+    }
+
+    async fn unref_unit(&self, _name: &str) {
+        self.record("unref_unit");
+        self.state.reference_balance.fetch_sub(1, Ordering::SeqCst);
+        if self.state.hold_unref_reply.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
     }
 
     async fn restart_unit(
@@ -160,10 +236,13 @@ impl FakeSystemd {
         self.record("kill_unit");
     }
 
-    async fn get_unit(&self, name: &str) -> OwnedObjectPath {
+    async fn get_unit(&self, name: &str) -> Result<OwnedObjectPath, FakeManagerError> {
         self.record("get_unit");
+        if self.state.unit_missing.load(Ordering::SeqCst) {
+            return Err(FakeManagerError::NoSuchUnit(name.to_owned()));
+        }
         *self.state.observed_unit.lock().unwrap() = name.to_string();
-        OwnedObjectPath::try_from(UNIT_PATH).unwrap()
+        Ok(OwnedObjectPath::try_from(UNIT_PATH).unwrap())
     }
 
     async fn list_units_by_patterns(
@@ -211,6 +290,20 @@ impl FakeSystemd {
     async fn reloading(emitter: &SignalEmitter<'_>, active: bool) -> zbus::Result<()>;
 }
 
+struct PendingAcceptedReference {
+    balance: Arc<AtomicI32>,
+}
+
+impl Drop for PendingAcceptedReference {
+    fn drop(&mut self) {
+        let _ = self
+            .balance
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |balance| {
+                Some(balance.saturating_sub(1))
+            });
+    }
+}
+
 struct FakeUnit {
     state: FakeState,
 }
@@ -226,13 +319,13 @@ impl FakeUnit {
     }
 
     #[zbus(property)]
-    fn active_state(&self) -> &str {
-        "active"
+    fn active_state(&self) -> String {
+        self.state.active_state.lock().unwrap().clone()
     }
 
     #[zbus(property)]
-    fn sub_state(&self) -> &str {
-        "running"
+    fn sub_state(&self) -> String {
+        self.state.sub_state.lock().unwrap().clone()
     }
 
     #[zbus(property)]
@@ -260,13 +353,22 @@ struct FakeService {
 impl FakeService {
     #[zbus(property, name = "MainPID")]
     fn main_pid(&self) -> u32 {
-        4242
+        self.state.main_pid.load(Ordering::SeqCst)
     }
 
     #[zbus(property)]
     fn control_group(&self) -> String {
         let name = self.state.observed_unit.lock().unwrap();
-        format!("/aos.slice/aos-sandboxes.slice/{name}")
+        if name.starts_with("aos-lease-guard-") {
+            format!("/aos.slice/aos-assignment-guardians.slice/{name}")
+        } else {
+            format!("/aos.slice/aos-sandboxes.slice/{name}")
+        }
+    }
+
+    #[zbus(property)]
+    fn environment(&self) -> Vec<String> {
+        self.state.environment.lock().unwrap().clone()
     }
 }
 
@@ -314,51 +416,118 @@ pub struct Harness {
     server_conn: Mutex<Option<zbus::Connection>>,
 }
 
+/// Harness whose client connection is owned by an exact-unit shutdown anchor.
+#[cfg(feature = "exact-unit-test-util")]
+pub struct ExactHarness {
+    pub client: ExactUnitClient,
+    pub state: FakeState,
+    pub server_conn: Mutex<Option<zbus::Connection>>,
+}
+
 const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
 const UNIT_PATH: &str = "/org/freedesktop/systemd1/unit/aos_2dsandbox";
 
+async fn build_harness<C, F, BuildClient>(
+    build_client: BuildClient,
+) -> (C, FakeState, Mutex<Option<zbus::Connection>>)
+where
+    F: std::future::Future<Output = C>,
+    BuildClient: FnOnce(std::os::unix::net::UnixStream) -> F,
+{
+    let guid = zbus::Guid::generate();
+    let (server_sock, client_sock) = std::os::unix::net::UnixStream::pair().unwrap();
+    let disconnect_observer = server_sock.try_clone().unwrap();
+    server_sock.set_nonblocking(true).unwrap();
+    let server_sock = tokio::net::UnixStream::from_std(server_sock).unwrap();
+    let state = FakeState::new();
+    let reference_balance = Arc::clone(&state.reference_balance);
+    let disconnect_observed = Arc::clone(&state.disconnect_observed);
+    let disconnect_error = Arc::clone(&state.disconnect_error);
+    std::thread::spawn(move || {
+        use rustix::event::{PollFd, PollFlags, poll};
+
+        let mut disconnect_events = PollFlags::HUP;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            disconnect_events |= PollFlags::RDHUP;
+        }
+        let error_events = PollFlags::ERR | PollFlags::NVAL;
+        let events = disconnect_events | error_events;
+        let mut descriptors = [PollFd::new(&disconnect_observer, events)];
+        loop {
+            match poll(&mut descriptors, None) {
+                Ok(_) if descriptors[0].revents().intersects(error_events) => {
+                    *disconnect_error.lock().unwrap() = Some(format!(
+                        "socket poll reported {:?}",
+                        descriptors[0].revents()
+                    ));
+                    return;
+                }
+                Ok(_) if descriptors[0].revents().intersects(disconnect_events) => break,
+                Ok(_) => descriptors[0].clear_revents(),
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => {
+                    *disconnect_error.lock().unwrap() = Some(error.to_string());
+                    return;
+                }
+            }
+        }
+
+        // systemd's RefUnit ownership is connection-scoped. Publish the HUP
+        // only after the fake's reference state reflects that cleanup.
+        reference_balance.store(0, Ordering::SeqCst);
+        disconnect_observed.store(true, Ordering::SeqCst);
+    });
+    let fake = FakeSystemd {
+        state: state.clone(),
+    };
+
+    let server_builder = zbus::connection::Builder::unix_stream(server_sock)
+        .server(guid)
+        .unwrap()
+        .p2p()
+        .serve_at(MANAGER_PATH, fake)
+        .unwrap()
+        .serve_at(
+            UNIT_PATH,
+            FakeUnit {
+                state: state.clone(),
+            },
+        )
+        .unwrap()
+        .serve_at(
+            UNIT_PATH,
+            FakeService {
+                state: state.clone(),
+            },
+        )
+        .unwrap();
+
+    // Build both ends concurrently — the auth handshake needs both active.
+    let (server_conn, client) = tokio::join!(server_builder.build(), build_client(client_sock));
+
+    (client, state, Mutex::new(Some(server_conn.unwrap())))
+}
+
 impl Harness {
     pub async fn new() -> Self {
-        let guid = zbus::Guid::generate();
-        let (server_sock, client_sock) = tokio::net::UnixStream::pair().unwrap();
-        let state = FakeState::new();
-        let fake = FakeSystemd {
-            state: state.clone(),
-        };
+        let (client, state, server_conn) = build_harness(|client_sock| async move {
+            client_sock.set_nonblocking(true).unwrap();
+            let client_sock = tokio::net::UnixStream::from_std(client_sock).unwrap();
+            let connection = zbus::connection::Builder::unix_stream(client_sock)
+                .p2p()
+                .build()
+                .await
+                .unwrap();
 
-        let server_builder = zbus::connection::Builder::unix_stream(server_sock)
-            .server(guid)
-            .unwrap()
-            .p2p()
-            .serve_at(MANAGER_PATH, fake)
-            .unwrap()
-            .serve_at(
-                UNIT_PATH,
-                FakeUnit {
-                    state: state.clone(),
-                },
-            )
-            .unwrap()
-            .serve_at(
-                UNIT_PATH,
-                FakeService {
-                    state: state.clone(),
-                },
-            )
-            .unwrap();
-        let client_builder = zbus::connection::Builder::unix_stream(client_sock).p2p();
+            SystemdClient::from_connection(connection).await.unwrap()
+        })
+        .await;
 
-        // Build both ends concurrently — the auth handshake needs both active.
-        let (server_conn, client_conn) =
-            tokio::join!(server_builder.build(), client_builder.build());
-        let server_conn = server_conn.unwrap();
-        let client_conn = client_conn.unwrap();
-
-        let client = SystemdClient::from_connection(client_conn).await.unwrap();
         Self {
             client,
             state,
-            server_conn: Mutex::new(Some(server_conn)),
+            server_conn,
         }
     }
 
@@ -447,5 +616,47 @@ impl Harness {
             .as_ref()
             .expect("server connection is open")
             .clone()
+    }
+}
+
+#[cfg(feature = "exact-unit-test-util")]
+impl ExactHarness {
+    pub async fn new() -> Self {
+        let (client, state, server_conn) = build_harness(|client_sock| async move {
+            ExactUnitClient::from_test_peer_stream(client_sock)
+                .await
+                .unwrap()
+        })
+        .await;
+
+        Self {
+            client,
+            state,
+            server_conn,
+        }
+    }
+
+    pub fn set_next_result(&self, result: &str) {
+        *self.state.next_result.lock().unwrap() = result.to_owned();
+    }
+
+    pub fn suppress_job_emission(&self) {
+        self.state.suppress_emit.store(true, Ordering::SeqCst);
+    }
+
+    pub fn set_environment(&self, values: Vec<String>) {
+        *self.state.environment.lock().unwrap() = values;
+    }
+
+    pub fn hold_ref_reply(&self) {
+        self.state.hold_ref_reply.store(true, Ordering::SeqCst);
+    }
+
+    pub fn hold_unref_reply(&self) {
+        self.state.hold_unref_reply.store(true, Ordering::SeqCst);
+    }
+
+    pub fn set_unit_missing(&self) {
+        self.state.unit_missing.store(true, Ordering::SeqCst);
     }
 }

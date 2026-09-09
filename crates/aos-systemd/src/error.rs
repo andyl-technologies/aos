@@ -34,6 +34,10 @@ pub enum Error {
     /// which only happens if the bus connection died mid-flight.
     #[error("systemd job result channel closed before completion (unit {0})")]
     JobSenderDropped(String),
+
+    /// A disposable exact-unit connection or operation exceeded its deadline.
+    #[error("systemd exact-unit {0} exceeded its fixed deadline")]
+    ExactUnitTimeout(&'static str),
 }
 
 impl Error {
@@ -47,6 +51,7 @@ impl Error {
             Self::SystemdUnavailable(_)
             | Self::Fdo(_)
             | Self::JobSenderDropped(_)
+            | Self::ExactUnitTimeout(_)
             | Self::InvalidSandboxUnit(_) => false,
         }
     }

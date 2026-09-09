@@ -5,6 +5,7 @@
 //! general property map or arbitrary service-manager operation.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::os::fd::{AsFd as _, BorrowedFd};
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,8 +13,9 @@ use std::time::Duration;
 use zbus::zvariant::Fd;
 
 use super::{
-    SandboxDescriptorPath, SandboxUnitName, bool_property, complex_property, duration_micros,
-    exec_property, invalid, string_array_property, string_property, u32_property, u64_property,
+    ExactStartError, ExactUnitRole, SandboxCgroupPath, SandboxDescriptorPath, SandboxUnitName,
+    bool_property, complex_property, duration_micros, exec_property, invalid,
+    string_array_property, string_property, u32_property, u64_property,
 };
 use crate::client::{JobOutcome, SystemdClient};
 use crate::error::Result;
@@ -22,6 +24,7 @@ use crate::manager_proxy::AuxiliaryUnit;
 const GUARDIAN_SLICE: &str = "aos-assignment-guardians.slice";
 const GUARDIAN_STATE_PREFIX: &str = "aos/lease-guards";
 const GUARDIAN_ENVIRONMENT_PREFIX: &str = "AOS_GUARDIAN_INCARNATION=";
+const GUARDIAN_BINDING_PREFIX: &str = "AOS_GUARDIAN_LAUNCH_BINDING=";
 const GUARDIAN_ALLOWED_ADDRESS_FAMILIES: &[&str] = &["AF_UNIX"];
 const GUARDIAN_ALLOWED_SYSCALLS: &[&str] = &["@system-service"];
 const GUARDIAN_DENIED_SOCKET_OPERATIONS: &[&str] =
@@ -30,6 +33,152 @@ const MAXIMUM_POLICY_BYTES: u64 = 64 * 1024;
 const MAXIMUM_PLAN_BYTES: u64 = 256 * 1024;
 const MAXIMUM_LEASE_BYTES: u64 = 64 * 1024;
 const MAXIMUM_SIGNATURE_BYTES: u64 = 64 * 1024;
+const MAXIMUM_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Copies the complete identity of one descriptor-pinned Guardian executable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuardianExecutableSnapshot {
+    /// Filesystem device containing the executable inode.
+    pub device: u64,
+    /// Exact executable inode.
+    pub inode: u64,
+    /// Exact byte length.
+    pub bytes: u64,
+    /// Owning user ID.
+    pub uid: u32,
+    /// Complete file type and permission mode.
+    pub mode: u32,
+    /// Last content-modification seconds.
+    pub modified_seconds: i64,
+    /// Last content-modification nanoseconds.
+    pub modified_nanoseconds: i64,
+    /// Last metadata-change seconds.
+    pub changed_seconds: i64,
+    /// Last metadata-change nanoseconds.
+    pub changed_nanoseconds: i64,
+    /// SHA-256 over the exact executable contents.
+    pub sha256_content: [u8; 32],
+}
+
+/// Owns and revalidates one exact read-only Guardian executable descriptor.
+#[derive(Clone, Debug)]
+pub struct GuardianExecutableDescriptor {
+    path: SandboxDescriptorPath,
+    snapshot: GuardianExecutableSnapshot,
+}
+
+impl GuardianExecutableDescriptor {
+    /// Duplicates a protected executable descriptor and records its exact identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the descriptor is a bounded, creator-owned,
+    /// non-group/world-writable executable regular file opened read-only.
+    pub fn from_descriptor(descriptor: BorrowedFd<'_>) -> Result<Self> {
+        let snapshot = validate_guardian_executable(descriptor)?;
+        let path = SandboxDescriptorPath::for_current_process(descriptor)
+            .map_err(|error| invalid(format!("cannot pin guardian executable: {error}")))?;
+        Ok(Self { path, snapshot })
+    }
+
+    /// Returns the exact admitted executable identity.
+    #[must_use]
+    pub const fn snapshot(&self) -> GuardianExecutableSnapshot {
+        self.snapshot
+    }
+
+    fn transferred_path(&self) -> Result<SandboxDescriptorPath> {
+        if validate_guardian_executable(self.path.descriptor())? != self.snapshot {
+            return Err(invalid(
+                "guardian executable identity or content changed before start",
+            ));
+        }
+        Ok(self.path.clone())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn validate_guardian_executable(descriptor: BorrowedFd<'_>) -> Result<GuardianExecutableSnapshot> {
+    use std::os::unix::fs::FileExt as _;
+
+    use rustix::fs::{FileType, OFlags, fcntl_getfl, fstat};
+    use sha2::{Digest as _, Sha256};
+
+    let before = fstat(descriptor)
+        .map_err(|error| invalid(format!("cannot inspect guardian executable: {error}")))?;
+    let bytes = u64::try_from(before.st_size)
+        .ok()
+        .filter(|bytes| (1..=MAXIMUM_EXECUTABLE_BYTES).contains(bytes))
+        .ok_or_else(|| invalid("guardian executable size is invalid"))?;
+    if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
+        || before.st_uid != rustix::process::geteuid().as_raw()
+        || before.st_mode & 0o111 == 0
+        || before.st_mode & 0o022 != 0
+        || fcntl_getfl(descriptor)
+            .map_err(|error| invalid(format!("cannot read guardian executable flags: {error}")))?
+            & OFlags::ACCMODE
+            != OFlags::RDONLY
+    {
+        return Err(invalid("guardian executable descriptor is not protected"));
+    }
+
+    let length = usize::try_from(bytes)
+        .map_err(|_| invalid("guardian executable size does not fit memory"))?;
+    let file = File::from(
+        descriptor
+            .try_clone_to_owned()
+            .map_err(|error| invalid(format!("cannot duplicate guardian executable: {error}")))?,
+    );
+    let mut content = vec![0; length];
+    let mut offset = 0;
+    while offset < content.len() {
+        let read = file
+            .read_at(&mut content[offset..], offset as u64)
+            .map_err(|error| invalid(format!("cannot read guardian executable: {error}")))?;
+        if read == 0 {
+            return Err(invalid(
+                "guardian executable ended before its declared size",
+            ));
+        }
+        offset += read;
+    }
+    let after = fstat(descriptor)
+        .map_err(|error| invalid(format!("cannot recheck guardian executable: {error}")))?;
+    if after.st_dev != before.st_dev
+        || after.st_ino != before.st_ino
+        || after.st_size != before.st_size
+        || after.st_mtime != before.st_mtime
+        || after.st_mtime_nsec != before.st_mtime_nsec
+        || after.st_ctime != before.st_ctime
+        || after.st_ctime_nsec != before.st_ctime_nsec
+    {
+        return Err(invalid("guardian executable changed during exact readback"));
+    }
+    let modified_nanoseconds = i64::try_from(before.st_mtime_nsec)
+        .map_err(|_| invalid("guardian executable modification time is invalid"))?;
+    let changed_nanoseconds = i64::try_from(before.st_ctime_nsec)
+        .map_err(|_| invalid("guardian executable metadata-change time is invalid"))?;
+
+    Ok(GuardianExecutableSnapshot {
+        device: before.st_dev,
+        inode: before.st_ino,
+        bytes,
+        uid: before.st_uid,
+        mode: before.st_mode,
+        modified_seconds: before.st_mtime,
+        modified_nanoseconds,
+        changed_seconds: before.st_ctime,
+        changed_nanoseconds,
+        sha256_content: Sha256::digest(content).into(),
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn validate_guardian_executable(_descriptor: BorrowedFd<'_>) -> Result<GuardianExecutableSnapshot> {
+    Err(invalid(
+        "guardian executable validation is available only on Linux",
+    ))
+}
 
 /// Names every exact authority descriptor consumed by a guardian.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -331,8 +480,9 @@ fn validate_guardian_descriptor(
 #[derive(Clone, Debug)]
 pub struct GuardianUnitSpec {
     name: SandboxUnitName,
-    executable: SandboxDescriptorPath,
+    executable: GuardianExecutableDescriptor,
     credentials: GuardianCredentialDescriptors,
+    binding: [u8; 32],
     incarnation_hex: String,
     timeout_start: Duration,
 }
@@ -351,17 +501,22 @@ impl GuardianUnitSpec {
     /// timeout.
     pub fn new(
         name: SandboxUnitName,
-        executable: SandboxDescriptorPath,
+        executable: GuardianExecutableDescriptor,
         credentials: GuardianCredentialDescriptors,
+        binding: [u8; 32],
         timeout_start: Duration,
     ) -> Result<Self> {
         let (_, incarnation) = SandboxUnitName::from_service_name(name.as_str())
             .ok_or_else(|| invalid("guardian unit name is not canonical"))?;
+        if binding == [0; 32] {
+            return Err(invalid("guardian launch binding is zero"));
+        }
         duration_micros(timeout_start, "guardian start timeout")?;
         Ok(Self {
             name,
             executable,
             credentials,
+            binding,
             incarnation_hex: super::encode_hex(incarnation),
             timeout_start,
         })
@@ -373,8 +528,19 @@ impl GuardianUnitSpec {
         self.name.guardian()
     }
 
+    /// Returns the authenticated launch binding retained in the unit environment.
+    #[must_use]
+    pub const fn binding(&self) -> [u8; 32] {
+        self.binding
+    }
+
     fn properties(&self) -> Result<Vec<crate::manager_proxy::TransientProperty>> {
         let environment = format!("{GUARDIAN_ENVIRONMENT_PREFIX}{}", self.incarnation_hex);
+        let binding = format!(
+            "{GUARDIAN_BINDING_PREFIX}{}",
+            super::encode_hex32(self.binding)
+        );
+        let executable = self.executable.transferred_path()?;
         let state_directory = format!("{GUARDIAN_STATE_PREFIX}/{}", self.incarnation_hex);
         Ok(vec![
             string_property("Description", format!("AOS lease guardian {}", self.name)),
@@ -439,37 +605,94 @@ impl GuardianUnitSpec {
                 vec!["/run/dbus/system_bus_socket".to_owned()],
             )?,
             complex_property("ExtraFileDescriptors", self.credentials.transferred()?)?,
-            string_array_property("Environment", vec![environment])?,
+            string_array_property("Environment", vec![environment, binding])?,
             bool_property("SetLoginEnvironment", false),
             u64_property(
                 "TimeoutStartUSec",
                 duration_micros(self.timeout_start, "guardian start timeout")?,
             ),
-            exec_property(&self.executable.path, vec![self.executable.path.clone()])?,
+            exec_property(&executable.path, vec![executable.path.clone()])?,
         ])
     }
 }
 
+/// Reports the manager-retained identity and state of one Guardian unit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardianUnitObservation {
+    /// Manager-retained launch binding, when exactly one canonical value exists.
+    pub binding: Option<[u8; 32]>,
+    /// Current systemd invocation identifier.
+    pub invocation_id: Option<[u8; 16]>,
+    /// High-level activation state.
+    pub active_state: String,
+    /// Service-specific substate.
+    pub sub_state: String,
+    /// Exact validated Guardian cgroup path, when realized.
+    pub cgroup: Option<SandboxCgroupPath>,
+    /// Current Guardian service leader, when systemd reports one.
+    pub main_pid: Option<std::num::NonZeroU32>,
+}
+
+/// Distinguishes a denied final guard from a systemd start failure.
+pub type GuardianStartError<E> = ExactStartError<E>;
+
 impl SystemdClient {
-    /// Creates and starts one closed guardian unit, then awaits its start job.
+    /// Prepares and starts one Guardian after a final synchronous guard.
     ///
-    /// This is the only guardian service-manager operation exposed by the
-    /// typed transport. The borrowed specification retains the executable and
-    /// authority descriptor pins through activation; `Restart=no` prevents
-    /// reuse after those pins are released.
+    /// Descriptor validation and property construction complete before
+    /// `before_submission` runs. This is the last local authority check before
+    /// the asynchronous D-Bus submission; it is not an atomic guarantee about
+    /// when PID 1 applies the request. The independently armed Guardian and
+    /// subsequent protected observations enforce the remaining lifetime. The
+    /// borrowed specification retains executable and authority descriptor pins
+    /// through activation; `Restart=no` prevents reuse after their release.
     ///
     /// # Errors
     ///
-    /// Returns an error when property compilation, D-Bus submission, or job
-    /// completion fails.
-    pub async fn start_guardian_unit(&self, spec: &GuardianUnitSpec) -> Result<JobOutcome> {
-        let properties = spec.properties()?;
+    /// Returns [`GuardianStartError::Guard`] when the final guard denies the
+    /// submission, or [`GuardianStartError::Systemd`] when preparation, D-Bus
+    /// submission, or job completion fails.
+    pub async fn start_guardian_unit_guarded<E>(
+        &self,
+        spec: &GuardianUnitSpec,
+        before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
+    ) -> std::result::Result<JobOutcome, GuardianStartError<E>> {
+        let properties =
+            super::exact_unit::prepare_then_guard(|| spec.properties(), before_submission)?;
         let auxiliary_units: Vec<AuxiliaryUnit> = Vec::new();
         let path = self
             .manager
             .start_transient_unit(spec.name(), "fail", &properties, &auxiliary_units)
+            .await
+            .map_err(crate::Error::from)
+            .map_err(GuardianStartError::Systemd)?;
+        self.await_job(path)
+            .await
+            .map_err(GuardianStartError::Systemd)
+    }
+
+    /// Observes one exact incarnation-derived Guardian unit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for D-Bus failures, malformed invocation identifiers,
+    /// or malformed or repeated manager-retained binding entries.
+    pub async fn observe_guardian_unit(
+        &self,
+        name: &SandboxUnitName,
+    ) -> Result<Option<GuardianUnitObservation>> {
+        let exact = super::ExactUnitClient::connect()
+            .await?
+            .observe_exact_unit(name, ExactUnitRole::Guardian)
             .await?;
-        self.await_job(path).await
+        Ok(exact.map(|observation| GuardianUnitObservation {
+            binding: observation.binding,
+            invocation_id: observation.invocation_id,
+            active_state: observation.active_state,
+            sub_state: observation.sub_state,
+            cgroup: observation.cgroup,
+            main_pid: observation.main_pid,
+        }))
     }
 }
 
@@ -481,11 +704,39 @@ mod tests {
     use std::os::fd::AsFd as _;
     #[cfg(target_os = "linux")]
     use std::os::unix::fs::PermissionsExt as _;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     #[cfg(target_os = "linux")]
     use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 
     use super::*;
+
+    #[test]
+    fn expiry_during_preparation_prevents_submission() {
+        let clock = AtomicU64::new(1);
+        let starts = AtomicUsize::new(0);
+        let mut guard = || {
+            (clock.load(Ordering::SeqCst) < 2)
+                .then_some(())
+                .ok_or("expired")
+        };
+        let prepared = super::super::exact_unit::prepare_then_guard(
+            || -> Result<()> {
+                clock.store(2, Ordering::SeqCst);
+                Ok(())
+            },
+            &mut guard,
+        );
+        if prepared.is_ok() {
+            starts.fetch_add(1, Ordering::SeqCst);
+        }
+
+        assert!(matches!(
+            prepared,
+            Err(GuardianStartError::Guard("expired"))
+        ));
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+    }
 
     fn spec() -> (tempfile::TempDir, GuardianUnitSpec) {
         let executable = File::open(
@@ -493,7 +744,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("test executable path failed: {error}")),
         )
         .unwrap_or_else(|error| panic!("test executable failed: {error}"));
-        let executable = SandboxDescriptorPath::for_current_process(executable.as_fd())
+        let executable = GuardianExecutableDescriptor::from_descriptor(executable.as_fd())
             .unwrap_or_else(|error| panic!("test executable pin failed: {error}"));
         let directory =
             tempfile::tempdir().unwrap_or_else(|error| panic!("test directory failed: {error}"));
@@ -502,6 +753,7 @@ mod tests {
             SandboxUnitName::from_incarnation([0xab; 16]),
             executable,
             descriptors,
+            [0xcd; 32],
             Duration::from_secs(10),
         )
         .unwrap_or_else(|error| panic!("test guardian spec failed: {error}"));
@@ -675,6 +927,20 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {name}"));
             assert_eq!(u64::try_from(value).unwrap_or(u64::MAX), 0);
         }
+
+        let (_, environment) = properties
+            .iter()
+            .find(|(name, _)| name == "Environment")
+            .unwrap_or_else(|| panic!("guardian environment is absent"));
+        let environment = Vec::<String>::try_from(environment.clone())
+            .unwrap_or_else(|error| panic!("guardian environment is malformed: {error}"));
+        assert_eq!(
+            environment,
+            vec![
+                format!("{GUARDIAN_ENVIRONMENT_PREFIX}{}", "ab".repeat(16)),
+                format!("{GUARDIAN_BINDING_PREFIX}{}", "cd".repeat(32)),
+            ]
+        );
     }
 
     #[test]

@@ -9,10 +9,11 @@
 
 use std::fmt;
 use std::num::NonZeroU32;
-use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Duration;
 
+use sha2::{Digest as _, Sha256};
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::{Fd, OwnedValue, Str, Value};
 
@@ -21,13 +22,21 @@ use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{AuxiliaryUnit, ServiceProxy, TransientProperty, UnitProxy};
 
 mod discovery;
+mod exact_unit;
 mod guardian;
 pub use discovery::{
     DiscoveredSandboxUnit, SandboxDiscoveryComparison, SandboxDiscoveryConflict,
     SandboxDiscoveryIndeterminate, SandboxDiscoveryOutcome, SandboxQuarantineEvidence,
     SandboxUnitDiscoverySnapshot,
 };
-pub use guardian::{GuardianCredentialDescriptors, GuardianCredentialRole, GuardianUnitSpec};
+pub use exact_unit::{
+    ExactStartError, ExactStopError, ExactStopOutcome, ExactUnitClient, ExactUnitObservation,
+    ExactUnitRole, ExactUnitState, ExactUnitTarget, PostUnrefUnitObservation,
+};
+pub use guardian::{
+    GuardianCredentialDescriptors, GuardianCredentialRole, GuardianExecutableDescriptor,
+    GuardianExecutableSnapshot, GuardianStartError, GuardianUnitObservation, GuardianUnitSpec,
+};
 
 const UNIT_PREFIX: &str = "aos-sandbox-";
 const UNIT_SUFFIX: &str = ".service";
@@ -35,6 +44,7 @@ const GUARD_PREFIX: &str = "aos-lease-guard-";
 const SANDBOX_SLICE: &str = "aos-sandboxes.slice";
 // Hyphens encode slice ancestry: systemd nests this slice beneath aos.slice.
 const SANDBOX_SLICE_CGROUP: &str = "/aos.slice/aos-sandboxes.slice";
+const GUARDIAN_SLICE_CGROUP: &str = "/aos.slice/aos-assignment-guardians.slice";
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 128 * 1024;
 const MAX_DEVICES: usize = 64;
@@ -153,6 +163,12 @@ impl SandboxUnitName {
     #[must_use]
     pub fn cgroup_path(&self) -> SandboxCgroupPath {
         SandboxCgroupPath(self.expected_cgroup())
+    }
+
+    /// Returns the sole cgroup-v2 path permitted for this incarnation's Guardian.
+    #[must_use]
+    pub fn guardian_cgroup_path(&self) -> SandboxCgroupPath {
+        SandboxCgroupPath(format!("{GUARDIAN_SLICE_CGROUP}/{}", self.guardian))
     }
 
     fn expected_cgroup(&self) -> String {
@@ -415,6 +431,10 @@ impl SandboxDescriptorPath {
     pub fn as_str(&self) -> &str {
         &self.path
     }
+
+    pub(crate) fn descriptor(&self) -> BorrowedFd<'_> {
+        self.pin.as_fd()
+    }
 }
 
 impl SandboxNspawnCommand {
@@ -544,6 +564,7 @@ pub struct SandboxUnitSpec {
     paths: SandboxResolvedPaths,
     resources: SandboxResources,
     devices: Vec<SandboxDevice>,
+    launch_binding: Option<[u8; 32]>,
     timeout_start: Duration,
     timeout_stop: Duration,
 }
@@ -585,9 +606,50 @@ impl SandboxUnitSpec {
             paths,
             resources,
             devices: Vec::new(),
+            launch_binding: None,
             timeout_start,
             timeout_stop,
         })
+    }
+
+    /// Constructs the Host 1.5 payload service bound to its immutable launch transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::new_nspawn`], and rejects the all-zero
+    /// launch-binding sentinel.
+    pub fn new_nspawn_bound(
+        name: SandboxUnitName,
+        command: SandboxNspawnCommand,
+        paths: SandboxResolvedPaths,
+        resources: SandboxResources,
+        launch_binding: [u8; 32],
+        timeout_start: Duration,
+        timeout_stop: Duration,
+    ) -> Result<Self> {
+        if launch_binding == [0; 32] {
+            return Err(invalid("payload launch binding is zero"));
+        }
+        let mut spec =
+            Self::new_nspawn(name, command, paths, resources, timeout_start, timeout_stop)?;
+        spec.launch_binding = Some(launch_binding);
+        Ok(spec)
+    }
+
+    /// Binds an already compiled payload spec to one Host 1.5 transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the all-zero sentinel or a spec which is already
+    /// bound, preventing a caller from silently rebinding compiled authority.
+    pub fn into_bound(mut self, launch_binding: [u8; 32]) -> Result<Self> {
+        if launch_binding == [0; 32] || self.launch_binding.is_some() {
+            return Err(invalid(
+                "payload launch binding is zero or already assigned",
+            ));
+        }
+        self.launch_binding = Some(launch_binding);
+        Ok(self)
     }
 
     /// Adds a typed supervisor device allowlist.
@@ -646,6 +708,73 @@ impl SandboxUnitSpec {
         PayloadRootContinuityPolicyV1 { _sealed: () }
     }
 
+    /// Returns the immutable Host 1.5 launch binding, when this is a bound spec.
+    #[must_use]
+    pub const fn launch_binding(&self) -> Option<[u8; 32]> {
+        self.launch_binding
+    }
+
+    /// Computes the canonical Host 1.5 payload-spec semantics digest.
+    ///
+    /// Broker-local `/proc/PID/fd` aliases and the launch binding itself are
+    /// intentionally excluded. Their live backing objects are bound by the
+    /// caller's kernel snapshots, while this digest covers every remaining
+    /// choice which changes the transient-unit contract.
+    #[must_use]
+    pub fn semantic_digest_v1(&self) -> [u8; 32] {
+        const DOMAIN: &[u8] = b"aos.systemd.sandbox-unit-semantics.v1\0";
+
+        let mut hash = Sha256::new();
+        hash.update(DOMAIN);
+        semantic_string(&mut hash, self.name.as_str());
+        hash.update(
+            u64::try_from(self.arguments.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        for argument in &self.arguments {
+            semantic_string(&mut hash, argument);
+        }
+        hash.update(self.command.uid_range_start.to_be_bytes());
+        hash.update(self.command.uid_range_size.to_be_bytes());
+        hash.update([u8::from(self.paths.attachment_anchor_pin.is_some())]);
+        hash.update(self.resources.memory_high_bytes.to_be_bytes());
+        hash.update(self.resources.memory_max_bytes.to_be_bytes());
+        hash.update(self.resources.tasks_max.to_be_bytes());
+        hash.update(self.resources.cpu_weight.get().to_be_bytes());
+        semantic_optional_u64(
+            &mut hash,
+            self.resources
+                .cpu_quota_per_second
+                .and_then(|value| u64::try_from(value.as_micros()).ok()),
+        );
+        semantic_optional_u64(&mut hash, self.resources.io_weight);
+        semantic_optional_u64(&mut hash, self.resources.open_files);
+        hash.update(
+            u64::try_from(self.devices.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        for device in &self.devices {
+            hash.update([match device {
+                SandboxDevice::Kvm => 1,
+                SandboxDevice::Tun => 2,
+                SandboxDevice::Fuse => 3,
+            }]);
+        }
+        hash.update(
+            u64::try_from(self.timeout_start.as_micros())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        hash.update(
+            u64::try_from(self.timeout_stop.as_micros())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        hash.finalize().into()
+    }
+
     fn properties(&self) -> Result<Vec<TransientProperty>> {
         let mut argv = Vec::with_capacity(self.arguments.len() + 1);
         argv.push(self.command.executable.clone());
@@ -669,6 +798,17 @@ impl SandboxUnitSpec {
             setup_descriptors.push((
                 Fd::from(anchor_fd),
                 NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE.to_owned(),
+            ));
+        }
+
+        let mut environment = NSPAWN_ENVIRONMENT
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>();
+        if let Some(binding) = self.launch_binding {
+            environment.push(format!(
+                "AOS_SANDBOX_LAUNCH_BINDING={}",
+                encode_hex32(binding)
             ));
         }
 
@@ -737,13 +877,7 @@ impl SandboxUnitSpec {
                     "rw,mode=0700,nosuid,nodev,noexec,size=16M".to_owned(),
                 )],
             )?,
-            string_array_property(
-                "Environment",
-                NSPAWN_ENVIRONMENT
-                    .iter()
-                    .map(|value| (*value).to_owned())
-                    .collect(),
-            )?,
+            string_array_property("Environment", environment)?,
             bool_property("SetLoginEnvironment", false),
             string_array_property("BindsTo", vec![self.name.guardian.to_string()])?,
             string_array_property("After", vec![self.name.guardian.to_string()])?,
@@ -798,6 +932,21 @@ impl SandboxUnitSpec {
     }
 }
 
+fn semantic_string(hash: &mut Sha256, value: &str) {
+    hash.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+    hash.update(value.as_bytes());
+}
+
+fn semantic_optional_u64(hash: &mut Sha256, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            hash.update([1]);
+            hash.update(value.to_be_bytes());
+        }
+        None => hash.update([0]),
+    }
+}
+
 /// A typed cgroup freezer observation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FreezerState {
@@ -844,6 +993,8 @@ pub struct SandboxUnitObservation {
     pub supervisor_pid: Option<NonZeroU32>,
     /// Current systemd invocation identifier, absent when all zeroes.
     pub invocation_id: Option<[u8; 16]>,
+    /// Manager-retained Host 1.5 launch binding, when canonical and unique.
+    pub binding: Option<[u8; 32]>,
 }
 
 impl SystemdClient {
@@ -869,6 +1020,43 @@ impl SystemdClient {
             .start_transient_unit(spec.name.as_str(), "fail", &properties, &auxiliary_units)
             .await?;
         self.await_job(path).await
+    }
+
+    /// Starts one Host 1.5 payload after a final synchronous authority guard.
+    ///
+    /// Descriptor/property preparation completes before `before_submission`
+    /// runs. This is the last local authority check before the asynchronous
+    /// D-Bus submission, not a zero-latency guarantee about when PID 1 applies
+    /// the request. The already-armed Guardian and subsequent protected
+    /// observations enforce the remaining lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactStartError::Guard`] when the final guard denies the
+    /// effect, or [`ExactStartError::Systemd`] for an unbound spec, property
+    /// preparation, D-Bus submission, or job-completion failure.
+    pub async fn start_sandbox_unit_guarded<E>(
+        &self,
+        spec: &SandboxUnitSpec,
+        before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
+    ) -> std::result::Result<JobOutcome, ExactStartError<E>> {
+        let properties = exact_unit::prepare_then_guard(
+            || {
+                if spec.launch_binding.is_none() {
+                    return Err(invalid("guarded payload start requires a launch binding"));
+                }
+                spec.properties()
+            },
+            before_submission,
+        )?;
+        let auxiliary_units: Vec<AuxiliaryUnit> = Vec::new();
+        let path = self
+            .manager
+            .start_transient_unit(spec.name.as_str(), "fail", &properties, &auxiliary_units)
+            .await
+            .map_err(Error::from)
+            .map_err(ExactStartError::Systemd)?;
+        self.await_job(path).await.map_err(ExactStartError::Systemd)
     }
 
     /// Freezes a sandbox service's complete cgroup subtree.
@@ -946,17 +1134,43 @@ impl SystemdClient {
             .build()
             .await?;
 
-        let invocation_id = parse_invocation_id(unit.invocation_id().await?)?;
+        let id_before = unit.id().await?;
+        let invocation_before = parse_invocation_id(unit.invocation_id().await?)?;
+        let environment_before = service.environment().await?;
+        let binding =
+            exact_unit::parse_launch_binding(&environment_before, ExactUnitRole::Payload)?;
+
         let cgroup = parse_cgroup(name, service.control_group().await?)?;
+        let load_state = unit.load_state().await?;
+        let active_state = unit.active_state().await?;
+        let sub_state = unit.sub_state().await?;
+        let freezer_state = FreezerState::from_systemd(unit.freezer_state().await?);
+        let supervisor_pid = NonZeroU32::new(service.main_pid().await?);
+
+        let environment_after = service.environment().await?;
+        let invocation_after = parse_invocation_id(unit.invocation_id().await?)?;
+        let id_after = unit.id().await?;
+        if id_before != name.as_str()
+            || id_after != name.as_str()
+            || id_before != id_after
+            || invocation_before != invocation_after
+            || environment_before != environment_after
+        {
+            return Err(invalid(
+                "sandbox invocation or launch binding changed during observation",
+            ));
+        }
+
         Ok(Some(SandboxUnitObservation {
             unit: name.clone(),
-            load_state: unit.load_state().await?,
-            active_state: unit.active_state().await?,
-            sub_state: unit.sub_state().await?,
-            freezer_state: FreezerState::from_systemd(unit.freezer_state().await?),
+            load_state,
+            active_state,
+            sub_state,
+            freezer_state,
             cgroup,
-            supervisor_pid: NonZeroU32::new(service.main_pid().await?),
-            invocation_id,
+            supervisor_pid,
+            invocation_id: invocation_after,
+            binding,
         }))
     }
 
@@ -982,6 +1196,16 @@ impl SystemdClient {
 fn encode_hex(bytes: [u8; 16]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(32);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn encode_hex32(bytes: [u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
     for byte in bytes {
         output.push(char::from(HEX[usize::from(byte >> 4)]));
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
@@ -1074,14 +1298,20 @@ fn parse_invocation_id(bytes: Vec<u8>) -> Result<Option<[u8; 16]>> {
 }
 
 fn parse_cgroup(name: &SandboxUnitName, path: String) -> Result<Option<SandboxCgroupPath>> {
+    parse_exact_cgroup(&name.cgroup_path(), path)
+}
+
+fn parse_exact_cgroup(
+    expected: &SandboxCgroupPath,
+    path: String,
+) -> Result<Option<SandboxCgroupPath>> {
     if path.is_empty() {
         return Ok(None);
     }
-    let expected = name.expected_cgroup();
-    if path != expected {
+    if path != expected.as_str() {
         return Err(invalid(format!(
-            "unit {} reported cgroup {path:?}, expected {expected:?}",
-            name.as_str()
+            "unit reported cgroup {path:?}, expected {:?}",
+            expected.as_str()
         )));
     }
     Ok(Some(SandboxCgroupPath(path)))
@@ -1257,6 +1487,108 @@ mod tests {
                 .contains("start timeout does not fit systemd's microsecond field"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn semantic_digest_commits_argument_and_duration_boundaries() {
+        let baseline = fixture();
+        let baseline_digest = baseline.semantic_digest_v1();
+
+        let mut fewer_arguments = baseline.clone();
+        fewer_arguments.arguments.pop();
+        assert_ne!(fewer_arguments.semantic_digest_v1(), baseline_digest);
+
+        let mut reordered_arguments = baseline.clone();
+        reordered_arguments.arguments.swap(0, 1);
+        assert_ne!(reordered_arguments.semantic_digest_v1(), baseline_digest);
+
+        let mut no_cpu_quota = baseline.clone();
+        no_cpu_quota.resources.cpu_quota_per_second = None;
+        assert_ne!(no_cpu_quota.semantic_digest_v1(), baseline_digest);
+
+        let mut later_start_timeout = baseline.clone();
+        later_start_timeout.timeout_start += Duration::from_micros(1);
+        assert_ne!(later_start_timeout.semantic_digest_v1(), baseline_digest);
+
+        let mut later_stop_timeout = baseline.clone();
+        later_stop_timeout.timeout_stop += Duration::from_micros(1);
+        assert_ne!(later_stop_timeout.semantic_digest_v1(), baseline_digest);
+
+        // systemd receives integer microseconds, so a discarded nanosecond
+        // remainder is the same unit semantics rather than a digest collision.
+        let mut equivalent_durations = baseline;
+        *equivalent_durations
+            .resources
+            .cpu_quota_per_second
+            .as_mut()
+            .unwrap() += Duration::from_nanos(1);
+        equivalent_durations.timeout_start += Duration::from_nanos(1);
+        equivalent_durations.timeout_stop += Duration::from_nanos(1);
+        assert_eq!(equivalent_durations.semantic_digest_v1(), baseline_digest);
+    }
+
+    #[test]
+    fn semantic_digest_v1_has_stable_canonical_preimage() {
+        fn append_string(preimage: &mut Vec<u8>, value: &str) {
+            preimage.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            preimage.extend_from_slice(value.as_bytes());
+        }
+
+        fn append_optional_u64(preimage: &mut Vec<u8>, value: Option<u64>) {
+            match value {
+                Some(value) => {
+                    preimage.push(1);
+                    preimage.extend_from_slice(&value.to_be_bytes());
+                }
+                None => preimage.push(0),
+            }
+        }
+
+        let spec = fixture();
+        let mut preimage = b"aos.systemd.sandbox-unit-semantics.v1\0".to_vec();
+
+        // This independently spells out the canonical v1 field order and
+        // widths. It intentionally does not call the production encoders.
+        append_string(&mut preimage, spec.name.as_str());
+        preimage.extend_from_slice(&u64::try_from(spec.arguments.len()).unwrap().to_be_bytes());
+        for argument in &spec.arguments {
+            append_string(&mut preimage, argument);
+        }
+        preimage.extend_from_slice(&spec.command.uid_range_start.to_be_bytes());
+        preimage.extend_from_slice(&spec.command.uid_range_size.to_be_bytes());
+        preimage.push(u8::from(spec.paths.attachment_anchor_pin.is_some()));
+        preimage.extend_from_slice(&spec.resources.memory_high_bytes.to_be_bytes());
+        preimage.extend_from_slice(&spec.resources.memory_max_bytes.to_be_bytes());
+        preimage.extend_from_slice(&spec.resources.tasks_max.to_be_bytes());
+        preimage.extend_from_slice(&spec.resources.cpu_weight.get().to_be_bytes());
+        append_optional_u64(
+            &mut preimage,
+            spec.resources
+                .cpu_quota_per_second
+                .map(|duration| u64::try_from(duration.as_micros()).unwrap()),
+        );
+        append_optional_u64(&mut preimage, spec.resources.io_weight);
+        append_optional_u64(&mut preimage, spec.resources.open_files);
+        assert_eq!(spec.devices, vec![SandboxDevice::Tun]);
+        preimage.extend_from_slice(&u64::try_from(spec.devices.len()).unwrap().to_be_bytes());
+        preimage.push(2); // SandboxDevice::Tun
+        preimage.extend_from_slice(
+            &u64::try_from(spec.timeout_start.as_micros())
+                .unwrap()
+                .to_be_bytes(),
+        );
+        preimage.extend_from_slice(
+            &u64::try_from(spec.timeout_stop.as_micros())
+                .unwrap()
+                .to_be_bytes(),
+        );
+
+        let independently_assembled_digest: [u8; 32] = Sha256::digest(preimage).into();
+        assert_eq!(
+            encode_hex32(independently_assembled_digest),
+            "999e97d599724e396cc3503a526e2b84f978cad4d02376b05c290d60386cc95f"
+        );
+        assert_eq!(spec.semantic_digest_v1(), independently_assembled_digest);
     }
 
     #[test]
@@ -1553,6 +1885,49 @@ mod tests {
                 false,
                 vec!["bpf:EPERM".to_owned(), "reboot:EPERM".to_owned()]
             )
+        );
+    }
+
+    #[test]
+    fn bound_payload_retains_one_canonical_launch_binding() {
+        let base = fixture();
+        let spec = SandboxUnitSpec::new_nspawn_bound(
+            base.name.clone(),
+            base.command.clone(),
+            base.paths.clone(),
+            base.resources,
+            [0x5a; 32],
+            base.timeout_start,
+            base.timeout_stop,
+        )
+        .unwrap();
+        let (_, environment) = spec
+            .properties()
+            .unwrap()
+            .into_iter()
+            .find(|(name, _)| name == "Environment")
+            .unwrap();
+        let environment = Vec::<String>::try_from(environment).unwrap();
+
+        assert_eq!(spec.launch_binding(), Some([0x5a; 32]));
+        assert_eq!(
+            environment
+                .iter()
+                .filter(|entry| entry.starts_with("AOS_SANDBOX_LAUNCH_BINDING="))
+                .collect::<Vec<_>>(),
+            vec![&format!("AOS_SANDBOX_LAUNCH_BINDING={}", "5a".repeat(32))]
+        );
+        assert!(
+            SandboxUnitSpec::new_nspawn_bound(
+                base.name,
+                base.command,
+                base.paths,
+                base.resources,
+                [0; 32],
+                base.timeout_start,
+                base.timeout_stop,
+            )
+            .is_err()
         );
     }
 

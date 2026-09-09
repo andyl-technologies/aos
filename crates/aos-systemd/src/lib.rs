@@ -20,12 +20,16 @@ pub use client::{
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;
 pub use sandbox::{
-    CpuWeight, DiscoveredSandboxUnit, FreezerState, GuardianCredentialDescriptors,
-    GuardianCredentialRole, GuardianUnitSpec, PayloadRootContinuityPolicyV1, SandboxCgroupPath,
-    SandboxDescriptorPath, SandboxDevice, SandboxDiscoveryComparison, SandboxDiscoveryConflict,
-    SandboxDiscoveryIndeterminate, SandboxDiscoveryOutcome, SandboxNspawnCommand,
-    SandboxQuarantineEvidence, SandboxResolvedPaths, SandboxResources,
-    SandboxUnitDiscoverySnapshot, SandboxUnitName, SandboxUnitObservation, SandboxUnitSpec,
+    CpuWeight, DiscoveredSandboxUnit, ExactStartError, ExactStopError, ExactStopOutcome,
+    ExactUnitClient, ExactUnitObservation, ExactUnitRole, ExactUnitState, ExactUnitTarget,
+    FreezerState, GuardianCredentialDescriptors, GuardianCredentialRole,
+    GuardianExecutableDescriptor, GuardianExecutableSnapshot, GuardianStartError,
+    GuardianUnitObservation, GuardianUnitSpec, PayloadRootContinuityPolicyV1,
+    PostUnrefUnitObservation, SandboxCgroupPath, SandboxDescriptorPath, SandboxDevice,
+    SandboxDiscoveryComparison, SandboxDiscoveryConflict, SandboxDiscoveryIndeterminate,
+    SandboxDiscoveryOutcome, SandboxNspawnCommand, SandboxQuarantineEvidence, SandboxResolvedPaths,
+    SandboxResources, SandboxUnitDiscoverySnapshot, SandboxUnitName, SandboxUnitObservation,
+    SandboxUnitSpec,
 };
 
 // `unit_property` returns a `zbus::zvariant::OwnedValue` in its public

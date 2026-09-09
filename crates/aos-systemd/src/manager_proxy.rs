@@ -52,6 +52,11 @@ pub trait Manager {
         auxiliary_units: &[AuxiliaryUnit],
     ) -> zbus::Result<OwnedObjectPath>;
 
+    /// Retain a loaded unit object until the matching [`Self::unref_unit`].
+    fn ref_unit(&self, name: &str) -> zbus::Result<()>;
+    /// Release one reference previously acquired through [`Self::ref_unit`].
+    fn unref_unit(&self, name: &str) -> zbus::Result<()>;
+
     /// Freeze every process in a unit's cgroup subtree.
     fn freeze_unit(&self, name: &str) -> zbus::Result<()>;
     /// Thaw every process in a unit's cgroup subtree.
@@ -169,6 +174,9 @@ pub trait Service {
     /// Unit cgroup path relative to the cgroup-v2 root.
     #[zbus(property)]
     fn control_group(&self) -> zbus::Result<String>;
+    /// Explicit environment entries retained in the unit definition.
+    #[zbus(property)]
+    fn environment(&self) -> zbus::Result<Vec<String>>;
 }
 
 /// One entry returned by `Manager.ListUnitsByPatterns` — D-Bus signature
