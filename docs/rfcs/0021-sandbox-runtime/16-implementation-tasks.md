@@ -6233,6 +6233,32 @@ not a process-restart test. Actual peer and worker-Ready authentication,
 protected labels, enforcing MAC, production runtime integration, and every
 readiness checkbox remain pending.
 
+The first immutable VM realization stopped before rootfs construction because
+the new fixture package had not declared the AOS build-platform `protoc`; the
+`aos-proto` build script failed to spawn it. Commit `cd41f11b4` adds only that
+native build dependency and exact `PROTOC` path. A frozen source comparison
+against the failed input differed only in
+`tests/vm/sandbox-filesystem-capability.nix`; the complete `crates/` tree was
+identical. Derivation inspection confirmed that the repaired fixture carried
+the x86_64 AOS protobuf output in its native inputs and exported that output's
+exact executable path before Cargo ran.
+
+The sole repaired x86_64 realization built the fixture and a 79-path rootfs,
+booted Linux 6.18.33 under Firecracker with KVM, and passed all 12 enumerated
+protected-store cases. This qualifies real ext4 fs-verity publication and
+readback, reopen lookup and replay, wrong-role rejection, physical-root alias
+rejection, and the cross-mount no-replace ambiguity check on that exact kernel.
+The guest printed the exact 12-case list, the protected-store proof object,
+`TEST_RESULT:PASS`, and exited through Firecracker with status zero.
+
+The proof still derives expected policy from an internal synthetic
+validated-Ready fixture. It drops and reopens every in-process store value but
+does not cross an executable process restart. It does not authenticate a live
+broker, lifecycle worker, systemd launch, or inspector response, and it does
+not exercise protected labels, enforcing MAC, role-separated production
+processes, or the proposed `CAP_SYS_PTRACE`-only inspector. No production
+readiness or task checkbox changes.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
