@@ -4,7 +4,7 @@
 //! exact package coordinates:
 //!
 //! ```json
-//! {"authenticated_policy_set":{"document":"policy.json","document_sha256":"sha256:...","document_size":1,"nar_hash":"sha256:...","nar_size":1,"store_path":"/nix/store/...-policy"},"desired_state":{"document":"desired.json","document_sha256":"sha256:...","document_size":1,"nar_hash":"sha256:...","nar_size":1,"store_path":"/nix/store/...-desired"},"packages":[{"ability_nar_hash":"sha256:...","ability_store_path":"/nix/store/...-ability","manifest_sha256":"sha256:...","name":"nginx","package_digest":"sha256:...","platform":"x86_64-linux","registry":"reference","runtime_nar_hash":"sha256:...","runtime_nar_size":1,"runtime_store_path":"/nix/store/...-nginx","version":"1.0.0"}],"required_features":["abilities-v1","ability-effects-v1"],"schema":"aos.ability.activation-input/v1"}
+//! {"authenticated_policy_set":{"document":"policy.json","document_sha256":"sha256:...","document_size":1,"nar_hash":"sha256:<52-nix-base32-chars>","nar_size":1,"store_path":"/nix/store/...-policy"},"desired_state":{"document":"desired.json","document_sha256":"sha256:...","document_size":1,"nar_hash":"sha256:<52-nix-base32-chars>","nar_size":1,"store_path":"/nix/store/...-desired"},"packages":[{"ability_nar_hash":"sha256:...","ability_store_path":"/nix/store/...-ability","manifest_sha256":"sha256:...","name":"nginx","package_digest":"sha256:...","platform":"x86_64-linux","registry":"reference","runtime_nar_hash":"sha256:...","runtime_nar_size":1,"runtime_store_path":"/nix/store/...-nginx","version":"1.0.0"}],"required_features":["abilities-v1","ability-effects-v1","native-resource-map-v1"],"schema":"aos.ability.activation-input/v1"}
 //! ```
 
 use std::collections::BTreeMap;
@@ -48,13 +48,20 @@ impl AbilityActivationInput {
                 self.schema
             );
         }
-        let required = vec![
+        let planning_features = vec![
             FEATURE_ABILITIES_V1.to_string(),
             FEATURE_ABILITY_EFFECTS_V1.to_string(),
         ];
-        if self.required_features != required {
+        let execution_features = vec![
+            FEATURE_ABILITIES_V1.to_string(),
+            FEATURE_ABILITY_EFFECTS_V1.to_string(),
+            "native-resource-map-v1".to_string(),
+        ];
+        if self.required_features != planning_features
+            && self.required_features != execution_features
+        {
             bail!(
-                "ability activation requires exact abilities-v1 and ability-effects-v1 feature gates"
+                "ability activation requires the exact planning or native-execution feature sequence"
             );
         }
         self.desired_state.validate("desired state")?;
@@ -109,7 +116,7 @@ impl AbilityActivationInput {
 pub struct PinnedAbilitySidecar {
     /// Store output containing the document.
     pub store_path: String,
-    /// Hash of the uncompressed output NAR.
+    /// Nix base32 NAR identity as `sha256:` plus exactly 52 base32 characters.
     pub nar_hash: String,
     /// Uncompressed output NAR size.
     pub nar_size: u64,
@@ -125,7 +132,7 @@ pub struct PinnedAbilitySidecar {
 }
 
 impl PinnedAbilitySidecar {
-    fn validate(&self, label: &str) -> Result<()> {
+    pub(crate) fn validate(&self, label: &str) -> Result<()> {
         validate_canonical_store_path(&self.store_path)
             .with_context(|| format!("invalid ability {label} store path"))?;
         let canonical_nar =

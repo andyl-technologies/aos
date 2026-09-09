@@ -38,6 +38,7 @@
 pub mod ability;
 pub mod ability_activation;
 pub mod ability_policy;
+pub mod ability_policy_authority;
 pub mod ability_store;
 pub mod activation;
 pub mod classify;
