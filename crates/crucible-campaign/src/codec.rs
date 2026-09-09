@@ -343,7 +343,7 @@ pub(crate) struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, cursor: 0 }
     }
 
@@ -453,6 +453,31 @@ impl<'a> Decoder<'a> {
             values.push(decode_value(self)?);
         }
         Ok(values)
+    }
+
+    pub(crate) fn byte_sequence_bounded_charged(
+        &mut self,
+        maximum: usize,
+        item_limit: &'static str,
+        aggregate_bytes: &mut usize,
+        maximum_aggregate_bytes: usize,
+        aggregate_limit: &'static str,
+    ) -> Result<Vec<u8>, CampaignCodecError> {
+        let length = self.bounded_length(maximum as u64, item_limit)?;
+        let next_aggregate =
+            aggregate_bytes
+                .checked_add(length)
+                .ok_or(CampaignCodecError::LimitExceeded {
+                    limit: aggregate_limit,
+                })?;
+        if next_aggregate > maximum_aggregate_bytes {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: aggregate_limit,
+            });
+        }
+
+        *aggregate_bytes = next_aggregate;
+        Ok(self.take(length)?.to_vec())
     }
 
     pub(crate) fn set_bounded<T: Canonical + Ord>(

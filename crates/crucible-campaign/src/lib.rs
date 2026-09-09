@@ -162,8 +162,9 @@ pub use identity::{
     StatisticalParticleId, SurvivorSelectionId,
 };
 pub use merkle::{
-    CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
-    MerkleMapPageProof, MerkleMapRoot,
+    CampaignStoreError, MAX_PROVEN_LOOKUP_KEYS, MAX_PROVEN_PAGE_ITEMS, MerkleMap,
+    MerkleMapLookupProof, MerkleMapMultiLookupProof, MerkleMapPage, MerkleMapPageProof,
+    MerkleMapRoot,
 };
 pub use model::{
     ActiveAttemptPolicy, AdmissionOrdinal, BudgetGrant, CampaignControlAction, CampaignDerivation,

@@ -139,6 +139,35 @@ impl StatisticalDrawPlan {
         })
     }
 
+    /// Builds a draw from a policy-declared opportunity identity.
+    ///
+    /// Offline policy authoring does not necessarily retain the full runtime
+    /// opportunity body. The repository later authenticates these exact and
+    /// semantic identities against the selected proposal before admitting the
+    /// draw into a statistical estimate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the stop condition is invalid.
+    pub fn from_predeclared_opportunity(
+        parent: Option<u64>,
+        opportunity: ChoiceOpportunityId,
+        opportunity_semantics: ChoiceOpportunitySemanticId,
+        domain: ChoiceDomainId,
+        model: ProbabilityModelId,
+        stop: StopCondition,
+    ) -> Result<Self, CampaignCodecError> {
+        stop.validate()?;
+        Ok(Self {
+            parent,
+            opportunity,
+            opportunity_semantics,
+            domain,
+            model,
+            stop,
+        })
+    }
+
     /// Returns the earlier draw whose endpoint is this draw's parent.
     #[must_use]
     pub const fn parent(&self) -> Option<u64> {

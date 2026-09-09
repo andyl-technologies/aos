@@ -695,7 +695,7 @@ enum CampaignPolicyCommand {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignPolicyCompileArgs {
-    /// Strict version-one campaign policy TOML.
+    /// Strict version-one or version-two campaign policy TOML.
     #[arg(value_name = "INPUT")]
     input: PathBuf,
     /// Canonical scenario TOML used to resolve selectable IDs and tag predicates.
