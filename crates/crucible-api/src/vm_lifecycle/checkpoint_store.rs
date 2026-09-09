@@ -59,6 +59,7 @@ mod test_support;
 pub use test_support::{
     AuthenticatedProductionCheckpointCodecFixture,
     build_authenticated_production_checkpoint_codec_fixture,
+    build_raw_production_checkpoint_codec_fixture,
 };
 
 const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v7\0";

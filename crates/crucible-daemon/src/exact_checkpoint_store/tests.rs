@@ -774,12 +774,68 @@ fn paused_raw_root_promotion_survives_restart_and_enables_exact_resume() {
             daemon_epoch: paused_epoch,
             execution,
             checkpoint: promoted,
-            promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
-                request.resources(),
-                request.retention(),
-            )),
+            promotion_basis: None,
         })
     );
+    let mut completed_restart_work = Vec::new();
+    restarted
+        .visit_checkpoint_promotion_restart_work(&mut |work| completed_restart_work.push(work))
+        .expect("scan promoted pause after completion");
+    assert!(completed_restart_work.is_empty());
+
+    let completed = restarted
+        .ledger()
+        .load_attempt(key)
+        .expect("load completed promotion")
+        .expect("completed promotion state");
+    let legacy_basis =
+        CheckpointPromotionExecutionBasis::new(request.resources(), request.retention());
+    let legacy = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: paused_epoch,
+        execution,
+        checkpoint: promoted,
+        promotion_basis: Some(legacy_basis),
+    };
+    let mut ledger = restarted.into_ledger();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, Some(completed), Some(legacy))
+            .expect("seed legacy completed promotion"),
+        crate::AttemptStateCas::Advanced
+    );
+    let mut restarted = LocalExecutorSupervisor::new(
+        ledger,
+        AllowAllAttemptAdmission,
+        resumed_epoch,
+        ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("legacy restart capacity"),
+    );
+    let mut legacy_restart_work = Vec::new();
+    restarted
+        .visit_checkpoint_promotion_restart_work(&mut |work| legacy_restart_work.push(work))
+        .expect("discover legacy completed promotion");
+    let [CheckpointPromotionRestartWork::Paused(legacy_recovery)] = legacy_restart_work.as_slice()
+    else {
+        panic!("expected one legacy completed promotion")
+    };
+    assert_eq!(
+        restarted
+            .complete_validated_checkpoint_promotion(*legacy_recovery)
+            .expect("migrate authenticated legacy promotion"),
+        CheckpointPromotionCompletionOutcome::Promoted
+    );
+    let mut migrated_restart_work = Vec::new();
+    restarted
+        .visit_checkpoint_promotion_restart_work(&mut |work| migrated_restart_work.push(work))
+        .expect("scan migrated legacy promotion");
+    assert!(migrated_restart_work.is_empty());
+    let mut migrated_roots = Vec::new();
+    restarted
+        .ledger()
+        .visit_checkpoint_roots(&mut |checkpoint| migrated_roots.push(checkpoint))
+        .expect("visit migrated checkpoint roots");
+    assert_eq!(migrated_roots, vec![promoted]);
 
     let resumed_assignment = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0x58; 16]).expect("resume assignment"),
@@ -799,6 +855,12 @@ fn paused_raw_root_promotion_survives_restart_and_enables_exact_resume() {
         response.disposition(),
         ResumeAttemptExecutionDisposition::Accepted { .. }
     ));
+    assert_eq!(
+        restarted
+            .complete_validated_checkpoint_promotion(*legacy_recovery)
+            .expect("classify migration after concurrent resume"),
+        CheckpointPromotionCompletionOutcome::NotCurrent
+    );
 }
 
 #[test]

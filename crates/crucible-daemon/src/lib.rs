@@ -485,8 +485,9 @@ pub use packaged_qemu_executor::{
 };
 #[cfg(target_os = "linux")]
 pub use paused_checkpoint_promotion::{
-    PausedCheckpointPromotionPreparationError, PausedCheckpointPromotionPublicationError,
-    PausedCheckpointPromotionReconcileError, PausedCheckpointPromotionRecoveryResolutionError,
+    AuthenticatedPausedCheckpointPromotion, PausedCheckpointPromotionPreparationError,
+    PausedCheckpointPromotionPublicationError, PausedCheckpointPromotionReconcileError,
+    PausedCheckpointPromotionRecoveryResolutionError,
     PausedCheckpointPromotionRestartPreparationError, PausedCheckpointPromotionStageOutcome,
     PausedCheckpointPromotionStagingError, PausedCheckpointPromotionTarget,
     PreparedPausedCheckpointPromotion, PreparedPausedCheckpointPromotionRestart,
