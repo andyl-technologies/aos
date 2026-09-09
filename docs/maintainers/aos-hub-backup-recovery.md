@@ -2,7 +2,11 @@
 
 This runbook covers the Cloudflare Worker deployments at
 `aos.staging.andyl.org` and `aos.andyl.org`. Back up the environments
-independently and never place either environment's secrets in the repository.
+independently when taking backups, and never place either environment's secrets
+in the repository. A full backup is required before changing a stateful production
+environment. Staging deployments do not require a full backup; the complete
+recovery procedure below is optional for staging. Database resets and destructive
+rebuilds still require explicit approval.
 
 ## What is actually sharded
 
@@ -33,9 +37,9 @@ and [R2 durability guidance](https://developers.cloudflare.com/r2/reference/dura
 
 ## Recovery objectives
 
-For testing, retain daily recovery points and every pre-deployment point for 30
-days; keep every closed release bundle needed to rebuild the active edge outside
-Cloudflare for at least 90 days. Testing may instead be rebuilt under a new root
+For testing, retain captured recovery points for 30 days; a recovery point is
+not required before each staging deployment. Keep every closed release bundle
+needed to rebuild the active edge outside Cloudflare for at least 90 days. Testing may instead be rebuilt under a new root
 epoch when explicitly approved.
 
 Main must not open until a portable HubDb logical export/import and an isolated

@@ -274,10 +274,11 @@ with development-era migration history cannot accept this consolidated
 baseline. Adopting it in staging requires a separate approved fresh installation;
 the routine commands below apply after that adoption.
 
-Before changing a stateful environment, capture the complete recovery set in
-[`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md). An explicitly
-approved empty testing rebuild records that decision instead of claiming a
-backup exists.
+Staging deployments do not require a full backup or completion of the recovery
+set in [`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md). Record the
+source commit and deployment identity for rollback; a database recovery bookmark
+may be captured when useful. This exemption does not authorize a database reset
+or destructive rebuild, which still requires explicit approval.
 
 Confirm that the shell contains the staging runtime values, then deploy:
 
@@ -369,6 +370,9 @@ Record the commit SHA, both deployment ids, installer store path, validation
 results, operator, and deployment time before production promotion.
 
 ## Promote the same installer to production
+
+Before changing a stateful production environment, capture the complete recovery
+set in [`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md).
 
 Keep the exact validated `installer`, `source_commit`, and
 `production_deployment_id`. Replace the shell's staging runtime values with
