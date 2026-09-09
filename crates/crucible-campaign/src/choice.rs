@@ -15,4 +15,5 @@ pub use group::{
 pub use model::{
     ChoiceClassContext, ChoiceCoordinate, ChoiceOpportunity, ChoiceSource, ModelSampleEvidence,
     ModelSampleVerifier, SelectableDeclaration, Selection, SelectionOrigin,
+    SelectionReplayMismatch, SelectionReplayMismatchKind,
 };
