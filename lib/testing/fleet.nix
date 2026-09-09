@@ -131,6 +131,8 @@
       expectAgent = m.expectAgent or true;
       memoryMiB = m.memoryMiB or 2048;
       tpm = m.tpm or false;
+      firmwareVars = m.firmwareVars or null;
+      exportFirmwareVars = m.exportFirmwareVars or false;
       hostAliases = m.hostAliases or [];
       name = mname;
       ip = "192.168.50.${toString (i + 10)}";
@@ -152,6 +154,21 @@
           " ${lib.concatStringsSep " " m.hostAliases}"
       )
       machinesWithIndex);
+
+  # Firmware variable stores are host-side paths and optional test outputs.
+  # Reject invalid combinations before the harness evaluates any VM closure.
+  validateFirmwareVarsMachine = machine:
+    if machine.firmwareVars != null && machine.bootMode != "image"
+    then throw "fleet: firmwareVars is valid only for image-boot machines"
+    else if machine.exportFirmwareVars && machine.bootMode != "image"
+    then throw "fleet: exportFirmwareVars is valid only for image-boot machines"
+    else if
+      machine.exportFirmwareVars
+      && builtins.match "[A-Za-z_][A-Za-z0-9_]*" machine.name == null
+    then
+      throw
+      "fleet: firmware-vars export requires a safe machine basename"
+    else machine;
 
   # ── Per-machine identity module (baked via extendModules) ──────────
   # Bakes each machine's identity into the image.
@@ -388,7 +405,24 @@
           m.extraDisks;
       in
         {
-          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB expectAgent hostStoreMount;
+          inherit
+            (m)
+            name
+            ip
+            mac
+            debugMac
+            index
+            packages
+            bootMode
+            tpm
+            firmwareVars
+            exportFirmwareVars
+            varProvisioning
+            varSizeMiB
+            memoryMiB
+            expectAgent
+            hostStoreMount
+            ;
           extraDisks = resolvedExtraDisks;
           inherit metadataISO;
           system = effectiveSystem;
@@ -422,7 +456,7 @@
     bootTimeout = spec.bootTimeout or null;
     systemReadyTimeout = spec.systemReadyTimeout or null;
 
-    machinesWithIndex = mkMachinesWithIndex machines;
+    machinesWithIndex = builtins.map validateFirmwareVarsMachine (mkMachinesWithIndex machines);
     hostsEntries = mkHostsEntries machinesWithIndex;
     machineBuilds = mkMachineBuilds {inherit machinesWithIndex hostsEntries;};
     validateMachinePlatform = machine:
@@ -471,6 +505,7 @@
                 # per-machine swtpm and wires QEMU's tpm-tis to it.
                 tpm = mb.tpm;
                 expect_agent = mb.expectAgent;
+                export_firmware_vars = mb.exportFirmwareVars;
                 extra_disks = mb.extraDisks;
                 host_store_mount = mb.hostStoreMount;
                 swtpm_bin = "${hostPkgs.swtpm}/bin/swtpm";
@@ -484,7 +519,10 @@
                   # Identity is baked into the image /etc, so no fw_cfg channel.
                   fw_cfg = null;
                   firmware_code = "${pkgs.edk2}/FV/OVMF_CODE.fd";
-                  firmware_vars = "${pkgs.edk2}/FV/OVMF_VARS.fd";
+                  firmware_vars =
+                    if mb.firmwareVars == null
+                    then "${pkgs.edk2}/FV/OVMF_VARS.fd"
+                    else mb.firmwareVars;
                   metadata =
                     if mb.metadataISO == null
                     then null
@@ -539,7 +577,32 @@
         --manifest "$TMPDIR/manifest.json" \
         --test     "$TMPDIR/test.py"
 
+      # The driver's export-aware shutdown waits for a natural QEMU exit, so
+      # writable pflash is closed before we inspect and preserve it.
       mkdir -p "$out"
+      ${lib.concatMapStringsSep "\n" (machine:
+        lib.optionalString machine.exportFirmwareVars ''
+          firmware_vars="$TMPDIR/${machine.name}-OVMF_VARS.fd"
+          if [ ! -f "$firmware_vars" ] || [ -L "$firmware_vars" ]; then
+            echo "fleet: missing regular firmware-vars result for ${machine.name}" >&2
+            exit 1
+          fi
+
+          expected_size=$(${hostPkgs.coreutils}/bin/stat -c %s ${lib.escapeShellArg (
+            if machine.firmwareVars == null
+            then "${pkgs.edk2}/FV/OVMF_VARS.fd"
+            else machine.firmwareVars
+          )})
+          actual_size=$(${hostPkgs.coreutils}/bin/stat -c %s "$firmware_vars")
+          if [ "$actual_size" -ne "$expected_size" ]; then
+            echo "fleet: firmware-vars result for ${machine.name} changed size" >&2
+            exit 1
+          fi
+
+          ${hostPkgs.coreutils}/bin/install -m 0444 "$firmware_vars" \
+            "$out/${machine.name}-OVMF_VARS.fd"
+        '')
+      machinesWithIndex}
       for log in "$TMPDIR"/*-serial.log "$TMPDIR"/*-qemu.log; do
         [ -f "$log" ] && cp "$log" "$out/"
       done
@@ -859,5 +922,5 @@
       ];
     };
 in {
-  inherit mkFleetTest mkFleetTestInteractive uriEncode dataUrl;
+  inherit mkFleetTest mkFleetTestInteractive validateFirmwareVarsMachine uriEncode dataUrl;
 }

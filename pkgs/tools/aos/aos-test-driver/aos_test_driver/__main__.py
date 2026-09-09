@@ -86,6 +86,15 @@ def _load_manifest(path: Path) -> dict[str, Any]:
             raise SystemExit(
                 f"machine {name!r}: image boot requires the qemu transport"
             )
+        export_firmware_vars = m.get("export_firmware_vars", False)
+        if not isinstance(export_firmware_vars, bool):
+            raise SystemExit(
+                f"machine {name!r}: export_firmware_vars must be a boolean"
+            )
+        if export_firmware_vars and boot != "image":
+            raise SystemExit(
+                f"machine {name!r}: firmware-vars export requires image boot"
+            )
         for required in ("disk", "memory_mib", "vcpu_count"):
             if required not in m:
                 raise SystemExit(
@@ -187,6 +196,7 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
             metadata=entry.get("metadata"),
             firmware_code=entry.get("firmware_code"),
             firmware_vars=entry.get("firmware_vars"),
+            export_firmware_vars=entry.get("export_firmware_vars", False),
             fw_cfg=entry.get("fw_cfg"),
             disk_size_mib=entry.get("disk_size_mib"),
             var_size_mib=entry.get("var_size_mib"),
@@ -304,6 +314,40 @@ def _wait_system_ready(machines: list[Machine], timeout: float) -> None:
             )
 
 
+def _cleanup_machines(machines: list[Machine], exit_code: int) -> int:
+    """Stops machines and makes firmware export cleanup fail closed."""
+    test_succeeded = exit_code == 0
+
+    if test_succeeded:
+        for machine in machines:
+            exporting_firmware = (
+                isinstance(machine, QemuMachine) and machine.export_firmware_vars
+            )
+            try:
+                if exporting_firmware:
+                    machine.shutdown_for_firmware_export()
+                else:
+                    machine.shutdown()
+            except Exception:
+                log.exception("shutdown error for %s", machine.name)
+                if exporting_firmware:
+                    exit_code = 1
+        time.sleep(2)
+
+    for machine in machines:
+        exporting_firmware = (
+            isinstance(machine, QemuMachine) and machine.export_firmware_vars
+        )
+        try:
+            machine.stop()
+        except Exception:
+            log.exception("cleanup error for %s", machine.name)
+            if exporting_firmware:
+                exit_code = 1
+
+    return exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_stdio()
 
@@ -375,26 +419,13 @@ def main(argv: list[str] | None = None) -> int:
         exit_code = 1
         log.exception("test raised")
     finally:
-        if exit_code == 0:
-            # Graceful shutdown on the happy path; on failure the agent
-            # may be wedged so we skip SHUTDOWN and kill the VM proc
-            # directly (matches the bash cleanup trap's behaviour).
-            for m in started:
-                try:
-                    m.shutdown()
-                except Exception:
-                    pass
-            time.sleep(2)
+        exit_code = _cleanup_machines(started, exit_code)
+
         # stop() before _dump_serial_logs: terminating the VM proc forces
         # the serial chardev / Firecracker stdout buffer to flush, so the
         # dumped log actually contains the boot output we want for
         # diagnosis. Reading the file mid-run regularly produced an empty
         # dump because the VM hadn't been flushed yet.
-        for m in started:
-            try:
-                m.stop()
-            except Exception:
-                log.exception("cleanup error for %s", m.name)
         if exit_code != 0:
             _dump_serial_logs(started)
 

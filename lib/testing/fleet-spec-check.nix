@@ -12,6 +12,9 @@
 #      rejects at eval time — the enum filters must exclude unbundled
 #      entries, otherwise a fleet spec could synthesise runtime
 #      activation for artifacts that won't exist on the running host.
+#   5. Image-boot firmware seed/export fields evaluate cleanly.
+#   6. Both firmware fields reject direct-kernel machines.
+#   7. Firmware export rejects a machine name that is unsafe as a basename.
 #
 # Runs via `nix-build -A checks.fleet-spec`.
 {
@@ -19,6 +22,7 @@
   lib,
 }: let
   fleetSpec = import ./fleet-spec.nix {inherit lib pkgs;};
+  fleetHarness = import ./fleet.nix {inherit lib pkgs;};
 
   # Stub system attrset shaped like what `discoverSystems` produces.
   # Only `config.aos.packages` is consulted by `fleetSpecType`'s package enum;
@@ -49,6 +53,11 @@
   tryEval = spec:
     builtins.tryEval (
       builtins.deepSeq (mkEval spec).config.spec null
+    );
+
+  tryFirmwareValidation = machine:
+    builtins.tryEval (
+      builtins.deepSeq (fleetHarness.validateFirmwareVarsMachine machine) null
     );
 
   # 1. Minimal spec evaluates.
@@ -97,6 +106,59 @@
     })
     .success;
 
+  # 5. Image machines accept an immutable firmware-vars seed and export flag.
+  imageFirmwareOptionsOk =
+    (tryEval {
+      name = "firmware-options";
+      machines.solo = {
+        system = stubSystem;
+        bootMode = "image";
+        firmwareVars = "/nix/store/example-OVMF_VARS.fd";
+        exportFirmwareVars = true;
+      };
+      testScript = "true";
+    })
+    .success;
+
+  firmwareValidationControl =
+    (tryFirmwareValidation {
+      name = "safe_name";
+      bootMode = "image";
+      firmwareVars = "/nix/store/example-OVMF_VARS.fd";
+      exportFirmwareVars = true;
+    })
+    .success;
+
+  # 6. The harness rejects image-only fields on direct-kernel machines before
+  # it tries to inspect the stub system's build products.
+  kernelFirmwareSeedRejected =
+    !(tryFirmwareValidation {
+      name = "solo";
+      bootMode = "kernel";
+      firmwareVars = "/nix/store/example-OVMF_VARS.fd";
+      exportFirmwareVars = false;
+    })
+    .success;
+  kernelFirmwareExportRejected =
+    !(tryFirmwareValidation {
+      name = "solo";
+      bootMode = "kernel";
+      firmwareVars = null;
+      exportFirmwareVars = true;
+    })
+    .success;
+
+  # 7. Exported names become output basenames, so separators and traversal
+  # components must fail during evaluation rather than reaching the shell.
+  unsafeExportNameRejected =
+    !(tryFirmwareValidation {
+      name = "../escape";
+      bootMode = "image";
+      firmwareVars = null;
+      exportFirmwareVars = true;
+    })
+    .success;
+
   allOk =
     lib.throwIfNot minimalOk
     "fleet-spec: minimal valid spec failed to evaluate"
@@ -106,7 +168,17 @@
         "fleet-spec: spec with undeclared package should be rejected"
         (lib.throwIfNot unbundledPackageRejected
           "fleet-spec: spec listing a package with bundle = false should be rejected"
-          true)));
+          (lib.throwIfNot imageFirmwareOptionsOk
+            "fleet-spec: image firmware options failed to evaluate"
+            (lib.throwIfNot firmwareValidationControl
+              "fleet: valid firmware-vars options failed harness validation"
+              (lib.throwIfNot kernelFirmwareSeedRejected
+                "fleet: firmwareVars should be rejected for kernel boot"
+                (lib.throwIfNot kernelFirmwareExportRejected
+                  "fleet: firmware-vars export should be rejected for kernel boot"
+                  (lib.throwIfNot unsafeExportNameRejected
+                    "fleet: unsafe firmware-vars export name should be rejected"
+                    true))))))));
 in
   pkgs.mkDerivation {
     pname = "fleet-spec-check";
@@ -123,6 +195,11 @@ in
           echo "  spec with declared package evaluates: OK"
           echo "  spec with undeclared package rejected: OK"
           echo "  spec with unbundled package rejected: OK"
+          echo "  image firmware options evaluate: OK"
+          echo "  valid firmware options pass harness validation: OK"
+          echo "  kernel firmware seed rejected: OK"
+          echo "  kernel firmware export rejected: OK"
+          echo "  unsafe firmware export name rejected: OK"
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';

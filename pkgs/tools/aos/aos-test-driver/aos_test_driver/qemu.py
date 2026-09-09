@@ -105,6 +105,7 @@ class QemuMachine(Machine):
     metadata_src: str | None
     firmware_code: str | None
     firmware_vars_src: str | None
+    export_firmware_vars: bool
     fw_cfg_path: str | None
     disk_size_mib: int | None
     var_size_mib: int | None
@@ -153,6 +154,7 @@ class QemuMachine(Machine):
         metadata: str | None = None,
         firmware_code: str | None = None,
         firmware_vars: str | None = None,
+        export_firmware_vars: bool = False,
         fw_cfg: str | None = None,
         disk_size_mib: int | None = None,
         var_size_mib: int | None = None,
@@ -207,6 +209,7 @@ class QemuMachine(Machine):
         self.metadata_src = metadata
         self.firmware_code = firmware_code
         self.firmware_vars_src = firmware_vars
+        self.export_firmware_vars = export_firmware_vars
         self.fw_cfg_path = fw_cfg
         self.disk_size_mib = disk_size_mib
         self.var_size_mib = var_size_mib
@@ -837,6 +840,53 @@ class QemuMachine(Machine):
             self.qemu_proc.pid if self.qemu_proc else "?",
         )
         self.agent.wait_ready(deadline)
+
+    def shutdown_for_firmware_export(self, timeout: float = 120.0) -> None:
+        """Shuts down and proves QEMU closed its writable firmware pflash.
+
+        The guest agent acknowledges ``SHUTDOWN`` before issuing its forced
+        poweroff. Waiting for QEMU to exit naturally establishes that pflash
+        is closed without relying on the cleanup path's terminate/kill
+        fallback.
+
+        Args:
+            timeout: Maximum seconds to wait for QEMU to exit.
+
+        Raises:
+            RuntimeError: If no QEMU process exists, the guest rejects the
+                shutdown request, or QEMU times out or exits unsuccessfully.
+        """
+        process = self.qemu_proc
+        if process is None:
+            raise RuntimeError(
+                f"[{self.name}] firmware export requested without a QEMU process"
+            )
+
+        try:
+            exit_code, _, _ = self.agent.shutdown()
+        except Exception as error:
+            raise RuntimeError(
+                f"[{self.name}] firmware export shutdown request failed: {error}"
+            ) from error
+        finally:
+            self.agent.close()
+
+        if exit_code != 0:
+            raise RuntimeError(
+                f"[{self.name}] firmware export shutdown returned {exit_code}"
+            )
+
+        try:
+            return_code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                f"[{self.name}] QEMU did not exit naturally before firmware export"
+            ) from error
+
+        if return_code != 0:
+            raise RuntimeError(
+                f"[{self.name}] QEMU exited with {return_code} before firmware export"
+            )
 
     def reboot_without_metadata(self, timeout: float = 600.0) -> None:
         """Reboot after detaching the optional metadata ISO.
