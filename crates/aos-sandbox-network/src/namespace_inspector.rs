@@ -175,13 +175,33 @@ impl InspectorProcessIdentityV1 {
     }
 }
 
+/// Names a fixed deployment role without embedding one execution's numeric identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NetworkNamespaceInspectorPeerRoleV1 {
+    /// The long-running Network broker publishes expected attempts.
+    Broker,
+    /// A one-shot namespace inspector claims attempts and returns namespaces.
+    Inspector,
+}
+
+/// Holds the static credentials provisioned for one authenticated process role.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProvisionedInspectorPeerRoleV1 {
+    role: NetworkNamespaceInspectorPeerRoleV1,
+    uid: u32,
+    gid: u32,
+}
+
 /// Models the kernel-authenticated identity for one connection or record.
 ///
 /// The future transport adapter must create this value only after retaining the
-/// peer pidfd, validating exact cgroup membership, and checking kernel-provided
-/// credentials. There is intentionally no general constructor.
+/// peer pidfd, validating the role's exact cgroup, executable, and effective
+/// MAC domain, and checking kernel-provided credentials. The role label is an
+/// output of those checks, never a caller or configuration input. There is
+/// intentionally no general constructor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct KernelAuthenticatedInspectorPeerV1 {
+    role: NetworkNamespaceInspectorPeerRoleV1,
     process: InspectorProcessIdentityV1,
     uid: u32,
     gid: u32,
@@ -217,15 +237,17 @@ impl KernelAuthenticatedSystemdManagerV1 {
     }
 }
 
-/// Holds the fixed identities supplied by protected deployment provisioning.
+/// Holds fixed roles and boot-local authority supplied by protected provisioning.
 ///
-/// This value cannot be decoded from caller wire. Its production constructor is
-/// intentionally pending alongside root-owned policy provisioning.
+/// Static role policy contains no process ID or cgroup inode. The manager
+/// identity is a separately retained boot-local kernel observation. This value
+/// cannot be decoded from caller wire; its production constructor remains
+/// pending alongside root-owned policy provisioning.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProvisionedNetworkNamespaceInspectorV1 {
     boot_id: [u8; 16],
-    broker: KernelAuthenticatedInspectorPeerV1,
-    inspector: KernelAuthenticatedInspectorPeerV1,
+    broker: ProvisionedInspectorPeerRoleV1,
+    inspector: ProvisionedInspectorPeerRoleV1,
     systemd_manager: KernelAuthenticatedSystemdManagerV1,
     launch_contract_digest: ObjectDigest,
 }
@@ -242,6 +264,19 @@ pub(crate) struct AuthenticatedLifecycleWorkerLaunchObservationV1 {
     cgroup: String,
     process: InspectorProcessIdentityV1,
     launch_contract_digest: ObjectDigest,
+}
+
+/// Binds one exact inspector activation to its retained socket and request.
+///
+/// The future transport adapter must mint this move-only token from the
+/// authenticated systemd activation, the retained inspector pidfd, and the
+/// broker's pending request. In particular, copying request bytes or assigning
+/// an inspector role cannot construct this evidence.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct AuthenticatedNamespaceInspectorActivationV1 {
+    manager: KernelAuthenticatedSystemdManagerV1,
+    inspector: KernelAuthenticatedInspectorPeerV1,
+    expected: ExpectedInspectorAttemptV1,
 }
 
 /// Captures one validated lifecycle-worker `READY` admission.
@@ -629,8 +664,19 @@ impl NetworkNamespaceInspectorAdmissionV1 {
         self.terminal = true;
 
         validate_descriptor_envelope(envelope)?;
-        validate_provisioned_peer(deployment.broker, connection_peer)?;
-        validate_provisioned_peer(deployment.broker, record_subject)?;
+        validate_provisioned_peer(
+            deployment.broker,
+            NetworkNamespaceInspectorPeerRoleV1::Broker,
+            connection_peer,
+        )?;
+        validate_provisioned_peer(
+            deployment.broker,
+            NetworkNamespaceInspectorPeerRoleV1::Broker,
+            record_subject,
+        )?;
+        if connection_peer != record_subject {
+            return Err(NetworkNamespaceInspectorError::PeerMismatch.into());
+        }
 
         let expected = policy
             .lookup(&request.expected.nonce)?
@@ -763,7 +809,8 @@ impl NetworkNamespaceInspectorCompletionV1 {
     fn complete_inspection(
         &mut self,
         deployment: &ProvisionedNetworkNamespaceInspectorV1,
-        connection_peer: KernelAuthenticatedInspectorPeerV1,
+        connection_peer: KernelAuthenticatedSystemdManagerV1,
+        activation: AuthenticatedNamespaceInspectorActivationV1,
         record_subject: KernelAuthenticatedInspectorPeerV1,
         pending: PendingLifecycleWorkerInspectionV1,
         clock: &mut impl InspectorTrustedClockV1,
@@ -778,8 +825,13 @@ impl NetworkNamespaceInspectorCompletionV1 {
         self.terminal = true;
 
         validate_descriptor_envelope(envelope)?;
-        validate_provisioned_peer(deployment.inspector, connection_peer)?;
-        validate_provisioned_peer(deployment.inspector, record_subject)?;
+        validate_inspector_activation(
+            deployment,
+            connection_peer,
+            &activation,
+            record_subject,
+            &pending.expected,
+        )?;
         validate_fresh_time(&pending.expected, clock.observe()?)?;
         if pending.expected.boot_id != deployment.boot_id
             || !response.matches(&pending.expected)
@@ -896,13 +948,63 @@ impl ExpectedInspectorAttemptV1 {
 }
 
 fn validate_provisioned_peer(
-    expected: KernelAuthenticatedInspectorPeerV1,
+    expected: ProvisionedInspectorPeerRoleV1,
+    required_role: NetworkNamespaceInspectorPeerRoleV1,
     actual: KernelAuthenticatedInspectorPeerV1,
 ) -> Result<(), NetworkNamespaceInspectorError> {
-    expected.process.validate()?;
     actual.process.validate()?;
-    if expected.uid != 0 || expected.gid != 0 || actual != expected {
+    if expected.uid != 0
+        || expected.gid != 0
+        || expected.role != required_role
+        || actual.role != expected.role
+        || actual.uid != expected.uid
+        || actual.gid != expected.gid
+    {
         return Err(NetworkNamespaceInspectorError::PeerMismatch);
+    }
+    Ok(())
+}
+
+fn validate_provisioned_manager(
+    expected: KernelAuthenticatedSystemdManagerV1,
+    actual: KernelAuthenticatedSystemdManagerV1,
+) -> Result<(), NetworkNamespaceInspectorError> {
+    expected.validate()?;
+    actual.validate()?;
+    if actual != expected {
+        return Err(NetworkNamespaceInspectorError::PeerMismatch);
+    }
+    Ok(())
+}
+
+fn validate_inspector_activation(
+    deployment: &ProvisionedNetworkNamespaceInspectorV1,
+    connection_peer: KernelAuthenticatedSystemdManagerV1,
+    activation: &AuthenticatedNamespaceInspectorActivationV1,
+    record_subject: KernelAuthenticatedInspectorPeerV1,
+    expected: &ExpectedInspectorAttemptV1,
+) -> Result<(), NetworkNamespaceInspectorError> {
+    validate_provisioned_manager(deployment.systemd_manager, connection_peer)?;
+    validate_provisioned_manager(deployment.systemd_manager, activation.manager)?;
+    validate_provisioned_peer(
+        deployment.inspector,
+        NetworkNamespaceInspectorPeerRoleV1::Inspector,
+        activation.inspector,
+    )?;
+    validate_provisioned_peer(
+        deployment.inspector,
+        NetworkNamespaceInspectorPeerRoleV1::Inspector,
+        record_subject,
+    )?;
+    if connection_peer != activation.manager || record_subject != activation.inspector {
+        return Err(NetworkNamespaceInspectorError::PeerMismatch);
+    }
+
+    activation.expected.validate()?;
+    if activation.expected.policy_digest != activation.expected.compute_digest()?
+        || activation.expected != *expected
+    {
+        return Err(NetworkNamespaceInspectorError::PolicyMismatch);
     }
     Ok(())
 }
@@ -1155,9 +1257,31 @@ mod tests {
         }
     }
 
-    fn peer(seed: u32) -> KernelAuthenticatedInspectorPeerV1 {
+    fn peer(
+        role: NetworkNamespaceInspectorPeerRoleV1,
+        seed: u32,
+    ) -> KernelAuthenticatedInspectorPeerV1 {
         KernelAuthenticatedInspectorPeerV1 {
+            role,
             process: process(seed),
+            uid: 0,
+            gid: 0,
+        }
+    }
+
+    fn broker_peer(seed: u32) -> KernelAuthenticatedInspectorPeerV1 {
+        peer(NetworkNamespaceInspectorPeerRoleV1::Broker, seed)
+    }
+
+    fn inspector_peer(seed: u32) -> KernelAuthenticatedInspectorPeerV1 {
+        peer(NetworkNamespaceInspectorPeerRoleV1::Inspector, seed)
+    }
+
+    fn provisioned_role(
+        role: NetworkNamespaceInspectorPeerRoleV1,
+    ) -> ProvisionedInspectorPeerRoleV1 {
+        ProvisionedInspectorPeerRoleV1 {
+            role,
             uid: 0,
             gid: 0,
         }
@@ -1174,11 +1298,22 @@ mod tests {
         }
     }
 
+    fn inspector_activation(
+        pending: &PendingLifecycleWorkerInspectionV1,
+        inspector_seed: u32,
+    ) -> AuthenticatedNamespaceInspectorActivationV1 {
+        AuthenticatedNamespaceInspectorActivationV1 {
+            manager: manager(),
+            inspector: inspector_peer(inspector_seed),
+            expected: pending.expected.clone(),
+        }
+    }
+
     fn deployment() -> ProvisionedNetworkNamespaceInspectorV1 {
         ProvisionedNetworkNamespaceInspectorV1 {
             boot_id: [7; 16],
-            broker: peer(100),
-            inspector: peer(200),
+            broker: provisioned_role(NetworkNamespaceInspectorPeerRoleV1::Broker),
+            inspector: provisioned_role(NetworkNamespaceInspectorPeerRoleV1::Inspector),
             systemd_manager: manager(),
             launch_contract_digest: ObjectDigest::from_bytes([6; 32]),
         }
@@ -1256,8 +1391,8 @@ mod tests {
         flatten_admission(
             NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
                 &deployment(),
-                peer(100),
-                peer(100),
+                broker_peer(100),
+                broker_peer(100),
                 &launch(pending),
                 catalog,
                 spent,
@@ -1369,8 +1504,8 @@ mod tests {
         let result = flatten_admission(
             NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
                 &deployment(),
-                peer(100),
-                peer(100),
+                broker_peer(100),
+                broker_peer(100),
                 &launch(&attacker),
                 &catalog,
                 &mut SpentLedger::default(),
@@ -1395,8 +1530,8 @@ mod tests {
         let mut admission = NetworkNamespaceInspectorAdmissionV1::default();
         let result = admission.authenticate_and_claim(
             &deployment(),
-            peer(100),
-            peer(100),
+            broker_peer(100),
+            broker_peer(100),
             &launch(&pending),
             &FailingPolicy,
             &mut UnreachableSpentLedger,
@@ -1435,8 +1570,8 @@ mod tests {
         assert!(matches!(
             flatten_admission(stale.authenticate_and_claim(
                 &deployment(),
-                peer(100),
-                peer(100),
+                broker_peer(100),
+                broker_peer(100),
                 &launch(&pending),
                 &catalog,
                 &mut SpentLedger::default(),
@@ -1451,8 +1586,8 @@ mod tests {
         assert!(matches!(
             flatten_admission(stale.authenticate_and_claim(
                 &deployment(),
-                peer(100),
-                peer(100),
+                broker_peer(100),
+                broker_peer(100),
                 &launch(&pending),
                 &catalog,
                 &mut SpentLedger::default(),
@@ -1469,8 +1604,8 @@ mod tests {
         assert!(matches!(
             flatten_admission(foreign.authenticate_and_claim(
                 &deployment(),
-                peer(101),
-                peer(100),
+                broker_peer(101),
+                broker_peer(100),
                 &launch(&pending),
                 &catalog,
                 &mut SpentLedger::default(),
@@ -1512,8 +1647,8 @@ mod tests {
             let result = flatten_admission(
                 NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
                     &deployment(),
-                    peer(100),
-                    peer(100),
+                    broker_peer(100),
+                    broker_peer(100),
                     &launch(&pending),
                     &catalog,
                     &mut spent,
@@ -1561,8 +1696,8 @@ mod tests {
             let result = flatten_admission(
                 NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
                     &deployment(),
-                    peer(100),
-                    peer(100),
+                    broker_peer(100),
+                    broker_peer(100),
                     &wrong,
                     &catalog,
                     &mut SpentLedger::default(),
@@ -1597,6 +1732,35 @@ mod tests {
     }
 
     #[test]
+    fn provisioned_roles_do_not_embed_or_interchange_execution_identities() {
+        let broker = provisioned_role(NetworkNamespaceInspectorPeerRoleV1::Broker);
+        assert!(
+            validate_provisioned_peer(
+                broker,
+                NetworkNamespaceInspectorPeerRoleV1::Broker,
+                broker_peer(100),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_provisioned_peer(
+                broker,
+                NetworkNamespaceInspectorPeerRoleV1::Broker,
+                broker_peer(101),
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_provisioned_peer(
+                broker,
+                NetworkNamespaceInspectorPeerRoleV1::Broker,
+                inspector_peer(100),
+            ),
+            Err(NetworkNamespaceInspectorError::PeerMismatch)
+        ));
+    }
+
+    #[test]
     fn foreign_boot_deployment_cannot_authorize_matching_attempt_bytes() {
         let pending = pending(1);
         let mut catalog = InspectorExpectedAttemptCatalogV1::default();
@@ -1611,8 +1775,8 @@ mod tests {
         let result = flatten_admission(
             NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
                 &foreign_deployment,
-                peer(100),
-                peer(100),
+                broker_peer(100),
+                broker_peer(100),
                 &launch(&pending),
                 &catalog,
                 &mut SpentLedger::default(),
@@ -1651,8 +1815,8 @@ mod tests {
             assert!(matches!(
                 flatten_admission(admission.authenticate_and_claim(
                     &deployment(),
-                    peer(100),
-                    peer(100),
+                    broker_peer(100),
+                    broker_peer(100),
                     &launch(&pending),
                     &catalog,
                     &mut SpentLedger::default(),
@@ -1712,12 +1876,14 @@ mod tests {
             .unwrap()
             .respond(&mut Clock::fixed([7; 16], 15), process(300), namespace(3))
             .unwrap();
+        let activation = inspector_activation(&pending, 200);
 
         let proof = NetworkNamespaceInspectorCompletionV1::default()
             .complete_inspection(
                 &deployment(),
-                peer(200),
-                peer(200),
+                manager(),
+                activation,
+                inspector_peer(200),
                 pending,
                 &mut Clock::fixed([7; 16], 15),
                 NetworkNamespaceInspectionResponseV1::decode(&response.encode()).unwrap(),
@@ -1741,10 +1907,12 @@ mod tests {
             .respond(&mut Clock::fixed([7; 16], 15), process(300), namespace(3))
             .unwrap();
 
+        let activation = inspector_activation(&expected_pending, 200);
         let result = NetworkNamespaceInspectorCompletionV1::default().complete_inspection(
             &deployment(),
-            peer(201),
-            peer(200),
+            manager(),
+            activation,
+            inspector_peer(201),
             pending(1),
             &mut Clock::fixed([7; 16], 15),
             response,
@@ -1757,10 +1925,70 @@ mod tests {
             Err(NetworkNamespaceInspectorError::PeerMismatch)
         ));
 
+        let mut foreign_manager = manager();
+        foreign_manager.cgroup_id += 1;
+        let activation = inspector_activation(&expected_pending, 200);
         let result = NetworkNamespaceInspectorCompletionV1::default().complete_inspection(
             &deployment(),
-            peer(200),
-            peer(200),
+            foreign_manager,
+            activation,
+            inspector_peer(200),
+            pending(1),
+            &mut Clock::fixed([7; 16], 15),
+            response,
+            envelope(),
+            process(300),
+            namespace(3),
+        );
+        assert!(matches!(
+            result,
+            Err(NetworkNamespaceInspectorError::PeerMismatch)
+        ));
+
+        let mut activation = inspector_activation(&expected_pending, 200);
+        activation.manager.cgroup_id += 1;
+        let result = NetworkNamespaceInspectorCompletionV1::default().complete_inspection(
+            &deployment(),
+            manager(),
+            activation,
+            inspector_peer(200),
+            pending(1),
+            &mut Clock::fixed([7; 16], 15),
+            response,
+            envelope(),
+            process(300),
+            namespace(3),
+        );
+        assert!(matches!(
+            result,
+            Err(NetworkNamespaceInspectorError::PeerMismatch)
+        ));
+
+        let mut activation = inspector_activation(&expected_pending, 200);
+        activation.expected.policy_digest = ObjectDigest::from_bytes([9; 32]);
+        let result = NetworkNamespaceInspectorCompletionV1::default().complete_inspection(
+            &deployment(),
+            manager(),
+            activation,
+            inspector_peer(200),
+            pending(1),
+            &mut Clock::fixed([7; 16], 15),
+            response,
+            envelope(),
+            process(300),
+            namespace(3),
+        );
+        assert!(matches!(
+            result,
+            Err(NetworkNamespaceInspectorError::PolicyMismatch)
+        ));
+
+        let activation = inspector_activation(&expected_pending, 200);
+        let result = NetworkNamespaceInspectorCompletionV1::default().complete_inspection(
+            &deployment(),
+            manager(),
+            activation,
+            inspector_peer(200),
             expected_pending,
             &mut Clock::fixed([7; 16], 15),
             response,
@@ -1778,6 +2006,55 @@ mod tests {
     }
 
     #[test]
+    fn broker_completion_rejects_a_swapped_activation_and_becomes_terminal() {
+        let current_pending = pending(1);
+        let mut catalog = InspectorExpectedAttemptCatalogV1::default();
+        catalog.record_from_admission(&current_pending).unwrap();
+        let response = authorize(&current_pending, &catalog, &mut SpentLedger::default())
+            .unwrap()
+            .respond(&mut Clock::fixed([7; 16], 15), process(300), namespace(3))
+            .unwrap();
+        let swapped_activation = inspector_activation(&pending(2), 200);
+        let mut completion = NetworkNamespaceInspectorCompletionV1::default();
+
+        let result = completion.complete_inspection(
+            &deployment(),
+            manager(),
+            swapped_activation,
+            inspector_peer(200),
+            current_pending,
+            &mut Clock::fixed([7; 16], 15),
+            response,
+            envelope(),
+            process(300),
+            namespace(3),
+        );
+        assert!(matches!(
+            result,
+            Err(NetworkNamespaceInspectorError::PolicyMismatch)
+        ));
+
+        let retry = pending(1);
+        let activation = inspector_activation(&retry, 200);
+        let result = completion.complete_inspection(
+            &deployment(),
+            manager(),
+            activation,
+            inspector_peer(200),
+            retry,
+            &mut Clock::fixed([7; 16], 15),
+            response,
+            envelope(),
+            process(300),
+            namespace(3),
+        );
+        assert!(matches!(
+            result,
+            Err(NetworkNamespaceInspectorError::Terminal)
+        ));
+    }
+
+    #[test]
     fn broker_completion_rechecks_deadline_and_boot_before_consuming_proof() {
         for mut clock in [Clock::fixed([7; 16], 20), Clock::fixed([8; 16], 15)] {
             let pending = pending(1);
@@ -1787,10 +2064,12 @@ mod tests {
                 .unwrap()
                 .respond(&mut Clock::fixed([7; 16], 15), process(300), namespace(3))
                 .unwrap();
+            let activation = inspector_activation(&pending, 200);
             let result = NetworkNamespaceInspectorCompletionV1::default().complete_inspection(
                 &deployment(),
-                peer(200),
-                peer(200),
+                manager(),
+                activation,
+                inspector_peer(200),
                 pending,
                 &mut clock,
                 response,
@@ -1814,10 +2093,12 @@ mod tests {
                 .unwrap();
             response.namespace = forbidden;
 
+            let activation = inspector_activation(&pending, 200);
             let result = NetworkNamespaceInspectorCompletionV1::default().complete_inspection(
                 &deployment(),
-                peer(200),
-                peer(200),
+                manager(),
+                activation,
+                inspector_peer(200),
                 pending,
                 &mut Clock::fixed([7; 16], 15),
                 response,

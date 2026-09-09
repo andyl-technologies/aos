@@ -197,6 +197,31 @@ pub(crate) struct BrokerExpectedAttemptPublisher {
 }
 
 impl BrokerExpectedAttemptPublisher {
+    /// Admits the broker's two local protected publication roots.
+    ///
+    /// This proves that the roots are distinct and support their local rename
+    /// pair. It deliberately does not prove that another process opened the
+    /// same expected-final directory. Fixed protected ancestry and enforcing
+    /// MAC policy are deployment prerequisites for that cross-process claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either root fails generic admission, the roots
+    /// alias, or the staging and final roots reside on different filesystems.
+    pub(crate) fn from_owned(
+        expected_staging: OwnedFd,
+        expected_final: OwnedFd,
+    ) -> Result<Self, InspectorProtectedRootError> {
+        let staging = BrokerExpectedStagingRoot(admit_root(expected_staging)?);
+        let final_root = BrokerExpectedFinalRoot(admit_root(expected_final)?);
+        validate_broker_root_topology([root_identity(&staging.0), root_identity(&final_root.0)])?;
+
+        Ok(Self {
+            staging,
+            final_root,
+        })
+    }
+
     /// Publishes and exactly reads back one canonical expected-attempt record.
     ///
     /// # Errors
@@ -248,6 +273,42 @@ pub(crate) struct InspectorProtectedStoreAccess {
 }
 
 impl InspectorProtectedStoreAccess {
+    /// Admits the inspector's three local protected-store roots.
+    ///
+    /// This proves local non-aliasing and the spent rename precondition only.
+    /// It does not prove that the broker's separately opened expected-final
+    /// descriptor names this directory; fixed protected ancestry and enforcing
+    /// MAC policy remain deployment prerequisites.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a root fails generic admission, any local roles
+    /// alias, or the spent staging and final roots reside on different filesystems.
+    pub(crate) fn from_owned(
+        expected_final: OwnedFd,
+        spent_staging: OwnedFd,
+        spent_final: OwnedFd,
+    ) -> Result<Self, InspectorProtectedRootError> {
+        let expected = InspectorExpectedFinalRoot(admit_root(expected_final)?);
+        let spent_staging = InspectorSpentStagingRoot(admit_root(spent_staging)?);
+        let spent_final = InspectorSpentFinalRoot(admit_root(spent_final)?);
+        validate_inspector_root_topology([
+            root_identity(&expected.0),
+            root_identity(&spent_staging.0),
+            root_identity(&spent_final.0),
+        ])?;
+
+        Ok(Self {
+            expected: InspectorExpectedAttemptReader {
+                final_root: expected,
+            },
+            spent: InspectorSpentNoncePublisher {
+                staging: spent_staging,
+                final_root: spent_final,
+            },
+        })
+    }
+
     /// Borrows the inspector's expected-policy lookup-only capability.
     pub(crate) const fn expected(&self) -> &InspectorExpectedAttemptReader {
         &self.expected
@@ -524,17 +585,41 @@ fn validate_root_topology(roots: [RootIdentity; 5]) -> Result<(), InspectorProte
         spent_staging,
         spent_final,
     ];
-    for (index, root) in physical_roots.iter().enumerate() {
-        for other in &physical_roots[index + 1..] {
-            if root == other {
-                return Err(InspectorProtectedRootError::RoleAlias);
-            }
+    validate_distinct_roots(&physical_roots)?;
+
+    validate_rename_pair(expected_staging, broker_expected_final)?;
+    validate_rename_pair(spent_staging, spent_final)?;
+    Ok(())
+}
+
+fn validate_broker_root_topology(
+    roots: [RootIdentity; 2],
+) -> Result<(), InspectorProtectedRootError> {
+    validate_distinct_roots(&roots)?;
+    validate_rename_pair(roots[0], roots[1])
+}
+
+fn validate_inspector_root_topology(
+    roots: [RootIdentity; 3],
+) -> Result<(), InspectorProtectedRootError> {
+    validate_distinct_roots(&roots)?;
+    validate_rename_pair(roots[1], roots[2])
+}
+
+fn validate_distinct_roots(roots: &[RootIdentity]) -> Result<(), InspectorProtectedRootError> {
+    for (index, root) in roots.iter().enumerate() {
+        if roots[index + 1..].contains(root) {
+            return Err(InspectorProtectedRootError::RoleAlias);
         }
     }
+    Ok(())
+}
 
-    if expected_staging.device != broker_expected_final.device
-        || spent_staging.device != spent_final.device
-    {
+fn validate_rename_pair(
+    staging: RootIdentity,
+    final_root: RootIdentity,
+) -> Result<(), InspectorProtectedRootError> {
+    if staging.device != final_root.device {
         return Err(InspectorProtectedRootError::CrossFilesystem);
     }
     Ok(())
@@ -852,6 +937,41 @@ mod tests {
     #[test]
     fn complete_topology_accepts_four_distinct_roots_and_matching_final_views() {
         assert!(validate_root_topology(topology(valid_physical_roots())).is_ok());
+    }
+
+    #[test]
+    fn broker_role_admits_only_a_distinct_same_filesystem_rename_pair() {
+        assert!(validate_broker_root_topology([identity(10, 1), identity(10, 2)]).is_ok());
+        assert!(matches!(
+            validate_broker_root_topology([identity(10, 1), identity(10, 1)]),
+            Err(InspectorProtectedRootError::RoleAlias)
+        ));
+        assert!(matches!(
+            validate_broker_root_topology([identity(10, 1), identity(20, 2)]),
+            Err(InspectorProtectedRootError::CrossFilesystem)
+        ));
+    }
+
+    #[test]
+    fn inspector_role_rejects_every_local_alias_and_cross_device_spent_pair() {
+        let roots = [identity(10, 1), identity(20, 2), identity(20, 3)];
+        assert!(validate_inspector_root_topology(roots).is_ok());
+
+        for first in 0..roots.len() {
+            for second in first + 1..roots.len() {
+                let mut aliased = roots;
+                aliased[second] = aliased[first];
+                assert!(matches!(
+                    validate_inspector_root_topology(aliased),
+                    Err(InspectorProtectedRootError::RoleAlias)
+                ));
+            }
+        }
+
+        assert!(matches!(
+            validate_inspector_root_topology([identity(10, 1), identity(20, 2), identity(30, 3),]),
+            Err(InspectorProtectedRootError::CrossFilesystem)
+        ));
     }
 
     #[test]
