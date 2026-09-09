@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// Maximum admission ordinals inspected by one objective-input scan page.
+pub const MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS: u32 = 10_000;
+const MAX_OBJECTIVE_CURSOR_DELTA_SNAPSHOTS: usize = 10_000;
+const MAX_OBJECTIVE_CURSOR_PENDING_ORDINALS: usize = 10_000;
+
 /// Stable result of publishing one policy-bound objective evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ObjectiveEvaluationPublicationResult {
@@ -15,7 +20,434 @@ pub struct ObjectiveEvaluationPublicationResult {
     pub replayed: bool,
 }
 
+/// Complete immutable input for the next policy evaluation in admission order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveEvaluationInput {
+    snapshot: CampaignSnapshotId,
+    policy: CampaignPolicy,
+    observation: Observation,
+    properties: PropertyVerdictSet,
+    measurements: MeasurementSet,
+    configuration: ConfigurationArtifact,
+    scenario: ScenarioArtifact,
+}
+
+/// Restartable position in the objective-evaluation admission scan.
+///
+/// The cursor is bound to one named campaign, authenticated snapshot, and
+/// active policy. When accounting advances, the repository replays only the
+/// bounded snapshot delta and records newly completed ordinals below the scan
+/// position for direct visits. Append-only admissions, higher-ordinal
+/// completions, and evaluation-only successors retain the high-water mark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveEvaluationCursor {
+    campaign: CampaignHash,
+    snapshot: CampaignSnapshotId,
+    policy: CampaignPolicyId,
+    accounting: ContentId,
+    after_ordinal: u64,
+    pending_ordinals: BTreeSet<u64>,
+}
+
+impl ObjectiveEvaluationCursor {
+    /// Returns the authenticated snapshot at which this position was emitted.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the active policy that owns this scan position.
+    #[must_use]
+    pub const fn policy(&self) -> CampaignPolicyId {
+        self.policy
+    }
+
+    /// Returns the exact accounting root that owns this scan position.
+    #[must_use]
+    pub const fn accounting(&self) -> ContentId {
+        self.accounting
+    }
+
+    /// Returns the last admission ordinal inspected by the scan.
+    #[must_use]
+    pub const fn after_ordinal(&self) -> u64 {
+        self.after_ordinal
+    }
+}
+
+/// One bounded page from the admission-ordered objective-evaluation scan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveEvaluationScanPage {
+    input: Option<ObjectiveEvaluationInput>,
+    cursor: ObjectiveEvaluationCursor,
+    complete: bool,
+    visited_ordinals: u32,
+}
+
+impl ObjectiveEvaluationScanPage {
+    /// Returns the first unevaluated observation found on this page.
+    #[must_use]
+    pub const fn input(&self) -> Option<&ObjectiveEvaluationInput> {
+        self.input.as_ref()
+    }
+
+    /// Consumes the page and returns its first unevaluated observation.
+    #[must_use]
+    pub fn into_input(self) -> Option<ObjectiveEvaluationInput> {
+        self.input
+    }
+
+    /// Returns the restartable position after this page's inspected ordinals.
+    #[must_use]
+    pub fn cursor(&self) -> ObjectiveEvaluationCursor {
+        self.cursor.clone()
+    }
+
+    /// Returns whether the page reached the exact admission upper bound.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Returns the number of admission ordinals inspected for this page.
+    #[must_use]
+    pub const fn visited_ordinals(&self) -> u32 {
+        self.visited_ordinals
+    }
+}
+
+impl ObjectiveEvaluationInput {
+    /// Returns the exact snapshot on which publication must compare-and-swap.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the active policy to evaluate.
+    #[must_use]
+    pub const fn policy(&self) -> &CampaignPolicy {
+        &self.policy
+    }
+
+    /// Returns the canonical observation awaiting evaluation.
+    #[must_use]
+    pub const fn observation(&self) -> &Observation {
+        &self.observation
+    }
+
+    /// Returns the observation's property-verdict set.
+    #[must_use]
+    pub const fn properties(&self) -> &PropertyVerdictSet {
+        &self.properties
+    }
+
+    /// Returns the observation's retained measurement set.
+    #[must_use]
+    pub const fn measurements(&self) -> &MeasurementSet {
+        &self.measurements
+    }
+
+    /// Returns the exact observed configuration artifact.
+    #[must_use]
+    pub const fn configuration(&self) -> &ConfigurationArtifact {
+        &self.configuration
+    }
+
+    /// Returns the configuration's execution-model scenario artifact.
+    #[must_use]
+    pub const fn scenario(&self) -> &ScenarioArtifact {
+        &self.scenario
+    }
+}
+
 impl CampaignRepository {
+    /// Scans for the next canonical observation lacking an active-policy evaluation.
+    ///
+    /// Available observations are visited in admission order. A later
+    /// lower-ordinal completion is retained as direct pending work without
+    /// rewinding the cursor's high-water mark. Explicitly closed non-modeled
+    /// attempts are skipped because they have no observation to evaluate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero or excessive page limit, missing campaign,
+    /// malformed admission-order index, unreadable observation closure, or
+    /// failed repository authentication.
+    pub fn scan_objective_evaluation_inputs(
+        &self,
+        name: &str,
+        cursor: Option<ObjectiveEvaluationCursor>,
+        limit: u32,
+    ) -> Result<ObjectiveEvaluationScanPage, CampaignRepositoryError> {
+        if limit == 0 || limit > MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "objective-evaluation-scan-limit",
+            });
+        }
+
+        let head = self.head(name)?;
+        let campaign = CampaignHash::derive(
+            "crucible.campaign.objective-evaluation-cursor-campaign.v1",
+            name.as_bytes(),
+        );
+        let snapshot = head.snapshot_id();
+        let roots = head.snapshot().roots();
+        let active_policy = head.snapshot().active_policy();
+        let policy = self.read_policy(active_policy.content_id())?;
+        if policy.id()? != active_policy {
+            return Err(integrity("objective-input-active-policy-id-mismatch"));
+        }
+        let admitted = self.accounted_attempts(roots.accounting)?;
+        let mut cursor = match cursor {
+            Some(cursor) if cursor.policy == active_policy && cursor.campaign == campaign => {
+                self.reconcile_objective_cursor(head.snapshot(), cursor)?
+            }
+            Some(_) | None => ObjectiveEvaluationCursor {
+                campaign,
+                snapshot,
+                policy: active_policy,
+                accounting: roots.accounting,
+                after_ordinal: 0,
+                pending_ordinals: BTreeSet::new(),
+            },
+        };
+        cursor.snapshot = snapshot;
+        cursor.accounting = roots.accounting;
+
+        let mut visited_ordinals = 0u32;
+        while let Some(ordinal) = cursor.pending_ordinals.pop_first() {
+            visited_ordinals = visited_ordinals
+                .checked_add(1)
+                .ok_or_else(|| integrity("objective-input-scan-count-overflow"))?;
+            if let Some(input) = self.objective_evaluation_input_at(
+                snapshot,
+                &policy,
+                roots,
+                AdmissionOrdinal::new(ordinal),
+            )? {
+                return Ok(ObjectiveEvaluationScanPage {
+                    input: Some(input),
+                    cursor,
+                    complete: false,
+                    visited_ordinals,
+                });
+            }
+            if visited_ordinals == limit {
+                return Ok(ObjectiveEvaluationScanPage {
+                    input: None,
+                    cursor,
+                    complete: false,
+                    visited_ordinals,
+                });
+            }
+        }
+
+        if cursor.after_ordinal >= admitted {
+            return Ok(ObjectiveEvaluationScanPage {
+                input: None,
+                cursor,
+                complete: true,
+                visited_ordinals,
+            });
+        }
+
+        let remaining = limit - visited_ordinals;
+        let page_end = cursor
+            .after_ordinal
+            .checked_add(u64::from(remaining))
+            .unwrap_or(u64::MAX)
+            .min(admitted);
+
+        for ordinal in (cursor.after_ordinal + 1)..=page_end {
+            visited_ordinals = visited_ordinals
+                .checked_add(1)
+                .ok_or_else(|| integrity("objective-input-scan-count-overflow"))?;
+            cursor.after_ordinal = ordinal;
+            if let Some(input) = self.objective_evaluation_input_at(
+                snapshot,
+                &policy,
+                roots,
+                AdmissionOrdinal::new(ordinal),
+            )? {
+                return Ok(ObjectiveEvaluationScanPage {
+                    input: Some(input),
+                    cursor,
+                    complete: ordinal == admitted,
+                    visited_ordinals,
+                });
+            }
+        }
+
+        cursor.after_ordinal = page_end;
+        Ok(ObjectiveEvaluationScanPage {
+            input: None,
+            cursor,
+            complete: page_end == admitted,
+            visited_ordinals,
+        })
+    }
+
+    fn reconcile_objective_cursor(
+        &self,
+        head: &CampaignSnapshot,
+        mut cursor: ObjectiveEvaluationCursor,
+    ) -> Result<ObjectiveEvaluationCursor, CampaignRepositoryError> {
+        let mut current = head.clone();
+        for _ in 0..MAX_OBJECTIVE_CURSOR_DELTA_SNAPSHOTS {
+            let current_id = current.id()?;
+            if current_id == cursor.snapshot {
+                if current.roots().accounting != cursor.accounting {
+                    return Err(integrity("objective-cursor-accounting-root-mismatch"));
+                }
+                return Ok(cursor);
+            }
+            if current.active_policy() != cursor.policy {
+                return self.fresh_objective_cursor(head, cursor.campaign);
+            }
+
+            let Some(parent_id) = current.parent() else {
+                return self.fresh_objective_cursor(head, cursor.campaign);
+            };
+            let parent = self.read_snapshot(parent_id.content_id())?;
+            if current.roots().accounting != parent.snapshot.roots().accounting {
+                let transition = current
+                    .transition()
+                    .ok_or_else(|| integrity("objective-cursor-accounting-transition-missing"))?;
+                match self.read_fact(transition.content_id())? {
+                    CampaignFact::ObservationPublished(observation)
+                    | CampaignFact::ObservationCredited(observation) => {
+                        let observation = self.read_observation(observation.content_id())?;
+                        let (_, ordinal) = self.observation_execution_basis(
+                            current.roots().accounting,
+                            &observation,
+                        )?;
+                        if ordinal.value() <= cursor.after_ordinal {
+                            cursor.pending_ordinals.insert(ordinal.value());
+                            if cursor.pending_ordinals.len() > MAX_OBJECTIVE_CURSOR_PENDING_ORDINALS
+                            {
+                                return Err(integrity("objective-cursor-pending-ordinal-limit"));
+                            }
+                        }
+                    }
+                    CampaignFact::ChoiceOpportunityDiscovered { .. }
+                    | CampaignFact::BranchRequestIssued(_)
+                    | CampaignFact::BranchRequestAccepted { .. }
+                    | CampaignFact::PlannerAdvanced(_)
+                    | CampaignFact::ProposalIssued(_)
+                    | CampaignFact::AttemptAdmitted(_)
+                    | CampaignFact::AttemptClosed { .. }
+                    | CampaignFact::FindingPublished(_)
+                    | CampaignFact::ObjectiveEvaluationPublished(_)
+                    | CampaignFact::BudgetGranted(_)
+                    | CampaignFact::ControlRequested(_)
+                    | CampaignFact::PinChanged(_)
+                    | CampaignFact::PinCommandAccepted(_)
+                    | CampaignFact::DiscoveryRequested(_)
+                    | CampaignFact::SavepointCaptureRequested(_)
+                    | CampaignFact::SavepointCaptureResolved(_)
+                    | CampaignFact::SavepointContinuationSelected(_) => {}
+                    CampaignFact::CampaignDerived(_) | CampaignFact::PolicyActivated(_) => {
+                        return self.fresh_objective_cursor(head, cursor.campaign);
+                    }
+                }
+            }
+            current = parent.snapshot;
+        }
+
+        Err(integrity("objective-cursor-snapshot-delta-limit"))
+    }
+
+    fn fresh_objective_cursor(
+        &self,
+        head: &CampaignSnapshot,
+        campaign: CampaignHash,
+    ) -> Result<ObjectiveEvaluationCursor, CampaignRepositoryError> {
+        Ok(ObjectiveEvaluationCursor {
+            campaign,
+            snapshot: head.id()?,
+            policy: head.active_policy(),
+            accounting: head.roots().accounting,
+            after_ordinal: 0,
+            pending_ordinals: BTreeSet::new(),
+        })
+    }
+
+    fn objective_evaluation_input_at(
+        &self,
+        snapshot: CampaignSnapshotId,
+        policy: &CampaignPolicy,
+        roots: crate::CampaignRoots,
+        ordinal: AdmissionOrdinal,
+    ) -> Result<Option<ObjectiveEvaluationInput>, CampaignRepositoryError> {
+        let Some(content) = self
+            .merkle
+            .get(roots.accounting, observation_ordinal_key(ordinal))?
+        else {
+            return Ok(None);
+        };
+        let observation = self.read_observation(content)?;
+        let observation_id = observation.id()?;
+        if self
+            .merkle
+            .get(
+                roots.observations,
+                objective_evaluation_key(policy.id()?, observation_id),
+            )?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        if self
+            .observation_execution_basis(roots.accounting, &observation)?
+            .1
+            != ordinal
+        {
+            return Err(integrity("objective-input-observation-ordinal-mismatch"));
+        }
+        let properties = self.read_property_verdict_set(observation.properties().content_id())?;
+        let measurements = self.read_measurement_set(observation.measurements().content_id())?;
+        let configuration =
+            self.read_configuration_artifact(observation.child_content().content_id())?;
+        let scenario =
+            self.read_scenario_artifact(configuration.scenario_artifact().content_id())?;
+
+        Ok(Some(ObjectiveEvaluationInput {
+            snapshot,
+            policy: policy.clone(),
+            observation,
+            properties,
+            measurements,
+            configuration,
+            scenario,
+        }))
+    }
+
+    /// Reads one authenticated raw measurement-evidence leaf owned by an input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the measurement set does not name the leaf, the
+    /// leaf is not trace content, its declared size exceeds `max_bytes`, or the
+    /// backend cannot complete an authenticated read.
+    pub fn read_objective_evidence_leaf(
+        &self,
+        input: &ObjectiveEvaluationInput,
+        evidence: ContentId,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, CampaignRepositoryError> {
+        let retained = input
+            .measurements
+            .evaluation()
+            .ok_or_else(|| integrity("objective-input-measurement-set-has-no-evaluation"))?;
+        if evidence.kind() != ObjectKind::Trace || !retained.evidence().contains(&evidence) {
+            return Err(integrity("objective-input-evidence-leaf-is-not-owned"));
+        }
+        self.blobs
+            .read(evidence, None)?
+            .read_all(max_bytes)
+            .map_err(Into::into)
+    }
+
     /// Publishes one verified objective evaluation into a named campaign.
     ///
     /// The execution-model adapter must already have proven that every retained

@@ -112,6 +112,8 @@ pub enum CampaignRecordKind {
     BudgetLedger,
     /// Snapshot-bound budget eligibility for one exact planner offer.
     PlannerCandidateBudget,
+    /// Snapshot-bound Beam membership for one frontier candidate.
+    PlannerBeamCandidate,
     /// Durable executor-produced finding candidate handoff.
     FindingCandidateBundle,
     /// Authenticated partial or complete campaign archive boundary.
@@ -122,7 +124,7 @@ pub enum CampaignRecordKind {
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 44] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -166,6 +168,7 @@ impl CampaignRecordKind {
         Self::FindingCandidateBundle,
         Self::ArchiveManifest,
         Self::ArchiveInventoryPage,
+        Self::PlannerBeamCandidate,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -212,6 +215,7 @@ impl CampaignRecordKind {
             Self::PlannerCandidateGuidance => "crucible.campaign.planner-candidate-guidance",
             Self::BudgetLedger => "crucible.campaign.budget-ledger",
             Self::PlannerCandidateBudget => "crucible.campaign.planner-candidate-budget",
+            Self::PlannerBeamCandidate => "crucible.campaign.planner-beam-candidate",
             Self::FindingCandidateBundle => "crucible.campaign.finding-candidate-bundle",
             Self::ArchiveManifest => "crucible.campaign.archive-manifest",
             Self::ArchiveInventoryPage => "crucible.campaign.archive-inventory-page",
@@ -267,6 +271,7 @@ impl CampaignRecordKind {
             | Self::ContinuationProjection
             | Self::PlannerCandidateGuidance
             | Self::PlannerCandidateBudget
+            | Self::PlannerBeamCandidate
             | Self::CoverageProjection
             | Self::RankingExplanation => ObjectKind::Projection,
             Self::ArchiveManifest | Self::ArchiveInventoryPage => ObjectKind::Projection,
@@ -345,6 +350,7 @@ impl Canonical for CampaignRecordKind {
             Self::FindingCandidateBundle => 40,
             Self::ArchiveManifest => 41,
             Self::ArchiveInventoryPage => 42,
+            Self::PlannerBeamCandidate => 43,
         });
     }
 
@@ -393,6 +399,7 @@ impl Canonical for CampaignRecordKind {
             40 => Ok(Self::FindingCandidateBundle),
             41 => Ok(Self::ArchiveManifest),
             42 => Ok(Self::ArchiveInventoryPage),
+            43 => Ok(Self::PlannerBeamCandidate),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -761,6 +768,7 @@ impl ObjectEnvelope {
                 | CampaignRecordKind::Finding
                 | CampaignRecordKind::FindingCandidateBundle
                 | CampaignRecordKind::PlannerCandidateGuidance
+                | CampaignRecordKind::PlannerBeamCandidate
                 | CampaignRecordKind::ArchiveManifest
                 | CampaignRecordKind::ArchiveInventoryPage
         ) {
@@ -946,6 +954,10 @@ fn expected_children(
         }
         CampaignRecordKind::PlannerCandidateBudget => {
             let value = crate::PlannerCandidateBudget::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::PlannerBeamCandidate => {
+            let value = crate::PlannerBeamCandidate::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
         CampaignRecordKind::ArchiveManifest => {

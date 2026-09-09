@@ -16,7 +16,7 @@ use crucible_campaign::{
     CampaignCodecError, CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignName,
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignRepository,
     CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
-    CampaignSupervisorError, CanonicalFrontierPlanner, CanonicalPuctPlanner,
+    CampaignSupervisorError, CanonicalBeamPlanner, CanonicalFrontierPlanner, CanonicalPuctPlanner,
     ExecutionRetentionIntent, ExecutorClient, ExecutorClientError, ExplorerPolicy,
     MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
     MAX_PLANNER_SCAN_PAGE_ITEMS, PlannerAuthorityKey, PlannerClient, PlannerRequest,
@@ -28,6 +28,7 @@ use crate::{
     CampaignRuntimeReport, CampaignRuntimeStartError, CanonicalPlannerProcessCancellation,
     CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
     ExecutorLoopbackEndpointConfig, LoopbackExecutorProtocolError, LoopbackExecutorService,
+    ObjectivePublishingCampaignDriver, ObjectivePublishingCampaignDriverError,
 };
 
 /// Maximum number of canonical campaign runtimes attached to one daemon.
@@ -219,12 +220,15 @@ type AuthorizedCanonicalFrontierPlanner =
     AuthorizedPlannerService<CanonicalFrontierPlanner, CanonicalPlannerProcessSupervisor>;
 type AuthorizedCanonicalPuctPlanner =
     AuthorizedPlannerService<CanonicalPuctPlanner, CanonicalPlannerProcessSupervisor>;
+type AuthorizedCanonicalBeamPlanner =
+    AuthorizedPlannerService<CanonicalBeamPlanner, CanonicalPlannerProcessSupervisor>;
 type CanonicalPlannerServiceError =
     AuthorizedPlannerServiceError<CampaignCodecError, CanonicalPlannerProcessError>;
 
 enum CanonicalPlannerService {
     Frontier(AuthorizedCanonicalFrontierPlanner),
     Puct(AuthorizedCanonicalPuctPlanner),
+    Beam(AuthorizedCanonicalBeamPlanner),
 }
 
 impl PlannerService for CanonicalPlannerService {
@@ -234,6 +238,7 @@ impl PlannerService for CanonicalPlannerService {
         match (self, request.policy().explorer()) {
             (Self::Frontier(service), ExplorerPolicy::Exhaustive { .. }) => service.plan(request),
             (Self::Puct(service), ExplorerPolicy::TreeSearch { .. }) => service.plan(request),
+            (Self::Beam(service), ExplorerPolicy::Beam { .. }) => service.plan(request),
             _ => Err(AuthorizedPlannerServiceError::InvalidOutput(
                 CampaignCodecError::InvalidValue {
                     reason: "active campaign explorer policy changed after planner attachment",
@@ -246,6 +251,9 @@ impl PlannerService for CanonicalPlannerService {
 type CanonicalSupervisor = CampaignSupervisor<CanonicalPlannerService, LoopbackExecutorService>;
 type CanonicalSupervisorFailure =
     CampaignSupervisorError<CanonicalPlannerServiceError, LoopbackExecutorProtocolError>;
+type CanonicalRuntimeDriver = ObjectivePublishingCampaignDriver<CanonicalSupervisor>;
+type CanonicalRuntimeDriverFailure =
+    ObjectivePublishingCampaignDriverError<CanonicalSupervisorFailure>;
 
 /// Prepared coordinator that has not started its long-lived thread.
 #[must_use = "prepared campaign runtime must be started or explicitly dropped"]
@@ -253,7 +261,7 @@ pub struct PreparedCanonicalCampaignRuntime {
     repository_identity: Arc<CampaignRepository>,
     campaign: CampaignName,
     scenario: ScenarioArtifactId,
-    supervisor: CanonicalSupervisor,
+    supervisor: CanonicalRuntimeDriver,
     planner_cancellation: CanonicalPlannerProcessCancellation,
     runtime: CampaignRuntimeConfig,
 }
@@ -297,7 +305,7 @@ impl PreparedCanonicalCampaignRuntime {
 #[must_use = "attached campaign runtime must be shut down and joined"]
 pub struct AttachedCanonicalCampaignRuntime {
     campaign: CampaignName,
-    runtime: CampaignRuntime<CanonicalSupervisor>,
+    runtime: CampaignRuntime<CanonicalRuntimeDriver>,
     planner_cancellation: CanonicalPlannerProcessCancellation,
 }
 
@@ -470,7 +478,25 @@ fn prepare_canonical_campaign_runtime_with_service(
                 )
             }
             ExplorerPolicy::Beam { .. } => {
-                return Err(CanonicalCampaignRuntimeError::UnsupportedExplorerPolicy);
+                let basis = repository
+                    .publish_canonical_beam_planner_basis()
+                    .map_err(CanonicalCampaignRuntimeError::Repository)?;
+                let (engine, artifact, initial_state) = basis.into_parts();
+                let (supervisor, cancellation) =
+                    CanonicalPlannerProcessSupervisor::new(config.planner_process().clone());
+                let service = AuthorizedPlannerService::new(
+                    CanonicalBeamPlanner,
+                    supervisor,
+                    planner_authority.clone(),
+                );
+
+                (
+                    engine,
+                    artifact,
+                    initial_state,
+                    CanonicalPlannerService::Beam(service),
+                    cancellation,
+                )
             }
         };
     let planner = CampaignPlannerDriver::new(
@@ -486,9 +512,7 @@ fn prepare_canonical_campaign_runtime_with_service(
     let planner = match policy.explorer() {
         ExplorerPolicy::TreeSearch { .. } => planner.require_tree_search_policy(),
         ExplorerPolicy::Exhaustive { .. } => planner.require_exhaustive_policy(),
-        ExplorerPolicy::Beam { .. } => {
-            return Err(CanonicalCampaignRuntimeError::UnsupportedExplorerPolicy);
-        }
+        ExplorerPolicy::Beam { .. } => planner.require_beam_policy(),
     };
     let executor = CampaignExecutorDriver::new(
         Arc::clone(&repository),
@@ -509,6 +533,11 @@ fn prepare_canonical_campaign_runtime_with_service(
         worker_slots,
     )
     .map_err(CanonicalCampaignRuntimeError::Supervisor)?;
+    let supervisor = ObjectivePublishingCampaignDriver::new(
+        Arc::clone(&repository),
+        config.campaign().as_str().to_owned(),
+        supervisor,
+    );
     Ok(PreparedCanonicalCampaignRuntime {
         repository_identity: Arc::clone(&repository),
         campaign: config.campaign().clone(),
@@ -564,7 +593,7 @@ pub enum CanonicalCampaignRuntimeError {
     RuntimeStart(#[source] CampaignRuntimeStartError),
     /// The runtime stopped because its driver failed or its thread panicked.
     #[error("canonical campaign runtime stopped unexpectedly")]
-    Runtime(#[source] CampaignRuntimeJoinError<CanonicalSupervisorFailure>),
+    Runtime(#[source] CampaignRuntimeJoinError<CanonicalRuntimeDriverFailure>),
 }
 
 #[cfg(test)]

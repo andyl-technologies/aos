@@ -8,9 +8,11 @@ use num_bigint::BigUint;
 use super::*;
 use crate::{ChoiceValue, IntegerDomain, IntegerRepresentation, IntegerValue};
 
+mod beam;
 mod branch;
 mod candidate_generation;
 
+pub(super) use beam::BeamProjectionCacheEntry;
 pub(super) use candidate_generation::*;
 
 const PROJECTION_SCAN_PAGE_ITEMS: usize = 10_000;

@@ -783,7 +783,7 @@ impl CampaignRepository {
             .collect())
     }
 
-    fn observation_execution_basis(
+    pub(in crate::repository) fn observation_execution_basis(
         &self,
         accounting: ContentId,
         observation: &Observation,

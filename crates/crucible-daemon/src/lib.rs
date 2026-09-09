@@ -102,6 +102,7 @@ pub mod campaign_bootstrap;
 pub mod campaign_endpoint;
 pub mod campaign_gc;
 pub mod campaign_loopback;
+pub mod campaign_objective_driver;
 pub mod campaign_policy;
 pub mod campaign_retention;
 pub mod campaign_runtime;
@@ -234,6 +235,10 @@ pub use campaign_loopback::{
     serve_authenticated_repository_campaign_once,
     serve_authenticated_repository_campaign_once_with_timeouts, serve_loopback_campaign_once,
     serve_loopback_campaign_once_with_timeouts,
+};
+pub use campaign_objective_driver::{
+    ObjectiveEvaluationDriverError, ObjectivePublishingCampaignDriver,
+    ObjectivePublishingCampaignDriverError, publish_next_objective_evaluation,
 };
 pub use campaign_policy::{
     CAMPAIGN_POLICY_SCHEMA, CAMPAIGN_POLICY_SCHEMA_VERSION, CampaignAccessGrant,

@@ -84,6 +84,28 @@ impl PlannerExecutionSupervisor<crucible_campaign::CanonicalFrontierPlanner> for
     }
 }
 
+impl PlannerExecutionSupervisor<crucible_campaign::CanonicalBeamPlanner> for LocalPlannerMeter {
+    type Error = LocalPlannerMeterError;
+
+    fn execute(
+        &mut self,
+        engine: &mut crucible_campaign::CanonicalBeamPlanner,
+        request: &PlannerRequest,
+    ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
+        let measured_fuel = u64::try_from(request.invocation().scan_page().positions().len())
+            .ok()
+            .and_then(|positions| positions.checked_add(1))
+            .ok_or(LocalPlannerMeterError::FuelOverflow)?;
+        if measured_fuel > request.invocation().budget().fuel() {
+            return Err(LocalPlannerMeterError::FuelExceeded);
+        }
+        Ok(SupervisedPlannerExecution::new(
+            engine.plan(request),
+            measured_fuel,
+        ))
+    }
+}
+
 pub(super) struct SynchronousCampaignExecutor<M> {
     store: CampaignExecutorStore,
     worker: RepositoryAttemptWorker<M>,

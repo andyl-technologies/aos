@@ -16,9 +16,10 @@ use crate::{
     CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceDomain, ChoiceDomainId,
     ChoiceDomainSemanticId, ChoiceOpportunity, ChoiceOpportunityId, ChoiceValue,
     ConfigurationArtifact, ConfigurationArtifactId, ContinuationProjectionId, CreditId,
-    DebugSessionId, ExpansionStateId, FindingKind, ObservationId, PlannerCandidateGuidanceId,
-    PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId, PlannerStepId,
-    PolicyArtifactId, ProbabilityModelId, ProposalId, RetainedPlannerRequestId, SelectionId,
+    DebugSessionId, ExpansionStateId, FindingKind, ObservationId, PlannerBeamCandidateId,
+    PlannerCandidateGuidanceId, PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId,
+    PlannerStepId, PolicyArtifactId, ProbabilityModelId, ProposalId, RetainedPlannerRequestId,
+    SelectionId, SurvivorSelectionId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
