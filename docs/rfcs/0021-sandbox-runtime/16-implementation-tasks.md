@@ -6046,18 +6046,53 @@ inspection in place of the protected-object gate; it still exercises retained
 descriptors, repeated reads, `fstat`, and original-snapshot comparison. This is
 not a root-provisioned or VM transfer test.
 
+Commit `5ef8462e8` connects those foundations to Host state format 4 without
+opening a live effect. The all-six custody result now releases role-ordered
+device, inode, length, and content-digest snapshots beside the same borrowed
+public descriptors only after every retained credential passes current
+revalidation; the journal secret remains absent. A deterministic version-1
+execution digest uses explicit tag-and-`u64`-length framing over request ID and
+transport digest, carrier and action, the assignment tuple, the exact future
+execution evidence and phase, and a separately framed stable-authority
+commitment. That stable commitment covers the fields enforced by pending
+replay: transport and semantic request digests, Host verb, exact target,
+assignment, node, plan digest, and ownership stable key ID, generation,
+public-key digest, and usage. It excludes refreshed outer sealed bytes and
+lease, status, and receipt fields; those remain independently MAC-opened, with
+equal plan expiry and exact fence/effect local-lease records, effect lease
+digest, status, and receipt cross-checked on every reopen. Exact historical
+Guardian attempt lease artifacts remain inside the execution record and
+therefore inside its MAC.
+
+Legacy V4 rows omit execution authentication and remain readable. Future
+Guardian and Stop rows require a nonempty bounded `HostExecution` seal at the
+exact request location. Missing, oversized, tampered, relocated, phase-mutated,
+context-mutated, and stable-authority-substituted records fail before use. A
+genuine signed-plan and signed-lease recovery test proves a byte-identical
+execution seal survives a newer outer ownership lease when stable semantics are
+unchanged; effect-only lease replacement fails the exact-record cross-check.
+Even a correctly authenticated future record reaches and is rejected by the
+separate final live-disabled gate.
+
+The earlier production Broker and Host library and Host binary check passes.
+The final focused source runs pass one protected-snapshot test, nine Host state
+tests, one transition-authentication test, three Host custody and MAC tests,
+and the existing Legacy broker renewal test. Complete post-change Broker and
+Host suites have not yet been rerun.
+
 This remains controller and source-level Host progress. The signing hook
 defaults to unavailable and has no production controller authority adapter.
-The Host 1.5 carrier guard and format-4 live reopen gate remain closed. Host now
-retains and can revalidate the static protected descriptors and can authenticate
-a bounded execution record, but no live path consumes either foundation,
-assembles and transfers the dynamic credentials, starts the exact Guardian
-before the payload, observes manager-retained launch bindings, or performs the
-final protected before-effect checks for both starts. Live exact-unit retry and
-compensation, composite Stop integration, renewal, early freeze, Network
-default-drop coupling, and a VM test proving expiry or Guardian death contains
-the payload also remain open. No `SBX-GUARD-01` or end-to-end Host task is
-closed by these slices.
+The Host 1.5 carrier guard and format-4 live execution gate remain closed. Host
+now retains and revalidates static descriptor evidence and authenticates future
+durable execution state across stable outer-lease renewal, but live admission
+still emits only Legacy records and no effect path consumes the custody and
+evidence bridge. No live path assembles and transfers the dynamic credentials,
+starts the exact Guardian before the payload, observes manager-retained launch
+bindings, or performs the final protected before-effect checks for both starts.
+Live exact-unit retry and compensation, composite Stop integration, renewal,
+early freeze, Network default-drop coupling, and a VM test proving expiry or
+Guardian death contains the payload also remain open. No `SBX-GUARD-01` or
+end-to-end Host task is closed by these slices.
 
 ### Qualified fleet firmware-variable stores (harness foundation)
 
