@@ -6,9 +6,9 @@
 //! commitments, and an exclusive expiry. [`VerifiedBrokerPlan`] proves only
 //! plan authenticity; it is deliberately not an effect authorization because
 //! ownership-lease verification and durable fence admission remain required.
-//! This v1 registry covers the Host, Mount, Storage, and Network protocols
-//! already present on the local wire. The per-assignment guardian consumes its
-//! signed ownership lease directly and is not a broker-plan audience.
+//! This v1 registry covers the Host, Mount, Storage, Network, and Guardian
+//! protocols. A guardian plan grants only the exact boot- and lease-bound arm
+//! operation; it does not grant access to another broker's effects.
 
 use crate::format::{
     CanonicalCborError, DecodeLimits, decode_broker_authorization_plan, decode_trust_policy,
@@ -74,6 +74,8 @@ pub enum BrokerAudience {
     Storage,
     /// Root network broker.
     Network,
+    /// Unprivileged per-assignment lease guardian.
+    Guardian,
 }
 
 impl BrokerAudience {
@@ -85,6 +87,7 @@ impl BrokerAudience {
             Self::Mount => ProtocolId::MountBroker,
             Self::Storage => ProtocolId::StorageBroker,
             Self::Network => ProtocolId::NetworkBroker,
+            Self::Guardian => ProtocolId::Guardian,
         }
     }
 }
@@ -156,6 +159,8 @@ pub enum BrokerVerb {
     NetworkDestroy,
     /// Inventories network resources for an assignment.
     NetworkInventory,
+    /// Arms one assignment guardian for an exact boot and ownership lease.
+    GuardianArm,
 }
 
 impl BrokerVerb {
@@ -199,6 +204,7 @@ impl BrokerVerb {
             30 => Ok(Self::MountReapDestinationSlot),
             31 => Ok(Self::MountRematerializeDestinationSlot),
             32 => Ok(Self::StoragePrepareCatalog),
+            34 => Ok(Self::GuardianArm),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -239,6 +245,7 @@ impl BrokerVerb {
             Self::MountReapDestinationSlot => 30,
             Self::MountRematerializeDestinationSlot => 31,
             Self::StoragePrepareCatalog => 32,
+            Self::GuardianArm => 34,
         }
     }
 
@@ -278,6 +285,7 @@ impl BrokerVerb {
             | Self::NetworkDisarm
             | Self::NetworkDestroy
             | Self::NetworkInventory => BrokerAudience::Network,
+            Self::GuardianArm => BrokerAudience::Guardian,
         }
     }
 
@@ -293,7 +301,8 @@ impl BrokerVerb {
             | Self::StorageInventory
             | Self::StoragePrepareCatalog
             | Self::NetworkPrepare
-            | Self::NetworkInventory => BrokerGrantTargetShape::Assignment,
+            | Self::NetworkInventory
+            | Self::GuardianArm => BrokerGrantTargetShape::Assignment,
             Self::HostStop
             | Self::HostFreeze
             | Self::HostThaw
@@ -1431,6 +1440,7 @@ mod tests {
             (30, BrokerVerb::MountReapDestinationSlot),
             (31, BrokerVerb::MountRematerializeDestinationSlot),
             (32, BrokerVerb::StoragePrepareCatalog),
+            (34, BrokerVerb::GuardianArm),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1440,6 +1450,10 @@ mod tests {
         }
         assert_eq!(
             BrokerVerb::from_code(33),
+            Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
+        );
+        assert_eq!(
+            BrokerVerb::from_code(35),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1564,6 +1578,7 @@ mod tests {
             BrokerVerb::StoragePrepareCatalog,
             BrokerVerb::NetworkPrepare,
             BrokerVerb::NetworkInventory,
+            BrokerVerb::GuardianArm,
         ];
         let resource_verbs = [
             BrokerVerb::HostStop,
@@ -1598,6 +1613,10 @@ mod tests {
             BrokerVerb::MountReplace.target_shape(),
             BrokerGrantTargetShape::ResourcePair
         );
+        assert_eq!(
+            BrokerVerb::GuardianArm.target_shape(),
+            BrokerGrantTargetShape::Assignment
+        );
 
         for code in (15..=22).chain(std::iter::once(32)) {
             assert_eq!(
@@ -1623,6 +1642,7 @@ mod tests {
             BrokerAudience::Network.protocol(),
             ProtocolId::NetworkBroker
         );
+        assert_eq!(BrokerAudience::Guardian.protocol(), ProtocolId::Guardian);
     }
 
     #[test]

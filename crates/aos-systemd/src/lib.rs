@@ -20,10 +20,11 @@ pub use client::{
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;
 pub use sandbox::{
-    CpuWeight, DiscoveredSandboxUnit, FreezerState, PayloadRootContinuityPolicyV1,
-    SandboxCgroupPath, SandboxDescriptorPath, SandboxDevice, SandboxDiscoveryComparison,
-    SandboxDiscoveryConflict, SandboxDiscoveryIndeterminate, SandboxDiscoveryOutcome,
-    SandboxNspawnCommand, SandboxQuarantineEvidence, SandboxResolvedPaths, SandboxResources,
+    CpuWeight, DiscoveredSandboxUnit, FreezerState, GuardianCredentialDescriptors,
+    GuardianCredentialRole, GuardianUnitSpec, PayloadRootContinuityPolicyV1, SandboxCgroupPath,
+    SandboxDescriptorPath, SandboxDevice, SandboxDiscoveryComparison, SandboxDiscoveryConflict,
+    SandboxDiscoveryIndeterminate, SandboxDiscoveryOutcome, SandboxNspawnCommand,
+    SandboxQuarantineEvidence, SandboxResolvedPaths, SandboxResources,
     SandboxUnitDiscoverySnapshot, SandboxUnitName, SandboxUnitObservation, SandboxUnitSpec,
 };
 

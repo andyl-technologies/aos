@@ -1685,6 +1685,26 @@ fn incomplete_substituted_and_noncanonical_audience_sets_fail_closed() {
         duplicate.prepare(),
         Err(AuthorityPublicationError::IncompleteAudienceSet)
     ));
+    let mut dedicated_guardian = proposal(1, 190);
+    dedicated_guardian.required_audiences = vec![BrokerAudience::Guardian];
+    assert!(matches!(
+        encode_draft(
+            &dedicated_guardian.manifest,
+            &dedicated_guardian.required_audiences,
+            &dedicated_guardian.templates,
+        ),
+        Err(AuthorityPublicationError::UnsupportedBrokerAudience)
+    ));
+    assert!(matches!(
+        dedicated_guardian.prepare(),
+        Err(AuthorityPublicationError::UnsupportedBrokerAudience)
+    ));
+    for reserved in [0, 5] {
+        assert!(matches!(
+            audience_from_code(reserved),
+            Err(AuthorityPublicationError::CorruptCurrent)
+        ));
+    }
     let mut wrong_lease = proposal(1, 190);
     wrong_lease.manifest = manifest_with_node(99);
     assert!(matches!(

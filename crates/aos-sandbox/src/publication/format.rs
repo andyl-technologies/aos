@@ -348,7 +348,7 @@ pub(super) fn validate_encoded_publication(
             || decoded.statement().purpose() != SignaturePurpose::BrokerAuthorization
             || decoded.statement().issued_seconds() != plan.issued_seconds()
             || decoded.statement().expires_seconds() != Some(plan.expires_seconds())
-            || audience_code(plan.audience()) != audience
+            || audience_code(plan.audience())? != audience
             || plan.assignment() != assignment
             || plan.node().as_bytes() != &node
             || plan.ownership_authority() != signature.statement().signer()

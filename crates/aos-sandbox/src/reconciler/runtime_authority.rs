@@ -93,7 +93,7 @@ pub(super) fn validate_intent_effects(
         || !template.descriptor_roles().is_empty()
         || draft
             .bind_effect(template.digest())?
-            .into_inner(operation, 0)
+            .into_inner(operation, 0)?
             != *effect
     {
         return Err(invalid());

@@ -21,11 +21,13 @@ use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{AuxiliaryUnit, ServiceProxy, TransientProperty, UnitProxy};
 
 mod discovery;
+mod guardian;
 pub use discovery::{
     DiscoveredSandboxUnit, SandboxDiscoveryComparison, SandboxDiscoveryConflict,
     SandboxDiscoveryIndeterminate, SandboxDiscoveryOutcome, SandboxQuarantineEvidence,
     SandboxUnitDiscoverySnapshot,
 };
+pub use guardian::{GuardianCredentialDescriptors, GuardianCredentialRole, GuardianUnitSpec};
 
 const UNIT_PREFIX: &str = "aos-sandbox-";
 const UNIT_SUFFIX: &str = ".service";

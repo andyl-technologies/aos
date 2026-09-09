@@ -1,0 +1,20 @@
+[package]
+name = "aos-sandbox-guardian"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-sandbox-core.workspace = true
+aos-sandbox-linux.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+rustix = { workspace = true, features = ["fs", "net", "process", "thread", "time"] }
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

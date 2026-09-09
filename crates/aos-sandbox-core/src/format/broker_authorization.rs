@@ -214,15 +214,17 @@ const fn audience_code(audience: BrokerAudience) -> u64 {
         BrokerAudience::Mount => 1,
         BrokerAudience::Storage => 2,
         BrokerAudience::Network => 3,
+        BrokerAudience::Guardian => 4,
     }
 }
 
 fn decode_audience(decoder: &mut Decoder<'_>) -> Result<BrokerAudience, CanonicalCborError> {
-    match decoder.closed("broker audience", 3)? {
+    match decoder.closed("broker audience", 4)? {
         0 => Ok(BrokerAudience::Host),
         1 => Ok(BrokerAudience::Mount),
         2 => Ok(BrokerAudience::Storage),
         3 => Ok(BrokerAudience::Network),
+        4 => Ok(BrokerAudience::Guardian),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "broker audience",
             value,
@@ -237,21 +239,22 @@ fn protocol_code(protocol: ProtocolId) -> u64 {
         ProtocolId::MountBroker => 1,
         ProtocolId::StorageBroker => 2,
         ProtocolId::NetworkBroker => 3,
+        ProtocolId::Guardian => 4,
         ProtocolId::PublicApi
         | ProtocolId::PublisherAuthority
         | ProtocolId::CoordinatorNode
         | ProtocolId::OwnershipAuthority
-        | ProtocolId::Guardian
         | ProtocolId::GuestAgent => unreachable!("broker plans use only broker protocols"),
     }
 }
 
 fn decode_protocol(decoder: &mut Decoder<'_>) -> Result<ProtocolId, CanonicalCborError> {
-    match decoder.closed("broker protocol", 3)? {
+    match decoder.closed("broker protocol", 4)? {
         0 => Ok(ProtocolId::HostBroker),
         1 => Ok(ProtocolId::MountBroker),
         2 => Ok(ProtocolId::StorageBroker),
         3 => Ok(ProtocolId::NetworkBroker),
+        4 => Ok(ProtocolId::Guardian),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "broker protocol",
             value,
@@ -273,6 +276,7 @@ mod tests {
     use super::*;
     use crate::{FeatureRef, InvalidBrokerAuthorizationPlan};
 
+    const GUARDIAN_PLAN_HEX: &str = "8e01040401008550010101010101010101010101010101015002020202020202020202020202020202030458200505050505050505050505050505050505050505050505050505050505050505500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a84696f776e65727368697001582009090909090909090909090909090909090909090909090909090909090909090581851822810058200b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b191000005820070707070707070707070707070707070707070707070707070707070707070750080808080808080808080808080808080a1481837825616f732e73616e64626f782e656e666f7263656d656e742e62726f6b65722d6c65646765720100";
     const PLAN_HEX: &str = "8e01010101008550010101010101010101010101010101015002020202020202020202020202020202030458200505050505050505050505050505050505050505050505050505050505050505500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a84696f776e657273686970015820090909090909090909090909090909090909090909090909090909090909090905818508810058200b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b191000005820070707070707070707070707070707070707070707070707070707070707070750080808080808080808080808080808080a1481837825616f732e73616e64626f782e656e666f7263656d656e742e62726f6b65722d6c65646765720100";
     use crate::model::{KeyReference, KeyUsage, StableKeyId};
 
@@ -288,7 +292,7 @@ mod tests {
 
     #[test]
     fn publisher_registration_does_not_expand_broker_protocol_wire_codes() {
-        let mut decoder = Decoder::new(&[4], DecodeLimits::default())
+        let mut decoder = Decoder::new(&[5], DecodeLimits::default())
             .unwrap_or_else(|error| panic!("test broker protocol decoder failed: {error}"));
         assert!(matches!(
             decode_protocol(&mut decoder),
@@ -354,6 +358,35 @@ mod tests {
         .unwrap_or_else(|error| panic!("test plan failed: {error}"))
     }
 
+    fn guardian_plan() -> BrokerAuthorizationPlan {
+        let original = plan();
+        let grant = &original.grants()[0];
+        BrokerAuthorizationPlan::new(
+            BrokerAudience::Guardian,
+            ProtocolId::Guardian,
+            ProtocolVersion::new(1, 0),
+            original.assignment(),
+            original.node(),
+            original.ownership_authority().clone(),
+            vec![
+                BrokerGrant::new(
+                    BrokerVerb::GuardianArm,
+                    BrokerGrantTarget::Assignment,
+                    grant.argument_commitment(),
+                    grant.maximum_request_bytes(),
+                    grant.maximum_descriptors(),
+                )
+                .unwrap_or_else(|error| panic!("test Guardian grant failed: {error}")),
+            ],
+            original.policy_commitment(),
+            original.revocation_scope(),
+            original.issued_seconds(),
+            original.expires_seconds(),
+            original.required_features().to_vec(),
+        )
+        .unwrap_or_else(|error| panic!("test Guardian plan failed: {error}"))
+    }
+
     #[test]
     fn canonical_round_trip_is_exact() {
         let plan = plan();
@@ -363,6 +396,47 @@ mod tests {
             decode_broker_authorization_plan(&bytes, DecodeLimits::default()),
             Ok(plan)
         );
+    }
+
+    #[test]
+    fn guardian_plan_registry_values_have_stable_exact_bytes() {
+        let plan = guardian_plan();
+        let bytes = encode_broker_authorization_plan(&plan);
+
+        assert_eq!(hex::encode(&bytes), GUARDIAN_PLAN_HEX);
+        assert_eq!(bytes[2], 4);
+        assert_eq!(bytes[3], 4);
+        assert!(bytes.windows(2).any(|window| window == [0x18, 34]));
+        assert_eq!(
+            decode_broker_authorization_plan(&bytes, DecodeLimits::default()),
+            Ok(plan)
+        );
+    }
+
+    #[test]
+    fn guardian_plan_registry_mutations_fail_closed() {
+        let original = encode_broker_authorization_plan(&guardian_plan());
+
+        for index in [2, 3] {
+            let mut mismatch = original.clone();
+            mismatch[index] = 1;
+            assert!(matches!(
+                decode_broker_authorization_plan(&mismatch, DecodeLimits::default()),
+                Err(CanonicalCborError::InvalidSemantics { .. })
+            ));
+        }
+
+        let mut wrong_verb = original;
+        let verb_offset = wrong_verb
+            .windows(6)
+            .position(|window| window == [0x81, 0x85, 0x18, 34, 0x81, 0])
+            .unwrap_or_else(|| panic!("Guardian grant encoding not found"))
+            + 3;
+        wrong_verb[verb_offset] = 32;
+        assert!(matches!(
+            decode_broker_authorization_plan(&wrong_verb, DecodeLimits::default()),
+            Err(CanonicalCborError::InvalidSemantics { .. })
+        ));
     }
 
     #[test]
@@ -398,6 +472,7 @@ mod tests {
             BrokerVerb::NetworkDisarm,
             BrokerVerb::NetworkDestroy,
             BrokerVerb::NetworkInventory,
+            BrokerVerb::GuardianArm,
         ];
         let resource = BrokerResourceHandle::from_bytes([30; 32])
             .unwrap_or_else(|error| panic!("test resource failed: {error}"));
@@ -416,7 +491,8 @@ mod tests {
                 | BrokerVerb::StorageInventory
                 | BrokerVerb::StoragePrepareCatalog
                 | BrokerVerb::NetworkPrepare
-                | BrokerVerb::NetworkInventory => BrokerGrantTarget::Assignment,
+                | BrokerVerb::NetworkInventory
+                | BrokerVerb::GuardianArm => BrokerGrantTarget::Assignment,
                 BrokerVerb::MountReplace => BrokerGrantTarget::ResourcePair {
                     previous: resource,
                     successor,
@@ -468,7 +544,7 @@ mod tests {
         ));
 
         let mut unknown_audience = encode_broker_authorization_plan(&plan());
-        unknown_audience[2] = 4;
+        unknown_audience[2] = 5;
         assert!(matches!(
             decode_broker_authorization_plan(&unknown_audience, DecodeLimits::default()),
             Err(CanonicalCborError::UnknownRegistryValue {
@@ -478,7 +554,7 @@ mod tests {
         ));
 
         let mut unknown_protocol = encode_broker_authorization_plan(&plan());
-        unknown_protocol[3] = 4;
+        unknown_protocol[3] = 5;
         assert!(matches!(
             decode_broker_authorization_plan(&unknown_protocol, DecodeLimits::default()),
             Err(CanonicalCborError::UnknownRegistryValue {

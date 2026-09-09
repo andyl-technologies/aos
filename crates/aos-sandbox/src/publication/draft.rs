@@ -13,6 +13,9 @@ pub(super) fn validate_draft(
     required_audiences: &[BrokerAudience],
     templates: &[BrokerDispatchTemplateV1],
 ) -> Result<aos_sandbox_core::model::KeyReference, AuthorityPublicationError> {
+    if required_audiences.contains(&BrokerAudience::Guardian) {
+        return Err(AuthorityPublicationError::UnsupportedBrokerAudience);
+    }
     if required_audiences.is_empty()
         || required_audiences.len() > 4
         || templates.is_empty()
@@ -32,7 +35,7 @@ pub(super) fn validate_draft(
     let mut prior_order = None;
     for template in templates {
         let plan = template.signed_plan().plan();
-        let order = (audience_code(plan.audience()), template.digest());
+        let order = (audience_code(plan.audience())?, template.digest());
         if plan.assignment() != assignment
             || plan.node() != manifest.manifest().node()
             || plan.ownership_authority() != &ownership_authority
@@ -82,12 +85,12 @@ pub(super) fn encode_draft(
     put_bytes(&mut bytes, manifest.canonical_bytes())?;
     put_u32(&mut bytes, required_audiences.len())?;
     for audience in required_audiences {
-        bytes.push(audience_code(*audience));
+        bytes.push(audience_code(*audience)?);
     }
     put_u32(&mut bytes, templates.len())?;
     for template in templates {
         bytes.extend_from_slice(template.digest().as_bytes());
-        bytes.push(audience_code(template.signed_plan().plan().audience()));
+        bytes.push(audience_code(template.signed_plan().plan().audience())?);
         put_bytes(&mut bytes, template.signed_plan().canonical_plan())?;
         put_bytes(&mut bytes, template.signed_plan().canonical_signature())?;
         bytes.extend_from_slice(&(template.method() as i32).to_be_bytes());
@@ -123,7 +126,7 @@ pub(super) fn encode_recovered_draft(
     put_bytes(&mut bytes, manifest.canonical_bytes())?;
     put_u32(&mut bytes, required_audiences.len())?;
     for audience in required_audiences {
-        bytes.push(audience_code(*audience));
+        bytes.push(audience_code(*audience)?);
     }
     encode_recovered_templates(&mut bytes, templates)?;
     Ok(bytes)
@@ -136,7 +139,7 @@ fn encode_recovered_templates(
     put_u32(bytes, templates.len())?;
     for template in templates {
         bytes.extend_from_slice(template.digest.as_bytes());
-        bytes.push(audience_code(template.audience));
+        bytes.push(audience_code(template.audience)?);
         put_bytes(bytes, &template.canonical_plan)?;
         put_bytes(bytes, &template.canonical_plan_signature)?;
         bytes.extend_from_slice(&(template.method as i32).to_be_bytes());
@@ -169,7 +172,7 @@ pub(super) fn encode_bound_draft(
     put_bytes(&mut bytes, lease.canonical_receipt_signature())?;
     put_u32(&mut bytes, draft.required_audiences.len())?;
     for audience in &draft.required_audiences {
-        bytes.push(audience_code(*audience));
+        bytes.push(audience_code(*audience)?);
     }
     encode_recovered_templates(&mut bytes, &draft.templates)?;
     Ok(bytes)
@@ -406,6 +409,12 @@ pub(super) fn draft_digest(bytes: &[u8]) -> ObjectDigest {
 pub(super) fn validate_proposal(
     proposal: &AuthorityPublicationProposalV1,
 ) -> Result<(), AuthorityPublicationError> {
+    if proposal
+        .required_audiences
+        .contains(&BrokerAudience::Guardian)
+    {
+        return Err(AuthorityPublicationError::UnsupportedBrokerAudience);
+    }
     if proposal.required_audiences.is_empty()
         || proposal.required_audiences.len() > 4
         || proposal.templates.is_empty()
@@ -432,7 +441,7 @@ pub(super) fn validate_proposal(
     let mut prior_order = None;
     for template in &proposal.templates {
         let plan = template.signed_plan().plan();
-        let order = (audience_code(plan.audience()), template.digest());
+        let order = (audience_code(plan.audience())?, template.digest());
         if !proposal.required_audiences.contains(&plan.audience())
             || plan.assignment() != assignment
             || plan.node() != proposal.manifest.manifest().node()
@@ -485,12 +494,12 @@ pub(super) fn encode_proposal(
     put_bytes(&mut bytes, proposal.lease.canonical_receipt_signature())?;
     put_u32(&mut bytes, proposal.required_audiences.len())?;
     for audience in &proposal.required_audiences {
-        bytes.push(audience_code(*audience));
+        bytes.push(audience_code(*audience)?);
     }
     put_u32(&mut bytes, proposal.templates.len())?;
     for template in &proposal.templates {
         bytes.extend_from_slice(template.digest().as_bytes());
-        bytes.push(audience_code(template.signed_plan().plan().audience()));
+        bytes.push(audience_code(template.signed_plan().plan().audience())?);
         put_bytes(&mut bytes, template.signed_plan().canonical_plan())?;
         put_bytes(&mut bytes, template.signed_plan().canonical_signature())?;
         bytes.extend_from_slice(&(template.method() as i32).to_be_bytes());

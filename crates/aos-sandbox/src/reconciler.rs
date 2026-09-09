@@ -162,7 +162,7 @@ impl OperationPlan {
             .map(|(step, effect)| {
                 effect.into_inner(operation_id, u32::try_from(step).unwrap_or(u32::MAX))
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         if operation_id.as_bytes() == &[0; 16]
             || desired_key.is_empty()
             || desired_value.is_empty()

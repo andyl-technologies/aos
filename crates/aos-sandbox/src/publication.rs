@@ -1145,6 +1145,9 @@ pub enum AuthorityPublicationError {
     /// Required audiences or templates are empty, unsorted, duplicated, or incomplete.
     #[error("authority publication audience set is invalid or incomplete")]
     IncompleteAudienceSet,
+    /// Guardian authority cannot use the generic broker publication format.
+    #[error("guardian authority is not supported by generic broker publication")]
+    UnsupportedBrokerAudience,
     /// Manifest, lease, plan, node, or ownership signer differs.
     #[error("authority publication contains substituted assignment authority")]
     ContextMismatch,
@@ -1273,12 +1276,13 @@ fn strictly_increasing(values: &[BrokerAudience]) -> bool {
     values.windows(2).all(|pair| pair[0] < pair[1])
 }
 
-const fn audience_code(audience: BrokerAudience) -> u8 {
+const fn audience_code(audience: BrokerAudience) -> Result<u8, AuthorityPublicationError> {
     match audience {
-        BrokerAudience::Host => 1,
-        BrokerAudience::Mount => 2,
-        BrokerAudience::Storage => 3,
-        BrokerAudience::Network => 4,
+        BrokerAudience::Host => Ok(1),
+        BrokerAudience::Mount => Ok(2),
+        BrokerAudience::Storage => Ok(3),
+        BrokerAudience::Network => Ok(4),
+        BrokerAudience::Guardian => Err(AuthorityPublicationError::UnsupportedBrokerAudience),
     }
 }
 

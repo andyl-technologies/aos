@@ -53,12 +53,15 @@ impl EffectDomain {
         }
     }
 
-    pub(super) const fn from_audience(audience: BrokerAudience) -> Self {
+    pub(super) const fn from_audience(audience: BrokerAudience) -> Result<Self, ReconcilerError> {
         match audience {
-            BrokerAudience::Host => Self::Host,
-            BrokerAudience::Storage => Self::Storage,
-            BrokerAudience::Mount => Self::Mount,
-            BrokerAudience::Network => Self::Network,
+            BrokerAudience::Host => Ok(Self::Host),
+            BrokerAudience::Storage => Ok(Self::Storage),
+            BrokerAudience::Mount => Ok(Self::Mount),
+            BrokerAudience::Network => Ok(Self::Network),
+            BrokerAudience::Guardian => Err(ReconcilerError::InvalidPlan(
+                "guardian authority cannot use the generic broker effect path",
+            )),
         }
     }
 }
@@ -132,7 +135,7 @@ impl AuthorityBoundEffectPlanV2 {
                 "invalid authority effect body",
             ));
         }
-        let domain = EffectDomain::from_audience(audience);
+        let domain = EffectDomain::from_audience(audience)?;
         let body_digest = effect_body_digest(body);
         let semantic_digest = crate::dispatch::semantic_identity_digest(semantics);
         Ok(Self {
@@ -189,7 +192,11 @@ impl AuthorityBoundEffectPlanV2 {
             && self.descriptor_free
     }
 
-    pub(super) fn into_inner(mut self, operation_id: OperationId, step: u32) -> EffectPlan {
+    pub(super) fn into_inner(
+        mut self,
+        operation_id: OperationId,
+        step: u32,
+    ) -> Result<EffectPlan, ReconcilerError> {
         if let Some(binding) = &mut self.plan.authority {
             binding.operation_id = operation_id;
             binding.step = step;
@@ -202,9 +209,9 @@ impl AuthorityBoundEffectPlanV2 {
                 binding.template_digest,
                 binding.body_digest,
                 binding.semantic_digest,
-            );
+            )?;
         }
-        self.plan
+        Ok(self.plan)
     }
 }
 
@@ -469,7 +476,7 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
         bytes.extend_from_slice(binding.operation_id.as_bytes());
         bytes.extend_from_slice(&binding.step.to_be_bytes());
         bytes.extend_from_slice(binding.source_draft_digest.as_bytes());
-        bytes.push(audience_code(binding.audience));
+        bytes.push(audience_code(binding.audience)?);
         bytes.extend_from_slice(&(binding.method as i32).to_be_bytes());
         bytes.extend_from_slice(binding.template_digest.as_bytes());
         bytes.extend_from_slice(binding.body_digest.as_bytes());
@@ -697,7 +704,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
                     binding.template_digest,
                     binding.body_digest,
                     binding.semantic_digest,
-                ))
+                )?)
     {
         return Err(ReconcilerError::CorruptLedger(
             "authority effect binding digest mismatch",
@@ -841,18 +848,18 @@ fn effect_binding_digest(
     template: ObjectDigest,
     body: ObjectDigest,
     semantics: ObjectDigest,
-) -> ObjectDigest {
+) -> Result<ObjectDigest, ReconcilerError> {
     let mut digest = Sha256::new();
     digest.update(BINDING_DIGEST_DOMAIN);
     digest.update(operation_id.as_bytes());
     digest.update(step.to_be_bytes());
     digest.update(source.as_bytes());
-    digest.update([audience_code(audience)]);
+    digest.update([audience_code(audience)?]);
     digest.update((method as i32).to_be_bytes());
     digest.update(template.as_bytes());
     digest.update(body.as_bytes());
     digest.update(semantics.as_bytes());
-    ObjectDigest::from_bytes(digest.finalize().into())
+    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
 }
 
 fn attempt_token_digest(attempt: &BrokerDispatchAttemptV1) -> ObjectDigest {
@@ -867,12 +874,15 @@ fn attempt_token_digest(attempt: &BrokerDispatchAttemptV1) -> ObjectDigest {
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
-const fn audience_code(audience: BrokerAudience) -> u8 {
+const fn audience_code(audience: BrokerAudience) -> Result<u8, ReconcilerError> {
     match audience {
-        BrokerAudience::Host => 1,
-        BrokerAudience::Mount => 2,
-        BrokerAudience::Storage => 3,
-        BrokerAudience::Network => 4,
+        BrokerAudience::Host => Ok(1),
+        BrokerAudience::Mount => Ok(2),
+        BrokerAudience::Storage => Ok(3),
+        BrokerAudience::Network => Ok(4),
+        BrokerAudience::Guardian => Err(ReconcilerError::InvalidPlan(
+            "guardian authority cannot use the generic broker effect path",
+        )),
     }
 }
 
@@ -893,6 +903,67 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use aos_sandbox_core::{BrokerArgumentCommitment, BrokerGrantTarget, BrokerVerb};
+
+    #[test]
+    fn guardian_audience_cannot_enter_the_generic_broker_effect_path() {
+        let semantics = BrokerDispatchSemanticIdentityV1::new(
+            BrokerVerb::GuardianArm,
+            BrokerGrantTarget::Assignment,
+            BrokerArgumentCommitment::for_canonical_bytes(b"guardian"),
+        );
+
+        assert!(matches!(
+            AuthorityBoundEffectPlanV2::from_template(
+                ObjectDigest::from_bytes([1; 32]),
+                BrokerAudience::Guardian,
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                ObjectDigest::from_bytes([2; 32]),
+                b"guardian",
+                semantics,
+                true,
+            ),
+            Err(ReconcilerError::InvalidPlan(
+                "guardian authority cannot use the generic broker effect path"
+            ))
+        ));
+
+        let invalid_record = EffectLedgerRecord {
+            plan: EffectPlan {
+                domain: EffectDomain::Guardian,
+                request: b"guardian".to_vec(),
+                authority: Some(AuthorityEffectBindingV2 {
+                    operation_id: OperationId::from_bytes([3; 16]),
+                    step: 0,
+                    source_draft_digest: ObjectDigest::from_bytes([1; 32]),
+                    audience: BrokerAudience::Guardian,
+                    method: BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                    template_digest: ObjectDigest::from_bytes([2; 32]),
+                    body_digest: ObjectDigest::from_bytes([4; 32]),
+                    semantic_digest: ObjectDigest::from_bytes([5; 32]),
+                    descriptor_free: true,
+                    digest: ObjectDigest::from_bytes([6; 32]),
+                }),
+            },
+            state: EffectState::Planned,
+            dispatch: None,
+        };
+        assert!(matches!(
+            encode_effect(&invalid_record),
+            Err(ReconcilerError::InvalidPlan(
+                "guardian authority cannot use the generic broker effect path"
+            ))
+        ));
+
+        for reserved in [0, 5] {
+            assert!(matches!(
+                audience_from_code(reserved),
+                Err(ReconcilerError::CorruptLedger(
+                    "unknown authority effect audience"
+                ))
+            ));
+        }
+    }
 
     #[test]
     fn legacy_v1_effect_bytes_remain_exact_in_every_state() {
