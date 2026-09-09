@@ -89,6 +89,9 @@ transaction's ordering or failure semantics.
     editor tooling, previews, diagnostics, and generation comparisons.
 12. Preserve hermetic builds, registry trust, secret handling, resource fencing,
     and the Crucible/QEMU process and licensing boundaries.
+13. Exercise production ability implementations in VM/fleet scenarios and
+    extend existing release qualification with independent behavior checks,
+    semantic fault injection, and evidence bound to exact tested subjects.
 
 ## Reading guide
 
@@ -104,7 +107,8 @@ transaction's ordering or failure semantics.
 | [07 — Documentation and operations](07-documentation-and-operations.md) | Explain CLI, Hub, editor, generation, and retention behavior |
 | [08 — Security and compatibility](08-security-and-compatibility.md) | Preserve authority and fail-closed version boundaries |
 | [09 — Implementation and validation](09-implementation-and-validation.md) | Define staged delivery and qualification gates |
-| [10 — Alternatives and open questions](10-alternatives-and-open-questions.md) | Record choices, prior art, and details requiring prototypes |
+| [10 — Testing and qualification](10-testing-and-qualification.md) | Define production-path tests, independent observations, fault injection, and release evidence |
+| [11 — Alternatives and open questions](11-alternatives-and-open-questions.md) | Record choices, prior art, and details requiring prototypes |
 
 ## Architecture
 

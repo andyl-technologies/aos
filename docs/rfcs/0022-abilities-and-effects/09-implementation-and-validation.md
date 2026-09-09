@@ -192,6 +192,12 @@ not establish namespace confinement, filesystem atomicity, or crash recovery.
 Use AOS-built test dependencies and the repository's VM/feature requirements.
 Boundary changes additionally run their existing ABI and licensing gates.
 
+[Testing and qualification](10-testing-and-qualification.md) specifies how
+these cases exercise the production implementation across provider, VM, fleet,
+container, and release environments. It defines independent observations,
+semantic fault injection, interface coverage, exact-subject evidence, and
+integration with the existing qualification catalog.
+
 ## Documentation change validation
 
 For this RFC-only change, check chapter references, repository source paths,
