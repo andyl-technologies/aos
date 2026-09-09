@@ -5,6 +5,10 @@
 //! fingerprint, frontier, and resolved-effect material for compatibility
 //! callers that need to build a reproduction artifact after the campaign
 //! repository accepts the observation.
+//!
+//! The guarded portable-report owner attaches this observer to fresh production
+//! lifecycles. Exact-resume and hot-fork runners honor the common preparation
+//! hook, but their raw production factories do not publish into this store.
 
 use crucible::{
     Configuration, FingerprintSample, NodeId, QuantumTerminalVerdict, SchedulerError,
@@ -27,6 +31,7 @@ use super::{
 };
 
 const MAX_EXECUTION_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES * 2;
+const MAX_TERMINAL_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES;
 
 /// Fresh lifecycle wrapper that records exact process-local execution evidence.
 ///
@@ -38,6 +43,7 @@ pub struct QemuObservedFreshAttemptLifecycle<L> {
     initial_fingerprints_recorded: bool,
     post_first_quantum_fingerprints_recorded: bool,
     fingerprint_nodes: Vec<NodeId>,
+    staged_terminal_fingerprints: Option<Vec<FingerprintSample>>,
     evidence: QemuAttemptExecutionEvidence,
 }
 
@@ -52,6 +58,7 @@ impl<L> QemuObservedFreshAttemptLifecycle<L> {
             initial_fingerprints_recorded: false,
             post_first_quantum_fingerprints_recorded: false,
             fingerprint_nodes,
+            staged_terminal_fingerprints: None,
             evidence,
         }
     }
@@ -164,6 +171,19 @@ where
         self.lifecycle.sample_fingerprint(node)
     }
 
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        self.lifecycle.prepare_terminal_fingerprints()?;
+        if self.staged_terminal_fingerprints.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("terminal fingerprints were already prepared"),
+            });
+        }
+
+        let samples = self.sample_fingerprints()?;
+        self.staged_terminal_fingerprints = Some(samples);
+        Ok(())
+    }
+
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
         self.lifecycle.resolved_effect_trace()
     }
@@ -171,8 +191,9 @@ where
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         let resolved_effect_trace = self.lifecycle.resolved_effect_trace();
         let final_events = self.lifecycle.shutdown()?;
+        let terminal_fingerprints = self.staged_terminal_fingerprints.take();
         self.evidence
-            .complete(&final_events, resolved_effect_trace?)?;
+            .complete(&final_events, resolved_effect_trace?, terminal_fingerprints)?;
         Ok(final_events)
     }
 }
@@ -182,13 +203,30 @@ where
     L: QemuFreshAttemptLifecycleOwner,
 {
     fn record_fingerprints(&mut self) -> Result<(), SchedulerError> {
-        let samples = self
-            .fingerprint_nodes
-            .iter()
-            .cloned()
-            .map(|node| self.lifecycle.sample_fingerprint(node))
-            .collect::<Result<Vec<_>, _>>()?;
+        let samples = self.sample_fingerprints()?;
         self.evidence.record_fingerprints(samples)
+    }
+
+    fn sample_fingerprints(&mut self) -> Result<Vec<FingerprintSample>, SchedulerError> {
+        let mut samples = Vec::new();
+        samples
+            .try_reserve(self.fingerprint_nodes.len())
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("reserve execution fingerprint samples: allocation failed"),
+            })?;
+        for expected in &self.fingerprint_nodes {
+            let sample = self.lifecycle.sample_fingerprint(expected.clone())?;
+            if sample.node != *expected {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "execution fingerprint sample named node `{}` while `{}` was requested",
+                        sample.node.name, expected.name
+                    ),
+                });
+            }
+            samples.push(sample);
+        }
+        Ok(samples)
     }
 }
 
@@ -248,17 +286,41 @@ where
             .reset()
             .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Evidence)
             .map_err(AttemptWorkerFailure::Retryable)?;
-        let lifecycle = self
-            .inner
-            .start_fresh_lifecycle(scenario, source, start, signal_fault_replay, context)
-            .map_err(map_factory_failure)?;
-        let mut fingerprint_nodes = source
-            .world()
-            .vm_nodes()
+        let vm_nodes = source.world().vm_nodes();
+        if vm_nodes.len() > MAX_TERMINAL_FINGERPRINT_SAMPLES {
+            let error = store::evidence_limit(
+                "qemu-terminal-fingerprint-node-count",
+                0,
+                vm_nodes.len() as u64,
+                MAX_TERMINAL_FINGERPRINT_SAMPLES as u64,
+            );
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuObservedFreshAttemptLifecycleFactoryError::Evidence(error),
+            ));
+        }
+        let mut fingerprint_nodes = vm_nodes
             .iter()
             .map(|node| node.id.clone())
             .collect::<Vec<_>>();
         fingerprint_nodes.sort_by(|left, right| left.name.cmp(&right.name));
+        if let Some(duplicate) = fingerprint_nodes
+            .windows(2)
+            .find(|pair| pair[0] == pair[1])
+            .map(|pair| pair[0].name.clone())
+        {
+            let error = SchedulerError::BoundaryViolation {
+                message: format!(
+                    "authenticated World contains duplicate VM node `{duplicate}` for fingerprint capture"
+                ),
+            };
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuObservedFreshAttemptLifecycleFactoryError::Evidence(error),
+            ));
+        }
+        let lifecycle = self
+            .inner
+            .start_fresh_lifecycle(scenario, source, start, signal_fault_replay, context)
+            .map_err(map_factory_failure)?;
         Ok(QemuObservedFreshAttemptLifecycle::new(
             lifecycle,
             fingerprint_nodes,

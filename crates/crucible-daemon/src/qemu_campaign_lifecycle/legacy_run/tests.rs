@@ -660,6 +660,12 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
             .iter()
             .all(|sample| sample.node == node)
     );
+    let terminal_fingerprints = evidence
+        .terminal_fingerprints()
+        .expect("accepted observation must carry terminal fingerprints");
+    assert_eq!(terminal_fingerprints.len(), 1);
+    assert_eq!(terminal_fingerprints[0].node, node);
+    assert_eq!(terminal_fingerprints[0].at, VirtualTime { ticks: 7 });
     assert_eq!(evidence.resolved_effect_trace(), Some(TEST_EFFECT_TRACE));
 }
 

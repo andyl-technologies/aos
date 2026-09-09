@@ -1571,7 +1571,8 @@ pub(super) use test_support::record_hot_fork_adoption_for_test;
 pub use test_support::{
     hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
-    prepared_multi_node_hot_fork_source_world_for_test, reset_hot_fork_adoption_count_for_test,
+    prepared_multi_node_hot_fork_source_world_for_test,
+    production_permanently_failed_loop_for_test, reset_hot_fork_adoption_count_for_test,
 };
 
 #[cfg(test)]

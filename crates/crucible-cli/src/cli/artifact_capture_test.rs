@@ -12,7 +12,7 @@ fn sample(index: u64, node: &str) -> VerifyFingerprintSample {
 }
 
 #[test]
-fn terminal_fingerprint_capture_selects_one_reindexed_sample_per_node()
+fn terminal_fingerprint_capture_selects_the_last_epoch_after_multiple_quanta()
 -> Result<(), Box<dyn std::error::Error>> {
     let scenario = crucible::happy_path_scenario()?.scenario;
     let nodes = scenario.world().vm_nodes();
@@ -29,14 +29,48 @@ fn terminal_fingerprint_capture_selects_one_reindexed_sample_per_node()
             sample(1, &second.id.name),
             sample(2, &first.id.name),
             sample(3, &second.id.name),
+            sample(4, &first.id.name),
+            sample(5, &second.id.name),
         ],
         LiveQemuFingerprintScope::TerminalAllNodes,
     )?;
     assert_eq!(selected.len(), 2);
     assert_eq!(selected[0].index, 0);
     assert_eq!(selected[0].node, first.id.name);
+    assert_eq!(selected[0].instruction, 14);
     assert_eq!(selected[1].index, 1);
     assert_eq!(selected[1].node, second.id.name);
+    assert_eq!(selected[1].instruction, 15);
+    Ok(())
+}
+
+#[test]
+fn full_execution_fingerprint_capture_retains_diagnostics_and_terminal_epoch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let scenario = crucible::happy_path_scenario()?.scenario;
+    let nodes = scenario.world().vm_nodes();
+    let first = nodes
+        .first()
+        .ok_or_else(|| std::io::Error::other("fixture has no first node"))?;
+    let second = nodes
+        .get(1)
+        .ok_or_else(|| std::io::Error::other("fixture has no second node"))?;
+    let samples = vec![
+        sample(0, &first.id.name),
+        sample(1, &second.id.name),
+        sample(2, &first.id.name),
+        sample(3, &second.id.name),
+        sample(4, &first.id.name),
+        sample(5, &second.id.name),
+    ];
+
+    let selected = select_live_qemu_artifact_fingerprints(
+        nodes,
+        samples.clone(),
+        LiveQemuFingerprintScope::FullExecution,
+    )?;
+
+    assert_eq!(selected, samples);
     Ok(())
 }
 

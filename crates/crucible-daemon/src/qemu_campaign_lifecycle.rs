@@ -257,6 +257,19 @@ pub trait QemuFreshAttemptLifecycleOwner {
         })
     }
 
+    /// Prepares exact terminal fingerprints before lifecycle teardown.
+    ///
+    /// Lifecycles without an attached evidence observer have no terminal
+    /// fingerprint work to perform.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when any authenticated scenario node cannot
+    /// be sampled at the terminal boundary.
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     /// Copies the exact resolved-effect trace retained by the live fault runtime.
     ///
     /// Lifecycles without a signal-driven fault runtime return `None`.
@@ -686,6 +699,9 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// Complete production checkpoint capture failed at a safe boundary.
     #[error("fresh production QEMU checkpoint capture failed: {0}")]
     CheckpointCapture(#[source] SchedulerError),
+    /// Exact terminal execution fingerprint capture failed before teardown.
+    #[error("fresh production QEMU terminal fingerprint capture failed: {0}")]
+    TerminalFingerprintCapture(#[source] SchedulerError),
     /// The prepared exact root could not be handed to the durable supervisor phase.
     #[error("fresh production QEMU checkpoint handoff failed: {0}")]
     CheckpointHandoff(#[source] CheckpointHandoffFailure),
@@ -1564,6 +1580,12 @@ where
                 }
             }
         });
+        let driven = driven.and_then(|pending| {
+            lifecycle
+                .prepare_terminal_fingerprints()
+                .map(|()| pending)
+                .map_err(map_terminal_fingerprint_capture_failure)
+        });
         let cleanup = lifecycle.shutdown();
 
         let (pending, final_events) = match (driven, cleanup) {
@@ -2222,6 +2244,28 @@ fn map_checkpoint_capture_failure<F, D>(
         | SchedulerError::TopologyActivationInPast { .. } => None,
     };
     let error = QemuFreshExecutionRunnerError::CheckpointCapture(error);
+    match class {
+        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
+        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
+        Some(SchedulerOperationalFailureClass::Terminal) | None => {
+            AttemptWorkerFailure::Terminal(error)
+        }
+    }
+}
+
+fn map_terminal_fingerprint_capture_failure<F, D>(
+    error: SchedulerError,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    let class = match &error {
+        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::NotImplemented { .. }
+        | SchedulerError::Backend(_)
+        | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::ResourceLimit { .. }
+        | SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. } => None,
+    };
+    let error = QemuFreshExecutionRunnerError::TerminalFingerprintCapture(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
         Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),

@@ -401,6 +401,7 @@ struct BranchReplayObservations {
     replay_requests: Arc<Mutex<Vec<Configuration>>>,
     guest_replies: Arc<Mutex<Vec<crucible_protocol::SelectionReply>>>,
     driver_starts: Arc<Mutex<Vec<Configuration>>>,
+    terminal_fingerprint_prepares: Arc<AtomicUsize>,
     shutdowns: Arc<AtomicUsize>,
     recoveries: Arc<AtomicUsize>,
     quarantines: Arc<AtomicUsize>,
@@ -412,6 +413,7 @@ impl BranchReplayObservations {
             replay_requests: Arc::new(Mutex::new(Vec::new())),
             guest_replies: Arc::new(Mutex::new(Vec::new())),
             driver_starts: Arc::new(Mutex::new(Vec::new())),
+            terminal_fingerprint_prepares: Arc::new(AtomicUsize::new(0)),
             shutdowns: Arc::new(AtomicUsize::new(0)),
             recoveries: Arc::new(AtomicUsize::new(0)),
             quarantines: Arc::new(AtomicUsize::new(0)),
@@ -522,6 +524,13 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
         0
     }
 
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        self.observations
+            .terminal_fingerprint_prepares
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     fn shutdown(
         &mut self,
     ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
@@ -606,6 +615,7 @@ impl QemuHotForkWorldLifecycleFactory for BranchReplayLifecycleFactory {
 #[derive(Clone)]
 struct InheritedBoundaryObservations {
     drives: Arc<AtomicUsize>,
+    terminal_fingerprint_prepares: Arc<AtomicUsize>,
     shutdowns: Arc<AtomicUsize>,
     recoveries: Arc<AtomicUsize>,
 }
@@ -614,6 +624,7 @@ impl InheritedBoundaryObservations {
     fn new() -> Self {
         Self {
             drives: Arc::new(AtomicUsize::new(0)),
+            terminal_fingerprint_prepares: Arc::new(AtomicUsize::new(0)),
             shutdowns: Arc::new(AtomicUsize::new(0)),
             recoveries: Arc::new(AtomicUsize::new(0)),
         }
@@ -697,6 +708,13 @@ impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
 
     fn pending_network_output_count(&self) -> usize {
         0
+    }
+
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        self.observations
+            .terminal_fingerprint_prepares
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     fn shutdown(
@@ -1344,6 +1362,12 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
         );
     }
     drop(replies);
+    assert_eq!(
+        observations
+            .terminal_fingerprint_prepares
+            .load(Ordering::SeqCst),
+        1
+    );
     assert_eq!(observations.shutdowns.load(Ordering::SeqCst), 1);
 
     assert_eq!(
@@ -1417,6 +1441,12 @@ fn hot_world_runner_honors_an_inherited_quantum_boundary_without_driving() {
     assert_eq!(candidate.observation().stop(), &StopOutcome::Reached(stop));
     assert_eq!(candidate.coverage().identities(), &expected_coverage);
     assert_eq!(observations.drives.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        observations
+            .terminal_fingerprint_prepares
+            .load(Ordering::SeqCst),
+        1
+    );
     assert_eq!(observations.shutdowns.load(Ordering::SeqCst), 1);
 
     assert_eq!(

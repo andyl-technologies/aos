@@ -967,6 +967,10 @@ fn campaign_run_report_with_state(
 ) -> Result<RunWorkflowReport, CliError> {
     let evidence = campaign.evidence();
     let configuration = campaign.terminal_configuration();
+    let execution_fingerprints = campaign_execution_fingerprints(
+        evidence.execution_fingerprints(),
+        evidence.terminal_fingerprints(),
+    )?;
     let streamed_events = evidence
         .event_log_entries()
         .iter()
@@ -1024,11 +1028,23 @@ fn campaign_run_report_with_state(
         coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(
             evidence.event_log_entries(),
         ),
-        execution_fingerprints: evidence.execution_fingerprints().to_vec(),
+        execution_fingerprints,
         resolved_effect_trace: evidence.resolved_effect_trace().map(ToOwned::to_owned),
         acknowledged_commands: Vec::new(),
         watch_statuses,
     })
+}
+
+fn campaign_execution_fingerprints(
+    diagnostics: &[crucible::FingerprintSample],
+    terminal: Option<&[crucible::FingerprintSample]>,
+) -> Result<Vec<crucible::FingerprintSample>, CliError> {
+    let terminal = terminal.ok_or_else(|| {
+        backend_error("campaign default run completed without terminal fingerprint evidence")
+    })?;
+    let mut execution_fingerprints = diagnostics.to_vec();
+    execution_fingerprints.extend_from_slice(terminal);
+    Ok(execution_fingerprints)
 }
 
 fn campaign_watch_status(
@@ -1112,6 +1128,47 @@ mod tests {
         };
         plan_run_invocation(args, Path::new("."))
             .expect("built-in default run should produce an invocation plan")
+    }
+
+    fn campaign_fingerprint(node: &str, tick: u64) -> crucible::FingerprintSample {
+        crucible::FingerprintSample {
+            node: crucible::NodeId {
+                name: node.to_string(),
+            },
+            at: VirtualTime { ticks: tick },
+            fingerprint: crucible::ExecutionFingerprint {
+                hash: crucible::ContentHash::from_bytes(&tick.to_le_bytes()),
+            },
+        }
+    }
+
+    #[test]
+    fn campaign_report_fingerprints_append_the_distinct_terminal_epoch() {
+        let diagnostics = vec![
+            campaign_fingerprint("node-a", 0),
+            campaign_fingerprint("node-b", 0),
+            campaign_fingerprint("node-a", 1),
+            campaign_fingerprint("node-b", 1),
+        ];
+        let terminal = vec![
+            campaign_fingerprint("node-a", 3),
+            campaign_fingerprint("node-b", 3),
+        ];
+
+        let combined = campaign_execution_fingerprints(&diagnostics, Some(&terminal))
+            .expect("complete terminal epoch");
+
+        assert_eq!(&combined[..diagnostics.len()], diagnostics);
+        assert_eq!(&combined[diagnostics.len()..], terminal);
+        assert_ne!(combined[2].fingerprint, combined[4].fingerprint);
+    }
+
+    #[test]
+    fn campaign_report_fingerprints_require_a_terminal_epoch() {
+        let error = campaign_execution_fingerprints(&[], None)
+            .expect_err("accepted campaign reports require terminal fingerprints");
+
+        assert!(error.to_string().contains("without terminal fingerprint"));
     }
 
     fn resume_evidence(schedule: Schedule, frontier: VirtualTime) -> ResumeHandleEvidence {
