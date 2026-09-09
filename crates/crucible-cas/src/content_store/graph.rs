@@ -38,8 +38,17 @@ use super::write_back::{
 use super::*;
 
 mod format;
+mod verification;
+
+#[cfg(test)]
+mod verification_tests;
 
 use format::canonical_graph_configuration;
+pub use verification::{
+    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS,
+    StoreGraphPhysicalVerification, StoreGraphVerificationError, StoreGraphVerificationLimit,
+    StoreGraphVerificationLimits, StoreGraphVerificationLimitsError, StoreGraphVerificationReport,
+};
 
 const MAX_GRAPH_NODES: usize = 256;
 const MAX_GRAPH_DEPTH: usize = 64;
@@ -97,6 +106,12 @@ impl StoreNodeId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl fmt::Display for StoreNodeId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 

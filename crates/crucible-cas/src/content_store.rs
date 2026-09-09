@@ -54,10 +54,12 @@ pub use encrypted_directory::{
     EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
 };
 pub use graph::{
-    StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId,
-    StoreGraphPhysicalAdmin, StoreGraphS3MultipartCleanupAdmin, StoreNodeDescription, StoreNodeId,
-    StoreNodeKind, StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec,
-    StoreWriteBackFlushSummary,
+    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, StoreGraph,
+    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPhysicalAdmin,
+    StoreGraphPhysicalVerification, StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError,
+    StoreGraphVerificationLimit, StoreGraphVerificationLimits, StoreGraphVerificationLimitsError,
+    StoreGraphVerificationReport, StoreNodeDescription, StoreNodeId, StoreNodeKind,
+    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
 pub use namespace::{
