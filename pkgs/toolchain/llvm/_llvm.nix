@@ -261,6 +261,36 @@ in
             ''
             else ""
           )
+          + (
+            if builtins.elem versionMajor ["20" "21" "22"] && stdenv.isCross && stdenv.hostPlatform.isLinux
+            then ''
+              # The PAC-with-PC helper copies the register context and may call
+              # memcpy. Finish that call before binding caller-saved x16/x17;
+              # otherwise GCC can lose the return address before authentication.
+              unwind_header=libunwind/src/DwarfInstructions.hpp
+              test "$(grep -Fc 'if (isReturnAddressSignedWithPC(addressSpace, registers, cfa, prolog)) {' "$unwind_header")" -eq 1
+              test "$(grep -Fc 'register unsigned long long x17 __asm("x17") = returnAddress;' "$unwind_header")" -eq 1
+              sed -i \
+                -e '/register unsigned long long x17 __asm("x17") = returnAddress;/i\        const bool signedWithPC = isReturnAddressSignedWithPC(addressSpace, registers, cfa, prolog);' \
+                -e 's/if (isReturnAddressSignedWithPC(addressSpace, registers, cfa, prolog)) {/if (signedWithPC) {/' \
+                "$unwind_header"
+            ''
+            else ""
+          )
+          + (
+            if versionMajor == "22" && stdenv.isCross && stdenv.hostPlatform.isLinux
+            then ''
+              # GCC supports the C23 spelling for complex binary128. Its
+              # __float128 alias cannot appear in this C++ typeof expression.
+              # Preserve the full type rather than disabling quad precision.
+              complex_header=libc/include/llvm-libc-types/cfloat128.h
+              test "$(grep -c '^typedef __typeof__(_Complex __float128) cfloat128;$' "$complex_header")" -eq 1
+              sed -i \
+                's/^typedef __typeof__(_Complex __float128) cfloat128;$/typedef _Complex _Float128 cfloat128;/' \
+                "$complex_header"
+            ''
+            else ""
+          )
           + ''
             ${
               if needsArc4randomFix
