@@ -7,7 +7,7 @@
 //! the committed operation record. Rows instead retain the creating operation
 //! and observed GUID, which gives restart validation a non-circular join.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use aos_sandbox::{Journal, JournalRecord, RecordNamespace};
 use aos_sandbox_core::ObjectDigest;
@@ -18,27 +18,38 @@ use crate::{
     CatalogBindingV1, CatalogObjectKind, CatalogPlanV1, DurableStoragePhase, ManagedDatasetRoot,
     ProjectAncestorPolicyV1, ReservationPolicy, ResolvedCatalogCommitmentV1, ResolvedDataset,
     ResolvedSnapshot, StorageDomainsV1, StorageStateError, WorkspaceSpacePolicyV1,
+    resolver::inventory::CheckedSnapshotRootMetadataRecordV1,
+    root_policy::PortableRootAttributesV1,
 };
 
 mod format;
+mod provider;
+mod validation;
+
+pub(crate) use provider::StorageCatalogTransitionProvider;
+use validation::normalize_and_validate;
 
 use format::{
-    decode_authenticated, digest_bytes, encode_authenticated, encoded_transition_size,
-    transition_digest, transition_payload, validate_catalog_chain, validate_head,
-    validate_reservation_payload, validate_reserved_transition_bound, validate_transition_payload,
+    decode_head_payload, decode_reservation_payload, decode_transition_payload, digest_bytes,
+    encode_head_payload, encode_reservation_payload, encode_transition_payload,
+    encoded_transition_size, transition_digest, transition_payload, validate_catalog_chain,
+    validate_head, validate_reserved_transition_bound,
 };
 
 const STATE_MAGIC: &str = "AOSSCS01";
 const RESERVATION_MAGIC: &str = "AOSSCR01";
 const TRANSITION_MAGIC: &str = "AOSSCT01";
 const HEAD_MAGIC: &str = "AOSSCH01";
-const FORMAT_VERSION: u16 = 1;
+const LEGACY_FORMAT_VERSION: u16 = 1;
+const EXECUTION_FORMAT_VERSION: u16 = 2;
 const STORAGE_RECORD_LEGACY_VERSION: u16 = 2;
 const STORAGE_RECORD_IDENTITY_VERSION: u16 = 3;
 const STORAGE_RECORD_TRANSITION_VERSION: u16 = 4;
 const STATE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.catalog-state.v1\0";
+const EXECUTION_STATE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.catalog-state.v2\0";
 const RECORD_MAC_DOMAIN: &[u8] = b"aos.sandbox.storage.catalog-record.v1\0";
 const TRANSITION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.catalog-transition.v1\0";
+const EXECUTION_TRANSITION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.catalog-transition.v2\0";
 const HEAD_KEY: &[u8] = b"physical-head";
 const MAXIMUM_STATE_BYTES: usize = 48 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 64 * 1024;
@@ -48,11 +59,13 @@ const MAXIMUM_HOLDS: usize = 512;
 const MAXIMUM_TOMBSTONES: usize = 256;
 const MAXIMUM_NAME_BYTES: usize = 255;
 // The synthetic transition fixes the observation digest to decimal `255`
-// bytes and the captured GUID to `u64::MAX`. Only the derived result-state
-// digest and envelope MAC remain data-dependent byte arrays. JSON renders
-// each byte in one to three decimal digits, so two extra digits per byte is a
-// complete upper bound independent of their values.
+// bytes and the captured GUID to `u64::MAX`. The result-state digest and
+// envelope MAC remain data-dependent for every format; an execution Snapshot
+// also derives the rich root-metadata record digest. JSON renders each byte in
+// one to three decimal digits, so two extra digits per byte is a complete
+// upper bound independent of their values.
 const VARIABLE_TRANSITION_ARRAY_BYTES: usize = 32 + 32;
+const EXECUTION_SNAPSHOT_VARIABLE_ARRAY_BYTES: usize = 32;
 const MAXIMUM_JSON_BYTE_EXPANSION: usize = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -96,6 +109,16 @@ impl From<StorageDomainsV1> for DomainsWire {
             retention: *value.retention().as_bytes(),
         }
     }
+}
+
+fn domains_from_wire(wire: DomainsWire) -> Result<StorageDomainsV1, StorageStateError> {
+    StorageDomainsV1::new(
+        ObjectDigest::from_bytes(wire.disclosure),
+        ObjectDigest::from_bytes(wire.encryption),
+        ObjectDigest::from_bytes(wire.accounting),
+        ObjectDigest::from_bytes(wire.retention),
+    )
+    .map_err(|_| StorageStateError::CorruptRecord)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -185,6 +208,26 @@ struct SnapshotWire {
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
+struct SnapshotRootMetadataWireV1 {
+    version: u16,
+    record: Vec<u8>,
+    record_digest: [u8; 32],
+    content_commitment: [u8; 32],
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SnapshotWireV2 {
+    name: String,
+    guid: u64,
+    source_name: String,
+    source_guid: u64,
+    created_by: Option<[u8; 16]>,
+    root_metadata: Option<SnapshotRootMetadataWireV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
 struct HoldWire {
     snapshot_name: String,
     snapshot_guid: u64,
@@ -222,9 +265,40 @@ struct PhysicalStateWire {
     tombstones: Vec<TombstoneWire>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PhysicalStateWireV2 {
+    magic: String,
+    version: u16,
+    generation: u64,
+    predecessor_state: Option<BindingWire>,
+    resolution: Option<BindingWire>,
+    roots: Vec<RootWire>,
+    datasets: Vec<DatasetWire>,
+    snapshots: Vec<SnapshotWireV2>,
+    holds: Vec<HoldWire>,
+    tombstones: Vec<TombstoneWire>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PhysicalStateEnvelopeV2 {
+    version: u16,
+    legacy_v1: Option<PhysicalStateWire>,
+    execution_v2: Option<PhysicalStateWireV2>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhysicalStateFormatV1 {
+    LegacyV1,
+    ExecutionV2,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PhysicalCatalogState {
+    format: PhysicalStateFormatV1,
     wire: PhysicalStateWire,
+    snapshot_root_metadata: BTreeMap<(String, u64), SnapshotRootMetadataWireV1>,
     bytes: Vec<u8>,
     binding: CatalogBindingV1,
 }
@@ -241,6 +315,191 @@ pub(crate) enum PhysicalWorkspaceProjection {
     },
 }
 
+/// Carries a physical-catalog snapshot obtained only by fresh journal recovery.
+#[derive(Clone, Debug)]
+pub(crate) struct VerifiedPhysicalCatalogSnapshotV2 {
+    binding: CatalogBindingV1,
+    roots: Vec<ManagedDatasetRoot>,
+    datasets: Vec<VerifiedPhysicalDatasetV1>,
+    snapshots: Vec<VerifiedPhysicalSnapshotV2>,
+    holds: Vec<(u64, [u8; 16])>,
+    occupied_names: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct VerifiedPhysicalDatasetV1 {
+    name: String,
+    guid: u64,
+    root: ManagedDatasetRoot,
+    domains: StorageDomainsV1,
+    created_by: Option<[u8; 16]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct VerifiedPhysicalSnapshotV2 {
+    name: String,
+    guid: u64,
+    source_name: String,
+    source_guid: u64,
+    created_by: Option<[u8; 16]>,
+    root_metadata: Option<CheckedSnapshotRootMetadataRecordV1>,
+}
+
+impl VerifiedPhysicalCatalogSnapshotV2 {
+    fn from_state(state: PhysicalCatalogState) -> Result<Self, StorageStateError> {
+        let roots = state
+            .wire
+            .roots
+            .iter()
+            .map(|root| {
+                ManagedDatasetRoot::from_catalog(&root.pool, &root.dataset_prefix, root.guid)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| StorageStateError::CorruptRecord)?;
+        let datasets = state
+            .wire
+            .datasets
+            .iter()
+            .map(|dataset| {
+                Ok(VerifiedPhysicalDatasetV1 {
+                    name: dataset.name.clone(),
+                    guid: dataset.guid,
+                    root: ManagedDatasetRoot::from_catalog(
+                        &dataset.root.pool,
+                        &dataset.root.dataset_prefix,
+                        dataset.root.guid,
+                    )
+                    .map_err(|_| StorageStateError::CorruptRecord)?,
+                    domains: domains_from_wire(dataset.domains)?,
+                    created_by: dataset.created_by,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageStateError>>()?;
+        let snapshots = state
+            .wire
+            .snapshots
+            .iter()
+            .map(|snapshot| {
+                let root_metadata = state
+                    .snapshot_root_metadata
+                    .get(&(snapshot.name.clone(), snapshot.guid))
+                    .map(|wire| {
+                        validate_snapshot_root_metadata_wire(
+                            wire,
+                            snapshot.guid,
+                            snapshot.source_guid,
+                            None,
+                            None,
+                        )
+                    })
+                    .transpose()?;
+                Ok(VerifiedPhysicalSnapshotV2 {
+                    name: snapshot.name.clone(),
+                    guid: snapshot.guid,
+                    source_name: snapshot.source_name.clone(),
+                    source_guid: snapshot.source_guid,
+                    created_by: snapshot.created_by,
+                    root_metadata,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageStateError>>()?;
+        let holds = state
+            .wire
+            .holds
+            .iter()
+            .map(|hold| (hold.snapshot_guid, hold.hold_id))
+            .collect();
+        let occupied_names = state
+            .wire
+            .datasets
+            .iter()
+            .map(|row| row.name.clone())
+            .chain(state.wire.snapshots.iter().map(|row| row.name.clone()))
+            .chain(state.wire.tombstones.iter().map(|row| row.name.clone()))
+            .collect();
+        Ok(Self {
+            binding: state.binding,
+            roots,
+            datasets,
+            snapshots,
+            holds,
+            occupied_names,
+        })
+    }
+
+    pub(crate) const fn binding(&self) -> CatalogBindingV1 {
+        self.binding
+    }
+
+    pub(crate) fn roots(&self) -> &[ManagedDatasetRoot] {
+        &self.roots
+    }
+
+    pub(crate) fn datasets(&self) -> &[VerifiedPhysicalDatasetV1] {
+        &self.datasets
+    }
+
+    pub(crate) fn snapshots(&self) -> &[VerifiedPhysicalSnapshotV2] {
+        &self.snapshots
+    }
+
+    pub(crate) fn holds(&self) -> &[(u64, [u8; 16])] {
+        &self.holds
+    }
+
+    pub(crate) fn occupied_names(&self) -> &[String] {
+        &self.occupied_names
+    }
+}
+
+impl VerifiedPhysicalDatasetV1 {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) const fn guid(&self) -> u64 {
+        self.guid
+    }
+
+    pub(crate) const fn root(&self) -> &ManagedDatasetRoot {
+        &self.root
+    }
+
+    pub(crate) const fn domains(&self) -> StorageDomainsV1 {
+        self.domains
+    }
+
+    pub(crate) const fn created_by(&self) -> Option<[u8; 16]> {
+        self.created_by
+    }
+}
+
+impl VerifiedPhysicalSnapshotV2 {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) const fn guid(&self) -> u64 {
+        self.guid
+    }
+
+    pub(crate) fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    pub(crate) const fn source_guid(&self) -> u64 {
+        self.source_guid
+    }
+
+    pub(crate) const fn created_by(&self) -> Option<[u8; 16]> {
+        self.created_by
+    }
+
+    pub(crate) const fn root_metadata(&self) -> Option<CheckedSnapshotRootMetadataRecordV1> {
+        self.root_metadata
+    }
+}
+
 impl PhysicalCatalogState {
     fn bootstrap(
         generation: u64,
@@ -249,9 +508,19 @@ impl PhysicalCatalogState {
         if generation == 0 || catalogs.is_empty() {
             return Err(StorageStateError::InvalidValue);
         }
+        let format = if catalogs.iter().all(|catalog| catalog.format_version() == 2) {
+            PhysicalStateFormatV1::LegacyV1
+        } else if catalogs.iter().all(|catalog| catalog.format_version() == 3) {
+            PhysicalStateFormatV1::ExecutionV2
+        } else {
+            return Err(StorageStateError::InvalidValue);
+        };
         let mut wire = PhysicalStateWire {
             magic: STATE_MAGIC.to_owned(),
-            version: FORMAT_VERSION,
+            version: match format {
+                PhysicalStateFormatV1::LegacyV1 => LEGACY_FORMAT_VERSION,
+                PhysicalStateFormatV1::ExecutionV2 => EXECUTION_FORMAT_VERSION,
+            },
             generation,
             predecessor_state: None,
             resolution: None,
@@ -264,35 +533,97 @@ impl PhysicalCatalogState {
         for catalog in catalogs {
             ingest_plan_inputs(&mut wire, catalog.plan(), true)?;
         }
-        Self::canonicalize(wire)
+        Self::canonicalize(format, wire, BTreeMap::new())
     }
 
-    fn from_wire(wire: PhysicalStateWire) -> Result<Self, StorageStateError> {
+    fn from_legacy_wire(wire: PhysicalStateWire) -> Result<Self, StorageStateError> {
         let original = wire.clone();
-        let state = Self::canonicalize(wire)?;
+        let state = Self::canonicalize(PhysicalStateFormatV1::LegacyV1, wire, BTreeMap::new())?;
         if state.wire != original {
             return Err(StorageStateError::CorruptRecord);
         }
         Ok(state)
     }
 
-    fn canonicalize(mut wire: PhysicalStateWire) -> Result<Self, StorageStateError> {
-        normalize_and_validate(&mut wire)?;
-        let bytes = serde_json::to_vec(&wire).map_err(|_| StorageStateError::CorruptRecord)?;
+    fn from_execution_wire(wire: PhysicalStateWireV2) -> Result<Self, StorageStateError> {
+        let original = wire.clone();
+        let (base, metadata) = split_execution_wire(wire)?;
+        let state = Self::canonicalize(PhysicalStateFormatV1::ExecutionV2, base, metadata)?;
+        if state.execution_wire()? != original {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        Ok(state)
+    }
+
+    fn from_envelope(envelope: PhysicalStateEnvelopeV2) -> Result<Self, StorageStateError> {
+        if envelope.version != 1 {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        match (envelope.legacy_v1, envelope.execution_v2) {
+            (Some(wire), None) => Self::from_legacy_wire(wire),
+            (None, Some(wire)) => Self::from_execution_wire(wire),
+            _ => Err(StorageStateError::CorruptRecord),
+        }
+    }
+
+    fn envelope(&self) -> Result<PhysicalStateEnvelopeV2, StorageStateError> {
+        match self.format {
+            PhysicalStateFormatV1::LegacyV1 => Ok(PhysicalStateEnvelopeV2 {
+                version: 1,
+                legacy_v1: Some(self.wire.clone()),
+                execution_v2: None,
+            }),
+            PhysicalStateFormatV1::ExecutionV2 => Ok(PhysicalStateEnvelopeV2 {
+                version: 1,
+                legacy_v1: None,
+                execution_v2: Some(self.execution_wire()?),
+            }),
+        }
+    }
+
+    fn canonicalize(
+        format: PhysicalStateFormatV1,
+        mut wire: PhysicalStateWire,
+        snapshot_root_metadata: BTreeMap<(String, u64), SnapshotRootMetadataWireV1>,
+    ) -> Result<Self, StorageStateError> {
+        normalize_and_validate(&mut wire, format)?;
+        validate_snapshot_root_metadata_set(&wire, &snapshot_root_metadata)?;
+        let bytes = match format {
+            PhysicalStateFormatV1::LegacyV1 if snapshot_root_metadata.is_empty() => {
+                serde_json::to_vec(&wire).map_err(|_| StorageStateError::CorruptRecord)?
+            }
+            PhysicalStateFormatV1::LegacyV1 => return Err(StorageStateError::CorruptRecord),
+            PhysicalStateFormatV1::ExecutionV2 => {
+                serde_json::to_vec(&execution_wire(&wire, &snapshot_root_metadata)?)
+                    .map_err(|_| StorageStateError::CorruptRecord)?
+            }
+        };
         if bytes.len() > MAXIMUM_STATE_BYTES {
             return Err(StorageStateError::InvalidValue);
         }
         let mut hash = Sha256::new();
-        hash.update(STATE_DIGEST_DOMAIN);
+        hash.update(match format {
+            PhysicalStateFormatV1::LegacyV1 => STATE_DIGEST_DOMAIN,
+            PhysicalStateFormatV1::ExecutionV2 => EXECUTION_STATE_DIGEST_DOMAIN,
+        });
         hash.update(&bytes);
         let digest = ObjectDigest::from_bytes(hash.finalize().into());
         let binding = CatalogBindingV1::from_publisher(wire.generation, digest)
             .map_err(|_| StorageStateError::InvalidValue)?;
         Ok(Self {
+            format,
             wire,
+            snapshot_root_metadata,
             bytes,
             binding,
         })
+    }
+
+    fn execution_wire(&self) -> Result<PhysicalStateWireV2, StorageStateError> {
+        if self.format != PhysicalStateFormatV1::ExecutionV2 {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        execution_wire(&self.wire, &self.snapshot_root_metadata)
     }
 
     fn apply(
@@ -301,19 +632,76 @@ impl PhysicalCatalogState {
         catalog: &ResolvedCatalogCommitmentV1,
         object_guid: Option<u64>,
     ) -> Result<Self, StorageStateError> {
-        if catalog.generation() != self.binding.generation().saturating_add(1) {
+        self.apply_with_snapshot_metadata(operation_id, catalog, object_guid, None)
+    }
+
+    fn apply_with_snapshot_metadata(
+        &self,
+        operation_id: [u8; 16],
+        catalog: &ResolvedCatalogCommitmentV1,
+        object_guid: Option<u64>,
+        snapshot_root_metadata: Option<SnapshotRootMetadataWireV1>,
+    ) -> Result<Self, StorageStateError> {
+        if self.binding.generation().checked_add(1) != Some(catalog.generation()) {
             return Err(StorageStateError::InvalidTransition);
         }
+        let format = match (self.format, catalog.format_version()) {
+            (PhysicalStateFormatV1::LegacyV1, 2) => PhysicalStateFormatV1::LegacyV1,
+            (PhysicalStateFormatV1::LegacyV1 | PhysicalStateFormatV1::ExecutionV2, 3) => {
+                PhysicalStateFormatV1::ExecutionV2
+            }
+            (PhysicalStateFormatV1::ExecutionV2, 2) => {
+                return Err(StorageStateError::InvalidTransition);
+            }
+            _ => return Err(StorageStateError::InvalidTransition),
+        };
         let mut wire = self.wire.clone();
+        wire.version = match format {
+            PhysicalStateFormatV1::LegacyV1 => LEGACY_FORMAT_VERSION,
+            PhysicalStateFormatV1::ExecutionV2 => EXECUTION_FORMAT_VERSION,
+        };
+        let mut metadata = self.snapshot_root_metadata.clone();
         ingest_plan_inputs(&mut wire, catalog.plan(), false)?;
         apply_postcondition(&mut wire, operation_id, catalog.plan(), object_guid)?;
+        match (catalog.plan(), snapshot_root_metadata) {
+            (CatalogPlanV1::Snapshot { destination, .. }, Some(metadata_wire))
+                if format == PhysicalStateFormatV1::ExecutionV2 =>
+            {
+                let guid = object_guid.ok_or(StorageStateError::InvalidValue)?;
+                validate_snapshot_root_metadata_wire(
+                    &metadata_wire,
+                    guid,
+                    destination.dataset().guid(),
+                    Some(destination.dataset().storage_handle()),
+                    None,
+                )?;
+                if metadata
+                    .insert((destination.name().to_owned(), guid), metadata_wire)
+                    .is_some()
+                {
+                    return Err(StorageStateError::InvalidTransition);
+                }
+            }
+            (CatalogPlanV1::Snapshot { .. }, None)
+                if format == PhysicalStateFormatV1::ExecutionV2 =>
+            {
+                return Err(StorageStateError::InvalidValue);
+            }
+            (CatalogPlanV1::Snapshot { .. }, Some(_)) | (_, Some(_)) => {
+                return Err(StorageStateError::InvalidValue);
+            }
+            _ => {}
+        }
+        if let CatalogPlanV1::DestroySnapshot { snapshot } = catalog.plan() {
+            metadata.remove(&(snapshot.name().to_owned(), snapshot.guid()));
+        }
         wire.generation = catalog
             .generation()
             .checked_add(1)
             .ok_or(StorageStateError::InvalidValue)?;
         wire.predecessor_state = Some(self.binding.into());
         wire.resolution = Some(catalog.binding().into());
-        Self::canonicalize(wire)
+        Self::canonicalize(format, wire, metadata)
     }
 
     pub(crate) const fn binding(&self) -> CatalogBindingV1 {
@@ -347,9 +735,159 @@ impl PhysicalCatalogState {
     }
 }
 
+fn split_execution_wire(
+    wire: PhysicalStateWireV2,
+) -> Result<
+    (
+        PhysicalStateWire,
+        BTreeMap<(String, u64), SnapshotRootMetadataWireV1>,
+    ),
+    StorageStateError,
+> {
+    let mut metadata = BTreeMap::new();
+    let mut snapshots = Vec::with_capacity(wire.snapshots.len());
+    for snapshot in wire.snapshots {
+        if let Some(root_metadata) = snapshot.root_metadata {
+            if metadata
+                .insert((snapshot.name.clone(), snapshot.guid), root_metadata)
+                .is_some()
+            {
+                return Err(StorageStateError::CorruptRecord);
+            }
+        }
+        snapshots.push(SnapshotWire {
+            name: snapshot.name,
+            guid: snapshot.guid,
+            source_name: snapshot.source_name,
+            source_guid: snapshot.source_guid,
+            created_by: snapshot.created_by,
+        });
+    }
+    Ok((
+        PhysicalStateWire {
+            magic: wire.magic,
+            version: wire.version,
+            generation: wire.generation,
+            predecessor_state: wire.predecessor_state,
+            resolution: wire.resolution,
+            roots: wire.roots,
+            datasets: wire.datasets,
+            snapshots,
+            holds: wire.holds,
+            tombstones: wire.tombstones,
+        },
+        metadata,
+    ))
+}
+
+fn execution_wire(
+    wire: &PhysicalStateWire,
+    metadata: &BTreeMap<(String, u64), SnapshotRootMetadataWireV1>,
+) -> Result<PhysicalStateWireV2, StorageStateError> {
+    let snapshots = wire
+        .snapshots
+        .iter()
+        .map(|snapshot| SnapshotWireV2 {
+            name: snapshot.name.clone(),
+            guid: snapshot.guid,
+            source_name: snapshot.source_name.clone(),
+            source_guid: snapshot.source_guid,
+            created_by: snapshot.created_by,
+            root_metadata: metadata
+                .get(&(snapshot.name.clone(), snapshot.guid))
+                .cloned(),
+        })
+        .collect();
+    Ok(PhysicalStateWireV2 {
+        magic: wire.magic.clone(),
+        version: wire.version,
+        generation: wire.generation,
+        predecessor_state: wire.predecessor_state,
+        resolution: wire.resolution,
+        roots: wire.roots.clone(),
+        datasets: wire.datasets.clone(),
+        snapshots,
+        holds: wire.holds.clone(),
+        tombstones: wire.tombstones.clone(),
+    })
+}
+
+fn validate_snapshot_root_metadata_set(
+    wire: &PhysicalStateWire,
+    metadata: &BTreeMap<(String, u64), SnapshotRootMetadataWireV1>,
+) -> Result<(), StorageStateError> {
+    for ((name, guid), metadata_wire) in metadata {
+        let snapshot = wire
+            .snapshots
+            .iter()
+            .find(|snapshot| snapshot.name == *name && snapshot.guid == *guid)
+            .ok_or(StorageStateError::CorruptRecord)?;
+        validate_snapshot_root_metadata_wire(
+            metadata_wire,
+            snapshot.guid,
+            snapshot.source_guid,
+            None,
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_snapshot_root_metadata_wire(
+    wire: &SnapshotRootMetadataWireV1,
+    snapshot_guid: u64,
+    dataset_guid: u64,
+    storage_handle: Option<[u8; 32]>,
+    version_handle: Option<[u8; 32]>,
+) -> Result<CheckedSnapshotRootMetadataRecordV1, StorageStateError> {
+    if wire.version != 1 || wire.record.len() != 136 {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let record = CheckedSnapshotRootMetadataRecordV1::from_canonical_bytes(&wire.record)
+        .map_err(|_| StorageStateError::CorruptRecord)?;
+    if record.record_digest().as_bytes() != &wire.record_digest
+        || record.content_commitment().as_bytes() != &wire.content_commitment
+        || record.snapshot_guid() != snapshot_guid
+        || record.dataset_guid() != dataset_guid
+        || storage_handle.is_some_and(|handle| record.storage_handle() != handle)
+        || version_handle.is_some_and(|handle| record.version_handle() != handle)
+    {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    Ok(record)
+}
+
+fn maximum_snapshot_root_metadata_wire(
+    catalog: &ResolvedCatalogCommitmentV1,
+    snapshot_guid: u64,
+) -> Result<Option<SnapshotRootMetadataWireV1>, StorageStateError> {
+    if catalog.format_version() != 3 {
+        return Ok(None);
+    }
+    let CatalogPlanV1::Snapshot { destination, .. } = catalog.plan() else {
+        return Ok(None);
+    };
+    let record = CheckedSnapshotRootMetadataRecordV1::new(
+        snapshot_guid,
+        destination.dataset().guid(),
+        PortableRootAttributesV1::new(u32::MAX - 1, u32::MAX - 1, 0o7777)
+            .map_err(|_| StorageStateError::InvalidValue)?,
+        destination.dataset().storage_handle(),
+        [u8::MAX; 32],
+        ObjectDigest::from_bytes([u8::MAX; 32]),
+    )
+    .map_err(|_| StorageStateError::InvalidValue)?;
+    Ok(Some(SnapshotRootMetadataWireV1 {
+        version: 1,
+        record: record.canonical_bytes().to_vec(),
+        record_digest: *record.record_digest().as_bytes(),
+        content_commitment: *record.content_commitment().as_bytes(),
+    }))
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ReservationPayload {
+struct ReservationPayloadV1 {
     magic: String,
     version: u16,
     operation_id: [u8; 16],
@@ -364,7 +902,7 @@ struct ReservationPayload {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct TransitionPayload {
+struct TransitionPayloadV1 {
     magic: String,
     version: u16,
     operation_id: [u8; 16],
@@ -379,13 +917,94 @@ struct TransitionPayload {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct HeadPayload {
+struct HeadPayloadV1 {
     magic: String,
     version: u16,
     binding: BindingWire,
     operation_id: Option<[u8; 16]>,
     transition_digest: Option<[u8; 32]>,
     genesis_state: Option<PhysicalStateWire>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReservationPayloadV2 {
+    magic: String,
+    version: u16,
+    operation_id: [u8; 16],
+    request_digest: [u8; 32],
+    mutation_digest: [u8; 32],
+    catalog: BindingWire,
+    catalog_bytes_digest: [u8; 32],
+    predecessor: BindingWire,
+    predecessor_state: PhysicalStateEnvelopeV2,
+    maximum_transition_bytes: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TransitionPayloadV2 {
+    magic: String,
+    version: u16,
+    operation_id: [u8; 16],
+    mutation_digest: [u8; 32],
+    catalog: BindingWire,
+    predecessor: BindingWire,
+    result: BindingWire,
+    observation_digest: [u8; 32],
+    object_guid: Option<u64>,
+    result_state: PhysicalStateWireV2,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HeadPayloadV2 {
+    magic: String,
+    version: u16,
+    binding: BindingWire,
+    operation_id: Option<[u8; 16]>,
+    transition_digest: Option<[u8; 32]>,
+    genesis_state: Option<PhysicalStateEnvelopeV2>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CatalogRecordFormatV1 {
+    LegacyV1,
+    ExecutionV2,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReservationPayload {
+    format: CatalogRecordFormatV1,
+    operation_id: [u8; 16],
+    request_digest: [u8; 32],
+    mutation_digest: [u8; 32],
+    catalog: BindingWire,
+    catalog_bytes_digest: [u8; 32],
+    predecessor: BindingWire,
+    maximum_transition_bytes: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TransitionPayload {
+    format: CatalogRecordFormatV1,
+    operation_id: [u8; 16],
+    mutation_digest: [u8; 32],
+    catalog: BindingWire,
+    predecessor: BindingWire,
+    result: BindingWire,
+    observation_digest: [u8; 32],
+    object_guid: Option<u64>,
+    result_state: PhysicalCatalogState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HeadPayload {
+    format: CatalogRecordFormatV1,
+    binding: BindingWire,
+    operation_id: Option<[u8; 16]>,
+    transition_digest: Option<[u8; 32]>,
+    genesis_state: Option<PhysicalCatalogState>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -457,461 +1076,6 @@ impl PreparedCatalogTransition {
             ),
         ]
     }
-}
-
-#[derive(Debug)]
-pub(crate) struct StorageCatalogTransitionProvider {
-    genesis: Option<CatalogBindingV1>,
-    head: Option<PhysicalCatalogState>,
-    reservations: BTreeMap<[u8; 16], CatalogReservation>,
-    transitions: BTreeMap<[u8; 16], TransitionPayload>,
-}
-
-impl StorageCatalogTransitionProvider {
-    pub(crate) fn load(
-        journal: &Journal,
-        key_id: [u8; 16],
-        secret: &[u8; 32],
-    ) -> Result<Self, StorageStateError> {
-        let mut reservations = BTreeMap::new();
-        for (record_key, bytes) in journal.records(RecordNamespace::StorageCatalogReservation) {
-            let payload: ReservationPayload = decode_authenticated(bytes, key_id, secret)?;
-            validate_reservation_payload(&payload)?;
-            if record_key != payload.operation_id {
-                return Err(StorageStateError::CorruptRecord);
-            }
-            let predecessor = PhysicalCatalogState::from_wire(payload.predecessor_state.clone())?;
-            if predecessor.binding != payload.predecessor.binding()? {
-                return Err(StorageStateError::CorruptRecord);
-            }
-            let reservation = CatalogReservation {
-                payload,
-                bytes: bytes.to_vec(),
-                predecessor,
-            };
-            if reservations
-                .insert(reservation.payload.operation_id, reservation)
-                .is_some()
-            {
-                return Err(StorageStateError::CorruptRecord);
-            }
-        }
-
-        let mut transitions = BTreeMap::new();
-        for (record_key, bytes) in journal.records(RecordNamespace::StorageCatalogTransition) {
-            let payload: TransitionPayload = decode_authenticated(bytes, key_id, secret)?;
-            if record_key != payload.operation_id {
-                return Err(StorageStateError::CorruptRecord);
-            }
-            validate_transition_payload(&payload)?;
-            if transitions.insert(payload.operation_id, payload).is_some() {
-                return Err(StorageStateError::CorruptRecord);
-            }
-        }
-
-        let head_payload = match journal.get(RecordNamespace::StorageCatalogHead, HEAD_KEY) {
-            Some(bytes) => {
-                let payload: HeadPayload = decode_authenticated(bytes, key_id, secret)?;
-                validate_head(&payload, &transitions)?;
-                Some(payload)
-            }
-            None if transitions.is_empty() && reservations.is_empty() => None,
-            None => return Err(StorageStateError::CorruptRecord),
-        };
-        let head = match head_payload.as_ref() {
-            Some(payload) => match (&payload.genesis_state, payload.operation_id) {
-                (Some(wire), None) => Some(PhysicalCatalogState::from_wire(wire.clone())?),
-                (None, Some(operation_id)) => {
-                    let transition = transitions
-                        .get(&operation_id)
-                        .ok_or(StorageStateError::CorruptRecord)?;
-                    Some(PhysicalCatalogState::from_wire(
-                        transition.result_state.clone(),
-                    )?)
-                }
-                _ => return Err(StorageStateError::CorruptRecord),
-            },
-            None => None,
-        };
-        validate_catalog_chain(
-            head_payload.as_ref(),
-            head.as_ref(),
-            &reservations,
-            &transitions,
-        )?;
-        let genesis = genesis_binding(head_payload.as_ref(), &reservations, &transitions)?;
-
-        Ok(Self {
-            genesis,
-            head,
-            reservations,
-            transitions,
-        })
-    }
-
-    pub(crate) fn prepare_bootstrap(
-        &self,
-        generation: u64,
-        catalogs: &[ResolvedCatalogCommitmentV1],
-        key_id: [u8; 16],
-        secret: &[u8; 32],
-    ) -> Result<PreparedCatalogBootstrap, StorageStateError> {
-        if self.head.is_some() || !self.reservations.is_empty() || !self.transitions.is_empty() {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        let state = PhysicalCatalogState::bootstrap(generation, catalogs)?;
-        let payload = HeadPayload {
-            magic: HEAD_MAGIC.to_owned(),
-            version: FORMAT_VERSION,
-            binding: state.binding.into(),
-            operation_id: None,
-            transition_digest: None,
-            genesis_state: Some(state.wire.clone()),
-        };
-        let head_bytes = encode_authenticated(&payload, key_id, secret)?;
-        Ok(PreparedCatalogBootstrap { head_bytes, state })
-    }
-
-    pub(crate) fn head_binding(&self) -> Option<CatalogBindingV1> {
-        self.head.as_ref().map(PhysicalCatalogState::binding)
-    }
-
-    pub(crate) fn workspace_projection(
-        &self,
-    ) -> Result<Vec<PhysicalWorkspaceProjection>, StorageStateError> {
-        self.head
-            .as_ref()
-            .map(PhysicalCatalogState::workspace_projection)
-            .ok_or(StorageStateError::InvalidTransition)
-    }
-
-    pub(crate) const fn genesis_binding(&self) -> Option<CatalogBindingV1> {
-        self.genesis
-    }
-
-    pub(crate) fn bootstrap_binding(
-        generation: u64,
-        catalogs: &[ResolvedCatalogCommitmentV1],
-    ) -> Result<CatalogBindingV1, StorageStateError> {
-        PhysicalCatalogState::bootstrap(generation, catalogs).map(|state| state.binding)
-    }
-
-    pub(crate) fn install_bootstrap(&mut self, bootstrap: PreparedCatalogBootstrap) {
-        self.genesis = Some(bootstrap.state.binding());
-        self.head = Some(bootstrap.state);
-    }
-
-    pub(crate) fn reserve(
-        &self,
-        operation_id: [u8; 16],
-        request_digest: ObjectDigest,
-        mutation_digest: ObjectDigest,
-        catalog: &ResolvedCatalogCommitmentV1,
-        key_id: [u8; 16],
-        secret: &[u8; 32],
-    ) -> Result<CatalogReservation, StorageStateError> {
-        if let Some(existing) = self.reservations.get(&operation_id) {
-            if existing.payload.request_digest == *request_digest.as_bytes()
-                && existing.payload.mutation_digest == *mutation_digest.as_bytes()
-                && existing.payload.catalog == catalog.binding().into()
-                && existing.payload.catalog_bytes_digest == digest_bytes(catalog.canonical_bytes())
-            {
-                return Ok(existing.clone());
-            }
-            return Err(StorageStateError::Equivocation);
-        }
-        if self
-            .reservations
-            .keys()
-            .any(|reserved| !self.transitions.contains_key(reserved))
-        {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        let predecessor = self
-            .head
-            .as_ref()
-            .cloned()
-            .ok_or(StorageStateError::InvalidTransition)?;
-        if catalog.generation() != predecessor.binding.generation().saturating_add(1) {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        ingest_plan_inputs(&mut predecessor.wire.clone(), catalog.plan(), false)?;
-
-        let worst_case_guid = capture_guid(catalog.plan()).then_some(u64::MAX);
-        let worst_case_state = predecessor.apply(operation_id, catalog, worst_case_guid)?;
-        let maximum_transition_bytes = encoded_transition_size(
-            operation_id,
-            mutation_digest,
-            catalog,
-            &predecessor,
-            &worst_case_state,
-            worst_case_guid,
-            ObjectDigest::from_bytes([u8::MAX; 32]),
-            key_id,
-            secret,
-        )?;
-        if maximum_transition_bytes > MAXIMUM_RECORD_BYTES {
-            return Err(StorageStateError::InvalidValue);
-        }
-
-        let payload = ReservationPayload {
-            magic: RESERVATION_MAGIC.to_owned(),
-            version: FORMAT_VERSION,
-            operation_id,
-            request_digest: *request_digest.as_bytes(),
-            mutation_digest: *mutation_digest.as_bytes(),
-            catalog: catalog.binding().into(),
-            catalog_bytes_digest: digest_bytes(catalog.canonical_bytes()),
-            predecessor: predecessor.binding.into(),
-            predecessor_state: predecessor.wire.clone(),
-            maximum_transition_bytes: u32::try_from(maximum_transition_bytes)
-                .map_err(|_| StorageStateError::InvalidValue)?,
-        };
-        let bytes = encode_authenticated(&payload, key_id, secret)?;
-        if bytes.len() > MAXIMUM_RECORD_BYTES {
-            return Err(StorageStateError::InvalidValue);
-        }
-        Ok(CatalogReservation {
-            payload,
-            bytes,
-            predecessor,
-        })
-    }
-
-    pub(crate) fn reservation_record(reservation: &CatalogReservation) -> JournalRecord {
-        JournalRecord::put(
-            RecordNamespace::StorageCatalogReservation,
-            reservation.payload.operation_id.to_vec(),
-            reservation.bytes.clone(),
-        )
-    }
-
-    pub(crate) fn effect_capacity_records(
-        &self,
-        operation_id: [u8; 16],
-    ) -> Result<Vec<JournalRecord>, StorageStateError> {
-        let reservation = self
-            .reservations
-            .get(&operation_id)
-            .ok_or(StorageStateError::InvalidTransition)?;
-        let transition_bytes = usize::try_from(reservation.payload.maximum_transition_bytes)
-            .map_err(|_| StorageStateError::InvalidValue)?;
-        Ok(vec![
-            JournalRecord::put(
-                RecordNamespace::StorageCatalogTransition,
-                operation_id.to_vec(),
-                vec![0; transition_bytes],
-            ),
-            JournalRecord::put(
-                RecordNamespace::StorageCatalogHead,
-                HEAD_KEY.to_vec(),
-                vec![0; MAXIMUM_HEAD_BYTES],
-            ),
-        ])
-    }
-
-    pub(crate) fn install_reservation(&mut self, reservation: CatalogReservation) {
-        self.reservations
-            .insert(reservation.payload.operation_id, reservation);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn remove_reservation_for_test(&mut self, operation_id: [u8; 16]) {
-        self.reservations.remove(&operation_id);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prepare_transition(
-        &self,
-        operation_id: [u8; 16],
-        mutation_digest: ObjectDigest,
-        catalog: &ResolvedCatalogCommitmentV1,
-        object_guid: Option<u64>,
-        observation_digest: ObjectDigest,
-        key_id: [u8; 16],
-        secret: &[u8; 32],
-    ) -> Result<PreparedCatalogTransition, StorageStateError> {
-        if self.transitions.contains_key(&operation_id) {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        let reservation = self
-            .reservations
-            .get(&operation_id)
-            .ok_or(StorageStateError::InvalidTransition)?;
-        if reservation.payload.mutation_digest != *mutation_digest.as_bytes()
-            || reservation.payload.catalog != catalog.binding().into()
-            || reservation.payload.catalog_bytes_digest != digest_bytes(catalog.canonical_bytes())
-            || self
-                .head
-                .as_ref()
-                .is_some_and(|head| head.binding != reservation.predecessor.binding)
-        {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        if capture_guid(catalog.plan()) != object_guid.is_some()
-            || object_guid == Some(0)
-            || observation_digest.as_bytes() == &[0; 32]
-        {
-            return Err(StorageStateError::InvalidValue);
-        }
-        let result_state = reservation
-            .predecessor
-            .apply(operation_id, catalog, object_guid)?;
-        let transition = transition_payload(
-            operation_id,
-            mutation_digest,
-            catalog,
-            &reservation.predecessor,
-            &result_state,
-            object_guid,
-            observation_digest,
-        )?;
-        let transition_bytes = encode_authenticated(&transition, key_id, secret)?;
-        if transition_bytes.len() > reservation.payload.maximum_transition_bytes as usize
-            || transition_bytes.len() > MAXIMUM_RECORD_BYTES
-        {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        let transition_digest = transition_digest(&transition)?;
-        let head_payload = HeadPayload {
-            magic: HEAD_MAGIC.to_owned(),
-            version: FORMAT_VERSION,
-            binding: result_state.binding.into(),
-            operation_id: Some(operation_id),
-            transition_digest: Some(*transition_digest.as_bytes()),
-            genesis_state: None,
-        };
-        let head_bytes = encode_authenticated(&head_payload, key_id, secret)?;
-        if head_bytes.len() > MAXIMUM_HEAD_BYTES {
-            return Err(StorageStateError::InvalidValue);
-        }
-        Ok(PreparedCatalogTransition {
-            operation_id,
-            transition,
-            transition_bytes,
-            head_bytes,
-            result_state,
-        })
-    }
-
-    pub(crate) fn install_transition(&mut self, prepared: PreparedCatalogTransition) {
-        self.head = Some(prepared.result_state);
-        self.transitions
-            .insert(prepared.operation_id, prepared.transition);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn validates_operation_transition(
-        &self,
-        record_version: u16,
-        operation_id: [u8; 16],
-        request_digest: ObjectDigest,
-        mutation_digest: ObjectDigest,
-        catalog: &ResolvedCatalogCommitmentV1,
-        phase: DurableStoragePhase,
-        result_catalog: Option<CatalogBindingV1>,
-        key_id: [u8; 16],
-        secret: &[u8; 32],
-    ) -> Result<Option<CatalogTransitionEvidence>, StorageStateError> {
-        let reservation = self.reservations.get(&operation_id);
-        let transition = self.transitions.get(&operation_id);
-        if matches!(
-            record_version,
-            STORAGE_RECORD_LEGACY_VERSION | STORAGE_RECORD_IDENTITY_VERSION
-        ) {
-            return if reservation.is_none() && transition.is_none() {
-                Ok(None)
-            } else {
-                Err(StorageStateError::CorruptRecord)
-            };
-        }
-        if record_version != STORAGE_RECORD_TRANSITION_VERSION {
-            return Err(StorageStateError::CorruptRecord);
-        }
-
-        let reservation = reservation.ok_or(StorageStateError::CorruptRecord)?;
-        if reservation.payload.request_digest != *request_digest.as_bytes()
-            || reservation.payload.mutation_digest != *mutation_digest.as_bytes()
-            || reservation.payload.catalog != catalog.binding().into()
-            || reservation.payload.catalog_bytes_digest != digest_bytes(catalog.canonical_bytes())
-        {
-            return Err(StorageStateError::CorruptRecord);
-        }
-        validate_reserved_transition_bound(reservation, catalog, key_id, secret)?;
-
-        match (phase, transition, result_catalog) {
-            (DurableStoragePhase::Prepared | DurableStoragePhase::Ambiguous, None, None) => {
-                Ok(None)
-            }
-            (DurableStoragePhase::Committed, Some(transition), Some(result_catalog)) => {
-                let result_state =
-                    reservation
-                        .predecessor
-                        .apply(operation_id, catalog, transition.object_guid)?;
-                if transition.operation_id != operation_id
-                    || transition.mutation_digest != *mutation_digest.as_bytes()
-                    || transition.catalog != catalog.binding().into()
-                    || transition.predecessor != reservation.payload.predecessor
-                    || transition.result != result_state.binding.into()
-                    || transition.result_state != result_state.wire
-                    || result_catalog != result_state.binding
-                {
-                    return Err(StorageStateError::CorruptRecord);
-                }
-                Ok(Some(CatalogTransitionEvidence {
-                    result_catalog,
-                    observation_digest: ObjectDigest::from_bytes(transition.observation_digest),
-                    object_guid: transition.object_guid,
-                }))
-            }
-            _ => Err(StorageStateError::CorruptRecord),
-        }
-    }
-
-    pub(crate) fn validate_operation_set(
-        &self,
-        operation_ids: impl Iterator<Item = [u8; 16]>,
-    ) -> Result<(), StorageStateError> {
-        let operations = operation_ids.collect::<std::collections::BTreeSet<_>>();
-        if self
-            .reservations
-            .keys()
-            .chain(self.transitions.keys())
-            .any(|operation_id| !operations.contains(operation_id))
-        {
-            Err(StorageStateError::CorruptRecord)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-fn genesis_binding(
-    head: Option<&HeadPayload>,
-    reservations: &BTreeMap<[u8; 16], CatalogReservation>,
-    transitions: &BTreeMap<[u8; 16], TransitionPayload>,
-) -> Result<Option<CatalogBindingV1>, StorageStateError> {
-    let Some(head) = head else {
-        return Ok(None);
-    };
-    if head.genesis_state.is_some() {
-        return head.binding.binding().map(Some);
-    }
-
-    let transition_results = transitions
-        .values()
-        .map(|transition| transition.result.binding())
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut roots = reservations
-        .values()
-        .filter(|reservation| transitions.contains_key(&reservation.payload.operation_id))
-        .filter(|reservation| !transition_results.contains(&reservation.predecessor.binding))
-        .map(|reservation| reservation.predecessor.binding);
-    let root = roots.next().ok_or(StorageStateError::CorruptRecord)?;
-    if roots.next().is_some() {
-        return Err(StorageStateError::CorruptRecord);
-    }
-    Ok(Some(root))
 }
 
 fn capture_guid(plan: &CatalogPlanV1) -> bool {
@@ -1300,135 +1464,6 @@ fn remove_snapshot(
         retired_by: operation_id,
     });
     Ok(())
-}
-
-fn normalize_and_validate(state: &mut PhysicalStateWire) -> Result<(), StorageStateError> {
-    state.roots.sort();
-    state.datasets.sort();
-    state.snapshots.sort();
-    state.holds.sort();
-    state.tombstones.sort();
-    if state.magic != STATE_MAGIC
-        || state.version != FORMAT_VERSION
-        || state.generation == 0
-        || state.roots.len() > MAXIMUM_OBJECTS
-        || state.datasets.len() > MAXIMUM_OBJECTS
-        || state.snapshots.len() > MAXIMUM_OBJECTS
-        || state.holds.len() > MAXIMUM_HOLDS
-        || state.tombstones.len() > MAXIMUM_TOMBSTONES
-        || !unique(state.roots.iter().map(|row| row.dataset_prefix.as_str()))
-        || !unique(state.roots.iter().map(|row| row.guid))
-        || !unique(state.datasets.iter().map(|row| row.name.as_str()))
-        || !unique(state.datasets.iter().map(|row| row.guid))
-        || !unique(state.snapshots.iter().map(|row| row.name.as_str()))
-        || !unique(state.snapshots.iter().map(|row| row.guid))
-        || !unique(
-            state
-                .holds
-                .iter()
-                .map(|row| (row.snapshot_name.as_str(), row.hold_id)),
-        )
-        || !unique(
-            state
-                .tombstones
-                .iter()
-                .map(|row| (row.kind, row.name.as_str())),
-        )
-        || !unique(state.tombstones.iter().map(|row| row.guid))
-    {
-        return Err(StorageStateError::CorruptRecord);
-    }
-    let valid_name = |name: &str| !name.is_empty() && name.len() <= MAXIMUM_NAME_BYTES;
-    if state
-        .roots
-        .iter()
-        .any(|root| root.guid == 0 || !valid_name(&root.pool) || !valid_name(&root.dataset_prefix))
-        || state
-            .datasets
-            .iter()
-            .any(|row| row.guid == 0 || !valid_name(&row.name))
-        || state.snapshots.iter().any(|row| {
-            row.guid == 0
-                || row.source_guid == 0
-                || !valid_name(&row.name)
-                || !valid_name(&row.source_name)
-        })
-        || state.holds.iter().any(|row| {
-            row.snapshot_guid == 0 || row.hold_id == [0; 16] || !valid_name(&row.snapshot_name)
-        })
-        || state
-            .tombstones
-            .iter()
-            .any(|row| row.guid == 0 || row.retired_by == [0; 16] || !valid_name(&row.name))
-    {
-        return Err(StorageStateError::CorruptRecord);
-    }
-    for hold in &state.holds {
-        if !state.snapshots.iter().any(|snapshot| {
-            snapshot.name == hold.snapshot_name && snapshot.guid == hold.snapshot_guid
-        }) {
-            return Err(StorageStateError::CorruptRecord);
-        }
-    }
-    for dataset in &state.datasets {
-        if !state.roots.iter().any(|root| root == &dataset.root) {
-            return Err(StorageStateError::CorruptRecord);
-        }
-        if let Some(origin) = &dataset.origin
-            && !state
-                .snapshots
-                .iter()
-                .any(|snapshot| snapshot.name == origin.name && snapshot.guid == origin.guid)
-        {
-            return Err(StorageStateError::CorruptRecord);
-        }
-    }
-    for snapshot in &state.snapshots {
-        if !state.datasets.iter().any(|dataset| {
-            dataset.name == snapshot.source_name && dataset.guid == snapshot.source_guid
-        }) {
-            return Err(StorageStateError::CorruptRecord);
-        }
-    }
-    let live_guids = state
-        .roots
-        .iter()
-        .map(|row| row.guid)
-        .chain(state.datasets.iter().map(|row| row.guid))
-        .chain(state.snapshots.iter().map(|row| row.guid));
-    if !unique(live_guids)
-        || state.tombstones.iter().any(|tombstone| {
-            state.roots.iter().any(|row| row.guid == tombstone.guid)
-                || state.datasets.iter().any(|row| row.guid == tombstone.guid)
-                || state.snapshots.iter().any(|row| row.guid == tombstone.guid)
-        })
-    {
-        return Err(StorageStateError::CorruptRecord);
-    }
-    let creating_operations = state
-        .datasets
-        .iter()
-        .filter_map(|row| row.created_by)
-        .chain(state.snapshots.iter().filter_map(|row| row.created_by));
-    if creating_operations
-        .clone()
-        .any(|operation| operation == [0; 16])
-        || !unique(creating_operations)
-    {
-        return Err(StorageStateError::CorruptRecord);
-    }
-    if state.tombstones.iter().any(|tombstone| {
-        state.datasets.iter().any(|row| row.name == tombstone.name)
-            || state.snapshots.iter().any(|row| row.name == tombstone.name)
-    }) {
-        return Err(StorageStateError::CorruptRecord);
-    }
-    Ok(())
-}
-
-fn unique<T: Ord>(values: impl Iterator<Item = T>) -> bool {
-    let mut seen = BTreeSet::new();
-    values.into_iter().all(|value| seen.insert(value))
 }
 
 impl From<CatalogObjectKind> for ObjectKindWire {

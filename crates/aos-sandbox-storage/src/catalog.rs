@@ -17,9 +17,11 @@ use aos_sandbox_protocol::semantics::CatalogBindingV1;
 use sha2::{Digest as _, Sha256};
 
 use crate::StorageOperation;
+use crate::root_policy::WorkspaceRootPolicyV1;
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSCAT1";
-const FORMAT_VERSION: u16 = 2;
+const LEGACY_FORMAT_VERSION: u16 = 2;
+const EXECUTION_FORMAT_VERSION: u16 = 3;
 const DIGEST_DOMAIN: &[u8] = b"aos-sandbox-storage-resolved-catalog-v1\0";
 const MAXIMUM_NAME_BYTES: usize = 255;
 const MAXIMUM_CANONICAL_BYTES: usize = 16 * 1024;
@@ -48,6 +50,56 @@ pub enum CatalogSemanticError {
     /// Persisted bytes use a format that cannot reconstruct every typed input.
     #[error("resolved storage catalog encoding version is unsupported for typed recovery")]
     UnsupportedEncodingVersion,
+    /// An execution catalog omitted, added, or mismatched its root policy.
+    #[error("resolved storage catalog root policy is absent or inconsistent")]
+    InvalidRootPolicy,
+}
+
+/// Identifies the exact recoverable encoding carried by one catalog value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResolvedCatalogFormatV1 {
+    /// Historical format 2 has no workspace-root policy binding.
+    LegacyV2,
+    /// Format 3 binds root policy for execution eligibility.
+    ExecutionV3,
+}
+
+impl ResolvedCatalogFormatV1 {
+    const fn version(self) -> u16 {
+        match self {
+            Self::LegacyV2 => LEGACY_FORMAT_VERSION,
+            Self::ExecutionV3 => EXECUTION_FORMAT_VERSION,
+        }
+    }
+
+    pub(crate) fn from_version(version: u16) -> Result<Self, CatalogSemanticError> {
+        match version {
+            LEGACY_FORMAT_VERSION => Ok(Self::LegacyV2),
+            EXECUTION_FORMAT_VERSION => Ok(Self::ExecutionV3),
+            _ => Err(CatalogSemanticError::UnsupportedEncodingVersion),
+        }
+    }
+}
+
+/// Carries the catalog and root-policy bindings safe for later execution.
+///
+/// This value proves only canonical schema coherence. Fresh signed authority,
+/// fencing, observation, and a durable ambiguous transition remain mandatory
+/// before any effect may run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ExecutionCatalogBindingV1 {
+    catalog: CatalogBindingV1,
+    root_policy_digest: ObjectDigest,
+}
+
+impl ExecutionCatalogBindingV1 {
+    pub(crate) const fn catalog(self) -> CatalogBindingV1 {
+        self.catalog
+    }
+
+    pub(crate) const fn root_policy_digest(self) -> ObjectDigest {
+        self.root_policy_digest
+    }
 }
 
 /// Identifies the kind of one exact ZFS catalog object.
@@ -852,9 +904,11 @@ impl CatalogPlanV1 {
 /// Carries exact canonical resolved-catalog bytes and their storage-domain digest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedCatalogCommitmentV1 {
+    format: ResolvedCatalogFormatV1,
     generation: u64,
     domains: StorageDomainsV1,
     plan: CatalogPlanV1,
+    root_policy: Option<WorkspaceRootPolicyV1>,
     bytes: Vec<u8>,
     digest: ObjectDigest,
     binding: CatalogBindingV1,
@@ -872,6 +926,47 @@ impl ResolvedCatalogCommitmentV1 {
         domains: StorageDomainsV1,
         plan: CatalogPlanV1,
     ) -> Result<Self, CatalogSemanticError> {
+        Self::new_at_format(
+            ResolvedCatalogFormatV1::LegacyV2,
+            generation,
+            domains,
+            plan,
+            None,
+        )
+    }
+
+    /// Canonicalizes one format-3 catalog eligible for later execution.
+    ///
+    /// Create requires the fixed initialization policy, Clone requires a
+    /// preservation policy bound to its exact source snapshot, and all other
+    /// operations require no root policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CatalogSemanticError`] for invalid catalog semantics or a
+    /// missing, extra, or mismatched root policy.
+    pub(crate) fn new_execution_v3(
+        generation: u64,
+        domains: StorageDomainsV1,
+        plan: CatalogPlanV1,
+        root_policy: Option<WorkspaceRootPolicyV1>,
+    ) -> Result<Self, CatalogSemanticError> {
+        Self::new_at_format(
+            ResolvedCatalogFormatV1::ExecutionV3,
+            generation,
+            domains,
+            plan,
+            root_policy,
+        )
+    }
+
+    fn new_at_format(
+        format: ResolvedCatalogFormatV1,
+        generation: u64,
+        domains: StorageDomainsV1,
+        plan: CatalogPlanV1,
+        root_policy: Option<WorkspaceRootPolicyV1>,
+    ) -> Result<Self, CatalogSemanticError> {
         if generation == 0 {
             return Err(CatalogSemanticError::InvalidValue);
         }
@@ -879,7 +974,16 @@ impl ResolvedCatalogCommitmentV1 {
         if domains != plan.domains() {
             return Err(CatalogSemanticError::InconsistentPlan);
         }
-        let bytes = encode_plan(generation, domains, &plan)?;
+        match format {
+            ResolvedCatalogFormatV1::LegacyV2 if root_policy.is_some() => {
+                return Err(CatalogSemanticError::InvalidRootPolicy);
+            }
+            ResolvedCatalogFormatV1::LegacyV2 => {}
+            ResolvedCatalogFormatV1::ExecutionV3 => {
+                validate_root_policy(&plan, root_policy)?;
+            }
+        }
+        let bytes = encode_plan(format, generation, domains, &plan, root_policy)?;
         let mut hasher = Sha256::new();
         hasher.update(DIGEST_DOMAIN);
         hasher.update(&bytes);
@@ -887,9 +991,11 @@ impl ResolvedCatalogCommitmentV1 {
         let binding = CatalogBindingV1::from_publisher(generation, digest)
             .map_err(|_| CatalogSemanticError::InvalidValue)?;
         Ok(Self {
+            format,
             generation,
             domains,
             plan,
+            root_policy,
             bytes,
             digest,
             binding,
@@ -909,8 +1015,14 @@ impl ResolvedCatalogCommitmentV1 {
     /// Returns [`CatalogSemanticError`] for malformed, oversized,
     /// noncanonical, semantically invalid, or pre-v2 bytes.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CatalogSemanticError> {
-        let (generation, domains, plan) = crate::catalog_decode::decode_catalog(bytes)?;
-        let catalog = Self::new(generation, domains, plan)?;
+        let decoded = crate::catalog_decode::decode_catalog(bytes)?;
+        let catalog = Self::new_at_format(
+            decoded.format,
+            decoded.generation,
+            decoded.domains,
+            decoded.plan,
+            decoded.root_policy,
+        )?;
         if catalog.canonical_bytes() != bytes {
             return Err(CatalogSemanticError::MalformedEncoding);
         }
@@ -933,6 +1045,42 @@ impl ResolvedCatalogCommitmentV1 {
     #[must_use]
     pub const fn plan(&self) -> &CatalogPlanV1 {
         &self.plan
+    }
+
+    /// Returns the exact persisted catalog format version.
+    #[must_use]
+    pub(crate) const fn format_version(&self) -> u16 {
+        self.format.version()
+    }
+
+    /// Returns the root policy carried by a format-3 Create or Clone catalog.
+    #[must_use]
+    pub(crate) const fn root_policy(&self) -> Option<WorkspaceRootPolicyV1> {
+        self.root_policy
+    }
+
+    /// Produces a checked binding only for execution-format catalogs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CatalogSemanticError::UnsupportedEncodingVersion`] for a
+    /// legacy format-2 catalog and [`CatalogSemanticError::InvalidRootPolicy`]
+    /// for an inconsistent format-3 policy.
+    pub(crate) fn execution_binding(
+        &self,
+    ) -> Result<ExecutionCatalogBindingV1, CatalogSemanticError> {
+        if self.format != ResolvedCatalogFormatV1::ExecutionV3 {
+            return Err(CatalogSemanticError::UnsupportedEncodingVersion);
+        }
+        validate_root_policy(&self.plan, self.root_policy)?;
+
+        Ok(ExecutionCatalogBindingV1 {
+            catalog: self.binding,
+            root_policy_digest: self
+                .root_policy
+                .map(WorkspaceRootPolicyV1::commitment)
+                .unwrap_or_else(|| ObjectDigest::from_bytes([0; 32])),
+        })
     }
 
     /// Returns exact versioned node-local bytes for persistence and recomputation.
@@ -1029,6 +1177,36 @@ fn validate_plan(plan: &CatalogPlanV1) -> Result<(), CatalogSemanticError> {
     }
 }
 
+fn validate_root_policy(
+    plan: &CatalogPlanV1,
+    root_policy: Option<WorkspaceRootPolicyV1>,
+) -> Result<(), CatalogSemanticError> {
+    if root_policy.is_some_and(|policy| policy.validate().is_err()) {
+        return Err(CatalogSemanticError::InvalidRootPolicy);
+    }
+
+    match (plan, root_policy) {
+        (CatalogPlanV1::CreateWorkspace { .. }, Some(policy)) if policy.is_create_initialize() => {
+            Ok(())
+        }
+        (CatalogPlanV1::Clone { source, .. }, Some(policy))
+            if policy.source_snapshot_guid() == Some(source.guid()) =>
+        {
+            Ok(())
+        }
+        (
+            CatalogPlanV1::Snapshot { .. }
+            | CatalogPlanV1::HoldSnapshot { .. }
+            | CatalogPlanV1::ReleaseHold { .. }
+            | CatalogPlanV1::SetQuota { .. }
+            | CatalogPlanV1::DestroyDataset { .. }
+            | CatalogPlanV1::DestroySnapshot { .. },
+            None,
+        ) => Ok(()),
+        _ => Err(CatalogSemanticError::InvalidRootPolicy),
+    }
+}
+
 fn same_project_ancestry(
     root: &ManagedDatasetRoot,
     workspace_name: &str,
@@ -1044,13 +1222,15 @@ fn same_project_ancestry(
 }
 
 fn encode_plan(
+    format: ResolvedCatalogFormatV1,
     generation: u64,
     domains: StorageDomainsV1,
     plan: &CatalogPlanV1,
+    root_policy: Option<WorkspaceRootPolicyV1>,
 ) -> Result<Vec<u8>, CatalogSemanticError> {
     let mut encoder = Encoder::new();
     encoder.field(1, FORMAT_MAGIC)?;
-    encoder.field(2, &FORMAT_VERSION.to_be_bytes())?;
+    encoder.field(2, &format.version().to_be_bytes())?;
     encoder.field(3, &generation.to_be_bytes())?;
     let root = plan.root();
     encoder.field(4, root.pool.as_bytes())?;
@@ -1062,6 +1242,12 @@ fn encode_plan(
     encoder.field(10, domains.retention.as_bytes())?;
     encode_operation(&mut encoder, plan)?;
     encode_postcondition(&mut encoder, &plan.postcondition())?;
+    if format == ResolvedCatalogFormatV1::ExecutionV3 {
+        match root_policy {
+            Some(policy) => encoder.field(38, &policy.canonical_bytes())?,
+            None => encoder.field(38, &[])?,
+        }
+    }
     Ok(encoder.finish())
 }
 
@@ -1427,6 +1613,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use crate::root_policy::{PortableRootAttributesV1, WorkspaceRootPolicyV1};
 
     fn root() -> ManagedDatasetRoot {
         ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap()
@@ -1560,6 +1747,15 @@ mod tests {
         );
         assert_eq!(baseline.binding().generation(), 7);
         assert_eq!(baseline.binding().digest(), baseline.digest());
+        assert_eq!(baseline.format_version(), LEGACY_FORMAT_VERSION);
+        let raw_bytes_digest: [u8; 32] = Sha256::digest(baseline.canonical_bytes()).into();
+        assert_eq!(
+            raw_bytes_digest,
+            [
+                91, 105, 150, 63, 187, 213, 108, 102, 95, 150, 254, 57, 248, 12, 34, 68, 219, 198,
+                139, 246, 207, 187, 83, 136, 180, 222, 40, 128, 134, 84, 23, 192,
+            ]
+        );
         assert!(
             baseline
                 .canonical_bytes()
@@ -1630,6 +1826,152 @@ mod tests {
                     .unwrap();
             assert_eq!(recovered, catalog);
         }
+    }
+
+    #[test]
+    fn canonical_v3_binds_checked_root_policy_without_reinterpreting_v2() {
+        let create_plan = CatalogPlanV1::CreateWorkspace {
+            destination: PlannedDataset::from_catalog(root(), "tank/aos/project/new", domains())
+                .unwrap(),
+            space: space(),
+            ancestor: ancestor(),
+        };
+        let create_policy = WorkspaceRootPolicyV1::create_initialize();
+        let create = ResolvedCatalogCommitmentV1::new_execution_v3(
+            7,
+            domains(),
+            create_plan,
+            Some(create_policy),
+        )
+        .unwrap();
+        let recovered =
+            ResolvedCatalogCommitmentV1::from_canonical_bytes(create.canonical_bytes()).unwrap();
+        assert_eq!(recovered, create);
+        assert_eq!(create.format_version(), EXECUTION_FORMAT_VERSION);
+        assert_eq!(create.root_policy(), Some(create_policy));
+        assert_ne!(
+            create.execution_binding().unwrap().root_policy_digest(),
+            ObjectDigest::from_bytes([0; 32])
+        );
+
+        let dataset =
+            ResolvedDataset::from_catalog(root(), "tank/aos/project/work", 11, [1; 32], domains())
+                .unwrap();
+        let snapshot_plan = CatalogPlanV1::Snapshot {
+            source: dataset.clone(),
+            destination: PlannedSnapshot::from_catalog(dataset.clone(), "revision-2").unwrap(),
+        };
+        let snapshot =
+            ResolvedCatalogCommitmentV1::new_execution_v3(8, domains(), snapshot_plan, None)
+                .unwrap();
+        assert_eq!(
+            snapshot.execution_binding().unwrap().root_policy_digest(),
+            ObjectDigest::from_bytes([0; 32])
+        );
+
+        let source = ResolvedSnapshot::from_catalog(dataset, "revision-1", 12, [2; 32]).unwrap();
+        let clone_plan = CatalogPlanV1::Clone {
+            source: Box::new(source.clone()),
+            origin_hold: ActiveHoldEvidence::from_catalog(
+                source.guid(),
+                HoldId::from_bytes([31; 16]).unwrap(),
+            )
+            .unwrap(),
+            destination: PlannedDataset::from_catalog(root(), "tank/aos/project/clone", domains())
+                .unwrap(),
+            space: space(),
+            ancestor: ancestor(),
+        };
+        let attributes = PortableRootAttributesV1::new(1000, 1001, 0o2750).unwrap();
+        let clone_policy = WorkspaceRootPolicyV1::clone_preserve(
+            source.guid(),
+            attributes,
+            ObjectDigest::from_bytes([44; 32]),
+        )
+        .unwrap();
+        let clone = ResolvedCatalogCommitmentV1::new_execution_v3(
+            9,
+            domains(),
+            clone_plan.clone(),
+            Some(clone_policy),
+        )
+        .unwrap();
+        assert_eq!(
+            ResolvedCatalogCommitmentV1::from_canonical_bytes(clone.canonical_bytes()).unwrap(),
+            clone
+        );
+
+        assert_eq!(
+            ResolvedCatalogCommitmentV1::new_execution_v3(9, domains(), clone_plan.clone(), None),
+            Err(CatalogSemanticError::InvalidRootPolicy)
+        );
+        let wrong_source = WorkspaceRootPolicyV1::clone_preserve(
+            13,
+            attributes,
+            ObjectDigest::from_bytes([44; 32]),
+        )
+        .unwrap();
+        assert_eq!(
+            ResolvedCatalogCommitmentV1::new_execution_v3(
+                9,
+                domains(),
+                clone_plan.clone(),
+                Some(wrong_source),
+            ),
+            Err(CatalogSemanticError::InvalidRootPolicy)
+        );
+        let directly_invalid = WorkspaceRootPolicyV1::invalid_clone_for_test(12, attributes);
+        assert_eq!(
+            ResolvedCatalogCommitmentV1::new_execution_v3(
+                9,
+                domains(),
+                clone_plan,
+                Some(directly_invalid),
+            ),
+            Err(CatalogSemanticError::InvalidRootPolicy)
+        );
+    }
+
+    #[test]
+    fn canonical_v3_rejects_bad_policy_field_shape_and_unknown_trailing_data() {
+        let catalog = ResolvedCatalogCommitmentV1::new_execution_v3(
+            7,
+            domains(),
+            CatalogPlanV1::CreateWorkspace {
+                destination: PlannedDataset::from_catalog(
+                    root(),
+                    "tank/aos/project/new",
+                    domains(),
+                )
+                .unwrap(),
+                space: space(),
+                ancestor: ancestor(),
+            },
+            Some(WorkspaceRootPolicyV1::create_initialize()),
+        )
+        .unwrap();
+        let policy_field = catalog.canonical_bytes().len() - 69;
+
+        let mut wrong_tag = catalog.canonical_bytes().to_vec();
+        wrong_tag[policy_field] = 39;
+        assert_eq!(
+            ResolvedCatalogCommitmentV1::from_canonical_bytes(&wrong_tag),
+            Err(CatalogSemanticError::MalformedEncoding)
+        );
+
+        let mut wrong_length = catalog.canonical_bytes().to_vec();
+        wrong_length[policy_field + 1..policy_field + 5].copy_from_slice(&63_u32.to_be_bytes());
+        assert_eq!(
+            ResolvedCatalogCommitmentV1::from_canonical_bytes(&wrong_length),
+            Err(CatalogSemanticError::MalformedEncoding)
+        );
+
+        let mut trailing = catalog.canonical_bytes().to_vec();
+        trailing.extend_from_slice(&[39, 0, 0, 0, 0]);
+        assert_eq!(
+            ResolvedCatalogCommitmentV1::from_canonical_bytes(&trailing),
+            Err(CatalogSemanticError::MalformedEncoding)
+        );
     }
 
     #[test]

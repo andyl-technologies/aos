@@ -39,6 +39,16 @@ mod pin_worker;
 mod pin_worker_runtime;
 pub mod process;
 pub mod request;
+#[allow(
+    dead_code,
+    reason = "protected catalog resolution is not wired until Storage Apply readiness exists"
+)]
+mod resolver;
+#[allow(
+    dead_code,
+    reason = "root initialization is not wired until Storage Apply readiness exists"
+)]
+mod root_policy;
 pub mod runtime;
 pub mod service;
 pub mod state;
@@ -52,8 +62,8 @@ mod workspace_repair_worker;
 pub mod zfs;
 
 pub use authorization::{
-    StorageAdmissionError, StorageAuthorityConfigError, StorageAuthorityV1,
-    StorageProtectedConfigurationV1,
+    AuthorizedStorageResolutionV1, StorageAdmissionError, StorageAuthorityConfigError,
+    StorageAuthorityV1, StorageProtectedConfigurationV1,
 };
 pub use broker::{
     StorageAdmissionCoordinator, StorageAdmissionOutcome, StorageBrokerError,

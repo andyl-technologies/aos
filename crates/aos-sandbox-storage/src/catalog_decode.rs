@@ -13,16 +13,22 @@ use aos_sandbox_core::ObjectDigest;
 use crate::{
     ActiveHoldEvidence, CatalogPlanV1, CatalogSemanticError, HoldId, ManagedDatasetRoot,
     PlannedDataset, PlannedSnapshot, ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset,
-    ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1,
+    ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1, catalog::ResolvedCatalogFormatV1,
+    root_policy::WorkspaceRootPolicyV1,
 };
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSCAT1";
-const FORMAT_VERSION: u16 = 2;
 const MAXIMUM_CANONICAL_BYTES: usize = 16 * 1024;
 
-pub(crate) fn decode_catalog(
-    bytes: &[u8],
-) -> Result<(u64, StorageDomainsV1, CatalogPlanV1), CatalogSemanticError> {
+pub(crate) struct DecodedCatalog {
+    pub(crate) format: ResolvedCatalogFormatV1,
+    pub(crate) generation: u64,
+    pub(crate) domains: StorageDomainsV1,
+    pub(crate) plan: CatalogPlanV1,
+    pub(crate) root_policy: Option<WorkspaceRootPolicyV1>,
+}
+
+pub(crate) fn decode_catalog(bytes: &[u8]) -> Result<DecodedCatalog, CatalogSemanticError> {
     if bytes.is_empty() || bytes.len() > MAXIMUM_CANONICAL_BYTES {
         return Err(CatalogSemanticError::MalformedEncoding);
     }
@@ -31,10 +37,7 @@ pub(crate) fn decode_catalog(
     if required_array::<8>(decoder.field(1)?)? != *FORMAT_MAGIC {
         return Err(CatalogSemanticError::MalformedEncoding);
     }
-    let version = required_u16(decoder.field(2)?)?;
-    if version != FORMAT_VERSION {
-        return Err(CatalogSemanticError::UnsupportedEncodingVersion);
-    }
+    let format = ResolvedCatalogFormatV1::from_version(required_u16(decoder.field(2)?)?)?;
     let generation = required_u64(decoder.field(3)?)?;
     let pool = required_text(decoder.field(4)?)?;
     let dataset_prefix = required_text(decoder.field(5)?)?;
@@ -65,6 +68,10 @@ pub(crate) fn decode_catalog(
     for tag in 28..=37 {
         let _ = decoder.field(tag)?;
     }
+    let encoded_root_policy = match format {
+        ResolvedCatalogFormatV1::LegacyV2 => None,
+        ResolvedCatalogFormatV1::ExecutionV3 => Some(decoder.field(38)?),
+    };
     decoder.finish()?;
 
     let space = raw_space.finish(&root, domains, ancestor_handle)?;
@@ -82,7 +89,21 @@ pub(crate) fn decode_catalog(
         version_handle,
     )?;
 
-    Ok((generation, domains, plan))
+    let root_policy = match encoded_root_policy {
+        None | Some([]) => None,
+        Some(bytes) => Some(
+            WorkspaceRootPolicyV1::from_canonical_bytes(bytes)
+                .map_err(|_| CatalogSemanticError::MalformedEncoding)?,
+        ),
+    };
+
+    Ok(DecodedCatalog {
+        format,
+        generation,
+        domains,
+        plan,
+        root_policy,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -23,6 +23,7 @@ use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
@@ -204,6 +205,123 @@ pub(crate) struct SealedStorageAdmission {
 /// Owns protected storage-audience trust and record-authentication state.
 pub struct StorageAuthorityV1(BrokerAuthority);
 
+/// Carries the exact resolver inputs covered by one verified Prepare grant.
+///
+/// The fields are deliberately private. Only [`StorageAuthorityV1`] can create
+/// this value, after independently decoding the received body and admitting
+/// that same canonical meaning through protected broker authority.
+#[derive(Debug, Eq, PartialEq)]
+pub struct AuthorizedStorageResolutionV1 {
+    assignment: BrokerAssignment,
+    operation: aos_sandbox_protocol::semantics::storage_prepare::StoragePreparationOperationV1,
+    sandbox_id: [u8; 16],
+    operation_id: [u8; 16],
+    inventory: crate::CatalogBindingV1,
+    expected_head: crate::CatalogBindingV1,
+    preparation_commitment: ObjectDigest,
+    transport_request_digest: ObjectDigest,
+    plan_digest: ObjectDigest,
+    lease_digest: ObjectDigest,
+}
+
+impl AuthorizedStorageResolutionV1 {
+    /// Returns the complete assignment admitted by plan and local lease.
+    #[must_use]
+    pub const fn assignment(&self) -> BrokerAssignment {
+        self.assignment
+    }
+
+    /// Returns the exact signed portable Storage operation.
+    #[must_use]
+    pub const fn operation(
+        &self,
+    ) -> aos_sandbox_protocol::semantics::storage_prepare::StoragePreparationOperationV1 {
+        self.operation
+    }
+
+    /// Returns the assignment sandbox whose protected policy selects names.
+    #[must_use]
+    pub const fn sandbox_id(&self) -> [u8; 16] {
+        self.sandbox_id
+    }
+
+    /// Returns the durable operation identifier.
+    #[must_use]
+    pub const fn operation_id(&self) -> [u8; 16] {
+        self.operation_id
+    }
+
+    /// Returns the exact signed current-inventory association.
+    #[must_use]
+    pub const fn inventory_binding(&self) -> crate::CatalogBindingV1 {
+        self.inventory
+    }
+
+    /// Returns the exact signed physical-catalog predecessor.
+    #[must_use]
+    pub const fn expected_catalog_head(&self) -> crate::CatalogBindingV1 {
+        self.expected_head
+    }
+
+    /// Returns the canonical Prepare argument commitment admitted by the plan.
+    #[must_use]
+    pub const fn preparation_commitment(&self) -> ObjectDigest {
+        self.preparation_commitment
+    }
+
+    /// Returns the digest of the exact received Prepare request bytes.
+    #[must_use]
+    pub const fn transport_request_digest(&self) -> ObjectDigest {
+        self.transport_request_digest
+    }
+
+    /// Returns the verified broker-plan digest.
+    #[must_use]
+    pub const fn plan_digest(&self) -> ObjectDigest {
+        self.plan_digest
+    }
+
+    /// Returns the verified local ownership-lease digest.
+    #[must_use]
+    pub const fn lease_digest(&self) -> ObjectDigest {
+        self.lease_digest
+    }
+}
+
+/// Retains one Prepare admission without exposing a generic sealing capability.
+#[derive(Debug)]
+pub(crate) struct VerifiedStoragePreparationAdmissionV1 {
+    admission: VerifiedBrokerAdmission,
+    resolution: AuthorizedStorageResolutionV1,
+    request_id: [u8; 16],
+}
+
+impl VerifiedStoragePreparationAdmissionV1 {
+    pub(crate) const fn resolution(&self) -> &AuthorizedStorageResolutionV1 {
+        &self.resolution
+    }
+
+    pub(crate) const fn fence(&self) -> &BrokerAuthorizationFenceV1 {
+        &self.admission.fence
+    }
+
+    pub(crate) const fn transport_request_digest(&self) -> ObjectDigest {
+        self.admission.effect.transport_request_digest()
+    }
+
+    pub(crate) const fn effect_deadline_boottime_nanoseconds(&self) -> u64 {
+        self.admission.effect.effect_deadline_boottime_nanoseconds()
+    }
+
+    pub(crate) const fn plan_digest(&self) -> ObjectDigest {
+        self.admission.effect.plan_digest()
+    }
+
+    pub(crate) const fn lease_digest(&self) -> ObjectDigest {
+        self.admission.effect.lease_digest()
+    }
+}
+
 impl StorageAuthorityV1 {
     /// Constructs storage authority from validated protected anchors.
     ///
@@ -279,30 +397,76 @@ impl StorageAuthorityV1 {
         semantics: &CanonicalStoragePreparationSemanticsV1,
         request_body: &[u8],
         protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
         current_clock: &RawPairedClockSample,
         prior_fence: Option<&[u8]>,
-    ) -> Result<VerifiedBrokerAdmission, StorageAdmissionError> {
-        let assignment = assignment_from_preparation(semantics)?;
-        self.0.admit(
+    ) -> Result<VerifiedStoragePreparationAdmissionV1, StorageAdmissionError> {
+        // Bind the opaque proof to the body itself, rather than trusting that
+        // a separately supplied decoded value came from these transport bytes.
+        let decoded = CanonicalStoragePreparationSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageAdmissionError::RequestMismatch)?;
+        if &decoded != semantics {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+
+        let assignment = assignment_from_preparation(&decoded)?;
+        let admission = self.0.admit(
             artifacts,
             AdmissionRequest {
                 audience: BrokerAudience::Storage,
                 protocol: ProtocolId::StorageBroker,
                 protocol_version,
                 assignment,
-                request_id: *semantics.header().request_id(),
+                request_id: *decoded.header().request_id(),
                 request_body,
                 descriptor_count: 0,
-                verb: semantics.broker_verb(),
-                target: semantics.grant_target(),
-                argument_commitment: semantics.argument_commitment(),
-                request_deadline_boottime_nanoseconds: semantics
+                verb: decoded.broker_verb(),
+                target: decoded.grant_target(),
+                argument_commitment: decoded.argument_commitment(),
+                request_deadline_boottime_nanoseconds: decoded
                     .header()
                     .deadline_boottime_nanoseconds(),
             },
             current_clock,
             prior_fence,
-        )
+        )?;
+        let transport_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
+        if admission.fence.assignment() != assignment
+            || admission.effect.status() != BrokerEffectStatusV2::Pending
+            || admission.effect.request_id() != decoded.header().request_id()
+            || admission.effect.transport_request_digest() != transport_digest
+            || admission.effect.request_digest() != decoded.argument_commitment().digest()
+            || admission.effect.verb() != BrokerVerb::StoragePrepareCatalog
+            || admission.effect.target() != BrokerGrantTarget::Assignment
+            || admission.effect.plan_digest() != admission.fence.plan_digest()
+            || admission.effect.lease_digest()
+                != admission.fence.local_lease_record().lease_digest()
+        {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+
+        Ok(VerifiedStoragePreparationAdmissionV1 {
+            resolution: AuthorizedStorageResolutionV1 {
+                assignment,
+                operation: decoded.operation(),
+                sandbox_id: *decoded.fence().sandbox_id(),
+                operation_id: decoded.operation_id(),
+                inventory: decoded.inventory_binding(),
+                expected_head: decoded.expected_catalog_head(),
+                preparation_commitment: decoded.argument_commitment().digest(),
+                transport_request_digest: transport_digest,
+                plan_digest: admission.effect.plan_digest(),
+                lease_digest: admission.effect.lease_digest(),
+            },
+            request_id: *decoded.header().request_id(),
+            admission,
+        })
     }
 
     pub(crate) fn admit_workspace_pin_repair(
@@ -351,6 +515,18 @@ impl StorageAuthorityV1 {
                 .0
                 .seal_operation_fence(operation_id, &admission.fence)?,
         })
+    }
+
+    pub(crate) fn seal_preparation(
+        &self,
+        admission: &VerifiedStoragePreparationAdmissionV1,
+    ) -> Result<SealedStorageAdmission, StorageAdmissionError> {
+        self.seal(
+            &admission.resolution.sandbox_id,
+            &admission.request_id,
+            &admission.resolution.operation_id,
+            &admission.admission,
+        )
     }
 
     pub(crate) fn open_fence(

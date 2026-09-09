@@ -391,6 +391,8 @@ impl StorageAdmissionCoordinator {
                 &semantics,
                 request_body,
                 protocol_version,
+                peer,
+                policy,
                 current_clock,
                 prior_fence.as_deref(),
             )
@@ -400,13 +402,13 @@ impl StorageAdmissionCoordinator {
             let retained = self.authenticate_catalog_preparation(operation_id, sealed_record)?;
             retained.record.replay_matches(
                 &semantics,
-                admission.effect.plan_digest(),
-                admission.effect.lease_digest(),
+                admission.plan_digest(),
+                admission.lease_digest(),
                 current_clock.host_boot_id(),
                 current_clock.boottime_nanoseconds(),
             )?;
-            if retained.preparation_fence != admission.fence
-                || admission.effect.transport_request_digest()
+            if &retained.preparation_fence != admission.fence()
+                || admission.transport_request_digest()
                     != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
             {
                 return Err(StorageCatalogPreparationError::Equivocation.into());
@@ -424,19 +426,19 @@ impl StorageAdmissionCoordinator {
         if semantics.expected_catalog_head() != current_head {
             return Err(StorageCatalogPreparationError::StaleCatalogHead.into());
         }
-        let catalog = resolver.resolve(&semantics, current_head)?;
+        let catalog = resolver.resolve(admission.resolution(), current_head)?;
         let sealed = self
             .authority
-            .seal(&sandbox_id, &request_id, &operation_id, &admission)
+            .seal_preparation(&admission)
             .map_err(|_| StorageBrokerError::Authority)?;
         let prepared = RetainedStorageCatalogPreparationV1::prepare(
             &semantics,
             catalog,
             request_id,
             current_clock.host_boot_id(),
-            admission.effect.effect_deadline_boottime_nanoseconds(),
-            admission.effect.plan_digest(),
-            admission.effect.lease_digest(),
+            admission.effect_deadline_boottime_nanoseconds(),
+            admission.plan_digest(),
+            admission.lease_digest(),
             StoragePreparationAuthorityRecordsV1 {
                 sealed_fence: &sealed.current_fence,
                 sealed_effect: &sealed.effect,
@@ -3030,6 +3032,18 @@ mod tests {
         decoded.encode_to_vec()
     }
 
+    fn with_assignment_incarnation_and_epoch(
+        request: &[u8],
+        incarnation_id: [u8; 16],
+        assignment_epoch: u64,
+    ) -> Vec<u8> {
+        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        let fence = decoded.fence.get_or_insert_default();
+        fence.incarnation_id = incarnation_id.to_vec();
+        fence.assignment_epoch = assignment_epoch;
+        decoded.encode_to_vec()
+    }
+
     fn with_deadline(request: &[u8], deadline_boottime_nanoseconds: u64) -> Vec<u8> {
         let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
         decoded
@@ -3101,10 +3115,33 @@ mod tests {
         catalog: &'a ResolvedCatalogCommitmentV1,
     }
 
+    struct AssignmentBoundCatalogResolver<'a> {
+        expected: BrokerAssignment,
+        catalog: &'a ResolvedCatalogCommitmentV1,
+    }
+
+    impl ProtectedStorageCatalogResolverV1 for AssignmentBoundCatalogResolver<'_> {
+        fn resolve(
+            &self,
+            authorization: &crate::AuthorizedStorageResolutionV1,
+            _current_head: crate::CatalogBindingV1,
+        ) -> Result<ResolvedCatalogCommitmentV1, StorageCatalogPreparationError> {
+            if authorization.assignment() != self.expected
+                || authorization.preparation_commitment().as_bytes() == &[0; 32]
+                || authorization.transport_request_digest().as_bytes() == &[0; 32]
+                || authorization.plan_digest().as_bytes() == &[0; 32]
+                || authorization.lease_digest().as_bytes() == &[0; 32]
+            {
+                return Err(StorageCatalogPreparationError::ResolutionRejected);
+            }
+            Ok(self.catalog.clone())
+        }
+    }
+
     impl ProtectedStorageCatalogResolverV1 for StaticCatalogResolver<'_> {
         fn resolve(
             &self,
-            _semantics: &CanonicalStoragePreparationSemanticsV1,
+            _authorization: &crate::AuthorizedStorageResolutionV1,
             _current_head: crate::CatalogBindingV1,
         ) -> Result<ResolvedCatalogCommitmentV1, StorageCatalogPreparationError> {
             Ok(self.catalog.clone())
@@ -3896,13 +3933,15 @@ mod tests {
                 &excessive_semantics,
                 &excessive_preparation,
                 ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
                 &admission_clock,
                 None,
             )
             .unwrap();
 
         assert_eq!(
-            admission.effect.effect_deadline_boottime_nanoseconds(),
+            admission.effect_deadline_boottime_nanoseconds(),
             admission_clock
                 .boottime_nanoseconds()
                 .checked_add(285_000_000_000)
@@ -5730,6 +5769,103 @@ mod tests {
     }
 
     #[test]
+    fn preparation_admission_rejects_semantics_from_a_sibling_body() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request_body = request(7, 8);
+        let sibling_request = request(9, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts_with_grants(&request_body, &catalog, false, true);
+        let broker = initialized_coordinator(&directory, &fixture, &catalog);
+        let (preparation_body, _, _) = preparation_request(&request_body, &catalog);
+        let (sibling_body, _, _) = preparation_request(&sibling_request, &catalog);
+        let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            &preparation_body,
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            broker
+                .authority
+                .admit_preparation(
+                    &artifacts,
+                    &semantics,
+                    &sibling_body,
+                    ProtocolVersion::new(1, 3),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    None,
+                )
+                .unwrap_err(),
+            StorageAdmissionError::RequestMismatch
+        );
+    }
+
+    #[test]
+    fn signed_preparation_token_preserves_full_assignment_for_policy_selection() {
+        let fixture = Fixture::new();
+        let current_request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let expected = decode_assignment(&current_request).unwrap();
+
+        for stale_request in [
+            with_assignment_incarnation_and_epoch(&current_request, [4; 16], 4),
+            with_assignment_incarnation_and_epoch(&current_request, [3; 16], 3),
+        ] {
+            let directory = TempDir::new().unwrap();
+            let artifacts = fixture.artifacts_with_grants(&stale_request, &catalog, false, true);
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            let before = broker.transactions.journal_sequence_for_test();
+            let (preparation, inventory, _) = preparation_request(&stale_request, &catalog);
+
+            assert!(matches!(
+                broker.prepare_catalog(
+                    &preparation,
+                    &artifacts,
+                    inventory,
+                    &AssignmentBoundCatalogResolver {
+                        expected,
+                        catalog: &catalog,
+                    },
+                    ProtocolVersion::new(1, 3),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                ),
+                Err(StorageBrokerError::Preparation(
+                    StorageCatalogPreparationError::ResolutionRejected
+                ))
+            ));
+            assert_eq!(broker.transactions.journal_sequence_for_test(), before);
+        }
+
+        let directory = TempDir::new().unwrap();
+        let artifacts = fixture.artifacts_with_grants(&current_request, &catalog, false, true);
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        let (preparation, inventory, _) = preparation_request(&current_request, &catalog);
+        let prepared = broker
+            .prepare_catalog(
+                &preparation,
+                &artifacts,
+                inventory,
+                &AssignmentBoundCatalogResolver {
+                    expected,
+                    catalog: &catalog,
+                },
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        assert_eq!(prepared.operation_id(), [7; 16]);
+    }
+
+    #[test]
     fn stale_catalog_head_rejects_preparation_without_journal_mutation() {
         let directory = TempDir::new().unwrap();
         let fixture = Fixture::new();
@@ -6514,6 +6650,8 @@ mod tests {
                     &preparation,
                     &preparation_bytes,
                     ProtocolVersion::new(1, 3),
+                    peer(),
+                    peer_policy(),
                     &current_clock,
                     prior_fence,
                 )

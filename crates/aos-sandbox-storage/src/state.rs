@@ -18,6 +18,7 @@ use sha2::{Digest as _, Sha256};
 use crate::broker::FreshWorkspacePinAuthority;
 use crate::catalog_transition::{
     CatalogReservation, PhysicalWorkspaceProjection, StorageCatalogTransitionProvider,
+    VerifiedPhysicalCatalogSnapshotV2,
 };
 use crate::workspace_catalog::StorageWorkspacePublicationIntentV1;
 use crate::workspace_pin::{
@@ -406,6 +407,45 @@ struct DurableRecord {
     result: Option<CommittedStorageResultV1>,
 }
 
+/// Carries one fresh, independently reauthenticated durable resolver view.
+///
+/// Its fields are private so row vectors or hashes cannot be promoted by a
+/// caller. Construction reloads both the physical head and every operation
+/// record directly from the protected journal and cross-validates them.
+pub(crate) struct VerifiedStorageResolverJournalV2 {
+    physical: VerifiedPhysicalCatalogSnapshotV2,
+    records: BTreeMap<[u8; 16], VerifiedStorageResolverOperationV1>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct VerifiedStorageResolverOperationV1 {
+    catalog: ResolvedCatalogCommitmentV1,
+    result: CommittedStorageResultV1,
+}
+
+impl VerifiedStorageResolverJournalV2 {
+    pub(crate) const fn physical(&self) -> &VerifiedPhysicalCatalogSnapshotV2 {
+        &self.physical
+    }
+
+    pub(crate) fn operation(
+        &self,
+        operation_id: &[u8; 16],
+    ) -> Option<&VerifiedStorageResolverOperationV1> {
+        self.records.get(operation_id)
+    }
+}
+
+impl VerifiedStorageResolverOperationV1 {
+    pub(crate) const fn catalog(&self) -> &ResolvedCatalogCommitmentV1 {
+        &self.catalog
+    }
+
+    pub(crate) const fn result(&self) -> CommittedStorageResultV1 {
+        self.result
+    }
+}
+
 enum PreparedRecord {
     Existing(BeginStorageTransaction),
     New(Box<DurableRecord>),
@@ -571,14 +611,7 @@ impl StorageTransactionStore {
         key: StorageStateKey,
         minimum_generation: u64,
     ) -> Result<Self, StorageStateError> {
-        let mut records = BTreeMap::new();
-        for (record_key, bytes) in journal.records(RecordNamespace::Operation) {
-            let record = decode_record(bytes, &key)?;
-            if record_key != record.operation_id {
-                return Err(StorageStateError::CorruptRecord);
-            }
-            records.insert(record.operation_id, record);
-        }
+        let records = load_durable_records(&journal, &key)?;
         let runtime_configuration = load_runtime_configuration(&journal, &key)?;
         let publication_intents = load_publication_intents(&journal, &key)?;
         let pin_attempts = load_attempts(&journal, key.key_id, &key.secret)?;
@@ -593,41 +626,7 @@ impl StorageTransactionStore {
         if latest_generation < minimum_generation {
             return Err(StorageStateError::Rollback);
         }
-        for record in records.values() {
-            let catalog = ResolvedCatalogCommitmentV1::from_canonical_bytes(&record.catalog_bytes)
-                .map_err(|_| StorageStateError::CorruptRecord)?;
-            let evidence = catalog_transitions.validates_operation_transition(
-                record.format_version,
-                record.operation_id,
-                record.request_digest,
-                record.mutation_digest,
-                &catalog,
-                record.phase,
-                record.result.map(|result| result.catalog),
-                key.key_id,
-                &key.secret,
-            )?;
-            match (record.result, evidence) {
-                (Some(result), Some(evidence)) => {
-                    let verified = VerifiedStorageResultV1::verify_observation(
-                        record.operation_id,
-                        record.request_digest,
-                        &catalog,
-                        &catalog.plan().postcondition(),
-                        evidence.object_guid,
-                        evidence.result_catalog,
-                        evidence.observation_digest,
-                    )?;
-                    if committed_result_with_key(&key, &verified)? != result {
-                        return Err(StorageStateError::CorruptRecord);
-                    }
-                }
-                (Some(_), None)
-                    if matches!(record.format_version, LEGACY_VERSION | IDENTITY_VERSION) => {}
-                (None, None) => {}
-                _ => return Err(StorageStateError::CorruptRecord),
-            }
-        }
+        validate_durable_records(&records, &catalog_transitions, &key)?;
         catalog_transitions.validate_operation_set(records.keys().copied())?;
         validate_publication_intent_set(&records, &publication_intents)?;
         validate_repair_intent_set(
@@ -2196,6 +2195,47 @@ impl StorageTransactionStore {
             .ok_or(StorageStateError::InvalidTransition)
     }
 
+    /// Reloads the durable physical head and operation records for resolution.
+    ///
+    /// The method deliberately ignores the provider and record caches. Both
+    /// views are authenticated again from the exclusively locked journal, and
+    /// every committed result is rejoined to the freshly verified transition
+    /// chain before the opaque source is returned.
+    pub(crate) fn verified_resolver_journal(
+        &self,
+    ) -> Result<VerifiedStorageResolverJournalV2, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let physical = StorageCatalogTransitionProvider::load_resolver_snapshot(
+            &self.journal,
+            self.key.key_id,
+            &self.key.secret,
+        )?;
+        let provider = StorageCatalogTransitionProvider::load(
+            &self.journal,
+            self.key.key_id,
+            &self.key.secret,
+        )?;
+        if provider.head_binding() != Some(physical.binding()) {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        let durable = load_durable_records(&self.journal, &self.key)?;
+        validate_durable_records(&durable, &provider, &self.key)?;
+        provider.validate_operation_set(durable.keys().copied())?;
+        let mut records = BTreeMap::new();
+        for record in durable.into_values() {
+            let Some(result) = record.result else {
+                continue;
+            };
+            let catalog = ResolvedCatalogCommitmentV1::from_canonical_bytes(&record.catalog_bytes)
+                .map_err(|_| StorageStateError::CorruptRecord)?;
+            records.insert(
+                record.operation_id,
+                VerifiedStorageResolverOperationV1 { catalog, result },
+            );
+        }
+        Ok(VerifiedStorageResolverJournalV2 { physical, records })
+    }
+
     pub(crate) fn catalog_preparation_record(
         &self,
         operation_id: &[u8; 16],
@@ -3078,6 +3118,65 @@ fn committed_result_with_key(
     })
 }
 
+fn load_durable_records(
+    journal: &Journal,
+    key: &StorageStateKey,
+) -> Result<BTreeMap<[u8; 16], DurableRecord>, StorageStateError> {
+    let mut records = BTreeMap::new();
+    for (record_key, bytes) in journal.records(RecordNamespace::Operation) {
+        let record = decode_record(bytes, key)?;
+        if record_key != record.operation_id
+            || records.insert(record.operation_id, record).is_some()
+        {
+            return Err(StorageStateError::CorruptRecord);
+        }
+    }
+    Ok(records)
+}
+
+fn validate_durable_records(
+    records: &BTreeMap<[u8; 16], DurableRecord>,
+    catalog_transitions: &StorageCatalogTransitionProvider,
+    key: &StorageStateKey,
+) -> Result<(), StorageStateError> {
+    for record in records.values() {
+        let catalog = ResolvedCatalogCommitmentV1::from_canonical_bytes(&record.catalog_bytes)
+            .map_err(|_| StorageStateError::CorruptRecord)?;
+        let evidence = catalog_transitions.validates_operation_transition(
+            record.format_version,
+            record.operation_id,
+            record.request_digest,
+            record.mutation_digest,
+            &catalog,
+            record.phase,
+            record.result.map(|result| result.catalog),
+            key.key_id,
+            &key.secret,
+        )?;
+        match (record.result, evidence) {
+            (Some(result), Some(evidence)) => {
+                let verified = VerifiedStorageResultV1::verify_observation(
+                    record.operation_id,
+                    record.request_digest,
+                    &catalog,
+                    &catalog.plan().postcondition(),
+                    evidence.object_guid,
+                    evidence.result_catalog,
+                    evidence.observation_digest,
+                )?;
+                if committed_result_with_key(key, &verified)? != result {
+                    return Err(StorageStateError::CorruptRecord);
+                }
+            }
+            (Some(_), None)
+                if matches!(record.format_version, LEGACY_VERSION | IDENTITY_VERSION) => {}
+            (None, None) => {}
+            _ => return Err(StorageStateError::CorruptRecord),
+        }
+    }
+    Ok(())
+}
+
 fn load_publication_intents(
     journal: &Journal,
     key: &StorageStateKey,
@@ -3931,11 +4030,17 @@ mod tests {
     use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 
     use aos_sandbox::JournalError;
-    use aos_sandbox_core::PortableMediaType;
+    use aos_sandbox_core::{
+        AssignmentEpoch, BrokerAssignment, DesiredGeneration, IncarnationId, PortableMediaType,
+        SandboxId,
+    };
     use tempfile::TempDir;
 
     use super::*;
     use crate::broker::FreshWorkspacePinAuthority;
+    use crate::resolver::inventory::ProtectedStorageInventoryV2;
+    use crate::resolver::policy::ProtectedStorageResolverPolicyV1;
+    use crate::root_policy::WorkspaceRootPolicyV1;
     use crate::workspace_pin::{
         WorkspaceDatasetObservationV1, WorkspacePinHostScopeV1, WorkspacePinObservationV1,
         WorkspacePinRecoveryDispositionV1, WorkspaceRootPinProofV1,
@@ -4030,6 +4135,40 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    fn execution_catalog_for_root(
+        generation: u64,
+        pool: &str,
+        root_name: &str,
+        root_guid: u64,
+        ancestor_name: &str,
+        ancestor_guid: u64,
+        destination_name: &str,
+    ) -> (ResolvedCatalogCommitmentV1, ResolvedDataset) {
+        let root = ManagedDatasetRoot::from_catalog(pool, root_name, root_guid).unwrap();
+        let ancestor = ResolvedDataset::from_catalog(
+            root.clone(),
+            ancestor_name,
+            ancestor_guid,
+            [u8::try_from(root_guid).unwrap(); 32],
+            domains(),
+        )
+        .unwrap();
+        let policy = ProjectAncestorPolicyV1::new(ancestor.clone(), 65_536, 8, 16).unwrap();
+        let destination = PlannedDataset::from_catalog(root, destination_name, domains()).unwrap();
+        let catalog = ResolvedCatalogCommitmentV1::new_execution_v3(
+            generation,
+            domains(),
+            CatalogPlanV1::CreateWorkspace {
+                destination,
+                space: WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap(),
+                ancestor: policy,
+            },
+            Some(WorkspaceRootPolicyV1::create_initialize()),
+        )
+        .unwrap();
+        (catalog, ancestor)
     }
 
     fn destroy_dataset_catalog(
@@ -4235,6 +4374,153 @@ mod tests {
             )
             .unwrap();
         (remove, mutation_digest)
+    }
+
+    #[test]
+    fn fresh_resolver_reload_validates_global_chain_before_selecting_one_root() {
+        let directory = TempDir::new().unwrap();
+        let (selected_execution, selected_ancestor) = execution_catalog_for_root(
+            7,
+            "tank",
+            "tank/aos-selected",
+            41,
+            "tank/aos-selected/project",
+            42,
+            "tank/aos-selected/project/workspace-future",
+        );
+        let (other_execution, other_ancestor) = execution_catalog_for_root(
+            7,
+            "vault",
+            "vault/aos-other",
+            43,
+            "vault/aos-other/project",
+            44,
+            "vault/aos-other/project/workspace-created",
+        );
+        let selected_catalog =
+            ResolvedCatalogCommitmentV1::new(7, domains(), selected_execution.plan().clone())
+                .unwrap();
+        let other_catalog =
+            ResolvedCatalogCommitmentV1::new(7, domains(), other_execution.plan().clone()).unwrap();
+        let other_snapshot =
+            PlannedSnapshot::from_catalog(other_ancestor.clone(), "history").unwrap();
+        let snapshot_catalog = ResolvedCatalogCommitmentV1::new(
+            7,
+            domains(),
+            CatalogPlanV1::Snapshot {
+                source: other_ancestor.clone(),
+                destination: other_snapshot,
+            },
+        )
+        .unwrap();
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        store
+            .initialize_catalog_from_protected_snapshot(
+                6,
+                &[selected_catalog.clone(), other_catalog.clone()],
+            )
+            .unwrap();
+        let BeginStorageTransaction::Prepared { mutation_digest } = store
+            .begin([45; 16], digest(46), &snapshot_catalog)
+            .unwrap()
+        else {
+            panic!("other-root Snapshot did not prepare")
+        };
+        store
+            .mark_mutation_ambiguous([45; 16], mutation_digest)
+            .unwrap();
+        let committed = store
+            .commit_observed(
+                [45; 16],
+                mutation_digest,
+                &snapshot_catalog,
+                &snapshot_catalog.plan().postcondition(),
+                Some(47),
+                digest(48),
+            )
+            .unwrap();
+        let other_handle = committed.storage_handle().unwrap();
+        drop(store);
+
+        let reopened = StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        let verified = reopened.verified_resolver_journal().unwrap();
+        assert_eq!(verified.physical().roots().len(), 2);
+        assert!(verified.operation(&[45; 16]).is_some());
+
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes([49; 16]),
+            IncarnationId::from_bytes([50; 16]),
+            AssignmentEpoch::new(51),
+            DesiredGeneration::new(52),
+            digest(53),
+        )
+        .unwrap();
+        let policy = ProtectedStorageResolverPolicyV1::new(
+            assignment,
+            selected_ancestor.root().clone(),
+            domains(),
+            ProjectAncestorPolicyV1::new(selected_ancestor.clone(), 65_536, 8, 16).unwrap(),
+            4096,
+            1024,
+        )
+        .unwrap();
+        let inventory =
+            ProtectedStorageInventoryV2::from_verified_journal(verified, &policy).unwrap();
+
+        assert_eq!(inventory.root(), selected_ancestor.root());
+        assert_eq!(
+            inventory.dataset(&selected_ancestor.storage_handle()),
+            Some(&selected_ancestor)
+        );
+        assert!(inventory.dataset(&other_handle).is_none());
+        assert_eq!(other_handle, other_ancestor.storage_handle());
+        assert!(inventory.name_is_occupied("vault/aos-other/project@history"));
+    }
+
+    #[test]
+    fn fresh_resolver_reload_rejects_orphan_physical_reservations_and_transitions() {
+        for commit_transition in [false, true] {
+            let directory = TempDir::new().unwrap();
+            let catalog = catalog(7, "tank/aos/project/work");
+            let operation_id = if commit_transition {
+                [61; 16]
+            } else {
+                [62; 16]
+            };
+            let mut store =
+                StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+            store
+                .initialize_catalog_from_protected_snapshot(6, std::slice::from_ref(&catalog))
+                .unwrap();
+            let BeginStorageTransaction::Prepared { mutation_digest } =
+                store.begin(operation_id, digest(63), &catalog).unwrap()
+            else {
+                panic!("catalog operation did not prepare")
+            };
+            if commit_transition {
+                store
+                    .mark_mutation_ambiguous(operation_id, mutation_digest)
+                    .unwrap();
+                store
+                    .commit_observed(
+                        operation_id,
+                        mutation_digest,
+                        &catalog,
+                        &catalog.plan().postcondition(),
+                        Some(64),
+                        digest(65),
+                    )
+                    .unwrap();
+            }
+
+            store.remove_authority_record_for_test(RecordNamespace::Operation, &operation_id);
+
+            assert!(matches!(
+                store.verified_resolver_journal(),
+                Err(StorageStateError::CorruptRecord)
+            ));
+        }
     }
 
     #[test]
