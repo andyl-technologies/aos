@@ -482,6 +482,19 @@ impl SharedTimeline {
     ) -> Result<Icount, TimeConversionError> {
         horizon.to_icount_ceil(self.shift)
     }
+
+    /// Converts a conservative upper bound to its greatest safe icount.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeConversionError::InvalidShift`] when the fixed shift cannot
+    /// name a `u64` power-of-two scale.
+    pub fn max_advance_icount_for_conservative_horizon(
+        &self,
+        horizon: SimInstant,
+    ) -> Result<Icount, TimeConversionError> {
+        horizon.to_icount_floor(self.shift)
+    }
 }
 
 /// A node-local counter projected onto the shared virtual timeline.
@@ -1482,23 +1495,63 @@ pub(super) fn exact_local_event_horizon_source(event: &ExactLocalEvent) -> Sched
     }
 }
 
-pub(super) fn horizon_source_allows_ceiling_past_target(source: SchedulerHorizonSource) -> bool {
-    matches!(
-        source,
-        SchedulerHorizonSource::ExactLocalTimer | SchedulerHorizonSource::ExactLocalIoCompletion
-    )
+pub(super) fn horizon_source_icount_rounding(
+    source: SchedulerHorizonSource,
+) -> SchedulerIcountRounding {
+    match source {
+        SchedulerHorizonSource::ExactLocalTimer
+        | SchedulerHorizonSource::ExactLocalIoCompletion => SchedulerIcountRounding::ExactCeil,
+        SchedulerHorizonSource::NetworkLookahead
+        | SchedulerHorizonSource::SignalFaultEvaluation
+        | SchedulerHorizonSource::TriggerEvaluation => SchedulerIcountRounding::ConservativeFloor,
+    }
 }
 
 pub(super) fn scheduler_ceiling_overshoot_error(
     node: &SchedulerNodeId,
     boundary_label: &str,
     boundary_time: SimInstant,
-    projected_target: SimInstant,
+    projection: &SchedulerIcountProjection,
 ) -> SchedulerError {
     SchedulerError::BoundaryViolation {
         message: format!(
-            "conservative PDES rejected icount ceiling overshoot for {}:{:?}: {boundary_label}={} projected_target={}",
-            node.node.name, node.kind, boundary_time.nanos, projected_target.nanos
+            "conservative PDES rejected icount ceiling overshoot for {}:{:?}: {boundary_label}_ns={} projected_target_ns={} source_counter_ticks={} source_logical_ns={} target_counter_ticks={} requested_target_ns={} anchor_counter_ticks={} anchor_logical_ns={} shift_bits={} nanos_per_counter_tick={} rounding={}",
+            node.node.name,
+            node.kind,
+            boundary_time.nanos,
+            projection.projected_target_time.nanos,
+            projection.source_counter.ticks,
+            projection.source_time.nanos,
+            projection.target_counter.ticks,
+            projection.target_time.nanos,
+            projection.time_mapping.anchor_counter.ticks,
+            projection.time_mapping.anchor_time.nanos,
+            projection.shift.bits,
+            projection.nanos_per_counter_tick,
+            projection.rounding.label(),
+        ),
+    }
+}
+
+pub(super) fn scheduler_unrepresentable_advance_error(
+    node: &SchedulerNodeId,
+    projection: &SchedulerIcountProjection,
+) -> SchedulerError {
+    SchedulerError::BoundaryViolation {
+        message: format!(
+            "conservative PDES cannot represent positive icount advance for {}:{:?}: target_at_ns={} projected_target_ns={} source_counter_ticks={} source_logical_ns={} target_counter_ticks={} anchor_counter_ticks={} anchor_logical_ns={} shift_bits={} nanos_per_counter_tick={} rounding={}",
+            node.node.name,
+            node.kind,
+            projection.target_time.nanos,
+            projection.projected_target_time.nanos,
+            projection.source_counter.ticks,
+            projection.source_time.nanos,
+            projection.target_counter.ticks,
+            projection.time_mapping.anchor_counter.ticks,
+            projection.time_mapping.anchor_time.nanos,
+            projection.shift.bits,
+            projection.nanos_per_counter_tick,
+            projection.rounding.label(),
         ),
     }
 }
