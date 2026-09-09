@@ -23,7 +23,9 @@ use crucible_qemu::{
 };
 use thiserror::Error;
 
-use crate::exact_checkpoint_restore::validate_materialized_start_configuration;
+use crate::exact_checkpoint_restore::{
+    authenticate_attempt_production_resume_checkpoint, validate_materialized_start_configuration,
+};
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey,
     CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
@@ -485,10 +487,26 @@ pub enum PausedCheckpointPromotionRecoveryResolutionError {
 /// No-write restart result ready for a short supervisor or publication phase.
 #[derive(Debug)]
 pub enum PreparedPausedCheckpointPromotionRestart {
+    /// A legacy paused root was already replay validated and needs only a ledger migration.
+    AlreadyValidated(AuthenticatedPausedCheckpointPromotion),
     /// A raw pause passed semantic resolution and guarded replay comparison.
     Stage(Box<PreparedPausedCheckpointPromotion>),
     /// A staged replacement was already complete and reauthenticated.
     Reconcile(Box<PublishedPausedCheckpointPromotion>),
+}
+
+/// Authenticated legacy paused root whose completed promotion basis may be cleared.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthenticatedPausedCheckpointPromotion {
+    recovery: PausedCheckpointPromotionRecovery,
+}
+
+impl AuthenticatedPausedCheckpointPromotion {
+    /// Returns the exact durable paused-root recovery identity.
+    #[must_use]
+    pub const fn recovery(self) -> PausedCheckpointPromotionRecovery {
+        self.recovery
+    }
 }
 
 /// Failure to prepare one durable promotion phase after restart.
@@ -610,10 +628,13 @@ fn validate_capture_attempt_start(
 
 /// Prepares one durable paused-root restart phase without supervisor ownership.
 ///
-/// Raw pauses resolve their exact repository input and run the complete guarded
-/// multi-node replay comparison. Staged pairs skip QEMU and fully authenticate
-/// the already-published production source/replacement relationship. Neither
-/// path writes immutable objects or operational ledger state.
+/// Raw pauses resolve their exact repository input first. A replay-ready legacy
+/// root passes complete closure and attempt-prefix authentication and returns a
+/// ledger-migration token without launching QEMU. A genuinely raw root runs the
+/// complete guarded multi-node comparison. Staged pairs fully authenticate the
+/// published source/replacement relationship and repeat the independent
+/// savepoint-boundary replay when that start mode requires it. No path writes
+/// immutable objects or operational ledger state.
 ///
 /// # Errors
 ///
@@ -640,9 +661,31 @@ where
                 recovery,
                 cancellation,
             )?;
+            let target = resolved.target(run_state_root);
+            match authenticate_attempt_production_resume_checkpoint(
+                checkpoints,
+                recovery.source(),
+                target.source,
+                target.initial,
+                target.post_selection,
+                target.cancellation,
+            ) {
+                Ok(()) => {
+                    return Ok(PreparedPausedCheckpointPromotionRestart::AlreadyValidated(
+                        AuthenticatedPausedCheckpointPromotion { recovery },
+                    ));
+                }
+                Err(ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady { .. }) => {}
+                Err(error) => {
+                    return Err(Box::new(
+                        PausedCheckpointPromotionPreparationError::ProductionRestore(error),
+                    )
+                    .into());
+                }
+            }
             let prepared = validate_and_prepare_production_paused_checkpoint_promotion(
                 checkpoints,
-                resolved.target(run_state_root),
+                target,
                 factory,
             )
             .map_err(Box::new)?;
