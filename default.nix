@@ -662,7 +662,7 @@
           "observer_perturbations=poll-yield-order-timeout-profiles"
           "observer_profile_count=at-least-two"
           "built_in_repetitions_per_observer_profile=2"
-          "representative_repetitions_per_observer_profile=1"
+          "representative_repetitions_per_observer_profile=2"
           "cli_backend=qemu-tcg-production-vm-lifecycle"
           "live_qemu_per_reduction=true"
           "live_event_streams=bit-identical"
