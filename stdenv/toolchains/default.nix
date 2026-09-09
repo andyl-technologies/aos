@@ -29,6 +29,8 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
+  # Qualification inspects the same tier values without changing their inputs.
+  exportTiers ? false,
 }: let
   lib = import ../../lib/platform.nix;
 
@@ -141,4 +143,17 @@
   # Points to the newest tier directory. The final compiler bootstrap happens
   # inside the tier; the rest of the tier is not rebuilt with itself.
 in
-  gcc16
+  if exportTiers
+  then
+    {inherit gcc3_4 gcc3_4_cross gcc4_1 gcc4_4 gcc4_8 gcc8 gcc11 gcc16;}
+    // (
+      if needsCross1
+      then {inherit gcc4_8_cross;}
+      else {}
+    )
+    // (
+      if needsCross2
+      then {inherit gcc8_cross;}
+      else {}
+    )
+  else gcc16

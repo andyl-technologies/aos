@@ -13,6 +13,12 @@ manual recovery checks and when to perform them. This page specifies the
 contract and evidence formats; the [command reference](canonical-releases.md)
 documents command arguments.
 
+The aggregate regression suite also requires the [toolchain boundary
+checks](toolchain-boundaries.md). These reject historical tool leakage at native
+tier exports and known ambient host-tool exposure in the build sandbox. Run the
+sandbox probe freshly on each qualification executor; a cached result does not
+validate that executor's current sandbox configuration.
+
 ## Target support matrix
 
 The support matrix records compatibility claims and the evidence supporting them.
