@@ -260,6 +260,7 @@ pub(super) fn savepoint_handle_evidence(
             ))
         },
     )?;
+    validate_campaign_marker_event_source(handle.boundary_proof.as_ref(), &scenario_form)?;
     let scenario = scenario_form.scenario_def();
     if scenario.id().to_hex() != handle.scenario_id_hex {
         return Err(CliError::Identity(format!(
@@ -291,6 +292,39 @@ pub(super) fn savepoint_handle_evidence(
         configuration,
         checkpoint,
     })
+}
+
+fn validate_campaign_marker_event_source(
+    proof: Option<&SavepointBoundaryProof>,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<(), CliError> {
+    let Some(SavepointBoundaryProof::CampaignMarkerEvent { node, .. }) = proof else {
+        return Ok(());
+    };
+    let source = scenario
+        .world()
+        .nodes()
+        .iter()
+        .find(|candidate| candidate.id() == node)
+        .ok_or_else(|| {
+            artifact_error(format!(
+                "campaign marker event source node `{}` is not declared by its embedded scenario",
+                node.name
+            ))
+        })?;
+    let crucible::WorldNodeDef::Vm(source) = source else {
+        return Err(artifact_error(format!(
+            "campaign marker event source node `{}` is not a virtual machine",
+            node.name
+        )));
+    };
+    if source.white_box != crucible::WhiteBoxPolicy::Enabled {
+        return Err(artifact_error(format!(
+            "campaign marker event source node `{}` is not white-box enabled",
+            node.name
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn savepoint_store_evidence(

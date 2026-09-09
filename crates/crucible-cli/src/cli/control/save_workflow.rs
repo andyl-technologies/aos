@@ -243,7 +243,8 @@ where
             selector: save_plan.selector.clone(),
             frontier_ticks: boundary.frontier.ticks,
             quanta: boundary.quanta_stepped,
-            breakpoint_firing,
+            proof: breakpoint_firing
+                .map_or(SaveBoundaryProof::Coordinate, SaveBoundaryProof::Breakpoint),
         },
     })
 }

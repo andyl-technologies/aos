@@ -53,7 +53,20 @@ pub(crate) struct SaveBoundaryEvidence {
     pub(crate) selector: Option<SaveAtSelector>,
     pub(crate) frontier_ticks: u64,
     pub(crate) quanta: u64,
-    pub(crate) breakpoint_firing: Option<crucible_session::BreakpointFiring>,
+    pub(crate) proof: SaveBoundaryProof,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SaveBoundaryProof {
+    Coordinate,
+    Breakpoint(crucible_session::BreakpointFiring),
+    CampaignMarkerEvent {
+        sequence: u64,
+        content_hash: crucible::ContentHash,
+        node: crucible::NodeId,
+        retired_icount: u64,
+        marker: crucible::MarkerId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,16 +124,30 @@ impl SaveBoundaryEvidence {
                 )
             })
             .unwrap_or_else(|| String::from("none"));
-        let proof = self
-            .breakpoint_firing
-            .as_ref()
-            .map(|firing| {
+        let proof = match &self.proof {
+            SaveBoundaryProof::Coordinate => String::from("breakpoint=none"),
+            SaveBoundaryProof::Breakpoint(firing) => {
                 format!(
                     "breakpoint={} disposition=suspend firing_frontier={} firing_quanta={}",
                     firing.id, firing.frontier.ticks, firing.quanta
                 )
-            })
-            .unwrap_or_else(|| String::from("breakpoint=none"));
+            }
+            SaveBoundaryProof::CampaignMarkerEvent {
+                sequence,
+                content_hash,
+                node,
+                retired_icount,
+                marker: _,
+            } => format!(
+                "campaign_marker_event={} event_hash={} node={} retired_icount={} firing_frontier={} firing_quanta={}",
+                sequence,
+                format_content_hash_ref(*content_hash),
+                encode_canonical_summary_value(&node.name),
+                retired_icount,
+                self.frontier_ticks,
+                self.quanta
+            ),
+        };
         format!(
             "at={} selector={} frontier={} quanta={} {}",
             self.at.label(),

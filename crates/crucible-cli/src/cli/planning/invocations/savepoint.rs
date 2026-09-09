@@ -183,6 +183,23 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
                             quanta: parse_u64(line_index, tag, &fields[5])?,
                         }
                     }
+                    Some("campaign-marker-event") => {
+                        require_field_count(line_index, tag, &fields, 8)?;
+                        validate_required_field("campaign marker event node", &fields[4])?;
+                        SavepointBoundaryProof::CampaignMarkerEvent {
+                            event_sequence: parse_u64(line_index, tag, &fields[2])?,
+                            event_content_hash: parse_blake3_content_hash(
+                                "campaign marker event",
+                                &fields[3],
+                            )?,
+                            node: crucible::NodeId {
+                                name: fields[4].clone(),
+                            },
+                            retired_icount: parse_u64(line_index, tag, &fields[5])?,
+                            frontier_ticks: parse_u64(line_index, tag, &fields[6])?,
+                            quanta: parse_u64(line_index, tag, &fields[7])?,
+                        }
+                    }
                     Some(kind) => {
                         return Err(artifact_line_error(
                             line_index,
@@ -255,7 +272,7 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
     }
 
     let schema = schema.ok_or_else(|| missing_line("schema"))?;
-    if schema != SAVEPOINT_HANDLE_SCHEMA {
+    if schema != SAVEPOINT_HANDLE_SCHEMA && schema != CAMPAIGN_MARKER_SAVEPOINT_HANDLE_SCHEMA {
         return Err(artifact_error(format!(
             "unsupported savepoint handle schema `{schema}`"
         )));
@@ -270,6 +287,7 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
     let boundary_predicate =
         boundary_predicate.ok_or_else(|| missing_line("boundary-predicate"))?;
     validate_savepoint_boundary_proof(
+        &schema,
         at,
         selector.as_ref(),
         &boundary_proof,
@@ -297,6 +315,7 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
 }
 
 fn validate_savepoint_boundary_proof(
+    schema: &str,
     at: SaveAtArg,
     selector: Option<&SaveAtSelector>,
     proof: &SavepointBoundaryProof,
@@ -306,7 +325,8 @@ fn validate_savepoint_boundary_proof(
 ) -> Result<(), CliError> {
     let proof_frontier = match proof {
         SavepointBoundaryProof::Coordinate { frontier_ticks, .. }
-        | SavepointBoundaryProof::Breakpoint { frontier_ticks, .. } => *frontier_ticks,
+        | SavepointBoundaryProof::Breakpoint { frontier_ticks, .. }
+        | SavepointBoundaryProof::CampaignMarkerEvent { frontier_ticks, .. } => *frontier_ticks,
     };
     if proof_frontier != frontier_ticks {
         return Err(artifact_error(format!(
@@ -353,18 +373,57 @@ fn validate_savepoint_boundary_proof(
         )));
     }
 
+    if let SavepointBoundaryProof::CampaignMarkerEvent {
+        event_sequence,
+        event_content_hash,
+        node,
+        retired_icount,
+        ..
+    } = proof
+    {
+        let Some(SaveAtSelector::Marker { name }) = selector else {
+            return Err(artifact_error(
+                "campaign marker event proof requires a guest-marker selector",
+            ));
+        };
+        let event = crucible::SchedulerEventLogEntry::guest_marker_observation(
+            *event_sequence,
+            crucible::Icount {
+                retired: *retired_icount,
+            },
+            node.clone(),
+            crucible::MarkerId::from_name(name),
+        );
+        if event.content_hash() != *event_content_hash {
+            return Err(artifact_error(
+                "campaign marker event proof content hash does not match its canonical event",
+            ));
+        }
+    }
+
     let shape_is_valid = matches!(
-        (at, proof),
+        (schema, at, proof),
         (
+            SAVEPOINT_HANDLE_SCHEMA,
             SaveAtArg::VirtualTime,
             SavepointBoundaryProof::Coordinate { .. }
         ) | (
+            SAVEPOINT_HANDLE_SCHEMA,
             SaveAtArg::Quiescence,
             SavepointBoundaryProof::Breakpoint { .. }
         ) | (
+            SAVEPOINT_HANDLE_SCHEMA,
             SaveAtArg::Property,
             SavepointBoundaryProof::Breakpoint { .. }
-        ) | (SaveAtArg::Marker, SavepointBoundaryProof::Breakpoint { .. })
+        ) | (
+            SAVEPOINT_HANDLE_SCHEMA,
+            SaveAtArg::Marker,
+            SavepointBoundaryProof::Breakpoint { .. }
+        ) | (
+            CAMPAIGN_MARKER_SAVEPOINT_HANDLE_SCHEMA,
+            SaveAtArg::Marker,
+            SavepointBoundaryProof::CampaignMarkerEvent { .. }
+        )
     );
     if !shape_is_valid {
         return Err(artifact_error(format!(

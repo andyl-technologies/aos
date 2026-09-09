@@ -3696,9 +3696,25 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   configuration, physical closure, and scheduler evidence, and remove the
   temporary physical closure before returning. They preserve the version-3
   legacy handle and logical DAG closure, so existing resume and fork readers
-  consume the result without native exact-resume acceleration. Quiescence,
-  property, marker, resume, fork, search, fuzz, remaining replay producers,
-  triage, interactive control, and long-lived session migration remain open.
+  consume the result without native exact-resume acceleration. Campaign-backed
+  marker saves now use the same exact-capture owner with a named-boundary stop.
+  They export a version-4 campaign-marker-event proof containing the retained,
+  canonically recomputable scheduler event and preserve version-3 reads and
+  writes for session-owned saves. Selection-free marker and virtual-time saves
+  remain portable; a boundary after a typed selection, historical override, or
+  application-random decision fails before export until the handle carries the
+  authenticated replay records. Resume
+  and fork validate the v4 event hash, marker predicate, source node policy,
+  frontier, and proof shape before using the embedded logical checkpoint.
+  Standard non-interactive, selection-free
+  local-QEMU resume now uses the campaign owner for version-3 and version-4
+  handles: it authenticates the logical source as a campaign observation,
+  captures and restores the exact source, continues to quiescence,
+  virtual-time, or terminal completion, and replay-validates the descendant
+  checkpoint. Typed-selection and historical override/application-randomness
+  resume schedules, property stops, interactive resume, fork execution,
+  quiescence and property saves, search, fuzz, remaining replay producers,
+  triage, and long-lived session migration remain open.
 - [x] **T-CAM-8.5** Publish user documentation and the worked network campaign
   as an executable fixture. The public Crucible guide now documents the
   shipped single-host campaign surface: strict offline import, managed daemon
