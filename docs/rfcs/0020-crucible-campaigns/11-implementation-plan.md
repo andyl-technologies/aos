@@ -1892,8 +1892,15 @@ fixed cadence outside the supervisor actor. A missing current-fact selection
 fails GC closed. Adjacent read-only porcelain
 reports the exact admitted graph and streams one requested content ID through
 deferred EOF authentication without borrowing ref or delete authority. It also
-authenticates a fixed-bound physical inventory under an opening/closing
-generation sandwich and reports only aggregate placement evidence. A hermetic
+delegates physical verification to the separately held `StoreGraphAdmin`,
+which enforces global aggregate work bounds while authenticating each physical
+leaf under its own opening/closing generation sandwich and returns typed,
+path-free aggregate placement evidence. The boundary rejects partial, short,
+long, or deferred-failure streams, inventory/opened-length disagreement,
+backend-identity disagreement, and generation drift without retaining a fence
+after failure.
+The CLI renders that evidence without reimplementing the administration
+protocol. A hermetic
 public-process flight now generates and validates the worked-network fixture,
 imports it before endpoint bind, creates and starts the campaign through the
 checked Unix service, authenticates live logical and physical store views,
