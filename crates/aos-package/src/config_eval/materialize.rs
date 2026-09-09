@@ -2765,7 +2765,11 @@ mod tests {
         manifest.inputs.expected_current_generation = Some(7);
         manifest.inputs.ability_activation = Some(AbilityActivationInput {
             schema: AbilityActivationInput::SCHEMA.to_string(),
-            required_features: vec!["abilities-v1".to_string(), "ability-effects-v1".to_string()],
+            required_features: vec![
+                "abilities-v1".to_string(),
+                "ability-effects-v1".to_string(),
+                "native-resource-map-v1".to_string(),
+            ],
             desired_state: sidecar("desired-state"),
             authenticated_policy_set: sidecar("policy-set"),
             packages: Vec::new(),
@@ -2775,6 +2779,16 @@ mod tests {
         let round_trip: ConfigManifest =
             serde_json::from_value(serde_json::to_value(&manifest).unwrap()).unwrap();
         assert_eq!(round_trip, manifest);
+
+        manifest
+            .inputs
+            .ability_activation
+            .as_mut()
+            .unwrap()
+            .required_features = vec!["abilities-v1".to_string(), "ability-effects-v1".to_string()];
+        manifest
+            .validate()
+            .expect("historical planning-only feature set remains readable");
     }
 
     #[test]
@@ -2808,7 +2822,11 @@ mod tests {
         manifest.inputs.expected_current_generation = Some(7);
         manifest.inputs.ability_activation = Some(AbilityActivationInput {
             schema: AbilityActivationInput::SCHEMA.to_string(),
-            required_features: vec!["abilities-v1".to_string(), "ability-effects-v1".to_string()],
+            required_features: vec![
+                "abilities-v1".to_string(),
+                "ability-effects-v1".to_string(),
+                "native-resource-map-v1".to_string(),
+            ],
             desired_state: sidecar("desired-state"),
             authenticated_policy_set: sidecar("policy-set"),
             packages: Vec::new(),
