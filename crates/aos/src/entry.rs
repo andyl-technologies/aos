@@ -220,6 +220,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return Ok(());
     }
 
+    // Portable inspection revalidates captured pure inputs without Nix or a
+    // live provider connection.
+    if let Commands::Ability { command } = &cli.command {
+        return commands::ability::run(command, printer);
+    }
+
     // The server command doesn't need NixRunner, handle it before construction.
     if let Commands::Serve { config } = &cli.command {
         return commands::serve::run(printer, config).await;
@@ -506,6 +512,7 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         Commands::Container { .. } => unreachable!(),
         Commands::Vm { .. } => unreachable!(),
         Commands::LanguageServer { .. } => unreachable!(),
+        Commands::Ability { .. } => unreachable!(),
     }
 }
 
