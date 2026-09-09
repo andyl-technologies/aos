@@ -61,6 +61,10 @@
     if isCross
     then buildPackages.git-minimal
     else git-minimal;
+  buildNix =
+    if isCross
+    then buildPackages.nix
+    else nix;
   buildOpenSsh =
     if isCross
     then buildPackages.openssh
@@ -228,11 +232,12 @@ in
     #
     # openssh and zstd are build-only inputs for the check phase: the workspace
     # tests use `ssh-keygen` for repository fixtures and exercise compressed
-    # registry packs. `git-minimal` is also used by those tests, but remains in
+    # registry packs. Nix supplies the multicall commands exercised by the
+    # executable-resolution tests. `git-minimal` is also used by tests, but remains in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildOpenSsh buildZstd remove-references-to]
+      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd remove-references-to]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl sqlite libssh2 zlib]
