@@ -26,9 +26,9 @@ use crate::workspace_pin::{
     WorkspacePinHostScopeV1, WorkspacePinObservationV1, WorkspacePinRecoveryDispositionV1,
     WorkspaceRootPinProofV1, attempt_record, derive_attempt_id, load_attempts,
 };
-#[cfg(test)]
-use crate::workspace_repair::repair_intent_record;
-use crate::workspace_repair::{StorageWorkspacePinRepairIntentV1, load_repair_intents};
+use crate::workspace_repair::{
+    StorageWorkspacePinRepairIntentV1, load_repair_intents, repair_intent_record,
+};
 use crate::{CatalogBindingV1, CatalogPlanV1, PostconditionPolicyV1, ResolvedCatalogCommitmentV1};
 
 type HmacSha256 = Hmac<Sha256>;
