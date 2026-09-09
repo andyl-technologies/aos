@@ -42,7 +42,9 @@ pub mod state;
 pub mod workspace_catalog;
 mod workspace_pin;
 mod workspace_repair;
+mod workspace_repair_admission;
 mod workspace_repair_observer;
+mod workspace_repair_worker;
 pub mod zfs;
 
 pub use authorization::{

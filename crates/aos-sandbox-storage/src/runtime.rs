@@ -26,7 +26,10 @@ use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::StorageProtectedConfigurationV1;
-use crate::broker::{WorkspacePinExecutionOutcomeV1, WorkspaceRemovePinRequirementV1};
+use crate::broker::{
+    AuthorizedWorkspacePinRepairAttemptV1, WorkspacePinExecutionOutcomeV1,
+    WorkspaceRemovePinRequirementV1,
+};
 use crate::helper::{StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome};
 use crate::pin_observer::WorkspacePinHostCustody;
 use crate::pin_worker_runtime::{SystemdWorkspacePinExecutor, SystemdWorkspacePinObserver};
@@ -116,6 +119,15 @@ pub enum StorageRuntimeMutationOutcome {
         /// Exact pending mutation commitment.
         mutation_digest: ObjectDigest,
     },
+}
+
+/// Reports one authorized workspace root-pin repair request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspacePinRepairExecutionOutcomeV1 {
+    /// Exact worker postcondition evidence satisfied the fresh repair attempt.
+    Satisfied,
+    /// The exact operation is already durable and remains observation-only.
+    ObservationRequired,
 }
 
 /// Owns the sole Storage coordinator and fixed worker helper.
@@ -243,6 +255,147 @@ impl StorageBrokerRuntime {
     #[must_use]
     pub const fn is_apply_ready(&self) -> bool {
         matches!(self.readiness, StorageRuntimeReadiness::Ready)
+    }
+
+    /// Reports whether the isolated repair path may accept a fresh request.
+    ///
+    /// Repair readiness never implies generic Apply readiness. The repair
+    /// method re-observes its exact precondition and rechecks all authority on
+    /// every call, including while another recovered operation remains pending.
+    #[must_use]
+    pub const fn is_repair_ready(&self) -> bool {
+        matches!(
+            self.readiness,
+            StorageRuntimeReadiness::Ready
+                | StorageRuntimeReadiness::IntegrationIncomplete
+                | StorageRuntimeReadiness::RecoveryPending { .. }
+        )
+    }
+
+    /// Repairs one existing workspace root pin through fresh observation.
+    ///
+    /// The caller supplies only the raw Storage 1.4 request and standard
+    /// authorization artifacts. Dataset identity, catalog, attempt ordinal,
+    /// mount observation, and host scope are derived from authenticated state
+    /// and retained descriptors while the runtime holds its exclusive journals.
+    /// An exact durable retry is observation-only and never reaches a mutator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError`] when repair is unavailable, authority or
+    /// retained history fails closed, exact dataset/pin absence is not freshly
+    /// proved, the atomic admission is uncertain, worker dispatch fails, or
+    /// the exact postcondition is not observed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn repair_workspace_pin<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+    ) -> Result<WorkspacePinRepairExecutionOutcomeV1, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        if !self.is_repair_ready() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let preliminary_clock = trusted_clock().map_err(|_| StorageRuntimeError::Recovery)?;
+        if self
+            .coordinator
+            .workspace_pin_repair_replay(
+                request_body,
+                artifacts,
+                protocol_version,
+                peer,
+                policy,
+                &preliminary_clock,
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?
+        {
+            return Ok(WorkspacePinRepairExecutionOutcomeV1::ObservationRequired);
+        }
+
+        let current_host_scope = self
+            .pin_custody
+            .host_scope()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let observation_dispatch = self
+            .coordinator
+            .plan_workspace_pin_repair_admission_observation(
+                request_body,
+                artifacts,
+                protocol_version,
+                peer,
+                policy,
+                &preliminary_clock,
+                &self.pin_contract,
+                current_host_scope,
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let observation_request = observation_dispatch
+            .request_bytes()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let fresh_observation = self
+            .pin_observer
+            .observe_repair_admission(
+                &observation_request,
+                observation_dispatch.probe(),
+                &self.pin_custody,
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let admitted = self
+            .coordinator
+            .begin_workspace_pin_repair(
+                observation_dispatch,
+                fresh_observation,
+                request_body,
+                artifacts,
+                protocol_version,
+                peer,
+                policy,
+                &self.pin_contract,
+                trusted_clock,
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let AuthorizedWorkspacePinRepairAttemptV1::Dispatch(dispatch) = admitted else {
+            return Ok(WorkspacePinRepairExecutionOutcomeV1::ObservationRequired);
+        };
+
+        let worker_request = dispatch
+            .worker_request_bytes()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let result =
+            match self
+                .pin_executor
+                .execute(&worker_request, dispatch.attempt(), &self.pin_custody)
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    self.latch_recovery_required();
+                    return Err(StorageRuntimeError::Recovery);
+                }
+            };
+        let disposition = match self
+            .coordinator
+            .complete_workspace_pin_repair_execution(dispatch.attempt(), &result)
+        {
+            Ok(disposition) => disposition,
+            Err(_) => {
+                self.latch_recovery_required();
+                return Err(StorageRuntimeError::Recovery);
+            }
+        };
+        if disposition
+            != crate::workspace_pin::WorkspacePinRecoveryDispositionV1::CompletePublication
+        {
+            self.latch_recovery_required();
+            return Err(StorageRuntimeError::Recovery);
+        }
+        self.readiness = self.reconcile_startup()?;
+        Ok(WorkspacePinRepairExecutionOutcomeV1::Satisfied)
     }
 
     /// Admits one workspace-creating effect with an exact retained identity range.

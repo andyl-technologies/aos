@@ -125,6 +125,26 @@ impl WorkspacePinWorkerAuthorityV1 {
         Ok(())
     }
 
+    pub(crate) const fn parent_request_id(&self) -> [u8; 16] {
+        self.parent_request_id
+    }
+
+    pub(crate) fn attempt_record(&self) -> &[u8] {
+        &self.attempt_record
+    }
+
+    pub(crate) fn current_fence(&self) -> &[u8] {
+        &self.current_fence
+    }
+
+    pub(crate) fn effect(&self) -> &[u8] {
+        &self.effect
+    }
+
+    pub(crate) fn operation_fence(&self) -> &[u8] {
+        &self.operation_fence
+    }
+
     #[cfg(test)]
     pub(crate) fn substitute_record_from(
         &mut self,

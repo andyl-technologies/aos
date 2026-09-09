@@ -23,6 +23,7 @@ use crate::workspace_pin::{
     workspace_pin_path,
 };
 use crate::workspace_repair::WorkspacePinRepairProbeV1;
+use crate::workspace_repair_admission::WorkspacePinRepairAdmissionProbeV1;
 
 const MAXIMUM_HOST_MOUNTS: usize = 65_536;
 
@@ -143,6 +144,24 @@ pub(crate) fn observe_workspace_pin(
 /// Observes a repair target in its freshly authenticated current host scope.
 pub(crate) fn observe_workspace_pin_repair(
     probe: &WorkspacePinRepairProbeV1,
+    dataset: &WorkspaceDatasetObservationV1,
+    mount_namespace: &NamespaceFd,
+    retained_pin_root: &ResolvedPath,
+) -> Result<WorkspacePinObservationV1, WorkspacePinObserverError> {
+    let target = WorkspacePinObservationTargetV1 {
+        host_scope: probe.current_host_scope(),
+        workspace_handle: probe.workspace_handle(),
+        dataset_name: probe.dataset_name(),
+        dataset_guid: probe.dataset_guid(),
+        expected_pin: None,
+        satisfied_pin: None,
+    };
+    observe_workspace_pin_for_target(&target, dataset, mount_namespace, retained_pin_root)
+}
+
+/// Observes a pre-admission repair target in its authenticated current scope.
+pub(crate) fn observe_workspace_pin_repair_admission(
+    probe: &WorkspacePinRepairAdmissionProbeV1,
     dataset: &WorkspaceDatasetObservationV1,
     mount_namespace: &NamespaceFd,
     retained_pin_root: &ResolvedPath,

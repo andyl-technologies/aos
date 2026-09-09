@@ -141,6 +141,17 @@ impl StorageStateKey {
     ) -> Result<StorageWorkspacePublicationIntentV1, StorageStateError> {
         decode_publication_intent(self, &operation_id, bytes)
     }
+
+    #[cfg(test)]
+    pub(crate) fn seal_workspace_publication_intent_for_test(
+        &self,
+        intent: &StorageWorkspacePublicationIntentV1,
+    ) -> Result<Vec<u8>, StorageStateError> {
+        publication_intent_record(self, intent)?
+            .value()
+            .map(ToOwned::to_owned)
+            .ok_or(StorageStateError::InvalidValue)
+    }
 }
 
 impl Drop for StorageStateKey {
@@ -1060,15 +1071,32 @@ impl StorageTransactionStore {
         if self.repair_intents.get(&intent.repair_operation_id()) != Some(intent) {
             return Err(StorageStateError::InvalidTransition);
         }
+        let attempt = self
+            .pin_attempts
+            .get(&intent.repair_attempt_id())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        self.workspace_creation_catalog_for_attempt(attempt)
+    }
+
+    pub(crate) fn workspace_creation_catalog_for_attempt(
+        &self,
+        attempt: &WorkspacePinAttemptV1,
+    ) -> Result<ResolvedCatalogCommitmentV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        if self.pin_attempts.get(&attempt.attempt_id()) != Some(attempt)
+            || attempt.action() != WorkspacePinActionV1::Ensure
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
         let creation = self
             .records
-            .get(&intent.creation_operation_id())
+            .get(&attempt.creation_operation_id())
             .filter(|record| {
                 record.phase == DurableStoragePhase::Committed
                     && record.result.is_some_and(|result| {
-                        result.catalog() == intent.creation_result_catalog()
-                            && result.result_digest() == intent.creation_result_digest()
-                            && result.storage_handle() == Some(intent.workspace_handle())
+                        result.catalog() == attempt.creation_result_catalog()
+                            && result.result_digest() == attempt.creation_result_digest()
+                            && result.storage_handle() == Some(attempt.workspace_handle())
                     })
             })
             .ok_or(StorageStateError::MissingAuthorityLink)?;
@@ -1109,6 +1137,185 @@ impl StorageTransactionStore {
             }
         }
         Ok(false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_workspace_pin_repair(
+        &mut self,
+        sandbox_id: [u8; 16],
+        expected_latest: &WorkspacePinAttemptV1,
+        intent: StorageWorkspacePinRepairIntentV1,
+        attempt: WorkspacePinAttemptV1,
+        sealed_current_fence: Vec<u8>,
+        sealed_pending_effect: Vec<u8>,
+        sealed_completed_effect: Vec<u8>,
+        sealed_operation_fence: Vec<u8>,
+        authority: FreshWorkspacePinAuthority,
+    ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let current_latest = self
+            .pin_attempts
+            .values()
+            .filter(|candidate| candidate.workspace_handle() == attempt.workspace_handle())
+            .max_by_key(|candidate| candidate.attempt_ordinal())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if current_latest != expected_latest
+            || !self.workspace_creation_is_active(
+                expected_latest.creation_operation_id(),
+                expected_latest.workspace_handle(),
+            )?
+            || expected_latest.action() != WorkspacePinActionV1::Ensure
+            || expected_latest.expected_pin().is_some()
+            || expected_latest.attempt_ordinal() >= MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE
+            || attempt.attempt_ordinal()
+                != expected_latest
+                    .attempt_ordinal()
+                    .checked_add(1)
+                    .ok_or(StorageStateError::InvalidTransition)?
+            || attempt.action() != WorkspacePinActionV1::Ensure
+            || attempt.phase() != WorkspacePinAttemptPhaseV1::Ambiguous
+            || attempt.effect_operation_id() != intent.repair_operation_id()
+            || attempt.creation_operation_id() != expected_latest.creation_operation_id()
+            || attempt.creation_result_catalog() != expected_latest.creation_result_catalog()
+            || attempt.creation_result_digest() != expected_latest.creation_result_digest()
+            || attempt.workspace_handle() != expected_latest.workspace_handle()
+            || attempt.workspace_assignment_digest()
+                != expected_latest.workspace_assignment_digest()
+            || attempt.dataset_name() != expected_latest.dataset_name()
+            || attempt.dataset_guid() != expected_latest.dataset_guid()
+            || attempt.identity_range_start() != expected_latest.identity_range_start()
+            || attempt.identity_range_size() != expected_latest.identity_range_size()
+            || attempt.expected_pin().is_some()
+            || intent.repair_attempt_id() != attempt.attempt_id()
+            || intent.repair_attempt_ordinal() != attempt.attempt_ordinal()
+            || intent.creation_operation_id() != attempt.creation_operation_id()
+            || intent.creation_result_catalog() != attempt.creation_result_catalog()
+            || intent.creation_result_digest() != attempt.creation_result_digest()
+            || intent.workspace_handle() != attempt.workspace_handle()
+            || intent.repair_assignment_digest() != attempt.effect_assignment_digest()
+            || intent.operation_fence_digest() != attempt.operation_fence_digest()
+            || intent.latest_ensure_attempt_id() != expected_latest.attempt_id()
+            || intent.latest_ensure_phase() != expected_latest.phase()
+            || intent.latest_ensure_attempt_record_digest()
+                != ObjectDigest::from_bytes(
+                    Sha256::digest(self.workspace_pin_attempt_record(expected_latest)?).into(),
+                )
+            || intent.admitted_effect_record() != sealed_pending_effect
+            || intent.operation_fence_digest()
+                != ObjectDigest::from_bytes(Sha256::digest(&sealed_operation_fence).into())
+            || intent.publication_intent_record_digest()
+                != ObjectDigest::from_bytes(
+                    Sha256::digest(
+                        self.workspace_publication_intent_record(attempt.creation_operation_id())?,
+                    )
+                    .into(),
+                )
+            || attempt.attempt_id() != authority.attempt_id()
+            || attempt.authority_digest()? != authority.attempt_digest()
+            || sandbox_id == [0; 16]
+            || sealed_current_fence.is_empty()
+            || sealed_pending_effect.is_empty()
+            || sealed_completed_effect.is_empty()
+            || sealed_operation_fence.is_empty()
+            || sealed_current_fence.len() > MAXIMUM_RECORD_BYTES
+            || sealed_pending_effect.len() > MAXIMUM_RECORD_BYTES
+            || sealed_completed_effect.len() > MAXIMUM_RECORD_BYTES
+            || sealed_operation_fence.len() > MAXIMUM_RECORD_BYTES
+            || sealed_completed_effect.as_slice() == sealed_pending_effect.as_slice()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+
+        if let Some(existing_intent) = self.repair_intents.get(&intent.repair_operation_id()) {
+            let existing_attempt = self
+                .pin_attempts
+                .get(&existing_intent.repair_attempt_id())
+                .ok_or(StorageStateError::MissingAuthorityLink)?;
+            if existing_intent != &intent || !existing_attempt.same_authorized_effect(&attempt) {
+                return Err(StorageStateError::Equivocation);
+            }
+            return Ok(BeginWorkspacePinAttemptV1::ObserveOnly(
+                existing_attempt.clone(),
+            ));
+        }
+        if self.records.contains_key(&intent.repair_operation_id())
+            || self
+                .journal
+                .get(
+                    RecordNamespace::AuthorityPublication,
+                    &intent.repair_operation_id(),
+                )
+                .is_some()
+            || self
+                .journal
+                .get(RecordNamespace::Effect, &intent.request_id())
+                .is_some()
+            || self.pin_attempts.contains_key(&attempt.attempt_id())
+            || self.pin_attempts.values().any(|candidate| {
+                candidate.workspace_handle() == attempt.workspace_handle()
+                    && candidate.attempt_ordinal() == attempt.attempt_ordinal()
+            })
+        {
+            return Err(StorageStateError::Equivocation);
+        }
+
+        let attempt = attempt.with_authority_receipt(authority.into_sealed_receipt())?;
+        let transaction = JournalTransaction::new(
+            workspace_pin_repair_transaction_id(intent.repair_operation_id()),
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    sandbox_id.to_vec(),
+                    sealed_current_fence,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    intent.request_id().to_vec(),
+                    sealed_pending_effect,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    intent.repair_operation_id().to_vec(),
+                    sealed_operation_fence,
+                ),
+                repair_intent_record(&intent, self.key.key_id, &self.key.secret)?,
+                attempt_record(&attempt, self.key.key_id, &self.key.secret)?,
+            ],
+        )?;
+        let capacity_completion = attempt.capacity_completion()?;
+        let satisfied = JournalTransaction::new(
+            pin_attempt_transaction_id(&capacity_completion),
+            vec![
+                attempt_record(&capacity_completion, self.key.key_id, &self.key.secret)?,
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    intent.request_id().to_vec(),
+                    sealed_completed_effect,
+                ),
+            ],
+        )?;
+        self.journal
+            .preflight_transactions(&[transaction.clone(), satisfied])?;
+
+        self.commit_journal(&transaction)?;
+        if transaction
+            .records()
+            .iter()
+            .any(|record| self.journal.get(record.namespace(), record.key()) != record.value())
+        {
+            self.commit_failed = true;
+            return Err(aos_sandbox::JournalError::Poisoned.into());
+        }
+
+        self.repair_intents
+            .insert(intent.repair_operation_id(), intent);
+        self.pin_attempts
+            .insert(attempt.attempt_id(), attempt.clone());
+        if self.validate_pin_attempt_context(&attempt).is_err() {
+            self.commit_failed = true;
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        Ok(BeginWorkspacePinAttemptV1::Dispatch(attempt))
     }
 
     #[cfg(test)]
@@ -1306,6 +1513,73 @@ impl StorageTransactionStore {
             dataset_guid,
             intent.identity_range_start(),
             intent.identity_range_size(),
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn plan_workspace_pin_repair(
+        &self,
+        expected_latest: &WorkspacePinAttemptV1,
+        repair_operation_id: [u8; 16],
+        operation_fence_digest: ObjectDigest,
+        repair_assignment_digest: ObjectDigest,
+        host_scope: WorkspacePinHostScopeV1,
+        clock_provenance: [u8; 16],
+        effect_deadline_boottime_nanoseconds: u64,
+    ) -> Result<WorkspacePinAttemptV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let latest = self
+            .pin_attempts
+            .values()
+            .filter(|attempt| attempt.workspace_handle() == expected_latest.workspace_handle())
+            .max_by_key(|attempt| attempt.attempt_ordinal())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if latest != expected_latest
+            || latest.action() != WorkspacePinActionV1::Ensure
+            || latest.expected_pin().is_some()
+            || !self.workspace_creation_is_active(
+                latest.creation_operation_id(),
+                latest.workspace_handle(),
+            )?
+            || repair_operation_id == latest.creation_operation_id()
+            || repair_operation_id == latest.effect_operation_id()
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let repair_ordinal = latest
+            .attempt_ordinal()
+            .checked_add(1)
+            .filter(|ordinal| *ordinal <= MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let attempt_id = derive_attempt_id(
+            &self.key.secret,
+            repair_operation_id,
+            latest.workspace_handle(),
+            WorkspacePinActionV1::Ensure,
+            repair_ordinal,
+        )?;
+        WorkspacePinAttemptV1::new_ambiguous(
+            attempt_id,
+            repair_ordinal,
+            WorkspacePinActionV1::Ensure,
+            repair_operation_id,
+            latest.creation_operation_id(),
+            operation_fence_digest,
+            repair_assignment_digest,
+            latest.workspace_assignment_digest(),
+            latest.creation_result_catalog(),
+            latest.creation_result_digest(),
+            latest.workspace_handle(),
+            host_scope.kernel_boot_id(),
+            host_scope.mount_namespace_device(),
+            host_scope.mount_namespace_inode(),
+            clock_provenance,
+            effect_deadline_boottime_nanoseconds,
+            latest.dataset_name().to_owned(),
+            latest.dataset_guid(),
+            latest.identity_range_start(),
+            latest.identity_range_size(),
             None,
         )
     }
@@ -1559,6 +1833,86 @@ impl StorageTransactionStore {
             )?],
         )?;
         self.commit_journal(&transaction)?;
+        self.pin_attempts.insert(attempt_id, satisfied);
+        Ok(disposition)
+    }
+
+    pub(crate) fn complete_workspace_pin_repair_attempt(
+        &mut self,
+        attempt_id: [u8; 16],
+        dataset: &WorkspaceDatasetObservationV1,
+        pin: &WorkspacePinObservationV1,
+        sealed_completed_effect: Vec<u8>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let current = self
+            .pin_attempts
+            .get(&attempt_id)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let latest = self
+            .pin_attempts
+            .values()
+            .filter(|attempt| attempt.workspace_handle() == current.workspace_handle())
+            .max_by_key(|attempt| attempt.attempt_ordinal())
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let intent = self
+            .repair_intents
+            .get(&current.effect_operation_id())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let live_effect = self
+            .journal
+            .get(RecordNamespace::Effect, &intent.request_id())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if latest.attempt_id() != current.attempt_id()
+            || current.action() != WorkspacePinActionV1::Ensure
+            || current.effect_operation_id() == current.creation_operation_id()
+            || intent.repair_attempt_id() != current.attempt_id()
+            || sealed_completed_effect.is_empty()
+            || sealed_completed_effect.len() > MAXIMUM_RECORD_BYTES
+            || sealed_completed_effect.as_slice() == intent.admitted_effect_record()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+
+        let disposition = current.classify(dataset, pin);
+        let WorkspacePinObservationV1::Present(observed_pin) = pin else {
+            return Ok(disposition);
+        };
+        if disposition != WorkspacePinRecoveryDispositionV1::CompletePublication {
+            return Ok(disposition);
+        }
+        if current.phase() == WorkspacePinAttemptPhaseV1::Satisfied {
+            if live_effect != sealed_completed_effect.as_slice() {
+                return Err(StorageStateError::AuthorityLinkMismatch);
+            }
+            return Ok(disposition);
+        }
+        if live_effect != intent.admitted_effect_record() {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+
+        let satisfied = current.satisfy(Some(observed_pin.clone()))?;
+        self.validate_pin_attempt_context(&satisfied)?;
+        let transaction = JournalTransaction::new(
+            pin_attempt_transaction_id(&satisfied),
+            vec![
+                attempt_record(&satisfied, self.key.key_id, &self.key.secret)?,
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    intent.request_id().to_vec(),
+                    sealed_completed_effect,
+                ),
+            ],
+        )?;
+        self.commit_journal(&transaction)?;
+        if transaction
+            .records()
+            .iter()
+            .any(|record| self.journal.get(record.namespace(), record.key()) != record.value())
+        {
+            self.commit_failed = true;
+            return Err(aos_sandbox::JournalError::Poisoned.into());
+        }
         self.pin_attempts.insert(attempt_id, satisfied);
         Ok(disposition)
     }
@@ -2639,6 +2993,10 @@ impl StorageTransactionStore {
             Ok(())
         }
     }
+
+    pub(crate) fn poison_after_committed_repair_failure(&mut self) {
+        self.commit_failed = true;
+    }
 }
 
 fn committed_result_with_key(
@@ -3244,6 +3602,19 @@ fn pin_attempt_transaction_id(attempt: &WorkspacePinAttemptV1) -> [u8; 16] {
         WorkspacePinAttemptPhaseV1::Ambiguous => 1,
         WorkspacePinAttemptPhaseV1::Satisfied => 2,
     }]);
+    let digest: [u8; 32] = hash.finalize().into();
+    let mut id = [0; 16];
+    id.copy_from_slice(&digest[..16]);
+    if id == [0; 16] {
+        id[15] = 1;
+    }
+    id
+}
+
+fn workspace_pin_repair_transaction_id(repair_operation_id: [u8; 16]) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"aos.sandbox.storage.workspace-pin-repair-transaction.v1\0");
+    hash.update(repair_operation_id);
     let digest: [u8; 32] = hash.finalize().into();
     let mut id = [0; 16];
     id.copy_from_slice(&digest[..16]);

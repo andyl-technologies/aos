@@ -15,6 +15,7 @@ use aos_sandbox_core::{
     ObjectDigest, ProtocolVersion, RawPairedClockSample,
 };
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
+use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use sha2::{Digest as _, Sha256};
@@ -31,7 +32,9 @@ use crate::pin_observer::WorkspacePinHostCustody;
 use crate::pin_worker::{
     WorkspacePinWorkerAuthorityV1, encode_request as encode_pin_worker_request,
 };
-use crate::pin_worker_runtime::SystemdWorkspacePinExecutor;
+use crate::pin_worker_runtime::{
+    FreshWorkspacePinRepairObservationV1, SystemdWorkspacePinExecutor,
+};
 use crate::state::{CatalogPreparationConsumption, StorageWorkspaceProjection};
 use crate::workspace_catalog::{
     StorageWorkspaceCatalogActionV1, StorageWorkspacePublicationV1, StorageWorkspaceRetirementV1,
@@ -42,10 +45,18 @@ use crate::workspace_pin::{
     WorkspaceRootPinProofV1,
 };
 use crate::workspace_repair::WorkspacePinRepairProbeV1;
+use crate::workspace_repair_admission::{
+    WorkspacePinRepairAdmissionProbeV1, WorkspacePinRepairAdmissionRequestV1,
+    bind_probe as bind_repair_admission_probe, classify_predecessor as classify_repair_predecessor,
+    encode_request as encode_repair_admission_request,
+};
 use crate::workspace_repair_observer::{
     WorkspacePinRepairObserverRequestV1, WorkspacePinRepairObserverResultV1,
     bind_probe as bind_repair_probe, encode_request as encode_repair_observer_request,
     random_challenge as random_repair_challenge,
+};
+use crate::workspace_repair_worker::{
+    WorkspacePinRepairWorkerRequestV1, encode_request as encode_repair_worker_request,
 };
 use crate::{
     BeginStorageTransaction, CatalogPlanV1, CommittedStorageResultV1, DurableStoragePhase,
@@ -172,6 +183,47 @@ pub(crate) struct WorkspacePinRepairObservationDispatchV1 {
     attempt: WorkspacePinAttemptV1,
     request: WorkspacePinRepairObserverRequestV1,
     probe: WorkspacePinRepairProbeV1,
+}
+
+/// Carries one fresh, non-authorizing observation challenge before admission.
+pub(crate) struct WorkspacePinRepairAdmissionDispatchV1 {
+    latest_attempt: WorkspacePinAttemptV1,
+    request: WorkspacePinRepairAdmissionRequestV1,
+    probe: WorkspacePinRepairAdmissionProbeV1,
+}
+
+/// Classifies a freshly admitted repair without permitting replay dispatch.
+pub(crate) enum AuthorizedWorkspacePinRepairAttemptV1 {
+    /// A newly committed attempt may be handed to the fixed repair worker once.
+    Dispatch(Box<FreshWorkspacePinRepairDispatchV1>),
+    /// The exact repair operation was already durable and is observation-only.
+    ObserveOnly,
+}
+
+/// Carries one newly committed repair attempt into immediate worker encoding.
+pub(crate) struct FreshWorkspacePinRepairDispatchV1 {
+    attempt: WorkspacePinAttemptV1,
+    request: WorkspacePinRepairWorkerRequestV1,
+}
+
+impl FreshWorkspacePinRepairDispatchV1 {
+    pub(crate) const fn attempt(&self) -> &WorkspacePinAttemptV1 {
+        &self.attempt
+    }
+
+    pub(crate) fn worker_request_bytes(&self) -> Result<Vec<u8>, ZfsHelperError> {
+        encode_repair_worker_request(&self.request).map_err(ZfsHelperError::Backend)
+    }
+}
+
+impl WorkspacePinRepairAdmissionDispatchV1 {
+    pub(crate) const fn probe(&self) -> &WorkspacePinRepairAdmissionProbeV1 {
+        &self.probe
+    }
+
+    pub(crate) fn request_bytes(&self) -> Result<Vec<u8>, ZfsHelperError> {
+        encode_repair_admission_request(&self.request).map_err(ZfsHelperError::Backend)
+    }
 }
 
 impl WorkspacePinRepairObservationDispatchV1 {
@@ -490,7 +542,440 @@ impl StorageAdmissionCoordinator {
             .authority
             .authenticate_workspace_pin_repair_intent(&intent, sealed_operation_fence, live_effect)
             .map_err(|_| ZfsHelperError::Authority)?;
+        let opened_live_effect = self
+            .authority
+            .open_admission_intent(&intent.request_id(), live_effect)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        match (attempt.phase(), opened_live_effect.status()) {
+            (WorkspacePinAttemptPhaseV1::Ambiguous, BrokerEffectStatusV2::Pending) => {}
+            (WorkspacePinAttemptPhaseV1::Satisfied, BrokerEffectStatusV2::Complete) => {
+                let expected_completed_effect = self
+                    .authority
+                    .seal_workspace_pin_repair_completion(&admitted_effect, attempt)
+                    .map_err(|_| ZfsHelperError::Authority)?;
+                if expected_completed_effect.as_slice() != live_effect {
+                    return Err(ZfsHelperError::Authority);
+                }
+            }
+            _ => return Err(ZfsHelperError::Authority),
+        }
         Ok(admitted_effect)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn plan_workspace_pin_repair_admission_observation(
+        &self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        contract: &ZfsHelperContract,
+        current_host_scope: WorkspacePinHostScopeV1,
+    ) -> Result<WorkspacePinRepairAdmissionDispatchV1, ZfsHelperError> {
+        let semantics = CanonicalStorageRepairSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| ZfsHelperError::Authority)?;
+        let sandbox_id = *semantics.fence().sandbox_id();
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .map(<[u8]>::to_vec);
+        let admission = self
+            .authority
+            .admit_workspace_pin_repair(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                current_clock,
+                prior_fence.as_deref(),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        if self.transactions.phase(semantics.operation_id())?.is_some()
+            || self
+                .transactions
+                .workspace_pin_repair_intent(semantics.operation_id())?
+                .is_some()
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+
+        let workspace_handle = *semantics.storage_handle().as_bytes();
+        let latest_attempt = self
+            .transactions
+            .workspace_pin_attempts()?
+            .into_iter()
+            .filter(|attempt| attempt.workspace_handle() == workspace_handle)
+            .max_by_key(WorkspacePinAttemptV1::attempt_ordinal)
+            .ok_or(ZfsHelperError::Authority)?;
+        let creation_is_active = self.transactions.workspace_creation_is_active(
+            latest_attempt.creation_operation_id(),
+            workspace_handle,
+        )?;
+        let predecessor_repair = self
+            .transactions
+            .workspace_pin_repair_intent(latest_attempt.effect_operation_id())?;
+        let predecessor_kind = classify_repair_predecessor(
+            &latest_attempt,
+            predecessor_repair.as_ref(),
+            creation_is_active,
+        )?;
+
+        let creation_intent = self
+            .transactions
+            .workspace_publication_intent(latest_attempt.creation_operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        if latest_attempt.workspace_assignment_digest() != creation_intent.assignment_digest() {
+            return Err(ZfsHelperError::Authority);
+        }
+        let catalog = self
+            .transactions
+            .workspace_creation_catalog_for_attempt(&latest_attempt)?;
+        let latest_attempt_record = self
+            .transactions
+            .workspace_pin_attempt_record(&latest_attempt)?;
+        let publication_intent_record = self
+            .transactions
+            .workspace_publication_intent_record(latest_attempt.creation_operation_id())?;
+        let predecessor_repair_intent_record = match predecessor_repair.as_ref() {
+            Some(intent) => self
+                .transactions
+                .workspace_pin_repair_intent_record(intent)?,
+            None => Vec::new(),
+        };
+        let request = WorkspacePinRepairAdmissionRequestV1::new(
+            contract.executable().to_path_buf(),
+            random_repair_challenge()?,
+            *semantics.header().request_id(),
+            semantics.operation_id(),
+            admission.effect.transport_request_digest(),
+            admission.effect.request_digest(),
+            admission.fence.assignment().digest(),
+            workspace_handle,
+            predecessor_kind,
+            catalog,
+            latest_attempt_record,
+            publication_intent_record,
+            predecessor_repair_intent_record,
+        )?;
+        let probe = bind_repair_admission_probe(
+            &request,
+            &latest_attempt,
+            predecessor_repair.as_ref(),
+            current_host_scope,
+        )?;
+
+        Ok(WorkspacePinRepairAdmissionDispatchV1 {
+            latest_attempt,
+            request,
+            probe,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn workspace_pin_repair_replay(
+        &self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<bool, ZfsHelperError> {
+        let semantics = CanonicalStorageRepairSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| ZfsHelperError::Authority)?;
+        let Some(intent) = self
+            .transactions
+            .workspace_pin_repair_intent(semantics.operation_id())?
+        else {
+            return Ok(false);
+        };
+        let sandbox_id = *semantics.fence().sandbox_id();
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let admission = self
+            .authority
+            .admit_workspace_pin_repair(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                current_clock,
+                Some(prior_fence),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let attempt = self
+            .transactions
+            .workspace_pin_attempts()?
+            .into_iter()
+            .find(|attempt| attempt.attempt_id() == intent.repair_attempt_id())
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        if intent.request_id() != *semantics.header().request_id()
+            || intent.request_digest()
+                != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+            || intent.semantic_commitment() != semantics.argument_commitment().digest()
+            || intent.repair_assignment_digest() != admission.fence.assignment().digest()
+            || intent.workspace_handle() != *semantics.storage_handle().as_bytes()
+            || attempt.effect_operation_id() != intent.repair_operation_id()
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        self.authenticate_workspace_pin_repair(&attempt)?;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_workspace_pin_repair<F>(
+        &mut self,
+        dispatch: WorkspacePinRepairAdmissionDispatchV1,
+        fresh_observation: FreshWorkspacePinRepairObservationV1,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        contract: &ZfsHelperContract,
+        trusted_clock: &mut F,
+    ) -> Result<AuthorizedWorkspacePinRepairAttemptV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        if !fresh_observation.matches_probe(&dispatch.probe) {
+            return Err(ZfsHelperError::Authority);
+        }
+        let current_latest = self
+            .transactions
+            .workspace_pin_attempts()?
+            .into_iter()
+            .filter(|attempt| {
+                attempt.workspace_handle() == dispatch.latest_attempt.workspace_handle()
+            })
+            .max_by_key(WorkspacePinAttemptV1::attempt_ordinal)
+            .ok_or(ZfsHelperError::Authority)?;
+        if current_latest != dispatch.latest_attempt
+            || !self.transactions.workspace_creation_is_active(
+                current_latest.creation_operation_id(),
+                current_latest.workspace_handle(),
+            )?
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        let predecessor_repair = self
+            .transactions
+            .workspace_pin_repair_intent(current_latest.effect_operation_id())?;
+        classify_repair_predecessor(&current_latest, predecessor_repair.as_ref(), true)?;
+        let current_attempt_record = self
+            .transactions
+            .workspace_pin_attempt_record(&current_latest)?;
+        let current_publication_record = self
+            .transactions
+            .workspace_publication_intent_record(current_latest.creation_operation_id())?;
+        let current_repair_record = match predecessor_repair.as_ref() {
+            Some(intent) => self
+                .transactions
+                .workspace_pin_repair_intent_record(intent)?,
+            None => Vec::new(),
+        };
+        if !dispatch.request.matches_current_records(
+            &current_attempt_record,
+            &current_publication_record,
+            &current_repair_record,
+        ) {
+            return Err(ZfsHelperError::Authority);
+        }
+
+        let current_clock = trusted_clock().map_err(|_| ZfsHelperError::Authority)?;
+        let semantics = CanonicalStorageRepairSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| ZfsHelperError::Authority)?;
+        let sandbox_id = *semantics.fence().sandbox_id();
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .map(<[u8]>::to_vec);
+        let admission = self
+            .authority
+            .admit_workspace_pin_repair(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                &current_clock,
+                prior_fence.as_deref(),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        if !dispatch.request.matches_semantics(
+            *semantics.header().request_id(),
+            semantics.operation_id(),
+            admission.effect.transport_request_digest(),
+            admission.effect.request_digest(),
+            admission.fence.assignment().digest(),
+            *semantics.storage_handle().as_bytes(),
+        ) {
+            return Err(ZfsHelperError::Authority);
+        }
+        self.authority
+            .check_before_effect(&admission.effect, trusted_clock)
+            .map_err(|_| ZfsHelperError::Authority)?;
+
+        let sealed = self
+            .authority
+            .seal(
+                &sandbox_id,
+                semantics.header().request_id(),
+                &semantics.operation_id(),
+                &admission,
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let operation_fence_digest =
+            ObjectDigest::from_bytes(Sha256::digest(&sealed.operation_fence).into());
+        let attempt = self.transactions.plan_workspace_pin_repair(
+            &current_latest,
+            semantics.operation_id(),
+            operation_fence_digest,
+            admission.fence.assignment().digest(),
+            dispatch.probe.current_host_scope(),
+            *admission.effect.clock_provenance(),
+            admission.effect.effect_deadline_boottime_nanoseconds(),
+        )?;
+        let sealed_receipt = self
+            .authority
+            .seal_pin_attempt_receipt(
+                &attempt,
+                &admission.effect,
+                &admission.fence,
+                semantics.operation_id(),
+                *semantics.header().request_id(),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let authority = FreshWorkspacePinAuthority {
+            attempt_id: attempt.attempt_id(),
+            attempt_digest: attempt.authority_digest()?,
+            sealed_receipt,
+        };
+        let repair_intent =
+            crate::workspace_repair::StorageWorkspacePinRepairIntentV1::new_ambiguous(
+                semantics.operation_id(),
+                &admission.effect,
+                sealed.effect.clone(),
+                admission.fence.assignment().digest(),
+                operation_fence_digest,
+                current_latest.creation_operation_id(),
+                current_latest.creation_result_catalog(),
+                current_latest.creation_result_digest(),
+                ObjectDigest::from_bytes(Sha256::digest(&current_publication_record).into()),
+                current_latest.workspace_handle(),
+                current_latest.attempt_id(),
+                current_latest.phase(),
+                ObjectDigest::from_bytes(Sha256::digest(&current_attempt_record).into()),
+                attempt.attempt_id(),
+                attempt.attempt_ordinal(),
+            )?;
+        let sealed_completed_effect = self
+            .authority
+            .seal_workspace_pin_repair_completion(&admission.effect, &attempt)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let outcome = self.transactions.begin_workspace_pin_repair(
+            sandbox_id,
+            &current_latest,
+            repair_intent,
+            attempt,
+            sealed.current_fence,
+            sealed.effect,
+            sealed_completed_effect,
+            sealed.operation_fence,
+            authority,
+        )?;
+        let BeginWorkspacePinAttemptV1::Dispatch(attempt) = outcome else {
+            return Ok(AuthorizedWorkspacePinRepairAttemptV1::ObserveOnly);
+        };
+
+        let postcommit = (|| {
+            let effect = self.authenticate_workspace_pin_repair(&attempt)?;
+            let current_fence_bytes = self
+                .transactions
+                .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+            let operation_fence_bytes = self
+                .transactions
+                .authority_record(
+                    RecordNamespace::AuthorityPublication,
+                    &attempt.effect_operation_id(),
+                )?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+            let current_fence = self
+                .authority
+                .open_fence(&sandbox_id, current_fence_bytes)
+                .map_err(|_| ZfsHelperError::Authority)?;
+            let operation_fence = self
+                .authority
+                .open_operation_fence(&attempt.effect_operation_id(), operation_fence_bytes)
+                .map_err(|_| ZfsHelperError::Authority)?;
+            if current_fence != operation_fence {
+                return Err(ZfsHelperError::Authority);
+            }
+            self.authority
+                .check_before_effect(&effect, trusted_clock)
+                .map_err(|_| ZfsHelperError::Authority)?;
+            self.authority
+                .verify_pin_attempt_receipt(&attempt, &effect, attempt.effect_operation_id())
+                .map_err(|_| ZfsHelperError::Authority)?;
+            let catalog = self
+                .transactions
+                .workspace_creation_catalog_for_attempt(&attempt)?;
+            let intent = self
+                .transactions
+                .workspace_pin_repair_intent(attempt.effect_operation_id())?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+            let repair_intent_record = self
+                .transactions
+                .workspace_pin_repair_intent_record(&intent)?;
+            let attempt_record = self.transactions.workspace_pin_attempt_record(&attempt)?;
+            let publication_intent_record = self
+                .transactions
+                .workspace_publication_intent_record(attempt.creation_operation_id())?;
+            let worker_authority = WorkspacePinWorkerAuthorityV1::new(
+                intent.request_id(),
+                attempt_record,
+                current_fence_bytes.to_vec(),
+                intent.admitted_effect_record().to_vec(),
+                operation_fence_bytes.to_vec(),
+            )?;
+            let request = WorkspacePinRepairWorkerRequestV1::new(
+                contract.executable().to_path_buf(),
+                catalog,
+                worker_authority,
+                repair_intent_record,
+                publication_intent_record,
+            )?;
+            Ok(FreshWorkspacePinRepairDispatchV1 { attempt, request })
+        })();
+        match postcommit {
+            Ok(dispatch) => Ok(AuthorizedWorkspacePinRepairAttemptV1::Dispatch(Box::new(
+                dispatch,
+            ))),
+            Err(error) => {
+                self.transactions.poison_after_committed_repair_failure();
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn workspace_pin_observation_dispatches(
@@ -642,12 +1127,74 @@ impl StorageAdmissionCoordinator {
         }
 
         let observation = result.into_observation();
-        let disposition = self.transactions.complete_workspace_pin_attempt(
-            dispatch.attempt.attempt_id(),
+        let disposition = self.complete_workspace_pin_repair_attempt(
+            &dispatch.attempt,
             observation.dataset(),
             observation.pin(),
         )?;
         if disposition == WorkspacePinRecoveryDispositionV1::Mismatch {
+            return Err(ZfsHelperError::Authority);
+        }
+        Ok(disposition)
+    }
+
+    pub(crate) fn complete_workspace_pin_repair_execution(
+        &mut self,
+        attempt: &WorkspacePinAttemptV1,
+        result: &crate::pin_worker::WorkspacePinWorkerResultV1,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        if result.attempt_id() != attempt.attempt_id()
+            || self
+                .transactions
+                .workspace_pin_attempts()?
+                .into_iter()
+                .find(|candidate| candidate.attempt_id() == attempt.attempt_id())
+                .as_ref()
+                != Some(attempt)
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        self.complete_workspace_pin_repair_attempt(attempt, result.dataset(), result.pin())
+    }
+
+    fn complete_workspace_pin_repair_attempt(
+        &mut self,
+        attempt: &WorkspacePinAttemptV1,
+        dataset: &crate::workspace_pin::WorkspaceDatasetObservationV1,
+        pin: &crate::workspace_pin::WorkspacePinObservationV1,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        let admitted_effect = self.authenticate_workspace_pin_repair(attempt)?;
+        self.authority
+            .verify_pin_attempt_receipt(attempt, &admitted_effect, attempt.effect_operation_id())
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let sealed_completed_effect = self
+            .authority
+            .seal_workspace_pin_repair_completion(&admitted_effect, attempt)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let disposition = self.transactions.complete_workspace_pin_repair_attempt(
+            attempt.attempt_id(),
+            dataset,
+            pin,
+            sealed_completed_effect,
+        )?;
+        if disposition != WorkspacePinRecoveryDispositionV1::CompletePublication {
+            return Ok(disposition);
+        }
+
+        let satisfied = self
+            .transactions
+            .workspace_pin_attempts()?
+            .into_iter()
+            .find(|candidate| candidate.attempt_id() == attempt.attempt_id())
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        if satisfied.phase() != WorkspacePinAttemptPhaseV1::Satisfied
+            || !satisfied.same_authorized_effect(attempt)
+        {
+            self.transactions.poison_after_committed_repair_failure();
+            return Err(ZfsHelperError::Authority);
+        }
+        if self.authenticate_workspace_pin_repair(&satisfied).is_err() {
+            self.transactions.poison_after_committed_repair_failure();
             return Err(ZfsHelperError::Authority);
         }
         Ok(disposition)
@@ -4907,7 +5454,7 @@ mod tests {
             workspace_handle,
             initial_attempt.attempt_id(),
             initial_attempt.phase(),
-            ObjectDigest::from_bytes(Sha256::digest(initial_attempt_record).into()),
+            ObjectDigest::from_bytes(Sha256::digest(&initial_attempt_record).into()),
             repair_attempt.attempt_id(),
             repair_attempt.attempt_ordinal(),
         )
@@ -4928,6 +5475,34 @@ mod tests {
 
         let mut broker = coordinator(&directory, &fixture);
         broker.authenticate_workspace_pin_attempts().unwrap();
+        let arbitrary_completed_effect = broker
+            .authority
+            .seal_effect_for_test(
+                repair_semantics.header().request_id(),
+                &admission.effect.clone().complete(vec![0xcc]).unwrap(),
+            )
+            .unwrap();
+        let ambiguous_completed_directory = TempDir::new().unwrap();
+        fs::copy(
+            directory.path().join("storage-state.journal"),
+            ambiguous_completed_directory
+                .path()
+                .join("storage-state.journal"),
+        )
+        .unwrap();
+        let mut ambiguous_completed = coordinator(&ambiguous_completed_directory, &fixture);
+        ambiguous_completed
+            .transactions
+            .put_authority_record_with_transaction_for_test(
+                [0xbf; 16],
+                RecordNamespace::Effect,
+                repair_semantics.header().request_id(),
+                arbitrary_completed_effect.clone(),
+            );
+        assert!(matches!(
+            ambiguous_completed.authenticate_workspace_pin_attempts(),
+            Err(ZfsHelperError::Authority)
+        ));
         assert!(
             broker
                 .workspace_pin_observation_dispatches()
@@ -4935,6 +5510,199 @@ mod tests {
                 .is_empty()
         );
         let contract = ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+        let worker_catalog = broker
+            .transactions
+            .workspace_creation_catalog(&repair_intent)
+            .unwrap();
+        let repair_intent_record = broker
+            .transactions
+            .workspace_pin_repair_intent_record(&repair_intent)
+            .unwrap();
+        let repair_attempt_record = broker
+            .transactions
+            .workspace_pin_attempt_record(&repair_attempt)
+            .unwrap();
+        let publication_intent_record = broker
+            .transactions
+            .workspace_publication_intent_record(creation.operation_id())
+            .unwrap();
+        let current_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let operation_fence = broker
+            .transactions
+            .authority_record(
+                RecordNamespace::AuthorityPublication,
+                &repair_semantics.operation_id(),
+            )
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let worker_authority = WorkspacePinWorkerAuthorityV1::new(
+            *repair_semantics.header().request_id(),
+            repair_attempt_record.clone(),
+            current_fence.clone(),
+            valid_pending_effect.clone(),
+            operation_fence.clone(),
+        )
+        .unwrap();
+        let worker_request =
+            crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1::new(
+                contract.executable().to_path_buf(),
+                worker_catalog.clone(),
+                worker_authority,
+                repair_intent_record.clone(),
+                publication_intent_record.clone(),
+            )
+            .unwrap();
+        let encoded_worker_request =
+            crate::workspace_repair_worker::encode_request(&worker_request).unwrap();
+        let authenticated_worker = crate::workspace_repair_worker::authenticate_request(
+            &fixture.authority(),
+            &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+            &contract,
+            crate::workspace_repair_worker::decode_request(&encoded_worker_request).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(authenticated_worker.attempt(), &repair_attempt);
+
+        let stale_authority = WorkspacePinWorkerAuthorityV1::new(
+            *repair_semantics.header().request_id(),
+            repair_attempt_record.clone(),
+            prior_fence.clone(),
+            valid_pending_effect.clone(),
+            operation_fence.clone(),
+        )
+        .unwrap();
+        let stale_request = crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1::new(
+            contract.executable().to_path_buf(),
+            worker_catalog.clone(),
+            stale_authority,
+            repair_intent_record.clone(),
+            publication_intent_record.clone(),
+        )
+        .unwrap();
+        assert!(
+            crate::workspace_repair_worker::authenticate_request(
+                &fixture.authority(),
+                &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+                &contract,
+                stale_request,
+            )
+            .is_err()
+        );
+
+        let prior_attempt_authority = WorkspacePinWorkerAuthorityV1::new(
+            *repair_semantics.header().request_id(),
+            initial_attempt_record.clone(),
+            current_fence.clone(),
+            valid_pending_effect.clone(),
+            operation_fence.clone(),
+        )
+        .unwrap();
+        let prior_attempt_request =
+            crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1::new(
+                contract.executable().to_path_buf(),
+                worker_catalog.clone(),
+                prior_attempt_authority,
+                repair_intent_record.clone(),
+                publication_intent_record.clone(),
+            )
+            .unwrap();
+        assert!(
+            crate::workspace_repair_worker::authenticate_request(
+                &fixture.authority(),
+                &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+                &contract,
+                prior_attempt_request,
+            )
+            .is_err()
+        );
+
+        let receipt_mismatched_attempt = repair_attempt
+            .with_authority_receipt(vec![0xee; 32])
+            .unwrap();
+        let receipt_mismatched_attempt_record =
+            crate::workspace_pin::attempt_record(&receipt_mismatched_attempt, [51; 16], &[52; 32])
+                .unwrap()
+                .value()
+                .unwrap()
+                .to_vec();
+        let receipt_mismatched_authority = WorkspacePinWorkerAuthorityV1::new(
+            *repair_semantics.header().request_id(),
+            receipt_mismatched_attempt_record,
+            current_fence.clone(),
+            valid_pending_effect.clone(),
+            operation_fence.clone(),
+        )
+        .unwrap();
+        let receipt_mismatched_request =
+            crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1::new(
+                contract.executable().to_path_buf(),
+                worker_catalog.clone(),
+                receipt_mismatched_authority,
+                repair_intent_record.clone(),
+                publication_intent_record.clone(),
+            )
+            .unwrap();
+        assert!(
+            crate::workspace_repair_worker::authenticate_request(
+                &fixture.authority(),
+                &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+                &contract,
+                receipt_mismatched_request,
+            )
+            .is_err()
+        );
+
+        let publication = broker
+            .transactions
+            .workspace_publication_intent(creation.operation_id())
+            .unwrap()
+            .unwrap();
+        let substituted_publication =
+            crate::workspace_catalog::StorageWorkspacePublicationIntentV1::from_authenticated_parts(
+                publication.operation_id(),
+                publication.request_catalog(),
+                ObjectDigest::from_bytes([0xef; 32]),
+                publication.root_image().clone(),
+                publication.identity_range_start(),
+                publication.identity_range_size(),
+            )
+            .unwrap();
+        let substituted_publication = StorageStateKey::new([51; 16], [52; 32])
+            .unwrap()
+            .seal_workspace_publication_intent_for_test(&substituted_publication)
+            .unwrap();
+        let substituted_publication_authority = WorkspacePinWorkerAuthorityV1::new(
+            *repair_semantics.header().request_id(),
+            repair_attempt_record,
+            current_fence,
+            valid_pending_effect.clone(),
+            operation_fence,
+        )
+        .unwrap();
+        let substituted_publication_request =
+            crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1::new(
+                contract.executable().to_path_buf(),
+                worker_catalog,
+                substituted_publication_authority,
+                repair_intent_record,
+                substituted_publication,
+            )
+            .unwrap();
+        assert!(
+            crate::workspace_repair_worker::authenticate_request(
+                &fixture.authority(),
+                &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+                &contract,
+                substituted_publication_request,
+            )
+            .is_err()
+        );
         let cross_boot_scope = WorkspacePinHostScopeV1::new([0x91; 16], 0x92, 0x93).unwrap();
         let host_scope = WorkspacePinHostScopeV1::new(
             repair_attempt.host_boot_id(),
@@ -5110,6 +5878,10 @@ mod tests {
                 &crate::workspace_pin::WorkspacePinObservationV1::Present(changed_proof),
             )
             .unwrap();
+        assert!(matches!(
+            changed.authenticate_workspace_pin_attempts(),
+            Err(ZfsHelperError::Authority)
+        ));
         let after_history_change = changed.transactions.journal_sequence_for_test();
         let superseded_result = WorkspacePinRepairObserverResultV1::new(
             changed_dispatch.probe().digest(),
@@ -5130,6 +5902,64 @@ mod tests {
         assert_eq!(
             changed.transactions.journal_sequence_for_test(),
             after_history_change
+        );
+
+        let completion_failure_directory = TempDir::new().unwrap();
+        fs::copy(
+            directory.path().join("storage-state.journal"),
+            completion_failure_directory
+                .path()
+                .join("storage-state.journal"),
+        )
+        .unwrap();
+        let mut completion_failure = coordinator(&completion_failure_directory, &fixture);
+        let failure_dispatch = completion_failure
+            .workspace_pin_repair_observation_dispatches(&contract, host_scope)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let failure_result = WorkspacePinRepairObserverResultV1::new(
+            failure_dispatch.probe().digest(),
+            crate::pin_worker::WorkspacePinWorkerResultV1::new(
+                repair_attempt.attempt_id(),
+                crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: initial_attempt.dataset_name().to_owned(),
+                    guid: 11,
+                },
+                crate::workspace_pin::WorkspacePinObservationV1::Present(workspace_pin_proof(
+                    workspace_handle,
+                    initial_attempt.dataset_name(),
+                    11,
+                )),
+                ObjectDigest::from_bytes([0xd2; 32]),
+            ),
+        );
+        completion_failure
+            .transactions
+            .fail_after_next_journal_commit_for_test();
+        assert!(
+            completion_failure
+                .complete_workspace_pin_repair_observation(failure_dispatch, failure_result)
+                .is_err()
+        );
+        assert!(
+            completion_failure
+                .authenticate_workspace_pin_attempts()
+                .is_err()
+        );
+        drop(completion_failure);
+        let completion_failure = coordinator(&completion_failure_directory, &fixture);
+        completion_failure
+            .authenticate_workspace_pin_attempts()
+            .unwrap();
+        assert_eq!(
+            completion_failure
+                .transactions
+                .latest_workspace_pin_attempt(creation.operation_id())
+                .unwrap()
+                .unwrap()
+                .phase(),
+            WorkspacePinAttemptPhaseV1::Satisfied
         );
 
         let mut dispatches = broker
@@ -5162,24 +5992,31 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let valid_completed_effect = broker
+            .transactions
+            .authority_record(
+                RecordNamespace::Effect,
+                repair_semantics.header().request_id(),
+            )
+            .unwrap()
+            .unwrap()
+            .to_vec();
         drop(broker);
 
         let mut broker = coordinator(&directory, &fixture);
         broker.authenticate_workspace_pin_attempts().unwrap();
-        let completed_effect = admission.effect.clone().complete(vec![0xcc]).unwrap();
-        let valid_completed_effect = broker
-            .authority
-            .seal_effect_for_test(repair_semantics.header().request_id(), &completed_effect)
-            .unwrap();
         broker
             .transactions
             .put_authority_record_with_transaction_for_test(
                 [0xc0; 16],
                 RecordNamespace::Effect,
                 repair_semantics.header().request_id(),
-                valid_completed_effect.clone(),
+                arbitrary_completed_effect,
             );
-        broker.authenticate_workspace_pin_attempts().unwrap();
+        assert!(matches!(
+            broker.authenticate_workspace_pin_attempts(),
+            Err(ZfsHelperError::Authority)
+        ));
 
         let alternate_transport = reverse_length_delimited_fields(&repair_request_bytes);
         assert_ne!(alternate_transport, repair_request_bytes);
@@ -5266,7 +6103,10 @@ mod tests {
                 repair_semantics.header().request_id(),
                 valid_pending_effect,
             );
-        broker.authenticate_workspace_pin_attempts().unwrap();
+        assert!(matches!(
+            broker.authenticate_workspace_pin_attempts(),
+            Err(ZfsHelperError::Authority)
+        ));
         broker
             .transactions
             .put_authority_record_with_transaction_for_test(

@@ -35,6 +35,8 @@ const PREPARATION_RECORD_DOMAIN: [u8; 16] = *b"AOSSTGPREPV10001";
 const PREPARATION_RECEIPT_DOMAIN: [u8; 16] = *b"AOSSTGPRCPV10001";
 const PIN_RECEIPT_MAGIC: &[u8; 8] = b"AOSPAR01";
 const PIN_RECEIPT_VERSION: u16 = 1;
+const REPAIR_COMPLETION_MAGIC: &[u8; 8] = b"AOSZRCE1";
+const REPAIR_COMPLETION_VERSION: u16 = 1;
 
 /// Storage-audience alias for protected authority configuration failures.
 pub type StorageAuthorityConfigError = BrokerAuthorityConfigError;
@@ -136,6 +138,39 @@ impl StorageProtectedConfigurationV1 {
         )
     }
 
+    pub(crate) fn authenticate_workspace_pin_repair_admission_request(
+        &self,
+        configured_contract: &crate::ZfsHelperContract,
+        request: crate::workspace_repair_admission::WorkspacePinRepairAdmissionRequestV1,
+        current_host_scope: crate::workspace_pin::WorkspacePinHostScopeV1,
+    ) -> Result<
+        crate::workspace_repair_admission::AuthenticatedWorkspacePinRepairAdmissionRequestV1,
+        crate::ZfsWorkerError,
+    > {
+        crate::workspace_repair_admission::authenticate_request(
+            &self.state_key,
+            configured_contract,
+            request,
+            current_host_scope,
+        )
+    }
+
+    pub(crate) fn authenticate_workspace_pin_repair_worker_request(
+        &self,
+        configured_contract: &crate::ZfsHelperContract,
+        request: crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1,
+    ) -> Result<
+        crate::workspace_repair_worker::AuthenticatedWorkspacePinRepairWorkerRequestV1,
+        crate::ZfsWorkerError,
+    > {
+        crate::workspace_repair_worker::authenticate_request(
+            &self.authority,
+            &self.state_key,
+            configured_contract,
+            request,
+        )
+    }
+
     pub(crate) fn check_workspace_pin_worker_before_effect<F>(
         &self,
         request: &crate::pin_worker::AuthenticatedWorkspacePinWorkerRequestV1,
@@ -145,6 +180,17 @@ impl StorageProtectedConfigurationV1 {
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
         crate::pin_worker::check_before_effect(&self.authority, request, trusted_clock)
+    }
+
+    pub(crate) fn check_workspace_pin_repair_worker_before_effect<F>(
+        &self,
+        request: &crate::workspace_repair_worker::AuthenticatedWorkspacePinRepairWorkerRequestV1,
+        trusted_clock: &mut F,
+    ) -> Result<(), crate::ZfsWorkerError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        crate::workspace_repair_worker::check_before_effect(&self.authority, request, trusted_clock)
     }
 }
 
@@ -511,6 +557,44 @@ impl StorageAuthorityV1 {
             domain,
             &payload,
         )
+    }
+
+    pub(crate) fn seal_workspace_pin_repair_completion(
+        &self,
+        effect: &BrokerEffectIntentV2,
+        attempt: &WorkspacePinAttemptV1,
+    ) -> Result<Vec<u8>, StorageAdmissionError> {
+        if effect.status() != BrokerEffectStatusV2::Pending
+            || effect.verb() != BrokerVerb::StorageRepairWorkspacePin
+            || effect.target()
+                != BrokerGrantTarget::Resource(
+                    BrokerResourceHandle::from_bytes(attempt.workspace_handle())
+                        .map_err(|_| StorageAdmissionError::FenceRejected)?,
+                )
+            || attempt.action() != WorkspacePinActionV1::Ensure
+            || attempt.effect_operation_id() == attempt.creation_operation_id()
+            || attempt.host_boot_id() != *effect.host_boot_id()
+            || attempt.clock_provenance() != *effect.clock_provenance()
+            || attempt.effect_deadline_boottime_nanoseconds()
+                != effect.effect_deadline_boottime_nanoseconds()
+        {
+            return Err(StorageAdmissionError::FenceRejected);
+        }
+        let mut receipt = Vec::with_capacity(58);
+        receipt.extend_from_slice(REPAIR_COMPLETION_MAGIC);
+        receipt.extend_from_slice(&REPAIR_COMPLETION_VERSION.to_be_bytes());
+        receipt.extend_from_slice(&attempt.attempt_id());
+        receipt.extend_from_slice(
+            attempt
+                .authority_digest()
+                .map_err(|_| StorageAdmissionError::FenceRejected)?
+                .as_bytes(),
+        );
+        let completed = effect
+            .clone()
+            .complete(receipt)
+            .map_err(|_| StorageAdmissionError::FenceRejected)?;
+        self.0.seal_effect(effect.request_id(), &completed)
     }
 
     pub(crate) fn verify_pin_attempt_receipt(
