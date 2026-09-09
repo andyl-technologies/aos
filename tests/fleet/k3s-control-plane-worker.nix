@@ -69,6 +69,8 @@ in {
       system = workerSystem;
       packages = ["k3s-worker"];
       extraClosures = [workloadImage];
+      # Containerd retains both image content and writable snapshots in /var.
+      varSizeMiB = 4096;
     };
   };
 
@@ -257,6 +259,14 @@ in {
         raise
 
     assert_k3s_cluster(controlplane, "${pkgs.k3s}/bin/kubectl", ["worker"])
+    assert_k3s_default_addons(controlplane, "${pkgs.k3s}/bin/kubectl")
+    assert_k3s_addon_services(
+        controlplane,
+        "${pkgs.k3s}/bin/kubectl",
+        "${pkgs.k3s}/share/k3s/aos-addon-images.json",
+        "worker",
+        "qualification-addon-services",
+    )
 
     manifest_hash = worker.succeed(
         "${pkgs.coreutils}/bin/sha256sum ${workloadImage}/manifest.json"

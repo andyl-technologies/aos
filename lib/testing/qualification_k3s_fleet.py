@@ -18,7 +18,13 @@ import time
 import urllib.parse
 
 import qualification_image as image
-from k3s_lifecycle import assert_k3s_cluster, assert_k3s_workload, import_k3s_workload
+from k3s_lifecycle import (
+    assert_k3s_addon_services,
+    assert_k3s_cluster,
+    assert_k3s_default_addons,
+    assert_k3s_workload,
+    import_k3s_workload,
+)
 from qualification_k3s_bindings import bind_k3s_fleet, verify_role_configuration_binding
 from qualification_k3s_oci import assemble_workload
 
@@ -306,6 +312,7 @@ class FleetScenario:
             self.machines[0], self.kubectl, ["server", "worker"] if combined else ["worker"],
             combined_node="server" if combined else None,
         )
+        assert_k3s_default_addons(self.machines[0], self.kubectl)
         if self.cluster_identity is not None and observed != self.cluster_identity:
             raise ValueError("K3s API object identities changed during lifecycle recovery")
         self.cluster_identity = observed
@@ -335,6 +342,13 @@ class FleetScenario:
         self.assert_cluster()
 
     def exercise_workloads(self, stage):
+        assert_k3s_addon_services(
+            self.machines[0],
+            self.kubectl,
+            self.k3s + "/share/k3s/aos-addon-images.json",
+            "worker",
+            "qualification-addons-" + stage,
+        )
         nodes = list(zip(("server", "worker"), self.machines))
         if self.topology == "control-plane-worker":
             nodes = nodes[1:]

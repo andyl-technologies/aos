@@ -5,6 +5,9 @@
   fetchGoModules,
   buildPackages,
   gnumake,
+  callPackage,
+  lib,
+  bash,
 }: let
   version = "1.35.1-k3s1";
   srcVersion = "1.35.1+k3s1";
@@ -19,6 +22,24 @@
     inherit src;
     hash = "sha256-IgBM6UOEzIAssm2/LPKfWFpgkzN5nC3/lvDH42PsZrQ=";
   };
+  addons = callPackage ./_k3s-addon-images.nix {};
+  addonInputs = builtins.toJSON (builtins.mapAttrs (_: addon: {
+      inherit (addon) reference;
+      manifest = "${addon.image}/manifest.json";
+    })
+    addons);
+  charts = {
+    traefik = fetchurl {
+      name = "traefik-38.0.201-up38.0.2.tgz";
+      urls = ["https://k3s.io/k3s-charts/assets/traefik/traefik-38.0.201+up38.0.2.tgz"];
+      hash = "sha256-W+Iqxncnjdh+YtabLbdjf95XYRS2CdOdJJbr15CXf5o=";
+    };
+    traefik-crd = fetchurl {
+      name = "traefik-crd-38.0.201-up38.0.2.tgz";
+      urls = ["https://k3s.io/k3s-charts/assets/traefik-crd/traefik-crd-38.0.201+up38.0.2.tgz"];
+      hash = "sha256-jVntDHAx6CTVvaeI86zS0pqweFsK4Jg6sNymgmZts7s=";
+    };
+  };
 in
   mkDerivation {
     pname = "k3s";
@@ -28,8 +49,13 @@ in
     buildDeps = [
       gnumake
       buildPackages.go
+      buildPackages.python3
     ];
     runtimeDeps = [];
+    passthru.evidenceSources =
+      [src goModules ./_k3s-bundle.py]
+      ++ builtins.attrValues charts
+      ++ lib.concatMap (addon: addon.evidenceSources) (builtins.attrValues addons);
 
     phases = [
       {
@@ -58,25 +84,14 @@ in
             '/snapshots\/btrfs\/plugin/d' \
             pkg/containerd/builtins_linux.go
 
-          # Stage k3s's bootstrap manifests into pkg/deploy/embed/
-          # so they get baked into the binary via the `//go:embed embed/*`
-          # directive in pkg/deploy/stage.go. Upstream's package-cli
-          # script does this just before `go build`; AOS hits the same
-          # need. The contents include rolebindings.yaml, which creates
-          # the ClusterRole + ClusterRoleBinding for `system:k3s-controller`.
-          # Without it, the agent-side flannel daemon's call into
-          # `pkg/agent/flannel.Run` (setup.go:105) hits
-          # `WaitForRBACReady` and polls for 15 minutes (the
-          # `DefaultAPIServerReadyTimeout`) before giving up, because
-          # the kubelet's NodeAuthorizer denies `list nodes` and the
-          # k3s-controller fallback credential has no permissions
-          # either. The other manifests (coredns, traefik, ccm,
-          # local-storage, metrics-server, runtimes) are best-effort
-          # addons; their charts come from a separate static/embed/
-          # path that AOS doesn't populate today, so the deploy
-          # controller will fail to render them at apply time but
-          # that doesn't block the RBAC manifest.
+          # Bind the defaults before embedding them. Missing addon images leave
+          # the aggregated metrics API unavailable and block namespace cleanup.
+          printf '%s\n' ${lib.escapeShellArg addonInputs} > "$TMPDIR/addon-inputs.json"
+          python3 ${./_k3s-bundle.py} "$PWD" "$TMPDIR/addon-inputs.json" ${bash}/bin/bash
           cp -av manifests/* pkg/deploy/embed/
+          mkdir -p pkg/static/embed/charts
+          cp ${charts.traefik} pkg/static/embed/charts/traefik-38.0.201+up38.0.2.tgz
+          cp ${charts.traefik-crd} pkg/static/embed/charts/traefik-crd-38.0.201+up38.0.2.tgz
         '';
       }
       {
@@ -143,12 +158,16 @@ in
           # right trade for a hermetic build that pins go via the
           # AOS package set instead of upstream's preference.
           GO_VERSION="$(go version | awk '{print $3}')"
+          helm_job_reference="$(cat aos-helm-job-reference)"
+          service_lb_reference="$(cat aos-service-lb-reference)"
           go build -trimpath \
             -tags "ctrd,no_btrfs" \
             -ldflags "-s -w \
               -X github.com/k3s-io/k3s/pkg/version.Version=v${srcVersion} \
               -X github.com/k3s-io/k3s/pkg/version.GitCommit=v${srcVersion} \
-              -X github.com/k3s-io/k3s/pkg/version.UpstreamGolang=$GO_VERSION" \
+              -X github.com/k3s-io/k3s/pkg/version.UpstreamGolang=$GO_VERSION \
+              -X github.com/k3s-io/helm-controller/pkg/controllers/chart.DefaultJobImage=$helm_job_reference \
+              -X github.com/k3s-io/k3s/pkg/cloudprovider.DefaultLBImage=$service_lb_reference" \
             -o k3s ./cmd/server
         '';
       }
@@ -167,6 +186,16 @@ in
           for cmd in kubectl crictl ctr; do
             ln -s k3s "$out/bin/$cmd"
           done
+
+          # Retain the image bytes in the published runtime closure. The role
+          # launchers import these archives before kubelet starts scheduling.
+          mkdir -p "$out/share/k3s/images"
+          cp aos-addon-images.json "$out/share/k3s/"
+          ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: addon: ''
+              ln -s ${addon.image}/image.oci.tar "$out/share/k3s/images/${name}.tar"
+              ln -s ${addon.image}/manifest.json "$out/share/k3s/images/${name}.manifest.json"
+            '')
+            addons)}
         '';
       }
     ];
