@@ -474,7 +474,7 @@
         --artifact-dir "$native_artifacts" \
         --format jsonl \
         verify ${representativeScenario} \
-        --runs 1 \
+        --runs 2 \
         --adversarial \
         --bisect \
         > "$native_verify"
@@ -488,7 +488,22 @@
         | wc -l
     )"
     test "$native_profiles" -ge 2
-    test "$native_reductions" -eq "$native_profiles"
+    test "$native_reductions" -eq "$((2 * native_profiles))"
+    for profile in $(
+      grep '"kind":"independent_reduction"' "$native_verify" \
+        | grep -o 'profile=[^ ]*' \
+        | sort -u
+    ); do
+      profile_reductions="$(grep '"kind":"independent_reduction"' "$native_verify" \
+        | grep -Fc "$profile ")"
+      test "$profile_reductions" -eq 2
+      profile_runs="$(grep '"kind":"independent_reduction"' "$native_verify" \
+        | grep -F "$profile " \
+        | grep -o 'run=[0-9]*' \
+        | sort -u \
+        | wc -l)"
+      test "$profile_runs" -eq 2
+    done
     native_fingerprint_reductions="$(grep '"kind":"independent_reduction"' "$native_verify" \
       | grep -c 'samples=[1-9][0-9]*')"
     test "$native_fingerprint_reductions" -eq "$native_reductions"
