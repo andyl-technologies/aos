@@ -29,6 +29,15 @@ pub enum Error {
     /// which only happens if the bus connection died mid-flight.
     #[error("systemd job result channel closed before completion (unit {0})")]
     JobSenderDropped(String),
+
+    /// Pinned lifecycle calls, early completions, or waiter identities
+    /// exhausted the bounded job registry capacity.
+    #[error("systemd pinned job registry capacity was exhausted")]
+    JobCompletionOverflow,
+
+    /// The caller's pinned bus/manager incarnation is no longer current.
+    #[error("systemd manager incarnation changed before the pinned operation")]
+    ManagerIncarnationChanged,
 }
 
 impl Error {
@@ -39,7 +48,11 @@ impl Error {
     pub fn is_no_such_unit(&self) -> bool {
         match self {
             Self::Zbus(err) => is_no_such_unit(err),
-            Self::SystemdUnavailable(_) | Self::Fdo(_) | Self::JobSenderDropped(_) => false,
+            Self::SystemdUnavailable(_)
+            | Self::Fdo(_)
+            | Self::JobSenderDropped(_)
+            | Self::JobCompletionOverflow
+            | Self::ManagerIncarnationChanged => false,
         }
     }
 }
