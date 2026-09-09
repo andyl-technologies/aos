@@ -17,6 +17,7 @@ use crucible::{
     SchedulerEventLogEntry, SearchFrontierChoices, SearchRuntimeFrontier, Seed, SelectionDecision,
     SignalFaultSelectable, VirtualTime, WhiteBoxPolicy, World, WorldNode, step,
 };
+use crucible_api::vm_lifecycle::production_permanently_failed_loop_for_test;
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
     ProductionVmNodeLauncher,
@@ -538,6 +539,8 @@ struct FakeFreshLifecycle {
     signal_fault_branches: VecDeque<crucible::SignalFaultCampaignBranch>,
     terminal_after_replay: bool,
     checkpoint_ready: bool,
+    fingerprint_error: bool,
+    fingerprint_node_override: Arc<Mutex<Option<crucible::NodeId>>>,
 }
 
 impl FakeFreshLifecycle {
@@ -707,11 +710,23 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         &mut self,
         node: crucible::NodeId,
     ) -> Result<crucible::FingerprintSample, crucible::SchedulerError> {
+        if self.fingerprint_error {
+            return Err(crucible::SchedulerError::BoundaryViolation {
+                message: format!("injected missing fingerprint node `{}`", node.name),
+            });
+        }
         Ok(crucible::FingerprintSample {
-            node,
-            at: VirtualTime { ticks: 1 },
+            node: self
+                .fingerprint_node_override
+                .lock()
+                .expect("fingerprint node override")
+                .clone()
+                .unwrap_or(node),
+            at: VirtualTime {
+                ticks: self.completed_quanta,
+            },
             fingerprint: crucible::ExecutionFingerprint {
-                hash: crucible::ContentHash::from_bytes(b"standalone-fingerprint-test"),
+                hash: crucible::ContentHash::from_bytes(&self.completed_quanta.to_le_bytes()),
             },
         })
     }
@@ -758,6 +773,8 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
         checkpoint_ready: true,
+        fingerprint_error: false,
+        fingerprint_node_override: Arc::new(Mutex::new(None)),
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed = QemuObservedFreshAttemptLifecycle::new(
@@ -770,24 +787,166 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
 
     observed
         .drive_quantum(QuantumRequest {
-            configuration: genesis,
+            configuration: genesis.clone(),
             control: Vec::new(),
         })
         .expect("first admitted quantum");
+    observed
+        .drive_quantum(QuantumRequest {
+            configuration: genesis,
+            control: Vec::new(),
+        })
+        .expect("second admitted quantum");
+    observed
+        .prepare_terminal_fingerprints()
+        .expect("terminal fingerprints");
     observed.shutdown().expect("cleanup remains available");
     let snapshot = evidence.snapshot().expect("observed execution evidence");
-    assert_eq!(snapshot.quanta(), 1);
+    assert_eq!(snapshot.quanta(), 2);
     assert_eq!(snapshot.frontier(), VirtualTime { ticks: 1 });
     assert_eq!(snapshot.event_log_entries().len(), 1);
     assert_eq!(snapshot.execution_fingerprints().len(), 2);
+    assert_eq!(snapshot.execution_fingerprints()[0].at.ticks, 0);
+    assert_eq!(snapshot.execution_fingerprints()[1].at.ticks, 1);
+    let terminal = snapshot
+        .terminal_fingerprints()
+        .expect("published terminal fingerprints");
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].at.ticks, 2);
+    assert_ne!(
+        terminal[0].fingerprint,
+        snapshot.execution_fingerprints()[1].fingerprint
+    );
     assert_eq!(
         snapshot.resolved_effect_trace(),
         Some(b"resolved-effect-test".as_slice())
     );
     assert_eq!(
         *order.lock().expect("standalone lifecycle order"),
-        ["replay", "shutdown"]
+        ["replay", "replay", "shutdown"]
     );
+}
+
+#[test]
+fn observed_production_lifecycle_projects_retained_failed_node_terminal_fingerprints()
+-> Result<(), Box<dyn Error>> {
+    let (source, mut lifecycle) = production_permanently_failed_loop_for_test()?;
+    let nodes = source
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|vm| vm.id.clone())
+        .collect::<Vec<_>>();
+    let expected = nodes
+        .iter()
+        .map(|node| QuantumLoop::sample_fingerprint(&mut lifecycle, node.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let evidence = QemuAttemptExecutionEvidence::default();
+    let mut observed = QemuObservedFreshAttemptLifecycle::new(lifecycle, nodes, evidence.clone());
+
+    observed.prepare_terminal_fingerprints()?;
+    observed.shutdown()?;
+
+    let snapshot = evidence.snapshot()?;
+    assert_eq!(snapshot.terminal_fingerprints(), Some(expected.as_slice()));
+    Ok(())
+}
+
+#[test]
+fn observed_lifecycle_rejects_a_mismatched_terminal_fingerprint_atomically() {
+    let scenario = ScenarioDef::from_canonical_material_with_seed(
+        "crucible.test.terminal-fingerprint-mismatch",
+        "scenario=terminal-fingerprint-mismatch",
+        Seed::from_u64(0x5a11_da11),
+    );
+    let genesis = Configuration::genesis(scenario);
+    let expected = crucible::NodeId {
+        name: String::from("expected-node"),
+    };
+    let fingerprint_node_override = Arc::new(Mutex::new(None));
+    let lifecycle = FakeFreshLifecycle {
+        order: Arc::new(Mutex::new(Vec::new())),
+        completed_quanta: 0,
+        promotion_observations: None,
+        cleanup_error: false,
+        pending: Vec::new(),
+        replies: Arc::new(Mutex::new(Vec::new())),
+        signal_fault_branches: VecDeque::new(),
+        terminal_after_replay: false,
+        checkpoint_ready: true,
+        fingerprint_error: false,
+        fingerprint_node_override: Arc::clone(&fingerprint_node_override),
+    };
+    let evidence = QemuAttemptExecutionEvidence::default();
+    let mut observed =
+        QemuObservedFreshAttemptLifecycle::new(lifecycle, vec![expected], evidence.clone());
+    observed
+        .drive_quantum(QuantumRequest {
+            configuration: genesis,
+            control: Vec::new(),
+        })
+        .expect("admitted quantum");
+    *fingerprint_node_override
+        .lock()
+        .expect("fingerprint node override") = Some(crucible::NodeId {
+        name: String::from("wrong-node"),
+    });
+
+    let error = observed
+        .prepare_terminal_fingerprints()
+        .expect_err("a mismatched terminal sample must fail closed");
+
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+    observed.shutdown().expect("cleanup remains available");
+    let snapshot = evidence.snapshot().expect("evidence after refusal");
+    assert_eq!(snapshot.execution_fingerprints().len(), 2);
+    assert_eq!(snapshot.terminal_fingerprints(), None);
+}
+
+#[test]
+fn observed_lifecycle_does_not_publish_staged_fingerprints_when_cleanup_fails() {
+    let scenario = ScenarioDef::from_canonical_material_with_seed(
+        "crucible.test.terminal-fingerprint-cleanup",
+        "scenario=terminal-fingerprint-cleanup",
+        Seed::from_u64(0x5a11_da12),
+    );
+    let genesis = Configuration::genesis(scenario);
+    let node = crucible::NodeId {
+        name: String::from("cleanup-node"),
+    };
+    let lifecycle = FakeFreshLifecycle {
+        order: Arc::new(Mutex::new(Vec::new())),
+        completed_quanta: 0,
+        promotion_observations: None,
+        cleanup_error: true,
+        pending: Vec::new(),
+        replies: Arc::new(Mutex::new(Vec::new())),
+        signal_fault_branches: VecDeque::new(),
+        terminal_after_replay: false,
+        checkpoint_ready: true,
+        fingerprint_error: false,
+        fingerprint_node_override: Arc::new(Mutex::new(None)),
+    };
+    let evidence = QemuAttemptExecutionEvidence::default();
+    let mut observed =
+        QemuObservedFreshAttemptLifecycle::new(lifecycle, vec![node], evidence.clone());
+    observed
+        .drive_quantum(QuantumRequest {
+            configuration: genesis,
+            control: Vec::new(),
+        })
+        .expect("admitted quantum");
+    observed
+        .prepare_terminal_fingerprints()
+        .expect("stage terminal fingerprints");
+
+    observed
+        .shutdown()
+        .expect_err("injected cleanup failure must remain observable");
+
+    let snapshot = evidence.snapshot().expect("evidence after cleanup failure");
+    assert_eq!(snapshot.execution_fingerprints().len(), 2);
+    assert_eq!(snapshot.terminal_fingerprints(), None);
 }
 
 struct FakeFreshLifecycleFactory {
@@ -795,6 +954,10 @@ struct FakeFreshLifecycleFactory {
     cleanup_error: bool,
     terminal_after_replay: bool,
     checkpoint_ready: bool,
+}
+
+struct FingerprintFailingFreshLifecycleFactory {
+    inner: FakeFreshLifecycleFactory,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -985,7 +1148,33 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
             terminal_after_replay: self.terminal_after_replay,
             checkpoint_ready: self.checkpoint_ready,
+            fingerprint_error: false,
+            fingerprint_node_override: Arc::new(Mutex::new(None)),
         })
+    }
+}
+
+impl QemuFreshAttemptLifecycleFactory for FingerprintFailingFreshLifecycleFactory {
+    type Lifecycle = FakeFreshLifecycle;
+    type Error = &'static str;
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        scenario: &ScenarioDef,
+        source: &crucible::ScenarioDefForm,
+        start: &Configuration,
+        signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
+        context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        let mut lifecycle = self.inner.start_fresh_lifecycle(
+            scenario,
+            source,
+            start,
+            signal_fault_replay,
+            context,
+        )?;
+        lifecycle.fingerprint_error = true;
+        Ok(lifecycle)
     }
 }
 
@@ -1020,6 +1209,8 @@ impl QemuFreshAttemptLifecycleFactory for PromotionRecordingFreshLifecycleFactor
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
             terminal_after_replay: false,
             checkpoint_ready: true,
+            fingerprint_error: false,
+            fingerprint_node_override: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -2287,6 +2478,8 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
         checkpoint_ready: true,
+        fingerprint_error: false,
+        fingerprint_node_override: Arc::new(Mutex::new(None)),
     };
     let mut current = parent.clone();
     apply_replayed_guest_selectables::<(), ()>(
@@ -2333,6 +2526,8 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
         checkpoint_ready: true,
+        fingerprint_error: false,
+        fingerprint_node_override: Arc::new(Mutex::new(None)),
     };
     let mut drift_current = parent.clone();
 
@@ -2706,6 +2901,99 @@ fn fresh_runner_cleans_up_and_preserves_driver_failure_classification() {
     assert_eq!(
         order.lock().expect("fresh lifecycle order").as_slice(),
         ["begin", "drive", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_runner_cleans_up_after_terminal_fingerprint_capture_failure() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let failing = FingerprintFailingFreshLifecycleFactory {
+        inner: FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: false,
+            checkpoint_ready: true,
+        },
+    };
+    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(failing);
+    let mut runner = QemuFreshExecutionRunner::new(
+        factory,
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+
+    let error = runner
+        .execute(&fresh_runner_input(), &fresh_runner_context())
+        .expect_err("missing terminal fingerprint authority must fail closed");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::TerminalFingerprintCapture(
+            SchedulerError::BoundaryViolation { .. }
+        ))
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "drive", "shutdown"]
+    );
+    assert_eq!(
+        evidence
+            .snapshot()
+            .expect("evidence after capture failure")
+            .terminal_fingerprints(),
+        None
+    );
+}
+
+#[test]
+fn cleanup_failure_overrides_terminal_fingerprint_capture_failure() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let failing = FingerprintFailingFreshLifecycleFactory {
+        inner: FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: true,
+            terminal_after_replay: false,
+            checkpoint_ready: true,
+        },
+    };
+    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(failing);
+    let mut runner = QemuFreshExecutionRunner::new(
+        factory,
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+
+    let error = runner
+        .execute(&fresh_runner_input(), &fresh_runner_context())
+        .expect_err("cleanup failure must retain precedence");
+
+    let AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CleanupAfterRunner {
+        failure,
+        ..
+    }) = error
+    else {
+        panic!("cleanup failure must retain the prior capture failure");
+    };
+    assert!(matches!(
+        *failure,
+        QemuFreshExecutionRunnerError::TerminalFingerprintCapture(
+            SchedulerError::BoundaryViolation { .. }
+        )
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "drive", "shutdown"]
+    );
+    assert_eq!(
+        evidence
+            .snapshot()
+            .expect("evidence after cleanup failure")
+            .terminal_fingerprints(),
+        None
     );
 }
 

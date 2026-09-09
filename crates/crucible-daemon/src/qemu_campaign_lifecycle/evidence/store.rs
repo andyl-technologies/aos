@@ -6,7 +6,7 @@ use crucible::{FingerprintSample, SchedulerError, SchedulerEventLogEntry};
 
 use super::{
     MAX_EXECUTION_FINGERPRINT_SAMPLES, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
+    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, MAX_TERMINAL_FINGERPRINT_SAMPLES,
 };
 
 /// Scheduler progress and reproduction evidence from one fresh QEMU attempt.
@@ -17,6 +17,7 @@ pub struct QemuAttemptExecutionEvidenceSnapshot {
     event_log_entries: Vec<SchedulerEventLogEntry>,
     event_log_bytes: usize,
     execution_fingerprints: Vec<FingerprintSample>,
+    terminal_fingerprints: Option<Vec<FingerprintSample>>,
     resolved_effect_trace: Option<Vec<u8>>,
 }
 
@@ -39,10 +40,16 @@ impl QemuAttemptExecutionEvidenceSnapshot {
         &self.event_log_entries
     }
 
-    /// Returns the concrete execution fingerprints sampled for the attempt.
+    /// Returns the bounded initial and post-first-quantum diagnostic samples.
     #[must_use]
     pub fn execution_fingerprints(&self) -> &[FingerprintSample] {
         &self.execution_fingerprints
+    }
+
+    /// Returns the complete terminal set published after successful teardown.
+    #[must_use]
+    pub fn terminal_fingerprints(&self) -> Option<&[FingerprintSample]> {
+        self.terminal_fingerprints.as_deref()
     }
 
     /// Returns the encoded resolved-effect trace retained by the live runtime.
@@ -119,10 +126,12 @@ impl QemuAttemptExecutionEvidence {
         &self,
         entries: &[SchedulerEventLogEntry],
         resolved_effect_trace: Option<Vec<u8>>,
+        terminal_fingerprints: Option<Vec<FingerprintSample>>,
     ) -> Result<(), SchedulerError> {
         self.complete_with_trace_limit(
             entries,
             resolved_effect_trace,
+            terminal_fingerprints,
             MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
         )
     }
@@ -131,6 +140,7 @@ impl QemuAttemptExecutionEvidence {
         &self,
         entries: &[SchedulerEventLogEntry],
         resolved_effect_trace: Option<Vec<u8>>,
+        terminal_fingerprints: Option<Vec<FingerprintSample>>,
         trace_byte_limit: usize,
     ) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
@@ -145,12 +155,24 @@ impl QemuAttemptExecutionEvidence {
                 trace_byte_limit as u64,
             ));
         }
+        if terminal_fingerprints
+            .as_ref()
+            .is_some_and(|samples| samples.len() > MAX_TERMINAL_FINGERPRINT_SAMPLES)
+        {
+            return Err(evidence_limit(
+                "qemu-terminal-fingerprint-count",
+                0,
+                terminal_fingerprints.as_ref().map_or(0, Vec::len) as u64,
+                MAX_TERMINAL_FINGERPRINT_SAMPLES as u64,
+            ));
+        }
 
         // Validate and reserve both bounded payloads before mutating the
         // retained attempt. A rejected final drain must preserve the last
         // complete evidence snapshot for diagnosis.
         append_event_entries(&mut snapshot, entries)?;
         snapshot.resolved_effect_trace = resolved_effect_trace;
+        snapshot.terminal_fingerprints = terminal_fingerprints;
         Ok(())
     }
 
@@ -331,7 +353,7 @@ fn evidence_poisoned() -> SchedulerError {
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
 #[allow(clippy::expect_used)]
 mod tests {
-    use crucible::VirtualTime;
+    use crucible::{ContentHash, ExecutionFingerprint, NodeId, VirtualTime};
 
     use super::*;
 
@@ -392,13 +414,51 @@ mod tests {
         );
 
         let error = evidence
-            .complete_with_trace_limit(&[final_entry], Some(vec![0xa5, 0x5a]), 1)
+            .complete_with_trace_limit(&[final_entry], Some(vec![0xa5, 0x5a]), None, 1)
             .expect_err("the effect-trace byte ceiling must reject the final evidence");
 
         assert!(matches!(
             error,
             SchedulerError::ResourceLimit {
                 field: "qemu-resolved-effect-trace-bytes",
+                ..
+            }
+        ));
+        assert_eq!(evidence.snapshot().expect("snapshot after refusal"), before);
+    }
+
+    #[test]
+    fn terminal_fingerprint_limit_refusal_preserves_prior_evidence() {
+        let evidence = QemuAttemptExecutionEvidence::default();
+        evidence
+            .record(3, VirtualTime { ticks: 11 }, &[])
+            .expect("seed evidence");
+        let before = evidence.snapshot().expect("snapshot before refusal");
+        let sample = FingerprintSample {
+            node: NodeId {
+                name: String::from("terminal-limit-fixture"),
+            },
+            at: VirtualTime { ticks: 11 },
+            fingerprint: ExecutionFingerprint {
+                hash: ContentHash::from_bytes(b"terminal-limit-fixture"),
+            },
+        };
+        let terminal_fingerprints =
+            vec![sample; MAX_TERMINAL_FINGERPRINT_SAMPLES.saturating_add(1)];
+
+        let error = evidence
+            .complete_with_trace_limit(
+                &[],
+                Some(vec![0xa5]),
+                Some(terminal_fingerprints),
+                MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+            )
+            .expect_err("the terminal fingerprint ceiling must reject the final evidence");
+
+        assert!(matches!(
+            error,
+            SchedulerError::ResourceLimit {
+                field: "qemu-terminal-fingerprint-count",
                 ..
             }
         ));

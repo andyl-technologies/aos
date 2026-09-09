@@ -101,7 +101,8 @@ pub use hot_fork::{
 pub use hot_fork::{
     hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
-    prepared_multi_node_hot_fork_source_world_for_test, reset_hot_fork_adoption_count_for_test,
+    prepared_multi_node_hot_fork_source_world_for_test,
+    production_permanently_failed_loop_for_test, reset_hot_fork_adoption_count_for_test,
 };
 
 /// Default final icount available to one production CLI lifecycle session.

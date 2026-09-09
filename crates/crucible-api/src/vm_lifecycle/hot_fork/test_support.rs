@@ -108,52 +108,11 @@ pub fn prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
     ),
     LifecycleApiError,
 > {
-    let mut lifecycle = lifecycle_without_backends(source)?;
+    let mut lifecycle = lifecycle_with_permanently_failed_nodes(source)?;
     if source_nodes.is_empty() || source_nodes.len() > source.world().vm_nodes().len() {
         return Err(loop_factory_error(
             "scripted source count is outside the built-in scenario World",
         ));
-    }
-
-    for vm in source.world().vm_nodes() {
-        let root_image = &lifecycle.config.guest_assets[&vm.arch].root_image;
-        let root_image = std::fs::File::open(root_image)
-            .map_err(|error| test_support_error("open scripted root image", error))?;
-        let root_image_hash = ContentHash::from_reader(root_image)
-            .map_err(|error| test_support_error("hash scripted root image", error))?;
-        lifecycle.node_generations.insert(vm.id.clone(), 1);
-        lifecycle
-            .node_service_states
-            .insert(vm.id.clone(), ProductionNodeServiceState::PermanentlyFailed);
-        lifecycle.failed_host_io.insert(
-            vm.id.clone(),
-            ProductionFailedNodeState::new(
-                &vm.id,
-                QemuHostIoCheckpoint::without_devices(ContentHash::from_canonical_material(
-                    "crucible.test.failed-host-io-binding.v1",
-                    &vm.id.name,
-                )),
-                FingerprintSample {
-                    node: vm.id.clone(),
-                    at: VirtualTime::default(),
-                    fingerprint: ExecutionFingerprint {
-                        hash: ContentHash::from_canonical_material(
-                            "crucible.test.failed-node-fingerprint.v1",
-                            &vm.id.name,
-                        ),
-                    },
-                },
-            )
-            .map_err(|error| test_support_error("construct failed-node fixture", error))?,
-        );
-        lifecycle
-            .inner
-            .loop_impl_mut()
-            .set_vm_node_activity(&vm.id, SchedulerNodeActivity::Done)
-            .map_err(|error| test_support_error("retire absent scripted VM", error))?;
-        lifecycle
-            .immutable_root_images
-            .insert(vm.id.clone(), root_image_hash);
     }
 
     let mut retained = Vec::with_capacity(source_nodes.len());
@@ -210,6 +169,73 @@ pub fn prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
         .prepare_hot_fork_source_world()
         .map_err(|error| test_support_error("prepare scripted hot-fork source world", error))?;
     Ok((retained, source_world))
+}
+
+/// Builds a process-free production lifecycle with every VM permanently failed.
+///
+/// Each node retains the authentic host-I/O and execution-fingerprint authority
+/// used by exact-checkpoint and hot-fork continuation tests.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when the built-in scenario or any
+/// production lifecycle boundary cannot be constructed.
+pub fn production_permanently_failed_loop_for_test()
+-> Result<(ScenarioDefForm, ProductionVmLifecycleLoop), LifecycleApiError> {
+    let source = crucible::crash_restart_scenario()
+        .map_err(|error| test_support_error("construct built-in scenario", error))?
+        .scenario;
+    let lifecycle = lifecycle_with_permanently_failed_nodes(&source)?;
+
+    Ok((source, lifecycle))
+}
+
+fn lifecycle_with_permanently_failed_nodes(
+    source: &ScenarioDefForm,
+) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    let mut lifecycle = lifecycle_without_backends(source)?;
+    for vm in source.world().vm_nodes() {
+        let root_image = &lifecycle.config.guest_assets[&vm.arch].root_image;
+        let root_image = std::fs::File::open(root_image)
+            .map_err(|error| test_support_error("open scripted root image", error))?;
+        let root_image_hash = ContentHash::from_reader(root_image)
+            .map_err(|error| test_support_error("hash scripted root image", error))?;
+        lifecycle.node_generations.insert(vm.id.clone(), 1);
+        lifecycle
+            .node_service_states
+            .insert(vm.id.clone(), ProductionNodeServiceState::PermanentlyFailed);
+        lifecycle.failed_host_io.insert(
+            vm.id.clone(),
+            ProductionFailedNodeState::new(
+                &vm.id,
+                QemuHostIoCheckpoint::without_devices(ContentHash::from_canonical_material(
+                    "crucible.test.failed-host-io-binding.v1",
+                    &vm.id.name,
+                )),
+                FingerprintSample {
+                    node: vm.id.clone(),
+                    at: VirtualTime::default(),
+                    fingerprint: ExecutionFingerprint {
+                        hash: ContentHash::from_canonical_material(
+                            "crucible.test.failed-node-fingerprint.v1",
+                            &vm.id.name,
+                        ),
+                    },
+                },
+            )
+            .map_err(|error| test_support_error("construct failed-node fixture", error))?,
+        );
+        lifecycle
+            .inner
+            .loop_impl_mut()
+            .set_vm_node_activity(&vm.id, SchedulerNodeActivity::Done)
+            .map_err(|error| test_support_error("retire absent scripted VM", error))?;
+        lifecycle
+            .immutable_root_images
+            .insert(vm.id.clone(), root_image_hash);
+    }
+
+    Ok(lifecycle)
 }
 
 fn lifecycle_without_backends(

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // crucible-lint: allow host-nondeterminism-state -- The factory authenticates and forwards an unchanged captured scheduler continuation; operational source availability cannot mutate it.
-use crucible::{ContentHash, ScenarioDef, SchedulerError};
+use crucible::{ContentHash, ScenarioDef, SchedulerError, SchedulerOperationalFailureClass};
 use crucible_api::vm_lifecycle::ProductionVmHotForkNodeBoundary;
 use crucible_api::{
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld, ProductionVmNodeGeneration,
@@ -958,6 +958,8 @@ pub enum QemuHotForkWorldExecutionRunnerError<F, D> {
     UnsolicitedCheckpoint,
     /// Capturing a later exact checkpoint failed.
     CheckpointCapture(SchedulerError),
+    /// Exact terminal execution fingerprint capture failed before teardown.
+    TerminalFingerprintCapture(SchedulerError),
     /// Durable checkpoint handoff failed.
     CheckpointHandoff(CheckpointHandoffFailure),
     /// Final drain or adopted-node cleanup failed.
@@ -1002,6 +1004,12 @@ impl<F, D> std::fmt::Display for QemuHotForkWorldExecutionRunnerError<F, D> {
             Self::CheckpointCapture(error) => {
                 write!(formatter, "capture production hot-fork checkpoint: {error}")
             }
+            Self::TerminalFingerprintCapture(error) => {
+                write!(
+                    formatter,
+                    "capture production hot-fork terminal fingerprints: {error}"
+                )
+            }
             Self::CheckpointHandoff(error) => {
                 write!(formatter, "handoff production hot-fork checkpoint: {error}")
             }
@@ -1034,9 +1042,10 @@ where
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Factory(error) => Some(error),
-            Self::Start(error) | Self::CheckpointCapture(error) | Self::Cleanup(error) => {
-                Some(error)
-            }
+            Self::Start(error)
+            | Self::CheckpointCapture(error)
+            | Self::TerminalFingerprintCapture(error)
+            | Self::Cleanup(error) => Some(error),
             Self::Driver(error) => Some(error),
             Self::CheckpointHandoff(error) => Some(error),
             Self::CleanupAfterRunner { failure, .. } => Some(failure.as_ref()),
@@ -1169,6 +1178,12 @@ where
                     }
                 }
             });
+        let driven = driven.and_then(|pending| {
+            lifecycle
+                .prepare_terminal_fingerprints()
+                .map(|()| pending)
+                .map_err(map_hot_fork_terminal_fingerprint_capture_failure)
+        });
         let cleanup = lifecycle.shutdown();
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
@@ -1304,6 +1319,28 @@ fn map_hot_fork_checkpoint_handoff_failure<F, D>(
     failure: AttemptWorkerFailure<CheckpointHandoffFailure>,
 ) -> AttemptWorkerFailure<QemuHotForkWorldExecutionRunnerError<F, D>> {
     failure.map(QemuHotForkWorldExecutionRunnerError::CheckpointHandoff)
+}
+
+fn map_hot_fork_terminal_fingerprint_capture_failure<F, D>(
+    error: SchedulerError,
+) -> AttemptWorkerFailure<QemuHotForkWorldExecutionRunnerError<F, D>> {
+    let class = match &error {
+        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::NotImplemented { .. }
+        | SchedulerError::Backend(_)
+        | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::ResourceLimit { .. }
+        | SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. } => None,
+    };
+    let error = QemuHotForkWorldExecutionRunnerError::TerminalFingerprintCapture(error);
+    match class {
+        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
+        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
+        Some(SchedulerOperationalFailureClass::Terminal) | None => {
+            AttemptWorkerFailure::Terminal(error)
+        }
+    }
 }
 
 pub(crate) trait AttemptWorkerFailureExt<E> {
