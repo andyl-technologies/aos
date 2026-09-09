@@ -36,6 +36,7 @@ use crate::{
 struct ResumeCalls {
     starts: AtomicUsize,
     drives: AtomicUsize,
+    terminal_fingerprint_prepares: AtomicUsize,
     shutdowns: AtomicUsize,
     seals: AtomicUsize,
 }
@@ -115,6 +116,13 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
 
     fn pending_network_output_count(&self) -> usize {
         0
+    }
+
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        self.calls
+            .terminal_fingerprint_prepares
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -392,6 +400,10 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
     assert_eq!(observed.attempt_event_count, 0);
     assert_eq!(calls.starts.load(Ordering::SeqCst), 1);
     assert_eq!(calls.drives.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        calls.terminal_fingerprint_prepares.load(Ordering::SeqCst),
+        1
+    );
     assert_eq!(calls.shutdowns.load(Ordering::SeqCst), 1);
     assert_eq!(calls.seals.load(Ordering::SeqCst), 1);
 }

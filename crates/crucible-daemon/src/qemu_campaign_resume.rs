@@ -259,6 +259,8 @@ pub enum QemuProductionExactResumeExecutionRunnerError<F, D> {
     UnsolicitedCheckpoint,
     /// Capturing a later exact checkpoint failed.
     CheckpointCapture(SchedulerError),
+    /// Exact terminal execution fingerprint capture failed before teardown.
+    TerminalFingerprintCapture(SchedulerError),
     /// Durable root-before-write handoff for a later checkpoint failed.
     CheckpointHandoff(CheckpointHandoffFailure),
     /// Final drain or lifecycle cleanup failed.
@@ -306,6 +308,9 @@ impl<F, D> std::fmt::Display for QemuProductionExactResumeExecutionRunnerError<F
             Self::CheckpointCapture(error) => {
                 write!(formatter, "capture resumed production checkpoint: {error}")
             }
+            Self::TerminalFingerprintCapture(error) => {
+                write!(formatter, "capture resumed terminal fingerprints: {error}")
+            }
             Self::CheckpointHandoff(error) => {
                 write!(formatter, "handoff resumed production checkpoint: {error}")
             }
@@ -332,7 +337,9 @@ where
         match self {
             Self::Lifecycle(error) => Some(error),
             Self::Driver(error) => Some(error),
-            Self::CheckpointCapture(error) | Self::Cleanup(error) => Some(error),
+            Self::CheckpointCapture(error)
+            | Self::TerminalFingerprintCapture(error)
+            | Self::Cleanup(error) => Some(error),
             Self::CheckpointHandoff(error) => Some(error),
             Self::CleanupAfterRunner { failure, .. } => Some(failure.as_ref()),
             Self::MissingCheckpoint
@@ -538,6 +545,12 @@ where
                         }
                     }
                 });
+        let driven = driven.and_then(|pending| {
+            lifecycle
+                .prepare_terminal_fingerprints()
+                .map(|()| pending)
+                .map_err(map_resume_terminal_fingerprint_capture_failure)
+        });
         let cleanup = lifecycle.shutdown();
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
@@ -705,6 +718,28 @@ fn map_resume_checkpoint_capture_failure<F, D>(
         | SchedulerError::TopologyActivationInPast { .. } => None,
     };
     let error = QemuProductionExactResumeExecutionRunnerError::CheckpointCapture(error);
+    match class {
+        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
+        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
+        Some(SchedulerOperationalFailureClass::Terminal) | None => {
+            AttemptWorkerFailure::Terminal(error)
+        }
+    }
+}
+
+fn map_resume_terminal_fingerprint_capture_failure<F, D>(
+    error: SchedulerError,
+) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
+    let class = match &error {
+        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::NotImplemented { .. }
+        | SchedulerError::Backend(_)
+        | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::ResourceLimit { .. }
+        | SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. } => None,
+    };
+    let error = QemuProductionExactResumeExecutionRunnerError::TerminalFingerprintCapture(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
         Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
