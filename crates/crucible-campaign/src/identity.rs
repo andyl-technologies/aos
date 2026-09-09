@@ -413,7 +413,7 @@ content_object_id!(
 content_object_id!(
     CampaignPolicyId,
     ObjectKind::Policy,
-    [1, 2, 3],
+    [1, 2, 3, 4],
     "crucible.campaign.policy",
     "Identifies one immutable campaign policy revision."
 );
@@ -529,6 +529,14 @@ content_object_id!(
 semantic_id!(
     ProbabilityModelId,
     "Identifies one exact modeled probability distribution."
+);
+semantic_id!(
+    StatisticalGenerationId,
+    "Identifies one owner-recomputed sequential Monte Carlo generation."
+);
+semantic_id!(
+    StatisticalParticleId,
+    "Identifies one sequential Monte Carlo particle slot and its genealogy."
 );
 semantic_id!(
     ChoiceRngStreamId,

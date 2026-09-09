@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::{
-    StatisticalEndpointEstimate, StatisticalEstimateReport, StatisticalProposalEvidence,
-    StatisticalRational, StatisticalWeightDiagnostics,
+    StatisticalEndpointEstimate, StatisticalEstimateReport, StatisticalGeneration,
+    StatisticalProposalEvidence, StatisticalRational, StatisticalWeightDiagnostics,
 };
 
 struct StatisticalDrawRecord {
@@ -154,6 +154,47 @@ impl CampaignRepository {
         name: &str,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<StatisticalEstimateReport, CampaignRepositoryError> {
+        self.project_finite_statistical_estimate(name, expected_snapshot, false)
+    }
+
+    /// Projects the first owner-authenticated SMC generation after stage zero.
+    ///
+    /// The initial finite flight must be complete. The repository authenticates
+    /// every proposal, execution basis, observation, path, and exact `P/Q`
+    /// factor before applying the policy-pinned ESS and systematic-resampling
+    /// rule. The resulting generation is derived state and is rebuilt from the
+    /// same snapshot after restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale snapshot, a policy without an SMC design,
+    /// incomplete or forged initial evidence, intervention ancestry, invalid
+    /// support, or bounded exact-arithmetic failure.
+    pub fn project_initial_smc_generation(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<StatisticalGeneration, CampaignRepositoryError> {
+        let initial = self.project_finite_statistical_estimate(name, expected_snapshot, true)?;
+        let policy = self.read_policy(initial.policy().content_id())?;
+        let design = policy
+            .sequential_monte_carlo_design()
+            .ok_or_else(|| integrity("SMC generation requires an SMC policy"))?;
+        StatisticalGeneration::from_initial_report(
+            initial.policy(),
+            policy.campaign_seed(),
+            design,
+            &initial,
+        )
+        .map_err(Into::into)
+    }
+
+    fn project_finite_statistical_estimate(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        allow_smc_initial_stage: bool,
+    ) -> Result<StatisticalEstimateReport, CampaignRepositoryError> {
         let head = self.head(name)?;
         if head.snapshot_id() != expected_snapshot {
             return Err(CampaignRepositoryError::Stale {
@@ -167,6 +208,13 @@ impl CampaignRepository {
         let policy = self.read_policy(policy_id.content_id())?;
         if policy.mode() != CampaignMode::Statistical {
             return Err(integrity("statistical-report-requires-statistical-policy"));
+        }
+        if policy.sequential_monte_carlo_design().is_some() != allow_smc_initial_stage {
+            return Err(if allow_smc_initial_stage {
+                integrity("SMC generation requires an SMC policy")
+            } else {
+                integrity("statistical report refuses incomplete SMC policy")
+            });
         }
         let design = policy
             .statistical_sampling_design()

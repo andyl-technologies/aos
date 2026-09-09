@@ -226,7 +226,7 @@ impl CampaignRecordKind {
     #[must_use]
     pub const fn schema_version(self) -> u32 {
         match self {
-            Self::Policy => 3,
+            Self::Policy => 4,
             Self::Snapshot => 3,
             Self::Fact => 13,
             Self::PlannerInvocation => 2,
@@ -733,7 +733,7 @@ impl ObjectEnvelope {
         )?;
         let version_supported = envelope.schema_version() == record_kind.schema_version()
             || record_kind == CampaignRecordKind::Policy
-                && matches!(envelope.schema_version(), 1..=2)
+                && matches!(envelope.schema_version(), 1..=3)
             || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
                 && matches!(envelope.schema_version(), 2..=12)
