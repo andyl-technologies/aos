@@ -139,6 +139,22 @@
     path = ../../../tests/abilities/evaluator-provider;
     name = "aos-ability-evaluator-fixture";
   };
+  abilityReferenceNginxFixture = builtins.path {
+    path = ../../../tests/abilities/reference-nginx/providers/nginx;
+    name = "aos-ability-reference-nginx";
+  };
+  abilityReferenceManagedConfigurationFixture = builtins.path {
+    path = ../../../tests/abilities/reference-nginx/providers/managed-configuration;
+    name = "aos-ability-reference-managed-configuration";
+  };
+  abilityReferenceCredentialFixture = builtins.path {
+    path = ../../../tests/abilities/reference-nginx/providers/credential;
+    name = "aos-ability-reference-credential";
+  };
+  abilityReferenceSystemdFixture = builtins.path {
+    path = ../../../tests/abilities/reference-nginx/providers/systemd;
+    name = "aos-ability-reference-systemd";
+  };
   abilityEvaluatorIfdFixture = builtins.derivation {
     name = "aos-ability-forbidden-ifd";
     system = stdenv.buildPlatform.system;
@@ -371,6 +387,14 @@ in
       export AOS_NIX_INSTANTIATE="${buildNix}/bin/nix-instantiate"
       export AOS_TEST_ABILITY_FIXTURE="${abilityEvaluatorFixture}"
       export AOS_TEST_ABILITY_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityEvaluatorFixture})"
+      export AOS_TEST_ABILITY_REFERENCE_NGINX="${abilityReferenceNginxFixture}"
+      export AOS_TEST_ABILITY_REFERENCE_NGINX_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceNginxFixture})"
+      export AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION="${abilityReferenceManagedConfigurationFixture}"
+      export AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceManagedConfigurationFixture})"
+      export AOS_TEST_ABILITY_REFERENCE_CREDENTIAL="${abilityReferenceCredentialFixture}"
+      export AOS_TEST_ABILITY_REFERENCE_CREDENTIAL_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceCredentialFixture})"
+      export AOS_TEST_ABILITY_REFERENCE_SYSTEMD="${abilityReferenceSystemdFixture}"
+      export AOS_TEST_ABILITY_REFERENCE_SYSTEMD_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceSystemdFixture})"
       export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
       export AOS_TEST_ABILITY_IFD_DERIVATION="${abilityEvaluatorIfdDrvPath}"
       export AOS_TEST_ABILITY_IFD_SYSTEM="${stdenv.buildPlatform.system}"
