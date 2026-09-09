@@ -24,6 +24,10 @@ mod lex;
 mod reference_integrity;
 #[path = "support/harness_lint/scan.rs"]
 mod scan;
+// crucible-lint: allow rust-allow -- This integration test imports only the source-section helpers used by production scans.
+#[allow(dead_code)]
+#[path = "support/source_sections.rs"]
+mod source_sections;
 
 use allow::*;
 use clippy::*;
@@ -33,6 +37,7 @@ use error_logging::*;
 use lex::*;
 use reference_integrity::*;
 use scan::*;
+use source_sections::*;
 
 #[test]
 fn gate_evidence_references_are_integral() -> Result<(), Box<dyn Error>> {

@@ -8,8 +8,10 @@
   hygieneRust = builtins.readFile ../../crates/crucible-harness/tests/engineering_hygiene.rs;
   hygieneBaselineText = builtins.readFile ./engineering-hygiene-baseline.txt;
 
-  softLineLimit = 600;
-  hardLineLimit = 1000;
+  responsibilityReviewThreshold = 1000;
+  cohesionReviewThreshold = 1500;
+  legacyShapeLineStaleThreshold = 600;
+  cohesionNotRequired = "threshold-not-reached";
 
   cruciblePackages = [
     "crucible-sim"
@@ -75,6 +77,16 @@
       path = builtins.elemAt fields 1;
       maxLines = builtins.fromJSON (builtins.elemAt fields 2);
     }
+    else if kind == "shape-review" && fieldCount == 7
+    then {
+      kind = "shape-review";
+      path = builtins.elemAt fields 1;
+      digest = builtins.elemAt fields 2;
+      role = builtins.elemAt fields 3;
+      lines = builtins.fromJSON (builtins.elemAt fields 4);
+      responsibilities = builtins.elemAt fields 5;
+      cohesion = builtins.elemAt fields 6;
+    }
     else if kind == "shape-header" && fieldCount == 2
     then {
       kind = "shape-header";
@@ -98,6 +110,7 @@
     else throw "invalid engineering hygiene baseline entry: ${line}";
   hygieneBaseline = map parseBaselineLine hygieneBaselineLines;
   shapeLineDebt = builtins.filter (entry: entry.kind == "shape-line") hygieneBaseline;
+  sourceReviews = builtins.filter (entry: entry.kind == "shape-review") hygieneBaseline;
   shapeHeaderDebt = builtins.filter (entry: entry.kind == "shape-header") hygieneBaseline;
   qemuTokenDebt = builtins.filter (entry: entry.kind == "qemu-token") hygieneBaseline;
   qemuManifestDebt = builtins.filter (entry: entry.kind == "qemu-manifest") hygieneBaseline;
@@ -113,22 +126,57 @@
   scrubCommentsAndStrings = content: let
     scrubChunk = chunkState: chunk: let
       length = builtins.stringLength chunk;
-      charAt = index: builtins.substring index 1 chunk;
+      charAt = index:
+        if index < length
+        then builtins.substring index 1 chunk
+        else "";
+      spaces = count: builtins.concatStringsSep "" (builtins.genList (_: " ") count);
+      countHashes = index:
+        if charAt index == "#"
+        then 1 + countHashes (index + 1)
+        else 0;
+      rawStartAt = index: let
+        prefixLength =
+          if charAt index == "r"
+          then 1
+          else if charAt index == "b" && charAt (index + 1) == "r"
+          then 2
+          else 0;
+        hashStart = index + prefixLength;
+        hashes = countHashes hashStart;
+        openerLength = prefixLength + hashes + 1;
+      in
+        if prefixLength > 0 && charAt (hashStart + hashes) == "\""
+        then {inherit hashes openerLength;}
+        else null;
+      rawClosesAt = hashes: index:
+        charAt index
+        == "\""
+        && builtins.all
+        (offset: charAt (index + 1 + offset) == "#")
+        (builtins.genList (offset: offset) hashes);
+      charLiteralLengthAt = index:
+        if charAt index != "'"
+        then 0
+        else if charAt (index + 1) == "\\" && charAt (index + 3) == "'"
+        then 4
+        else if charAt (index + 2) == "'"
+        then 3
+        else 0;
       indexes = builtins.genList (index: index) length;
       folded = builtins.foldl' step chunkState indexes;
       step = state: index:
-        if state.skip
+        if state.skip > 0
         then
           state
           // {
-            skip = false;
+            skip = state.skip - 1;
           }
         else let
           ch = charAt index;
-          next =
-            if (index + 1) < length
-            then charAt (index + 1)
-            else "";
+          next = charAt (index + 1);
+          rawStart = rawStartAt index;
+          charLiteralLength = charLiteralLengthAt index;
         in
           if state.mode == "code"
           then
@@ -138,7 +186,7 @@
               // {
                 out = state.out + "  ";
                 mode = "line";
-                skip = true;
+                skip = 1;
               }
             else if ch == "/" && next == "*"
             then
@@ -147,7 +195,23 @@
                 out = state.out + "  ";
                 mode = "block";
                 depth = 1;
-                skip = true;
+                skip = 1;
+              }
+            else if rawStart != null
+            then
+              state
+              // {
+                out = state.out + spaces rawStart.openerLength;
+                mode = "raw";
+                rawHashes = rawStart.hashes;
+                skip = rawStart.openerLength - 1;
+              }
+            else if charLiteralLength > 0
+            then
+              state
+              // {
+                out = state.out + spaces charLiteralLength;
+                skip = charLiteralLength - 1;
               }
             else if ch == "\""
             then
@@ -183,7 +247,7 @@
               // {
                 out = state.out + "  ";
                 depth = state.depth + 1;
-                skip = true;
+                skip = 1;
               }
             else if ch == "*" && next == "/"
             then
@@ -198,7 +262,7 @@
                   if state.depth == 1
                   then 0
                   else state.depth - 1;
-                skip = true;
+                skip = 1;
               }
             else
               state
@@ -211,38 +275,62 @@
                     else " "
                   );
               }
-          else if ch == "\\" && next != ""
+          else if state.mode == "string"
           then
-            state
-            // {
-              out =
-                state.out
-                + " "
-                + (
-                  if next == "\n"
-                  then "\n"
-                  else " "
-                );
-              skip = true;
-            }
-          else if ch == "\""
+            if ch == "\\" && next != ""
+            then
+              state
+              // {
+                out =
+                  state.out
+                  + " "
+                  + (
+                    if next == "\n"
+                    then "\n"
+                    else " "
+                  );
+                skip = 1;
+              }
+            else if ch == "\""
+            then
+              state
+              // {
+                out = state.out + " ";
+                mode = "code";
+              }
+            else
+              state
+              // {
+                out =
+                  state.out
+                  + (
+                    if ch == "\n"
+                    then "\n"
+                    else " "
+                  );
+              }
+          else if state.mode == "raw"
           then
-            state
-            // {
-              out = state.out + " ";
-              mode = "code";
-            }
-          else
-            state
-            // {
-              out =
-                state.out
-                + (
-                  if ch == "\n"
-                  then "\n"
-                  else " "
-                );
-            };
+            if rawClosesAt state.rawHashes index
+            then
+              state
+              // {
+                out = state.out + spaces (state.rawHashes + 1);
+                mode = "code";
+                skip = state.rawHashes;
+              }
+            else
+              state
+              // {
+                out =
+                  state.out
+                  + (
+                    if ch == "\n"
+                    then "\n"
+                    else " "
+                  );
+              }
+          else throw "invalid source scrubber state";
     in
       # Force the accumulated output flat before the next chunk so thunk
       # depth stays bounded by the longest line, not the whole file.
@@ -263,7 +351,8 @@
         out = "";
         mode = "code";
         depth = 0;
-        skip = false;
+        rawHashes = 0;
+        skip = 0;
       }
       (builtins.genList (index: index) lineCount);
   in
@@ -297,32 +386,235 @@
       then raw - 1
       else raw;
 
-  sourceShapeFailuresForContent = relative: content: let
-    lines = lineCount content;
+  sourceLines = content: let
+    parts = lib.splitString "\n" content;
   in
-    lib.optionals (lines > hardLineLimit) [
-      "${relative}: ${builtins.toString lines} lines exceeds hard line limit ${builtins.toString hardLineLimit}"
+    if content != "" && lib.hasSuffix "\n" content
+    then lib.init parts
+    else parts;
+
+  countCharacter = character: text:
+    builtins.length (
+      builtins.filter
+      (index: builtins.substring index 1 text == character)
+      (builtins.genList (index: index) (builtins.stringLength text))
+    );
+
+  isCfgTestLine = line: let
+    normalized = lib.replaceStrings [" " "\t"] ["" ""] line;
+    allPredicates =
+      if lib.hasPrefix "#[cfg(all(" normalized && lib.hasSuffix "))]" normalized
+      then
+        lib.splitString "," (
+          lib.removeSuffix "))]" (lib.removePrefix "#[cfg(all(" normalized)
+        )
+      else [];
+  in
+    normalized
+    == "#[cfg(test)]"
+    || builtins.elem "test" allPredicates;
+
+  cfgTestLineMaskForScrubbed = scrubbed: let
+    step = state: line: let
+      cfgTest = isCfgTestLine line;
+      active = state.active || cfgTest;
+      trimmed = lib.trim line;
+      stackedAttribute =
+        state.active
+        && !state.itemStarted
+        && (state.attributeBrackets > 0 || lib.hasPrefix "#[" trimmed);
+      blankBeforeItem = state.active && !state.itemStarted && trimmed == "";
+      itemLine = active && !cfgTest && !stackedAttribute && !blankBeforeItem;
+
+      attributeBrackets =
+        if stackedAttribute
+        then state.attributeBrackets + countCharacter "[" line - countCharacter "]" line
+        else 0;
+      parentheses =
+        if itemLine || state.itemStarted
+        then state.parentheses + countCharacter "(" line - countCharacter ")" line
+        else 0;
+      brackets =
+        if itemLine || state.itemStarted
+        then state.brackets + countCharacter "[" line - countCharacter "]" line
+        else 0;
+      braces =
+        if itemLine || state.itemStarted
+        then state.braces + countCharacter "{" line - countCharacter "}" line
+        else 0;
+      sawBracedBody =
+        (itemLine || state.itemStarted)
+        && (state.sawBracedBody || countCharacter "{" line > 0);
+      itemStarted = state.itemStarted || itemLine;
+      delimitersClosed = parentheses == 0 && brackets == 0 && braces == 0;
+      unbracedTerminator =
+        delimitersClosed
+        && (hasInfix ";" line || lib.hasSuffix "," trimmed);
+      itemComplete =
+        itemStarted
+        && (
+          (sawBracedBody && delimitersClosed)
+          || (!sawBracedBody && unbracedTerminator)
+        );
+    in
+      if itemComplete
+      then {
+        active = false;
+        itemStarted = false;
+        attributeBrackets = 0;
+        parentheses = 0;
+        brackets = 0;
+        braces = 0;
+        sawBracedBody = false;
+        mask = state.mask ++ [active];
+      }
+      else {
+        inherit active itemStarted attributeBrackets parentheses brackets braces sawBracedBody;
+        mask = state.mask ++ [active];
+      };
+  in
+    (builtins.foldl' step {
+      active = false;
+      itemStarted = false;
+      attributeBrackets = 0;
+      parentheses = 0;
+      brackets = 0;
+      braces = 0;
+      sawBracedBody = false;
+      mask = [];
+    } (sourceLines scrubbed)).mask;
+
+  isTestOnlyPath = relative: let
+    components = lib.splitString "/" relative;
+    name = lib.last components;
+  in
+    builtins.any (component: builtins.elem component ["tests" "test_support"]) components
+    || name == "tests.rs"
+    || name == "test_support.rs"
+    || lib.hasSuffix "_test.rs" name
+    || lib.hasSuffix "_tests.rs" name
+    || hasInfix "_test_" name;
+
+  isTestSupportOnlyFrom = content: scrubbed: let
+    source = sourceLines content;
+    scrubbedSource = sourceLines scrubbed;
+    classified =
+      builtins.foldl' (
+        state: index:
+          if state.testOnly || !state.beforeItems
+          then state
+          else let
+            scrubbedLine = lib.trim (builtins.elemAt scrubbedSource index);
+            sourceLine = builtins.elemAt source index;
+            normalized = lib.replaceStrings [" " "\t" "\r"] ["" "" ""] sourceLine;
+            innerAttribute = lib.hasPrefix "#![" scrubbedLine;
+            approvedTestAttribute =
+              normalized
+              == "#![cfg(test)]"
+              || normalized == "#![cfg(any(test,feature=\"test-support\"))]";
+          in
+            if scrubbedLine == ""
+            then state
+            else if innerAttribute
+            then
+              state
+              // {
+                testOnly = approvedTestAttribute;
+              }
+            else
+              state
+              // {
+                beforeItems = false;
+              }
+      ) {
+        beforeItems = true;
+        testOnly = false;
+      } (builtins.genList (index: index) (builtins.length scrubbedSource));
+  in
+    classified.testOnly;
+
+  isTestSupportOnly = content: let
+    scrubbed = scrubCommentsAndStrings content;
+  in
+    isTestSupportOnlyFrom content scrubbed;
+
+  sourceRoleLineCounts = relative: content: let
+    total = lineCount content;
+    scrubbed = scrubCommentsAndStrings content;
+    testOnly = isTestOnlyPath relative || isTestSupportOnlyFrom content scrubbed;
+    mask =
+      if testOnly
+      then builtins.genList (_: true) total
+      else cfgTestLineMaskForScrubbed scrubbed;
+    tests = builtins.length (builtins.filter (marked: marked) mask);
+  in {
+    implementation = total - tests;
+    inherit tests;
+  };
+
+  reviewFor = relative: role:
+    builtins.filter (entry: entry.path == relative && entry.role == role) sourceReviews;
+
+  legacyLineCapAllows = relative: content:
+    builtins.any (
+      entry: entry.path == relative && lineCount content <= entry.maxLines
+    )
+    shapeLineDebt;
+
+  sourceDigest = content: "sha256:${builtins.hashString "sha256" content}";
+
+  sourceReviewFailuresForRole = relative: content: role: lines: let
+    reviews = reviewFor relative role;
+    reviewCount = builtins.length reviews;
+    review =
+      if reviewCount == 1
+      then builtins.head reviews
+      else null;
+    grandfathered = legacyLineCapAllows relative content;
+  in
+    lib.optionals (reviewCount > 1) [
+      "${relative}: duplicate source-review records for ${role}"
     ]
-    ++ lib.optionals (lines <= hardLineLimit && lines > softLineLimit) [
-      "${relative}: ${builtins.toString lines} lines exceeds soft line limit ${builtins.toString softLineLimit}"
+    ++ lib.optionals (lines <= responsibilityReviewThreshold && reviewCount != 0) [
+      "${relative}: stale ${role} source review at ${builtins.toString lines} lines"
     ]
-    ++ lib.optionals (!(lib.hasPrefix "//!" content)) [
+    ++ lib.optionals (lines > responsibilityReviewThreshold && !grandfathered && reviewCount == 0) [
+      "${relative}: ${role} section has ${builtins.toString lines} lines and requires a content-bound responsibility review above ${builtins.toString responsibilityReviewThreshold}"
+    ]
+    ++ lib.optionals (lines > responsibilityReviewThreshold && review != null && review.digest != sourceDigest content) [
+      "${relative}: ${role} source-review digest is stale"
+    ]
+    ++ lib.optionals (lines > responsibilityReviewThreshold && review != null && review.lines != lines) [
+      "${relative}: ${role} source-review line count ${builtins.toString review.lines} does not match ${builtins.toString lines}"
+    ]
+    ++ lib.optionals (lines > cohesionReviewThreshold && review != null && review.cohesion == cohesionNotRequired) [
+      "${relative}: ${role} section has ${builtins.toString lines} lines and requires a cohesion rationale above ${builtins.toString cohesionReviewThreshold}"
+    ]
+    ++ lib.optionals (lines > responsibilityReviewThreshold && lines <= cohesionReviewThreshold && review != null && review.cohesion != cohesionNotRequired) [
+      "${relative}: ${role} source review must use `${cohesionNotRequired}` at ${builtins.toString lines} lines"
+    ];
+
+  sourceReviewFailures = relative: content: let
+    counts = sourceRoleLineCounts relative content;
+  in
+    sourceReviewFailuresForRole relative content "implementation" counts.implementation
+    ++ sourceReviewFailuresForRole relative content "tests" counts.tests;
+
+  sourceShapeFailuresForContent = relative: content:
+    lib.optionals (!(lib.hasPrefix "//!" content)) [
       "${relative}: missing `//!` module header"
     ];
 
-  sourceShapeFailureAllowed = relative: content: finding: let
-    lines = lineCount content;
-  in
-    (hasInfix "line limit" finding
-      && builtins.any (entry: entry.path == relative && lines <= entry.maxLines) shapeLineDebt)
-    || (hasInfix "missing `//!` module header" finding
-      && builtins.any (entry: entry.path == relative) shapeHeaderDebt);
+  sourceShapeFailureAllowed = relative: content: finding:
+    hasInfix "missing `//!` module header" finding
+    && builtins.any (entry: entry.path == relative) shapeHeaderDebt;
 
   sourceShapeFailures = relative: let
     content = builtins.readFile (root + "/${relative}");
   in
     builtins.filter (finding: !(sourceShapeFailureAllowed relative content finding))
-    (sourceShapeFailuresForContent relative content);
+    (sourceShapeFailuresForContent relative content)
+    ++ sourceReviewFailures relative content;
 
   # The Rust gate owns the scrubbed source-token boundary scan. Keeping that
   # character-level scanner in pure Nix makes this source-only mirror fragile on
@@ -413,23 +705,73 @@
   sourceShapeBaselineStaleFailures =
     lib.concatMap (
       entry: let
-        content = builtins.readFile (root + "/${entry.path}");
-        lines = lineCount content;
+        exists = builtins.pathExists (root + "/${entry.path}");
+        lines =
+          if exists
+          then lineCount (builtins.readFile (root + "/${entry.path}"))
+          else 0;
       in
-        lib.optionals (lines <= softLineLimit) [
+        lib.optionals (!exists) [
+          "tests/crucible/engineering-hygiene-baseline.txt: shape-line path `${entry.path}` does not exist"
+        ]
+        ++ lib.optionals (exists && lines <= legacyShapeLineStaleThreshold) [
           "tests/crucible/engineering-hygiene-baseline.txt: stale shape-line baseline `${entry.path}` cap ${builtins.toString entry.maxLines} observed ${builtins.toString lines}"
         ]
     )
     shapeLineDebt
     ++ lib.concatMap (
       entry: let
-        content = builtins.readFile (root + "/${entry.path}");
+        exists = builtins.pathExists (root + "/${entry.path}");
+        content =
+          if exists
+          then builtins.readFile (root + "/${entry.path}")
+          else "";
       in
-        lib.optionals (lib.hasPrefix "//!" content) [
+        lib.optionals (!exists) [
+          "tests/crucible/engineering-hygiene-baseline.txt: shape-header path `${entry.path}` does not exist"
+        ]
+        ++ lib.optionals (exists && lib.hasPrefix "//!" content) [
           "tests/crucible/engineering-hygiene-baseline.txt: stale shape-header baseline `${entry.path}`"
         ]
     )
     shapeHeaderDebt;
+
+  validReviewDigest = digest:
+    builtins.match "sha256:[0-9a-f]{64}" digest != null;
+
+  sourceReviewKeys = map (entry: "${entry.path}|${entry.role}") sourceReviews;
+  sourceReviewResponsibilities = map (entry: entry.responsibilities) sourceReviews;
+  sourceReviewCohesion = map (entry: entry.cohesion) (
+    builtins.filter (entry: entry.cohesion != cohesionNotRequired) sourceReviews
+  );
+  duplicateValues = values:
+    builtins.filter (
+      value: builtins.length (builtins.filter (candidate: candidate == value) values) > 1
+    ) (lib.unique values);
+
+  sourceReviewBaselineFailures =
+    lib.concatMap (
+      entry:
+        lib.optionals (!(builtins.elem entry.role ["implementation" "tests"])) [
+          "tests/crucible/engineering-hygiene-baseline.txt: source-review `${entry.path}` has invalid role `${entry.role}`"
+        ]
+        ++ lib.optionals (!(validReviewDigest entry.digest)) [
+          "tests/crucible/engineering-hygiene-baseline.txt: source-review `${entry.path}` has invalid SHA-256 digest"
+        ]
+        ++ lib.optionals (entry.responsibilities == "" || entry.cohesion == "") [
+          "tests/crucible/engineering-hygiene-baseline.txt: source-review `${entry.path}` has an empty rationale field"
+        ]
+        ++ lib.optionals (!(builtins.pathExists (root + "/${entry.path}"))) [
+          "tests/crucible/engineering-hygiene-baseline.txt: source-review path `${entry.path}` does not exist"
+        ]
+    )
+    sourceReviews
+    ++ map (key: "tests/crucible/engineering-hygiene-baseline.txt: duplicate source-review `${key}`")
+    (duplicateValues sourceReviewKeys)
+    ++ map (responsibilities: "tests/crucible/engineering-hygiene-baseline.txt: source-review responsibilities are not file-specific: `${responsibilities}`")
+    (duplicateValues sourceReviewResponsibilities)
+    ++ map (cohesion: "tests/crucible/engineering-hygiene-baseline.txt: source-review cohesion rationale is not file-specific: `${cohesion}`")
+    (duplicateValues sourceReviewCohesion);
 
   qemuManifestBaselineStaleFailures =
     lib.concatMap (
@@ -477,25 +819,117 @@
     + builtins.concatStringsSep "" (
       builtins.genList (_: "fn line() {}\n") (lines - 1)
     );
-  noLineLimitFailure = findings:
-    !(builtins.any (finding: hasInfix "line limit" finding) findings);
   lineCountRegressionFailures = let
-    exactSoft = sourceShapeFailuresForContent "synthetic.rs" (syntheticSource softLineLimit);
-    overSoft = sourceShapeFailuresForContent "synthetic.rs" (syntheticSource (softLineLimit + 1));
-    exactHard = sourceShapeFailuresForContent "synthetic.rs" (syntheticSource hardLineLimit);
-    overHard = sourceShapeFailuresForContent "synthetic.rs" (syntheticSource (hardLineLimit + 1));
+    syntheticPath = "crates/crucible-example/src/synthetic.rs";
+    exactReview = sourceReviewFailures syntheticPath (syntheticSource responsibilityReviewThreshold);
+    overReview = sourceReviewFailures syntheticPath (syntheticSource (responsibilityReviewThreshold + 1));
+    mixed =
+      "//! synthetic\n"
+      + builtins.concatStringsSep "" (builtins.genList (_: "fn implementation() {}\n") 499)
+      + "#[cfg(test)]\nmod tests {\n"
+      + builtins.concatStringsSep "" (builtins.genList (_: "fn test_case() {}\n") 1197)
+      + "}\n";
+    mixedCounts = sourceRoleLineCounts syntheticPath mixed;
+    testOnlyCounts = sourceRoleLineCounts "crates/crucible-example/src/tests.rs" (syntheticSource 1200);
+    testSupportCounts = sourceRoleLineCounts "crates/crucible-example/src/node/test_support/large.rs" (syntheticSource 1200);
+    testSupportModuleCounts = sourceRoleLineCounts "crates/crucible-example/src/test_support.rs" (syntheticSource 1200);
+    stackedAttribute = ''
+      //! synthetic
+      #[cfg(test)]
+      #[allow(dead_code, unused_variables)]
+      fn gated(value: (u8, u8)) {
+          let _ = value;
+      }
+      fn production() {}
+    '';
+    stackedCounts = sourceRoleLineCounts syntheticPath stackedAttribute;
+    cfgField = ''
+      //! synthetic
+      struct Example {
+          #[cfg(test)]
+          #[allow(dead_code)]
+          gated: Option<(u8, u8)>,
+          production: u8,
+      }
+    '';
+    cfgFieldCounts = sourceRoleLineCounts syntheticPath cfgField;
+    cfgExpression = ''
+      //! synthetic
+      #[cfg(test)]
+      let outcome = if condition {
+          1
+      } else {
+          2
+      };
+      fn production() {}
+    '';
+    cfgExpressionCounts = sourceRoleLineCounts syntheticPath cfgExpression;
+    fakeCrateCfg = ''
+      //! synthetic
+      const TEXT: &str = r###"
+      #![cfg(test)]
+      "quoted raw content"
+      "###;
+      /* #![cfg(test)] */
+      fn production() {}
+    '';
+    realCrateCfg = ''
+      #![cfg(any(test, feature = "test-support"))]
+      //! synthetic
+      fn support() {}
+    '';
+    platformOrTest = ''
+      #![cfg(any(test, unix))]
+      //! synthetic
+      fn production() {}
+    '';
+    nestedCrateCfg = ''
+      //! synthetic
+      mod support {
+          #![cfg(test)]
+          fn nested() {}
+      }
+      fn production() {}
+    '';
   in
-    lib.optionals (!(noLineLimitFailure exactSoft)) [
-      "line-count regression: exact soft limit should not fail [${builtins.concatStringsSep "; " exactSoft}]"
+    lib.optionals (exactReview != []) [
+      "line-count regression: exact responsibility-review threshold should pass [${builtins.concatStringsSep "; " exactReview}]"
     ]
-    ++ lib.optionals (!(builtins.any (finding: hasInfix "exceeds soft line limit" finding) overSoft)) [
-      "line-count regression: soft+1 should fail [${builtins.concatStringsSep "; " overSoft}]"
+    ++ lib.optionals (!(builtins.any (finding: hasInfix "responsibility review above 1000" finding) overReview)) [
+      "line-count regression: responsibility-review threshold + 1 should require review [${builtins.concatStringsSep "; " overReview}]"
     ]
-    ++ lib.optionals (builtins.any (finding: hasInfix "exceeds hard line limit" finding) exactHard) [
-      "line-count regression: exact hard limit should not hard-fail [${builtins.concatStringsSep "; " exactHard}]"
+    ++ lib.optionals (mixedCounts.implementation != 500 || mixedCounts.tests != 1200) [
+      "line-count regression: co-located tests were not counted separately"
     ]
-    ++ lib.optionals (!(builtins.any (finding: hasInfix "exceeds hard line limit" finding) overHard)) [
-      "line-count regression: hard+1 should fail [${builtins.concatStringsSep "; " overHard}]"
+    ++ lib.optionals (testOnlyCounts.implementation != 0 || testOnlyCounts.tests != 1200) [
+      "line-count regression: test-only source was not classified as tests"
+    ]
+    ++ lib.optionals (testSupportCounts.implementation != 0 || testSupportCounts.tests != 1200) [
+      "line-count regression: nested test-support source was not classified as tests"
+    ]
+    ++ lib.optionals (testSupportModuleCounts.implementation != 0 || testSupportModuleCounts.tests != 1200) [
+      "line-count regression: test-support module was not classified as tests"
+    ]
+    ++ lib.optionals (stackedCounts.implementation != 2 || stackedCounts.tests != 5) [
+      "line-count regression: stacked attributes truncated a cfg(test) item"
+    ]
+    ++ lib.optionals (cfgFieldCounts.implementation != 4 || cfgFieldCounts.tests != 3) [
+      "line-count regression: a cfg(test) field absorbed adjacent production fields"
+    ]
+    ++ lib.optionals (cfgExpressionCounts.implementation != 2 || cfgExpressionCounts.tests != 6) [
+      "line-count regression: an else block truncated a cfg(test) expression"
+    ]
+    ++ lib.optionals (isTestSupportOnly fakeCrateCfg) [
+      "line-count regression: a raw-string or comment payload impersonated a test-only crate attribute"
+    ]
+    ++ lib.optionals (!(isTestSupportOnly realCrateCfg)) [
+      "line-count regression: the real test-support crate attribute was not recognized"
+    ]
+    ++ lib.optionals (isTestSupportOnly platformOrTest) [
+      "line-count regression: a platform-or-test crate was misclassified as test-only"
+    ]
+    ++ lib.optionals (isTestSupportOnly nestedCrateCfg) [
+      "line-count regression: a nested module attribute was misclassified as crate-level test-only"
     ];
 
   qemuManifestRegressionFailures = let
@@ -525,6 +959,7 @@
   sourceFailures =
     lib.concatMap packageSourceFailures cruciblePackages
     ++ sourceShapeBaselineStaleFailures
+    ++ sourceReviewBaselineFailures
     ++ qemuManifestBaselineStaleFailures;
   policyFailures =
     commitRuleFailures standards
@@ -537,11 +972,14 @@
     ++ lib.optionals (!(builtins.pathExists ./phase1-crate-layer-graph.nix)) [
       "missing crate layer-graph mirror for STD-28"
     ]
-    ++ lib.optionals (!(hasInfix "SOFT_LINE_LIMIT: usize = 600" hygieneRust)) [
-      "engineering_hygiene.rs must publish the soft line limit"
+    ++ lib.optionals (!(hasInfix "RESPONSIBILITY_REVIEW_LINE_THRESHOLD: usize = 1_000" hygieneRust)) [
+      "engineering_hygiene.rs must publish the responsibility-review threshold"
     ]
-    ++ lib.optionals (!(hasInfix "HARD_LINE_LIMIT: usize = 1_000" hygieneRust)) [
-      "engineering_hygiene.rs must publish the hard line limit"
+    ++ lib.optionals (!(hasInfix "COHESION_REVIEW_LINE_THRESHOLD: usize = 1_500" hygieneRust)) [
+      "engineering_hygiene.rs must publish the cohesion-review threshold"
+    ]
+    ++ lib.optionals (!(hasInfix "shape-review" hygieneRust)) [
+      "engineering_hygiene.rs must consume content-bound source reviews"
     ]
     ++ lib.optionals (!(hasInfix "HygieneBaseline" hygieneRust)) [
       "engineering_hygiene.rs must consume the engineering hygiene baseline"
@@ -579,8 +1017,9 @@ in
             PASS
             check=checks.crucible.phase1.engineeringHygiene
             tasks=T-STD-11
-            file_soft_limit=600
-            file_hard_limit=1000
+            responsibility_review_threshold=1000
+            cohesion_review_threshold=1500
+            source_review_binding=whole-file-sha256-role-line-count
             layer_graph_check=checks.crucible.phase1.crateLayerGraph
             qemu_boundary=crucible-qemu,crucible-qemu-plugin
             debt_baseline=tests/crucible/engineering-hygiene-baseline.txt

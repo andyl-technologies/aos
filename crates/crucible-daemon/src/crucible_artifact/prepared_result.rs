@@ -1524,6 +1524,7 @@ fn charge_validation_references(
     Ok(())
 }
 
+// crucible-lint: allow rust-allow -- replay materialization receives parallel authenticated component tables.
 #[allow(clippy::too_many_arguments)]
 fn materialize_replays(
     indexes: &[ReplayIndexes],
@@ -1604,6 +1605,7 @@ fn discovery_path_from_tag(
     }
 }
 
+// crucible-lint: allow rust-allow -- replay totals validate every bounded component table together.
 #[allow(clippy::too_many_arguments)]
 fn replay_record_totals(
     configurations: &[ConfigurationArtifact],

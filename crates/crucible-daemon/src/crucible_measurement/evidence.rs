@@ -759,8 +759,9 @@ fn normalize_guest_measurements(
                         }
                         .into());
                     }
-                    validate_guest_measurement_value(value, contract)
-                        .map_err(|reason| guest_measurement_error(entry.sequence(), reason))?;
+                    validate_guest_measurement_value(value, contract).map_err(|error| {
+                        guest_measurement_error(entry.sequence(), error.to_string())
+                    })?;
                     sample_work_bytes = sample_work_bytes
                         .checked_add(guest_sample_normalization_work(
                             measurement.as_str(),
@@ -776,8 +777,9 @@ fn normalize_guest_measurements(
                         }
                         .into());
                     }
-                    let value = normalize_guest_measurement_value(value)
-                        .map_err(|reason| guest_measurement_error(entry.sequence(), reason))?;
+                    let value = normalize_guest_measurement_value(value).map_err(|error| {
+                        guest_measurement_error(entry.sequence(), error.to_string())
+                    })?;
                     samples.push(MeasurementRuntimeSample::new(
                         entry.sequence(),
                         measurement,
@@ -946,22 +948,29 @@ fn cohort_contains(cohort: &CohortPolicy, node: &NodeId) -> bool {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum GuestMeasurementValueError {
+    #[error(transparent)]
+    InvalidRational(#[from] crucible::model::MeasurementEvaluationError),
+    #[error("rational sample is not canonical reduced form")]
+    NonCanonicalRational,
+    #[error("metric `{metric}` value violates its declared type or guest protocol bound")]
+    ContractMismatch { metric: MetricId },
+}
+
 fn normalize_guest_measurement_value(
     value: &GuestMeasurementValue,
-) -> Result<MeasurementSampleValue, String> {
+) -> Result<MeasurementSampleValue, GuestMeasurementValueError> {
     match value {
         GuestMeasurementValue::Signed(value) => Ok(MeasurementSampleValue::Signed(*value)),
         GuestMeasurementValue::Unsigned(value) => Ok(MeasurementSampleValue::Unsigned(*value)),
         GuestMeasurementValue::Rational(value) => {
-            let reduced = ReducedRational::new(value.negative, value.numerator, value.denominator)
-                .map_err(|error| error.to_string())?;
+            let reduced = ReducedRational::new(value.negative, value.numerator, value.denominator)?;
             if reduced.is_negative() != value.negative
                 || reduced.numerator() != value.numerator
                 || reduced.denominator() != value.denominator
             {
-                return Err(String::from(
-                    "rational sample is not canonical reduced form",
-                ));
+                return Err(GuestMeasurementValueError::NonCanonicalRational);
             }
             Ok(MeasurementSampleValue::Rational(reduced))
         }
@@ -981,7 +990,7 @@ fn normalize_guest_measurement_value(
 fn validate_guest_measurement_value(
     value: &GuestMeasurementValue,
     metric: &MetricDefinition,
-) -> Result<(), String> {
+) -> Result<(), GuestMeasurementValueError> {
     let valid = match (value, &metric.value_type) {
         (GuestMeasurementValue::Signed(_), MetricValueType::SignedInteger)
         | (GuestMeasurementValue::Unsigned(_), MetricValueType::UnsignedInteger)
@@ -1014,10 +1023,9 @@ fn validate_guest_measurement_value(
         _ => false,
     };
     if !valid {
-        return Err(format!(
-            "metric `{}` value violates its declared type or guest protocol bound",
-            metric.id
-        ));
+        return Err(GuestMeasurementValueError::ContractMismatch {
+            metric: metric.id.clone(),
+        });
     }
     Ok(())
 }
