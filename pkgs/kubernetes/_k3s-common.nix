@@ -55,6 +55,7 @@ in {
 
   kernelModules = [
     "br_netfilter"
+    "xt_physdev" # kube-router network-policy matching on bridged pod traffic
     "vxlan" # flannel default (VXLAN) backend
     "ip_set" # k3s netpol controller
   ];
@@ -152,6 +153,26 @@ in {
           fi
         done
         runtime_arguments+=(--pause-image "${pause.reference}@sha256:$pause_digest")
+
+        # Every node that can host pods needs the bundled defaults, including
+        # workers joined to an agentless control plane. Digest-bearing names
+        # invalidate K3s's air-gap cache when the package changes.
+        for bundled_image in ${pkgs.k3s}/share/k3s/images/*.tar; do
+          image_name="''${bundled_image##*/}"
+          image_name="''${image_name%.tar}"
+          manifest=${pkgs.k3s}/share/k3s/images/$image_name.manifest.json
+          image_digest=$(${pkgs.coreutils}/bin/sha256sum "$manifest")
+          image_digest="''${image_digest%% *}"
+          image_link="$images/aos-addon-$image_name-$image_digest.tar"
+          ${pkgs.coreutils}/bin/ln -s "$bundled_image" "$image_link.$$.tmp"
+          ${pkgs.coreutils}/bin/mv -Tf "$image_link.$$.tmp" "$image_link"
+
+          for previous_image in "$images/aos-addon-$image_name-"*.tar; do
+            if [ "$previous_image" != "$image_link" ] && [ -L "$previous_image" ]; then
+              ${pkgs.coreutils}/bin/rm -- "$previous_image"
+            fi
+          done
+        done
       ''}
 
       case ${lib.escapeShellArg command} in
