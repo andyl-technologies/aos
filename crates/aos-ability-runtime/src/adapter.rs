@@ -55,6 +55,10 @@ pub struct SystemMonotonicClock {
 impl SystemMonotonicClock {
     /// Starts a monotonic clock at the current instant.
     #[must_use]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "this native clock only charges local execution budgets and never enters deterministic Crucible state"
+    )]
     pub fn new() -> Self {
         Self {
             origin: Instant::now(),
@@ -69,6 +73,10 @@ impl Default for SystemMonotonicClock {
 }
 
 impl MonotonicClock for SystemMonotonicClock {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "this native clock only charges local execution budgets and never enters deterministic Crucible state"
+    )]
     fn now_millis(&self) -> u64 {
         u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX)
     }

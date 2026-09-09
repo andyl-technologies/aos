@@ -14,7 +14,9 @@ mod transaction;
 #[cfg(test)]
 mod tests;
 
-pub use admission::{AdmissionError, AdmissionFailure, AdmittedOperation, TrustedAdmissionPolicy};
+pub use admission::{
+    AdmissionError, AdmissionFailure, AdmissionResult, AdmittedOperation, TrustedAdmissionPolicy,
+};
 pub use event::{
     CancellationResult, DispatchAbortReason, EXECUTION_EVENT_SCHEMA, ExecutionEvent,
     ExecutionEventKind, ReconciliationResult,

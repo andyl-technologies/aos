@@ -135,6 +135,11 @@ pub enum AdmissionError {
 /// Retains ownership tokens whose cleanup also failed during admission.
 #[derive(Debug)]
 pub struct AdmissionFailure<H> {
+    state: Box<AdmissionFailureState<H>>,
+}
+
+#[derive(Debug)]
+struct AdmissionFailureState<H> {
     error: AdmissionError,
     retained_resources: Vec<ResourceHandle<H>>,
     cleanup_errors: Vec<anyhow::Error>,
@@ -145,19 +150,21 @@ impl<H> AdmissionFailure<H> {
     /// Returns the primary reason admission failed.
     #[must_use]
     pub const fn error(&self) -> &AdmissionError {
-        &self.error
+        &self.state.error
     }
 
     /// Returns resources still owned because their cleanup failed.
-    #[must_use]
     pub fn retained_resources(&self) -> impl Iterator<Item = &ResourceId> {
-        self.retained_resources.iter().map(ResourceHandle::resource)
+        self.state
+            .retained_resources
+            .iter()
+            .map(ResourceHandle::resource)
     }
 
     /// Returns failures reported while releasing incomplete reservations.
     #[must_use]
     pub fn cleanup_errors(&self) -> &[anyhow::Error] {
-        &self.cleanup_errors
+        &self.state.cleanup_errors
     }
 
     /// Retries release of every retained reservation.
@@ -169,14 +176,14 @@ impl<H> AdmissionFailure<H> {
     where
         Catalog: TrustedResourceCatalog<Handle = H>,
     {
-        self.cleanup_errors.clear();
+        self.state.cleanup_errors.clear();
         release_incomplete(
-            &mut self.retained_resources,
-            &mut self.cleanup_errors,
+            &mut self.state.retained_resources,
+            &mut self.state.cleanup_errors,
             catalog,
         );
-        if self.retained_resources.is_empty() {
-            if let Some(live_reservation) = &mut self.live_reservation {
+        if self.state.retained_resources.is_empty() {
+            if let Some(live_reservation) = &mut self.state.live_reservation {
                 live_reservation.release_claim();
             }
             Ok(())
@@ -185,6 +192,10 @@ impl<H> AdmissionFailure<H> {
         }
     }
 }
+
+/// Returns either a freshly admitted operation or a failure retaining cleanup ownership.
+pub type AdmissionResult<'plan, Request, Handle> =
+    Result<AdmittedOperation<'plan, Request, Handle>, AdmissionFailure<Handle>>;
 
 /// Proves that one checked operation passed fresh authority and ownership checks.
 #[derive(Debug)]
@@ -273,7 +284,6 @@ impl<Request, H> AdmittedOperation<'_, Request, H> {
     }
 
     /// Returns reserved logical resources in canonical identity order.
-    #[must_use]
     pub fn resources(&self) -> impl Iterator<Item = &ResourceId> {
         self.resources.iter().map(ResourceHandle::resource)
     }
@@ -313,10 +323,7 @@ impl<'plan> ExecutionTransaction<'plan> {
         catalog: &mut Catalog,
         policy: &mut Policy,
         clock: &Clock,
-    ) -> Result<
-        AdmittedOperation<'plan, Adapter::Request, Adapter::Handle>,
-        AdmissionFailure<Adapter::Handle>,
-    >
+    ) -> AdmissionResult<'plan, Adapter::Request, Adapter::Handle>
     where
         Adapter: TrustedAdapter,
         Catalog: TrustedResourceCatalog<Handle = Adapter::Handle>,
@@ -789,10 +796,12 @@ where
         Some(live_reservation)
     };
     AdmissionFailure {
-        error,
-        retained_resources: resources,
-        cleanup_errors,
-        live_reservation,
+        state: Box::new(AdmissionFailureState {
+            error,
+            retained_resources: resources,
+            cleanup_errors,
+            live_reservation,
+        }),
     }
 }
 
@@ -820,10 +829,12 @@ fn release_incomplete<H, Catalog>(
 
 fn failure<H>(error: AdmissionError) -> AdmissionFailure<H> {
     AdmissionFailure {
-        error,
-        retained_resources: Vec::new(),
-        cleanup_errors: Vec::new(),
-        live_reservation: None,
+        state: Box::new(AdmissionFailureState {
+            error,
+            retained_resources: Vec::new(),
+            cleanup_errors: Vec::new(),
+            live_reservation: None,
+        }),
     }
 }
 
@@ -867,10 +878,12 @@ mod tests {
     fn retry_cleanup_preserves_the_token_until_release_succeeds()
     -> Result<(), Box<dyn std::error::Error>> {
         let failure = AdmissionFailure {
-            error: AdmissionError::PlanNotExecutable,
-            retained_resources: vec![handle("alpha")?],
-            cleanup_errors: Vec::new(),
-            live_reservation: None,
+            state: Box::new(AdmissionFailureState {
+                error: AdmissionError::PlanNotExecutable,
+                retained_resources: vec![handle("alpha")?],
+                cleanup_errors: Vec::new(),
+                live_reservation: None,
+            }),
         };
         let mut catalog = TestCatalog::failing("alpha");
 
