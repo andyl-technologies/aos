@@ -122,7 +122,7 @@ in
 
             # Fake git — must return exit 1 to avoid canonicalize("") panic
             mkdir -p .fake-bin
-            printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
+            printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
             cat > bootstrap.toml << TOML
@@ -159,12 +159,12 @@ in
             rpath = true
             omit-git-hash = true
             download-rustc = false
-            # `lld = false`: x.py refuses `rust.lld = true` when configured with an
-            # external `llvm-config` (it has no bundled llvm-project to build lld
-            # from). The wasm32-unknown-unknown target nonetheless needs `rust-lld`
+            # \`lld = false\`: x.py refuses \`rust.lld = true\` when configured with an
+            # external \`llvm-config\` (it has no bundled llvm-project to build lld
+            # from). The wasm32-unknown-unknown target nonetheless needs \`rust-lld\`
             # (wasm has no system linker), so the install phase symlinks it from
-            # the AOS LLVM's own `lld` driver instead. `use-lld = false` keeps the
-            # host (x86_64) target on GCC's `ld` — rust-lld as the default host
+            # the AOS LLVM's own \`lld\` driver instead. \`use-lld = false\` keeps the
+            # host (x86_64) target on GCC's \`ld\` — rust-lld as the default host
             # linker chokes on the zlib-compressed debug sections in GCC 14's
             # libgcc.a.
             lld = false
