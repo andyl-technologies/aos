@@ -1,8 +1,8 @@
 //! Stable process-instance observations anchored by a live pidfd.
 //!
-//! Numeric process IDs are reusable. This module couples the atomic identity
-//! returned by `PIDFD_GET_INFO` to Linux's boot-relative process start time,
-//! while the pidfd keeps the observed process instance pinned.
+//! Numeric process IDs are reusable. This module couples repeated identity
+//! observations returned by `PIDFD_GET_INFO` to Linux's boot-relative process
+//! start time, while the pidfd keeps the observed process instance pinned.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -63,8 +63,11 @@ impl PidFd {
     /// Observes a stable process instance while retaining this pidfd.
     ///
     /// The procfs start time is read between two equal `PIDFD_GET_INFO`
-    /// samples. Final liveness rejects the case where the pinned process exits
-    /// and its numeric PID is reused while procfs is being inspected.
+    /// observations. Equality is a consistency sandwich, not a globally atomic
+    /// snapshot or proof against a mutable field changing and changing back.
+    /// Final liveness rejects the case where the pinned process exits and its
+    /// numeric PID is reused while procfs is being inspected. No field is
+    /// guaranteed fresh after this method returns.
     ///
     /// # Errors
     ///

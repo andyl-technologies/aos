@@ -4,15 +4,15 @@
 //! its application role. This module binds those subjects to the root UID/GID
 //! snapshot supplied by `SO_PEERCRED` or `SCM_CREDENTIALS`, a strictly resolved
 //! cgroup-v2 object, a provisioned executable inode, and the exact effective
-//! SELinux domain observed through procfs. Linux 6.18 PIDFD_GET_INFO reports
-//! task credentials, but the current [`PidFdInfo`] wrapper does not expose
-//! them. This staged adapter can therefore check the retained socket snapshot
-//! for consistency but cannot yet claim a fresh effective-UID/GID observation;
-//! typed credential exposure is a production-authentication prerequisite.
+//! SELinux domain observed through procfs. Every pidfd observation must include
+//! Linux 6.18's complete credential tuple. All eight IDs must remain root and
+//! the effective IDs must agree with the historical `SO_PEERCRED` or
+//! `SCM_CREDENTIALS` nomination.
 //!
 //! Process inspection is deliberately a repeated observation, not a claim of
-//! atomicity. The verifier compares stable pidfd identity, exact cgroup
-//! membership, executable inode, and MAC context before and after the central
+//! global atomicity or proof that a mutable value never changed and changed
+//! back. The verifier compares pidfd identity and credentials, exact cgroup
+//! membership, executable inode, and MAC context around the central
 //! observations, then finishes with pidfd liveness. A process can still change
 //! immediately after admission; callers must retain the returned evidence and
 //! revalidate it at the effect boundary.
@@ -39,7 +39,7 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo, PidFdProcessIdentity};
+use aos_sandbox_linux::pidfd::{PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, PeerCredentials, RecordCredentials,
 };
@@ -142,8 +142,9 @@ impl NamespaceInspectorKernelVerifierV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error for every descriptor, procfs, liveness, or fixed-role
-    /// mismatch. A procfs permission denial is not converted to weak evidence.
+    /// Returns an error for every credential, descriptor, procfs, liveness, or
+    /// fixed-role mismatch. A procfs permission denial is not converted to weak
+    /// evidence.
     pub(crate) fn authenticate_broker_connection<'peer>(
         &self,
         peer: &'peer ConnectionPeerIdentity,
@@ -152,7 +153,7 @@ impl NamespaceInspectorKernelVerifierV1 {
         let evidence = self.authenticate(
             peer.pidfd(),
             peer.initial_info(),
-            Credentials::from(peer.credentials()),
+            TransportCredentials::from(peer.credentials()),
             RoleExpectation::broker(&self.broker_executable),
         )?;
 
@@ -163,8 +164,9 @@ impl NamespaceInspectorKernelVerifierV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error for every descriptor, procfs, liveness, or fixed-role
-    /// mismatch. The record subject is consumed so its pidfd remains retained.
+    /// Returns an error for every credential, descriptor, procfs, liveness, or
+    /// fixed-role mismatch. The record subject is consumed so its pidfd remains
+    /// retained.
     pub(crate) fn authenticate_broker_record(
         &self,
         subject: KernelAuthorizedRecordSubject,
@@ -172,7 +174,7 @@ impl NamespaceInspectorKernelVerifierV1 {
         let evidence = self.authenticate(
             subject.pidfd(),
             subject.initial_info(),
-            Credentials::from(subject.credentials()),
+            TransportCredentials::from(subject.credentials()),
             RoleExpectation::broker(&self.broker_executable),
         )?;
 
@@ -187,8 +189,8 @@ impl NamespaceInspectorKernelVerifierV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error for a malformed instance or any descriptor, procfs,
-    /// liveness, or fixed-role mismatch.
+    /// Returns an error for a malformed instance or any credential, descriptor,
+    /// procfs, liveness, or fixed-role mismatch.
     pub(crate) fn authenticate_inspector_record(
         &self,
         subject: KernelAuthorizedRecordSubject,
@@ -200,7 +202,7 @@ impl NamespaceInspectorKernelVerifierV1 {
         let evidence = self.authenticate(
             subject.pidfd(),
             subject.initial_info(),
-            Credentials::from(subject.credentials()),
+            TransportCredentials::from(subject.credentials()),
             RoleExpectation::inspector(&self.inspector_executable, &cgroup),
         )?;
 
@@ -224,7 +226,7 @@ impl NamespaceInspectorKernelVerifierV1 {
         let evidence = self.authenticate(
             peer.pidfd(),
             peer.initial_info(),
-            Credentials::from(peer.credentials()),
+            TransportCredentials::from(peer.credentials()),
             RoleExpectation::manager(&self.manager_executable),
         )?;
 
@@ -235,9 +237,11 @@ impl NamespaceInspectorKernelVerifierV1 {
         &self,
         pidfd: &PidFd,
         initial_info: PidFdInfo,
-        credentials: Credentials,
+        transport_credentials: TransportCredentials,
         expected: RoleExpectation<'_>,
     ) -> Result<RetainedKernelProcessEvidenceV1, NamespaceInspectorKernelAuthenticationError> {
+        let initial_pidfd = PidFdObservation::try_from(initial_info)?;
+        let pidfd_before = PidFdObservation::try_from(pidfd.info()?)?;
         let before = pidfd.process_identity()?;
         let cgroup = self.cgroup_root.resolve(expected.cgroup)?;
         cgroup.verify_exact_membership(pidfd)?;
@@ -249,12 +253,15 @@ impl NamespaceInspectorKernelVerifierV1 {
 
         cgroup.verify_exact_membership(pidfd)?;
         let after = pidfd.process_identity()?;
+        let pidfd_after = PidFdObservation::try_from(pidfd.info()?)?;
         validate_observation(
             expected,
-            credentials,
-            initial_info.into(),
+            transport_credentials,
+            initial_pidfd,
+            pidfd_before,
             before.into(),
             after.into(),
+            pidfd_after,
             executable_before.identity,
             executable_after.identity,
             &mac_before,
@@ -270,7 +277,10 @@ impl NamespaceInspectorKernelVerifierV1 {
             role: expected.role,
             process: after,
             cgroup_id: cgroup.kernel_id(),
-            credentials,
+            credentials: AuthenticatedCredentials {
+                transport: transport_credentials,
+                pidfd: pidfd_after.credentials,
+            },
             cgroup,
             executable: executable_after.descriptor,
         })
@@ -289,8 +299,9 @@ impl RetainedInspectorConnectionPeerV1<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error unless a fresh complete pidfd, cgroup, executable, and
-    /// MAC observation still matches the retained admission baseline.
+    /// Returns an error unless fresh pidfd identity and credentials, cgroup,
+    /// executable, and MAC observations still match the retained admission
+    /// baseline.
     pub(crate) fn authenticated_peer(
         &self,
     ) -> Result<KernelAuthenticatedInspectorPeerV1, NamespaceInspectorKernelAuthenticationError>
@@ -307,8 +318,9 @@ impl RetainedInspectorConnectionPeerV1<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the process exited, migrated, its retained cgroup
-    /// became inactive, or its executable or effective MAC domain changed.
+    /// Returns an error if the process exited, changed credentials, migrated,
+    /// its retained cgroup became inactive, or its executable or effective MAC
+    /// domain changed.
     pub(crate) fn revalidate_retained(
         &self,
     ) -> Result<(), NamespaceInspectorKernelAuthenticationError> {
@@ -348,8 +360,9 @@ impl RetainedInspectorRecordSubjectV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error unless a fresh complete pidfd, cgroup, executable, and
-    /// MAC observation still matches the retained admission baseline.
+    /// Returns an error unless fresh pidfd identity and credentials, cgroup,
+    /// executable, and MAC observations still match the retained admission
+    /// baseline.
     pub(crate) fn authenticated_peer(
         &self,
     ) -> Result<KernelAuthenticatedInspectorPeerV1, NamespaceInspectorKernelAuthenticationError>
@@ -366,8 +379,9 @@ impl RetainedInspectorRecordSubjectV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error if the process exited, migrated, its retained cgroup
-    /// became inactive, or its executable or effective MAC domain changed.
+    /// Returns an error if the process exited, changed credentials, migrated,
+    /// its retained cgroup became inactive, or its executable or effective MAC
+    /// domain changed.
     pub(crate) fn revalidate_retained(
         &self,
     ) -> Result<(), NamespaceInspectorKernelAuthenticationError> {
@@ -391,8 +405,9 @@ impl RetainedSystemdManagerConnectionV1<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error unless a fresh complete PID 1, manager-cgroup,
-    /// executable, and MAC observation still matches the admission baseline.
+    /// Returns an error unless fresh PID 1 identity and credentials,
+    /// manager-cgroup, executable, and MAC observations still match the
+    /// admission baseline.
     pub(crate) fn authenticated_manager(
         &self,
     ) -> Result<KernelAuthenticatedSystemdManagerV1, NamespaceInspectorKernelAuthenticationError>
@@ -409,8 +424,9 @@ impl RetainedSystemdManagerConnectionV1<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if PID 1 exited, changed identity, migrated, its
-    /// retained cgroup became inactive, or its executable or MAC domain changed.
+    /// Returns an error if PID 1 exited, changed identity or credentials,
+    /// migrated, its retained cgroup became inactive, or its executable or MAC
+    /// domain changed.
     pub(crate) fn revalidate_retained(
         &self,
     ) -> Result<(), NamespaceInspectorKernelAuthenticationError> {
@@ -427,7 +443,7 @@ struct RetainedKernelProcessEvidenceV1 {
     role: AuthenticatedRole,
     process: PidFdProcessIdentity,
     cgroup_id: u64,
-    credentials: Credentials,
+    credentials: AuthenticatedCredentials,
     cgroup: RetainedCgroupAnchor,
     // Retaining the descriptor pins the executable inode accepted above.
     executable: OwnedFd,
@@ -449,8 +465,8 @@ impl RetainedKernelProcessEvidenceV1 {
         Ok(KernelAuthenticatedInspectorPeerV1 {
             role,
             process: model_process(self.process, self.cgroup_id),
-            uid: self.credentials.uid,
-            gid: self.credentials.gid,
+            uid: self.credentials.pidfd.effective_user_id,
+            gid: self.credentials.pidfd.effective_group_id,
         })
     }
 
@@ -466,8 +482,8 @@ impl RetainedKernelProcessEvidenceV1 {
             thread_group_id: self.process.thread_group_id(),
             parent_pid: self.process.parent_pid(),
             cgroup_id: self.cgroup_id,
-            uid: self.credentials.uid,
-            gid: self.credentials.gid,
+            uid: self.credentials.pidfd.effective_user_id,
+            gid: self.credentials.pidfd.effective_group_id,
         })
     }
 
@@ -475,8 +491,10 @@ impl RetainedKernelProcessEvidenceV1 {
         &self,
         pidfd: &PidFd,
         initial_info: PidFdInfo,
-        credentials: Credentials,
+        transport_credentials: TransportCredentials,
     ) -> Result<(), NamespaceInspectorKernelAuthenticationError> {
+        let initial_pidfd = PidFdObservation::try_from(initial_info)?;
+        let pidfd_before = PidFdObservation::try_from(pidfd.info()?)?;
         let before = pidfd.process_identity()?;
         self.cgroup.verify_exact_membership(pidfd)?;
 
@@ -487,13 +505,16 @@ impl RetainedKernelProcessEvidenceV1 {
 
         self.cgroup.verify_exact_membership(pidfd)?;
         let after = pidfd.process_identity()?;
+        let pidfd_after = PidFdObservation::try_from(pidfd.info()?)?;
         let expected_executable = executable_identity(self.executable.as_fd())?;
         validate_observation(
             RoleExpectation::retained(self.role, expected_executable),
-            credentials,
-            initial_info.into(),
+            transport_credentials,
+            initial_pidfd,
+            pidfd_before,
             before.into(),
             after.into(),
+            pidfd_after,
             executable_before.identity,
             executable_after.identity,
             &mac_before,
@@ -501,7 +522,17 @@ impl RetainedKernelProcessEvidenceV1 {
             self.cgroup_id,
         )?;
         self.cgroup.validate_current()?;
-        if after != self.process || credentials != self.credentials || !pidfd.is_alive()? {
+        let observed_credentials = AuthenticatedCredentials {
+            transport: transport_credentials,
+            pidfd: pidfd_after.credentials,
+        };
+        validate_retained_baseline(
+            after.into(),
+            observed_credentials,
+            self.process.into(),
+            self.credentials,
+        )?;
+        if !pidfd.is_alive()? {
             return Err(NamespaceInspectorKernelAuthenticationError::Mismatch);
         }
         Ok(())
@@ -521,6 +552,18 @@ impl RetainedKernelProcessEvidenceV1 {
     }
 }
 
+fn validate_retained_baseline(
+    observed_process: ProcessIdentitySnapshot,
+    observed_credentials: AuthenticatedCredentials,
+    retained_process: ProcessIdentitySnapshot,
+    retained_credentials: AuthenticatedCredentials,
+) -> Result<(), NamespaceInspectorKernelAuthenticationError> {
+    if observed_process != retained_process || observed_credentials != retained_credentials {
+        return Err(NamespaceInspectorKernelAuthenticationError::Mismatch);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AuthenticatedRole {
     Broker,
@@ -529,13 +572,19 @@ enum AuthenticatedRole {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Credentials {
+struct TransportCredentials {
     pid: u32,
     uid: u32,
     gid: u32,
 }
 
-impl From<PeerCredentials> for Credentials {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AuthenticatedCredentials {
+    transport: TransportCredentials,
+    pidfd: KernelCredentialSnapshot,
+}
+
+impl From<PeerCredentials> for TransportCredentials {
     fn from(credentials: PeerCredentials) -> Self {
         Self {
             pid: credentials.pid().get(),
@@ -545,7 +594,7 @@ impl From<PeerCredentials> for Credentials {
     }
 }
 
-impl From<RecordCredentials> for Credentials {
+impl From<RecordCredentials> for TransportCredentials {
     fn from(credentials: RecordCredentials) -> Self {
         Self {
             pid: credentials.pid().get(),
@@ -553,6 +602,71 @@ impl From<RecordCredentials> for Credentials {
             gid: credentials.gid(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KernelCredentialSnapshot {
+    real_user_id: u32,
+    real_group_id: u32,
+    effective_user_id: u32,
+    effective_group_id: u32,
+    saved_user_id: u32,
+    saved_group_id: u32,
+    filesystem_user_id: u32,
+    filesystem_group_id: u32,
+}
+
+impl KernelCredentialSnapshot {
+    fn is_root(self) -> bool {
+        self.real_user_id == ROOT_UID
+            && self.real_group_id == ROOT_GID
+            && self.effective_user_id == ROOT_UID
+            && self.effective_group_id == ROOT_GID
+            && self.saved_user_id == ROOT_UID
+            && self.saved_group_id == ROOT_GID
+            && self.filesystem_user_id == ROOT_UID
+            && self.filesystem_group_id == ROOT_GID
+    }
+}
+
+impl From<PidFdCredentials> for KernelCredentialSnapshot {
+    fn from(credentials: PidFdCredentials) -> Self {
+        Self {
+            real_user_id: credentials.real_user_id(),
+            real_group_id: credentials.real_group_id(),
+            effective_user_id: credentials.effective_user_id(),
+            effective_group_id: credentials.effective_group_id(),
+            saved_user_id: credentials.saved_user_id(),
+            saved_group_id: credentials.saved_group_id(),
+            filesystem_user_id: credentials.filesystem_user_id(),
+            filesystem_group_id: credentials.filesystem_group_id(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PidFdObservation {
+    process: PidFdProcessSnapshot,
+    credentials: KernelCredentialSnapshot,
+}
+
+impl TryFrom<PidFdInfo> for PidFdObservation {
+    type Error = NamespaceInspectorKernelAuthenticationError;
+
+    fn try_from(info: PidFdInfo) -> Result<Self, Self::Error> {
+        let credentials = require_kernel_credentials(info.credentials().map(Into::into))?;
+
+        Ok(Self {
+            process: info.into(),
+            credentials,
+        })
+    }
+}
+
+fn require_kernel_credentials(
+    credentials: Option<KernelCredentialSnapshot>,
+) -> Result<KernelCredentialSnapshot, NamespaceInspectorKernelAuthenticationError> {
+    credentials.ok_or(NamespaceInspectorKernelAuthenticationError::Mismatch)
 }
 
 #[derive(Debug)]
@@ -660,37 +774,47 @@ impl<'policy> RoleExpectation<'policy> {
 #[allow(clippy::too_many_arguments)]
 fn validate_observation(
     expected: RoleExpectation<'_>,
-    credentials: Credentials,
-    initial: InitialProcessSnapshot,
+    transport_credentials: TransportCredentials,
+    initial_pidfd: PidFdObservation,
+    pidfd_before: PidFdObservation,
     before: ProcessIdentitySnapshot,
     after: ProcessIdentitySnapshot,
+    pidfd_after: PidFdObservation,
     executable_before: ExecutableIdentity,
     executable_after: ExecutableIdentity,
     mac_before: &[u8],
     mac_after: &[u8],
     cgroup_id: u64,
 ) -> Result<(), NamespaceInspectorKernelAuthenticationError> {
-    let expected_pid = expected.pid.unwrap_or(credentials.pid);
+    let expected_pid = expected.pid.unwrap_or(transport_credentials.pid);
     let expected_parent = expected.parent_pid.unwrap_or(before.parent_pid);
+    let expected_process = PidFdProcessSnapshot {
+        pid: before.pid,
+        thread_group_id: before.thread_group_id,
+        parent_pid: before.parent_pid,
+        cgroup_id: before.cgroup_id,
+    };
     let identity_matches = before == after
         && before.pid == expected_pid
         && before.thread_group_id == expected_pid
         && before.parent_pid == expected_parent
         && (expected.role == AuthenticatedRole::Manager || before.parent_pid != 0)
         && before.cgroup_id == Some(cgroup_id)
-        && initial.pid == before.pid
-        && initial.thread_group_id == before.thread_group_id
-        && initial.parent_pid == before.parent_pid
-        && initial.cgroup_id == before.cgroup_id;
-    let role_matches = credentials.pid == expected_pid
-        && credentials.uid == ROOT_UID
-        && credentials.gid == ROOT_GID
+        && initial_pidfd.process == expected_process
+        && pidfd_before.process == expected_process
+        && pidfd_after.process == expected_process;
+    let credential_matches = initial_pidfd.credentials == pidfd_before.credentials
+        && pidfd_before.credentials == pidfd_after.credentials
+        && pidfd_after.credentials.is_root()
+        && transport_credentials.uid == pidfd_after.credentials.effective_user_id
+        && transport_credentials.gid == pidfd_after.credentials.effective_group_id;
+    let role_matches = transport_credentials.pid == expected_pid
         && executable_before == expected.executable
         && executable_after == expected.executable
         && mac_before == expected.mac_context
         && mac_after == expected.mac_context;
 
-    if !identity_matches || !role_matches {
+    if !identity_matches || !credential_matches || !role_matches {
         return Err(NamespaceInspectorKernelAuthenticationError::Mismatch);
     }
     Ok(())
@@ -836,14 +960,14 @@ impl From<PidFdProcessIdentity> for ProcessIdentitySnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct InitialProcessSnapshot {
+struct PidFdProcessSnapshot {
     pid: u32,
     thread_group_id: u32,
     parent_pid: u32,
     cgroup_id: Option<u64>,
 }
 
-impl From<PidFdInfo> for InitialProcessSnapshot {
+impl From<PidFdInfo> for PidFdProcessSnapshot {
     fn from(process: PidFdInfo) -> Self {
         Self {
             pid: process.pid(),
@@ -872,10 +996,12 @@ mod tests {
 
     #[derive(Clone, Copy)]
     struct TestObservation {
-        credentials: Credentials,
-        initial: InitialProcessSnapshot,
+        transport_credentials: TransportCredentials,
+        initial_pidfd: PidFdObservation,
+        pidfd_before: PidFdObservation,
         before: ProcessIdentitySnapshot,
         after: ProcessIdentitySnapshot,
+        pidfd_after: PidFdObservation,
         executable_before: ExecutableIdentity,
         executable_after: ExecutableIdentity,
         mac_before: &'static [u8],
@@ -890,10 +1016,12 @@ mod tests {
         ) -> Result<(), NamespaceInspectorKernelAuthenticationError> {
             validate_observation(
                 expected,
-                self.credentials,
-                self.initial,
+                self.transport_credentials,
+                self.initial_pidfd,
+                self.pidfd_before,
                 self.before,
                 self.after,
+                self.pidfd_after,
                 self.executable_before,
                 self.executable_after,
                 self.mac_before,
@@ -922,20 +1050,26 @@ mod tests {
             cgroup_id: Some(91),
             start_time_ticks: 7,
         };
-        TestObservation {
-            credentials: Credentials {
-                pid: 41,
-                uid: 0,
-                gid: 0,
-            },
-            initial: InitialProcessSnapshot {
+        let pidfd = PidFdObservation {
+            process: PidFdProcessSnapshot {
                 pid: 41,
                 thread_group_id: 41,
                 parent_pid: 1,
                 cgroup_id: Some(91),
             },
+            credentials: root_kernel_credentials(),
+        };
+        TestObservation {
+            transport_credentials: TransportCredentials {
+                pid: 41,
+                uid: 0,
+                gid: 0,
+            },
+            initial_pidfd: pidfd,
+            pidfd_before: pidfd,
             before: process,
             after: process,
+            pidfd_after: pidfd,
             executable_before: ExecutableIdentity {
                 device: 11,
                 inode: 12,
@@ -950,6 +1084,19 @@ mod tests {
         }
     }
 
+    fn root_kernel_credentials() -> KernelCredentialSnapshot {
+        KernelCredentialSnapshot {
+            real_user_id: 0,
+            real_group_id: 0,
+            effective_user_id: 0,
+            effective_group_id: 0,
+            saved_user_id: 0,
+            saved_group_id: 0,
+            filesystem_user_id: 0,
+            filesystem_group_id: 0,
+        }
+    }
+
     #[test]
     fn exact_broker_observation_is_accepted() {
         let executable = executable(11, 12);
@@ -961,11 +1108,170 @@ mod tests {
     }
 
     #[test]
+    fn pidfd_credentials_are_required_and_every_id_must_be_root() {
+        assert!(matches!(
+            require_kernel_credentials(None),
+            Err(NamespaceInspectorKernelAuthenticationError::Mismatch)
+        ));
+
+        let root = root_kernel_credentials();
+        let nonroot = [
+            KernelCredentialSnapshot {
+                real_user_id: 1,
+                ..root
+            },
+            KernelCredentialSnapshot {
+                real_group_id: 1,
+                ..root
+            },
+            KernelCredentialSnapshot {
+                effective_user_id: 1,
+                ..root
+            },
+            KernelCredentialSnapshot {
+                effective_group_id: 1,
+                ..root
+            },
+            KernelCredentialSnapshot {
+                saved_user_id: 1,
+                ..root
+            },
+            KernelCredentialSnapshot {
+                saved_group_id: 1,
+                ..root
+            },
+            KernelCredentialSnapshot {
+                filesystem_user_id: 1,
+                ..root
+            },
+            KernelCredentialSnapshot {
+                filesystem_group_id: 1,
+                ..root
+            },
+        ];
+        let executable = executable(11, 12);
+
+        for credentials in nonroot {
+            let mut observation = broker_observation();
+            observation.initial_pidfd.credentials = credentials;
+            observation.pidfd_before.credentials = credentials;
+            observation.pidfd_after.credentials = credentials;
+
+            assert!(matches!(
+                observation.authenticate(broker_expectation(&executable)),
+                Err(NamespaceInspectorKernelAuthenticationError::Mismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn pidfd_credential_fences_and_transport_nomination_must_agree() {
+        let executable = executable(11, 12);
+
+        let mut changed_initial = broker_observation();
+        changed_initial.initial_pidfd.credentials.saved_user_id = 1;
+        let mut changed_before = broker_observation();
+        changed_before.pidfd_before.credentials.saved_user_id = 1;
+        let mut changed_after = broker_observation();
+        changed_after.pidfd_after.credentials.saved_user_id = 1;
+        let mut nominated_user = broker_observation();
+        nominated_user.transport_credentials.uid = 1;
+        let mut nominated_group = broker_observation();
+        nominated_group.transport_credentials.gid = 1;
+
+        for observation in [
+            changed_initial,
+            changed_before,
+            changed_after,
+            nominated_user,
+            nominated_group,
+        ] {
+            assert!(matches!(
+                observation.authenticate(broker_expectation(&executable)),
+                Err(NamespaceInspectorKernelAuthenticationError::Mismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn every_pidfd_identity_observation_must_match_the_process_sandwich() {
+        let executable = executable(11, 12);
+
+        let mut changed_initial = broker_observation();
+        changed_initial.initial_pidfd.process.parent_pid = 2;
+        let mut changed_before = broker_observation();
+        changed_before.pidfd_before.process.cgroup_id = Some(92);
+        let mut changed_after = broker_observation();
+        changed_after.pidfd_after.process.thread_group_id = 42;
+
+        for observation in [changed_initial, changed_before, changed_after] {
+            assert!(matches!(
+                observation.authenticate(broker_expectation(&executable)),
+                Err(NamespaceInspectorKernelAuthenticationError::Mismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn retained_credential_baseline_rejects_transport_or_pidfd_drift() {
+        let transport = broker_observation().transport_credentials;
+        let pidfd = root_kernel_credentials();
+        let retained = AuthenticatedCredentials { transport, pidfd };
+        let process = broker_observation().after;
+        assert!(validate_retained_baseline(process, retained, process, retained).is_ok());
+
+        let changed_transport = TransportCredentials {
+            uid: 1,
+            ..transport
+        };
+        let changed_pidfd = KernelCredentialSnapshot {
+            filesystem_group_id: 1,
+            ..pidfd
+        };
+        assert!(matches!(
+            validate_retained_baseline(
+                process,
+                AuthenticatedCredentials {
+                    transport: changed_transport,
+                    pidfd,
+                },
+                process,
+                retained,
+            ),
+            Err(NamespaceInspectorKernelAuthenticationError::Mismatch)
+        ));
+        assert!(matches!(
+            validate_retained_baseline(
+                process,
+                AuthenticatedCredentials {
+                    transport,
+                    pidfd: changed_pidfd,
+                },
+                process,
+                retained,
+            ),
+            Err(NamespaceInspectorKernelAuthenticationError::Mismatch)
+        ));
+        assert!(matches!(
+            validate_retained_baseline(
+                ProcessIdentitySnapshot {
+                    start_time_ticks: 8,
+                    ..process
+                },
+                retained,
+                process,
+                retained,
+            ),
+            Err(NamespaceInspectorKernelAuthenticationError::Mismatch)
+        ));
+    }
+
+    #[test]
     fn every_role_axis_fails_closed() {
         let executable = executable(11, 12);
 
         let mut wrong_uid = broker_observation();
-        wrong_uid.credentials.uid = 1;
+        wrong_uid.transport_credentials.uid = 1;
         let mut wrong_cgroup = broker_observation();
         wrong_cgroup.after.cgroup_id = Some(92);
         let mut wrong_executable = broker_observation();
