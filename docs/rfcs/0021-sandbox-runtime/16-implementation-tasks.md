@@ -5946,14 +5946,55 @@ lease renewal with stale-plan rejection, initial and Absent-retry ordering,
 durable body/packet/boot mutation, V2 migration and historical compatibility,
 and completed V3 recovery across reboot.
 
-This remains controller-only progress. The signing hook defaults to unavailable
-and has no production controller authority adapter. The Host broker does not
-yet convert the companion and enclosing authority into the Guardian's ten
-validated credentials, start the exact Guardian unit before the payload, or
-perform the final protected before-effect checks for both starts. Dynamic
-Guardian artifacts still need sealed read-only memfd validation while static
-trust credentials remain verified regular files. Exact-unit retry,
-compensation, non-adoption, Stop cleanup, renewal, early freeze, Network
-default-drop coupling, and a VM test proving expiry or Guardian death contains
-the payload also remain open. No `SBX-GUARD-01` or end-to-end Host task is
-closed by this slice.
+Commit `803ba708a` adds the descriptor-custody boundary needed by the future
+Host handoff. A Linux helper creates anonymous dynamic credentials with the
+complete write, grow, shrink, and seal seals, then reopens them read-only
+without retaining a writable description. The typed systemd adapter accepts
+exactly ten ordered descriptors: six creator-owned, singly linked, read-only
+protected files with exact mode and repeated content/metadata checks, followed
+by four anonymous fully sealed read-only credentials. It revalidates every
+retained snapshot immediately before D-Bus transfer. The Guardian startup path
+proves it is single-threaded, rejects any inherited descriptor outside stdio
+and the exact ten-name activation set, and duplicates descriptors without
+taking ownership of the caller's raw descriptor number. Focused and complete
+development-shell runs passed 113 Linux tests plus eight doctests, 42 systemd
+tests, and 14 Guardian tests, including exact-binary missing, renamed, and
+extra-descriptor startup failures. This is source-level custody validation;
+Host does not yet retain the six protected input descriptors or assemble the
+four request artifacts into this typed set.
+
+Commit `b26875ac0` adds Host state format 4 and a pure Guardian/Stop transition
+model without enabling effects. Each future launch record retains the exact
+dynamic artifact bytes, six protected-input snapshots, a content-digested
+pinned executable identity, and a recomputed attempt binding. Its closed phases
+distinguish authorization, issued Guardian and payload starts, current-job
+Guardian readiness, worker proof, exact-owned cleanup, and historical
+completion. An arbitrary active unit cannot become readiness evidence. The
+Stop model separately records authorized planning and an issued frozen target
+set, so expiry permits only completion of already-issued exact operations;
+every stop rechecks the current binding and invocation, payload-before-Guardian
+progress never rewinds, foreign or indeterminate observations quarantine, and
+recording cleanup completion requires both units currently absent. Later
+replay of a completed record is a historical receipt, not a claim of current
+liveness. Exhaustive pair matrices cover exact, wrong-invocation,
+wrong-binding, indeterminate, and absent observations in every cleanup phase.
+Host carriers 1.1 through 1.4 continue to use signed Host 1.1 authority, while
+the future matrix assigns only Host 1.5 Launch to signed 1.5 authority and
+leaves lifecycle actions at signed 1.1. Apply and Query share that selector.
+Versions 1 through 3 migrate only with empty fence and request tables, and
+production reopen explicitly rejects the future execution variants because
+their domain-separated protected-authority authentication is not integrated
+yet. Focused validation passed all 17 transition tests, the migration test, the
+Apply/Query carrier matrix, and the authenticated-reopen tamper test.
+
+This remains controller and source-level Host progress. The signing hook
+defaults to unavailable and has no production controller authority adapter.
+The Host 1.5 carrier guard remains closed: Host does not yet retain the static
+protected descriptors, independently verify and seal an authenticated
+execution record, assemble and transfer the dynamic credentials, start the
+exact Guardian before the payload, observe manager-retained launch bindings,
+or perform the final protected before-effect checks for both starts. Live
+exact-unit retry and compensation, composite Stop integration, renewal, early
+freeze, Network default-drop coupling, and a VM test proving expiry or Guardian
+death contains the payload also remain open. No `SBX-GUARD-01` or end-to-end
+Host task is closed by these slices.
