@@ -1216,6 +1216,7 @@ where
     /// Returns the same source and semantic validation errors as [`Self::begin_resume`],
     /// or [`QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary`] when
     /// the portable scheduler retains only an event suffix.
+    // crucible-lint: allow rust-allow -- resume authentication keeps every source and checkpoint binding explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn authenticate_resume_boundary(
         &mut self,

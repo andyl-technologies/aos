@@ -393,6 +393,7 @@ pub struct CampaignArchiveManifest {
 }
 
 impl CampaignArchiveManifest {
+    // crucible-lint: allow rust-allow -- manifest construction names every independently authenticated archive field.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         source_snapshot: CampaignSnapshotId,

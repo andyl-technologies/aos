@@ -24,6 +24,10 @@ use super::*;
 
 const TEST_READ_LIMIT: u64 = 1024 * 1024;
 
+// Cross-instance directory fences can include filesystem sync work after the
+// lock is released. Leave enough headroom for highly parallel test runners.
+const FILESYSTEM_FENCE_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 struct RecordingNamespaceAuthorizer {
     allowed: AtomicBool,
@@ -1364,7 +1368,7 @@ fn directory_ref_inventory_waits_for_cross_instance_publication() {
     });
 
     started_rx
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(FILESYSTEM_FENCE_COMPLETION_TIMEOUT)
         .expect("inventory worker started");
     assert!(matches!(
         acquired_rx.recv_timeout(Duration::from_millis(50)),
@@ -1373,7 +1377,7 @@ fn directory_ref_inventory_waits_for_cross_instance_publication() {
 
     drop(publication);
     acquired_rx
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(FILESYSTEM_FENCE_COMPLETION_TIMEOUT)
         .expect("inventory acquired after publication completed");
     worker.join().expect("join directory inventory worker");
 }

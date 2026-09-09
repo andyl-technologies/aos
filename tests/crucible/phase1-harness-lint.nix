@@ -29,6 +29,7 @@
       ../../crates/crucible-harness/tests/support/harness_lint/error_logging.rs
       ../../crates/crucible-harness/tests/support/harness_lint/lex.rs
       ../../crates/crucible-harness/tests/support/harness_lint/reference_integrity.rs
+      ../../crates/crucible-harness/tests/support/source_sections.rs
     ])
     ++ [
       harnessLintScanRust

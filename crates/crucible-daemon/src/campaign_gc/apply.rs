@@ -132,6 +132,7 @@ where
 /// Returns [`CampaignGcApplyError`] under the same conditions as
 /// [`apply_single_host_campaign_gc`], and when transfer-root inventory is
 /// invalid or differs from the planned root set.
+// crucible-lint: allow rust-allow -- GC apply keeps each authenticated store, fence, and plan authority explicit.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_single_host_campaign_gc_with_transfers<'a, L>(
     journal: &mut DirectoryCampaignGcJournal,
