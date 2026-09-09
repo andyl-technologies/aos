@@ -1,9 +1,11 @@
 //! Durable legacy and authority-bound effect records.
 //!
 //! Version 1 retains the original generic request format byte-for-byte.
-//! Version 2 binds an ownership-gated effect to one exact publication draft
-//! template. Attempt material is added only after publication selection and is
-//! retained before any external broker call.
+//! Version 2 bound an ownership-gated effect to one exact publication draft
+//! but did not retain the host boot paired with BOOTTIME. Version 3 adds that
+//! boot identity. V2 completed records remain readable for historical receipt
+//! validation; a V2 pending attempt requires explicit migration and is never
+//! replayed with an ambiguous BOOTTIME provenance.
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox_core::{BrokerAudience, ObjectDigest, OperationId, RawPairedClockSample};
@@ -16,7 +18,8 @@ pub(super) const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
 pub(super) const MAXIMUM_RECEIPT_BYTES: usize = 64 * 1024;
 pub(super) const MAXIMUM_DIAGNOSTIC_BYTES: usize = 4096;
 const LEGACY_EFFECT_VERSION: u8 = 1;
-const AUTHORITY_EFFECT_VERSION: u8 = 2;
+pub(super) const LEGACY_AUTHORITY_EFFECT_VERSION: u8 = 2;
+pub(super) const AUTHORITY_EFFECT_VERSION: u8 = 3;
 const MAXIMUM_DISPATCH_PACKET_BYTES: usize = MAXIMUM_REQUEST_BYTES;
 const BODY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-body.v2\0";
 const BINDING_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-binding.v2\0";
@@ -262,6 +265,7 @@ pub struct PreparedAuthorityEffectV2 {
     publication_digest: ObjectDigest,
     preparation_wall_seconds: i64,
     preparation_boottime_nanoseconds: u64,
+    preparation_host_boot_id: Option<[u8; 16]>,
     attempt: BrokerDispatchAttemptV1,
 }
 
@@ -277,6 +281,7 @@ impl PreparedAuthorityEffectV2 {
             publication_digest,
             preparation_wall_seconds: preparation_clock.wall_seconds(),
             preparation_boottime_nanoseconds: preparation_clock.boottime_nanoseconds(),
+            preparation_host_boot_id: Some(preparation_clock.host_boot_id()),
             attempt,
         }
     }
@@ -286,6 +291,7 @@ impl PreparedAuthorityEffectV2 {
         publication_digest: ObjectDigest,
         preparation_wall_seconds: i64,
         preparation_boottime_nanoseconds: u64,
+        preparation_host_boot_id: Option<[u8; 16]>,
         attempt: BrokerDispatchAttemptV1,
     ) -> Self {
         Self {
@@ -293,6 +299,7 @@ impl PreparedAuthorityEffectV2 {
             publication_digest,
             preparation_wall_seconds,
             preparation_boottime_nanoseconds,
+            preparation_host_boot_id,
             attempt,
         }
     }
@@ -350,6 +357,10 @@ impl PreparedAuthorityEffectV2 {
 
     pub(crate) const fn preparation_boottime_nanoseconds(&self) -> u64 {
         self.preparation_boottime_nanoseconds
+    }
+
+    pub(crate) const fn preparation_host_boot_id(&self) -> Option<[u8; 16]> {
+        self.preparation_host_boot_id
     }
 }
 
@@ -453,7 +464,7 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
         ));
     }
     let authority_length = if record.plan.authority.is_some() {
-        359 + dispatch_body_length + dispatch_packet_length
+        375 + dispatch_body_length + dispatch_packet_length
     } else {
         0
     };
@@ -500,6 +511,15 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
             );
             bytes.extend_from_slice(&dispatch.preparation_wall_seconds.to_be_bytes());
             bytes.extend_from_slice(&dispatch.preparation_boottime_nanoseconds.to_be_bytes());
+            let host_boot_id = dispatch
+                .preparation_host_boot_id
+                .ok_or(ReconcilerError::MigrationRequired)?;
+            if host_boot_id == [0; 16] {
+                return Err(ReconcilerError::InvalidPlan(
+                    "authority effect dispatch has a sentinel host boot",
+                ));
+            }
+            bytes.extend_from_slice(&host_boot_id);
             bytes.extend_from_slice(
                 &u32::try_from(dispatch_body_length)
                     .map_err(|_| ReconcilerError::InvalidPlan("dispatch body exceeds bounds"))?
@@ -513,7 +533,7 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
             bytes.extend_from_slice(dispatch.attempt.body());
             bytes.extend_from_slice(dispatch.attempt.packet());
         } else {
-            bytes.extend_from_slice(&[0; 172]);
+            bytes.extend_from_slice(&[0; 188]);
         }
     }
     bytes.extend_from_slice(&record.plan.request);
@@ -524,7 +544,10 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
 
 pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, ReconcilerError> {
     if bytes.len() < 18
-        || !matches!(bytes[0], LEGACY_EFFECT_VERSION | AUTHORITY_EFFECT_VERSION)
+        || !matches!(
+            bytes[0],
+            LEGACY_EFFECT_VERSION | LEGACY_AUTHORITY_EFFECT_VERSION | AUTHORITY_EFFECT_VERSION
+        )
         || bytes[3] != 0
     {
         return Err(ReconcilerError::CorruptLedger(
@@ -555,7 +578,10 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
             .map_err(|_| ReconcilerError::CorruptLedger("invalid diagnostic length"))?,
     ) as usize;
     let mut cursor = 18;
-    let (authority, dispatch) = if version == AUTHORITY_EFFECT_VERSION {
+    let (authority, dispatch) = if matches!(
+        version,
+        LEGACY_AUTHORITY_EFFECT_VERSION | AUTHORITY_EFFECT_VERSION
+    ) {
         let operation_bytes = take_array(bytes, &mut cursor)?;
         if operation_bytes == [0; 16] {
             return Err(ReconcilerError::CorruptLedger(
@@ -619,6 +645,12 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         let deadline = u64::from_be_bytes(take_array(bytes, &mut cursor)?);
         let clock_wall = i64::from_be_bytes(take_array(bytes, &mut cursor)?);
         let clock_boottime = u64::from_be_bytes(take_array(bytes, &mut cursor)?);
+        let clock_host_boot_id = if version == AUTHORITY_EFFECT_VERSION {
+            let host_boot_id = take_array(bytes, &mut cursor)?;
+            (host_boot_id != [0; 16]).then_some(host_boot_id)
+        } else {
+            None
+        };
         let body_length = u32::from_be_bytes(take_array(bytes, &mut cursor)?) as usize;
         let packet_length = u32::from_be_bytes(take_array(bytes, &mut cursor)?) as usize;
         let dispatch = match dispatch_present {
@@ -630,6 +662,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
                 && deadline == 0
                 && clock_wall == 0
                 && clock_boottime == 0
+                && clock_host_boot_id.is_none()
                 && body_length == 0
                 && packet_length == 0 =>
             {
@@ -643,7 +676,8 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
                 && body_length != 0
                 && body_length <= MAXIMUM_REQUEST_BYTES
                 && packet_length != 0
-                && packet_length <= MAXIMUM_DISPATCH_PACKET_BYTES =>
+                && packet_length <= MAXIMUM_DISPATCH_PACKET_BYTES
+                && (version == LEGACY_AUTHORITY_EFFECT_VERSION || clock_host_boot_id.is_some()) =>
             {
                 let body = take_vec(bytes, &mut cursor, body_length)?;
                 let packet = take_vec(bytes, &mut cursor, packet_length)?;
@@ -652,6 +686,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
                     publication_digest,
                     clock_wall,
                     clock_boottime,
+                    clock_host_boot_id,
                     BrokerDispatchAttemptV1::from_durable_parts(
                         dispatch_template,
                         lease_digest,

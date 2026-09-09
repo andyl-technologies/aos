@@ -24,17 +24,18 @@ use aos_sandbox_core::format::{
 };
 use aos_sandbox_core::model::SignaturePurpose;
 use aos_sandbox_core::{
-    BrokerAudience, BrokerAuthorizationPlan, CanonicalAssignmentManifestV1, DecodeLimits,
-    ObjectDigest, OperationId, OwnershipLease, RawPairedClockSample, SandboxId,
-    descriptor_for_bytes,
+    BrokerAudience, BrokerAuthorizationPlan, BrokerVerb, CanonicalAssignmentManifestV1,
+    DecodeLimits, ObjectDigest, OperationId, OwnershipLease, ProtocolVersion, RawPairedClockSample,
+    SandboxId, descriptor_for_bytes,
 };
 use sha2::{Digest as _, Sha256};
 
 use crate::{
     AuthorityBoundEffectPlanV2, BrokerDispatchAttemptError, BrokerDispatchAttemptV1,
-    BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, IdempotencyKey, IdempotencyOutcome,
-    Journal, JournalError, JournalRecord, JournalTransaction, OwnershipTransactionReceiptV1,
-    PreparedAuthorityEffectV2, RecordNamespace, SignedOwnershipLease,
+    BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, GuardianPlanRequestV1,
+    IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction,
+    OwnershipTransactionReceiptV1, PreparedAuthorityEffectV2, RecordNamespace, SignedBrokerPlan,
+    SignedOwnershipLease,
 };
 use aos_sandbox_ownership_protocol::{OwnershipClaimAction, OwnershipClaimV1};
 
@@ -907,10 +908,21 @@ pub(crate) fn validate_durable_effect_attempt(
     template_digest: ObjectDigest,
     body_without_deadline: &[u8],
     prepared_effect: &PreparedAuthorityEffectV2,
+    current_host_boot_id: Option<[u8; 16]>,
 ) -> Result<(), AuthorityPublicationError> {
     validate_publication_namespace(journal)?;
     if prepared_effect.binding_digest() != binding_digest {
         return Err(AuthorityPublicationError::CorruptCurrent);
+    }
+    match (
+        prepared_effect.preparation_host_boot_id(),
+        current_host_boot_id,
+    ) {
+        (Some(prepared), Some(current)) if prepared != current => {
+            return Err(AuthorityPublicationError::CorruptCurrent);
+        }
+        (None, Some(_)) => return Err(AuthorityPublicationError::MigrationRequired),
+        _ => {}
     }
     let activated = journal
         .get(
@@ -953,13 +965,30 @@ pub(crate) fn validate_durable_effect_attempt(
     {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
-    let reconstructed = BrokerDispatchAttemptV1::from_recovered_current_at(
-        template,
-        &artifacts.lease,
-        prepared_effect.attempt().deadline_boottime_nanoseconds(),
-        prepared_effect.preparation_wall_seconds(),
-        prepared_effect.preparation_boottime_nanoseconds(),
-    )
+    let reconstructed = if template.plan().protocol_version() == ProtocolVersion::new(1, 5)
+        && template.semantics().verb() == BrokerVerb::HostLaunch
+    {
+        let host_boot_id = prepared_effect
+            .preparation_host_boot_id()
+            .ok_or(AuthorityPublicationError::MigrationRequired)?;
+        BrokerDispatchAttemptV1::from_recovered_host_launch_with_guardian_at(
+            template,
+            &artifacts.lease,
+            prepared_effect.attempt().body(),
+            host_boot_id,
+            prepared_effect.attempt().deadline_boottime_nanoseconds(),
+            prepared_effect.preparation_wall_seconds(),
+            prepared_effect.preparation_boottime_nanoseconds(),
+        )
+    } else {
+        BrokerDispatchAttemptV1::from_recovered_current_at(
+            template,
+            &artifacts.lease,
+            prepared_effect.attempt().deadline_boottime_nanoseconds(),
+            prepared_effect.preparation_wall_seconds(),
+            prepared_effect.preparation_boottime_nanoseconds(),
+        )
+    }
     .map_err(AuthorityPublicationError::DispatchAttempt)?;
     if &reconstructed != prepared_effect.attempt() {
         return Err(AuthorityPublicationError::CorruptCurrent);
@@ -1092,6 +1121,54 @@ impl<'a> AuthorityPublicationStore<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn select_bound_guardian_plan_request(
+        &self,
+        sandbox: SandboxId,
+        activated_publication: ObjectDigest,
+        source_draft_digest: ObjectDigest,
+        audience: BrokerAudience,
+        template_digest: ObjectDigest,
+        host_boot_id: [u8; 16],
+    ) -> Result<Option<GuardianPlanRequestV1>, AuthorityPublicationError> {
+        let activated = self
+            .prepared(activated_publication)?
+            .ok_or(AuthorityPublicationError::CorruptCurrent)?;
+        let current = self
+            .current(sandbox)?
+            .ok_or(AuthorityPublicationError::CurrentAbsent)?;
+        validate_successor(&activated, &current.prepared)?;
+        if activated.source_draft_digest != source_draft_digest
+            || current.prepared.source_draft_digest != source_draft_digest
+        {
+            return Err(AuthorityPublicationError::StaleCurrent);
+        }
+        let template = current
+            .templates
+            .iter()
+            .find(|candidate| candidate.digest == template_digest)
+            .ok_or(AuthorityPublicationError::TemplateAbsent)?;
+        if template.audience != audience {
+            return Err(AuthorityPublicationError::WrongAudience);
+        }
+        if template.semantics().verb() != BrokerVerb::HostLaunch {
+            return Ok(None);
+        }
+        if template.audience != BrokerAudience::Host
+            || template.plan().protocol_version() != ProtocolVersion::new(1, 5)
+        {
+            return Err(AuthorityPublicationError::GuardianRequired);
+        }
+        GuardianPlanRequestV1::new(
+            template.plan(),
+            current.lease.lease(),
+            current.lease.digest(),
+            host_boot_id,
+        )
+        .map(Some)
+        .map_err(AuthorityPublicationError::DispatchAttempt)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn select_bound_current_attempt(
         &self,
         sandbox: SandboxId,
@@ -1099,6 +1176,7 @@ impl<'a> AuthorityPublicationStore<'a> {
         source_draft_digest: ObjectDigest,
         audience: BrokerAudience,
         template_digest: ObjectDigest,
+        guardian_plan: Option<&SignedBrokerPlan>,
         deadline_boottime_nanoseconds: u64,
         clock: RawPairedClockSample,
     ) -> Result<(ObjectDigest, BrokerDispatchAttemptV1), AuthorityPublicationError> {
@@ -1125,12 +1203,30 @@ impl<'a> AuthorityPublicationStore<'a> {
         if !template.descriptor_roles.is_empty() {
             return Err(AuthorityPublicationError::DescriptorExecutionUnsupported);
         }
-        let attempt = BrokerDispatchAttemptV1::from_recovered_current(
-            template,
-            &current.lease,
-            deadline_boottime_nanoseconds,
-            clock,
-        )
+        let host_launch = template.semantics().verb() == BrokerVerb::HostLaunch;
+        let attempt = match (host_launch, guardian_plan) {
+            (true, Some(guardian_plan))
+                if template.audience == BrokerAudience::Host
+                    && template.plan().protocol_version() == ProtocolVersion::new(1, 5) =>
+            {
+                BrokerDispatchAttemptV1::from_recovered_current_with_guardian(
+                    template,
+                    &current.lease,
+                    guardian_plan,
+                    clock.host_boot_id(),
+                    deadline_boottime_nanoseconds,
+                    clock,
+                )
+            }
+            (true, _) => return Err(AuthorityPublicationError::GuardianRequired),
+            (false, Some(_)) => return Err(AuthorityPublicationError::UnexpectedGuardianPlan),
+            (false, None) => BrokerDispatchAttemptV1::from_recovered_current(
+                template,
+                &current.lease,
+                deadline_boottime_nanoseconds,
+                clock,
+            ),
+        }
         .map_err(AuthorityPublicationError::DispatchAttempt)?;
         Ok((current.digest(), attempt))
     }
@@ -1148,6 +1244,12 @@ pub enum AuthorityPublicationError {
     /// Guardian authority cannot use the generic broker publication format.
     #[error("guardian authority is not supported by generic broker publication")]
     UnsupportedBrokerAudience,
+    /// A Host launch lacks a fresh lease- and boot-bound Guardian plan.
+    #[error("Host launch requires a current Guardian arm plan")]
+    GuardianRequired,
+    /// A non-launch attempt was paired with an unrelated Guardian plan.
+    #[error("Guardian arm plan is present for a non-launch attempt")]
+    UnexpectedGuardianPlan,
     /// Manifest, lease, plan, node, or ownership signer differs.
     #[error("authority publication contains substituted assignment authority")]
     ContextMismatch,

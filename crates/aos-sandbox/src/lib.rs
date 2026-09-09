@@ -117,7 +117,7 @@ pub use destination_slot_inventory::{
 };
 pub use dispatch::{
     BrokerDispatchAttemptError, BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1,
-    BrokerDispatchTemplateError, BrokerDispatchTemplateV1,
+    BrokerDispatchTemplateError, BrokerDispatchTemplateV1, GuardianPlanRequestV1,
 };
 pub use filesystem_view_state::{
     DurableFilesystemViewRevisionV1, FilesystemViewRevisionCommitOutcomeV1,

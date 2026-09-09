@@ -25,14 +25,17 @@ use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use aos_sandbox_ownership_protocol::{CLAIM_BYTES, OwnershipClaimV1};
 
+use crate::{GuardianPlanRequestV1, SignedBrokerPlan};
+
 use crate::journal::{
     IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction,
     RecordNamespace,
 };
 use crate::publication::{
     AuthorityPublicationActivationPartsV1, AuthorityPublicationActivationV1,
-    AuthorityPublicationDraftV1, AuthorityPublicationStore, validate_durable_effect_attempt,
-    validate_durable_gate_publication, validate_publication_namespace,
+    AuthorityPublicationDraftV1, AuthorityPublicationError, AuthorityPublicationStore,
+    validate_durable_effect_attempt, validate_durable_gate_publication,
+    validate_publication_namespace,
 };
 
 mod effect;
@@ -426,6 +429,21 @@ pub trait SingleNodeEffectExecutor {
         _operation_id: OperationId,
         _step: u32,
     ) -> Option<AuthorityEffectAttemptTimingV1> {
+        None
+    }
+
+    /// Signs the exact post-lease Guardian arm plan requested for a Host launch.
+    ///
+    /// The request already commits the selected current lease and host boot.
+    /// Returning `None` leaves Guardian-gated Host launches disabled. This hook
+    /// must not start Guardian or payload units; the resulting plan is inserted
+    /// into an exact packet and made durable first.
+    fn prepare_guardian_plan(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+        _request: &GuardianPlanRequestV1,
+    ) -> Option<SignedBrokerPlan> {
         None
     }
 
@@ -1043,17 +1061,16 @@ where
                                 "authority-bound effect execution is unsupported",
                             ))?;
                         let sandbox = gate_plan.claim().assignment().sandbox();
-                        let (selected_publication, attempt) =
-                            AuthorityPublicationStore::new(&mut self.journal)
-                                .select_bound_current_attempt(
-                                    sandbox,
-                                    *publication_digest,
-                                    binding.source_draft_digest,
-                                    binding.audience,
-                                    binding.template_digest,
-                                    timing.deadline(),
-                                    timing.clock(),
-                                )?;
+                        let (selected_publication, attempt) = self.prepare_bound_current_attempt(
+                            operation_id,
+                            step,
+                            sandbox,
+                            *publication_digest,
+                            binding.source_draft_digest,
+                            binding.audience,
+                            binding.template_digest,
+                            timing,
+                        )?;
                         Some(PreparedAuthorityEffectV2::new(
                             binding.digest,
                             selected_publication,
@@ -1147,9 +1164,13 @@ where
         Ok(Some((operation_id, outcome)))
     }
 
-    fn validate_all_ownership_gates(&self) -> Result<(), ReconcilerError> {
-        for (key, _) in self.journal.records(RecordNamespace::OwnershipGate) {
-            let operation_id = decode_operation_key(key)?;
+    fn validate_all_ownership_gates(&mut self) -> Result<(), ReconcilerError> {
+        let gated_operations = self
+            .journal
+            .records(RecordNamespace::OwnershipGate)
+            .map(|(key, _)| decode_operation_key(key))
+            .collect::<Result<Vec<_>, _>>()?;
+        for operation_id in gated_operations {
             let operation = self.load_operation(operation_id).map_err(|error| {
                 if matches!(error, ReconcilerError::OperationNotFound) {
                     ReconcilerError::CorruptLedger("orphan ownership gate")
@@ -1159,9 +1180,15 @@ where
             })?;
             self.load_and_validate_ownership_gate(operation_id, operation)?;
         }
-        for (key, value) in self.journal.records(RecordNamespace::Operation) {
-            let operation_id = decode_operation_key(key)?;
-            self.load_and_validate_ownership_gate(operation_id, decode_operation(value)?)?;
+
+        let operations = self
+            .journal
+            .records(RecordNamespace::Operation)
+            .map(|(key, _)| decode_operation_key(key))
+            .collect::<Result<Vec<_>, _>>()?;
+        for operation_id in operations {
+            let operation = self.load_operation(operation_id)?;
+            self.load_and_validate_ownership_gate(operation_id, operation)?;
         }
         Ok(())
     }
@@ -1439,7 +1466,7 @@ where
     }
 
     fn validate_operation_gate_relation(
-        &self,
+        &mut self,
         operation_id: OperationId,
     ) -> Result<(), ReconcilerError> {
         let operation = self.load_operation(operation_id)?;
@@ -1448,7 +1475,7 @@ where
     }
 
     fn load_and_validate_ownership_gate(
-        &self,
+        &mut self,
         operation_id: OperationId,
         operation: OperationRecord,
     ) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
@@ -1538,7 +1565,7 @@ where
     }
 
     fn validate_effect_authority_bindings(
-        &self,
+        &mut self,
         operation_id: OperationId,
         effect_count: u32,
         draft: Option<&AuthorityPublicationDraftV1>,
@@ -1578,6 +1605,20 @@ where
                         ));
                     }
                     if let Some(dispatch) = &effect.dispatch {
+                        let current_host_boot_id =
+                            if matches!(&effect.state, EffectState::Applying { .. }) {
+                                Some(
+                                    self.executor
+                                        .authority_effect_timing(operation_id, step)
+                                        .ok_or(ReconcilerError::InvalidExecutorOutput(
+                                            "authority-bound effect execution is unsupported",
+                                        ))?
+                                        .clock()
+                                        .host_boot_id(),
+                                )
+                            } else {
+                                None
+                            };
                         validate_durable_effect_attempt(
                             &self.journal,
                             draft.manifest().manifest().sandbox(),
@@ -1590,11 +1631,16 @@ where
                             binding.template_digest,
                             effect.plan.request(),
                             dispatch,
+                            current_host_boot_id,
                         )
-                        .map_err(|_| {
-                            ReconcilerError::CorruptLedger(
-                                "authority effect dispatch is missing or corrupt",
-                            )
+                        .map_err(|error| {
+                            if matches!(error, AuthorityPublicationError::MigrationRequired) {
+                                ReconcilerError::MigrationRequired
+                            } else {
+                                ReconcilerError::CorruptLedger(
+                                    "authority effect dispatch is missing or corrupt",
+                                )
+                            }
                         })?;
                         if let EffectState::Applied { receipt, .. } = &effect.state {
                             dispatch
@@ -1632,6 +1678,51 @@ where
             }
         }
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_bound_current_attempt(
+        &mut self,
+        operation_id: OperationId,
+        step: u32,
+        sandbox: SandboxId,
+        activated_publication: ObjectDigest,
+        source_draft_digest: ObjectDigest,
+        audience: aos_sandbox_core::BrokerAudience,
+        template_digest: ObjectDigest,
+        timing: AuthorityEffectAttemptTimingV1,
+    ) -> Result<(ObjectDigest, crate::BrokerDispatchAttemptV1), ReconcilerError> {
+        let guardian_request = AuthorityPublicationStore::new(&mut self.journal)
+            .select_bound_guardian_plan_request(
+                sandbox,
+                activated_publication,
+                source_draft_digest,
+                audience,
+                template_digest,
+                timing.clock().host_boot_id(),
+            )?;
+        let guardian_plan = guardian_request
+            .as_ref()
+            .map(|request| {
+                self.executor
+                    .prepare_guardian_plan(operation_id, step, request)
+                    .ok_or(ReconcilerError::InvalidExecutorOutput(
+                        "Guardian plan signing is unavailable for Host launch",
+                    ))
+            })
+            .transpose()?;
+        AuthorityPublicationStore::new(&mut self.journal)
+            .select_bound_current_attempt(
+                sandbox,
+                activated_publication,
+                source_draft_digest,
+                audience,
+                template_digest,
+                guardian_plan.as_ref(),
+                timing.deadline(),
+                timing.clock(),
+            )
+            .map_err(ReconcilerError::AuthorityPublication)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1681,17 +1772,16 @@ where
                         .ok_or(ReconcilerError::InvalidExecutorOutput(
                             "authority-bound effect execution is unsupported",
                         ))?;
-                    let (publication_digest, fresh_attempt) =
-                        AuthorityPublicationStore::new(&mut self.journal)
-                            .select_bound_current_attempt(
-                                sandbox,
-                                activated_publication,
-                                binding.source_draft_digest,
-                                binding.audience,
-                                binding.template_digest,
-                                timing.deadline(),
-                                timing.clock(),
-                            )?;
+                    let (publication_digest, fresh_attempt) = self.prepare_bound_current_attempt(
+                        operation_id,
+                        step,
+                        sandbox,
+                        activated_publication,
+                        binding.source_draft_digest,
+                        binding.audience,
+                        binding.template_digest,
+                        timing,
+                    )?;
                     let fresh = PreparedAuthorityEffectV2::new(
                         binding.digest,
                         publication_digest,
@@ -2283,8 +2373,9 @@ mod tests {
     use crate::journal::JournalLimits;
     use crate::publication::tests::{
         activation_claim, alternate_descriptor_free_activation_fixture,
-        descriptor_free_activation_fixture, descriptor_free_mount_activation_fixture,
-        descriptor_host_activation_fixture,
+        descriptor_free_activation_fixture, descriptor_free_launch_activation_fixture,
+        descriptor_free_mount_activation_fixture, descriptor_host_activation_fixture,
+        signed_guardian_plan,
     };
     use crate::publication::{AuthorityPublicationDraftV1, AuthorityPublicationStore};
 
@@ -2320,6 +2411,9 @@ mod tests {
         observe_calls: usize,
         authority_pending: bool,
         authority_receipt_override: Option<ValidatedHostEffectReceiptV1>,
+        guardian_plan_requests: Vec<GuardianPlanRequestV1>,
+        guardian_plan_override: Option<SignedBrokerPlan>,
+        host_boot_id: Option<[u8; 16]>,
     }
 
     fn host_receipt_bytes(prepared: &PreparedAuthorityEffectV2) -> Vec<u8> {
@@ -2355,9 +2449,26 @@ mod tests {
             _step: u32,
         ) -> Option<AuthorityEffectAttemptTimingV1> {
             let provenance = RawClockProvenance::new_untrusted([0x91; 16]).unwrap();
-            let clock =
-                RawPairedClockSample::new_untrusted(provenance, [0x92; 16], 150, 1_000).unwrap();
+            let clock = RawPairedClockSample::new_untrusted(
+                provenance,
+                self.host_boot_id.unwrap_or([0x92; 16]),
+                150,
+                1_000,
+            )
+            .unwrap();
             Some(AuthorityEffectAttemptTimingV1::new(clock, 2_000))
+        }
+
+        fn prepare_guardian_plan(
+            &mut self,
+            _operation_id: OperationId,
+            _step: u32,
+            request: &GuardianPlanRequestV1,
+        ) -> Option<SignedBrokerPlan> {
+            self.guardian_plan_requests.push(request.clone());
+            self.guardian_plan_override
+                .clone()
+                .or_else(|| Some(signed_guardian_plan(request)))
         }
 
         fn observe(
@@ -2470,6 +2581,29 @@ mod tests {
         gated_operation_with_publication(1).0
     }
 
+    fn gated_launch_operation_with_publication(
+        lease_generation: u64,
+    ) -> (
+        OperationPlan,
+        AuthorityPublicationDraftV1,
+        crate::publication::PreparedAuthorityPublicationV1,
+    ) {
+        let (draft, prepared) = descriptor_free_launch_activation_fixture(lease_generation);
+        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        let plan = OperationPlan::ownership_gated(
+            OperationId::from_bytes([0x35; 16]),
+            IdempotencyKey::new(b"guardian-gated-launch".to_vec()).unwrap(),
+            [0x36; 32],
+            b"guardian-gated-sandbox".to_vec(),
+            b"pending-launch".to_vec(),
+            vec![effect],
+            activation_claim(&draft, lease_generation),
+            draft.clone(),
+        )
+        .unwrap();
+        (plan, draft, prepared)
+    }
+
     fn gate_activation(
         reconciler: &mut Reconciler<Executor>,
         draft: &AuthorityPublicationDraftV1,
@@ -2491,6 +2625,16 @@ mod tests {
         )
         .unwrap()
         .0
+    }
+
+    fn authority_effect_v3_as_legacy_v2(mut bytes: Vec<u8>) -> Vec<u8> {
+        const HOST_BOOT_OFFSET: usize = 369;
+        const HOST_BOOT_BYTES: usize = 16;
+
+        assert_eq!(bytes[0], effect::AUTHORITY_EFFECT_VERSION);
+        bytes[0] = effect::LEGACY_AUTHORITY_EFFECT_VERSION;
+        bytes.drain(HOST_BOOT_OFFSET..HOST_BOOT_OFFSET + HOST_BOOT_BYTES);
+        bytes
     }
 
     #[test]
@@ -3224,6 +3368,355 @@ mod tests {
     }
 
     #[test]
+    fn host_launch_signs_after_lease_selection_and_refreshes_before_absent_retry() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_launch_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        assert_eq!(reconciler.executor.apply_calls, 0);
+        assert_eq!(reconciler.executor.guardian_plan_requests.len(), 1);
+        let first_request = reconciler.executor.guardian_plan_requests[0].clone();
+        assert_eq!(first_request.lease_generation(), 1);
+        assert_eq!(first_request.lease_digest(), prepared.lease_digest());
+        let first_record = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap();
+        let first_dispatch = first_record.dispatch.as_ref().unwrap();
+        assert_eq!(first_dispatch.attempt().lease_generation(), 1);
+        let first_companion = aos_sandbox_protocol::decode_host_guardian_companion_v1(
+            first_dispatch.attempt().body(),
+        )
+        .unwrap();
+        assert_eq!(
+            first_companion.broker_plan(),
+            signed_guardian_plan(&first_request).canonical_plan(),
+        );
+
+        reconciler
+            .executor
+            .failures
+            .push_back(EffectFailure::Retryable("transport lost".to_owned()));
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::RetryPending
+        );
+        assert_eq!(reconciler.executor.apply_calls, 1);
+        assert_eq!(reconciler.executor.guardian_plan_requests.len(), 2);
+
+        let (_, renewed) = descriptor_free_launch_activation_fixture(2);
+        AuthorityPublicationStore::new(reconciler.journal_mut())
+            .publish(
+                &renewed,
+                &IdempotencyKey::new("guardian-launch-renewal").unwrap(),
+                OperationId::new(),
+                [0xd8; 16],
+            )
+            .unwrap();
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::EffectApplied
+        );
+        let renewed_request = reconciler.executor.guardian_plan_requests.last().unwrap();
+        assert_eq!(renewed_request.lease_generation(), 2);
+        assert_eq!(renewed_request.lease_digest(), renewed.lease_digest());
+        assert_ne!(renewed_request.lease_digest(), first_request.lease_digest());
+        let applied = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(plan.operation_id(), 0))
+                .unwrap(),
+        )
+        .unwrap();
+        let applied_dispatch = applied.dispatch.as_ref().unwrap();
+        assert_eq!(applied_dispatch.attempt().lease_generation(), 2);
+        let renewed_companion = aos_sandbox_protocol::decode_host_guardian_companion_v1(
+            applied_dispatch.attempt().body(),
+        )
+        .unwrap();
+        assert_eq!(
+            renewed_companion.broker_plan(),
+            signed_guardian_plan(renewed_request).canonical_plan(),
+        );
+        assert_ne!(
+            renewed_companion.broker_plan(),
+            first_companion.broker_plan(),
+        );
+    }
+
+    #[test]
+    fn renewed_host_launch_rejects_a_stale_guardian_plan_before_apply() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_launch_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        reconciler.reconcile_once(plan.operation_id()).unwrap();
+        let stale_guardian = signed_guardian_plan(&reconciler.executor.guardian_plan_requests[0]);
+        let effect_key = effect_key(plan.operation_id(), 0);
+        let before = reconciler
+            .journal
+            .get(RecordNamespace::Effect, &effect_key)
+            .unwrap()
+            .to_vec();
+
+        let (_, renewed) = descriptor_free_launch_activation_fixture(2);
+        AuthorityPublicationStore::new(reconciler.journal_mut())
+            .publish(
+                &renewed,
+                &IdempotencyKey::new("stale-guardian-renewal").unwrap(),
+                OperationId::new(),
+                [0xd9; 16],
+            )
+            .unwrap();
+        reconciler.executor.guardian_plan_override = Some(stale_guardian);
+        assert!(matches!(
+            reconciler.reconcile_once(plan.operation_id()),
+            Err(ReconcilerError::AuthorityPublication(
+                AuthorityPublicationError::DispatchAttempt(
+                    crate::BrokerDispatchAttemptError::GuardianPlanMismatch
+                        | crate::BrokerDispatchAttemptError::GuardianContextMismatch
+                )
+            ))
+        ));
+        assert_eq!(reconciler.executor.apply_calls, 0);
+        assert_eq!(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key)
+                .unwrap(),
+            before,
+        );
+    }
+
+    #[test]
+    fn durable_host_launch_rejects_body_packet_and_boot_substitution_before_io() {
+        for mutation in ["body", "packet", "boot"] {
+            let directory = TestDirectory::new();
+            let (journal, _) =
+                Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+            let mut reconciler = Reconciler::new(journal, Executor::default());
+            let (plan, draft, prepared) = gated_launch_operation_with_publication(1);
+            reconciler.accept(&plan).unwrap();
+            let activation = gate_activation(&mut reconciler, &draft, &prepared);
+            reconciler
+                .activate_ownership_gate(plan.operation_id(), activation)
+                .unwrap();
+            reconciler.reconcile_once(plan.operation_id()).unwrap();
+
+            let effect_key = effect_key(plan.operation_id(), 0);
+            let mut record = decode_effect(
+                reconciler
+                    .journal
+                    .get(RecordNamespace::Effect, &effect_key)
+                    .unwrap(),
+            )
+            .unwrap();
+            let durable = record.dispatch.as_ref().unwrap();
+            let mut body = durable.attempt().body().to_vec();
+            let mut packet = durable.attempt().packet().to_vec();
+            let mut host_boot_id = durable.preparation_host_boot_id();
+            match mutation {
+                "body" => *body.last_mut().unwrap() ^= 1,
+                "packet" => *packet.last_mut().unwrap() ^= 1,
+                "boot" => host_boot_id = Some([0x93; 16]),
+                _ => unreachable!(),
+            }
+            let substituted = BrokerDispatchAttemptV1::from_durable_parts(
+                durable.attempt().template_digest(),
+                durable.attempt().lease_digest(),
+                durable.attempt().lease_generation(),
+                durable.attempt().deadline_boottime_nanoseconds(),
+                body,
+                packet,
+            );
+            record.dispatch = Some(PreparedAuthorityEffectV2::from_durable_parts(
+                durable.binding_digest(),
+                durable.publication_digest(),
+                durable.preparation_wall_seconds(),
+                durable.preparation_boottime_nanoseconds(),
+                host_boot_id,
+                substituted,
+            ));
+            let replacement = JournalRecord::put(
+                RecordNamespace::Effect,
+                effect_key.to_vec(),
+                encode_effect(&record).unwrap(),
+            );
+            reconciler
+                .journal_mut()
+                .commit(
+                    &JournalTransaction::new(
+                        match mutation {
+                            "body" => [0xe1; 16],
+                            "packet" => [0xe2; 16],
+                            "boot" => [0xe3; 16],
+                            _ => unreachable!(),
+                        },
+                        vec![replacement],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+
+            assert!(matches!(
+                reconciler.reconcile_once(plan.operation_id()),
+                Err(ReconcilerError::CorruptLedger(_))
+            ));
+            assert_eq!(reconciler.executor.observe_calls, 0, "{mutation}");
+            assert_eq!(reconciler.executor.apply_calls, 0, "{mutation}");
+        }
+    }
+
+    #[test]
+    fn completed_v3_host_launch_remains_historical_after_reboot() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_launch_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::EffectApplied
+        );
+        let apply_calls = reconciler.executor.apply_calls;
+
+        reconciler.executor.host_boot_id = Some([0x93; 16]);
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::Succeeded
+        );
+        assert_eq!(reconciler.executor.apply_calls, apply_calls);
+    }
+
+    #[test]
+    fn applying_v2_authority_dispatch_requires_migration_before_executor_io() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        reconciler.reconcile_once(plan.operation_id()).unwrap();
+        let effect_key = effect_key(plan.operation_id(), 0);
+        let v3 = reconciler
+            .journal
+            .get(RecordNamespace::Effect, &effect_key)
+            .unwrap()
+            .to_vec();
+        let v2 = authority_effect_v3_as_legacy_v2(v3);
+        let decoded = decode_effect(&v2).unwrap();
+        assert_eq!(
+            decoded
+                .dispatch
+                .as_ref()
+                .unwrap()
+                .preparation_host_boot_id(),
+            None
+        );
+        assert!(matches!(
+            encode_effect(&decoded),
+            Err(ReconcilerError::MigrationRequired)
+        ));
+        reconciler
+            .journal_mut()
+            .commit(
+                &JournalTransaction::new(
+                    [0xe4; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::Effect,
+                        effect_key.to_vec(),
+                        v2,
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            reconciler.reconcile_once(plan.operation_id()),
+            Err(ReconcilerError::MigrationRequired)
+        ));
+        assert_eq!(reconciler.executor.observe_calls, 0);
+        assert_eq!(reconciler.executor.apply_calls, 0);
+    }
+
+    #[test]
+    fn completed_v2_authority_dispatch_remains_readable_but_not_reencodable() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        reconciler.reconcile_once(plan.operation_id()).unwrap();
+        reconciler.reconcile_once(plan.operation_id()).unwrap();
+        let effect_key = effect_key(plan.operation_id(), 0);
+        let v3 = reconciler
+            .journal
+            .get(RecordNamespace::Effect, &effect_key)
+            .unwrap()
+            .to_vec();
+        let v2 = authority_effect_v3_as_legacy_v2(v3);
+        assert!(matches!(
+            encode_effect(&decode_effect(&v2).unwrap()),
+            Err(ReconcilerError::MigrationRequired)
+        ));
+        reconciler
+            .journal_mut()
+            .commit(
+                &JournalTransaction::new(
+                    [0xe5; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::Effect,
+                        effect_key.to_vec(),
+                        v2,
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let apply_calls = reconciler.executor.apply_calls;
+
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::Succeeded
+        );
+        assert_eq!(reconciler.executor.apply_calls, apply_calls);
+    }
+
+    #[test]
     fn authority_attempt_is_durable_before_io_and_reused_after_restart() {
         let directory = TestDirectory::new();
         let path = directory.journal();
@@ -3310,7 +3803,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_durable_bytes_omit_raw_clock_provenance_and_boot_identity() {
+    fn v3_durable_bytes_omit_clock_provenance_but_bind_host_boot() {
         let directory = TestDirectory::new();
         let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         let mut reconciler = Reconciler::new(journal, Executor::default());
@@ -3331,7 +3824,7 @@ mod tests {
         let durable = record.dispatch.as_ref().unwrap();
         let alternate_clock = RawPairedClockSample::new_untrusted(
             RawClockProvenance::new_untrusted([0xee; 16]).unwrap(),
-            [0xef; 16],
+            durable.preparation_host_boot_id().unwrap(),
             durable.preparation_wall_seconds(),
             durable.preparation_boottime_nanoseconds(),
         )
@@ -3344,6 +3837,24 @@ mod tests {
             durable.attempt().clone(),
         ));
         assert_eq!(
+            encode_effect(&record).unwrap(),
+            encode_effect(&alternate).unwrap()
+        );
+
+        let another_boot = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted([0xee; 16]).unwrap(),
+            [0xef; 16],
+            durable.preparation_wall_seconds(),
+            durable.preparation_boottime_nanoseconds(),
+        )
+        .unwrap();
+        alternate.dispatch = Some(PreparedAuthorityEffectV2::new(
+            durable.binding_digest(),
+            durable.publication_digest(),
+            another_boot,
+            durable.attempt().clone(),
+        ));
+        assert_ne!(
             encode_effect(&record).unwrap(),
             encode_effect(&alternate).unwrap()
         );
@@ -3486,6 +3997,7 @@ mod tests {
             durable.publication_digest(),
             durable.preparation_wall_seconds(),
             durable.preparation_boottime_nanoseconds(),
+            durable.preparation_host_boot_id(),
             substituted,
         ));
         let replacement = JournalRecord::put(

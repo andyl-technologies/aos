@@ -62,7 +62,10 @@ pub use storage_inventory::{
 };
 
 mod runtime_template;
-pub use runtime_template::{ValidatedRuntimeTemplateV1, decode_runtime_template_v1};
+pub use runtime_template::{
+    ValidatedGuardianArmCompanionV1, ValidatedRuntimeTemplateV1, decode_host_guardian_companion_v1,
+    decode_runtime_template_v1, encode_host_guardian_companion_v1,
+};
 
 pub use session::{
     AuthorizationArtifactBytes, MAXIMUM_HANDSHAKE_BYTES, MAXIMUM_PACKET_DESCRIPTORS,
@@ -304,6 +307,7 @@ pub struct ValidatedRuntimeRequest {
     fence: ValidatedAssignmentFence,
     action: RuntimeAction,
     launch_plan: Option<ValidatedRuntimePlan>,
+    guardian_arm: Option<ValidatedGuardianArmCompanionV1>,
 }
 
 impl ValidatedRuntimeRequest {
@@ -329,6 +333,12 @@ impl ValidatedRuntimeRequest {
     #[must_use]
     pub const fn launch_plan(&self) -> Option<&ValidatedRuntimePlan> {
         self.launch_plan.as_ref()
+    }
+
+    /// Returns the exact untrusted Guardian plan pair on a Host 1.5 launch.
+    #[must_use]
+    pub const fn guardian_arm(&self) -> Option<&ValidatedGuardianArmCompanionV1> {
+        self.guardian_arm.as_ref()
     }
 }
 
@@ -644,13 +654,15 @@ pub fn decode_runtime_request(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
-    let template = runtime_template::validate_runtime_body(&request, header.protocol_version())?;
+    let template =
+        runtime_template::validate_live_runtime_body(&request, header.protocol_version())?;
 
     Ok(ValidatedRuntimeRequest {
         header,
         fence: template.fence,
         action: template.action,
         launch_plan: template.launch_plan,
+        guardian_arm: template.guardian_arm,
     })
 }
 
@@ -1214,6 +1226,20 @@ pub fn exercise_malformed_request_decoders(bytes: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use aos_sandbox_core::format::{
+        descriptor_for_bytes, encode_broker_authorization_plan, encode_signature,
+    };
+    use aos_sandbox_core::model::{
+        KeyReference, KeyUsage, Signature, SignatureBytes, SignaturePurpose, SignatureStatement,
+        StableKeyId,
+    };
+    use aos_sandbox_core::{
+        AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment, BrokerAudience,
+        BrokerAuthorizationPlan, BrokerGrant, BrokerGrantTarget, BrokerVerb, DesiredGeneration,
+        IncarnationId, MediaType, NodeId, PortableMediaType, RevocationScopeId, SandboxId,
+        TrustScopeId,
+    };
+
     use super::*;
 
     #[test]
@@ -1310,6 +1336,132 @@ mod tests {
     }
 
     #[test]
+    fn guardian_companion_matrix_is_closed_over_profile_action_and_host_version() {
+        let (broker_plan, broker_plan_signature) = guardian_plan_pair();
+        let actions = [
+            RuntimeAction::RUNTIME_ACTION_LAUNCH,
+            RuntimeAction::RUNTIME_ACTION_STOP,
+            RuntimeAction::RUNTIME_ACTION_FREEZE,
+            RuntimeAction::RUNTIME_ACTION_THAW,
+            RuntimeAction::RUNTIME_ACTION_KILL,
+        ];
+
+        for minor in [4, 5] {
+            for action in actions {
+                for has_companion in [false, true] {
+                    let mut request = valid_runtime_request();
+                    request.header.get_or_insert_default().protocol_minor = minor;
+                    request
+                        .launch_plan
+                        .get_or_insert_default()
+                        .attachment_anchor_handle = vec![9; OPAQUE_HANDLE_BYTES];
+                    request.action = action.into();
+                    if action != RuntimeAction::RUNTIME_ACTION_LAUNCH {
+                        request.launch_plan = None.into();
+                    }
+                    if has_companion {
+                        let companion = request.guardian_arm.get_or_insert_default();
+                        companion.broker_plan.clone_from(&broker_plan);
+                        companion
+                            .broker_plan_signature
+                            .clone_from(&broker_plan_signature);
+                    }
+
+                    let live_valid =
+                        decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 100)
+                            .is_ok();
+                    assert_eq!(
+                        live_valid,
+                        (minor == 5
+                            && has_companion == (action == RuntimeAction::RUNTIME_ACTION_LAUNCH))
+                            || (minor == 4 && !has_companion),
+                        "live minor={minor} action={action:?} companion={has_companion}",
+                    );
+
+                    request
+                        .header
+                        .get_or_insert_default()
+                        .deadline_boottime_nanoseconds = 0;
+                    let template_valid =
+                        decode_runtime_template_v1(&request.encode_to_vec()).is_ok();
+                    assert_eq!(
+                        template_valid, !has_companion,
+                        "template minor={minor} action={action:?} companion={has_companion}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn guardian_companion_encoder_enforces_live_header_and_unknown_field_bounds() {
+        let (broker_plan, broker_plan_signature) = guardian_plan_pair();
+        let mut request = valid_runtime_request();
+        request.header.get_or_insert_default().protocol_minor = 5;
+        request
+            .launch_plan
+            .get_or_insert_default()
+            .attachment_anchor_handle = vec![9; OPAQUE_HANDLE_BYTES];
+
+        let encoded = encode_host_guardian_companion_v1(
+            &request.encode_to_vec(),
+            &broker_plan,
+            &broker_plan_signature,
+        )
+        .unwrap_or_else(|error| panic!("valid companion injection failed: {error}"));
+        let validated = decode_runtime_request(&encoded, peer(), policy(), 100)
+            .unwrap_or_else(|error| panic!("injected request failed validation: {error}"));
+        assert_eq!(
+            validated
+                .guardian_arm()
+                .unwrap_or_else(|| panic!("companion missing"))
+                .broker_plan(),
+            broker_plan,
+        );
+
+        type Mutation = (&'static str, fn(&mut ApplyRuntimeRequest));
+        let mutations: [Mutation; 5] = [
+            ("request unknown", |request| {
+                request.__buffa_unknown_fields =
+                    buffa::UnknownFields::decode_from_slice(&[0xf8, 0x07, 0x01]).unwrap()
+            }),
+            ("header unknown", |request| {
+                request
+                    .header
+                    .get_or_insert_default()
+                    .__buffa_unknown_fields =
+                    buffa::UnknownFields::decode_from_slice(&[0xf8, 0x07, 0x01]).unwrap()
+            }),
+            ("request id", |request| {
+                request.header.get_or_insert_default().request_id.clear()
+            }),
+            ("audience", |request| {
+                request.header.get_or_insert_default().audience =
+                    Audience::AUDIENCE_ROOT_MOUNT.into()
+            }),
+            ("response bound", |request| {
+                request
+                    .header
+                    .get_or_insert_default()
+                    .maximum_response_bytes = MINIMUM_RESPONSE_BYTES - 1
+            }),
+        ];
+        for (name, mutate) in mutations {
+            let mut invalid = request.clone();
+            mutate(&mut invalid);
+            assert!(
+                encode_host_guardian_companion_v1(
+                    &invalid.encode_to_vec(),
+                    &broker_plan,
+                    &broker_plan_signature,
+                )
+                .is_err(),
+                "{name}",
+            );
+        }
+    }
+
+    #[test]
     fn host_1_3_requires_one_nonzero_attachment_anchor_handle() {
         let mut request = valid_runtime_request();
         request.header.get_or_insert_default().protocol_minor = 3;
@@ -1382,6 +1534,85 @@ mod tests {
                 ..Default::default()
             });
         request
+    }
+
+    fn guardian_plan_pair() -> (Vec<u8>, Vec<u8>) {
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(3),
+            DesiredGeneration::new(4),
+            ObjectDigest::from_bytes([5; 32]),
+        )
+        .unwrap_or_else(|error| panic!("test assignment failed: {error}"));
+        let lease_authority = KeyReference::new(
+            StableKeyId::new("ownership-authority".to_owned())
+                .unwrap_or_else(|error| panic!("test key ID failed: {error}")),
+            1,
+            ObjectDigest::from_bytes([6; 32]),
+            KeyUsage::OwnershipLease,
+        );
+        let plan = BrokerAuthorizationPlan::new(
+            BrokerAudience::Guardian,
+            ProtocolId::Guardian,
+            ProtocolVersion::new(1, 0),
+            assignment,
+            NodeId::from_bytes([7; 16]),
+            lease_authority,
+            vec![
+                BrokerGrant::new(
+                    BrokerVerb::GuardianArm,
+                    BrokerGrantTarget::Assignment,
+                    BrokerArgumentCommitment::for_canonical_bytes(b"guardian arm"),
+                    4096,
+                    0,
+                )
+                .unwrap_or_else(|error| panic!("test grant failed: {error}")),
+            ],
+            ObjectDigest::from_bytes([8; 32]),
+            RevocationScopeId::from_bytes([9; 16]),
+            100,
+            200,
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("test plan failed: {error}"));
+        let broker_plan = encode_broker_authorization_plan(&plan);
+        let subject = descriptor_for_bytes(
+            MediaType::new(
+                PortableMediaType::BrokerAuthorizationPlan
+                    .as_str()
+                    .to_owned(),
+            )
+            .unwrap_or_else(|error| panic!("test media type failed: {error}")),
+            &broker_plan,
+        );
+        let signer = KeyReference::new(
+            StableKeyId::new("broker-controller".to_owned())
+                .unwrap_or_else(|error| panic!("test key ID failed: {error}")),
+            1,
+            ObjectDigest::from_bytes([10; 32]),
+            KeyUsage::BrokerAuthorization,
+        );
+        let policy = ObjectDescriptor::new(
+            MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
+                .unwrap_or_else(|error| panic!("test media type failed: {error}")),
+            ObjectDigest::from_bytes([11; 32]),
+            1,
+        );
+        let statement = SignatureStatement::new(
+            subject,
+            TrustScopeId::from_bytes([12; 16]),
+            signer,
+            SignaturePurpose::BrokerAuthorization,
+            100,
+            Some(200),
+            policy,
+        )
+        .unwrap_or_else(|error| panic!("test signature statement failed: {error}"));
+        let broker_plan_signature =
+            encode_signature(&Signature::new(statement, SignatureBytes::new([13; 64])));
+
+        (broker_plan, broker_plan_signature)
     }
 
     fn valid_mount_request() -> Vec<u8> {

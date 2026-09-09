@@ -209,11 +209,20 @@ message RuntimePlan {
   bytes attachment_anchor_handle = 9;
 }
 
+// Host 1.5 launch-only carrier for the separately signed Guardian plan.
+// The Guardian reuses the exact ownership lease and lease signature from the
+// enclosing Host authorization quartet; duplicating them here is forbidden.
+message GuardianArmCompanionV1 {
+  bytes broker_plan = 1; // Canonical Guardian BrokerAuthorizationPlan CBOR.
+  bytes broker_plan_signature = 2; // Canonical detached Signature CBOR.
+}
+
 message ApplyRuntimeRequest {
   RequestHeader header = 1;
   AssignmentFence fence = 2;
   RuntimeAction action = 3;
   RuntimePlan launch_plan = 4; // Present only for launch.
+  GuardianArmCompanionV1 guardian_arm = 5; // Host 1.5 launch only.
 }
 
 message RuntimeObservation {

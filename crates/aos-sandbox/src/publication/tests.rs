@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyRuntimeRequest, AssignmentFence, Audience, BrokerDescriptorRole, BrokerMethod,
-    RequestHeader, RuntimeAction,
+    ApplyRuntimeRequest, AssignmentFence, Audience, BrokerDescriptorRole, BrokerMethod, Feature,
+    RequestHeader, ResourceLimit, RuntimeAction,
 };
 use aos_sandbox_core::format::{encode_signature, encode_trust_policy};
 use aos_sandbox_core::model::{
@@ -23,9 +23,9 @@ use buffa::Message as _;
 use ed25519_dalek::SigningKey;
 
 use crate::{
-    BrokerDispatchSemanticIdentityV1, BrokerPlanPreparation, OwnershipAuthorityVerifier,
-    OwnershipClaimV1, OwnershipTransactionReceiptV1, ReturnedSignature, SignedBrokerPlan,
-    SigningAuthority, UnverifiedOwnershipLeaseResponse,
+    BrokerDispatchSemanticIdentityV1, BrokerPlanPreparation, GuardianPlanRequestV1,
+    OwnershipAuthorityVerifier, OwnershipClaimV1, OwnershipTransactionReceiptV1, ReturnedSignature,
+    SignedBrokerPlan, SigningAuthority, UnverifiedOwnershipLeaseResponse,
 };
 use aos_sandbox_ownership_protocol::ExpectedOwnershipLease;
 
@@ -184,6 +184,41 @@ fn signed_plan(
     (signed, semantics)
 }
 
+pub(crate) fn signed_guardian_plan(request: &GuardianPlanRequestV1) -> SignedBrokerPlan {
+    let key = SigningKey::from_bytes(&[46; 32]);
+    let plan = BrokerAuthorizationPlan::new(
+        BrokerAudience::Guardian,
+        ProtocolId::Guardian,
+        ProtocolVersion::new(1, 0),
+        request.assignment(),
+        request.node(),
+        request.ownership_authority().clone(),
+        vec![
+            BrokerGrant::new(
+                BrokerVerb::GuardianArm,
+                BrokerGrantTarget::Assignment,
+                request.commitment(),
+                request.request_bytes(),
+                4,
+            )
+            .unwrap_or_else(|error| panic!("test Guardian grant failed: {error}")),
+        ],
+        ObjectDigest::from_bytes([52; 32]),
+        RevocationScopeId::from_bytes([53; 16]),
+        100,
+        180,
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("test Guardian plan failed: {error}"));
+    let preparation = BrokerPlanPreparation::new(plan, authority(&key))
+        .unwrap_or_else(|error| panic!("test Guardian plan preparation failed: {error}"));
+    let signature = sign_statement(preparation.signing_request().statement().clone(), &key)
+        .unwrap_or_else(|error| panic!("test Guardian signing failed: {error}"));
+    preparation
+        .complete(ReturnedSignature::Bytes(signature.signature()), 150)
+        .unwrap_or_else(|error| panic!("test signed Guardian plan failed: {error}"))
+}
+
 fn signed_host_plan(
     manifest: &CanonicalAssignmentManifestV1,
     lease_signer: KeyReference,
@@ -205,14 +240,33 @@ fn signed_host_control_plan_with_scope(
     action: RuntimeAction,
     observe_scope: bool,
 ) -> (SignedBrokerPlan, BrokerDispatchSemanticIdentityV1, Vec<u8>) {
+    signed_host_control_plan_with_version(manifest, lease_signer, action, observe_scope, None)
+}
+
+fn signed_host_control_plan_with_version(
+    manifest: &CanonicalAssignmentManifestV1,
+    lease_signer: KeyReference,
+    action: RuntimeAction,
+    observe_scope: bool,
+    protocol_minor_override: Option<u32>,
+) -> (SignedBrokerPlan, BrokerDispatchSemanticIdentityV1, Vec<u8>) {
     let key = SigningKey::from_bytes(&[40; 32]);
     let assignment = manifest
         .broker_assignment()
         .unwrap_or_else(|error| panic!("test broker assignment failed: {error}"));
-    let body = ApplyRuntimeRequest {
+    let request_protocol_minor = protocol_minor_override.unwrap_or_else(|| {
+        if action == RuntimeAction::RUNTIME_ACTION_LAUNCH {
+            5
+        } else if observe_scope {
+            2
+        } else {
+            1
+        }
+    });
+    let mut request = ApplyRuntimeRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
-            protocol_minor: if observe_scope { 2 } else { 1 },
+            protocol_minor: request_protocol_minor,
             request_id: vec![0x44; 16],
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             deadline_boottime_nanoseconds: 0,
@@ -231,8 +285,44 @@ fn signed_host_control_plan_with_scope(
         .into(),
         action: action.into(),
         ..Default::default()
+    };
+    if action == RuntimeAction::RUNTIME_ACTION_LAUNCH {
+        let launch = request.launch_plan.get_or_insert_default();
+        let root = launch.root_image.get_or_insert_default();
+        root.media_type = "application/vnd.aos.sandbox.view.v1+cbor".to_owned();
+        root.sha256 = vec![0x61; 32];
+        root.encoded_size = 1;
+        launch.workspace_handle = vec![0x62; 32];
+        launch.network_handle = vec![0x63; 32];
+        launch.uid_range_start = 65_536;
+        launch.uid_range_size = 65_536;
+        launch.limits = vec![
+            ResourceLimit {
+                dimension: 2,
+                value: 128,
+                ..Default::default()
+            },
+            ResourceLimit {
+                dimension: 3,
+                value: 1 << 30,
+                ..Default::default()
+            },
+            ResourceLimit {
+                dimension: 4,
+                value: 100,
+                ..Default::default()
+            },
+        ];
+        launch.attachment_handles.push(vec![0x64; 32]);
+        launch.attachment_anchor_handle = vec![0x65; 32];
+        launch.required_features.push(Feature {
+            namespace: "aos.sandbox.runtime.linux-systemd".to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        });
     }
-    .encode_to_vec();
+    let body = request.encode_to_vec();
     let checked = aos_sandbox_protocol::decode_runtime_template_v1(&body)
         .unwrap_or_else(|error| panic!("test Host template failed: {error}"));
     let canonical =
@@ -257,10 +347,17 @@ fn signed_host_control_plan_with_scope(
         grants.push(payload_scope_grant(assignment));
         grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
     }
+    // Payload observation uses the Host 1.2 carrier under the original 1.1
+    // authority plan. Launch is the only action whose authority version moves.
+    let authority_protocol_minor = if action == RuntimeAction::RUNTIME_ACTION_LAUNCH {
+        request_protocol_minor
+    } else {
+        1
+    };
     let plan = BrokerAuthorizationPlan::new(
         BrokerAudience::Host,
         ProtocolId::HostBroker,
-        ProtocolVersion::new(1, 1),
+        ProtocolVersion::new(1, authority_protocol_minor as u16),
         assignment,
         manifest.manifest().node(),
         lease_signer,
@@ -516,6 +613,51 @@ pub(crate) fn descriptor_free_activation_fixture(
     lease_generation: u64,
 ) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
     descriptor_free_control_activation_fixture(lease_generation, RuntimeAction::RUNTIME_ACTION_STOP)
+}
+
+pub(crate) fn descriptor_free_launch_activation_fixture(
+    lease_generation: u64,
+) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
+    descriptor_free_control_activation_fixture(
+        lease_generation,
+        RuntimeAction::RUNTIME_ACTION_LAUNCH,
+    )
+}
+
+fn legacy_host_launch_activation_fixture()
+-> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
+    let mut source = proposal(1, 190);
+    let lease_signer = source.lease.signer().clone();
+    let (plan, semantics, body) = signed_host_control_plan_with_version(
+        &source.manifest,
+        lease_signer,
+        RuntimeAction::RUNTIME_ACTION_LAUNCH,
+        false,
+        Some(4),
+    );
+    source.templates = vec![
+        BrokerDispatchTemplateV1::new(
+            plan,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            body,
+            Vec::new(),
+            semantics,
+        )
+        .unwrap_or_else(|error| panic!("legacy Host launch template failed: {error}")),
+    ];
+    source.required_audiences = vec![BrokerAudience::Host];
+    let lease = source.lease.clone();
+    let draft = AuthorityPublicationDraftV1::new(
+        source.manifest,
+        source.required_audiences,
+        source.templates,
+    )
+    .unwrap_or_else(|error| panic!("legacy Host launch draft failed: {error}"));
+    let prepared = draft
+        .clone()
+        .bind_lease(&activation_claim(&draft, 1), lease)
+        .unwrap_or_else(|error| panic!("legacy Host launch bind failed: {error}"));
+    (draft, prepared)
 }
 
 pub(crate) fn descriptor_free_stop_draft_with_node(node: u8) -> AuthorityPublicationDraftV1 {
@@ -1668,6 +1810,51 @@ fn selection_rejects_substitution_wrong_audience_and_stale_publication() {
             clock(150, 1_000),
         ),
         Err(AuthorityPublicationError::StaleCurrent)
+    ));
+}
+
+#[test]
+fn production_selection_rejects_a_legacy_host_launch_without_guardian() {
+    let directory = TestDirectory::new();
+    let (draft, prepared) = legacy_host_launch_activation_fixture();
+    let template = &draft.templates()[0];
+    let sandbox = draft.manifest().manifest().sandbox();
+    let (mut journal, _) = Journal::open(directory.journal(), Default::default())
+        .unwrap_or_else(|error| panic!("test journal failed: {error}"));
+    let mut store = AuthorityPublicationStore::new(&mut journal);
+    store
+        .publish(
+            &prepared,
+            &IdempotencyKey::new(b"legacy-host-launch".to_vec())
+                .unwrap_or_else(|error| panic!("test key failed: {error}")),
+            OperationId::from_bytes([0xa1; 16]),
+            [0xa2; 16],
+        )
+        .unwrap_or_else(|error| panic!("test publish failed: {error}"));
+
+    assert!(matches!(
+        store.select_bound_guardian_plan_request(
+            sandbox,
+            prepared.digest(),
+            draft.digest(),
+            BrokerAudience::Host,
+            template.digest(),
+            [0xa3; 16],
+        ),
+        Err(AuthorityPublicationError::GuardianRequired)
+    ));
+    assert!(matches!(
+        store.select_bound_current_attempt(
+            sandbox,
+            prepared.digest(),
+            draft.digest(),
+            BrokerAudience::Host,
+            template.digest(),
+            None,
+            2_000,
+            clock(150, 1_000),
+        ),
+        Err(AuthorityPublicationError::GuardianRequired)
     ));
 }
 

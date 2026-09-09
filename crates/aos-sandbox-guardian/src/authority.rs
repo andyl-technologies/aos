@@ -4,9 +4,9 @@ use aos_sandbox_core::format::{
     CanonicalCborError, DecodeLimits, decode_broker_authorization_plan, decode_signature,
 };
 use aos_sandbox_core::{
-    BrokerArgumentCommitment, BrokerAssignment, BrokerAudience, BrokerGrantTarget,
-    BrokerPlanExpectation, BrokerPlanRequest, BrokerPlanTrustAnchor, BrokerPlanVerificationError,
-    BrokerVerb, IncarnationId, LeaseFenceOutcome, NodeId, ObjectDigest, OwnershipLeaseExpectation,
+    BrokerAudience, BrokerGrantTarget, BrokerPlanExpectation, BrokerPlanRequest,
+    BrokerPlanTrustAnchor, BrokerPlanVerificationError, BrokerVerb, GuardianPlanBinding,
+    IncarnationId, LeaseFenceOutcome, NodeId, ObjectDigest, OwnershipLeaseExpectation,
     OwnershipLeaseTrustAnchor, OwnershipLeaseVerificationError, ProtocolId, ProtocolVersion,
     RawClockProvenance, RawPairedClockSample, prepare_local_lease_record, verify_broker_plan,
     verify_ownership_lease,
@@ -17,8 +17,6 @@ use crate::{DurablyPersistedGuardian, GuardianState, GuardianStateCodecError};
 const MAXIMUM_PLAN_BYTES: usize = 256 * 1024;
 const MAXIMUM_LEASE_BYTES: usize = 64 * 1024;
 const MAXIMUM_SIGNATURE_BYTES: usize = 64 * 1024;
-const BINDING_DOMAIN: &[u8; 8] = b"AOSGAB1\0";
-const BINDING_BYTES: u32 = 160;
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 
 /// Borrows the exact four portable authority artifacts supplied at startup.
@@ -32,96 +30,6 @@ pub struct GuardianArtifacts<'a> {
     pub ownership_lease: &'a [u8],
     /// Canonical detached signature over `ownership_lease`.
     pub ownership_lease_signature: &'a [u8],
-}
-
-/// Commits one plan grant to the current boot and exact ownership lease.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GuardianPlanBinding {
-    assignment: BrokerAssignment,
-    node: NodeId,
-    host_boot_id: [u8; 16],
-    lease_generation: u64,
-    lease_digest: ObjectDigest,
-}
-
-impl GuardianPlanBinding {
-    /// Constructs the only semantic argument accepted by `GuardianArm`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GuardianAuthorityError::InvalidPlanBinding`] for a sentinel
-    /// node, boot identity, lease generation, or lease digest.
-    pub fn new(
-        assignment: BrokerAssignment,
-        node: NodeId,
-        host_boot_id: [u8; 16],
-        lease_generation: u64,
-        lease_digest: ObjectDigest,
-    ) -> Result<Self, GuardianAuthorityError> {
-        if node.as_bytes() == &[0; 16]
-            || host_boot_id == [0; 16]
-            || lease_generation == 0
-            || lease_digest.as_bytes() == &[0; 32]
-        {
-            return Err(GuardianAuthorityError::InvalidPlanBinding);
-        }
-        Ok(Self {
-            assignment,
-            node,
-            host_boot_id,
-            lease_generation,
-            lease_digest,
-        })
-    }
-
-    /// Returns the domain-separated exact semantic commitment signed by the plan.
-    #[must_use]
-    pub fn commitment(self) -> BrokerArgumentCommitment {
-        BrokerArgumentCommitment::for_canonical_bytes(&self.encode())
-    }
-
-    /// Returns the exact fixed semantic byte length charged to the grant.
-    #[must_use]
-    pub const fn encoded_len(self) -> u32 {
-        BINDING_BYTES
-    }
-
-    fn encode(self) -> [u8; BINDING_BYTES as usize] {
-        let mut bytes = [0; BINDING_BYTES as usize];
-        let mut cursor = 0;
-        append(&mut bytes, &mut cursor, BINDING_DOMAIN);
-        append(
-            &mut bytes,
-            &mut cursor,
-            self.assignment.sandbox().as_bytes(),
-        );
-        append(
-            &mut bytes,
-            &mut cursor,
-            self.assignment.incarnation().as_bytes(),
-        );
-        append(
-            &mut bytes,
-            &mut cursor,
-            &self.assignment.epoch().get().to_be_bytes(),
-        );
-        append(
-            &mut bytes,
-            &mut cursor,
-            &self.assignment.desired_generation().get().to_be_bytes(),
-        );
-        append(&mut bytes, &mut cursor, self.assignment.digest().as_bytes());
-        append(&mut bytes, &mut cursor, self.node.as_bytes());
-        append(&mut bytes, &mut cursor, &self.host_boot_id);
-        append(
-            &mut bytes,
-            &mut cursor,
-            &self.lease_generation.to_be_bytes(),
-        );
-        append(&mut bytes, &mut cursor, self.lease_digest.as_bytes());
-        debug_assert_eq!(cursor, bytes.len());
-        bytes
-    }
 }
 
 /// Owns the protected trust roots and node identity for guardian admission.
@@ -234,7 +142,8 @@ impl GuardianAuthority {
             current_clock.host_boot_id(),
             verified_lease.lease().lease_generation(),
             verified_lease.lease_digest(),
-        )?;
+        )
+        .map_err(|_| GuardianAuthorityError::InvalidPlanBinding)?;
         verified_plan.match_request(BrokerPlanRequest {
             verb: BrokerVerb::GuardianArm,
             target: BrokerGrantTarget::Assignment,
@@ -483,70 +392,9 @@ fn limits(maximum_bytes: usize) -> DecodeLimits {
     }
 }
 
-fn append<const N: usize>(target: &mut [u8], cursor: &mut usize, source: &[u8; N]) {
-    let end = *cursor + N;
-    target[*cursor..end].copy_from_slice(source);
-    *cursor = end;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_sandbox_core::{AssignmentEpoch, DesiredGeneration, SandboxId};
-
-    const BINDING_HEX: &str = "414f5347414231000101010101010101010101010101010102020202020202020202020202020202000000000000000300000000000000040505050505050505050505050505050505050505050505050505050505050505060606060606060606060606060606060808080808080808080808080808080800000000000000070909090909090909090909090909090909090909090909090909090909090909";
-
-    fn assignment(digest: u8) -> BrokerAssignment {
-        BrokerAssignment::new(
-            SandboxId::from_bytes([1; 16]),
-            IncarnationId::from_bytes([2; 16]),
-            AssignmentEpoch::new(3),
-            DesiredGeneration::new(4),
-            ObjectDigest::from_bytes([digest; 32]),
-        )
-        .unwrap_or_else(|error| panic!("test assignment failed: {error}"))
-    }
-
-    fn binding(
-        assignment: BrokerAssignment,
-        node: u8,
-        boot: u8,
-        lease_generation: u64,
-        lease_digest: u8,
-    ) -> GuardianPlanBinding {
-        GuardianPlanBinding::new(
-            assignment,
-            NodeId::from_bytes([node; 16]),
-            [boot; 16],
-            lease_generation,
-            ObjectDigest::from_bytes([lease_digest; 32]),
-        )
-        .unwrap_or_else(|error| panic!("test binding failed: {error}"))
-    }
-
-    #[test]
-    fn plan_binding_has_stable_exact_bytes() {
-        let binding = binding(assignment(5), 6, 8, 7, 9);
-
-        assert_eq!(hex::encode(binding.encode()), BINDING_HEX);
-        assert_eq!(binding.encoded_len(), 160);
-    }
-
-    #[test]
-    fn every_plan_binding_field_changes_the_commitment() {
-        let original = binding(assignment(5), 6, 8, 7, 9).commitment();
-        let mutations = [
-            binding(assignment(10), 6, 8, 7, 9),
-            binding(assignment(5), 10, 8, 7, 9),
-            binding(assignment(5), 6, 10, 7, 9),
-            binding(assignment(5), 6, 8, 10, 9),
-            binding(assignment(5), 6, 8, 7, 10),
-        ];
-
-        for mutation in mutations {
-            assert_ne!(mutation.commitment(), original);
-        }
-    }
 
     #[test]
     fn plan_deadline_reserves_the_truncated_wall_tick() {

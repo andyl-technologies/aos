@@ -925,16 +925,12 @@ fn validate_authorization_artifact_bytes(
         return Err(ProtocolValidationError::RequestTooLarge);
     }
 
-    decode_broker_authorization_plan(
+    validate_broker_plan_artifact_pair(
         artifacts.broker_plan,
-        authorization_decode_limits(MAXIMUM_BROKER_PLAN_BYTES),
-    )
-    .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.plan"))?;
-    decode_signature(
         artifacts.broker_plan_signature,
-        authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
-    )
-    .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.plan_signature"))?;
+        "envelope.authorization.plan",
+        "envelope.authorization.plan_signature",
+    )?;
     decode_ownership_lease(
         artifacts.ownership_lease,
         authorization_decode_limits(MAXIMUM_OWNERSHIP_LEASE_BYTES),
@@ -945,6 +941,32 @@ fn validate_authorization_artifact_bytes(
         authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
     )
     .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.lease_signature"))?;
+    Ok(())
+}
+
+pub(crate) fn validate_broker_plan_artifact_pair(
+    broker_plan: &[u8],
+    broker_plan_signature: &[u8],
+    plan_field: &'static str,
+    signature_field: &'static str,
+) -> Result<(), ProtocolValidationError> {
+    if broker_plan.is_empty()
+        || broker_plan.len() > MAXIMUM_BROKER_PLAN_BYTES
+        || broker_plan_signature.is_empty()
+        || broker_plan_signature.len() > MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES
+    {
+        return Err(ProtocolValidationError::InvalidField(plan_field));
+    }
+    decode_broker_authorization_plan(
+        broker_plan,
+        authorization_decode_limits(MAXIMUM_BROKER_PLAN_BYTES),
+    )
+    .map_err(|_| ProtocolValidationError::InvalidField(plan_field))?;
+    decode_signature(
+        broker_plan_signature,
+        authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
+    )
+    .map_err(|_| ProtocolValidationError::InvalidField(signature_field))?;
     Ok(())
 }
 
