@@ -20,6 +20,9 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy};
 
+const SYSTEMD_ALREADY_SUBSCRIBED: &str = "org.freedesktop.systemd1.AlreadySubscribed";
+const PINNED_COMPLETION_LIMIT: usize = 1_024;
+
 /// Classification of a systemd job's terminal `result`, per the `job_result`
 /// table in systemd's `src/core/job.h`. We name only the four cases
 /// switch-to-configuration-ng classifies explicitly; everything else
@@ -85,6 +88,33 @@ pub struct JobOutcome {
     pub job_path: OwnedObjectPath,
     /// Classified terminal result from the job's `JobRemoved` signal.
     pub result: JobResult,
+}
+
+/// Identifies one system bus lifetime and the exact systemd service owner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagerIncarnation {
+    bus_id: String,
+    owner: String,
+}
+
+impl ManagerIncarnation {
+    /// Returns the D-Bus GUID identifying this bus lifetime.
+    #[must_use]
+    pub fn bus_id(&self) -> &str {
+        &self.bus_id
+    }
+
+    /// Returns systemd's unique service owner within the bus lifetime.
+    #[must_use]
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    /// Returns an opaque durable token suitable for provider assignment identity.
+    #[must_use]
+    pub fn token(&self) -> String {
+        format!("bus:{};owner:{}", self.bus_id, self.owner)
+    }
 }
 
 /// A unit found in a failed (or failed-and-auto-restarting) state by
@@ -169,6 +199,128 @@ struct JobRegistry {
     closed: bool,
 }
 
+#[derive(Default)]
+struct PinnedJobRegistry {
+    /// Awaiters grouped by job path. systemd may merge concurrent requests and
+    /// return the same path to each caller, so one completion wakes the group.
+    waiters: BTreeMap<String, BTreeMap<u64, oneshot::Sender<JobResult>>>,
+    /// Results that raced ahead of one or more outstanding method replies.
+    completed: BTreeMap<String, JobResult>,
+    /// Calls whose method reply has not exposed the job path yet.
+    active_submissions: usize,
+    /// Total lifecycle calls holding one bounded registry reservation.
+    pending_calls: usize,
+    next_waiter_id: u64,
+    closed: bool,
+    /// Set when unrelated signals exhaust the bounded early-completion map.
+    overflowed: bool,
+}
+
+struct PinnedSubmission {
+    jobs: Arc<Mutex<PinnedJobRegistry>>,
+    before_reply: bool,
+    waiter: Option<(String, u64)>,
+    pending: bool,
+}
+
+enum PinnedRegistration {
+    Completed(JobResult),
+    Pending(oneshot::Receiver<JobResult>),
+}
+
+impl PinnedSubmission {
+    fn begin(jobs: &Arc<Mutex<PinnedJobRegistry>>) -> Result<Self> {
+        let mut registry = lock_pinned_registry(jobs);
+        if registry.overflowed {
+            return Err(Error::JobCompletionOverflow);
+        }
+        if registry.closed {
+            return Err(Error::JobSenderDropped("manager signal stream".to_string()));
+        }
+        if registry.pending_calls >= PINNED_COMPLETION_LIMIT {
+            return Err(Error::JobCompletionOverflow);
+        }
+        registry.pending_calls += 1;
+        registry.active_submissions += 1;
+
+        Ok(Self {
+            jobs: Arc::clone(jobs),
+            before_reply: true,
+            waiter: None,
+            pending: true,
+        })
+    }
+
+    fn register(&mut self, path_key: &str) -> Result<PinnedRegistration> {
+        let mut registry = lock_pinned_registry(&self.jobs);
+        registry.active_submissions = registry.active_submissions.saturating_sub(1);
+        self.before_reply = false;
+
+        if registry.overflowed {
+            return Err(Error::JobCompletionOverflow);
+        }
+        if let Some(result) = registry.completed.get(path_key).cloned() {
+            if registry.active_submissions == 0 {
+                registry.completed.clear();
+            }
+            registry.pending_calls = registry.pending_calls.saturating_sub(1);
+            self.pending = false;
+            return Ok(PinnedRegistration::Completed(result));
+        }
+        if registry.closed {
+            return Err(Error::JobSenderDropped(path_key.to_string()));
+        }
+        if registry.active_submissions == 0 {
+            registry.completed.clear();
+        }
+
+        let waiter_id = registry.next_waiter_id;
+        registry.next_waiter_id = registry
+            .next_waiter_id
+            .checked_add(1)
+            .ok_or(Error::JobCompletionOverflow)?;
+        let (sender, receiver) = oneshot::channel();
+        registry
+            .waiters
+            .entry(path_key.to_string())
+            .or_default()
+            .insert(waiter_id, sender);
+        self.waiter = Some((path_key.to_string(), waiter_id));
+
+        Ok(PinnedRegistration::Pending(receiver))
+    }
+
+    fn finish(&mut self) {
+        let mut registry = lock_pinned_registry(&self.jobs);
+        registry.pending_calls = registry.pending_calls.saturating_sub(1);
+        self.waiter = None;
+        self.pending = false;
+    }
+}
+
+impl Drop for PinnedSubmission {
+    fn drop(&mut self) {
+        if self.pending {
+            let mut registry = lock_pinned_registry(&self.jobs);
+            if self.before_reply {
+                registry.active_submissions = registry.active_submissions.saturating_sub(1);
+            }
+            if let Some((path, waiter_id)) = self.waiter.take()
+                && let Some(waiters) = registry.waiters.get_mut(&path)
+            {
+                waiters.remove(&waiter_id);
+                if waiters.is_empty() {
+                    registry.waiters.remove(&path);
+                }
+            }
+            registry.pending_calls = registry.pending_calls.saturating_sub(1);
+            if registry.active_submissions == 0 {
+                registry.completed.clear();
+            }
+        }
+    }
+}
+
 /// Typed async client for `org.freedesktop.systemd1`.
 pub struct SystemdClient {
     conn: zbus::Connection,
@@ -181,6 +333,30 @@ pub struct SystemdClient {
     job_event_rx: AsyncMutex<mpsc::UnboundedReceiver<()>>,
     /// Background signal-listener tasks; aborted on drop.
     tasks: Vec<JoinHandle<()>>,
+}
+
+/// A listener-free capability for one caller-selected systemd bus.
+///
+/// The connection itself fixes the manager scope. Native catalogs retain this
+/// capability and create bounded unique-owner pins from it; they never replace
+/// a supplied user, container, or initrd transport with the host system bus.
+#[derive(Clone)]
+pub struct SystemdManagerConnection {
+    conn: zbus::Connection,
+}
+
+/// A lifecycle client bound to one exact systemd service owner.
+///
+/// Calls are addressed to the owner's D-Bus unique name, and job completion
+/// signals flow into a registry owned only by this pin. This keeps an unrelated
+/// `JobRemoved` from a replacement manager from completing an earlier call
+/// that happened to receive the same object path.
+pub struct PinnedSystemdManager {
+    conn: zbus::Connection,
+    incarnation: ManagerIncarnation,
+    manager: ManagerProxy<'static>,
+    jobs: Arc<Mutex<PinnedJobRegistry>>,
+    job_task: JoinHandle<()>,
 }
 
 impl SystemdClient {
@@ -447,6 +623,22 @@ impl SystemdClient {
 
     // ---- Inspection -------------------------------------------------------
 
+    /// Returns the current bus and service-owner incarnation of systemd.
+    ///
+    /// A D-Bus unique name is unique only during one bus lifetime and may be
+    /// reused after restart. This token therefore combines the bus GUID with
+    /// the current unique owner of `org.freedesktop.systemd1`. Callers can
+    /// persist and recheck it across reconnection without confusing two bus
+    /// lifetimes that both assigned a name such as `:1.0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bus daemon cannot resolve
+    /// `org.freedesktop.systemd1` to a current unique owner.
+    pub async fn manager_incarnation(&self) -> Result<ManagerIncarnation> {
+        read_manager_incarnation(&self.conn).await
+    }
+
     /// Whether `name`'s `ActiveState == "active"`. A unit that isn't loaded
     /// (systemd returns `NoSuchUnit`) counts as not-active — matching
     /// `systemctl is-active` on an unknown unit.
@@ -693,6 +885,275 @@ impl SystemdClient {
     }
 }
 
+impl PinnedSystemdManager {
+    /// Opens the host system bus and pins its current systemd manager owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system bus is unavailable or the manager cannot
+    /// be identified, subscribed, and rechecked on the new connection.
+    pub async fn connect() -> Result<Self> {
+        SystemdManagerConnection::system().await?.pin().await
+    }
+
+    /// Pins the current systemd manager on a caller-supplied bus connection.
+    ///
+    /// The connection must be attached to a real D-Bus broker because manager
+    /// identity uses the bus GUID and unique-name owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manager cannot be identified, subscribed, or
+    /// rechecked on the supplied connection.
+    pub async fn from_connection(conn: zbus::Connection) -> Result<Self> {
+        let incarnation = read_manager_incarnation(&conn).await?;
+        let manager = ManagerProxy::builder(&conn)
+            .destination(incarnation.owner.clone())?
+            .build()
+            .await?;
+
+        // Subscription state belongs to this bus connection and manager
+        // process, not to the proxy object. Addressing Subscribe to the unique
+        // owner proves which process accepted it and keeps replacement owners
+        // outside this pin's signal stream.
+        if let Err(error) = manager.subscribe().await
+            && !is_already_subscribed(&error)
+        {
+            return Err(error.into());
+        }
+
+        let mut job_removed = manager.receive_job_removed().await?;
+        let jobs = Arc::new(Mutex::new(PinnedJobRegistry::default()));
+        let jobs_for_task = Arc::clone(&jobs);
+        let job_task = tokio::spawn(async move {
+            while let Some(signal) = job_removed.next().await {
+                let Ok(args) = signal.args() else { continue };
+                let path_key = args.job.as_str().to_owned();
+                let result = JobResult::from_systemd(&args.result);
+                route_pinned_completion(&jobs_for_task, path_key, result);
+            }
+
+            let mut registry = lock_pinned_registry(&jobs_for_task);
+            registry.closed = true;
+            registry.waiters.clear();
+        });
+
+        let pinned = Self {
+            conn,
+            incarnation,
+            manager,
+            jobs,
+            job_task,
+        };
+        pinned.ensure_current().await?;
+        Ok(pinned)
+    }
+
+    /// Returns the bus and manager identity held by this pin.
+    #[must_use]
+    pub fn incarnation(&self) -> &ManagerIncarnation {
+        &self.incarnation
+    }
+
+    /// Starts a unit through the pinned owner and awaits its exact job result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manager incarnation changed, the call fails, or
+    /// the pinned signal stream closes before the job result arrives.
+    pub async fn start_unit(&self, name: &str) -> Result<JobOutcome> {
+        self.ensure_current().await?;
+        let submission = self.begin_submission()?;
+        let path = self.manager.start_unit(name, "replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Stops a unit through the pinned owner and awaits its exact job result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`PinnedSystemdManager::start_unit`].
+    pub async fn stop_unit(&self, name: &str) -> Result<JobOutcome> {
+        self.ensure_current().await?;
+        let submission = self.begin_submission()?;
+        let path = self.manager.stop_unit(name, "replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Restarts a unit through the pinned owner and awaits its exact job result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`PinnedSystemdManager::start_unit`].
+    pub async fn restart_unit(&self, name: &str) -> Result<JobOutcome> {
+        self.ensure_current().await?;
+        let submission = self.begin_submission()?;
+        let path = self.manager.restart_unit(name, "replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Reloads a unit through the pinned owner and awaits its exact job result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`PinnedSystemdManager::start_unit`].
+    pub async fn reload_unit(&self, name: &str) -> Result<JobOutcome> {
+        self.ensure_current().await?;
+        let submission = self.begin_submission()?;
+        let path = self.manager.reload_unit(name, "replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Reports whether a unit is active according to the pinned owner.
+    ///
+    /// An unloaded unit is inactive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manager incarnation changed or the D-Bus
+    /// inspection fails for a reason other than `NoSuchUnit`.
+    pub async fn is_active(&self, name: &str) -> Result<bool> {
+        self.ensure_current().await?;
+        match self.manager.get_unit(name).await {
+            Ok(path) => {
+                let unit = UnitProxy::builder(&self.conn)
+                    .destination(self.incarnation.owner.clone())?
+                    .path(path)?
+                    .cache_properties(CacheProperties::No)
+                    .build()
+                    .await?;
+                Ok(unit.active_state().await? == "active")
+            }
+            Err(error) if is_no_such_unit(&error) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn ensure_current(&self) -> Result<()> {
+        if read_manager_incarnation(&self.conn).await? == self.incarnation {
+            Ok(())
+        } else {
+            Err(Error::ManagerIncarnationChanged)
+        }
+    }
+
+    fn begin_submission(&self) -> Result<PinnedSubmission> {
+        PinnedSubmission::begin(&self.jobs)
+    }
+
+    async fn await_submission(
+        &self,
+        mut submission: PinnedSubmission,
+        path: OwnedObjectPath,
+    ) -> Result<JobOutcome> {
+        let path_key = path.as_str().to_owned();
+        let receiver = match submission.register(&path_key)? {
+            PinnedRegistration::Completed(result) => {
+                return Ok(JobOutcome {
+                    job_path: path,
+                    result,
+                });
+            }
+            PinnedRegistration::Pending(receiver) => receiver,
+        };
+        let result = match receiver.await {
+            Ok(result) => result,
+            Err(_) if lock_pinned_registry(&self.jobs).overflowed => {
+                return Err(Error::JobCompletionOverflow);
+            }
+            Err(_) => return Err(Error::JobSenderDropped(path.as_str().to_string())),
+        };
+        submission.finish();
+        Ok(JobOutcome {
+            job_path: path,
+            result,
+        })
+    }
+}
+
+impl SystemdManagerConnection {
+    /// Opens an explicit host system-bus capability without starting listeners.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SystemdUnavailable`] when the host system bus cannot be
+    /// reached.
+    pub async fn system() -> Result<Self> {
+        let conn = zbus::Connection::system()
+            .await
+            .map_err(Error::SystemdUnavailable)?;
+        Ok(Self { conn })
+    }
+
+    /// Wraps a caller-selected bus connection without changing its scope.
+    #[must_use]
+    pub const fn from_connection(conn: zbus::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// Pins the current manager on this exact connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manager cannot be identified, subscribed, or
+    /// rechecked on the retained connection.
+    pub async fn pin(&self) -> Result<PinnedSystemdManager> {
+        PinnedSystemdManager::from_connection(self.conn.clone()).await
+    }
+}
+
+impl Drop for PinnedSystemdManager {
+    fn drop(&mut self) {
+        self.job_task.abort();
+    }
+}
+
+async fn read_manager_incarnation(conn: &zbus::Connection) -> Result<ManagerIncarnation> {
+    let proxy = zbus::fdo::DBusProxy::new(conn).await?;
+    let service =
+        zbus::names::BusName::try_from("org.freedesktop.systemd1").map_err(zbus::Error::from)?;
+    let bus = proxy.get_id().await?;
+    let owner = proxy.get_name_owner(service).await?;
+    Ok(ManagerIncarnation {
+        bus_id: bus.to_string(),
+        owner: owner.to_string(),
+    })
+}
+
+fn is_already_subscribed(error: &zbus::Error) -> bool {
+    matches!(error, zbus::Error::MethodError(name, _, _) if name.as_str() == SYSTEMD_ALREADY_SUBSCRIBED)
+}
+
+fn lock_pinned_registry(
+    registry: &Mutex<PinnedJobRegistry>,
+) -> std::sync::MutexGuard<'_, PinnedJobRegistry> {
+    registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn route_pinned_completion(jobs: &Mutex<PinnedJobRegistry>, path_key: String, result: JobResult) {
+    let mut registry = lock_pinned_registry(jobs);
+    let waiters = registry.waiters.remove(&path_key).unwrap_or_default();
+    for sender in waiters.into_values() {
+        let _ = sender.send(result.clone());
+    }
+
+    if registry.active_submissions == 0 {
+        return;
+    }
+    if registry.completed.contains_key(&path_key)
+        || registry.completed.len() < PINNED_COMPLETION_LIMIT
+    {
+        registry.completed.insert(path_key, result);
+        return;
+    }
+
+    registry.overflowed = true;
+    registry.completed.clear();
+    registry.waiters.clear();
+}
+
 impl Drop for SystemdClient {
     fn drop(&mut self) {
         // Stop the background listeners.
@@ -725,5 +1186,136 @@ async fn systemctl_status(unit: &str) -> String {
     {
         Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
         Err(e) => format!("(failed to capture `systemctl status {unit}`: {e})"),
+    }
+}
+
+#[cfg(test)]
+mod pinned_tests {
+    use super::*;
+
+    #[test]
+    fn unrelated_early_completions_fail_closed_at_the_bound() {
+        let jobs = Mutex::new(PinnedJobRegistry {
+            active_submissions: 1,
+            pending_calls: 1,
+            ..PinnedJobRegistry::default()
+        });
+
+        for index in 0..PINNED_COMPLETION_LIMIT {
+            route_pinned_completion(&jobs, format!("/unrelated/{index}"), JobResult::Done);
+        }
+        assert_eq!(
+            lock_pinned_registry(&jobs).completed.len(),
+            PINNED_COMPLETION_LIMIT
+        );
+
+        route_pinned_completion(&jobs, "/overflow".to_string(), JobResult::Done);
+        let registry = lock_pinned_registry(&jobs);
+        assert!(registry.overflowed);
+        assert!(registry.completed.is_empty());
+    }
+
+    #[test]
+    fn idle_pinned_registry_discards_unrelated_completions() {
+        let jobs = Mutex::new(PinnedJobRegistry::default());
+
+        route_pinned_completion(&jobs, "/unrelated/1".to_string(), JobResult::Done);
+
+        assert!(lock_pinned_registry(&jobs).completed.is_empty());
+    }
+
+    #[test]
+    fn never_completing_calls_are_bounded_across_registered_waiters() {
+        let jobs = Arc::new(Mutex::new(PinnedJobRegistry::default()));
+        let mut calls = Vec::with_capacity(PINNED_COMPLETION_LIMIT);
+
+        for index in 0..PINNED_COMPLETION_LIMIT {
+            let mut submission = PinnedSubmission::begin(&jobs).unwrap();
+            let registration = submission.register(&format!("/job/{index}")).unwrap();
+            assert!(matches!(registration, PinnedRegistration::Pending(_)));
+            calls.push(submission);
+        }
+
+        let registry = lock_pinned_registry(&jobs);
+        assert_eq!(registry.pending_calls, PINNED_COMPLETION_LIMIT);
+        assert_eq!(
+            registry.waiters.values().map(BTreeMap::len).sum::<usize>(),
+            PINNED_COMPLETION_LIMIT
+        );
+        drop(registry);
+        assert!(matches!(
+            PinnedSubmission::begin(&jobs),
+            Err(Error::JobCompletionOverflow)
+        ));
+
+        drop(calls);
+        let registry = lock_pinned_registry(&jobs);
+        assert_eq!(registry.pending_calls, 0);
+        assert!(registry.waiters.is_empty());
+    }
+
+    #[test]
+    fn dropping_an_awaiting_call_removes_its_waiter() {
+        let jobs = Arc::new(Mutex::new(PinnedJobRegistry::default()));
+        let mut submission = PinnedSubmission::begin(&jobs).unwrap();
+        let registration = submission.register("/job/cancelled").unwrap();
+        assert!(matches!(registration, PinnedRegistration::Pending(_)));
+        assert_eq!(lock_pinned_registry(&jobs).pending_calls, 1);
+
+        drop(submission);
+
+        let registry = lock_pinned_registry(&jobs);
+        assert_eq!(registry.pending_calls, 0);
+        assert!(registry.waiters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_job_path_completion_wakes_every_waiter() {
+        let jobs = Arc::new(Mutex::new(PinnedJobRegistry::default()));
+        let mut first = PinnedSubmission::begin(&jobs).unwrap();
+        let mut second = PinnedSubmission::begin(&jobs).unwrap();
+        let PinnedRegistration::Pending(first_receiver) = first.register("/job/merged").unwrap()
+        else {
+            panic!("first call unexpectedly completed before a signal");
+        };
+        let PinnedRegistration::Pending(second_receiver) = second.register("/job/merged").unwrap()
+        else {
+            panic!("second call unexpectedly completed before a signal");
+        };
+
+        route_pinned_completion(&jobs, "/job/merged".to_string(), JobResult::Done);
+
+        assert_eq!(first_receiver.await.unwrap(), JobResult::Done);
+        assert_eq!(second_receiver.await.unwrap(), JobResult::Done);
+        first.finish();
+        second.finish();
+        let registry = lock_pinned_registry(&jobs);
+        assert_eq!(registry.pending_calls, 0);
+        assert!(registry.waiters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn merged_early_completion_reaches_a_later_method_reply() {
+        let jobs = Arc::new(Mutex::new(PinnedJobRegistry::default()));
+        let mut first = PinnedSubmission::begin(&jobs).unwrap();
+        let mut second = PinnedSubmission::begin(&jobs).unwrap();
+        let PinnedRegistration::Pending(first_receiver) = first.register("/job/merged").unwrap()
+        else {
+            panic!("first call unexpectedly completed before a signal");
+        };
+
+        route_pinned_completion(&jobs, "/job/merged".to_string(), JobResult::Done);
+
+        let PinnedRegistration::Completed(second_result) = second.register("/job/merged").unwrap()
+        else {
+            panic!("early completion was not retained for the pending method reply");
+        };
+        assert_eq!(first_receiver.await.unwrap(), JobResult::Done);
+        assert_eq!(second_result, JobResult::Done);
+        first.finish();
+        let registry = lock_pinned_registry(&jobs);
+        assert_eq!(registry.pending_calls, 0);
+        assert!(registry.completed.is_empty());
+        assert!(registry.waiters.is_empty());
     }
 }

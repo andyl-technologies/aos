@@ -23,6 +23,7 @@
   policycoreutils,
   pkg-config,
   protobuf,
+  dbus,
   semodule-utils,
   sbsigntools,
   systemd,
@@ -73,6 +74,10 @@
     if isCross
     then buildPackages.zstd
     else zstd;
+  buildDbus =
+    if isCross
+    then buildPackages.dbus
+    else dbus;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
   # The four executables share Rust libraries and one Cargo build, but their
@@ -255,7 +260,7 @@ in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd remove-references-to]
+      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd buildDbus remove-references-to]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl sqlite libssh2 zlib]
@@ -270,6 +275,83 @@ in
     # dynamically link only these shared libraries; command-specific tools are
     # referenced exclusively by the corresponding installed wrapper.
     NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${sqlite}/lib -Wl,-rpath,${zlib}/lib";
+
+    postBuild = ''
+      if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
+        pinned_bus_dir="$NIX_BUILD_TOP/aos-pinned-dbus"
+        pinned_bus_socket="$pinned_bus_dir/bus"
+        pinned_bus_info="$pinned_bus_dir/daemon.info"
+        pinned_bus_log="$pinned_bus_dir/daemon.log"
+        mkdir -p "$pinned_bus_dir"
+        cat > "$pinned_bus_dir/session.conf" <<EOF
+      <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+       "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+      <busconfig>
+        <type>session</type>
+        <listen>unix:path=$pinned_bus_socket</listen>
+        <auth>EXTERNAL</auth>
+        <policy context="default">
+          <allow send_destination="*" eavesdrop="true"/>
+          <allow eavesdrop="true"/>
+          <allow own="*"/>
+        </policy>
+      </busconfig>
+      EOF
+
+        ${buildDbus}/bin/dbus-daemon \
+          --nofork \
+          --nopidfile \
+          --config-file="$pinned_bus_dir/session.conf" \
+          --print-address=1 \
+          --print-pid=1 \
+          > "$pinned_bus_info" \
+          2> "$pinned_bus_log" &
+        pinned_bus_pid=$!
+        cleanup_pinned_bus() {
+          if kill -0 "$pinned_bus_pid" 2>/dev/null; then
+            kill "$pinned_bus_pid"
+            wait "$pinned_bus_pid" || true
+          fi
+        }
+        trap cleanup_pinned_bus EXIT HUP INT TERM
+
+        pinned_bus_attempt=0
+        while [ ! -S "$pinned_bus_socket" ] || [ "$(wc -l < "$pinned_bus_info")" -lt 2 ]; do
+          if ! kill -0 "$pinned_bus_pid" 2>/dev/null; then
+            cat "$pinned_bus_log" >&2
+            exit 1
+          fi
+          pinned_bus_attempt=$((pinned_bus_attempt + 1))
+          if [ "$pinned_bus_attempt" -ge 100 ]; then
+            echo "timed out waiting for the hermetic D-Bus broker" >&2
+            cat "$pinned_bus_log" >&2
+            exit 1
+          fi
+          sleep 0.05
+        done
+
+        export AOS_TEST_DBUS_ADDRESS
+        AOS_TEST_DBUS_ADDRESS=$(sed -n '1p' "$pinned_bus_info")
+        reported_pinned_bus_pid=$(sed -n '2p' "$pinned_bus_info")
+        if [ "$reported_pinned_bus_pid" != "$pinned_bus_pid" ]; then
+          echo "D-Bus broker reported pid $reported_pinned_bus_pid, expected $pinned_bus_pid" >&2
+          exit 1
+        fi
+
+        cargo test \
+          --frozen \
+          --offline \
+          -p aos-systemd \
+          --test pinned_bus \
+          replacement_owner_cannot_complete_reused_job_path \
+          -- \
+          --ignored \
+          --exact
+
+        cleanup_pinned_bus
+        trap - EXIT HUP INT TERM
+      fi
+    '';
 
     preBuild = ''
       # Keep the integration-test executable below the bounded verifier-

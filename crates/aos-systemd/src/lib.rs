@@ -13,8 +13,8 @@ mod error;
 mod manager_proxy;
 
 pub use client::{
-    FailedUnit, FailedUnitsReport, JobOutcome, JobResult, RestartPolicy, SettleOutcome,
-    SystemdClient,
+    FailedUnit, FailedUnitsReport, JobOutcome, JobResult, ManagerIncarnation, PinnedSystemdManager,
+    RestartPolicy, SettleOutcome, SystemdClient, SystemdManagerConnection,
 };
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;
