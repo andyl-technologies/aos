@@ -510,6 +510,12 @@ enum HubTopologyMethod {
     ListRegistries,
     /// Selects the normalized `GetRegistry` Connect operation.
     GetRegistry,
+    /// Reads committed registry metadata.
+    GetRegistryMetadata,
+    /// Plans a committed metadata draft.
+    PlanUpdateRegistryMetadata,
+    /// Creates the reviewed metadata draft.
+    UpdateRegistryMetadata,
     /// Selects the normalized `ListReleases` Connect operation.
     ListReleases,
     /// Selects the normalized `PlanCreateRegistry` Connect operation.
@@ -1124,6 +1130,9 @@ impl HubTopologyMethod {
             ListReleases => "aos.hub.v1.RegistryService/ListReleases",
             PlanCreateRegistry => "aos.hub.v1.RegistryService/PlanCreateRegistry",
             CreateRegistry => "aos.hub.v1.RegistryService/CreateRegistry",
+            GetRegistryMetadata => "aos.hub.v1.RegistryService/GetRegistryMetadata",
+            PlanUpdateRegistryMetadata => "aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata",
+            UpdateRegistryMetadata => "aos.hub.v1.RegistryService/UpdateRegistryMetadata",
             PlanUpdateRegistry => "aos.hub.v1.RegistryService/PlanUpdateRegistry",
             UpdateRegistry => "aos.hub.v1.RegistryService/UpdateRegistry",
             PlanDeleteRegistry => "aos.hub.v1.RegistryService/PlanDeleteRegistry",
@@ -1620,6 +1629,9 @@ pub mod hub_rpc {
         ListReleases: ListReleasesRequest => ListReleasesResponse;
         PlanCreateRegistry: PlanCreateRegistryRequest => TopologyPlanResponse;
         CreateRegistry: ApplyRegistryMutationRequest => RegistryResponse;
+        GetRegistryMetadata: GetRegistryRequest => RegistryMetadataResponse;
+        PlanUpdateRegistryMetadata: PlanUpdateRegistryMetadataRequest => TopologyPlanResponse;
+        UpdateRegistryMetadata: ApplyRegistryMutationRequest => RegistryMetadataChangeResponse;
         PlanUpdateRegistry: PlanUpdateRegistryRequest => TopologyPlanResponse;
         UpdateRegistry: ApplyRegistryMutationRequest => RegistryResponse;
         PlanDeleteRegistry: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;

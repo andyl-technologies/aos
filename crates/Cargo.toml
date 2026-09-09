@@ -149,6 +149,7 @@ clap_complete = "4"
 
 # Package manager
 toml = "0.8"
+toml_edit = "0.22"
 semver = "1"
 # Git access for the apm/apr registry. libgit2 (vendored, built with
 # -DEXPERIMENTAL_SHA256=ON via unstable-sha256) drives local object/ref
