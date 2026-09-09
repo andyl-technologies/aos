@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt as _;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -24,6 +24,17 @@ use crate::{QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome};
 const TEMPLATE_GENERATION: u64 = 1;
 const PROCESS_CONTRACT_GENERATION: u64 = 13;
 const CHILD_FILES_GENERATION: u64 = 17;
+
+fn spawn_scripted_process() -> std::io::Result<std::process::Child> {
+    // Quarantine tests deliberately retain live children, so the fixture must
+    // not retain the test harness's input or output pipes with them.
+    Command::new("sleep")
+        .arg("60")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+}
 
 /// Scripted parent outcome used by cross-crate hot-fork ownership tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,9 +186,7 @@ pub fn scripted_hot_fork_source_with_script_for_test(
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
     let plugin_barrier =
         crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
-    let child = Command::new("sleep")
-        .arg("60")
-        .spawn()
+    let child = spawn_scripted_process()
         .map_err(|source| QemuTestHotForkSourceError::new("spawn scripted source", source))?;
     let process_id = child.id();
     let channels = QemuNodeChannels::new(
@@ -1146,7 +1155,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         match self.outcome {
             QemuTestHotForkOutcome::Forked => {
                 write_child_file_payloads(self.child_files.as_ref())?;
-                let child = Command::new("sleep").arg("60").spawn().map_err(|source| {
+                let child = spawn_scripted_process().map_err(|source| {
                     crate::QemuHotForkCommandError::Rejected {
                         source: QemuNodeChannelError::new(
                             "fork scripted hot-fork template",

@@ -10,6 +10,7 @@ use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use crucible::{
     Configuration, ContentHash, Decision, EventLog, Icount, MarkerId, NodeId, ObservableEvent,
@@ -1458,11 +1459,16 @@ fn factory(
         source_world.continuation().configuration().id(),
         ExecutorCompatibilityProfile::from_lineage(lineage),
     );
+    let mut shutdown_policy = QemuShutdownPolicy::fast_test();
+    shutdown_policy.sigterm_wait = Duration::from_secs(2);
+    shutdown_policy.sigkill_wait = Duration::from_secs(1);
+    shutdown_policy.reap_wait = Duration::from_secs(1);
+
     QemuProductionHotForkWorldLifecycleFactory::new(
         QemuSingleHotForkSourceWorldProvider::new(key, source_world),
         ScriptedWorldGuardFactory { observations },
         run_state_root,
-        QemuShutdownPolicy::fast_test(),
+        shutdown_policy,
         QemuAsyncDriverPolicy::fast_test(),
     )
 }

@@ -325,7 +325,9 @@ impl CampaignRepository {
                             cursor.pending_ordinals.insert(ordinal.value());
                             if cursor.pending_ordinals.len() > MAX_OBJECTIVE_CURSOR_PENDING_ORDINALS
                             {
-                                return Err(integrity("objective-cursor-pending-ordinal-limit"));
+                                // Pending ordinals only accelerate scanning; excess valid work
+                                // restarts the bounded scan instead of rejecting campaign history.
+                                return self.fresh_objective_cursor(head, cursor.campaign);
                             }
                         }
                     }
@@ -354,7 +356,9 @@ impl CampaignRepository {
             current = parent.snapshot;
         }
 
-        Err(integrity("objective-cursor-snapshot-delta-limit"))
+        // The ancestry walk is cursor bookkeeping, so exhausting its budget
+        // discards the optimization rather than classifying valid history as corrupt.
+        self.fresh_objective_cursor(head, cursor.campaign)
     }
 
     fn fresh_objective_cursor(
@@ -725,5 +729,92 @@ impl CampaignRepository {
             &mut ChoiceValidationCache::default(),
         )?;
         crate::rank_survivors(&policy, selection.rule(), candidates).map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
+
+    use super::*;
+    use crate::CampaignRoots;
+
+    #[test]
+    fn excessive_valid_cursor_delta_falls_back_to_a_fresh_position() {
+        let repository = CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new(
+                "objective-cursor-cap",
+                128 * 1024 * 1024,
+            )),
+            Arc::new(MemoryRefBackend::new()),
+        );
+        let root = ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"empty-root");
+        let roots = CampaignRoots {
+            graph: root,
+            exploration: root,
+            observations: root,
+            corpus: root,
+            coverage: root,
+            findings: root,
+            pins: root,
+            accounting: root,
+            coordination: root,
+        };
+        let lineage = CampaignLineageId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignFact,
+            1,
+            b"lineage",
+        ))
+        .expect("synthetic lineage ID");
+        let policy = CampaignPolicyId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Policy,
+            1,
+            b"policy",
+        ))
+        .expect("synthetic policy ID");
+        let transition = CampaignFactId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignFact,
+            2,
+            b"transition",
+        ))
+        .expect("synthetic transition ID");
+
+        let genesis = CampaignSnapshot::genesis(lineage, policy, roots).expect("genesis");
+        let genesis_id = CampaignSnapshotId::from_content_id(
+            repository.put_snapshot(&genesis).expect("publish genesis"),
+        )
+        .expect("genesis ID");
+        let campaign = CampaignHash::derive("objective-cursor-cap-test", b"campaign");
+        let cursor = ObjectiveEvaluationCursor {
+            campaign,
+            snapshot: genesis_id,
+            policy,
+            accounting: root,
+            after_ordinal: 37,
+            pending_ordinals: BTreeSet::from([11]),
+        };
+
+        let mut parent = genesis_id;
+        let mut head = genesis;
+        for _ in 0..=MAX_OBJECTIVE_CURSOR_DELTA_SNAPSHOTS {
+            head = CampaignSnapshot::successor(parent, lineage, policy, roots, transition)
+                .expect("successor");
+            parent = CampaignSnapshotId::from_content_id(
+                repository.put_snapshot(&head).expect("publish successor"),
+            )
+            .expect("successor ID");
+        }
+
+        let reconciled = repository
+            .reconcile_objective_cursor(&head, cursor)
+            .expect("valid excessive delta falls back");
+        assert_eq!(reconciled.snapshot(), parent);
+        assert_eq!(reconciled.policy(), policy);
+        assert_eq!(reconciled.accounting(), root);
+        assert_eq!(reconciled.after_ordinal(), 0);
+        assert!(reconciled.pending_ordinals.is_empty());
     }
 }
