@@ -309,6 +309,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .with_whitebox(whitebox)
         .with_coverage(config.coverage)
         .with_fingerprint(crucible_qemu::QemuLaunchPluginSwitch::On)
+        .with_fingerprint_mode(crucible_qemu::QemuFingerprintSamplingMode::OnDemand)
         .with_queue_capacity(PRODUCTION_QUEUE_CAPACITY)
         .with_completion_timeout(config.completion_timeout)
         .with_console_capture()

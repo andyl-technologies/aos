@@ -50,8 +50,8 @@ pub use modes::{
     MachineResetMode,
 };
 pub use plugin_config::{
-    QemuLaunchAppRandomConfig, QemuLaunchInheritedFds, QemuLaunchPluginConfig,
-    QemuLaunchPluginSwitch,
+    QemuFingerprintSamplingMode, QemuLaunchAppRandomConfig, QemuLaunchInheritedFds,
+    QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
 };
 pub use validation::{
     LaunchProfileError, QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError,

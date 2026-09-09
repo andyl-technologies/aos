@@ -57,8 +57,9 @@ use crate::{
 };
 use crate::{
     FINGERPRINT_DIGEST_BYTES, FINGERPRINT_SAMPLE_MAX_VCPUS, FINGERPRINT_SAMPLE_SLOT_ALIGN,
-    FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET, FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET,
-    FINGERPRINT_SAMPLE_SLOT_SIZE, FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET, FINGERPRINT_SAMPLE_WORDS,
+    FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET, FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET,
+    FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET, FINGERPRINT_SAMPLE_SLOT_SIZE,
+    FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET, FINGERPRINT_SAMPLE_WORDS,
     GUEST_INTROSPECTION_ENTRY_ALIGN, GUEST_INTROSPECTION_ENTRY_DATA_BYTES,
     GUEST_INTROSPECTION_ENTRY_DATA_OFFSET, GUEST_INTROSPECTION_ENTRY_LEN_OFFSET,
     GUEST_INTROSPECTION_ENTRY_PAD_OFFSET, GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET,
@@ -234,7 +235,7 @@ fn emit_fingerprint_sample_slot(out: &mut String) {
         "typedef struct CRUCIBLE_SHMEM_ALIGNED({FINGERPRINT_SAMPLE_SLOT_ALIGN}) crucible_shmem_fingerprint_sample_slot {{\n"
     ));
     out.push_str("    _Atomic uint32_t sample_gen;\n");
-    out.push_str("    uint32_t reserved;\n");
+    out.push_str("    _Atomic uint32_t capture_request;\n");
     out.push_str("    _Atomic uint64_t words[CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_WORDS];\n");
     out.push_str("} crucible_shmem_fingerprint_sample_slot;\n\n");
 
@@ -244,7 +245,7 @@ fn emit_fingerprint_sample_slot(out: &mut String) {
         "FINGERPRINT_SAMPLE_SLOT",
         &[
             ("sample_gen", "GEN"),
-            ("reserved", "RESERVED"),
+            ("capture_request", "CAPTURE_REQUEST"),
             ("words", "WORDS"),
         ],
     );

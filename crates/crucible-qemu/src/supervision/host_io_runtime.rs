@@ -78,6 +78,7 @@ pub struct QemuLiveHostIoRuntime {
     region: MappedSetupRegion,
     wake: Arc<File>,
     vm_slot: u32,
+    fingerprint_mode: crate::QemuFingerprintSamplingMode,
     poll_interval: Duration,
     advance_wait_deadline: AdvanceWaitDeadline,
     /// Pre-wake generation for scheduler input that invalidated an idle report.
@@ -202,6 +203,16 @@ impl QemuLiveHostIoRuntime {
         )
     }
 
+    /// Binds explicit fingerprint requests to the immutable plugin launch mode.
+    #[must_use]
+    pub(crate) const fn with_fingerprint_sampling_mode(
+        mut self,
+        mode: crate::QemuFingerprintSamplingMode,
+    ) -> Self {
+        self.fingerprint_mode = mode;
+        self
+    }
+
     /// Maps the region with an explicit poll interval for the advance await.
     ///
     /// # Errors
@@ -230,6 +241,7 @@ impl QemuLiveHostIoRuntime {
             region,
             wake: Arc::new(wake),
             vm_slot,
+            fingerprint_mode: crate::QemuFingerprintSamplingMode::EveryQuantum,
             poll_interval,
             advance_wait_deadline: AdvanceWaitDeadline::default(),
             scheduler_input_publish_generation: None,
@@ -621,6 +633,19 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 "scheduler or device publication remains unsettled",
             ));
         }
+        if self.fingerprint_mode == crate::QemuFingerprintSamplingMode::OnDemand
+            && self
+                .region
+                .fingerprint_sample(self.vm_slot)
+                .map_err(map_slot_error)?
+                .pending_capture_request_v1()
+                .is_some()
+        {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "clone hot-fork host-I/O continuation",
+                "on-demand fingerprint capture request remains pending",
+            ));
+        }
 
         let block = self
             .block
@@ -677,6 +702,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             QemuAsyncDriverRuntimeError::new("clone hot-fork host-I/O runtime", source.to_string())
         })?;
         continuation.checkpoint_idle_coordinate = self.checkpoint_idle_coordinate;
+        continuation.fingerprint_mode = self.fingerprint_mode;
         continuation.staged_fault_events = self.staged_fault_events.clone();
         continuation.fault_event_staging_limit = self.fault_event_staging_limit;
         continuation.fault_event_canonical_current_offset =
@@ -821,6 +847,17 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             ));
         }
 
+        let fingerprint_request =
+            if self.fingerprint_mode == crate::QemuFingerprintSamplingMode::OnDemand {
+                Some(
+                    self.region
+                        .fingerprint_sample(self.vm_slot)
+                        .map_err(map_slot_error)?
+                        .request_capture_v1(),
+                )
+            } else {
+                None
+            };
         let request = self.signal_wake()?;
         let attempts = bounded_poll_attempts(timeout, self.poll_interval);
         let deadline = HostSupervisionDeadline::start(timeout);
@@ -844,6 +881,21 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 snapshot.status,
             ));
             if control_boundary_request_is_acknowledged(request, &snapshot) {
+                let fingerprint_ack = self
+                    .region
+                    .fingerprint_sample(self.vm_slot)
+                    .map_err(map_slot_error)?
+                    .capture_request_generation();
+                if fingerprint_request
+                    .is_some_and(|request| fingerprint_ack != request.wrapping_add(1))
+                {
+                    return Err(QemuAsyncDriverRuntimeError::new(
+                        "publish current execution fingerprint",
+                        format!(
+                            "plugin acknowledged control token {request} without fingerprint request {fingerprint_request:?}; observed fingerprint generation {fingerprint_ack}"
+                        ),
+                    ));
+                }
                 // The plugin publishes the fingerprint through its synchronous
                 // digest worker before release-acknowledging this request. The
                 // acquire snapshot therefore makes the exact sample visible to

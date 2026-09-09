@@ -704,6 +704,7 @@ impl OwnedCallbackRuntimeState {
         process_generation: u64,
         fault_command_apis: crate::fault_command::QemuFaultCommandApis,
         fingerprint: Option<crate::PluginFingerprintSampling>,
+        fingerprint_mode: crate::PluginFingerprintSamplingMode,
         fingerprint_oracle: bool,
         state_dump: Option<crate::PluginRawStateDump>,
     ) -> Result<*mut live_callbacks::LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
@@ -813,6 +814,7 @@ impl OwnedCallbackRuntimeState {
                 callback_state.attach_fingerprint(
                     sampling,
                     slot,
+                    fingerprint_mode,
                     fingerprint_oracle,
                     Arc::clone(&state.workers),
                 )?

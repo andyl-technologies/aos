@@ -2,6 +2,7 @@
 {
   pkgs,
   lib,
+  guestChoice ? false,
 }: let
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
@@ -85,7 +86,11 @@
     finish_timeout_ms = 15000
     maximum_slots = 1
     maximum_vcpus = 2
-    maximum_resident_bytes = 536870912
+    maximum_resident_bytes = ${toString (
+      if guestChoice
+      then 1073741824
+      else 536870912
+    )}
     maximum_disk_bytes = 2147483648
     maximum_execution_quanta = 10000
     maximum_checkpoint_bytes = 1073741824
@@ -93,11 +98,21 @@
     host_architecture = "x86_64"
     qemu_profile = "deterministic-tcg-v1"
   '';
+  choiceInitramfs = import ./phase4-packaged-campaign-choice-guest.nix {inherit pkgs;};
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {
-    name = "crucible-packaged-campaign";
+    name =
+      if guestChoice
+      then "crucible-packaged-campaign-choice"
+      else "crucible-packaged-campaign";
     memory = 2048;
-    rootfsDeps = [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep];
+    rootfsDeps =
+      [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
+      ++ (
+        if guestChoice
+        then [choiceInitramfs]
+        else []
+      );
     testScript = ''
       set -eu
       setup_log=/tmp/campaign-host-setup.log
@@ -151,79 +166,102 @@
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
       export CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES=1
-      if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-        ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
-        public_default_run_executes_through_an_authenticated_campaign \
-        --nocapture > /tmp/legacy-default-run-flight.log 2>&1; then
-        cat /tmp/legacy-default-run-flight.log
-        exit 1
-      fi
-      cat /tmp/legacy-default-run-flight.log
-      ${pkgs.grep}/bin/grep -Fxq \
-        'legacy_default_run_campaign=true' \
-        /tmp/legacy-default-run-flight.log
-      if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-        ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
-        campaign_virtual_time_save_feeds_native_resume_and_fork \
-        --nocapture > /tmp/legacy-native-save-flight.log 2>&1; then
-        cat /tmp/legacy-native-save-flight.log
-        exit 1
-      fi
-      cat /tmp/legacy-native-save-flight.log
-      ${pkgs.grep}/bin/grep -Fxq \
-        'legacy_campaign_native_save_resume_fork=true' \
-        /tmp/legacy-native-save-flight.log
-      if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-        ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
-        guarded_campaign_failure_artifact_replays_live_evidence \
-        --nocapture > /tmp/legacy-failure-replay-flight.log 2>&1; then
-        cat /tmp/legacy-failure-replay-flight.log
-        exit 1
-      fi
-      cat /tmp/legacy-failure-replay-flight.log
-      ${pkgs.grep}/bin/grep -Fxq \
-        'legacy_guarded_failure_replay=true' \
-        /tmp/legacy-failure-replay-flight.log
-      if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-        ${flight}/bin/crucible-unit-flight --ignored --exact \
-        cli_replay::tests::actual_session_run_artifact_replays_through_campaign_owner \
-        --nocapture > /tmp/legacy-actual-session-replay-flight.log 2>&1; then
-        cat /tmp/legacy-actual-session-replay-flight.log
-        exit 1
-      fi
-      cat /tmp/legacy-actual-session-replay-flight.log
-      ${pkgs.grep}/bin/grep -Fxq \
-        'legacy_actual_session_campaign_replay=true' \
-        /tmp/legacy-actual-session-replay-flight.log
-      if ! ${pkgs.coreutils}/bin/timeout -k 5 60 \
-        ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
-        guarded_campaign_rejects_insufficient_capacity_before_guest_launch \
-        --nocapture > /tmp/legacy-capacity-refusal-flight.log 2>&1; then
-        cat /tmp/legacy-capacity-refusal-flight.log
-        exit 1
-      fi
-      cat /tmp/legacy-capacity-refusal-flight.log
-      ${pkgs.grep}/bin/grep -Fxq \
-        'legacy_guarded_prelaunch_capacity_refusal=true' \
-        /tmp/legacy-capacity-refusal-flight.log
-      ${pkgs.coreutils}/bin/timeout -k 5 300 \
-        ${flight}/bin/campaign-process-flight --ignored --exact \
-        packaged::public_packaged_executor_captures_genesis_and_restarts --nocapture
-      ${pkgs.coreutils}/bin/timeout -k 5 300 \
-        ${flight}/bin/campaign-process-flight --ignored --exact \
-        packaged::public_packaged_executor_completes_initial_discovery --nocapture
-      ${pkgs.coreutils}/bin/timeout -k 5 300 \
-        ${flight}/bin/campaign-process-flight --ignored --exact \
-        packaged::public_packaged_executor_completes_guest_quantum --nocapture
-      ${pkgs.coreutils}/bin/timeout -k 5 300 \
-        ${flight}/bin/campaign-process-flight --ignored --exact \
-        packaged::public_packaged_executor_observes_exact_trigger_deadlines --nocapture
-      ${pkgs.coreutils}/bin/timeout -k 5 300 \
-        ${flight}/bin/campaign-process-flight --ignored --exact \
-        packaged::public_packaged_executor_synchronizes_exact_time_across_vms --nocapture
-      ${pkgs.coreutils}/bin/timeout -k 5 300 \
-        ${flight}/bin/campaign-process-flight --ignored --exact \
-        packaged::public_packaged_executor_observes_zero_and_early_logical_deadlines --nocapture
+      ${
+        if guestChoice
+        then ''
+          export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+            ${flight}/bin/campaign-process-flight --ignored --exact \
+            packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart \
+            --nocapture > /tmp/guest-choice-flight.log 2>&1; then
+            cat /tmp/guest-choice-flight.log
+            exit 1
+          fi
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_discrete_and_integer=true' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_rendezvous_icount=100000000' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_negative_result=true' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_initial_qemu_fingerprint_mode=on-demand-v1' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_restarted_qemu_fingerprint_mode=on-demand-v1' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_resume_source_exact=true' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_post_resume_progress=true' /tmp/guest-choice-flight.log
+          cat /tmp/guest-choice-flight.log
+        ''
+        else ''
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+            public_default_run_executes_through_an_authenticated_campaign \
+            --nocapture > /tmp/legacy-default-run-flight.log 2>&1; then
+            cat /tmp/legacy-default-run-flight.log
+            exit 1
+          fi
+          cat /tmp/legacy-default-run-flight.log
+          ${pkgs.grep}/bin/grep -Fxq \
+            'legacy_default_run_campaign=true' \
+            /tmp/legacy-default-run-flight.log
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+            campaign_virtual_time_save_feeds_native_resume_and_fork \
+            --nocapture > /tmp/legacy-native-save-flight.log 2>&1; then
+            cat /tmp/legacy-native-save-flight.log
+            exit 1
+          fi
+          cat /tmp/legacy-native-save-flight.log
+          ${pkgs.grep}/bin/grep -Fxq \
+            'legacy_campaign_native_save_resume_fork=true' \
+            /tmp/legacy-native-save-flight.log
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+            guarded_campaign_failure_artifact_replays_live_evidence \
+            --nocapture > /tmp/legacy-failure-replay-flight.log 2>&1; then
+            cat /tmp/legacy-failure-replay-flight.log
+            exit 1
+          fi
+          cat /tmp/legacy-failure-replay-flight.log
+          ${pkgs.grep}/bin/grep -Fxq \
+            'legacy_guarded_failure_replay=true' \
+            /tmp/legacy-failure-replay-flight.log
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/crucible-unit-flight --ignored --exact \
+            cli_replay::tests::actual_session_run_artifact_replays_through_campaign_owner \
+            --nocapture > /tmp/legacy-actual-session-replay-flight.log 2>&1; then
+            cat /tmp/legacy-actual-session-replay-flight.log
+            exit 1
+          fi
+          cat /tmp/legacy-actual-session-replay-flight.log
+          ${pkgs.grep}/bin/grep -Fxq \
+            'legacy_actual_session_campaign_replay=true' \
+            /tmp/legacy-actual-session-replay-flight.log
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 60 \
+            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+            guarded_campaign_rejects_insufficient_capacity_before_guest_launch \
+            --nocapture > /tmp/legacy-capacity-refusal-flight.log 2>&1; then
+            cat /tmp/legacy-capacity-refusal-flight.log
+            exit 1
+          fi
+          cat /tmp/legacy-capacity-refusal-flight.log
+          ${pkgs.grep}/bin/grep -Fxq \
+            'legacy_guarded_prelaunch_capacity_refusal=true' \
+            /tmp/legacy-capacity-refusal-flight.log
+          ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/campaign-process-flight --ignored --exact \
+            packaged::public_packaged_executor_captures_genesis_and_restarts --nocapture
+          ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/campaign-process-flight --ignored --exact \
+            packaged::public_packaged_executor_completes_initial_discovery --nocapture
+          ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/campaign-process-flight --ignored --exact \
+            packaged::public_packaged_executor_completes_guest_quantum --nocapture
+          ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/campaign-process-flight --ignored --exact \
+            packaged::public_packaged_executor_observes_exact_trigger_deadlines --nocapture
+          ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/campaign-process-flight --ignored --exact \
+            packaged::public_packaged_executor_synchronizes_exact_time_across_vms --nocapture
+          ${pkgs.coreutils}/bin/timeout -k 5 300 \
+            ${flight}/bin/campaign-process-flight --ignored --exact \
+            packaged::public_packaged_executor_observes_zero_and_early_logical_deadlines --nocapture
+        ''
+      }
       ${pkgs.util-linux}/bin/umount /tmp/attempts
       trap - EXIT HUP INT TERM
     '';

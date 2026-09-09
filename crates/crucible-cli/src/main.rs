@@ -835,7 +835,7 @@ struct CampaignBranchArgs {
     /// Maximum newly admitted attempts.
     #[arg(long, value_name = "COUNT", default_value_t = 1)]
     attempts: u64,
-    /// Stop: next-choice, terminal, boundary:NAME, virtual-time-ns:N, or events:N.
+    /// Stop: next-choice, terminal, boundary:NAME, virtual-time-ns:N, events:N, execution-quanta:N, or virtual-time-or-execution-quanta:TIME:QUANTA.
     #[arg(long, value_name = "CONDITION", default_value = "next-choice")]
     stop: String,
 }

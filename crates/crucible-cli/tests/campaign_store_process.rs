@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -34,11 +34,12 @@ use crucible_cas::content_store::{
 };
 use crucible_daemon::DirectoryCampaignGcJournal;
 use serde_json::Value;
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 
 const CAMPAIGN: &str = "worked-network";
 const PRINCIPAL: &str = "operator";
 const START_COMMAND: &str = "4242424242424242424242424242424242424242424242424242424242424242";
+const MAX_CAMPAIGN_SERVICE_STDERR_BYTES: u64 = 64 * 1024;
 const MAXIMUM_LOGICAL_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_PENDING_OBJECTS: u64 = 65_536;
 const MAXIMUM_PENDING_BYTES: u64 = 512 * 1024 * 1024;
@@ -851,6 +852,26 @@ campaign = "*"
 
 [[grants]]
 principal = "{PRINCIPAL}"
+operation = "get-campaign-graph-object"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
+operation = "query-campaign-choices"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
+operation = "get-campaign-choice-object"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
+operation = "submit-branch-request"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
 operation = "explain-campaign-attempt"
 campaign = "*"
 "#,
@@ -922,10 +943,14 @@ root = {objects:?}
         mut command: Command,
         timeout: Duration,
     ) -> Result<CampaignServiceChild, Box<dyn Error>> {
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let stderr = NamedTempFile::new_in(self._temporary.path())?;
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(stderr.reopen()?));
         let child = command.spawn()?;
         let mut child = CampaignServiceChild {
             child,
+            stderr,
             kill_on_drop: true,
         };
         let stdout = child
@@ -937,11 +962,8 @@ root = {objects:?}
             Ok(line) => line,
             Err(error) => {
                 let _ = child.child.kill();
-                let _ = child.child.wait();
-                let mut stderr = String::new();
-                if let Some(mut stream) = child.child.stderr.take() {
-                    stream.read_to_string(&mut stderr)?;
-                }
+                let _ = wait_for_exit(&mut child.child, Duration::from_secs(5));
+                let stderr = child.stderr_tail();
                 return Err(format!("{error}; stderr={stderr}").into());
             }
         };
@@ -983,21 +1005,20 @@ root = {objects:?}
 
 struct CampaignServiceChild {
     child: Child,
+    stderr: NamedTempFile,
     kill_on_drop: bool,
 }
 
 impl CampaignServiceChild {
     fn stop(&mut self) -> Result<(), Box<dyn Error>> {
-        send_sigterm(&self.child)?;
+        let signal = send_sigterm(&self.child);
         // The packaged pool has a thirty-second bounded cleanup window.
         let status = wait_for_exit(&mut self.child, Duration::from_secs(45));
-        let mut stderr = String::new();
-        if let Some(mut stream) = self.child.stderr.take() {
-            stream.read_to_string(&mut stderr)?;
-        }
+        let stderr = self.stderr_tail();
         if !stderr.is_empty() {
             eprintln!("campaign service stderr: {stderr}");
         }
+        signal.map_err(|error| format!("{error}; stderr={stderr}"))?;
         let status = status.map_err(|error| format!("{error}; stderr={stderr}"))?;
         if !status.success() {
             return Err(format!("campaign service failed: {status}; stderr={stderr}").into());
@@ -1005,13 +1026,51 @@ impl CampaignServiceChild {
         self.kill_on_drop = false;
         Ok(())
     }
+
+    fn stderr_tail(&self) -> String {
+        let Ok(mut stderr) = self.stderr.reopen() else {
+            return String::from("<campaign service stderr unavailable>");
+        };
+        let Ok(length) = stderr.metadata().map(|metadata| metadata.len()) else {
+            return String::from("<campaign service stderr metadata unavailable>");
+        };
+        let start = length.saturating_sub(MAX_CAMPAIGN_SERVICE_STDERR_BYTES);
+        if stderr.seek(SeekFrom::Start(start)).is_err() {
+            return String::from("<campaign service stderr seek failed>");
+        }
+
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(length - start).unwrap_or(MAX_CAMPAIGN_SERVICE_STDERR_BYTES as usize),
+        );
+        if stderr
+            .take(MAX_CAMPAIGN_SERVICE_STDERR_BYTES)
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            return String::from("<campaign service stderr read failed>");
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
 }
 
 impl Drop for CampaignServiceChild {
     fn drop(&mut self) {
         if self.kill_on_drop {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+            let signal = send_sigterm(&self.child);
+            let graceful = wait_for_exit(&mut self.child, Duration::from_secs(45));
+            let forced = if graceful.is_err() {
+                let _ = self.child.kill();
+                Some(wait_for_exit(&mut self.child, Duration::from_secs(5)))
+            } else {
+                None
+            };
+
+            let stderr = self.stderr_tail();
+            if signal.is_err() || graceful.is_err() || !stderr.is_empty() {
+                eprintln!(
+                    "campaign service failure cleanup: signal={signal:?} graceful={graceful:?} forced={forced:?} stderr={stderr}"
+                );
+            }
         }
     }
 }
@@ -1192,8 +1251,6 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<ExitStatus, Box
             return Ok(status);
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
             return Err("campaign service did not exit before timeout".into());
         }
         thread::sleep(Duration::from_millis(10));

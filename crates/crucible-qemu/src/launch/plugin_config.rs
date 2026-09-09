@@ -22,6 +22,7 @@ const PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET: &str = "app_random_draw_offset";
 const PLUGIN_ARG_APP_RANDOM_POSITIONS: &str = "app_random_positions";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
 const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
+const PLUGIN_ARG_FINGERPRINT_MODE: &str = "fingerprint_mode";
 const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
 const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
 const PLUGIN_ARG_STATE_DUMP_PATH: &str = "state_dump_path";
@@ -50,6 +51,25 @@ pub enum QemuLaunchPluginSwitch {
     Off,
     /// The feature is enabled.
     On,
+}
+
+/// Controls when an enabled fingerprint sampler captures guest state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QemuFingerprintSamplingMode {
+    /// Captures at every exact scheduler quantum and explicit control boundary.
+    #[default]
+    EveryQuantum,
+    /// Captures only at an explicitly requested control boundary.
+    OnDemand,
+}
+
+impl fmt::Display for QemuFingerprintSamplingMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EveryQuantum => f.write_str("every-quantum"),
+            Self::OnDemand => f.write_str("on-demand-v1"),
+        }
+    }
 }
 
 /// Seed and bound passed to the production plugin's app-random doorbell.
@@ -198,6 +218,7 @@ pub struct QemuLaunchPluginConfig {
         Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
+    fingerprint_mode: QemuFingerprintSamplingMode,
     fingerprint_oracle: QemuLaunchPluginSwitch,
     state_dump: Option<(u64, String)>,
 }
@@ -222,6 +243,7 @@ impl QemuLaunchPluginConfig {
             selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
+            fingerprint_mode: QemuFingerprintSamplingMode::EveryQuantum,
             fingerprint_oracle: QemuLaunchPluginSwitch::Off,
             state_dump: None,
         }
@@ -335,6 +357,16 @@ impl QemuLaunchPluginConfig {
         self
     }
 
+    /// Returns a config with the fingerprint capture mode set.
+    ///
+    /// On-demand mode is a launch compatibility choice: it is serialized into
+    /// the immutable plugin argument and survives profile cloning and restore.
+    #[must_use]
+    pub const fn with_fingerprint_mode(mut self, mode: QemuFingerprintSamplingMode) -> Self {
+        self.fingerprint_mode = mode;
+        self
+    }
+
     /// Returns a config with gate-only synchronous fingerprint comparison set.
     ///
     /// This switch deliberately retains the old vCPU-thread digest only as an
@@ -421,6 +453,12 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub const fn fingerprint(&self) -> QemuLaunchPluginSwitch {
         self.fingerprint
+    }
+
+    /// Returns the fingerprint capture mode passed to the plugin.
+    #[must_use]
+    pub const fn fingerprint_mode(&self) -> QemuFingerprintSamplingMode {
+        self.fingerprint_mode
     }
 
     /// Returns the gate-only synchronous fingerprint-oracle switch.
@@ -517,6 +555,12 @@ impl QemuLaunchPluginConfig {
         // treats an absent fingerprint key as off).
         if self.fingerprint == QemuLaunchPluginSwitch::On {
             args.push(format!("{PLUGIN_ARG_FINGERPRINT}={}", self.fingerprint));
+        }
+        if self.fingerprint_mode == QemuFingerprintSamplingMode::OnDemand {
+            args.push(format!(
+                "{PLUGIN_ARG_FINGERPRINT_MODE}={}",
+                self.fingerprint_mode
+            ));
         }
         if self.fingerprint_oracle == QemuLaunchPluginSwitch::On {
             args.push(format!(
@@ -618,8 +662,16 @@ impl QemuLaunchPluginConfig {
                 return Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration);
             }
         }
+        if self.fingerprint_mode == QemuFingerprintSamplingMode::OnDemand
+            && self.fingerprint != QemuLaunchPluginSwitch::On
+        {
+            return Err(QemuLaunchCommandError::FingerprintModeWithoutFingerprint);
+        }
         if let Some((target_icount, output_path)) = &self.state_dump {
-            if self.fingerprint != QemuLaunchPluginSwitch::On || *target_icount == 0 {
+            if self.fingerprint != QemuLaunchPluginSwitch::On
+                || self.fingerprint_mode == QemuFingerprintSamplingMode::OnDemand
+                || *target_icount == 0
+            {
                 return Err(QemuLaunchCommandError::InvalidStateDumpConfiguration);
             }
             validate_launch_text(PLUGIN_ARG_STATE_DUMP_PATH, output_path)?;

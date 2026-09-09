@@ -2,6 +2,116 @@
 
 use super::*;
 
+#[test]
+fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2, 0))?;
+    let layout = allocation.layout();
+    let bytes = allocation.setup_region_bytes()?;
+    let mut shmem = tempfile::tempfile()?;
+    shmem.set_len(layout.region_size)?;
+    shmem.write_all(&bytes)?;
+    let wake = tempfile::tempfile()?;
+    let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+        shmem.as_fd(),
+        wake.as_fd(),
+        layout.region_size,
+        0,
+        Duration::from_millis(1),
+    )?
+    .with_fingerprint_sampling_mode(crate::QemuFingerprintSamplingMode::OnDemand);
+
+    let host = std::thread::spawn(move || {
+        runtime.publish_current_execution_fingerprint(Duration::from_secs(1))
+    });
+    let request = (0..1_000)
+        .find_map(|_| {
+            let request = plugin
+                .fingerprint_sample(0)
+                .ok()?
+                .pending_capture_request_v1();
+            if request.is_none() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            request
+        })
+        .ok_or("host did not publish an on-demand fingerprint request")?;
+    plugin
+        .fingerprint_sample(0)?
+        .publish(&crucible_shmem::FingerprintSample::default())?;
+    assert!(
+        plugin
+            .fingerprint_sample(0)?
+            .acknowledge_capture_v1(request)
+    );
+    plugin.node_slot(0)?.publish_control_boundary(0, 0, 0)?;
+    plugin.node_slot(0)?.acknowledge_control_boundary();
+
+    host.join()
+        .map_err(|_panic| "fingerprint host thread panicked")??;
+    assert_eq!(
+        plugin.fingerprint_sample(0)?.capture_request_generation(),
+        request.wrapping_add(1)
+    );
+    Ok(())
+}
+
+#[test]
+fn eager_fingerprint_host_retains_token_free_control_protocol()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2, 0))?;
+    let layout = allocation.layout();
+    let bytes = allocation.setup_region_bytes()?;
+    let mut shmem = tempfile::tempfile()?;
+    shmem.set_len(layout.region_size)?;
+    shmem.write_all(&bytes)?;
+    let wake = tempfile::tempfile()?;
+    let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+        shmem.as_fd(),
+        wake.as_fd(),
+        layout.region_size,
+        0,
+        Duration::from_millis(1),
+    )?;
+
+    let host = std::thread::spawn(move || {
+        runtime.publish_current_execution_fingerprint(Duration::from_secs(1))
+    });
+    let control_requested = (0..1_000).any(|_| {
+        let requested = plugin
+            .node_slot(0)
+            .is_ok_and(crucible_shmem::NodeSlot::control_boundary_is_requested);
+        if !requested {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        requested
+    });
+    assert!(
+        control_requested,
+        "host did not publish an eager control request"
+    );
+    assert_eq!(
+        plugin.fingerprint_sample(0)?.capture_request_generation(),
+        0
+    );
+    plugin.node_slot(0)?.publish_control_boundary(0, 0, 0)?;
+    plugin.node_slot(0)?.acknowledge_control_boundary();
+
+    host.join()
+        .map_err(|_panic| "fingerprint host thread panicked")??;
+    Ok(())
+}
+
 /// Builds the real mapped host runtime after exercising lossless event retry.
 pub(crate) fn staged_fault_event_runtime(
     event: DequeuedFaultEvent,
@@ -502,6 +612,44 @@ fn private_region_pair() -> Result<(std::fs::File, std::fs::File, u64), Box<dyn 
     child.set_len(layout.region_size)?;
     child.write_all(&bytes)?;
     Ok((source, child, layout.region_size))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hot_fork_rejects_pending_on_demand_fingerprint_request() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::os::fd::AsFd;
+
+    let (source_region, child_region, region_len) = private_region_pair()?;
+    let source_wake = tempfile::tempfile()?;
+    let child_wake = tempfile::tempfile()?;
+    let mut source = QemuLiveHostIoRuntime::from_shmem_fd(
+        source_region.as_fd(),
+        source_wake.as_fd(),
+        region_len,
+        0,
+    )?
+    .with_fingerprint_sampling_mode(crate::QemuFingerprintSamplingMode::OnDemand);
+    let request = source.region.fingerprint_sample(0)?.request_capture_v1();
+
+    let error = match source.clone_hot_fork_host_io_continuation(
+        ContentHash::from_bytes(b"pending-fingerprint-request"),
+        child_region.as_fd(),
+        child_wake.as_fd(),
+        region_len,
+        None,
+    ) {
+        Ok(_) => return Err("pending fingerprint request must reject hot fork".into()),
+        Err(error) => error,
+    };
+
+    assert_eq!(request & 1, 1);
+    assert!(
+        error
+            .to_string()
+            .contains("fingerprint capture request remains pending")
+    );
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
