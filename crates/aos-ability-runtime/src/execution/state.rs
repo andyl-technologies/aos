@@ -12,8 +12,8 @@ use aos_ability_model::{
 use aos_contract::Sha256Digest;
 use thiserror::Error;
 
-use crate::execution::DispatchAbortReason;
 use crate::execution::event::{CancellationResult, ExecutionEventKind, ReconciliationResult};
+use crate::execution::{CompensationInterventionReason, DispatchAbortReason};
 use crate::journal::JournalRecord;
 
 /// Describes the durable state of one operation without discarding history.
@@ -53,6 +53,14 @@ pub enum OperationState {
         attempt: NonZeroU32,
         evidence: AbilityValue,
     },
+    /// A retry is blocked until a restart-stable native timestamp is reached.
+    RetryBackoff {
+        attempt: NonZeroU32,
+        observed_at_millis: u64,
+        eligible_at_millis: u64,
+    },
+    /// A persisted delay elapsed and the next attempt may be freshly admitted.
+    RetryReady { attempt: NonZeroU32 },
     /// Cancellation intent is durable but its actual outcome is unresolved.
     CancellationIntentDurable { attempt: NonZeroU32 },
     /// The unresolved effect requires an operator decision.
@@ -67,6 +75,33 @@ pub enum OperationState {
     },
 }
 
+/// Describes the separately journaled state of explicit compensation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompensationState {
+    /// Compensation was requested after original success and resource release.
+    Requested { reason: AbilityValue },
+    /// Current authority and resources were admitted for compensation.
+    Admitted,
+    /// Compensation intent is durable and its outcome may be unknown.
+    IntentDurable,
+    /// Compensation completed with separately retained evidence and outputs.
+    Completed {
+        evidence: AbilityValue,
+        outputs: BTreeMap<LocalKey, AbilityValue>,
+    },
+    /// Compensation was proven rejected before effect.
+    RejectedBeforeEffect { evidence: AbilityValue },
+    /// Compensation may have occurred and requires compensation reconciliation.
+    Indeterminate { evidence: AbilityValue },
+    /// Compensation reconciliation intent is durable.
+    ReconciliationIntentDurable,
+    /// Compensation requires operator intervention.
+    InterventionRequired {
+        reason: CompensationInterventionReason,
+        evidence: Option<AbilityValue>,
+    },
+}
+
 /// Selects the only safe next action after replaying durable history.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RecoveryAction {
@@ -78,6 +113,27 @@ pub enum RecoveryAction {
     ReconcileBeforeRetry { attempt: NonZeroU32 },
     /// Reacquires current authority and ownership for a proven-safe new attempt.
     Retry { attempt: NonZeroU32 },
+    /// Persists the checked delay before admitting another attempt.
+    ScheduleRetryBackoff {
+        attempt: NonZeroU32,
+        backoff_millis: u64,
+    },
+    /// Waits for the already persisted restart-stable eligibility timestamp.
+    AwaitRetryBackoff {
+        attempt: NonZeroU32,
+        observed_at_millis: u64,
+        eligible_at_millis: u64,
+    },
+    /// Acquires current authority and resources for explicit compensation.
+    AdmitCompensation,
+    /// Persists and dispatches the exact compensation method.
+    ExecuteCompensation,
+    /// Reconciles an ambiguous compensation effect.
+    ReconcileCompensation,
+    /// Releases resources after compensation settles.
+    ReleaseCompensationResources,
+    /// Reports a compensation outcome requiring operator action.
+    CompensationInterventionRequired,
     /// Releases resources after a settled operation.
     ReleaseResources,
     /// Persists a bounded failure before releasing any admitted resources.
@@ -124,6 +180,10 @@ pub struct OperationHistory {
     interrupted_call_budget_millis: u64,
     durable_request: Option<AbilityValue>,
     idempotency_key: Option<Sha256Digest>,
+    compensation: Option<CompensationState>,
+    compensation_request: Option<AbilityValue>,
+    compensation_idempotency_key: Option<Sha256Digest>,
+    last_sequence: u64,
 }
 
 impl OperationHistory {
@@ -140,6 +200,10 @@ impl OperationHistory {
             interrupted_call_budget_millis: 0,
             durable_request: None,
             idempotency_key: None,
+            compensation: None,
+            compensation_request: None,
+            compensation_idempotency_key: None,
+            last_sequence: 0,
         }
     }
 
@@ -185,6 +249,12 @@ impl OperationHistory {
         &self.operation
     }
 
+    /// Returns the latest journal sequence that changed this operation.
+    #[must_use]
+    pub const fn last_sequence(&self) -> u64 {
+        self.last_sequence
+    }
+
     /// Returns the greatest persisted elapsed recovery budget.
     #[must_use]
     pub const fn elapsed_millis(&self) -> u64 {
@@ -222,6 +292,37 @@ impl OperationHistory {
         self.idempotency_key
     }
 
+    /// Returns the separately retained compensation state, when requested.
+    #[must_use]
+    pub const fn compensation_state(&self) -> Option<&CompensationState> {
+        self.compensation.as_ref()
+    }
+
+    /// Returns original completion evidence without conflating compensation outcome.
+    #[must_use]
+    pub fn original_completion(
+        &self,
+    ) -> Option<(&AbilityValue, &BTreeMap<LocalKey, AbilityValue>)> {
+        match &self.state {
+            OperationState::Completed {
+                evidence, outputs, ..
+            } => Some((evidence, outputs)),
+            _ => None,
+        }
+    }
+
+    /// Returns the durable compensation request, when intent exists.
+    #[must_use]
+    pub const fn compensation_request(&self) -> Option<&AbilityValue> {
+        self.compensation_request.as_ref()
+    }
+
+    /// Returns the compensation idempotency key, when intent exists.
+    #[must_use]
+    pub const fn compensation_idempotency_key(&self) -> Option<Sha256Digest> {
+        self.compensation_idempotency_key
+    }
+
     /// Returns the attempt named by the current state, when one has begun.
     #[must_use]
     pub fn current_attempt(&self) -> Option<NonZeroU32> {
@@ -243,6 +344,51 @@ impl OperationHistory {
                 RecoveryAction::None
             } else {
                 RecoveryAction::InterventionRequired
+            };
+        }
+
+        if let Some(compensation) = &self.compensation {
+            return match compensation {
+                CompensationState::Requested { .. } => {
+                    if self.elapsed_millis() >= total_recovery_millis {
+                        RecoveryAction::CompensationInterventionRequired
+                    } else {
+                        RecoveryAction::AdmitCompensation
+                    }
+                }
+                CompensationState::Admitted => {
+                    if self.elapsed_millis() >= total_recovery_millis {
+                        RecoveryAction::CompensationInterventionRequired
+                    } else {
+                        RecoveryAction::ExecuteCompensation
+                    }
+                }
+                CompensationState::IntentDurable
+                | CompensationState::Indeterminate { .. }
+                | CompensationState::ReconciliationIntentDurable => {
+                    if self.elapsed_millis() >= total_recovery_millis {
+                        RecoveryAction::CompensationInterventionRequired
+                    } else {
+                        RecoveryAction::ReconcileCompensation
+                    }
+                }
+                CompensationState::Completed { .. } => {
+                    if self.resources_released {
+                        RecoveryAction::None
+                    } else {
+                        RecoveryAction::ReleaseCompensationResources
+                    }
+                }
+                CompensationState::RejectedBeforeEffect { .. } => {
+                    if self.resources_released {
+                        RecoveryAction::CompensationInterventionRequired
+                    } else {
+                        RecoveryAction::ReleaseCompensationResources
+                    }
+                }
+                CompensationState::InterventionRequired { .. } => {
+                    RecoveryAction::CompensationInterventionRequired
+                }
             };
         }
 
@@ -280,6 +426,31 @@ impl OperationHistory {
                     RecoveryAction::ReleaseResources
                 }
             }
+            OperationState::RetryBackoff {
+                attempt,
+                observed_at_millis,
+                eligible_at_millis,
+            } => {
+                if self.elapsed_millis() >= total_recovery_millis {
+                    RecoveryAction::SettleFailureBeforeEffect
+                } else {
+                    RecoveryAction::AwaitRetryBackoff {
+                        attempt: *attempt,
+                        observed_at_millis: *observed_at_millis,
+                        eligible_at_millis: *eligible_at_millis,
+                    }
+                }
+            }
+            OperationState::RetryReady { attempt } => {
+                if self.elapsed_millis() >= total_recovery_millis {
+                    RecoveryAction::SettleFailureBeforeEffect
+                } else {
+                    match next_attempt(*attempt) {
+                        Some(attempt) => RecoveryAction::Retry { attempt },
+                        None => RecoveryAction::SettleFailureBeforeEffect,
+                    }
+                }
+            }
             OperationState::Completed { .. } => {
                 if self.resources_released {
                     RecoveryAction::None
@@ -306,6 +477,9 @@ impl OperationHistory {
         if event.transaction() != &self.transaction {
             return Err(invalid(sequence, "record belongs to another transaction"));
         }
+
+        let affects_operation = matches!(event, ExecutionEventKind::TransactionPlanned { .. })
+            || event.operation() == Some(&self.operation);
 
         match event {
             ExecutionEventKind::TransactionPlanned { plan, .. } => {
@@ -350,6 +524,8 @@ impl OperationHistory {
                         } | OperationState::RejectedBeforeEffect {
                             attempt: previous,
                             ..
+                        } | OperationState::RetryReady {
+                            attempt: previous,
                         } if next_attempt(previous) == Some(*attempt)
                     );
                 if !first_attempt && !retry_attempt {
@@ -391,6 +567,306 @@ impl OperationHistory {
                 self.idempotency_key = Some(*idempotency_key);
                 self.observe_elapsed(sequence, *elapsed_millis)?;
                 self.interrupted_call_budget_millis = *attempt_timeout_millis;
+            }
+            ExecutionEventKind::CompensationRequested {
+                operation,
+                reason,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                if self.compensation.is_some()
+                    || !self.resources_released
+                    || !matches!(self.state, OperationState::Completed { .. })
+                {
+                    return Err(invalid(
+                        sequence,
+                        "compensation request requires released original success",
+                    ));
+                }
+                self.compensation = Some(CompensationState::Requested {
+                    reason: reason.clone(),
+                });
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+            }
+            ExecutionEventKind::CompensationAdmitted {
+                operation,
+                resources,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                if !matches!(self.compensation, Some(CompensationState::Requested { .. })) {
+                    return Err(invalid(
+                        sequence,
+                        "compensation admission lacks an explicit request",
+                    ));
+                }
+                if !resources_are_canonical(resources) {
+                    return Err(invalid(
+                        sequence,
+                        "compensation resources are not canonical",
+                    ));
+                }
+                self.admitted_resources.clone_from(resources);
+                self.transferred_resources.clear();
+                self.resources_released = resources.is_empty();
+                self.compensation = Some(CompensationState::Admitted);
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+            }
+            ExecutionEventKind::CompensationIntent {
+                operation,
+                request,
+                idempotency_key,
+                attempt_timeout_millis,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                if !matches!(self.compensation, Some(CompensationState::Admitted)) {
+                    return Err(invalid(sequence, "compensation intent was not admitted"));
+                }
+                if self.durable_request.as_ref() != Some(request) {
+                    return Err(invalid(
+                        sequence,
+                        "compensation request differs from the retained primary request",
+                    ));
+                }
+                self.compensation = Some(CompensationState::IntentDurable);
+                self.compensation_request = Some(request.clone());
+                self.compensation_idempotency_key = Some(*idempotency_key);
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+                self.interrupted_call_budget_millis = *attempt_timeout_millis;
+            }
+            ExecutionEventKind::CompensationCompleted {
+                operation,
+                evidence,
+                outputs,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                if !matches!(self.compensation, Some(CompensationState::IntentDurable)) {
+                    return Err(invalid(
+                        sequence,
+                        "compensation completion lacks durable intent",
+                    ));
+                }
+                self.compensation = Some(CompensationState::Completed {
+                    evidence: evidence.clone(),
+                    outputs: outputs.clone(),
+                });
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+                self.interrupted_call_budget_millis = 0;
+            }
+            ExecutionEventKind::CompensationRejectedBeforeEffect {
+                operation,
+                evidence,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                if !matches!(self.compensation, Some(CompensationState::IntentDurable)) {
+                    return Err(invalid(
+                        sequence,
+                        "compensation rejection lacks durable intent",
+                    ));
+                }
+                self.compensation = Some(CompensationState::RejectedBeforeEffect {
+                    evidence: evidence.clone(),
+                });
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+                self.interrupted_call_budget_millis = 0;
+            }
+            ExecutionEventKind::CompensationIndeterminate {
+                operation,
+                evidence,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                if !matches!(self.compensation, Some(CompensationState::IntentDurable)) {
+                    return Err(invalid(
+                        sequence,
+                        "ambiguous compensation lacks durable intent",
+                    ));
+                }
+                self.compensation = Some(CompensationState::Indeterminate {
+                    evidence: evidence.clone(),
+                });
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+                self.interrupted_call_budget_millis = 0;
+            }
+            ExecutionEventKind::CompensationReconciliationIntent {
+                operation,
+                call_timeout_millis,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                if !matches!(
+                    self.compensation,
+                    Some(
+                        CompensationState::IntentDurable
+                            | CompensationState::Indeterminate { .. }
+                            | CompensationState::ReconciliationIntentDurable
+                    )
+                ) {
+                    return Err(invalid(
+                        sequence,
+                        "compensation reconciliation lacks ambiguity",
+                    ));
+                }
+                self.compensation = Some(CompensationState::ReconciliationIntentDurable);
+                self.begin_interrupted_call(sequence, *elapsed_millis, *call_timeout_millis)?;
+            }
+            ExecutionEventKind::CompensationReconciliationObserved {
+                operation,
+                result,
+                evidence,
+                outputs,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                if !matches!(
+                    self.compensation,
+                    Some(CompensationState::ReconciliationIntentDurable)
+                ) {
+                    return Err(invalid(
+                        sequence,
+                        "compensation observation lacks reconciliation intent",
+                    ));
+                }
+                self.compensation = Some(match result {
+                    ReconciliationResult::Completed => CompensationState::Completed {
+                        evidence: evidence.clone(),
+                        outputs: outputs.clone(),
+                    },
+                    ReconciliationResult::RejectedBeforeEffect => {
+                        CompensationState::RejectedBeforeEffect {
+                            evidence: evidence.clone(),
+                        }
+                    }
+                    ReconciliationResult::StillIndeterminate => CompensationState::Indeterminate {
+                        evidence: evidence.clone(),
+                    },
+                    ReconciliationResult::SafeToRetry
+                    | ReconciliationResult::InterventionRequired => {
+                        CompensationState::InterventionRequired {
+                            reason: CompensationInterventionReason::ProviderRequired,
+                            evidence: Some(evidence.clone()),
+                        }
+                    }
+                });
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+                self.interrupted_call_budget_millis = 0;
+            }
+            ExecutionEventKind::CompensationInterventionRequired {
+                operation,
+                reason,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                let valid = match reason {
+                    CompensationInterventionReason::DeadlineBeforeIntent
+                    | CompensationInterventionReason::CancelledBeforeIntent => matches!(
+                        self.compensation,
+                        Some(CompensationState::Requested { .. } | CompensationState::Admitted)
+                    ),
+                    CompensationInterventionReason::DeadlineAfterIntent
+                    | CompensationInterventionReason::CancelledAfterIntent
+                    | CompensationInterventionReason::AdapterUnavailable
+                    | CompensationInterventionReason::RecoveryUnavailable => matches!(
+                        self.compensation,
+                        Some(
+                            CompensationState::IntentDurable
+                                | CompensationState::Indeterminate { .. }
+                                | CompensationState::ReconciliationIntentDurable
+                        )
+                    ),
+                    CompensationInterventionReason::ProviderRequired => false,
+                };
+                if !valid {
+                    return Err(invalid(
+                        sequence,
+                        "compensation intervention reason does not match durable progress",
+                    ));
+                }
+                self.compensation = Some(CompensationState::InterventionRequired {
+                    reason: *reason,
+                    evidence: None,
+                });
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+                self.interrupted_call_budget_millis = 0;
+            }
+            ExecutionEventKind::RetryBackoffScheduled {
+                operation,
+                attempt,
+                observed_at_millis,
+                eligible_at_millis,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                self.require_attempt(sequence, *attempt, |state| {
+                    matches!(
+                        state,
+                        OperationState::RetryAuthorized { .. }
+                            | OperationState::RejectedBeforeEffect { .. }
+                            | OperationState::DispatchAborted { .. }
+                    )
+                })?;
+                if !self.resources_released {
+                    return Err(invalid(
+                        sequence,
+                        "retry backoff began before resource release",
+                    ));
+                }
+                if eligible_at_millis <= observed_at_millis {
+                    return Err(invalid(
+                        sequence,
+                        "retry backoff eligibility is not in the future",
+                    ));
+                }
+                self.state = OperationState::RetryBackoff {
+                    attempt: *attempt,
+                    observed_at_millis: *observed_at_millis,
+                    eligible_at_millis: *eligible_at_millis,
+                };
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+            }
+            ExecutionEventKind::RetryBackoffElapsed {
+                operation,
+                attempt,
+                observed_at_millis,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                let OperationState::RetryBackoff {
+                    attempt: current,
+                    observed_at_millis: scheduled_at,
+                    eligible_at_millis,
+                } = self.state
+                else {
+                    return Err(invalid(
+                        sequence,
+                        "retry eligibility lacks a scheduled backoff",
+                    ));
+                };
+                if current != *attempt || observed_at_millis < &eligible_at_millis {
+                    return Err(invalid(
+                        sequence,
+                        "retry eligibility was observed too early",
+                    ));
+                }
+                let waited = observed_at_millis
+                    .checked_sub(scheduled_at)
+                    .ok_or_else(|| {
+                        invalid(sequence, "restart-stable retry clock moved backward")
+                    })?;
+                let minimum_elapsed = self.elapsed_millis.checked_add(waited).ok_or_else(|| {
+                    invalid(sequence, "retry backoff exhausted the elapsed-time range")
+                })?;
+                if *elapsed_millis < minimum_elapsed {
+                    return Err(invalid(
+                        sequence,
+                        "retry backoff did not charge elapsed time",
+                    ));
+                }
+                self.state = OperationState::RetryReady { attempt: *attempt };
+                self.observe_elapsed(sequence, *elapsed_millis)?;
             }
             ExecutionEventKind::EffectCompleted {
                 operation,
@@ -601,7 +1077,10 @@ impl OperationHistory {
                             attempt: current, ..
                         },
                         Some(recorded),
-                    ) => current == recorded,
+                    )
+                    | (OperationState::RetryReady { attempt: current }, Some(recorded)) => {
+                        current == recorded
+                    }
                     _ => false,
                 };
                 if !valid {
@@ -626,13 +1105,23 @@ impl OperationHistory {
                 elapsed_millis,
                 ..
             } if operation == &self.operation => {
-                if !matches!(
+                let original_unresolved = matches!(
                     self.state,
                     OperationState::Indeterminate { .. }
                         | OperationState::ReconciliationIntentDurable { .. }
                         | OperationState::CancellationIntentDurable { .. }
                         | OperationState::InterventionRequired { .. }
-                ) {
+                );
+                let compensation_unresolved = matches!(
+                    self.compensation,
+                    Some(
+                        CompensationState::IntentDurable
+                            | CompensationState::Indeterminate { .. }
+                            | CompensationState::ReconciliationIntentDurable
+                            | CompensationState::InterventionRequired { .. }
+                    )
+                );
+                if !original_unresolved && !compensation_unresolved {
                     return Err(invalid(
                         sequence,
                         "ownership transfer requires an unresolved or intervention state",
@@ -665,17 +1154,29 @@ impl OperationHistory {
                 if self.resources_released {
                     return Err(invalid(sequence, "resources were released more than once"));
                 }
-                let settled = matches!(
-                    self.state,
-                    OperationState::Completed { .. }
-                        | OperationState::RejectedBeforeEffect { .. }
-                        | OperationState::DispatchAborted { .. }
-                        | OperationState::RetryAuthorized { .. }
-                        | OperationState::SettledFailure { .. }
+                let compensation_settled = matches!(
+                    self.compensation,
+                    Some(
+                        CompensationState::Completed { .. }
+                            | CompensationState::RejectedBeforeEffect { .. }
+                    )
                 );
+                let original_settled = self.compensation.is_none()
+                    && matches!(
+                        self.state,
+                        OperationState::Completed { .. }
+                            | OperationState::RejectedBeforeEffect { .. }
+                            | OperationState::DispatchAborted { .. }
+                            | OperationState::RetryAuthorized { .. }
+                            | OperationState::RetryReady { .. }
+                            | OperationState::SettledFailure { .. }
+                    );
                 let all_unsettled_resources_transferred = !self.admitted_resources.is_empty()
                     && self.transferred_resources.len() == self.admitted_resources.len();
-                if !settled && !all_unsettled_resources_transferred {
+                if !original_settled
+                    && !compensation_settled
+                    && !all_unsettled_resources_transferred
+                {
                     return Err(invalid(
                         sequence,
                         "unresolved resources released without transferring all ownership",
@@ -697,6 +1198,9 @@ impl OperationHistory {
                 self.observe_elapsed(sequence, *elapsed_millis)?;
             }
             _ => {}
+        }
+        if affects_operation {
+            self.last_sequence = sequence;
         }
         Ok(())
     }
@@ -752,14 +1256,24 @@ impl OperationHistory {
         if self.elapsed_millis() >= total_recovery_millis {
             return RecoveryAction::SettleFailureBeforeEffect;
         }
-        let RetryPolicy::Bounded { max_attempts, .. } = retry else {
+        let RetryPolicy::Bounded {
+            max_attempts,
+            backoff_millis,
+        } = retry
+        else {
             return RecoveryAction::SettleFailureBeforeEffect;
         };
         if attempt >= *max_attempts {
             return RecoveryAction::SettleFailureBeforeEffect;
         }
         match next_attempt(attempt) {
-            Some(attempt) => RecoveryAction::Retry { attempt },
+            Some(next_attempt) if *backoff_millis == 0 => RecoveryAction::Retry {
+                attempt: next_attempt,
+            },
+            Some(_) => RecoveryAction::ScheduleRetryBackoff {
+                attempt,
+                backoff_millis: *backoff_millis,
+            },
             None => RecoveryAction::SettleFailureBeforeEffect,
         }
     }
@@ -782,6 +1296,8 @@ fn state_attempt(state: &OperationState) -> Option<NonZeroU32> {
         | OperationState::Indeterminate { attempt, .. }
         | OperationState::ReconciliationIntentDurable { attempt }
         | OperationState::RetryAuthorized { attempt, .. }
+        | OperationState::RetryBackoff { attempt, .. }
+        | OperationState::RetryReady { attempt }
         | OperationState::CancellationIntentDurable { attempt }
         | OperationState::InterventionRequired { attempt, .. } => Some(*attempt),
         OperationState::SettledFailure { attempt, .. } => *attempt,
@@ -1049,6 +1565,107 @@ mod tests {
                 attempt: attempt(2)
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_rejects_retry_eligibility_observed_before_the_durable_gate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new()?;
+        let evidence = fixture.evidence()?;
+        let records = fixture.write(&[
+            fixture.planned(),
+            fixture.admitted(1, 2),
+            fixture.intent(1, 3),
+            fixture.indeterminate(1, 4, evidence.clone()),
+            ExecutionEvent::new(ExecutionEventKind::ReconciliationIntent {
+                transaction: fixture.transaction.clone(),
+                operation: fixture.operation.clone(),
+                attempt: attempt(1),
+                call_timeout_millis: 20,
+                elapsed_millis: 5,
+            }),
+            ExecutionEvent::new(ExecutionEventKind::ReconciliationObserved {
+                transaction: fixture.transaction.clone(),
+                operation: fixture.operation.clone(),
+                attempt: attempt(1),
+                result: ReconciliationResult::SafeToRetry,
+                evidence,
+                outputs: BTreeMap::new(),
+                elapsed_millis: 6,
+            }),
+            ExecutionEvent::new(ExecutionEventKind::RetryBackoffScheduled {
+                transaction: fixture.transaction.clone(),
+                operation: fixture.operation.clone(),
+                attempt: attempt(1),
+                observed_at_millis: 100,
+                eligible_at_millis: 150,
+                elapsed_millis: 6,
+            }),
+            ExecutionEvent::new(ExecutionEventKind::RetryBackoffElapsed {
+                transaction: fixture.transaction.clone(),
+                operation: fixture.operation.clone(),
+                attempt: attempt(1),
+                observed_at_millis: 149,
+                elapsed_millis: 55,
+            }),
+        ])?;
+
+        let error = OperationHistory::replay(
+            fixture.transaction.clone(),
+            fixture.operation.clone(),
+            &records,
+        )
+        .expect_err("eligibility before the persisted timestamp must fail replay");
+        assert_eq!(error.sequence(), 8);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_rejects_compensation_request_substitution() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fixture = Fixture::new()?;
+        let records = fixture.write(&[
+            fixture.planned(),
+            fixture.admitted(1, 2),
+            fixture.intent(1, 3),
+            ExecutionEvent::new(ExecutionEventKind::EffectCompleted {
+                transaction: fixture.transaction.clone(),
+                operation: fixture.operation.clone(),
+                attempt: attempt(1),
+                evidence: fixture.evidence()?,
+                outputs: BTreeMap::new(),
+                elapsed_millis: 4,
+            }),
+            ExecutionEvent::new(ExecutionEventKind::CompensationRequested {
+                transaction: fixture.transaction.clone(),
+                operation: fixture.operation.clone(),
+                reason: fixture.evidence()?,
+                elapsed_millis: 4,
+            }),
+            ExecutionEvent::new(ExecutionEventKind::CompensationAdmitted {
+                transaction: fixture.transaction.clone(),
+                operation: fixture.operation.clone(),
+                resources: Vec::new(),
+                elapsed_millis: 5,
+            }),
+            ExecutionEvent::new(ExecutionEventKind::CompensationIntent {
+                transaction: fixture.transaction.clone(),
+                operation: fixture.operation.clone(),
+                request: AbilityValue::new(json!({"revision": 8}))?,
+                idempotency_key: Sha256Digest::of_bytes("compensation"),
+                attempt_timeout_millis: 20,
+                elapsed_millis: 6,
+            }),
+        ])?;
+
+        let error = OperationHistory::replay(
+            fixture.transaction.clone(),
+            fixture.operation.clone(),
+            &records,
+        )
+        .expect_err("compensation must reuse the retained primary request");
+        assert_eq!(error.sequence(), 7);
         Ok(())
     }
 

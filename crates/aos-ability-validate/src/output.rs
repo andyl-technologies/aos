@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use aos_ability_model::{
-    AbilityValue, LocalKey, Operation, ProviderAssignment, ProviderReadiness, ScopedOperationKey,
+    AbilityValue, LocalKey, MethodReference, Operation, ProviderAssignment, ProviderReadiness,
+    ScopedOperationKey,
 };
 use thiserror::Error;
 
@@ -48,6 +49,12 @@ pub enum OutputValidationError {
     /// The operation's primary method is unavailable.
     #[error("operation method is absent from its exact interface descriptor")]
     MissingMethod,
+    /// The method is not declared as this operation's primary or recovery method.
+    #[error("method is not declared by the checked operation")]
+    UndeclaredMethod,
+    /// The checked binding grant does not authorize the declared method.
+    #[error("checked operation method authority is invalid: {0}")]
+    InvalidMethodAuthority(#[source] crate::InvocationAuthorizationError),
     /// The operation's exact binding is unavailable.
     #[error("operation binding is absent from the checked binding plan")]
     MissingBinding,
@@ -100,6 +107,21 @@ impl CheckedEffectPlan {
     ) -> Result<&aos_ability_model::OutcomeSemantics, OutputValidationError> {
         self.operation_method(operation)
             .map(|method| &method.outcome)
+    }
+
+    /// Returns the checked outcome semantics for one exact recovery method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign operation, an undeclared method, invalid
+    /// checked method authority, or a missing exact interface or method.
+    pub fn method_outcome_semantics(
+        &self,
+        operation: &Operation,
+        method: &MethodReference,
+    ) -> Result<&aos_ability_model::OutcomeSemantics, OutputValidationError> {
+        self.operation_method_reference(operation, method)
+            .map(|descriptor| &descriptor.outcome)
     }
 
     /// Validates fully materialized primary-method inputs before adapter preparation.
@@ -203,7 +225,27 @@ impl CheckedEffectPlan {
         operation: &Operation,
         evidence: &AbilityValue,
     ) -> Result<(), OutputValidationError> {
-        let method = self.operation_method(operation)?;
+        let method = MethodReference {
+            interface: operation.interface.clone(),
+            method: operation.method.clone(),
+        };
+        self.validate_method_completion_evidence(operation, &method, evidence)
+    }
+
+    /// Validates successful evidence against one exact authorized method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign operation, an undeclared method, invalid
+    /// checked method authority, a missing exact descriptor, or a value that
+    /// violates the selected method's completion-evidence schema.
+    pub fn validate_method_completion_evidence(
+        &self,
+        operation: &Operation,
+        method: &MethodReference,
+        evidence: &AbilityValue,
+    ) -> Result<(), OutputValidationError> {
+        let method = self.operation_method_reference(operation, method)?;
         self.validate_operation_value(
             operation,
             &method.outcome.completion_evidence,
@@ -224,7 +266,27 @@ impl CheckedEffectPlan {
         operation: &Operation,
         evidence: &AbilityValue,
     ) -> Result<(), OutputValidationError> {
-        let method = self.operation_method(operation)?;
+        let method = MethodReference {
+            interface: operation.interface.clone(),
+            method: operation.method.clone(),
+        };
+        self.validate_method_observation_evidence(operation, &method, evidence)
+    }
+
+    /// Validates observation evidence against one exact authorized method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign operation, an undeclared method, invalid
+    /// checked method authority, a missing exact descriptor, or a value that
+    /// violates the selected method's observation-evidence schema.
+    pub fn validate_method_observation_evidence(
+        &self,
+        operation: &Operation,
+        method: &MethodReference,
+        evidence: &AbilityValue,
+    ) -> Result<(), OutputValidationError> {
+        let method = self.operation_method_reference(operation, method)?;
         self.validate_operation_value(
             operation,
             &method.outcome.observation_evidence,
@@ -244,7 +306,27 @@ impl CheckedEffectPlan {
         operation: &Operation,
         outputs: &BTreeMap<LocalKey, AbilityValue>,
     ) -> Result<(), OutputValidationError> {
-        let method = self.operation_method(operation)?;
+        let method = MethodReference {
+            interface: operation.interface.clone(),
+            method: operation.method.clone(),
+        };
+        self.validate_method_outputs(operation, &method, outputs)
+    }
+
+    /// Validates the complete exact output set of one authorized method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign operation, an undeclared method, invalid
+    /// checked method authority, a missing exact descriptor, omitted or
+    /// invented ports, or a value outside its checked schema.
+    pub fn validate_method_outputs(
+        &self,
+        operation: &Operation,
+        method: &MethodReference,
+        outputs: &BTreeMap<LocalKey, AbilityValue>,
+    ) -> Result<(), OutputValidationError> {
+        let method = self.operation_method_reference(operation, method)?;
         if outputs.len() != method.outputs.len()
             || outputs
                 .keys()
@@ -360,6 +442,38 @@ impl CheckedEffectPlan {
             .interface
             .methods
             .get(&operation.method)
+            .ok_or(OutputValidationError::MissingMethod)
+    }
+
+    fn operation_method_reference(
+        &self,
+        operation: &Operation,
+        method: &MethodReference,
+    ) -> Result<&aos_ability_model::MethodDescriptor, OutputValidationError> {
+        if self.operation(&operation.key) != Some(operation) {
+            return Err(OutputValidationError::UnknownOperation);
+        }
+        let primary = MethodReference {
+            interface: operation.interface.clone(),
+            method: operation.method.clone(),
+        };
+        let declared = method == &primary
+            || operation.recovery.reconcile.as_ref() == Some(method)
+            || operation.recovery.cancel.as_ref() == Some(method)
+            || operation.recovery.compensate.as_ref() == Some(method);
+        if !declared {
+            return Err(OutputValidationError::UndeclaredMethod);
+        }
+        self.authorize_invocation(operation, method)
+            .map_err(OutputValidationError::InvalidMethodAuthority)?;
+        let interface = self
+            .interfaces
+            .get(&method.interface)
+            .ok_or(OutputValidationError::MissingInterface)?;
+        interface
+            .interface
+            .methods
+            .get(&method.method)
             .ok_or(OutputValidationError::MissingMethod)
     }
 

@@ -15,8 +15,8 @@ use crate::adapter::{
     ResourceAdmissionEvidence, ResourceHandle, TrustedAdapter, TrustedResourceCatalog,
 };
 use crate::execution::{
-    ExecutionEventKind, ExecutionTransaction, OperationHistory, RecoveryAction, TransactionError,
-    transaction::LiveReservationGuard,
+    CompensationInterventionReason, CompensationState, ExecutionEventKind, ExecutionTransaction,
+    OperationHistory, RecoveryAction, TransactionError, transaction::LiveReservationGuard,
 };
 
 /// Revalidates current policy and provider assignment at every admission.
@@ -76,9 +76,18 @@ pub enum AdmissionError {
     /// The operation's exact checked binding could not be resolved.
     #[error("operation binding is absent from the checked binding plan")]
     BindingMissing,
-    /// Version 1 does not execute an advertised compensation contract.
-    #[error("operation declares compensation, which this runtime does not implement")]
-    CompensationUnsupported,
+    /// A trusted restart-stable clock moved behind its persisted observation.
+    #[error("trusted retry clock moved backward")]
+    RetryClockMovedBackward,
+    /// A retry remains ineligible under its persisted delay.
+    #[error("retry backoff has {remaining_millis} milliseconds remaining")]
+    RetryBackoffPending {
+        /// Reports the minimum remaining delay.
+        remaining_millis: u64,
+    },
+    /// A durable retry timestamp or elapsed budget was not representable.
+    #[error("retry backoff timestamp or elapsed budget overflowed")]
+    RetryBackoffOverflow,
     /// The checked plan does not authorize the exact invocation semantics.
     #[error("checked plan does not authorize {purpose:?}: {source}")]
     CheckedAuthority {
@@ -212,6 +221,8 @@ pub struct AdmittedOperation<'plan, Request, H> {
     clock_observed_at: u64,
     deadline_expired: bool,
     request: PreparedRequest<Request>,
+    invocation_purpose: InvocationPurpose,
+    operation_sequence: u64,
     resources: Vec<ResourceHandle<H>>,
     _live_reservation: LiveReservationGuard,
 }
@@ -251,6 +262,16 @@ impl<Request, H> AdmittedOperation<'_, Request, H> {
     #[must_use]
     pub const fn attempt(&self) -> NonZeroU32 {
         self.attempt
+    }
+
+    /// Returns the exact effect or recovery purpose admitted by this token.
+    #[must_use]
+    pub const fn invocation_purpose(&self) -> InvocationPurpose {
+        self.invocation_purpose
+    }
+
+    pub(crate) const fn operation_sequence(&self) -> u64 {
+        self.operation_sequence
     }
 
     /// Returns charged recovery time for this operation across restarts.
@@ -333,18 +354,79 @@ impl<'plan> ExecutionTransaction<'plan> {
         let plan = self.plan();
         let session = Arc::clone(self.session());
         let transaction = self.transaction().clone();
-        let transaction_elapsed = self.elapsed_millis();
         let transaction_limit = self.total_recovery_millis();
         self.check_operation_ready(operation_key)
             .map_err(transaction_failure)?;
         let expected_provider = self
             .provider_assignment_for(operation_key)
             .map_err(transaction_failure)?;
-        let recovery_action = self
+        let mut recovery_action = self
             .next_action(operation_key)
             .map_err(transaction_failure)?;
-        let history = self.history(operation_key).map_err(transaction_failure)?;
-        let admission = check_admission(plan, history, recovery_action).map_err(failure)?;
+        if let RecoveryAction::ScheduleRetryBackoff {
+            attempt,
+            backoff_millis,
+        } = recovery_action
+        {
+            let observed_at_millis = clock.restart_stable_millis();
+            let eligible_at_millis = observed_at_millis
+                .checked_add(backoff_millis)
+                .ok_or_else(|| failure(AdmissionError::RetryBackoffOverflow))?;
+            let history = self.history(operation_key).map_err(transaction_failure)?;
+            self.append(ExecutionEventKind::RetryBackoffScheduled {
+                transaction: transaction.clone(),
+                operation: history.operation_id().clone(),
+                attempt,
+                observed_at_millis,
+                eligible_at_millis,
+                elapsed_millis: history.elapsed_millis(),
+            })
+            .map_err(transaction_failure)?;
+            recovery_action = self
+                .next_action(operation_key)
+                .map_err(transaction_failure)?;
+        }
+        if let RecoveryAction::AwaitRetryBackoff {
+            attempt,
+            observed_at_millis,
+            eligible_at_millis,
+        } = recovery_action
+        {
+            let now = clock.restart_stable_millis();
+            if now < observed_at_millis {
+                return Err(failure(AdmissionError::RetryClockMovedBackward));
+            }
+            if now < eligible_at_millis {
+                return Err(failure(AdmissionError::RetryBackoffPending {
+                    remaining_millis: eligible_at_millis - now,
+                }));
+            }
+            let history = self.history(operation_key).map_err(transaction_failure)?;
+            let elapsed_millis = history
+                .elapsed_millis()
+                .checked_add(now - observed_at_millis)
+                .ok_or_else(|| failure(AdmissionError::RetryBackoffOverflow))?;
+            self.append(ExecutionEventKind::RetryBackoffElapsed {
+                transaction: transaction.clone(),
+                operation: history.operation_id().clone(),
+                attempt,
+                observed_at_millis: now,
+                elapsed_millis,
+            })
+            .map_err(transaction_failure)?;
+            recovery_action = self
+                .next_action(operation_key)
+                .map_err(transaction_failure)?;
+            if matches!(recovery_action, RecoveryAction::SettleFailureBeforeEffect) {
+                return Err(failure(AdmissionError::DeadlineExceeded));
+            }
+        }
+        let history = self
+            .history(operation_key)
+            .map_err(transaction_failure)?
+            .clone();
+        let admission = check_admission(plan, &history, recovery_action).map_err(failure)?;
+        let transaction_elapsed = self.elapsed_millis();
         let live_reservation = self
             .claim_live_reservation(operation_key.clone(), admission.attempt)
             .map_err(transaction_failure)?;
@@ -356,8 +438,26 @@ impl<'plan> ExecutionTransaction<'plan> {
             transaction_limit,
         );
 
-        check_deadline(&timer).map_err(failure)?;
-        if admission.invocation_purpose == InvocationPurpose::Reconcile {
+        check_deadline_or_record_compensation(
+            self,
+            operation_key,
+            admission.invocation_purpose,
+            &timer,
+        )
+        .map_err(failure)?;
+        if matches!(
+            admission.invocation_purpose,
+            InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation
+        ) && !adapter.supports_compensation()
+        {
+            return Err(failure(AdmissionError::AdapterMismatch(
+                admission.invocation_purpose,
+            )));
+        }
+        if matches!(
+            admission.invocation_purpose,
+            InvocationPurpose::Reconcile | InvocationPurpose::ReconcileCompensation
+        ) {
             let method = admission
                 .operation
                 .recovery
@@ -369,13 +469,68 @@ impl<'plan> ExecutionTransaction<'plan> {
                 admission.operation,
                 admission.binding,
                 method,
-                InvocationPurpose::Reconcile,
+                admission.invocation_purpose,
                 adapter,
                 policy,
             )
             .map_err(failure)?;
-            check_deadline(&timer).map_err(failure)?;
+            check_deadline_or_record_compensation(
+                self,
+                operation_key,
+                admission.invocation_purpose,
+                &timer,
+            )
+            .map_err(failure)?;
+        } else if admission.invocation_purpose == InvocationPurpose::Compensate {
+            let method = admission
+                .operation
+                .recovery
+                .compensate
+                .as_ref()
+                .ok_or_else(|| failure(AdmissionError::StateDoesNotPermitAdmission))?;
+            check_invocation(
+                plan,
+                admission.operation,
+                admission.binding,
+                method,
+                InvocationPurpose::Compensate,
+                adapter,
+                policy,
+            )
+            .map_err(failure)?;
+            check_deadline_or_record_compensation(
+                self,
+                operation_key,
+                admission.invocation_purpose,
+                &timer,
+            )
+            .map_err(failure)?;
+            if let Some(reconcile) = &admission.operation.recovery.reconcile {
+                check_invocation(
+                    plan,
+                    admission.operation,
+                    admission.binding,
+                    reconcile,
+                    InvocationPurpose::ReconcileCompensation,
+                    adapter,
+                    policy,
+                )
+                .map_err(failure)?;
+                check_deadline_or_record_compensation(
+                    self,
+                    operation_key,
+                    admission.invocation_purpose,
+                    &timer,
+                )
+                .map_err(failure)?;
+            }
         } else {
+            if admission.operation.recovery.compensate.is_some() && !adapter.supports_compensation()
+            {
+                return Err(failure(AdmissionError::AdapterMismatch(
+                    InvocationPurpose::Compensate,
+                )));
+            }
             check_invocation(
                 plan,
                 admission.operation,
@@ -386,7 +541,13 @@ impl<'plan> ExecutionTransaction<'plan> {
                 policy,
             )
             .map_err(failure)?;
-            check_deadline(&timer).map_err(failure)?;
+            check_deadline_or_record_compensation(
+                self,
+                operation_key,
+                admission.invocation_purpose,
+                &timer,
+            )
+            .map_err(failure)?;
             if let Some(method) = &admission.operation.recovery.reconcile {
                 check_invocation(
                     plan,
@@ -398,7 +559,13 @@ impl<'plan> ExecutionTransaction<'plan> {
                     policy,
                 )
                 .map_err(failure)?;
-                check_deadline(&timer).map_err(failure)?;
+                check_deadline_or_record_compensation(
+                    self,
+                    operation_key,
+                    admission.invocation_purpose,
+                    &timer,
+                )
+                .map_err(failure)?;
             }
             if let Some(method) = &admission.operation.recovery.cancel {
                 check_invocation(
@@ -411,7 +578,51 @@ impl<'plan> ExecutionTransaction<'plan> {
                     policy,
                 )
                 .map_err(failure)?;
-                check_deadline(&timer).map_err(failure)?;
+                check_deadline_or_record_compensation(
+                    self,
+                    operation_key,
+                    admission.invocation_purpose,
+                    &timer,
+                )
+                .map_err(failure)?;
+            }
+            if let Some(method) = &admission.operation.recovery.compensate {
+                check_invocation(
+                    plan,
+                    admission.operation,
+                    admission.binding,
+                    method,
+                    InvocationPurpose::Compensate,
+                    adapter,
+                    policy,
+                )
+                .map_err(failure)?;
+                check_deadline_or_record_compensation(
+                    self,
+                    operation_key,
+                    admission.invocation_purpose,
+                    &timer,
+                )
+                .map_err(failure)?;
+                if let Some(reconcile) = &admission.operation.recovery.reconcile {
+                    check_invocation(
+                        plan,
+                        admission.operation,
+                        admission.binding,
+                        reconcile,
+                        InvocationPurpose::ReconcileCompensation,
+                        adapter,
+                        policy,
+                    )
+                    .map_err(failure)?;
+                    check_deadline_or_record_compensation(
+                        self,
+                        operation_key,
+                        admission.invocation_purpose,
+                        &timer,
+                    )
+                    .map_err(failure)?;
+                }
             }
         }
 
@@ -428,7 +639,12 @@ impl<'plan> ExecutionTransaction<'plan> {
         }
 
         for access in accesses {
-            if let Err(error) = check_deadline(&timer) {
+            if let Err(error) = check_deadline_or_record_compensation(
+                self,
+                operation_key,
+                admission.invocation_purpose,
+                &timer,
+            ) {
                 return Err(cleanup_failure(error, resources, catalog, live_reservation));
             }
             let reservation = match catalog.acquire(
@@ -471,7 +687,12 @@ impl<'plan> ExecutionTransaction<'plan> {
                 );
                 return Err(cleanup_failure(error, resources, catalog, live_reservation));
             }
-            if let Err(error) = check_deadline(&timer) {
+            if let Err(error) = check_deadline_or_record_compensation(
+                self,
+                operation_key,
+                admission.invocation_purpose,
+                &timer,
+            ) {
                 return Err(cleanup_failure(error, resources, catalog, live_reservation));
             }
         }
@@ -524,7 +745,12 @@ impl<'plan> ExecutionTransaction<'plan> {
                 live_reservation,
             ));
         }
-        if let Err(error) = check_deadline(&timer) {
+        if let Err(error) = check_deadline_or_record_compensation(
+            self,
+            operation_key,
+            admission.invocation_purpose,
+            &timer,
+        ) {
             return Err(cleanup_failure(error, resources, catalog, live_reservation));
         }
         let durable = match admission.durable_request.clone() {
@@ -541,11 +767,14 @@ impl<'plan> ExecutionTransaction<'plan> {
                         ));
                     }
                 };
-                match adapter.prepare_durable(admission.operation, &inputs, &resources) {
+                let prepared = adapter
+                    .prepare_durable(admission.operation, &inputs, &resources)
+                    .map_err(anyhow::Error::new);
+                match prepared {
                     Ok(durable) => durable,
                     Err(source) => {
                         return Err(cleanup_failure(
-                            AdmissionError::RequestPreparation(anyhow::Error::new(source)),
+                            AdmissionError::RequestPreparation(source),
                             resources,
                             catalog,
                             live_reservation,
@@ -554,7 +783,12 @@ impl<'plan> ExecutionTransaction<'plan> {
                 }
             }
         };
-        if let Err(error) = check_deadline(&timer) {
+        if let Err(error) = check_deadline_or_record_compensation(
+            self,
+            operation_key,
+            admission.invocation_purpose,
+            &timer,
+        ) {
             return Err(cleanup_failure(error, resources, catalog, live_reservation));
         }
         let request = match adapter.recover_request(&durable, &resources) {
@@ -568,17 +802,31 @@ impl<'plan> ExecutionTransaction<'plan> {
                 ));
             }
         };
-        if let Err(error) = check_deadline(&timer) {
+        if let Err(error) = check_deadline_or_record_compensation(
+            self,
+            operation_key,
+            admission.invocation_purpose,
+            &timer,
+        ) {
             return Err(cleanup_failure(error, resources, catalog, live_reservation));
         }
 
         if !admission.already_durable {
-            let event = ExecutionEventKind::OperationAdmitted {
-                transaction: transaction.clone(),
-                operation: admission.operation_id.clone(),
-                attempt: admission.attempt,
-                resources: resource_ids,
-                elapsed_millis: timer.operation_elapsed_millis(),
+            let event = if admission.invocation_purpose == InvocationPurpose::Compensate {
+                ExecutionEventKind::CompensationAdmitted {
+                    transaction: transaction.clone(),
+                    operation: admission.operation_id.clone(),
+                    resources: resource_ids,
+                    elapsed_millis: timer.operation_elapsed_millis(),
+                }
+            } else {
+                ExecutionEventKind::OperationAdmitted {
+                    transaction: transaction.clone(),
+                    operation: admission.operation_id.clone(),
+                    attempt: admission.attempt,
+                    resources: resource_ids,
+                    elapsed_millis: timer.operation_elapsed_millis(),
+                }
             };
             if let Err(source) = self.append(event) {
                 return Err(cleanup_failure(
@@ -593,6 +841,17 @@ impl<'plan> ExecutionTransaction<'plan> {
         let deadline_expired = timer.remaining_millis() == 0;
         let elapsed_millis = timer.operation_elapsed_millis();
         let clock_observed_at = clock.now_millis();
+        let operation_sequence = match self.history(operation_key) {
+            Ok(history) => history.last_sequence(),
+            Err(source) => {
+                return Err(cleanup_failure(
+                    AdmissionError::Transaction(source),
+                    resources,
+                    catalog,
+                    live_reservation,
+                ));
+            }
+        };
         let mut live_reservation = live_reservation;
         if !resources.is_empty() {
             live_reservation.retain_claim_on_drop();
@@ -610,6 +869,8 @@ impl<'plan> ExecutionTransaction<'plan> {
             clock_observed_at,
             deadline_expired,
             request,
+            invocation_purpose: admission.invocation_purpose,
+            operation_sequence,
             resources,
             _live_reservation: live_reservation,
         })
@@ -635,10 +896,6 @@ fn check_admission<'plan>(
         .binding_plan()
         .binding(&operation.binding)
         .ok_or(AdmissionError::BindingMissing)?;
-    if operation.recovery.compensate.is_some() {
-        return Err(AdmissionError::CompensationUnsupported);
-    }
-
     let (attempt, already_durable, durable_request, invocation_purpose) = match action {
         RecoveryAction::Admit => (NonZeroU32::MIN, false, None, InvocationPurpose::Effect),
         RecoveryAction::Retry { attempt } => (attempt, false, None, InvocationPurpose::Effect),
@@ -653,6 +910,39 @@ fn check_admission<'plan>(
                     .ok_or(AdmissionError::RecoveryRequestMissing)?,
             ),
             InvocationPurpose::Reconcile,
+        ),
+        RecoveryAction::AdmitCompensation => (
+            NonZeroU32::MIN,
+            false,
+            Some(
+                history
+                    .durable_request()
+                    .cloned()
+                    .ok_or(AdmissionError::RecoveryRequestMissing)?,
+            ),
+            InvocationPurpose::Compensate,
+        ),
+        RecoveryAction::ExecuteCompensation => (
+            NonZeroU32::MIN,
+            true,
+            Some(
+                history
+                    .durable_request()
+                    .cloned()
+                    .ok_or(AdmissionError::RecoveryRequestMissing)?,
+            ),
+            InvocationPurpose::Compensate,
+        ),
+        RecoveryAction::ReconcileCompensation => (
+            NonZeroU32::MIN,
+            true,
+            Some(
+                history
+                    .compensation_request()
+                    .cloned()
+                    .ok_or(AdmissionError::RecoveryRequestMissing)?,
+            ),
+            InvocationPurpose::ReconcileCompensation,
         ),
         _ => return Err(AdmissionError::StateDoesNotPermitAdmission),
     };
@@ -776,6 +1066,45 @@ where
     } else {
         Ok(())
     }
+}
+
+fn check_deadline_or_record_compensation<Clock>(
+    transaction: &mut ExecutionTransaction<'_>,
+    operation: &ScopedOperationKey,
+    purpose: InvocationPurpose,
+    timer: &AdmissionTimer<'_, Clock>,
+) -> Result<(), AdmissionError>
+where
+    Clock: MonotonicClock,
+{
+    let Err(deadline_error) = check_deadline(timer) else {
+        return Ok(());
+    };
+
+    if !matches!(
+        purpose,
+        InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation
+    ) {
+        return Err(deadline_error);
+    }
+    let history = transaction
+        .history(operation)
+        .map_err(AdmissionError::Transaction)?;
+    let reason = match history.compensation_state() {
+        Some(CompensationState::Requested { .. } | CompensationState::Admitted) => {
+            CompensationInterventionReason::DeadlineBeforeIntent
+        }
+        Some(
+            CompensationState::IntentDurable
+            | CompensationState::Indeterminate { .. }
+            | CompensationState::ReconciliationIntentDurable,
+        ) => CompensationInterventionReason::DeadlineAfterIntent,
+        _ => return Err(deadline_error),
+    };
+    transaction
+        .record_compensation_intervention(operation, reason, timer.operation_elapsed_millis())
+        .map_err(AdmissionError::Transaction)?;
+    Err(deadline_error)
 }
 
 fn cleanup_failure<H, Catalog>(

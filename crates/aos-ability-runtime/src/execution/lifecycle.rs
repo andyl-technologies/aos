@@ -172,11 +172,21 @@ where
     let empty_release_is_complete = expected_resources.is_empty()
         && history.resources_released()
         && admitted.resources().next().is_none();
+    let compensation_release = action == RecoveryAction::ReleaseCompensationResources;
+    let attempt_matches = if compensation_release {
+        matches!(
+            admitted.invocation_purpose(),
+            crate::adapter::InvocationPurpose::Compensate
+                | crate::adapter::InvocationPurpose::ReconcileCompensation
+        ) && admitted.attempt() == std::num::NonZeroU32::MIN
+    } else {
+        history.current_attempt() == Some(admitted.attempt())
+    };
     let token_matches = admitted.belongs_to_session(transaction.session())
         && admitted.plan().id() == transaction.plan().id()
         && admitted.transaction() == transaction.transaction()
         && admitted.operation_id().operation == admitted.operation().key
-        && history.current_attempt() == Some(admitted.attempt())
+        && attempt_matches
         && admitted.resources().eq(expected_resources.iter());
     if !token_matches {
         return Err(release_failure(
@@ -189,7 +199,10 @@ where
         admitted.release_live_reservation();
         return Ok(());
     }
-    if !matches!(action, RecoveryAction::ReleaseResources) {
+    if !matches!(
+        action,
+        RecoveryAction::ReleaseResources | RecoveryAction::ReleaseCompensationResources
+    ) {
         return Err(release_failure(
             ResourceReleaseError::StaleAdmission,
             admitted,

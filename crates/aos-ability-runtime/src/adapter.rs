@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use std::num::NonZeroU32;
 
@@ -44,6 +44,13 @@ impl CancellationToken {
 pub trait MonotonicClock {
     /// Returns milliseconds since this clock's stable local origin.
     fn now_millis(&self) -> u64;
+
+    /// Returns a trusted native timestamp whose origin survives process restart.
+    ///
+    /// The runtime persists the observation for eligibility gates and rejects
+    /// regression or overflow before retry. This native execution input never
+    /// contributes to plan or operation identity.
+    fn restart_stable_millis(&self) -> u64;
 }
 
 /// Measures live attempt time using [`Instant`].
@@ -79,6 +86,18 @@ impl MonotonicClock for SystemMonotonicClock {
     )]
     fn now_millis(&self) -> u64 {
         u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "wall time is persisted only as a trusted native retry eligibility observation"
+    )]
+    fn restart_stable_millis(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(u64::MAX, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+            })
     }
 }
 
@@ -459,6 +478,10 @@ pub enum InvocationPurpose {
     Reconcile,
     /// Requests bounded cancellation of an admitted attempt.
     Cancel,
+    /// Executes an explicitly requested compensation method.
+    Compensate,
+    /// Reconciles an ambiguous compensation effect.
+    ReconcileCompensation,
 }
 
 /// Reports the immediate disposition of one effect invocation.
@@ -531,6 +554,12 @@ pub trait TrustedAdapter {
         false
     }
 
+    /// Reports whether compensation dispatch and compensation reconciliation are implemented.
+    #[must_use]
+    fn supports_compensation(&self) -> bool {
+        false
+    }
+
     /// Builds the exact bounded request value from a checked operation and handles.
     ///
     /// # Errors
@@ -577,4 +606,25 @@ pub trait TrustedAdapter {
         request: &Self::Request,
         control: &dyn RuntimeControl,
     ) -> CancellationDisposition<Self::Completion, Self::Observation>;
+
+    /// Executes one durable compensation intent.
+    ///
+    /// Returning `None` after admission is an adapter contract failure and
+    /// leaves the durable intent for compensation-specific reconciliation.
+    fn compensate(
+        &mut self,
+        _request: &Self::Request,
+        _control: &dyn RuntimeControl,
+    ) -> Option<EffectDisposition<Self::Completion, Self::Observation>> {
+        None
+    }
+
+    /// Reconciles an ambiguous compensation effect rather than the primary effect.
+    fn reconcile_compensation(
+        &mut self,
+        _request: &Self::Request,
+        _control: &dyn RuntimeControl,
+    ) -> Option<ReconcileDisposition<Self::Completion, Self::Observation>> {
+        None
+    }
 }

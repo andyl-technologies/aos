@@ -3,15 +3,15 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io;
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 
 use aos_ability_model::{
     AbilityValue, AccessMode, ArtifactReference, BindingId, BranchMembership, DecisionAlternative,
     DecisionNode, DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind,
     IncarnationId, IndeterminateSemantics, LocalKey, MergeNode, MergedOutput, MethodReference,
-    Operation, OperationResultReference, PlanNodeKey, ProviderAssignment, ResourceAccess,
-    ResourceId, ResourcePermission, ResultProducerKey, RetryPolicy, RevisionId, ScopedOperationKey,
-    TransactionId, ValueExpression, compare_edges, compare_operation_keys,
+    Operation, OperationId, OperationResultReference, PlanNodeKey, ProviderAssignment,
+    ResourceAccess, ResourceId, ResourcePermission, ResultProducerKey, RetryPolicy, RevisionId,
+    ScopedOperationKey, TransactionId, ValueExpression, compare_edges, compare_operation_keys,
 };
 use aos_ability_validate::test_support::{
     checked_effect_plan, checked_planned_provider_chain, plan_fixture,
@@ -27,10 +27,11 @@ use crate::adapter::{
     TrustedRootStore,
 };
 use crate::execution::{
-    AdmissionError, ExecutionError, ExecutionStep, ExecutionTransaction, OperationState,
-    OperationStatus, RecoveryAction, ResourceReleaseError, TerminalResult, TrustedAdmissionPolicy,
+    AdmissionError, ExecutionError, ExecutionEvent, ExecutionEventKind, ExecutionStep,
+    ExecutionTransaction, OperationState, OperationStatus, RecoveryAction, ResourceReleaseError,
+    TerminalResult, TrustedAdmissionPolicy,
 };
-use crate::journal::JournalLimits;
+use crate::journal::{FileJournal, JournalLimits};
 
 #[test]
 fn public_controller_completes_and_releases_a_checked_operation()
@@ -736,21 +737,703 @@ fn reopened_indeterminate_effect_authorizes_only_reconciliation_and_preserves_bu
 }
 
 #[test]
-fn transaction_rejects_unenforced_nonzero_retry_backoff() -> Result<(), Box<dyn std::error::Error>>
-{
+fn transaction_accepts_durably_enforced_nonzero_retry_backoff()
+-> Result<(), Box<dyn std::error::Error>> {
     let plan = recovery_plan_fixture(1)
         .validate()
         .expect("nonzero backoff is a valid checked plan contract");
     let fixture = RuntimeFixture::with_plan(plan)?;
     let mut store = TestStore;
 
-    let error = fixture
-        .open(&mut store)
-        .expect_err("runtime must not silently ignore declared retry backoff");
+    let transaction = fixture.open(&mut store)?;
 
+    assert_eq!(
+        transaction.next_action(fixture.operation())?,
+        RecoveryAction::Admit
+    );
+    Ok(())
+}
+
+#[test]
+fn retry_backoff_survives_reopen_and_charges_waited_budget()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plan = recovery_plan_fixture(50)
+        .validate()
+        .expect("delayed recovery plan must validate");
+    let fixture = RuntimeFixture::with_plan(plan)?;
+    let mut store = TestStore;
+    let clock = SettableClock::default();
+    let mut catalog = TestCatalog::default();
+    let mut policy = RecordingPolicy::default();
+    let mut adapter = RecoveryAdapter::default();
+    let mut transaction = fixture.open(&mut store)?;
+    let admitted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .map_err(admission_error)?;
+    assert_eq!(
+        transaction.drive_admitted(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &clock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Indeterminate
+    );
+    drop(admitted);
+    drop(transaction);
+    let mut transaction = fixture.open(&mut store)?;
+    let recovery = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .map_err(admission_error)?;
+    assert_eq!(
+        transaction.drive_admitted(
+            &recovery,
+            &mut adapter,
+            &mut policy,
+            &clock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::SafeToRetry
+    );
+    transaction
+        .release_admitted::<RecoveryAdapter, _, _>(recovery, &mut catalog, &clock)
+        .map_err(release_error)?;
+
+    clock.set(u64::MAX);
+    let overflow = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .expect_err("an unrepresentable eligibility point must fail closed");
+    assert!(matches!(
+        overflow.error(),
+        AdmissionError::RetryBackoffOverflow
+    ));
+    clock.set(100);
+    let pending = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .expect_err("the persisted delay must reject an early retry");
+    assert!(matches!(
+        pending.error(),
+        AdmissionError::RetryBackoffPending {
+            remaining_millis: 50
+        }
+    ));
+    drop(transaction);
+
+    clock.set(99);
+    let mut reopened = fixture.open(&mut store)?;
+    let backward = reopened
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .expect_err("a backward trusted clock must fail closed");
+    assert!(matches!(
+        backward.error(),
+        AdmissionError::RetryClockMovedBackward
+    ));
+    clock.set(149);
+    let pending = reopened
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .expect_err("reopen must preserve remaining delay");
+    assert!(matches!(
+        pending.error(),
+        AdmissionError::RetryBackoffPending {
+            remaining_millis: 1
+        }
+    ));
+    clock.set(150);
+    let retry = reopened
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .map_err(admission_error)?;
+    assert_eq!(retry.attempt().get(), 2);
+    assert_eq!(retry.elapsed_millis(), 50);
+    Ok(())
+}
+
+#[test]
+fn retry_backoff_exhaustion_settles_before_another_attempt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut plan_fixture = recovery_plan_fixture(50);
+    plan_fixture.effect_plan.operations[0]
+        .deadline
+        .attempt_timeout_millis = NonZeroU64::new(10).ok_or("positive attempt timeout")?;
+    plan_fixture.effect_plan.operations[0]
+        .deadline
+        .total_recovery_millis = NonZeroU64::new(40).ok_or("positive recovery timeout")?;
+    plan_fixture.refresh_commitments();
+    let plan = plan_fixture
+        .validate()
+        .expect("bounded delayed recovery plan must validate");
+    let fixture = RuntimeFixture::with_plan(plan)?;
+    let mut store = TestStore;
+    let clock = SettableClock::default();
+    let mut catalog = TestCatalog::default();
+    let mut policy = RecordingPolicy::default();
+    let mut adapter = RecoveryAdapter::default();
+    let mut transaction = fixture.open(&mut store)?;
+    let admitted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .map_err(admission_error)?;
+    transaction.drive_admitted(
+        &admitted,
+        &mut adapter,
+        &mut policy,
+        &clock,
+        &CancellationToken::default(),
+    )?;
+    drop(admitted);
+    drop(transaction);
+
+    let mut transaction = fixture.open(&mut store)?;
+    let recovery = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .map_err(admission_error)?;
+    transaction.drive_admitted(
+        &recovery,
+        &mut adapter,
+        &mut policy,
+        &clock,
+        &CancellationToken::default(),
+    )?;
+    transaction
+        .release_admitted::<RecoveryAdapter, _, _>(recovery, &mut catalog, &clock)
+        .map_err(release_error)?;
+    let pending = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .expect_err("the delay must be persisted before eligibility");
+    assert!(matches!(
+        pending.error(),
+        AdmissionError::RetryBackoffPending { .. }
+    ));
+
+    clock.set(50);
+    let exhausted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .expect_err("elapsed backoff must exhaust the recovery budget");
+    assert!(matches!(
+        exhausted.error(),
+        AdmissionError::DeadlineExceeded
+    ));
+    assert_eq!(
+        transaction.next_action(fixture.operation())?,
+        RecoveryAction::SettleFailureBeforeEffect
+    );
+    Ok(())
+}
+
+#[test]
+fn declared_compensation_is_preflighted_before_primary_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let operation = scoped("observe");
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let adapter = TestAdapter::without_compensation_support();
+
+    let failure = transaction
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .expect_err("primary admission must require its declared compensation capability");
+    assert!(matches!(
+        failure.error(),
+        AdmissionError::AdapterMismatch(InvocationPurpose::Compensate)
+    ));
+    assert_eq!(catalog.acquire_calls, 0);
+    assert!(matches!(
+        transaction.history(&operation)?.state(),
+        OperationState::Pending
+    ));
+    Ok(())
+}
+
+#[test]
+fn explicit_compensation_preserves_original_evidence_and_has_a_separate_outcome()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let operation = scoped("observe");
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    complete(&mut transaction, &operation)?;
+
+    transaction.request_compensation(&operation, ability(true))?;
+    let history = transaction.history(&operation)?;
+    assert!(history.original_completion().is_some());
+    assert!(history.compensation_state().is_some());
+
+    let mut catalog = TestCatalog::default();
+    let mut policy = RecordingPolicy::default();
+    let mut adapter = TestAdapter::valid();
+    let admitted = transaction
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+    assert_eq!(admitted.invocation_purpose(), InvocationPurpose::Compensate);
+    assert!(policy.purposes.contains(&InvocationPurpose::Compensate));
+    assert!(
+        policy
+            .purposes
+            .contains(&InvocationPurpose::ReconcileCompensation)
+    );
+    assert_eq!(
+        transaction.drive_admitted(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Completed
+    );
+    transaction
+        .release_admitted::<TestAdapter, _, _>(admitted, &mut catalog, &TestClock)
+        .map_err(release_error)?;
+
+    let history = transaction.history(&operation)?;
+    assert!(history.original_completion().is_some());
+    assert!(matches!(
+        history.compensation_state(),
+        Some(crate::execution::CompensationState::Completed { .. })
+    ));
+    let summary = transaction.summary();
+    let compensated = summary
+        .operations()
+        .iter()
+        .find(|item| &item.operation().operation == &operation)
+        .ok_or("compensated operation summary missing")?;
+    assert_eq!(compensated.status(), OperationStatus::Compensated);
+    Ok(())
+}
+
+#[test]
+fn primary_token_is_stale_after_compensation_admission() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let operation = scoped("observe");
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let mut adapter = TestAdapter::valid();
+    let mut primary = transaction
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+    assert_eq!(
+        transaction.drive_admitted(
+            &primary,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Completed
+    );
+
+    let resources = primary.resources().cloned().collect();
+    transaction.append(ExecutionEventKind::ResourcesReleased {
+        transaction: transaction.transaction().clone(),
+        operation: primary.operation_id().clone(),
+        resources,
+        elapsed_millis: transaction.history(&operation)?.elapsed_millis(),
+    })?;
+    primary.release_live_reservation();
+    transaction.request_compensation(&operation, ability(true))?;
+    let _compensation = transaction
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+
+    let error = transaction
+        .drive_admitted(
+            &primary,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )
+        .expect_err("a primary token must not dispatch compensation");
+    assert!(matches!(error, ExecutionError::StaleAdmission));
+    assert_eq!(adapter.compensate_calls, 0);
+    Ok(())
+}
+
+#[test]
+fn compensation_token_is_stale_after_reconciliation_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let operation = scoped("observe");
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    complete(&mut transaction, &operation)?;
+    transaction.request_compensation(&operation, ability(true))?;
+
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let mut adapter = RecoveryAdapter::default();
+    let mut compensation = transaction
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+    assert_eq!(
+        transaction.drive_admitted(
+            &compensation,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Indeterminate
+    );
+    compensation.release_live_reservation();
+    let reconciliation = transaction
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+
+    let error = transaction
+        .drive_admitted(
+            &compensation,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )
+        .expect_err("a compensation token must not dispatch reconciliation");
+    assert!(matches!(error, ExecutionError::StaleAdmission));
+    assert_eq!(adapter.compensate_calls, 1);
+    assert_eq!(adapter.compensation_reconciliation_calls, 0);
+
+    assert_eq!(
+        transaction.drive_admitted(
+            &reconciliation,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Completed
+    );
+    assert_eq!(adapter.compensation_reconciliation_calls, 1);
+    Ok(())
+}
+
+#[test]
+fn ambiguous_compensation_reopens_into_compensation_reconciliation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let operation = scoped("observe");
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    complete(&mut transaction, &operation)?;
+    transaction.request_compensation(&operation, ability(true))?;
+
+    let mut catalog = TestCatalog::default();
+    let mut policy = RecordingPolicy::default();
+    let mut adapter = RecoveryAdapter::default();
+    let admitted = transaction
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+    assert_eq!(
+        transaction.drive_admitted(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Indeterminate
+    );
+    drop(admitted);
+    drop(transaction);
+
+    let mut reopened = fixture.open(&mut store)?;
+    let reconciliation = reopened
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+    assert_eq!(
+        reconciliation.invocation_purpose(),
+        InvocationPurpose::ReconcileCompensation
+    );
+    assert_eq!(
+        reopened.drive_admitted(
+            &reconciliation,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Completed
+    );
+    assert_eq!(adapter.compensation_reconciliation_calls, 1);
+    reopened
+        .release_admitted::<RecoveryAdapter, _, _>(reconciliation, &mut catalog, &TestClock)
+        .map_err(release_error)?;
+    assert_eq!(reopened.next_action(&operation)?, RecoveryAction::None);
+    Ok(())
+}
+
+#[test]
+fn compensation_deadline_before_intent_is_durable_and_retains_ownership()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let operation = scoped("observe");
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    complete(&mut transaction, &operation)?;
+    transaction.request_compensation(&operation, ability(true))?;
+
+    let clock = SettableClock::default();
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let mut adapter = TestAdapter::valid();
+    let admitted = transaction
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &clock)
+        .map_err(admission_error)?;
+    assert!(admitted.resources().next().is_some());
+    clock.set(
+        fixture
+            .plan
+            .operation(&operation)
+            .ok_or("compensation operation missing")?
+            .deadline
+            .total_recovery_millis
+            .get(),
+    );
+
+    let error = transaction
+        .drive_admitted(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &clock,
+            &CancellationToken::default(),
+        )
+        .expect_err("deadline exhaustion before compensation intent must be reported");
+    assert!(
+        matches!(error, ExecutionError::DeadlineBeforeIntent),
+        "unexpected compensation deadline error: {error:?}"
+    );
+    let history = transaction.history(&operation)?;
+    assert!(matches!(
+        history.compensation_state(),
+        Some(crate::execution::CompensationState::InterventionRequired {
+            reason: crate::execution::CompensationInterventionReason::DeadlineBeforeIntent,
+            evidence: None,
+        })
+    ));
+    assert!(!history.resources_released());
+    assert_eq!(catalog.release_calls, 0);
+    let summary = transaction.summary();
+    let operation = summary
+        .operations()
+        .iter()
+        .find(|item| item.operation() == history.operation_id())
+        .ok_or("intervention operation summary missing")?;
+    assert_eq!(operation.status(), OperationStatus::InterventionRequired);
+    Ok(())
+}
+
+#[test]
+fn scheduler_durably_classifies_an_exhausted_compensation_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let operation = scoped("observe");
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    complete(&mut transaction, &operation)?;
+    let operation_id = transaction.history(&operation)?.operation_id().clone();
+    let deadline = fixture
+        .plan
+        .operation(&operation)
+        .ok_or("compensation operation missing")?
+        .deadline
+        .total_recovery_millis
+        .get();
+    transaction.append(ExecutionEventKind::CompensationRequested {
+        transaction: fixture.transaction.clone(),
+        operation: operation_id,
+        reason: ability(true),
+        elapsed_millis: deadline,
+    })?;
+
+    let ready = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    assert!(ready.iter().any(|item| {
+        item.operation() == &operation
+            && item.action() == &RecoveryAction::CompensationInterventionRequired
+    }));
+    assert!(matches!(
+        transaction.history(&operation)?.compensation_state(),
+        Some(crate::execution::CompensationState::InterventionRequired {
+            reason: crate::execution::CompensationInterventionReason::DeadlineBeforeIntent,
+            evidence: None,
+        })
+    ));
+    let summary = transaction.summary();
+    let operation = summary
+        .operations()
+        .iter()
+        .find(|item| item.operation().operation == scoped("observe"))
+        .ok_or("intervention operation summary missing")?;
+    assert_eq!(operation.status(), OperationStatus::InterventionRequired);
+    Ok(())
+}
+
+#[test]
+fn compensation_request_rejects_a_previously_admitted_downstream_consumer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let producer = scoped("observe");
+    let consumer = scoped("consume");
+    complete(&mut transaction, &producer)?;
+
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let mut adapter = TestAdapter::valid();
+    let admitted = transaction
+        .admit(&consumer, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+    let error = transaction
+        .request_compensation(&producer, ability(true))
+        .expect_err("a live success-consuming dependent must block compensation");
     assert!(matches!(
         error,
-        crate::execution::TransactionError::UnsupportedRetryBackoff
+        crate::execution::TransactionError::CompensationDependentProgressed
+    ));
+
+    assert_eq!(
+        transaction.drive_admitted(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Completed
+    );
+    assert_eq!(adapter.execute_calls, 1);
+    Ok(())
+}
+
+#[test]
+fn replay_rejects_compensation_after_a_dependent_consumed_success()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let producer = scoped("observe");
+    let consumer = scoped("consume");
+    complete(&mut transaction, &producer)?;
+
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let adapter = TestAdapter::valid();
+    let admitted = transaction
+        .admit(&consumer, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+    drop(admitted);
+    drop(transaction);
+
+    let mut journal =
+        FileJournal::<ExecutionEvent>::open(fixture.journal_path(), JournalLimits::default())?
+            .journal;
+    journal.append(&ExecutionEvent::new(
+        ExecutionEventKind::CompensationRequested {
+            transaction: fixture.transaction.clone(),
+            operation: OperationId {
+                plan: fixture.plan.id(),
+                operation: producer,
+            },
+            reason: ability(true),
+            elapsed_millis: 0,
+        },
+    ))?;
+    drop(journal);
+
+    let error = fixture
+        .open(&mut store)
+        .expect_err("replay must reject a late compensation request");
+    assert!(matches!(
+        error,
+        crate::execution::TransactionError::InvalidHistory { .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn terminal_transaction_requires_a_separately_rooted_compensation_transaction()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_terminal_compensation_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    complete(&mut transaction, fixture.operation())?;
+
+    let error = transaction
+        .request_compensation(fixture.operation(), ability(true))
+        .expect_err("terminal journals must not be amended behind their terminal marker");
+    assert!(matches!(
+        error,
+        crate::execution::TransactionError::CompensationAfterTerminal
     ));
     Ok(())
 }
@@ -902,6 +1585,38 @@ fn checked_dependent_plan() -> aos_ability_validate::CheckedEffectPlan {
     fixture
         .validate()
         .expect("dependent runtime fixture must pass production validation")
+}
+
+fn checked_compensatable_dependent_plan() -> aos_ability_validate::CheckedEffectPlan {
+    let mut fixture = recovery_plan_fixture(0);
+    let mut producer = fixture.effect_plan.operations[0].clone();
+    producer.recovery.retry = RetryPolicy::Disabled;
+    producer.recovery.compensate = Some(MethodReference {
+        interface: producer.interface.clone(),
+        method: producer.method.clone(),
+    });
+    let mut consumer = producer.clone();
+    consumer.key = scoped("consume");
+    consumer.recovery.compensate = None;
+    consumer.inputs = ValueExpression::OperationResult {
+        reference: result_reference(&producer.key),
+    };
+    fixture.effect_plan.operations = vec![consumer, producer.clone()];
+    fixture
+        .effect_plan
+        .operations
+        .sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
+    fixture.effect_plan.edges = vec![DependencyEdge {
+        from: PlanNodeKey::Operation { key: producer.key },
+        to: PlanNodeKey::Operation {
+            key: scoped("consume"),
+        },
+        kind: DependencyKind::Data,
+    }];
+    fixture.refresh_commitments();
+    fixture
+        .validate()
+        .expect("compensatable dependent fixture must pass production validation")
 }
 
 fn checked_failure_then_ordering_plan() -> aos_ability_validate::CheckedEffectPlan {
@@ -1071,6 +1786,20 @@ fn checked_recovery_plan() -> aos_ability_validate::CheckedEffectPlan {
     recovery_plan_fixture(0)
         .validate()
         .expect("reconcilable runtime fixture must pass production validation")
+}
+
+fn checked_terminal_compensation_plan() -> aos_ability_validate::CheckedEffectPlan {
+    let mut fixture = recovery_plan_fixture(0);
+    let operation = &mut fixture.effect_plan.operations[0];
+    operation.recovery.retry = RetryPolicy::Disabled;
+    operation.recovery.compensate = Some(MethodReference {
+        interface: operation.interface.clone(),
+        method: operation.method.clone(),
+    });
+    fixture.refresh_commitments();
+    fixture
+        .validate()
+        .expect("terminal compensation fixture must pass production validation")
 }
 
 fn branch_plan_fixture() -> aos_ability_validate::test_support::PlanFixture {
@@ -1301,10 +2030,14 @@ impl RuntimeFixture {
         ExecutionTransaction::open(
             &self.plan,
             self.transaction.clone(),
-            self.directory.path().join("execution.journal"),
+            self.journal_path(),
             JournalLimits::default(),
             store,
         )
+    }
+
+    fn journal_path(&self) -> std::path::PathBuf {
+        self.directory.path().join("execution.journal")
     }
 }
 
@@ -1455,7 +2188,9 @@ struct TestAdapter {
     outputs: BTreeMap<LocalKey, AbilityValue>,
     fail_preparation: bool,
     reject_before_effect: bool,
+    supports_compensation: bool,
     execute_calls: usize,
+    compensate_calls: usize,
 }
 
 impl TestAdapter {
@@ -1464,7 +2199,9 @@ impl TestAdapter {
             outputs: BTreeMap::from([(key("ready"), output)]),
             fail_preparation: false,
             reject_before_effect: false,
+            supports_compensation: true,
             execute_calls: 0,
+            compensate_calls: 0,
         }
     }
 
@@ -1477,7 +2214,9 @@ impl TestAdapter {
             outputs: BTreeMap::new(),
             fail_preparation: false,
             reject_before_effect: false,
+            supports_compensation: true,
             execute_calls: 0,
+            compensate_calls: 0,
         }
     }
 
@@ -1486,7 +2225,9 @@ impl TestAdapter {
             outputs: BTreeMap::new(),
             fail_preparation: true,
             reject_before_effect: false,
+            supports_compensation: true,
             execute_calls: 0,
+            compensate_calls: 0,
         }
     }
 
@@ -1495,7 +2236,16 @@ impl TestAdapter {
             outputs: BTreeMap::new(),
             fail_preparation: false,
             reject_before_effect: true,
+            supports_compensation: true,
             execute_calls: 0,
+            compensate_calls: 0,
+        }
+    }
+
+    fn without_compensation_support() -> Self {
+        Self {
+            supports_compensation: false,
+            ..Self::valid()
         }
     }
 }
@@ -1514,6 +2264,10 @@ impl TrustedAdapter for TestAdapter {
         _purpose: InvocationPurpose,
     ) -> bool {
         true
+    }
+
+    fn supports_compensation(&self) -> bool {
+        self.supports_compensation
     }
 
     fn prepare_durable(
@@ -1575,12 +2329,39 @@ impl TrustedAdapter for TestAdapter {
             outputs: BTreeMap::new(),
         })
     }
+
+    fn compensate(
+        &mut self,
+        _request: &Self::Request,
+        _control: &dyn RuntimeControl,
+    ) -> Option<EffectDisposition<Self::Completion, Self::Observation>> {
+        self.compensate_calls += 1;
+        Some(EffectDisposition::Completed(TestRecord {
+            evidence: ability(true),
+            outputs: self.outputs.clone(),
+        }))
+    }
+
+    fn reconcile_compensation(
+        &mut self,
+        _request: &Self::Request,
+        _control: &dyn RuntimeControl,
+    ) -> Option<ReconcileDisposition<Self::Completion, Self::Observation>> {
+        Some(ReconcileDisposition::Completed(TestRecord {
+            evidence: ability(true),
+            outputs: self.outputs.clone(),
+        }))
+    }
 }
 
 struct TestClock;
 
 impl MonotonicClock for TestClock {
     fn now_millis(&self) -> u64 {
+        0
+    }
+
+    fn restart_stable_millis(&self) -> u64 {
         0
     }
 }
@@ -1596,6 +2377,10 @@ impl SettableClock {
 
 impl MonotonicClock for SettableClock {
     fn now_millis(&self) -> u64 {
+        self.0.get()
+    }
+
+    fn restart_stable_millis(&self) -> u64 {
         self.0.get()
     }
 }
@@ -1635,6 +2420,8 @@ impl TrustedAdmissionPolicy for RecordingPolicy {
 #[derive(Default)]
 struct RecoveryAdapter {
     reconciliation_elapsed: Vec<u64>,
+    compensate_calls: usize,
+    compensation_reconciliation_calls: usize,
 }
 
 impl TrustedAdapter for RecoveryAdapter {
@@ -1650,6 +2437,10 @@ impl TrustedAdapter for RecoveryAdapter {
         _method: &MethodReference,
         _purpose: InvocationPurpose,
     ) -> bool {
+        true
+    }
+
+    fn supports_compensation(&self) -> bool {
         true
     }
 
@@ -1702,6 +2493,30 @@ impl TrustedAdapter for RecoveryAdapter {
             evidence: ability(true),
             outputs: BTreeMap::new(),
         })
+    }
+
+    fn compensate(
+        &mut self,
+        _request: &Self::Request,
+        _control: &dyn RuntimeControl,
+    ) -> Option<EffectDisposition<Self::Completion, Self::Observation>> {
+        self.compensate_calls += 1;
+        Some(EffectDisposition::Indeterminate(TestRecord {
+            evidence: ability(true),
+            outputs: BTreeMap::new(),
+        }))
+    }
+
+    fn reconcile_compensation(
+        &mut self,
+        _request: &Self::Request,
+        _control: &dyn RuntimeControl,
+    ) -> Option<ReconcileDisposition<Self::Completion, Self::Observation>> {
+        self.compensation_reconciliation_calls += 1;
+        Some(ReconcileDisposition::Completed(TestRecord {
+            evidence: ability(true),
+            outputs: BTreeMap::from([(key("ready"), ability(true))]),
+        }))
     }
 }
 
