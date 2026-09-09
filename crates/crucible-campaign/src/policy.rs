@@ -35,8 +35,11 @@ const MAX_CANDIDATE_GENERATOR_BYTES: usize = 4 * 1024 * 1024;
 /// Generator implementation version for static `all` enumeration.
 ///
 /// This version enumerates Boolean values as `false`, then `true`, and discrete
-/// alternatives in stable [`AlternativeId`] order. Earlier and unknown versions
-/// remain suspended so repository upgrades do not reinterpret persisted work.
+/// alternatives in stable [`AlternativeId`] order. For integer domains, the
+/// request addresses only the canonical prefix bounded by its proposal budget;
+/// exhausting that prefix closes the request unless it also covers the complete
+/// semantic domain. Earlier and unknown versions remain suspended so repository
+/// upgrades do not reinterpret persisted work.
 pub const STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION: u32 = 2;
 
 /// Generator implementation version for static boundary-integer enumeration.
@@ -667,7 +670,7 @@ impl Canonical for WeightedGenerator {
 /// Closed deterministic candidate-generation algorithm and exact parameters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CandidateGeneratorAlgorithm {
-    /// Enumerates a small Boolean or discrete domain in canonical order.
+    /// Enumerates a domain or an explicitly proposal-bounded integer prefix.
     All,
     /// Samples discrete alternatives without replacement using exact weights.
     WeightedCategorical {

@@ -13,16 +13,17 @@ use std::sync::{
 use std::time::Duration;
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, EventLog, ExecutionFingerprint,
-    FingerprintSample, Icount, MarkerId, NodeId, NodeTemplate, ObservableEvent, Plan, Properties,
-    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ReadyPoint, ScenarioDef,
-    ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables, SchedulerError,
-    SchedulerEventLogEntry, Seed, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    AssertionDef, AssertionId, Checkpoint, CheckpointKind, Configuration, ContentHash, EventLog,
+    ExecutionFingerprint, FingerprintSample, Icount, MarkerId, NodeId, NodeTemplate,
+    ObservableEvent, Plan, Properties, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
+    ReadyPoint, ScenarioDef, ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables,
+    SchedulerError, SchedulerEventLogEntry, Seed, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig};
 use crucible_campaign::{
     AttemptResourceLimits, BooleanDomain, CampaignState, ChoiceClassContext, ChoiceDomain,
-    ChoiceSource, ChoiceValue, SelectableDeclaration, StopOutcome,
+    ChoiceSource, ChoiceValue, ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue,
+    PropertyVerdict, SelectableDeclaration, StopOutcome,
 };
 use crucible_cas::content_store::{
     BlobHandle, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MutableRefBackend,
@@ -289,6 +290,7 @@ struct SelectableLifecycle {
     terminal_driven: bool,
     frontier: VirtualTime,
     completed_quanta: u64,
+    terminal_failure: Option<Vec<String>>,
 }
 
 impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
@@ -343,8 +345,12 @@ impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
-        self.terminal_driven
-            .then_some(QuantumTerminalVerdict::Passed)
+        self.terminal_driven.then(|| {
+            self.terminal_failure.clone().map_or(
+                QuantumTerminalVerdict::Passed,
+                QuantumTerminalVerdict::Failed,
+            )
+        })
     }
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
@@ -416,6 +422,7 @@ impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
 struct SelectableLifecycleFactory {
     node: NodeId,
     starts: Arc<AtomicUsize>,
+    terminal_failure: Option<Vec<String>>,
 }
 
 impl QemuFreshAttemptLifecycleFactory for SelectableLifecycleFactory {
@@ -439,6 +446,7 @@ impl QemuFreshAttemptLifecycleFactory for SelectableLifecycleFactory {
             terminal_driven: false,
             frontier: VirtualTime::default(),
             completed_quanta: 0,
+            terminal_failure: self.terminal_failure.clone(),
         })
     }
 }
@@ -699,6 +707,216 @@ fn selected_schedule_replays_through_a_fresh_authenticated_repository() {
         closure_bytes
     );
     assert_eq!(replay_starts.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn bounded_exploration_uses_accepted_branch_requests_and_observations() {
+    let (request, node) = selectable_request();
+    let exploration = GuardedCampaignExploration::new(
+        3,
+        None,
+        false,
+        GuardedCampaignExplorationStrategy::CanonicalFrontier,
+    )
+    .expect("bounded exploration");
+    let request = request.with_exploration(exploration).with_watch_frames();
+    let starts = Arc::new(AtomicUsize::new(0));
+
+    let completed = run_selectable_campaign(request, node, Arc::clone(&starts));
+
+    assert_eq!(starts.load(Ordering::Relaxed), 3);
+    assert_eq!(completed.observations().len(), 3);
+    assert_eq!(completed.branch_request_count(), 1);
+    assert_eq!(completed.branch_acceptances().len(), 1);
+    assert_eq!(
+        completed.branch_acceptances()[0].observation(),
+        completed.observations()[0].id()
+    );
+    assert_eq!(completed.branch_acceptances()[0].maximum_attempts(), 2);
+    assert!(completed.branch_acceptances()[0].exhausts_domain());
+    assert!(completed.branch_acceptances()[0].snapshot() != completed.final_snapshot());
+    assert_eq!(
+        completed.exploration_completion(),
+        Some(GuardedCampaignExplorationCompletion::Exhausted)
+    );
+    assert_eq!(
+        completed
+            .observations()
+            .iter()
+            .map(|observation| observation.configuration().id())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        3
+    );
+    assert!(
+        completed
+            .observations()
+            .iter()
+            .all(|observation| observation.evidence().frontier().ticks
+                == observation.virtual_time_ticks())
+    );
+    assert!(
+        completed
+            .watch_frames()
+            .iter()
+            .filter_map(GuardedDefaultCampaignWatchFrame::observation)
+            .eq(completed
+                .observations()
+                .iter()
+                .map(GuardedDefaultCampaignObservation::id))
+    );
+}
+
+#[test]
+fn bounded_exploration_lazily_admits_a_full_width_integer_domain() {
+    let integer = IntegerDomain::new(
+        1,
+        IntegerRepresentation::Unsigned64,
+        IntegerValue::Unsigned(0),
+        IntegerValue::Unsigned(u64::MAX),
+        1,
+        None,
+        ExactRational::new(1, 1).expect("unit scale"),
+        Vec::new(),
+    )
+    .expect("full-width integer domain");
+    let (request, node) = selectable_request_with_domain(
+        ChoiceDomain::Integer(integer),
+        ChoiceValue::Integer(IntegerValue::Unsigned(0)),
+    );
+    let exploration = GuardedCampaignExploration::new(
+        4,
+        None,
+        false,
+        GuardedCampaignExplorationStrategy::CanonicalFrontier,
+    )
+    .expect("bounded exploration");
+    let starts = Arc::new(AtomicUsize::new(0));
+
+    let completed = run_selectable_campaign(
+        request.with_exploration(exploration),
+        node,
+        Arc::clone(&starts),
+    );
+
+    assert_eq!(starts.load(Ordering::Relaxed), 4);
+    assert_eq!(completed.observations().len(), 4);
+    assert_eq!(completed.branch_acceptances().len(), 1);
+    assert_eq!(completed.branch_acceptances()[0].maximum_attempts(), 4);
+    assert!(!completed.branch_acceptances()[0].exhausts_domain());
+    assert_eq!(
+        completed.exploration_completion(),
+        Some(GuardedCampaignExplorationCompletion::AttemptBudget)
+    );
+}
+
+#[test]
+fn bounded_exploration_reports_a_pruned_depth_boundary() {
+    let (request, node) = selectable_request();
+    let exploration = GuardedCampaignExploration::new(
+        3,
+        Some(0),
+        false,
+        GuardedCampaignExplorationStrategy::CanonicalFrontier,
+    )
+    .expect("depth-bounded exploration");
+    let starts = Arc::new(AtomicUsize::new(0));
+
+    let completed = run_selectable_campaign(
+        request.with_exploration(exploration),
+        node,
+        Arc::clone(&starts),
+    );
+
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    assert_eq!(completed.observations().len(), 1);
+    assert!(completed.branch_acceptances().is_empty());
+    assert_eq!(
+        completed.exploration_completion(),
+        Some(GuardedCampaignExplorationCompletion::DepthBound)
+    );
+}
+
+#[test]
+fn bounded_exploration_stops_on_an_accepted_scenario_finding() {
+    let (request, node) = selectable_request();
+    let exploration = GuardedCampaignExploration::new(
+        3,
+        None,
+        true,
+        GuardedCampaignExplorationStrategy::CanonicalFrontier,
+    )
+    .expect("finding-bounded exploration");
+    let starts = Arc::new(AtomicUsize::new(0));
+    let reasons = vec![String::from("selected branch violated invariant")];
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(SelectableLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            terminal_failure: Some(reasons.clone()),
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let completed = run_guarded_default_campaign_with_runner(
+        request.with_exploration(exploration),
+        runner,
+        evidence,
+    )
+    .expect("scenario finding campaign");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
+    assert_eq!(completed.observations().len(), 2);
+    assert_eq!(
+        completed.terminal().observation().stop(),
+        &StopOutcome::ScenarioFailure(reasons)
+    );
+    assert_eq!(
+        completed.exploration_completion(),
+        Some(GuardedCampaignExplorationCompletion::Finding)
+    );
+}
+
+#[test]
+fn bounded_exploration_stops_on_an_accepted_property_finding() {
+    let property_name = "selected-branch-reports-success";
+    let assertion = AssertionDef::guest_sometimes(
+        AssertionId::from_name(property_name),
+        "the selected branch reports success",
+    );
+    let (request, node) = selectable_request_with_domain_and_assertion(
+        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain")),
+        ChoiceValue::Boolean(false),
+        Some(assertion),
+    );
+    let exploration = GuardedCampaignExploration::new(
+        3,
+        None,
+        true,
+        GuardedCampaignExplorationStrategy::CanonicalFrontier,
+    )
+    .expect("finding-bounded exploration");
+    let starts = Arc::new(AtomicUsize::new(0));
+
+    let completed = run_selectable_campaign(
+        request.with_exploration(exploration),
+        node,
+        Arc::clone(&starts),
+    );
+
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    assert_eq!(completed.observations().len(), 1);
+    assert_eq!(
+        completed.terminal().observation().stop(),
+        &StopOutcome::AssertionFailure(String::from(property_name))
+    );
+    assert_eq!(
+        completed.terminal().properties().properties()[property_name].verdict(),
+        PropertyVerdict::Failed
+    );
+    assert_eq!(
+        completed.exploration_completion(),
+        Some(GuardedCampaignExplorationCompletion::Finding)
+    );
 }
 
 #[test]
@@ -1712,6 +1930,24 @@ fn legacy_resume_checkpoint(
 }
 
 fn selectable_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
+    selectable_request_with_domain(
+        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain")),
+        ChoiceValue::Boolean(false),
+    )
+}
+
+fn selectable_request_with_domain(
+    domain: ChoiceDomain,
+    default: ChoiceValue,
+) -> (GuardedDefaultCampaignRunRequest, NodeId) {
+    selectable_request_with_domain_and_assertion(domain, default, None)
+}
+
+fn selectable_request_with_domain_and_assertion(
+    domain: ChoiceDomain,
+    default: ChoiceValue,
+    assertion: Option<AssertionDef>,
+) -> (GuardedDefaultCampaignRunRequest, NodeId) {
     let node = NodeId {
         name: String::from("guarded-choice-node"),
     };
@@ -1737,8 +1973,8 @@ fn selectable_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
             node: node.name.clone(),
             protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
         },
-        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain")),
-        ChoiceValue::Boolean(false),
+        domain,
+        default,
         ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
         BTreeSet::from([String::from("recovery")]),
         true,
@@ -1751,11 +1987,12 @@ fn selectable_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
     )
     .expect("guarded scenario selectables");
     let seed = Seed::from_u64(0x7365_6c65_6374_6564);
-    let scenario =
-        ScenarioDefForm::from_components(&world, &Plan::empty(), &Properties::empty(), seed)
-            .expect("guarded selectable scenario")
-            .with_selectables(selectables)
-            .expect("attach guarded selectables");
+    let properties = Properties::from_assertions_for_world(&world, assertion.into_iter().collect())
+        .expect("guarded selectable properties");
+    let scenario = ScenarioDefForm::from_components(&world, &Plan::empty(), &properties, seed)
+        .expect("guarded selectable scenario")
+        .with_selectables(selectables)
+        .expect("attach guarded selectables");
     let host = LinuxQemuAttemptHostConfig::new(
         "/sys/fs/cgroup/crucible-guarded-selectable-test",
         "/tmp/crucible-guarded-selectable-test",
@@ -1834,6 +2071,7 @@ fn try_selectable_campaign(
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(SelectableLifecycleFactory {
             node,
             starts,
+            terminal_failure: None,
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
     run_guarded_default_campaign_with_runner(request, runner, evidence)
@@ -1850,6 +2088,7 @@ fn try_selectable_campaign_with_store(
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(SelectableLifecycleFactory {
             node,
             starts,
+            terminal_failure: None,
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
     run_guarded_default_campaign_with_store(request, runner, evidence, blobs, refs)

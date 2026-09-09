@@ -17,22 +17,20 @@ use crucible::{ScenarioDefForm, Schedule, Seed, VirtualTime};
 // crucible-lint: allow host-nondeterminism-state -- the caller supplies a validated production lifecycle capability; host observations cannot alter modeled choices.
 use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
-    ApplyCampaignCommandRequest, Attempt, AttemptResourceLimits, AttemptStart,
-    AuthorizedPlannerService, AuthorizedPlannerServiceError, BranchBudget, BranchRequest,
-    BranchRequestCause, BudgetGrant, CampaignAuthorizationError, CampaignClient,
+    ApplyCampaignCommandRequest, Attempt, AttemptResourceLimits, AttemptStart, BranchBudget,
+    BranchRequest, BranchRequestCause, BudgetGrant, CampaignAuthorizationError, CampaignClient,
     CampaignClientError, CampaignCodecError, CampaignCommandId, CampaignControlAction,
     CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorStepOutcome,
     CampaignExecutorStore, CampaignFact, CampaignFactId, CampaignHash, CampaignLineage,
-    CampaignMode, CampaignName, CampaignPlannerDriver, CampaignPlannerDriverConfigError,
-    CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError,
-    CampaignSeed, CampaignServiceOperation, CampaignSnapshotId, CampaignState, CampaignSupervisor,
+    CampaignName, CampaignPlannerDriverConfigError, CampaignPlannerStepOutcome, CampaignPrincipal,
+    CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError,
+    CampaignServiceOperation, CampaignSnapshotId, CampaignState, CampaignSupervisor,
     CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
     CandidateSource, CreateCampaignRequest, DaemonEpoch, DebuggerAuthorityKey, DiscoveryRequest,
-    ExactCheckpointId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExplorerPolicy,
-    FairnessPolicy, Observation, ObservationId, PlannerAuthorityKey, PlannerClient, PlanningBudget,
-    RepositoryCampaignService, RetentionPolicy, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointContinuationSelection, StopCondition, StopOutcome, SubmitCampaignBranchRequest,
-    SubmitCampaignDiscoveryRequest,
+    ExactCheckpointId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, Observation,
+    ObservationId, PlannerAuthorityKey, PlannerDisposition, RepositoryCampaignService,
+    SavepointCaptureOutcome, SavepointCaptureRequest, SavepointContinuationSelection,
+    StopCondition, StopOutcome, SubmitCampaignBranchRequest, SubmitCampaignDiscoveryRequest,
 };
 use crucible_cas::content_store::{
     ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, MutableRefBackend,
@@ -56,9 +54,17 @@ use crate::{
 };
 
 mod executor;
-use executor::{
-    LocalPlannerMeter, LocalPlannerMeterError, SynchronousCampaignExecutor,
-    SynchronousCampaignExecutorError,
+use executor::{SynchronousCampaignExecutor, SynchronousCampaignExecutorError};
+
+mod exploration;
+use exploration::{
+    ExplorationBranchDecision, LocalCampaignPlannerService, LocalCampaignPlannerServiceError,
+    exploration_branch_request, local_campaign_planner, local_campaign_policy,
+    observation_has_finding, publish_all_candidates_generator,
+};
+pub use exploration::{
+    GuardedCampaignBranchAcceptance, GuardedCampaignExploration,
+    GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
 };
 
 mod replay_closure;
@@ -84,10 +90,8 @@ const DEFAULT_RUN_PLANNER_SCAN: u32 = 1_024;
 const DEFAULT_RUN_MAX_SUPERVISOR_STEPS: usize = 1_000_000;
 const DEFAULT_RUN_RECONCILIATION_STEPS: usize = 64;
 
-type DefaultPlannerService =
-    AuthorizedPlannerService<crucible_campaign::CanonicalBeamPlanner, LocalPlannerMeter>;
-type DefaultPlannerServiceError =
-    AuthorizedPlannerServiceError<CampaignCodecError, LocalPlannerMeterError>;
+type DefaultPlannerService = LocalCampaignPlannerService;
+type DefaultPlannerServiceError = LocalCampaignPlannerServiceError;
 type DefaultExecutorService<R> = SynchronousCampaignExecutor<CrucibleExecutionModel<R>>;
 type DefaultExecutorServiceError<E> =
     SynchronousCampaignExecutorError<CrucibleExecutionModelError<E>>;
@@ -139,6 +143,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     collect_watch_frames: bool,
     capture_reached_stop: Option<Arc<ExactCheckpointStore>>,
     resume_source: Option<GuardedDefaultCampaignResumeSource>,
+    exploration: Option<GuardedCampaignExploration>,
 }
 
 impl GuardedDefaultCampaignRunRequest {
@@ -167,6 +172,7 @@ impl GuardedDefaultCampaignRunRequest {
             collect_watch_frames: false,
             capture_reached_stop: None,
             resume_source: None,
+            exploration: None,
         }
     }
 
@@ -201,6 +207,18 @@ impl GuardedDefaultCampaignRunRequest {
     #[must_use]
     pub const fn with_watch_frames(mut self) -> Self {
         self.collect_watch_frames = true;
+        self
+    }
+
+    /// Explores typed choices through the shared campaign planner and executor.
+    ///
+    /// Exploration starts with `NextChoice` discovery and retains every
+    /// accepted observation and branch-request identity. It cannot be combined
+    /// with the single-run savepoint or resume adapters.
+    #[must_use]
+    pub fn with_exploration(mut self, exploration: GuardedCampaignExploration) -> Self {
+        self.discovery_stop = StopCondition::NextChoice;
+        self.exploration = Some(exploration);
         self
     }
 
@@ -256,6 +274,11 @@ pub struct GuardedDefaultCampaignObservation {
     id: ObservationId,
     observation: Observation,
     virtual_time_ticks: u64,
+    configuration: Configuration,
+    properties: crucible_campaign::PropertyVerdictSet,
+    coverage: crucible_campaign::CoverageProjection,
+    evidence: QemuAttemptExecutionEvidenceSnapshot,
+    replay_closure: GuardedCampaignReplayClosure,
 }
 
 impl GuardedDefaultCampaignObservation {
@@ -275,6 +298,37 @@ impl GuardedDefaultCampaignObservation {
     #[must_use]
     pub const fn virtual_time_ticks(&self) -> u64 {
         self.virtual_time_ticks
+    }
+
+    /// Returns the decoded child configuration authenticated by the observation.
+    #[must_use]
+    // crucible-lint: allow host-nondeterminism-state -- the configuration is decoded from the accepted campaign artifact and its complete selection closure.
+    pub const fn configuration(&self) -> &Configuration {
+        &self.configuration
+    }
+
+    /// Returns the authenticated property verdict set for this observation.
+    #[must_use]
+    pub const fn properties(&self) -> &crucible_campaign::PropertyVerdictSet {
+        &self.properties
+    }
+
+    /// Returns the authenticated coverage projection for this observation.
+    #[must_use]
+    pub const fn coverage(&self) -> &crucible_campaign::CoverageProjection {
+        &self.coverage
+    }
+
+    /// Returns bounded scheduler evidence captured for this exact attempt.
+    #[must_use]
+    pub const fn evidence(&self) -> &QemuAttemptExecutionEvidenceSnapshot {
+        &self.evidence
+    }
+
+    /// Returns the exact choice-record closure for this accepted configuration.
+    #[must_use]
+    pub const fn replay_closure(&self) -> &GuardedCampaignReplayClosure {
+        &self.replay_closure
     }
 }
 
@@ -334,8 +388,11 @@ pub struct GuardedDefaultCampaignRun {
     final_snapshot: CampaignSnapshotId,
     observations: Vec<GuardedDefaultCampaignObservation>,
     terminal: GuardedDefaultCampaignObservation,
+    // crucible-lint: allow host-nondeterminism-state -- the owner exposes only the configuration decoded from the terminal authenticated campaign artifact.
     terminal_configuration: Configuration,
     branch_request_count: usize,
+    branch_acceptances: Vec<GuardedCampaignBranchAcceptance>,
+    exploration_completion: Option<GuardedCampaignExplorationCompletion>,
     state_updates: Vec<CampaignState>,
     watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
@@ -429,6 +486,18 @@ impl GuardedDefaultCampaignRun {
     #[must_use]
     pub const fn branch_request_count(&self) -> usize {
         self.branch_request_count
+    }
+
+    /// Returns each repository-accepted exploration request in acceptance order.
+    #[must_use]
+    pub fn branch_acceptances(&self) -> &[GuardedCampaignBranchAcceptance] {
+        &self.branch_acceptances
+    }
+
+    /// Returns the bounded exploration completion reason for a search run.
+    #[must_use]
+    pub const fn exploration_completion(&self) -> Option<GuardedCampaignExplorationCompletion> {
+        self.exploration_completion
     }
 
     /// Returns authenticated campaign lifecycle states in observation order.
@@ -569,6 +638,9 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// Save and resume capture modes were requested together.
     #[error("savepoint capture and legacy resume cannot share one default run")]
     ConflictingCheckpointModes,
+    /// Exploration was combined with a single-path checkpoint adapter.
+    #[error("local exploration cannot share a campaign with savepoint capture or resume")]
+    ConflictingExplorationMode,
     /// The legacy resume requested a stop outside its supported compatibility surface.
     #[error("the legacy resume final stop is not supported by the default campaign owner")]
     UnsupportedResumeStop,
@@ -687,7 +759,12 @@ where
     }
     .map_err(GuardedDefaultCampaignRunError::Artifact)?;
     let lineage = default_run_lineage(&request, scenario_content, genesis_content)?;
-    let policy = default_run_policy(&lineage, request.seed, &request.discovery_stop)?;
+    let policy = local_campaign_policy(
+        &lineage,
+        request.seed,
+        &request.discovery_stop,
+        request.exploration,
+    )?;
     let campaign = CampaignName::new(format!(
         "legacy-run-{:016x}",
         request.seed.decision_rng_root_seed()
@@ -716,14 +793,9 @@ where
     let created_state = repository
         .state(campaign.as_str())
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let funded = apply_campaign_control(
-        &client,
-        &principal,
-        &campaign,
-        created.snapshot(),
-        0,
-        CampaignControlAction::GrantBudget(
-            BudgetGrant::new(
+    let (maximum_branch_requests, maximum_attempts) = request.exploration.map_or_else(
+        || {
+            (
                 DEFAULT_RUN_MAX_CHOICES,
                 DEFAULT_RUN_MAX_CHOICES
                     + if request.resume_source.is_some() {
@@ -732,7 +804,23 @@ where
                         1
                     },
             )
-            .map_err(GuardedDefaultCampaignRunError::Codec)?,
+        },
+        |exploration| {
+            (
+                exploration.maximum_attempts(),
+                exploration.maximum_attempts(),
+            )
+        },
+    );
+    let funded = apply_campaign_control(
+        &client,
+        &principal,
+        &campaign,
+        created.snapshot(),
+        0,
+        CampaignControlAction::GrantBudget(
+            BudgetGrant::new(maximum_branch_requests, maximum_attempts)
+                .map_err(GuardedDefaultCampaignRunError::Codec)?,
         ),
     )?;
     let running = apply_campaign_control(
@@ -790,27 +878,7 @@ where
             .map_err(GuardedDefaultCampaignRunError::ExecutorCapacity)?,
         None => executor_service,
     };
-    let planner_basis = repository
-        .publish_canonical_beam_planner_basis()
-        .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let planner_service = AuthorizedPlannerService::new(
-        crucible_campaign::CanonicalBeamPlanner,
-        LocalPlannerMeter,
-        planner_authority.clone(),
-    );
-    let planning_budget = PlanningBudget::new(1, 1, 64, 1024 * 1024, 4096)
-        .map_err(GuardedDefaultCampaignRunError::Codec)?;
-    let planner = CampaignPlannerDriver::new(
-        Arc::clone(&repository),
-        PlannerClient::new(planner_service, planner_authority),
-        planner_basis.engine().clone(),
-        planner_basis.artifact().clone(),
-        planner_basis.initial_state().clone(),
-        DEFAULT_RUN_PLANNER_SCAN,
-        planning_budget,
-    )
-    .map_err(GuardedDefaultCampaignRunError::PlannerConfiguration)?
-    .require_beam_policy();
+    let planner = local_campaign_planner(&repository, planner_authority, request.exploration)?;
     let executor = CampaignExecutorDriver::new(
         Arc::clone(&repository),
         crucible_campaign::ExecutorClient::new(executor_service),
@@ -850,6 +918,11 @@ where
             None,
         )?);
     }
+    let all_candidates = request
+        .exploration
+        .map(|_| publish_all_candidates_generator(&repository))
+        .transpose()
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
     let execution = drive_default_campaign(
         DefaultRunContext {
             repository: &repository,
@@ -860,6 +933,8 @@ where
             policy: policy.id().map_err(GuardedDefaultCampaignRunError::Codec)?,
             discovery_stop: &request.discovery_stop,
             initial_configuration_content: genesis_content,
+            exploration: request.exploration,
+            all_candidates,
         },
         vec![created_state, running_state],
         watch_frames,
@@ -942,6 +1017,11 @@ fn validate_initial_replay<E>(
 where
     E: Error + 'static,
 {
+    if request.exploration.is_some()
+        && (request.capture_reached_stop.is_some() || request.resume_source.is_some())
+    {
+        return Err(GuardedDefaultCampaignInvariantError::ConflictingExplorationMode.into());
+    }
     match &request.initial_replay_closure {
         Some(closure) => closure
             .validate_for_schedule(&request.scenario, &request.initial_schedule)
@@ -953,49 +1033,6 @@ where
             },
         )),
     }
-}
-
-fn default_run_policy<E>(
-    lineage: &CampaignLineage,
-    seed: Seed,
-    discovery_stop: &StopCondition,
-) -> Result<crucible_campaign::CampaignPolicy, GuardedDefaultCampaignRunError<E>>
-where
-    E: Error + 'static,
-{
-    let stop_conditions = match discovery_stop {
-        StopCondition::NamedBoundary(name) => BTreeSet::from([name.clone()]),
-        StopCondition::NextChoice
-        | StopCondition::VirtualTimeNanoseconds(_)
-        | StopCondition::EventCount(_)
-        | StopCondition::Terminal
-        | StopCondition::ExecutionQuanta(_)
-        | StopCondition::VirtualTimeOrExecutionQuanta { .. } => BTreeSet::new(),
-    };
-    crucible_campaign::CampaignPolicy::new(
-        lineage.scenario(),
-        CampaignSeed::from_bytes(seed.bytes()),
-        CampaignMode::Strict,
-        ExplorerPolicy::Beam {
-            width: 1,
-            novelty_reserve: 0,
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        stop_conditions,
-        FairnessPolicy::new(0, 0).map_err(GuardedDefaultCampaignRunError::Codec)?,
-        RetentionPolicy::new(true, 1, true, true),
-        true,
-    )
-    .and_then(|policy| {
-        // The caller-owned root discovery is the standalone cohort that opens
-        // the scenario-default path, so this pinned policy admits its guidance.
-        policy.with_intervention_learning_policy(
-            crucible_campaign::InterventionLearningPolicy::IncludeInGuidance,
-        )
-    })
-    .map_err(GuardedDefaultCampaignRunError::Codec)
 }
 
 fn apply_campaign_control<S, E>(
@@ -1034,6 +1071,8 @@ where
 struct DefaultRunExecution {
     observations: Vec<DefaultRunAcceptedObservation>,
     branch_request_count: usize,
+    branch_acceptances: Vec<GuardedCampaignBranchAcceptance>,
+    exploration_completion: Option<GuardedCampaignExplorationCompletion>,
     final_snapshot: CampaignSnapshotId,
     state_updates: Vec<CampaignState>,
     watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
@@ -1074,6 +1113,8 @@ struct DefaultRunContext<'a, S> {
     policy: crucible_campaign::CampaignPolicyId,
     discovery_stop: &'a StopCondition,
     initial_configuration_content: crucible_campaign::ConfigurationArtifactId,
+    exploration: Option<GuardedCampaignExploration>,
+    all_candidates: Option<crucible_campaign::CandidateGeneratorSpecId>,
 }
 
 fn drive_default_campaign<R, S>(
@@ -1093,6 +1134,9 @@ where
 {
     let mut observations = Vec::new();
     let mut branch_request_count = 0usize;
+    let mut branch_acceptances = Vec::new();
+    let mut planner_no_work_snapshot = None;
+    let mut exploration_completion = None;
     let mut pending_capture: Option<DefaultRunPendingSavepointCapture> = None;
     let mut resume_progress = resume_source.map(|_| DefaultRunResumeProgress::AwaitingSource);
     let mut objective_evaluation_cursor = None;
@@ -1111,9 +1155,69 @@ where
         let outcome = supervisor_result
             .map_err(|error| GuardedDefaultCampaignSupervisorError(Box::new(error)))
             .map_err(GuardedDefaultCampaignRunError::Supervisor)?;
+        if let CampaignSupervisorStepOutcome::Planner(planner_outcome) = &outcome {
+            planner_no_work_snapshot = match planner_outcome {
+                CampaignPlannerStepOutcome::Advanced {
+                    result,
+                    disposition: PlannerDisposition::NoWork,
+                } => Some(result.new_snapshot),
+                CampaignPlannerStepOutcome::Settled {
+                    snapshot,
+                    disposition: PlannerDisposition::NoWork,
+                    ..
+                } => Some(*snapshot),
+                CampaignPlannerStepOutcome::BudgetBlocked { snapshot, .. } => {
+                    exploration_completion =
+                        Some(GuardedCampaignExplorationCompletion::AttemptBudget);
+                    Some(*snapshot)
+                }
+                CampaignPlannerStepOutcome::Inactive { .. }
+                | CampaignPlannerStepOutcome::Advanced { .. }
+                | CampaignPlannerStepOutcome::Settled { .. } => None,
+            };
+            continue;
+        }
         let CampaignSupervisorStepOutcome::Executor { outcome, .. } = outcome else {
             continue;
         };
+        if context.exploration.is_some()
+            && let CampaignExecutorStepOutcome::Idle { snapshot } = &outcome
+            && Some(*snapshot) == planner_no_work_snapshot
+        {
+            let evidence = context
+                .execution_evidence
+                .snapshot()
+                .map_err(GuardedDefaultCampaignRunError::Evidence)?;
+            let final_snapshot = complete_default_campaign(
+                &context,
+                *snapshot,
+                supervisor_iteration,
+                &mut state_updates,
+            )?;
+            if collect_watch_frames {
+                watch_frames.push(campaign_watch_frame(
+                    context.repository,
+                    context.campaign,
+                    final_snapshot,
+                    &evidence,
+                    None,
+                )?);
+            }
+            return Ok(DefaultRunExecution {
+                observations,
+                branch_request_count,
+                branch_acceptances,
+                exploration_completion: Some(
+                    exploration_completion
+                        .unwrap_or(GuardedCampaignExplorationCompletion::Exhausted),
+                ),
+                final_snapshot,
+                state_updates,
+                watch_frames,
+                savepoint: None,
+                resume: None,
+            });
+        }
 
         if let CampaignExecutorStepOutcome::CaptureResolved {
             result,
@@ -1257,6 +1361,8 @@ where
             return Ok(DefaultRunExecution {
                 observations,
                 branch_request_count,
+                branch_acceptances,
+                exploration_completion: None,
                 final_snapshot,
                 state_updates,
                 watch_frames,
@@ -1377,6 +1483,8 @@ where
             return Ok(DefaultRunExecution {
                 observations,
                 branch_request_count,
+                branch_acceptances,
+                exploration_completion: None,
                 final_snapshot,
                 state_updates,
                 watch_frames,
@@ -1392,9 +1500,93 @@ where
                     matches!(progress, DefaultRunResumeProgress::Continuing(_))
                         && observation.stop() == &StopOutcome::Reached(source.final_stop.clone())
                 });
+        if let Some(exploration) = context.exploration
+            && exploration.stop_on_finding()
+            && observation_has_finding(context.repository, &observation)?
+        {
+            let final_snapshot = complete_default_campaign(
+                &context,
+                snapshot,
+                supervisor_iteration,
+                &mut state_updates,
+            )?;
+            if collect_watch_frames {
+                watch_frames.push(campaign_watch_frame(
+                    context.repository,
+                    context.campaign,
+                    final_snapshot,
+                    &execution_boundary,
+                    None,
+                )?);
+            }
+            return Ok(DefaultRunExecution {
+                observations,
+                branch_request_count,
+                branch_acceptances,
+                exploration_completion: Some(GuardedCampaignExplorationCompletion::Finding),
+                final_snapshot,
+                state_updates,
+                watch_frames,
+                savepoint: None,
+                resume: None,
+            });
+        }
         if observation.stop() == &StopOutcome::Reached(StopCondition::NextChoice)
             && !resume_final_stop_reached
         {
+            if let Some(exploration) = context.exploration {
+                let all_candidates = context
+                    .all_candidates
+                    .ok_or(GuardedDefaultCampaignInvariantError::MissingChoice)?;
+                let mut expected_snapshot = snapshot;
+                for opportunity in observation.discovered_choices() {
+                    match exploration_branch_request(
+                        context.repository,
+                        exploration,
+                        all_candidates,
+                        observation_id,
+                        &observation,
+                        *opportunity,
+                    )? {
+                        ExplorationBranchDecision::Request {
+                            request: branch,
+                            exhausts_domain,
+                        } => {
+                            let submission = SubmitCampaignBranchRequest::new(
+                                context.principal.clone(),
+                                context.campaign.clone(),
+                                expected_snapshot,
+                                *branch,
+                            )
+                            .map_err(GuardedDefaultCampaignRunError::Codec)?;
+                            let response = context
+                                .client
+                                .submit_branch_request(&submission)
+                                .map_err(GuardedDefaultCampaignRunError::Service)?;
+                            expected_snapshot = response.new_snapshot();
+                            branch_acceptances.push(
+                                GuardedCampaignBranchAcceptance::from_response(
+                                    observation_id,
+                                    &response,
+                                    exhausts_domain,
+                                ),
+                            );
+                            if !exhausts_domain && exploration_completion.is_none() {
+                                exploration_completion =
+                                    Some(GuardedCampaignExplorationCompletion::AttemptBudget);
+                            }
+                            branch_request_count += 1;
+                        }
+                        ExplorationBranchDecision::DepthBound => {
+                            exploration_completion =
+                                Some(GuardedCampaignExplorationCompletion::DepthBound);
+                            break;
+                        }
+                    }
+                }
+                planner_no_work_snapshot = None;
+                continue;
+            }
             let opportunity_id = observation
                 .discovered_choices()
                 .iter()
@@ -1446,6 +1638,11 @@ where
             continue;
         }
 
+        if context.exploration.is_some() {
+            planner_no_work_snapshot = None;
+            continue;
+        }
+
         if capture_reached_stop {
             if observation.stop() != &StopOutcome::Reached(context.discovery_stop.clone()) {
                 return Err(GuardedDefaultCampaignInvariantError::SavepointStopNotReached.into());
@@ -1494,6 +1691,8 @@ where
         return Ok(DefaultRunExecution {
             observations,
             branch_request_count,
+            branch_acceptances,
+            exploration_completion: None,
             final_snapshot,
             state_updates,
             watch_frames,
@@ -1671,24 +1870,37 @@ where
         let observation = repository
             .load_observation(accepted.id)
             .map_err(GuardedDefaultCampaignRunError::Repository)?;
+        let child = repository
+            .load_configuration_artifact(observation.child_content())
+            .map_err(GuardedDefaultCampaignRunError::Repository)?;
+        let configuration = decode_crucible_configuration_artifact_with_selections(
+            &scenario,
+            &scenario_artifact,
+            &child,
+            &store,
+        )
+        .map_err(GuardedDefaultCampaignRunError::Artifact)?;
+        let properties = repository
+            .load_property_verdict_set(observation.properties())
+            .map_err(GuardedDefaultCampaignRunError::Repository)?;
+        let coverage = repository
+            .load_coverage_projection(observation.coverage())
+            .map_err(GuardedDefaultCampaignRunError::Repository)?;
+        let replay_closure =
+            GuardedCampaignReplayClosure::collect(&store, &scenario, &configuration.schedule)
+                .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
         if index + 1 == observation_count {
-            let child = repository
-                .load_configuration_artifact(observation.child_content())
-                .map_err(GuardedDefaultCampaignRunError::Repository)?;
-            terminal_configuration = Some(
-                decode_crucible_configuration_artifact_with_selections(
-                    &scenario,
-                    &scenario_artifact,
-                    &child,
-                    &store,
-                )
-                .map_err(GuardedDefaultCampaignRunError::Artifact)?,
-            );
+            terminal_configuration = Some(configuration.clone());
         }
         observations.push(GuardedDefaultCampaignObservation {
             id: accepted.id,
             observation,
             virtual_time_ticks: accepted.virtual_time_ticks,
+            configuration,
+            properties,
+            coverage,
+            evidence: accepted.evidence,
+            replay_closure,
         });
     }
     let terminal = observations
@@ -1775,6 +1987,8 @@ where
         terminal,
         terminal_configuration,
         branch_request_count: execution.branch_request_count,
+        branch_acceptances: execution.branch_acceptances,
+        exploration_completion: execution.exploration_completion,
         state_updates: execution.state_updates,
         watch_frames: execution.watch_frames,
         evidence,

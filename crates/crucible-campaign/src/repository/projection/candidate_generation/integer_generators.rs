@@ -442,7 +442,7 @@ fn progressive_refinement_gaps(
     Ok(gaps)
 }
 
-pub(super) fn integer_candidate_at_offset(
+pub(in crate::repository::projection) fn integer_candidate_at_offset(
     domain: &IntegerDomain,
     offset: u128,
 ) -> Result<IntegerValue, CampaignRepositoryError> {
