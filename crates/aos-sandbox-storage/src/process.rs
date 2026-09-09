@@ -31,7 +31,9 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use aos_sandbox_linux::cgroup::CgroupV2Root;
+use aos_sandbox_linux::cgroup::{
+    CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
+};
 use aos_sandbox_linux::process::{FixedProcessOutcome, FixedProcessRequest, run_fixed_process};
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
@@ -60,9 +62,13 @@ const MAXIMUM_STDOUT_BYTES: usize = 64 * 1024;
 const MAXIMUM_STDERR_BYTES: usize = 64 * 1024;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(35);
+const NATURAL_EXIT_TIMEOUT: Duration = Duration::from_secs(1);
+const QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(5);
+const QUIESCENCE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SYSTEMD_MANAGER_CGROUP: &str = "init.scope";
-const STORAGED_CGROUP: &str = "aos-control.slice/aos-storaged.service";
-const WORKER_CGROUP_PREFIX: &str = "aos-control.slice/aos-sandbox-zfs-worker@";
+const CONTROL_SLICE_CGROUP: &str = "aos.slice/aos-control.slice";
+const STORAGED_CGROUP: &str = "aos.slice/aos-control.slice/aos-storaged.service";
+const WORKER_CGROUP_PREFIX: &str = "aos.slice/aos-control.slice/aos-sandbox-zfs-worker@";
 const WORKER_CGROUP_SUFFIX: &str = ".service";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 
@@ -78,6 +84,12 @@ pub enum ZfsWorkerError {
     /// The connected process does not belong to the configured service role.
     #[error("fixed ZFS worker peer provenance did not match")]
     PeerMismatch,
+    /// Protected durable authority did not authorize the requested worker effect.
+    #[error("fixed ZFS worker protected authority was rejected")]
+    Authority,
+    /// A dispatched worker unit could not be proved completely quiescent.
+    #[error("fixed ZFS worker whole-unit quiescence failed: {0}")]
+    Quiescence(String),
     /// The transport could not exchange one complete bounded transaction.
     #[error("fixed ZFS worker transport failed: {0}")]
     Transport(#[from] SeqpacketError),
@@ -108,8 +120,9 @@ pub const fn process_timeout() -> Duration {
 #[derive(Debug)]
 pub struct SystemdZfsExecutor {
     socket_path: PathBuf,
-    systemd_manager_cgroup: aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
-    worker_parent_cgroup: aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
+    systemd_manager_cgroup: RetainedCgroupAnchor,
+    worker_parent_cgroup: RetainedCgroupAnchor,
+    fail_stopped: bool,
 }
 
 impl SystemdZfsExecutor {
@@ -128,11 +141,12 @@ impl SystemdZfsExecutor {
             return Err(ZfsWorkerError::Protocol("unsafe worker socket path"));
         }
         let systemd_manager_cgroup = cgroup_root.resolve(Path::new(SYSTEMD_MANAGER_CGROUP))?;
-        let worker_parent_cgroup = cgroup_root.resolve(Path::new("aos-control.slice"))?;
+        let worker_parent_cgroup = cgroup_root.resolve(Path::new(CONTROL_SLICE_CGROUP))?;
         Ok(Self {
             socket_path,
             systemd_manager_cgroup,
             worker_parent_cgroup,
+            fail_stopped: false,
         })
     }
 
@@ -148,7 +162,7 @@ impl SystemdZfsExecutor {
     /// A disconnect after request transmission is ambiguous and is never
     /// retried; child-side `execve` errno is retained only in worker logging.
     pub fn execute_once(
-        &self,
+        &mut self,
         contract: &ZfsHelperContract,
         operation: StorageOperation,
         catalog: &ResolvedCatalogCommitmentV1,
@@ -170,7 +184,7 @@ impl SystemdZfsExecutor {
     /// Returns an error for worker activation, authentication, framing,
     /// execution, parsing, or deadline failure.
     pub fn observe_preconditions(
-        &self,
+        &mut self,
         contract: &ZfsHelperContract,
         operation: StorageOperation,
         catalog: &ResolvedCatalogCommitmentV1,
@@ -191,7 +205,7 @@ impl SystemdZfsExecutor {
     /// execution, parsing, or deadline failure. A successful parent inventory
     /// is required before an absent object can produce a matched result.
     pub fn observe_postcondition(
-        &self,
+        &mut self,
         contract: &ZfsHelperContract,
         operation: StorageOperation,
         catalog: &ResolvedCatalogCommitmentV1,
@@ -205,7 +219,7 @@ impl SystemdZfsExecutor {
     }
 
     fn observe(
-        &self,
+        &mut self,
         verb: WorkerRequestVerb,
         contract: &ZfsHelperContract,
         operation: StorageOperation,
@@ -217,10 +231,15 @@ impl SystemdZfsExecutor {
     }
 
     fn exchange(
-        &self,
+        &mut self,
         request: Vec<u8>,
         maximum_response_bytes: usize,
     ) -> Result<Vec<u8>, ZfsWorkerError> {
+        if self.fail_stopped {
+            return Err(ZfsWorkerError::Quiescence(
+                "fixed ZFS executor is fail-stopped".to_owned(),
+            ));
+        }
         let deadline = Deadline::after(CONNECTION_TIMEOUT);
         let mut socket = SeqpacketSocket::connect(&self.socket_path)?;
         verify_systemd_activation_peer(socket.peer(), &self.systemd_manager_cgroup)?;
@@ -228,18 +247,53 @@ impl SystemdZfsExecutor {
         let ready = receive_before(&mut socket, MAXIMUM_READY_BYTES, deadline)?;
         let (ready_payload, worker_subject) = ready.into_parts();
         let worker_cgroup = decode_ready(&ready_payload)?;
-        verify_worker_peer(
+        let worker_cgroup = verify_worker_peer(
             &worker_subject,
             &self.worker_parent_cgroup,
             Path::new(worker_cgroup),
         )?;
+        let population = worker_cgroup.population_monitor()?;
+        let exchange = (|| {
+            send_before(&mut socket, &request, deadline)?;
+            let response = receive_before(&mut socket, maximum_response_bytes, deadline)?;
+            verify_same_live_subject(&worker_subject, response.subject())?;
+            worker_cgroup.verify_exact_membership(response.subject().pidfd())?;
+            let payload = response.payload().to_vec();
+            send_before(&mut socket, &encode_ack(), deadline)?;
+            Ok(payload)
+        })();
 
-        send_before(&mut socket, &request, deadline)?;
-        let response = receive_before(&mut socket, maximum_response_bytes, deadline)?;
-        verify_same_live_subject(&worker_subject, response.subject())?;
-        let payload = response.payload().to_vec();
-        send_before(&mut socket, &encode_ack(), deadline)?;
-        Ok(payload)
+        match exchange {
+            Ok(payload) => {
+                let natural_exit =
+                    wait_for_worker_quiescence(&worker_subject, &population, NATURAL_EXIT_TIMEOUT);
+                let Err(natural_exit_error) = natural_exit else {
+                    return Ok(payload);
+                };
+                if let Err(cancellation_error) =
+                    quiesce_worker(&worker_subject, &worker_cgroup, &population)
+                {
+                    self.fail_stopped = true;
+                    return Err(ZfsWorkerError::Quiescence(format!(
+                        "a successful fixed ZFS worker remained live and cancellation was not proved; natural exit: {natural_exit_error}; cancellation: {cancellation_error}"
+                    )));
+                }
+                Err(ZfsWorkerError::Quiescence(format!(
+                    "a successful fixed ZFS worker did not terminate cleanly; natural exit: {natural_exit_error}"
+                )))
+            }
+            Err(error) => {
+                if let Err(cancellation_error) =
+                    quiesce_worker(&worker_subject, &worker_cgroup, &population)
+                {
+                    self.fail_stopped = true;
+                    return Err(ZfsWorkerError::Quiescence(format!(
+                        "failed fixed ZFS worker cancellation was not proved; exchange: {error}; cancellation: {cancellation_error}"
+                    )));
+                }
+                Err(error)
+            }
+        }
     }
 }
 
@@ -283,6 +337,12 @@ pub enum WorkerObservationOutcome {
 /// Returns an error for an invalid executable, inherited socket, storaged peer,
 /// request, transaction compilation, process launch, or response write.
 pub fn run_inherited_worker(configured_zfs: PathBuf) -> Result<(), ZfsWorkerError> {
+    // A stable service UID is required because systemd's DynamicUser path
+    // forces a seccomp rule incompatible with mandatory openat2 resolution.
+    // Disable dumpability before opening or parsing any privileged state so
+    // the serialized UID cannot become a ptrace or core-file authority path.
+    aos_sandbox_linux::process::disable_core_dumps()?;
+
     let contract = ZfsHelperContract::new(configured_zfs)
         .map_err(|error| ZfsWorkerError::Executable(error.to_string()))?;
     let _executable_pin = PinnedExecutable::open(&contract)?;
@@ -334,6 +394,14 @@ pub fn run_inherited_worker(configured_zfs: PathBuf) -> Result<(), ZfsWorkerErro
     storaged_cgroup.verify_exact_membership(acknowledgement.subject().pidfd())?;
     decode_ack(acknowledgement.payload())?;
     Ok(())
+}
+
+pub(crate) fn execute_transaction_for(
+    contract: &ZfsHelperContract,
+    transaction: &ZfsTransaction,
+    timeout: Duration,
+) -> Result<WorkerProcessOutput, ZfsWorkerError> {
+    execute_transaction(contract, transaction, Deadline::after(timeout))
 }
 
 fn execute_transaction(
@@ -406,6 +474,21 @@ fn execute_transaction(
     })
 }
 
+pub(crate) fn observe_transaction_for(
+    contract: &ZfsHelperContract,
+    transaction: &ZfsTransaction,
+    postcondition: bool,
+    timeout: Duration,
+) -> Result<ZfsObservationResult, ZfsWorkerError> {
+    let plan = if postcondition {
+        ZfsObservationPlan::postcondition(transaction)
+    } else {
+        ZfsObservationPlan::preconditions(transaction)
+    }
+    .map_err(|_| ZfsWorkerError::Protocol("invalid ZFS observation plan"))?;
+    execute_observation(contract, &plan, Deadline::after(timeout))
+}
+
 fn execute_observation(
     contract: &ZfsHelperContract,
     plan: &ZfsObservationPlan,
@@ -469,14 +552,14 @@ fn execute_observation(
     ))
 }
 
-struct PinnedExecutable {
+pub(crate) struct PinnedExecutable {
     _file: File,
     device: u64,
     inode: u64,
 }
 
 impl PinnedExecutable {
-    fn open(contract: &ZfsHelperContract) -> Result<Self, ZfsWorkerError> {
+    pub(crate) fn open(contract: &ZfsHelperContract) -> Result<Self, ZfsWorkerError> {
         let metadata = std::fs::symlink_metadata(contract.executable())?;
         if !metadata.file_type().is_file()
             || metadata.uid() != 0
@@ -500,7 +583,10 @@ impl PinnedExecutable {
         })
     }
 
-    fn validate_current(&self, contract: &ZfsHelperContract) -> Result<(), ZfsWorkerError> {
+    pub(crate) fn validate_current(
+        &self,
+        contract: &ZfsHelperContract,
+    ) -> Result<(), ZfsWorkerError> {
         let metadata = std::fs::symlink_metadata(contract.executable())?;
         if !metadata.file_type().is_file()
             || metadata.dev() != self.device
@@ -590,21 +676,78 @@ fn validate_worker_cgroup(path: &str) -> Result<(), ZfsWorkerError> {
 
 fn verify_worker_peer(
     subject: &KernelAuthorizedRecordSubject,
-    parent: &aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
+    parent: &RetainedCgroupAnchor,
     path: &Path,
-) -> Result<(), ZfsWorkerError> {
+) -> Result<RetainedCgroupAnchor, ZfsWorkerError> {
     let credentials = subject.credentials();
     if credentials.uid() == 0 || credentials.gid() == 0 {
         return Err(ZfsWorkerError::PeerMismatch);
     }
     let relative = path
-        .strip_prefix("aos-control.slice")
+        .strip_prefix(CONTROL_SLICE_CGROUP)
         .map_err(|_| ZfsWorkerError::PeerMismatch)?;
-    let info = parent.verify_descendant_membership(subject.pidfd(), relative)?;
+    let worker_cgroup = parent.resolve_descendant(relative)?;
+    let info = worker_cgroup.verify_exact_membership(subject.pidfd())?;
     if info.pid() != credentials.pid().get() || info.thread_group_id() != credentials.pid().get() {
         return Err(ZfsWorkerError::PeerMismatch);
     }
-    Ok(())
+    parent.validate_current()?;
+    Ok(worker_cgroup)
+}
+
+fn quiesce_worker(
+    subject: &KernelAuthorizedRecordSubject,
+    worker_cgroup: &RetainedCgroupAnchor,
+    population: &CgroupPopulationMonitor,
+) -> Result<(), ZfsWorkerError> {
+    if worker_is_quiescent(subject, population)? {
+        return Ok(());
+    }
+    if let Err(kill_error) = worker_cgroup.kill_all() {
+        // Systemd can empty or remove the unit cgroup before this write.
+        // Accept that race only when exact pidfd death plus the retained
+        // monitor proves either an empty active subtree or its retirement.
+        return match worker_is_quiescent(subject, population) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(kill_error.into()),
+            Err(proof_error) => Err(ZfsWorkerError::Quiescence(format!(
+                "cgroup kill failed and the quiescence recheck also failed; kill: {kill_error}; recheck: {proof_error}"
+            ))),
+        };
+    }
+
+    wait_for_worker_quiescence(subject, population, QUIESCENCE_TIMEOUT)
+}
+
+fn worker_is_quiescent(
+    subject: &KernelAuthorizedRecordSubject,
+    population: &CgroupPopulationMonitor,
+) -> Result<bool, ZfsWorkerError> {
+    if subject.pidfd().is_alive()? {
+        return Ok(false);
+    }
+    match population.state()? {
+        CgroupPopulationState::Empty | CgroupPopulationState::Retired => Ok(true),
+        CgroupPopulationState::Populated => Ok(false),
+    }
+}
+
+fn wait_for_worker_quiescence(
+    subject: &KernelAuthorizedRecordSubject,
+    population: &CgroupPopulationMonitor,
+    timeout: Duration,
+) -> Result<(), ZfsWorkerError> {
+    let deadline = Deadline::after(timeout);
+
+    loop {
+        if worker_is_quiescent(subject, population)? {
+            return Ok(());
+        }
+        let remaining = deadline.remaining().ok_or(ZfsWorkerError::Quiescence(
+            "fixed ZFS worker quiescence deadline elapsed".to_owned(),
+        ))?;
+        std::thread::sleep(remaining.min(QUIESCENCE_POLL_INTERVAL));
+    }
 }
 
 fn verify_systemd_activation_peer(
@@ -734,7 +877,7 @@ struct Deadline(Duration);
 impl Deadline {
     fn after(duration: Duration) -> Self {
         Self(
-            monotonic_now()
+            boottime_now()
                 .checked_add(duration)
                 .unwrap_or(Duration::MAX),
         )
@@ -742,7 +885,7 @@ impl Deadline {
 
     fn remaining(self) -> Option<Duration> {
         self.0
-            .checked_sub(monotonic_now())
+            .checked_sub(boottime_now())
             .filter(|remaining| !remaining.is_zero())
     }
 
@@ -753,12 +896,15 @@ impl Deadline {
     }
 }
 
-fn monotonic_now() -> Duration {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+fn boottime_now() -> Duration {
+    // CLOCK_BOOTTIME includes suspend. A relative poll may wake late after a
+    // resume, but the mandatory before/after checks reject that record instead
+    // of extending the authorization acceptance window.
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
     Duration::new(now.tv_sec as u64, now.tv_nsec as u32)
 }
 
-fn open_cgroup_root() -> Result<CgroupV2Root, ZfsWorkerError> {
+pub(crate) fn open_cgroup_root() -> Result<CgroupV2Root, ZfsWorkerError> {
     let descriptor: OwnedFd = rustix::fs::open(
         CGROUP_ROOT,
         rustix::fs::OFlags::PATH
@@ -890,6 +1036,23 @@ mod tests {
             .unwrap(),
             StorageOperation::CreateWorkspace { quota_bytes: 4096 },
         )
+    }
+
+    #[test]
+    fn worker_cgroup_requires_the_exact_systemd_slice_hierarchy() {
+        let expected = "aos.slice/aos-control.slice/aos-sandbox-zfs-worker@trusted.service";
+        validate_worker_cgroup(expected).unwrap();
+
+        for substituted in [
+            "aos-control.slice/aos-sandbox-zfs-worker@trusted.service",
+            "aos.slice/alternate.slice/aos-sandbox-zfs-worker@trusted.service",
+            "aos.slice/aos-control.slice/alternate/aos-sandbox-zfs-worker@trusted.service",
+        ] {
+            assert!(matches!(
+                validate_worker_cgroup(substituted),
+                Err(ZfsWorkerError::PeerMismatch)
+            ));
+        }
     }
 
     #[test]
@@ -1056,7 +1219,7 @@ mod tests {
         .unwrap();
         let ancestor = ProjectAncestorPolicyV1::new(ancestor_dataset, 268_435_456, 8, 16).unwrap();
         let contract = ZfsHelperContract::new(executable).unwrap();
-        let executor = SystemdZfsExecutor::new(
+        let mut executor = SystemdZfsExecutor::new(
             PathBuf::from("/run/aos/sandbox-zfs-worker/control.sock"),
             open_cgroup_root().unwrap(),
         )

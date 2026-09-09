@@ -4710,11 +4710,12 @@ also remains, and `SBX-P0-04` and `SBX-P0-05` stay open.
 
 ### Production Storage worker and deadline qualification (in progress)
 
-The current Storage increment adds a fixed typed, systemd-contained mutation
-worker. The worker runs as a dynamic non-root identity with `CAP_SYS_ADMIN`,
-compiles an independent fixed ZFS argument vector, admits a closed environment
-and descriptor set, bounds captured output, authenticates the worker exchange,
-and checks the broker deadline around worker I/O. It also adds exact ZFS
+An earlier Storage qualification increment added a fixed typed,
+systemd-contained mutation worker. At that iteration, the worker ran as a
+dynamic non-root identity with `CAP_SYS_ADMIN`,
+compiled an independent fixed ZFS argument vector, admitted a closed environment
+and descriptor set, bounded captured output, authenticated the worker exchange,
+and checked the broker deadline around worker I/O. It also added exact ZFS
 `list`, `get`, and `holds` observation plans, strict worker-local parsers and a
 pre/post-state evaluator, typed v2 observation verbs and results, and a private
 `SystemdZfsProcessBackend` adapter under the existing store-lifetime lock.
@@ -4905,6 +4906,118 @@ fresh repair admission is not implemented. The runtime remains
 `IntegrationIncomplete`, Storage Apply remains unadvertised, and
 `SBX-STOR-01` and `SBX-P0-07` remain open.
 
+### Descriptor-backed Storage root-pin execution (in progress)
+
+The current source composes root-pin attempts with separate systemd effect and
+observation helpers. The broker retains the initial host mount namespace and
+the fixed root-owned workspace-pin directory, transfers those descriptors in
+fixed roles, authenticates the complete durable attempt and ZFS catalog inside
+the one-shot helper, and requires the helper process to remain in its exact
+reserved cgroup. Ensure uses the descriptor-first `fsopen`/`fsconfig`/`fsmount`
+path. RemoveAndDestroy performs an ordinary unmount and the exact ZFS destroy
+inside the same authenticated worker. A root-owned replay claim precedes the
+first target mutation. Every post-request failure is ambiguous, cancels the
+whole worker cgroup, and is never dispatched again.
+
+Ambiguous recovery uses a distinct observer service. It authenticates the
+historical operation fence and attempt while independently requiring current
+host authority, but owns no replay ledger, protected effect clock, mount
+construction, unmount, or ZFS mutation call path. Its systemd syscall profile
+admits the required mount-namespace `setns` and explicitly denies mount and
+chroot mutation. Exact read-only dataset and descriptor-backed mount evidence
+may complete only the already-authorized publication or retirement. Startup
+also cancels and proves empty every reserved root-pin, observer, and generic
+ZFS worker cgroup before physical observation.
+
+systemd 259 implements `RestrictSUIDSGID=true` by returning `ENOSYS` for every
+`openat2` call because the creation mode is indirect. The three fixed workers
+therefore leave that filter disabled rather than weakening mandatory
+descriptor-relative `openat2` resolution. The generic worker remains inside
+its systemd mount view; the pin helpers open their authority and replay roots
+before entering the retained host mount namespace, and the current typed code
+creates only `0700` pin slots and `0600` replay records through retained roots.
+Those constraints, the narrow capability sets, `NoNewPrivileges`, and the
+closed syscall and request profiles are not equivalent setid-creation
+enforcement after `setns`. Production enablement still requires enforcing MAC
+and actual forbidden-syscall, setid-creation, and host-write negative tests;
+Storage Apply remains unadvertised until that residual exposure is closed.
+
+A current-source Storage library run passes 114 tests with two real-systemd
+tests ignored. All Storage targets, including both new helper executables, pass
+`cargo check`; warning-denied rustdoc and all-target, no-dependency strict
+Clippy also pass.
+
+The current x86_64 platform gate passes at
+`/nix/store/17hh1aziqcbbafm7zzj01qlmmn2yxna3-aos-fleet-test-sandbox-zfs-platform-proof-0`.
+It boots Linux 6.18.33 with the matching OpenZFS 2.4.0 userland and kernel
+module, and proves snapshot, hold and blocked destroy, clone identity, quota
+and reservation properties, reservation accounting, enforced quota through
+`EDQUOT`, send/receive snapshot identity, and an idmapped ZFS mount. The idmap
+proof preserves canonical root ownership on disk while checking translated
+ownership from both the host and sandbox views, including a file created
+through the mapped mount.
+
+The same gate proves descriptor-first `fsopen`/`fsconfig`/`fsmount` ZFS
+construction twice, including source and filesystem-root identity without
+changing the dataset GUID or its `mountpoint=none,canmount=off` properties.
+libzfs directly retains the AOS `libgcc_s.so.1` unwind runtime required by
+pthread cancellation, and the successful send/receive runs under a shell
+boundary that is first shown to propagate a failing pipeline producer. The
+test finally requires the exact healthy-pool result, unmounts both constructed
+views, destroys the pool, and successfully observes its absence from the full
+post-destroy pool inventory. The exact derivation is
+`/nix/store/zqmhmz4gpxig7fpkivm24iz3n2ccicyx-aos-fleet-test-sandbox-zfs-platform-proof-0.drv`.
+
+This qualifies the native x86_64 OpenZFS substrate only. The AArch64 fleet VM,
+installed root-pin worker lifecycle, runtime observer syscall-denial proof,
+pre-dispatch expiry with zero mount/ZFS/replay attempts, whole-cgroup
+descendant termination, and crash recovery remain unqualified. `SBX-P0-07`,
+`SBX-P0-08`, and `SBX-STOR-01` therefore remain open; the runtime stays
+`IntegrationIncomplete` and Storage Apply remains unadvertised.
+
+### Nested broker identity and generic Storage worker qualification (in progress)
+
+Commit `227f64e36` corrects the fixed Host and Mount broker peer profiles to
+the actual nested systemd hierarchy under `aos.slice/aos-control.slice`.
+Verification still resolves one exact cgroup through retained cgroup v2
+custody and matches the accepted socket peer's pidfd and PID against that
+membership. Same-named flattened and alternate-slice cgroups are explicit
+negative controls; they do not grant controller or RootMount authority. The
+cross-UID pidfd liveness fixture also keeps its private control marker separate
+from libtest's status stream without changing the production liveness check.
+
+The exact `checks.vm.sandbox-local-identity` derivation
+`/nix/store/68za5y1zbr7a236y7kc7l45c40c4kiqm-aos-vm-test-sandbox-local-identity-0.drv`
+passes at
+`/nix/store/c39mazsk4i2rq3x3js8qsfznm4355za3-aos-vm-test-sandbox-local-identity-0`.
+It qualifies real socket activation, realm membership, the cross-UID pidfd
+path, the distinct RootMount peer, and the flattened and alternate-hierarchy
+decoys. This is local peer-identity evidence, not Storage Apply or end-to-end
+runtime qualification.
+
+The subsequent generic Storage worker gate
+`/nix/store/irv1qrw858f0ps79s4mljz2zqbjnq52s-aos-fleet-test-sandbox-zfs-worker-0.drv`
+failed after both guests booted. The real worker's mandatory `openat2` returned
+`ENOSYS`: systemd 259.8 unconditionally installs the
+`RestrictSUIDSGID` creation filter for `DynamicUser`, even when the unit text
+sets `RestrictSUIDSGID=false`. This independently confirmed that adding
+`openat2` to `SystemCallFilter` cannot repair the failure. The current pending
+qualification replaces only the generic worker's dynamic identity with fixed
+non-root UID/GID 992, disables core dumps before request handling, and limits
+its activation socket to one simultaneous connection. All other capability,
+namespace, descriptor, syscall, cgroup, peer, and fail-stop checks remain.
+
+The pending fleet assertions require the fixed account and effective unit
+properties, process ownership, one active worker and cgroup, refusal counters
+for a concurrent client while that worker and a descendant remain live,
+whole-cgroup drain, and a fresh successful dispatch afterward. No passing VM
+result exists yet for this static-worker revision. Mandatory MAC enforcement
+and negative gates for forbidden syscalls, setid creation, and host writes --
+including after entering the retained host mount namespace -- remain required
+production work rather than a permanent qualification exception. Storage
+Apply therefore remains unadvertised, and `SBX-STOR-01`, `SBX-P0-07`, and
+`SBX-P0-08` remain open.
+
 ### Signed Storage catalog preparation retention (in progress)
 
 The local commit `1d36f09ae` advances `SBX-STOR-01` with a library coordinator
@@ -4946,6 +5059,216 @@ The ignored real-systemd test remains ignored, no passing VM result is claimed,
 and the runtime still does not advertise Storage Apply. The complete production
 handler, protected resolver provisioning, and integrated lifecycle remain open;
 `SBX-STOR-01` is not complete.
+
+### Exact Storage worker quiescence foundation (in progress)
+
+The current source retains an authenticated `cgroup.events` descriptor before
+dispatch and distinguishes a populated subtree, an empty active subtree, and
+retirement of that exact cgroup lifetime. Only `ENODEV` from the retained
+kernfs descriptor is accepted as retirement; every other read failure remains
+an error. The generic ZFS and workspace-pin paths require exact worker pidfd
+death plus an empty or retired subtree, cancel the complete unit through
+`cgroup.kill`, and fail-stop the executor when cancellation cannot be proved.
+The Network worker consumes the same typed population contract.
+
+The exact `checks.vm.sandbox-local-identity` derivation
+`/nix/store/dvq6cfmfbdby12w6vz4ag37rma5jdd9a-aos-vm-test-sandbox-local-identity-0.drv`
+passes at
+`/nix/store/njw7w3cgq8c6xfd8ng0izq7qf1v7b288-aos-vm-test-sandbox-local-identity-0`.
+Its new kernel test proves empty and populated states through a live descendant,
+the kernel's refusal to remove populated ancestry, exact pidfd death, retained
+retirement after removal, same-path recreation with a different kernel ID, and
+continued retirement of the old retained monitor. The remaining local-identity
+guest groups also pass, including the existing cgroup membership, cross-UID
+pidfd, descriptor-subject, runtime-scope, local-session, provisioning,
+publisher-session, publisher-control, journal, peer, and service checks.
+
+This is focused kernel lifecycle evidence, not a passing integrated Storage
+worker result. In the exact full worker derivation
+`/nix/store/p0r0fhmyz49aa7jdgmhc5x258k6pg0cx-aos-fleet-test-sandbox-zfs-worker-0.drv`
+both guests booted and passed the readiness and socket-policy checks. The real
+guest then passed create, snapshot, hold, clone, quota, clone destruction, hold
+release, snapshot destruction, and workspace destruction through the production
+generic worker. Every operation also passed the broker's exact pidfd and worker
+cgroup quiescence check before the next operation began. The test then failed in
+the standalone mount-namespace and Landlock boundary probe before reaching the
+descriptor-backed workspace-pin flow. The diagnostic rerun
+`/nix/store/s22wxscc8mdjrf692bzbbbv32ffgcyri-aos-fleet-test-sandbox-zfs-worker-0.drv`
+proved that the probe failed while opening `/proc/1/ns/mnt`: Landlock's ptrace
+check denies that post-restriction procfs magic-link lookup, before `setns` is
+reached. A focused rerun at
+`/nix/store/3q87dmv4kwsvw2cvjcr8y50aw3fyzm3m-aos-fleet-test-sandbox-storage-boundary-focused-0`
+passes with systemd preopening the namespace descriptor. It authenticates the
+descriptor before `setns` and retains the existing Landlock, seccomp, set-ID,
+and mount denials. That run only proves aggregate fail-closed handling for the
+malformed descriptor fixtures. A first build of the strengthened focused
+derivation with independently valid extra, misnamed, and wrong-filesystem
+fixtures did not reach the VM: its immutable top-level derivation
+`/nix/store/jm0hka3mc2yl4n6xyckmczpapmi766b7-aos-fleet-test-sandbox-storage-boundary-focused-0.drv`
+failed in an upstream `aos` package check after 4,795 of 4,796 tests passed. The
+unrelated failing Hub test was
+`manifest_admission_stages_before_validation_and_claims_each_digest_once`, where
+one concurrent request returned 503 after its bounded digest-claim convergence
+window while the other returned 201. The exact Hub test then passed alone, and
+an unchanged retry passed all 4,796 package tests and the strengthened focused
+VM at
+`/nix/store/z29xpp0wwam2p34jnf56lvq3ckvflmpl-aos-fleet-test-sandbox-storage-boundary-focused-0`.
+That VM proves the missing, extra, misnamed, and wrong-filesystem descriptor
+contracts independently fail closed with their exact diagnostics, while the
+positive systemd-preopened descriptor path still passes. The intermittent Hub
+failure's specific cause remains unresolved, and the descriptor-backed
+workspace-pin flow remains pending.
+Storage Apply remains unadvertised, and no completion is claimed for
+`SBX-STOR-01`, `SBX-P0-07`, or `SBX-P0-08`.
+
+### Typed Storage pin proof and live workspace publication (in progress)
+
+The workspace catalog now persists the exact satisfied Ensure proof rather than
+reconstructing publication authority from mutable filesystem metadata. Catalog
+format 2 binds that proof into a new resource-digest domain. Active publish,
+recovery, replay, and inventory revalidate the proof's boot, host namespace,
+mount point, ZFS name and GUID; the live `O_PATH` directory type, device and
+inode; the distinct parent and unique mount ID; and a bounded mount-inventory
+entry whose root, filesystem, source and device match. A reopened descriptor
+and second inventory pass must agree before publication is accepted. Format 1
+rows remain decodable only for historical retirement reconstruction and cannot
+authorize a fresh active publication.
+
+Custody checks now distinguish the protected empty mount slot from the mounted
+filesystem root. The unmounted slot must remain under the exact protected
+parent mount, root-owned, and not group- or other-writable. Once the independently
+proved ZFS mount occupies that slot, its root owner and mode are guest data and
+may change without invalidating the mount identity. Regression coverage rejects
+an unmounted UID 992 or mode `0777` slot, accepts those attributes on an exact
+mounted root, rejects same-device/inode substitutions with a changed mount ID,
+and rejects boot, namespace, source, inode, proof, and legacy-envelope
+substitutions. It preserves the existing cross-workspace device/inode alias
+check. This does not authorize recursive ownership repair or add `CAP_CHOWN`.
+
+A Nix-development-shell run of the current Storage library suite executed 135
+tests: 133 passed, none failed, and two real-systemd tests were ignored. The
+focused catalog suite independently passed all 12 tests. These source tests
+include exact mount-proof persistence and restart validation, mutable mounted
+root attributes, and the protected-state tempfile regression. They do not by
+themselves qualify the installed services.
+
+The immutable integrated attempt was
+`/nix/store/cjk5b9f36y65zqwv1dnmi9z7pijxsas5-aos-fleet-test-sandbox-zfs-worker-0.drv`,
+with workspace source
+`/nix/store/8ar75jf7wdkgdgshgjvrixspwr863cqp-aos-workspace-src`, manifest
+`/nix/store/0j8rngdx198bdz1kis9c4b4vh5hhdmkp-aos-fleet-test-sandbox-zfs-worker-manifest.json.drv`,
+and generated test
+`/nix/store/13y6283vqi8wqh4nlfrzh85p9qi8mnca-aos-fleet-test-sandbox-zfs-worker-test.py.drv`.
+Its real guest passed the production
+`broker::tests::systemd_workspace_pin_vm_client`: create and satisfied Ensure,
+root-owned catalog publish with one decoded inventory entry, catalog drop and
+reopen with exact replay, RemoveAndDestroy and retirement to an empty inventory,
+a second drop and reopen preserving that empty inventory, and stale-fence
+effect-worker rejection followed by exact read-only observer evidence yielding
+`AwaitFreshRepair` without a replay claim. The filtered Rust result was one
+passed, zero failed, and 134 filtered out.
+
+The complete fleet derivation is nevertheless red. Its later fault guest proved
+the fast dispatch and whole-cgroup timeout/drain cases, but the timed-out
+Accept=yes worker left the client oneshot successful and inactive. PID 1 then
+collected that static `aos-storaged.service`. The next named
+`systemctl reset-failed` therefore failed with
+`Unit aos-storaged.service not loaded` before the broker-kill, overlapping
+client, and final fresh-dispatch tail. This is a fixture unit-GC/reset race, not
+a failure of the earlier catalog branch.
+
+The fixture-only correction reloads and validates the exact static unit, admits
+only `inactive` or `failed`, and resets that named unit only when it is actually
+failed; it does not ignore errors or reset unrelated units. Its generated
+Python passed syntax compilation with the AOS-built Python 3.14.3 interpreter.
+The immutable successor was
+`/nix/store/l1frvml9kzz0rnzmmjqyacv2jxfdyq0j-aos-fleet-test-sandbox-zfs-worker-0.drv`,
+with source
+`/nix/store/8qq8ywpbs9251s92xaalcwbi8y4rw78h-aos-workspace-src`. It did not
+reach either payload: the fault and real guests reached their stage-2 systems
+only after roughly 90 and 103 seconds, respectively, then started
+`aos-eval.service` at guest uptimes 94.647 and 107.044 seconds. The fault agent
+failed to become ready before the 180-second manifest boot timeout while both
+evaluations were still running. The predecessor reached the same evaluation
+path near guest uptime six seconds and did not start its identical test-agent
+unit until evaluation converged near guest uptime 113 seconds. The two
+manifests retain the same kernel, QEMU, KVM, CPU, memory, vCPU, network, agent,
+and timeout configuration; their normalized evaluation scripts are identical,
+with raw differences limited to workspace-derived store paths. The delayed
+pre-stage-2 boot is therefore consistent with transient host scheduling rather
+than the fixture correction, but that is not established as its cause and the
+red run provides no evidence for or against that correction. One unchanged
+retry of the same immutable derivation,
+source, manifest, and 180-second timeout brought both agents ready roughly 116
+seconds after launch and passed the complete fault and real payloads. It
+realized
+`/nix/store/qv8ac0yfmabqkwmks9kmi85wf3l1s36g-aos-fleet-test-sandbox-zfs-worker-0`.
+This qualifies the fixture correction and the integrated branches covered by
+that exact fleet test while preserving the initial timeout as an unexplained
+boot-timing failure.
+Fresh repair admission and one-time new-dataset ownership initialization also
+remain unimplemented. Storage Apply stays unadvertised and `SBX-STOR-01`,
+`SBX-P0-07`, `SBX-P0-08`, and `SBX-P0-10` remain open.
+
+### Set-ID creation guard source feasibility (design only)
+
+A read-only source audit bounded one possible BPF-LSM SetidGuard, but does not
+replace the required enforcing MAC policy in `SBX-P0-10`. The immutable Linux
+6.18.33 archive is
+`/nix/store/23av28lf5a6sm73qn0qvhpip0b1nfw1l-linux-6.18.33.tar.xz`, with
+SHA-256
+`6f16ff302599f6fe34742890322cf0775703105fbd8767449682fca6af0fb782`.
+`fs/namei.c:3422-3458` strips SGID conditionally and applies the umask before
+filesystem creation, but does not itself strip SUID. Named creation has the
+returning `inode_create` hook; `O_TMPFILE` instead calls the filesystem's
+`tmpfile` operation at `fs/namei.c:4026` and only then invokes the void
+`inode_post_create_tmpfile` hook at `fs/namei.c:4042`, as declared by
+`include/linux/lsm_hook_defs.h:123-126`. A later `security_file_open` rejection
+at `fs/open.c:942` reaches the failed-open cleanup at
+`fs/namei.c:4114-4150`. It can therefore prevent an `O_TMPFILE` descriptor or
+linkable artifact from reaching the caller, but cannot satisfy a literal
+no-inode-allocation rule.
+
+That distinction is observable in the immutable OpenZFS 2.4.0 archive
+`/nix/store/8062ray287njrihgsasw4zyi2749r5da-zfs-2.4.0.tar.gz`, with SHA-256
+`7bdf13de0a71d95554c0e3e47d5e8f50786c30d4f4b63b7c593b1d11af75c9ee`.
+`module/os/linux/zfs/zpl_inode.c:282-348` creates the tmpfile into ZFS's
+unlinked set before `finish_open_simple`. Thus a `file_open` denial leaves no
+reachable or persistent artifact after cleanup, while transient allocation
+still occurred. If the production requirement is literally no creation, the
+stock hook surface is insufficient; it needs a returning pre-filesystem hook
+or trusted pre-filesystem mediation that validates the requested mode while
+denying the effect worker any unmediated `openat2`, such as a final seccomp
+policy installed after bootstrap.
+
+Per-task policy identity is also source-feasible, not yet qualified. Linux
+initializes the child's BPF task-storage pointer before the returning
+`security_task_alloc` hook and aborts the clone if that hook fails
+(`kernel/fork.c:2146-2168`, `security/security.c:3228-3237`). The base helper
+dispatcher exposes cgroup- and task-storage lookup, creation, and deletion
+helpers (`kernel/bpf/helpers.c:2048-2070`), while
+`Documentation/bpf/map_cgrp_storage.rst:15-34,92-105` documents preallocation
+by cgroup fd and the possible null lookup. This supports a design in which a
+separate trusted loader registers an exact worker cgroup, an exec hook seeds a
+task tag, `task_alloc` copies only an existing parent tag, and policy hooks
+fail closed when either identity is absent. Every selected hook still needs
+compile, verifier, inheritance, stale-cgroup, exec, clone, and VM-negative
+proof before that design can be accepted.
+
+There is no `BPF_F_RDONLY_USER` flag. `BPF_F_RDONLY` restricts syscall-side
+access through an opened map descriptor, while `BPF_F_RDONLY_PROG` restricts
+program-side access (`include/uapi/linux/bpf.h:1379-1402`). Neither makes the
+map immutable: a process with `CAP_SYS_ADMIN` can reacquire a map by ID with a
+writable descriptor (`kernel/bpf/syscall.c:4843-4858`). The current Network
+effect worker retains `CAP_BPF`, `CAP_PERFMON`, `CAP_SYS_ADMIN`, and
+`CAP_NET_ADMIN`, so an acceptable design must move loading and map mutation to
+a separate trusted service, remove the BPF and map-reopen authorities from the
+effect worker, and deny its BPF object-management paths. `CAP_NET_ADMIN` is a
+separate namespace-networking authority and is not implicated merely by the
+map-FD issue. This bounded guard would still cover only the set-ID gap.
+Dedicated enforcing domains and host-path allowlists, plus set-ID creation and
+modification, forbidden-syscall, and post-namespace-entry host-write negatives,
+remain mandatory. No `SBX-P0-10` checkbox is closed.
 
 ### Canonical Network kernel plan (in progress)
 

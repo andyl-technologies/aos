@@ -85,6 +85,47 @@ impl StorageProtectedConfigurationV1 {
     pub const fn public_binding(&self) -> ObjectDigest {
         self.public_binding
     }
+
+    pub(crate) fn authenticate_workspace_pin_worker_request(
+        &self,
+        configured_contract: &crate::ZfsHelperContract,
+        request: crate::pin_worker::WorkspacePinWorkerRequestV1,
+    ) -> Result<crate::pin_worker::AuthenticatedWorkspacePinWorkerRequestV1, crate::ZfsWorkerError>
+    {
+        crate::pin_worker::authenticate_request(
+            &self.authority,
+            &self.state_key,
+            configured_contract,
+            request,
+        )
+    }
+
+    pub(crate) fn authenticate_workspace_pin_observation_request(
+        &self,
+        configured_contract: &crate::ZfsHelperContract,
+        request: crate::pin_worker::WorkspacePinWorkerRequestV1,
+    ) -> Result<
+        crate::pin_worker::AuthenticatedWorkspacePinObservationRequestV1,
+        crate::ZfsWorkerError,
+    > {
+        crate::pin_worker::authenticate_observation_request(
+            &self.authority,
+            &self.state_key,
+            configured_contract,
+            request,
+        )
+    }
+
+    pub(crate) fn check_workspace_pin_worker_before_effect<F>(
+        &self,
+        request: &crate::pin_worker::AuthenticatedWorkspacePinWorkerRequestV1,
+        trusted_clock: &mut F,
+    ) -> Result<(), crate::ZfsWorkerError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        crate::pin_worker::check_before_effect(&self.authority, request, trusted_clock)
+    }
 }
 
 /// Groups the three location-bound records committed with one Storage intent.

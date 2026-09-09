@@ -26,7 +26,11 @@ use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::StorageProtectedConfigurationV1;
+use crate::broker::{WorkspacePinExecutionOutcomeV1, WorkspaceRemovePinRequirementV1};
 use crate::helper::{StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome};
+use crate::pin_observer::WorkspacePinHostCustody;
+use crate::pin_worker_runtime::{SystemdWorkspacePinExecutor, SystemdWorkspacePinObserver};
+use crate::process::open_cgroup_root;
 use crate::{
     CommittedStorageResultV1, DurableStoragePhase, ResolvedCatalogCommitmentV1,
     StorageAdmissionCoordinator, StorageAdmissionError, StorageAdmissionOutcome,
@@ -43,6 +47,8 @@ const BOOTSTRAP_HEADER_BYTES: usize = 24;
 const MAXIMUM_BOOTSTRAP_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_BOOTSTRAP_CATALOGS: usize = 256;
 const RUNTIME_BINDING_DOMAIN: &[u8] = b"aos.sandbox.storage.runtime-composition.v1\0";
+const WORKSPACE_PIN_WORKER_SOCKET: &str = "/run/aos/sandbox-workspace-pin-worker/control.sock";
+const WORKSPACE_PIN_OBSERVER_SOCKET: &str = "/run/aos/sandbox-workspace-pin-observer/control.sock";
 
 /// Reports protected Storage runtime construction or recovery failure.
 #[derive(Debug, thiserror::Error)]
@@ -68,6 +74,9 @@ pub enum StorageRuntimeError {
     /// Protected workspace publication state or root-pin identity failed closed.
     #[error("Storage workspace publication failed closed: {0}")]
     WorkspaceCatalog(#[from] StorageWorkspaceCatalogError),
+    /// The initial host mount namespace or fixed pin root could not be retained.
+    #[error("initial Storage workspace pin scope failed closed")]
+    WorkspacePinScope,
     /// Signed Apply admission or its durable authority links failed closed.
     #[error("Storage admission failed closed: {0}")]
     Admission(#[from] StorageBrokerError),
@@ -113,6 +122,10 @@ pub enum StorageRuntimeMutationOutcome {
 pub struct StorageBrokerRuntime {
     coordinator: StorageAdmissionCoordinator,
     workspaces: StorageWorkspaceCatalogV1,
+    pin_custody: WorkspacePinHostCustody,
+    pin_contract: ZfsHelperContract,
+    pin_executor: SystemdWorkspacePinExecutor,
+    pin_observer: SystemdWorkspacePinObserver,
     helper: StorageMutationHelper<SystemdZfsProcessBackend>,
     readiness: StorageRuntimeReadiness,
 }
@@ -139,6 +152,10 @@ impl StorageBrokerRuntime {
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
     ) -> Result<Self, StorageRuntimeError> {
+        // Retain the host mount namespace before constructing any subsystem
+        // that may later acquire a namespace-scoped helper.
+        let pin_custody = WorkspacePinHostCustody::retain_initial_root_owned()
+            .map_err(|_| StorageRuntimeError::WorkspacePinScope)?;
         let protected_configuration =
             StorageProtectedConfigurationV1::from_protected_directory(authority_directory)?;
         let configuration_binding =
@@ -152,6 +169,19 @@ impl StorageBrokerRuntime {
             configuration_binding,
             bootstrap.genesis_generation,
             &bootstrap.catalogs,
+        )?;
+        let contract = ZfsHelperContract::new(zfs_executable)?;
+        let mut pin_executor = SystemdWorkspacePinExecutor::new(
+            PathBuf::from(WORKSPACE_PIN_WORKER_SOCKET),
+            open_cgroup_root()?,
+        )?;
+        // The transaction journal lock is already held. Prove the complete
+        // reserved pin-worker cgroup scope empty before opening or observing
+        // workspace state and before generic mutation recovery.
+        pin_executor.recover_quiescence()?;
+        let pin_observer = SystemdWorkspacePinObserver::new(
+            PathBuf::from(WORKSPACE_PIN_OBSERVER_SOCKET),
+            open_cgroup_root()?,
         )?;
         // Keep both exclusive journals for the runtime lifetime. Acquiring the
         // transaction journal first is the only permitted cross-journal order.
@@ -167,11 +197,14 @@ impl StorageBrokerRuntime {
             )?;
         }
 
-        let contract = ZfsHelperContract::new(zfs_executable)?;
         let backend = SystemdZfsProcessBackend::new(executor);
         let mut runtime = Self {
             coordinator: StorageAdmissionCoordinator::new(authority, transactions),
             workspaces,
+            pin_custody,
+            pin_contract: contract.clone(),
+            pin_executor,
+            pin_observer,
             helper: StorageMutationHelper::new(contract, backend),
             readiness: StorageRuntimeReadiness::IntegrationIncomplete,
         };
@@ -305,11 +338,7 @@ impl StorageBrokerRuntime {
         if !self.is_apply_ready() {
             return Err(StorageRuntimeError::Recovery);
         }
-        let outcome = match self.coordinator.preobserve_and_execute(
-            &mut self.helper,
-            operation_id,
-            trusted_clock,
-        ) {
+        let outcome = match self.execute_composed(operation_id, trusted_clock) {
             Ok(outcome) => outcome,
             Err(_) => {
                 self.latch_recovery_required();
@@ -320,6 +349,90 @@ impl StorageBrokerRuntime {
             self.latch_recovery_required();
         }
         Ok(outcome.into())
+    }
+
+    fn execute_composed<F>(
+        &mut self,
+        operation_id: [u8; 16],
+        trusted_clock: &mut F,
+    ) -> Result<ZfsHelperOutcome, crate::helper::ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        let prepared = self
+            .coordinator
+            .preobserve(&mut self.helper, operation_id)?;
+        let remove_requirement = self
+            .coordinator
+            .workspace_remove_pin_requirement(&prepared)?;
+        match remove_requirement {
+            WorkspaceRemovePinRequirementV1::Required(expected_pin) => {
+                let entry = prepared.entry();
+                let (pin_outcome, committed) =
+                    self.coordinator.execute_workspace_remove_and_destroy(
+                        &mut self.pin_executor,
+                        &self.pin_contract,
+                        &self.pin_custody,
+                        prepared,
+                        expected_pin,
+                        trusted_clock,
+                    )?;
+                return match (pin_outcome, committed) {
+                    (WorkspacePinExecutionOutcomeV1::Satisfied, Some(result)) => {
+                        let retirement = self
+                            .coordinator
+                            .workspace_retirement(result)
+                            .map_err(|_| crate::helper::ZfsHelperError::PostconditionMismatch)?;
+                        self.workspaces
+                            .retire(retirement)
+                            .map_err(|_| crate::helper::ZfsHelperError::PostconditionMismatch)?;
+                        Ok(ZfsHelperOutcome::Committed(result))
+                    }
+                    _ => Ok(ZfsHelperOutcome::ObservationRequired {
+                        phase: DurableStoragePhase::Ambiguous,
+                        mutation_digest: entry.mutation_digest(),
+                    }),
+                };
+            }
+            WorkspaceRemovePinRequirementV1::Missing => {
+                return Err(crate::helper::ZfsHelperError::PostconditionMismatch);
+            }
+            WorkspaceRemovePinRequirementV1::NotWorkspace => {}
+        }
+
+        let outcome =
+            self.coordinator
+                .execute_preobserved(&mut self.helper, prepared, trusted_clock)?;
+        let ZfsHelperOutcome::Committed(result) = outcome else {
+            return Ok(outcome);
+        };
+        if self
+            .coordinator
+            .workspace_identity_range(result.operation_id())
+            .map_err(|_| crate::helper::ZfsHelperError::PostconditionMismatch)?
+            .is_none()
+        {
+            return Ok(ZfsHelperOutcome::Committed(result));
+        }
+
+        let pin_outcome = self.coordinator.execute_workspace_pin_ensure(
+            &mut self.pin_executor,
+            &self.pin_contract,
+            &self.pin_custody,
+            result,
+            trusted_clock,
+        )?;
+        if pin_outcome != WorkspacePinExecutionOutcomeV1::Satisfied {
+            return Err(crate::helper::ZfsHelperError::PostconditionMismatch);
+        }
+        let publication = self
+            .coordinator
+            .workspace_publication(result)
+            .map_err(|_| crate::helper::ZfsHelperError::PostconditionMismatch)?;
+        self.workspaces
+            .publish(publication)
+            .map_err(|_| crate::helper::ZfsHelperError::PostconditionMismatch)?;
+        Ok(ZfsHelperOutcome::Committed(result))
     }
 
     fn reconcile_startup(&mut self) -> Result<StorageRuntimeReadiness, StorageRuntimeError> {
@@ -339,6 +452,28 @@ impl StorageBrokerRuntime {
             {
                 ZfsHelperOutcome::Committed(_) => {}
                 ZfsHelperOutcome::ObservationRequired { .. } => pending += 1,
+            }
+        }
+        for dispatch in self
+            .coordinator
+            .workspace_pin_observation_dispatches()
+            .map_err(|_| StorageRuntimeError::Recovery)?
+        {
+            let request = dispatch
+                .request_bytes(&self.pin_contract)
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+            let result = self
+                .pin_observer
+                .observe(&request, dispatch.attempt(), &self.pin_custody)
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+            match self
+                .coordinator
+                .complete_workspace_pin_observation(dispatch.attempt(), &result)
+                .map_err(|_| StorageRuntimeError::Recovery)?
+            {
+                crate::workspace_pin::WorkspacePinRecoveryDispositionV1::CompletePublication
+                | crate::workspace_pin::WorkspacePinRecoveryDispositionV1::CompleteRetirement => {}
+                _ => pending += 1,
             }
         }
         let identity_ranges = self

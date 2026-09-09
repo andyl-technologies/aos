@@ -32,6 +32,9 @@ mod catalog_transition;
 )]
 mod helper;
 mod observation;
+mod pin_observer;
+mod pin_worker;
+mod pin_worker_runtime;
 pub mod process;
 pub mod request;
 pub mod runtime;
@@ -57,6 +60,9 @@ pub use catalog::{
 pub use catalog_preparation::{
     ProtectedStorageCatalogResolverV1, StorageCatalogPreparationError,
     StorageCatalogPreparationOutcomeV1,
+};
+pub use pin_worker_runtime::{
+    run_inherited_workspace_pin_observer, run_inherited_workspace_pin_worker,
 };
 pub use process::{
     SystemdZfsExecutor, WorkerProcessOutput, ZfsWorkerError, process_timeout, run_inherited_worker,

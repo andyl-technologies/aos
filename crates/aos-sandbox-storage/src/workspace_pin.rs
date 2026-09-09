@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use aos_sandbox::{Journal, JournalRecord, RecordNamespace};
 use aos_sandbox_core::ObjectDigest;
 use hmac::{Hmac, Mac as _};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::{CatalogBindingV1, StorageStateError};
@@ -44,7 +45,7 @@ const ATTEMPT_AUTHORITY_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-pin-auth
 const MAXIMUM_STRING_BYTES: usize = 512;
 const MAXIMUM_AUTHORITY_RECEIPT_BYTES: usize = 16 * 1024;
 const MAC_BYTES: usize = 32;
-const WORKSPACE_PIN_ROOT: &str = "/run/aos/sandbox-pins/workspaces";
+pub(crate) const WORKSPACE_PIN_ROOT: &str = "/run/aos/sandbox-pins/workspaces";
 const ID_BYTES: usize = 16;
 const DIGEST_BYTES: usize = 32;
 const U64_BYTES: usize = 8;
@@ -118,7 +119,8 @@ impl WorkspacePinAttemptPhaseV1 {
 /// `statmount(2)`, not the recyclable mountinfo ID. Construction is kept
 /// crate-private because a trusted descriptor-backed observer must prove that
 /// the reported mount is current and occupies the protected slot.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct WorkspaceRootPinProofV1 {
     kernel_boot_id: [u8; 16],
     mount_namespace_device: u64,
@@ -165,7 +167,7 @@ impl WorkspaceRootPinProofV1 {
         Ok(proof)
     }
 
-    fn validate(&self) -> Result<(), StorageStateError> {
+    pub(crate) fn validate(&self) -> Result<(), StorageStateError> {
         if self.kernel_boot_id == [0; 16]
             || self.mount_namespace_device == 0
             || self.mount_namespace_inode == 0
@@ -792,7 +794,7 @@ fn encode_attempt(
     Ok(bytes)
 }
 
-fn decode_attempt(
+pub(crate) fn decode_attempt(
     bytes: &[u8],
     key_id: [u8; 16],
     secret: &[u8; 32],
@@ -903,7 +905,7 @@ fn valid_string(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAXIMUM_STRING_BYTES && !value.as_bytes().contains(&0)
 }
 
-fn workspace_pin_path(workspace_handle: &[u8; 32]) -> String {
+pub(crate) fn workspace_pin_path(workspace_handle: &[u8; 32]) -> String {
     use std::fmt::Write as _;
 
     let mut path = String::with_capacity(WORKSPACE_PIN_ROOT.len() + 1 + 64);

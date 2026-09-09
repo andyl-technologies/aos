@@ -1372,7 +1372,7 @@ fn validate_snapshot_component(dataset: &str, component: &str) -> Result<(), Cat
     }
 }
 
-fn valid_dataset_name(name: &str) -> bool {
+pub(crate) fn valid_dataset_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAXIMUM_NAME_BYTES
         && !name.contains(['@', '#', '\0'])

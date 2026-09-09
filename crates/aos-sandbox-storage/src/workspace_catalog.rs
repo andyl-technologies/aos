@@ -5,7 +5,7 @@
 //! canonical versioned JSON:
 //!
 //! ```text
-//! {"version":1,"record":{...}}
+//! {"version":2,"record":{...}}
 //! ```
 //!
 //! A catalog head fixes the trusted subordinate-identity pool and advances by
@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
 #[cfg(test)]
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
@@ -34,6 +35,7 @@ use aos_sandbox_core::{
     validate_descriptor_role,
 };
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace};
 use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS,
     MINIMUM_HOST_IDENTITY_RANGE, decode_storage_resource_inventory_response,
@@ -42,6 +44,7 @@ use buffa::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::workspace_pin::WorkspaceRootPinProofV1;
 use crate::{
     CatalogBindingV1, CatalogPlanV1, CommittedStorageResultV1, ResolvedCatalogCommitmentV1,
 };
@@ -50,10 +53,11 @@ const WORKSPACE_JOURNAL_FILE: &str = "storage-workspaces.journal";
 const WORKSPACE_PIN_ROOT: &str = "/run/aos/sandbox-pins/workspaces";
 const HEAD_KEY: &[u8] = b"aos.storage.workspace.head.v1\0";
 const RECORD_KEY_PREFIX: &[u8] = b"aos.storage.workspace.v1\0";
-const RECORD_FORMAT_VERSION: u16 = 1;
-const RESOURCE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-resource.v1\0";
+const RECORD_FORMAT_VERSION: u16 = 2;
+const RESOURCE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-resource.v2\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-transaction.v1\0";
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024;
+const MAXIMUM_HOST_MOUNTS: usize = 65_536;
 
 /// Retains the portable facts needed to publish a committed workspace.
 ///
@@ -264,6 +268,7 @@ pub struct StorageWorkspacePublicationV1 {
     root_image: ObjectDescriptor,
     identity_range_start: u32,
     identity_range_size: u32,
+    pin_proof: WorkspaceRootPinProofV1,
 }
 
 impl StorageWorkspacePublicationV1 {
@@ -272,6 +277,7 @@ impl StorageWorkspacePublicationV1 {
         request_catalog: &ResolvedCatalogCommitmentV1,
         assignment: BrokerAssignment,
         intent: &StorageWorkspacePublicationIntentV1,
+        pin_proof: WorkspaceRootPinProofV1,
     ) -> Result<Self, StorageWorkspaceCatalogError> {
         let workspace_handle = result
             .storage_handle()
@@ -304,6 +310,7 @@ impl StorageWorkspacePublicationV1 {
             root_image: intent.root_image.clone(),
             identity_range_start: intent.identity_range_start,
             identity_range_size: intent.identity_range_size,
+            pin_proof,
         })
     }
 }
@@ -428,7 +435,8 @@ impl StorageWorkspaceCatalogV1 {
         let owner = fs::symlink_metadata(pin_directory)
             .map_err(|error| StorageWorkspaceCatalogError::RootPin(error.to_string()))?
             .uid();
-        let pin_root = PinRoot::open(pin_directory, owner)?;
+        let mut pin_root = PinRoot::open(pin_directory, owner)?;
+        pin_root.allow_same_mount_for_test = true;
         Self::recover(
             journal,
             pin_root,
@@ -566,7 +574,12 @@ impl StorageWorkspaceCatalogV1 {
         publication: StorageWorkspacePublicationV1,
     ) -> Result<StorageWorkspaceCatalogOutcomeV1, StorageWorkspaceCatalogError> {
         if let Some(existing) = self.records.get(&publication.workspace_handle) {
-            let pin = self.pin_root.observe(&publication.workspace_handle)?;
+            let pin = self.pin_root.observe(
+                &publication.workspace_handle,
+                &publication.pin_proof,
+                self.kernel_boot_id,
+                publication.dataset_guid,
+            )?;
             if existing.matches_publication(&publication, pin, self.kernel_boot_id) {
                 return Ok(StorageWorkspaceCatalogOutcomeV1::Replay);
             }
@@ -582,6 +595,7 @@ impl StorageWorkspaceCatalogV1 {
                 refreshed.kernel_boot_id = self.kernel_boot_id;
                 refreshed.root_device = pin.device;
                 refreshed.root_inode = pin.inode;
+                refreshed.pin_proof = publication.pin_proof.clone();
                 refreshed.refresh_digest()?;
                 refreshed.validate()?;
                 self.commit(refreshed, publication.operation_id)?;
@@ -601,7 +615,12 @@ impl StorageWorkspaceCatalogV1 {
             return Err(StorageWorkspaceCatalogError::IdentityConflict);
         }
 
-        let pin = self.pin_root.observe(&publication.workspace_handle)?;
+        let pin = self.pin_root.observe(
+            &publication.workspace_handle,
+            &publication.pin_proof,
+            self.kernel_boot_id,
+            publication.dataset_guid,
+        )?;
         if self.current_boot_pin_is_claimed(pin) {
             return Err(StorageWorkspaceCatalogError::IdentityConflict);
         }
@@ -623,6 +642,7 @@ impl StorageWorkspaceCatalogV1 {
             root_device: pin.device,
             root_inode: pin.inode,
             dataset_guid: publication.dataset_guid,
+            pin_proof: publication.pin_proof,
             uid_range_start: publication.identity_range_start,
             uid_range_size: publication.identity_range_size,
             lifecycle: WorkspaceLifecycleV1::Active,
@@ -771,6 +791,7 @@ impl StorageWorkspaceCatalogV1 {
             root_device: 0,
             root_inode: 0,
             dataset_guid: creation.dataset_guid,
+            pin_proof: creation.pin_proof,
             uid_range_start: creation.identity_range_start,
             uid_range_size: creation.identity_range_size,
             lifecycle: WorkspaceLifecycleV1::Retired {
@@ -913,13 +934,17 @@ impl StorageWorkspaceCatalogActionV1 {
 
 struct PinRoot {
     descriptor: OwnedFd,
-    expected_owner: u32,
+    path: String,
+    mount_id: MountId,
+    #[cfg(test)]
+    allow_same_mount_for_test: bool,
 }
 
 #[derive(Clone, Copy)]
 struct PinIdentity {
     device: u64,
     inode: u64,
+    mount_id: u64,
 }
 
 impl PinRoot {
@@ -942,17 +967,51 @@ impl PinRoot {
                 "pin root is not an owner-controlled real directory".to_owned(),
             ));
         }
+        let path = path
+            .as_os_str()
+            .to_str()
+            .ok_or_else(|| {
+                StorageWorkspaceCatalogError::RootPin("pin root path is not valid UTF-8".to_owned())
+            })?
+            .trim_end_matches('/')
+            .to_owned();
+        let mount_id = MountId::from_fd(descriptor.as_fd())
+            .map_err(|error| StorageWorkspaceCatalogError::RootPin(error.to_string()))?;
         Ok(Self {
             descriptor,
-            expected_owner,
+            path,
+            mount_id,
+            #[cfg(test)]
+            allow_same_mount_for_test: false,
         })
     }
 
-    fn observe(&self, handle: &[u8; 32]) -> Result<PinIdentity, StorageWorkspaceCatalogError> {
+    fn observe(
+        &self,
+        handle: &[u8; 32],
+        proof: &WorkspaceRootPinProofV1,
+        kernel_boot_id: [u8; 16],
+        dataset_guid: u64,
+    ) -> Result<PinIdentity, StorageWorkspaceCatalogError> {
+        proof.validate().map_err(|_| {
+            StorageWorkspaceCatalogError::RootPin("stored pin proof is invalid".to_owned())
+        })?;
+        let expected_point = format!("{}/{}", self.path, encode_hex(handle));
+        if proof.kernel_boot_id() != kernel_boot_id
+            || proof.mount_root() != "/"
+            || proof.mount_point() != expected_point
+            || proof.filesystem_type() != "zfs"
+            || proof.dataset_guid() != dataset_guid
+        {
+            return Err(StorageWorkspaceCatalogError::RootPin(
+                "pin proof does not match the catalog workspace".to_owned(),
+            ));
+        }
+
         let component = encode_hex(handle);
         let descriptor = rustix::fs::openat(
             self.descriptor.as_fd(),
-            component,
+            &component,
             rustix::fs::OFlags::PATH
                 | rustix::fs::OFlags::DIRECTORY
                 | rustix::fs::OFlags::NOFOLLOW
@@ -962,29 +1021,127 @@ impl PinRoot {
         .map_err(pin_error)?;
         let metadata = rustix::fs::fstat(&descriptor).map_err(pin_error)?;
         if rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::Directory
-            || metadata.st_uid != self.expected_owner
-            || metadata.st_mode & 0o022 != 0
             || metadata.st_dev == 0
             || metadata.st_ino == 0
         {
             return Err(StorageWorkspaceCatalogError::RootPin(
-                "pin is not the required owned directory".to_owned(),
+                "pin is not a real directory with stable identity".to_owned(),
             ));
         }
+        let mount_id = MountId::from_fd(descriptor.as_fd())
+            .map_err(|error| StorageWorkspaceCatalogError::RootPin(error.to_string()))?;
+        #[cfg(test)]
+        let distinct_mount = self.allow_same_mount_for_test || mount_id != self.mount_id;
+        #[cfg(not(test))]
+        let distinct_mount = mount_id != self.mount_id;
+        if !distinct_mount
+            || mount_id.get() != proof.mount_id()
+            || metadata.st_dev != proof.root_device()
+            || metadata.st_ino != proof.root_inode()
+        {
+            return Err(StorageWorkspaceCatalogError::RootPin(
+                "pin no longer names the proved filesystem mount".to_owned(),
+            ));
+        }
+        #[cfg(test)]
+        if !self.allow_same_mount_for_test {
+            self.verify_live_mount(proof)?;
+        }
+        #[cfg(not(test))]
+        self.verify_live_mount(proof)?;
+
+        let mount_namespace = rustix::fs::open(
+            "/proc/self/ns/mnt",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(pin_error)?;
+        let namespace_metadata = rustix::fs::fstat(mount_namespace).map_err(pin_error)?;
+        if namespace_metadata.st_dev != proof.mount_namespace_device()
+            || namespace_metadata.st_ino != proof.mount_namespace_inode()
+        {
+            return Err(StorageWorkspaceCatalogError::RootPin(
+                "pin proof belongs to another mount namespace".to_owned(),
+            ));
+        }
+
+        let current_descriptor = rustix::fs::openat(
+            self.descriptor.as_fd(),
+            &component,
+            rustix::fs::OFlags::PATH
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(pin_error)?;
+        let current_metadata = rustix::fs::fstat(&current_descriptor).map_err(pin_error)?;
+        if (current_metadata.st_dev, current_metadata.st_ino) != (metadata.st_dev, metadata.st_ino)
+            || MountId::from_fd(current_descriptor.as_fd())
+                .map_err(|error| StorageWorkspaceCatalogError::RootPin(error.to_string()))?
+                != mount_id
+        {
+            return Err(StorageWorkspaceCatalogError::RootPin(
+                "pin changed during catalog observation".to_owned(),
+            ));
+        }
+        #[cfg(test)]
+        if !self.allow_same_mount_for_test {
+            self.verify_live_mount(proof)?;
+        }
+        #[cfg(not(test))]
+        self.verify_live_mount(proof)?;
+
         Ok(PinIdentity {
             device: metadata.st_dev,
             inode: metadata.st_ino,
+            mount_id: mount_id.get(),
         })
+    }
+
+    fn verify_live_mount(
+        &self,
+        proof: &WorkspaceRootPinProofV1,
+    ) -> Result<(), StorageWorkspaceCatalogError> {
+        let inventory = MountNamespace::current()
+            .inventory(MAXIMUM_HOST_MOUNTS, MountListOrder::Forward)
+            .map_err(|error| StorageWorkspaceCatalogError::RootPin(error.to_string()))?;
+        let mut matching = inventory.mounts.into_iter().filter(|mount| {
+            mount.mount_point.as_os_str().as_bytes() == proof.mount_point().as_bytes()
+        });
+        let Some(mount) = matching.next() else {
+            return Err(StorageWorkspaceCatalogError::RootPin(
+                "proved mount point is absent".to_owned(),
+            ));
+        };
+        let exact = matching.next().is_none() && mount_matches_proof(&mount, proof);
+        if !exact {
+            return Err(StorageWorkspaceCatalogError::RootPin(
+                "live mount topology does not match the stored proof".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     fn verify_record(
         &self,
         record: &WorkspaceRecordV1,
     ) -> Result<(), StorageWorkspaceCatalogError> {
-        let pin = self.observe(&record.workspace_handle)?;
-        if (pin.device, pin.inode) != (record.root_device, record.root_inode) {
+        let pin = self.observe(
+            &record.workspace_handle,
+            &record.pin_proof,
+            record.kernel_boot_id,
+            record.dataset_guid,
+        )?;
+        if (pin.device, pin.inode, pin.mount_id)
+            != (
+                record.root_device,
+                record.root_inode,
+                record.pin_proof.mount_id(),
+            )
+        {
             return Err(StorageWorkspaceCatalogError::RootPin(
-                "pin device/inode identity changed".to_owned(),
+                "pin mount or filesystem identity changed".to_owned(),
             ));
         }
         Ok(())
@@ -1005,6 +1162,18 @@ impl PinRoot {
             Err(error) => Err(pin_error(error)),
         }
     }
+}
+
+fn mount_matches_proof(
+    mount: &aos_sandbox_linux::inventory::MountObservation,
+    proof: &WorkspaceRootPinProofV1,
+) -> bool {
+    mount.mount_id.get() == proof.mount_id()
+        && mount.root.as_os_str().as_bytes() == proof.mount_root().as_bytes()
+        && mount.filesystem_type.as_os_str().as_bytes() == proof.filesystem_type().as_bytes()
+        && mount.superblock_source.as_os_str().as_bytes() == proof.superblock_source().as_bytes()
+        && mount.device_major == rustix::fs::major(proof.root_device())
+        && mount.device_minor == rustix::fs::minor(proof.root_device())
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1173,6 +1342,7 @@ struct WorkspaceRecordV1 {
     root_device: u64,
     root_inode: u64,
     dataset_guid: u64,
+    pin_proof: WorkspaceRootPinProofV1,
     uid_range_start: u32,
     uid_range_size: u32,
     lifecycle: WorkspaceLifecycleV1,
@@ -1181,8 +1351,17 @@ struct WorkspaceRecordV1 {
 
 impl WorkspaceRecordV1 {
     fn validate(&self) -> Result<(), StorageWorkspaceCatalogError> {
+        self.pin_proof
+            .validate()
+            .map_err(|_| StorageWorkspaceCatalogError::CorruptRecord)?;
         let pin_identity_is_valid = match self.lifecycle {
-            WorkspaceLifecycleV1::Active => self.root_device != 0 && self.root_inode != 0,
+            WorkspaceLifecycleV1::Active => {
+                self.root_device != 0
+                    && self.root_inode != 0
+                    && self.kernel_boot_id == self.pin_proof.kernel_boot_id()
+                    && self.root_device == self.pin_proof.root_device()
+                    && self.root_inode == self.pin_proof.root_inode()
+            }
             WorkspaceLifecycleV1::Retired { .. } => {
                 (self.root_device == 0) == (self.root_inode == 0)
             }
@@ -1194,6 +1373,7 @@ impl WorkspaceRecordV1 {
             || self.kernel_boot_id == [0; 16]
             || !pin_identity_is_valid
             || self.dataset_guid == 0
+            || self.dataset_guid != self.pin_proof.dataset_guid()
             || self.uid_range_start == 0
             || self.uid_range_size < MINIMUM_HOST_IDENTITY_RANGE
             || self.uid_range_end().is_err()
@@ -1274,6 +1454,7 @@ impl WorkspaceRecordV1 {
         self.matches_durable_publication(publication)
             && self.kernel_boot_id == kernel_boot_id
             && (self.root_device, self.root_inode) == (pin.device, pin.inode)
+            && self.pin_proof == publication.pin_proof
     }
 
     fn matches_durable_publication(&self, publication: &StorageWorkspacePublicationV1) -> bool {
@@ -1546,6 +1727,7 @@ const fn workspace_journal_limits() -> JournalLimits {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::ffi::OsString;
     use std::path::PathBuf;
 
     use aos_sandbox_core::{AssignmentEpoch, DesiredGeneration, IncarnationId, SandboxId};
@@ -1603,6 +1785,65 @@ mod tests {
         fn create_pin(&self, handle: u8) {
             fs::create_dir(self.pin_path(handle)).unwrap();
         }
+
+        fn publication(
+            &self,
+            handle: u8,
+            kernel_boot_id: [u8; 16],
+        ) -> StorageWorkspacePublicationV1 {
+            let pin_path = self.pin_path(handle);
+            let observation_path = if pin_path.exists() {
+                pin_path.as_path()
+            } else {
+                self.pin_directory.as_path()
+            };
+            let descriptor = rustix::fs::open(
+                observation_path,
+                rustix::fs::OFlags::PATH
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .unwrap();
+            let metadata = rustix::fs::fstat(&descriptor).unwrap();
+            let mount_namespace = rustix::fs::open(
+                "/proc/self/ns/mnt",
+                rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .unwrap();
+            let namespace_metadata = rustix::fs::fstat(mount_namespace).unwrap();
+            let dataset_guid = u64::from(handle) + 100;
+            let pin_proof = WorkspaceRootPinProofV1::new(
+                kernel_boot_id,
+                namespace_metadata.st_dev,
+                namespace_metadata.st_ino,
+                MountId::from_fd(descriptor.as_fd()).unwrap().get(),
+                "/".to_owned(),
+                pin_path.to_str().unwrap().to_owned(),
+                "zfs".to_owned(),
+                format!("tank/aos/project/{handle}"),
+                dataset_guid,
+                metadata.st_dev,
+                metadata.st_ino,
+            )
+            .unwrap();
+
+            StorageWorkspacePublicationV1 {
+                operation_id: [handle.wrapping_add(10); 16],
+                request_catalog: binding(u64::from(handle) + 10, handle.wrapping_add(20)),
+                result_catalog: binding(u64::from(handle) + 11, handle.wrapping_add(21)),
+                result_digest: ObjectDigest::from_bytes([handle.wrapping_add(22); 32]),
+                workspace_handle: [handle; 32],
+                dataset_guid,
+                assignment: assignment(handle),
+                root_image: root_image(handle.wrapping_add(30)),
+                identity_range_start: u32::from(handle) * RANGE_SIZE,
+                identity_range_size: RANGE_SIZE,
+                pin_proof,
+            }
+        }
     }
 
     fn binding(generation: u64, marker: u8) -> CatalogBindingV1 {
@@ -1629,18 +1870,50 @@ mod tests {
         )
     }
 
-    fn publication(handle: u8) -> StorageWorkspacePublicationV1 {
-        StorageWorkspacePublicationV1 {
-            operation_id: [handle.wrapping_add(10); 16],
-            request_catalog: binding(u64::from(handle) + 10, handle.wrapping_add(20)),
-            result_catalog: binding(u64::from(handle) + 11, handle.wrapping_add(21)),
-            result_digest: ObjectDigest::from_bytes([handle.wrapping_add(22); 32]),
-            workspace_handle: [handle; 32],
-            dataset_guid: u64::from(handle) + 100,
-            assignment: assignment(handle),
-            root_image: root_image(handle.wrapping_add(30)),
-            identity_range_start: u32::from(handle) * RANGE_SIZE,
-            identity_range_size: RANGE_SIZE,
+    fn proof_with(
+        proof: &WorkspaceRootPinProofV1,
+        kernel_boot_id: [u8; 16],
+        namespace_device: u64,
+        namespace_inode: u64,
+        mount_id: u64,
+        source: &str,
+    ) -> WorkspaceRootPinProofV1 {
+        WorkspaceRootPinProofV1::new(
+            kernel_boot_id,
+            namespace_device,
+            namespace_inode,
+            mount_id,
+            proof.mount_root().to_owned(),
+            proof.mount_point().to_owned(),
+            proof.filesystem_type().to_owned(),
+            source.to_owned(),
+            proof.dataset_guid(),
+            proof.root_device(),
+            proof.root_inode(),
+        )
+        .unwrap()
+    }
+
+    fn mount_observation(
+        proof: &WorkspaceRootPinProofV1,
+    ) -> aos_sandbox_linux::inventory::MountObservation {
+        aos_sandbox_linux::inventory::MountObservation {
+            mount_id: MountId::new(proof.mount_id()).unwrap(),
+            parent_mount_id: MountId::new(proof.mount_id() + 1).unwrap(),
+            mount_namespace_id: 1,
+            device_major: rustix::fs::major(proof.root_device()),
+            device_minor: rustix::fs::minor(proof.root_device()),
+            superblock_magic: 0,
+            superblock_flags: 0,
+            mount_attributes: 0,
+            propagation: 0,
+            supported_mask: None,
+            root: OsString::from(proof.mount_root()),
+            mount_point: OsString::from(proof.mount_point()),
+            filesystem_type: OsString::from(proof.filesystem_type()),
+            superblock_source: OsString::from(proof.superblock_source()),
+            uid_map: None,
+            gid_map: None,
         }
     }
 
@@ -1672,12 +1945,12 @@ mod tests {
         assert_eq!(catalog.generation(), 1);
         assert!(inventory(&catalog).workspaces().is_empty());
         assert_eq!(
-            catalog.publish(publication(1)).unwrap(),
+            catalog.publish(fixture.publication(1, [81; 16])).unwrap(),
             StorageWorkspaceCatalogOutcomeV1::Published
         );
         assert_eq!(catalog.generation(), 2);
         assert_eq!(
-            catalog.publish(publication(1)).unwrap(),
+            catalog.publish(fixture.publication(1, [81; 16])).unwrap(),
             StorageWorkspaceCatalogOutcomeV1::Replay
         );
 
@@ -1703,7 +1976,7 @@ mod tests {
     fn convergence_replays_after_restart_and_rejects_orphan_catalog_rows() {
         let fixture = Fixture::new(2);
         fixture.create_pin(1);
-        let action = StorageWorkspaceCatalogActionV1::Publish(publication(1));
+        let action = StorageWorkspaceCatalogActionV1::Publish(fixture.publication(1, [81; 16]));
         let mut catalog = fixture.open([81; 16]).unwrap();
         assert_eq!(
             catalog.converge(vec![action.clone()]).unwrap(),
@@ -1726,7 +1999,7 @@ mod tests {
     fn retired_projection_recovers_a_missing_journal_with_the_reserved_range() {
         let fixture = Fixture::new(2);
         let action = StorageWorkspaceCatalogActionV1::Retire {
-            creation: publication(1),
+            creation: fixture.publication(1, [81; 16]),
             retirement: retirement(1),
         };
         let mut catalog = fixture.open([81; 16]).unwrap();
@@ -1754,8 +2027,8 @@ mod tests {
     fn lost_journal_recovery_preserves_ranges_independent_of_action_order() {
         let fixture = Fixture::new(3);
         fixture.create_pin(2);
-        let first = publication(1);
-        let second = publication(2);
+        let first = fixture.publication(1, [81; 16]);
+        let second = fixture.publication(2, [81; 16]);
         let mut catalog = fixture.open([81; 16]).unwrap();
         let retirement = StorageWorkspaceCatalogActionV1::Retire {
             creation: first,
@@ -1804,11 +2077,11 @@ mod tests {
         let mut catalog = fixture.open([81; 16]).unwrap();
 
         assert_eq!(
-            catalog.publish(publication(1)).unwrap(),
+            catalog.publish(fixture.publication(1, [81; 16])).unwrap(),
             StorageWorkspaceCatalogOutcomeV1::Published
         );
         assert_eq!(
-            catalog.publish(publication(2)).unwrap(),
+            catalog.publish(fixture.publication(2, [81; 16])).unwrap(),
             StorageWorkspaceCatalogOutcomeV1::Published
         );
         assert_eq!(
@@ -1826,7 +2099,7 @@ mod tests {
             StorageWorkspaceCatalogOutcomeV1::Replay
         );
         assert_eq!(
-            catalog.publish(publication(3)).unwrap(),
+            catalog.publish(fixture.publication(3, [81; 16])).unwrap(),
             StorageWorkspaceCatalogOutcomeV1::Published
         );
 
@@ -1848,7 +2121,7 @@ mod tests {
         let fixture = Fixture::new(2);
         fixture.create_pin(1);
         let mut catalog = fixture.open([81; 16]).unwrap();
-        catalog.publish(publication(1)).unwrap();
+        catalog.publish(fixture.publication(1, [81; 16])).unwrap();
         drop(catalog);
 
         fs::rename(
@@ -1864,7 +2137,9 @@ mod tests {
         fixture.create_pin(1);
         let mut current_boot = fixture.open([82; 16]).unwrap();
         assert_eq!(
-            current_boot.publish(publication(1)).unwrap(),
+            current_boot
+                .publish(fixture.publication(1, [82; 16]))
+                .unwrap(),
             StorageWorkspaceCatalogOutcomeV1::Refreshed
         );
         let snapshot = inventory(&current_boot);
@@ -1878,13 +2153,13 @@ mod tests {
     }
 
     #[test]
-    fn changed_or_writable_pins_fail_closed() {
+    fn changed_pin_fails_but_mounted_root_mode_is_mutable_data() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let fixture = Fixture::new(2);
         fixture.create_pin(1);
         let mut catalog = fixture.open([81; 16]).unwrap();
-        catalog.publish(publication(1)).unwrap();
+        catalog.publish(fixture.publication(1, [81; 16])).unwrap();
 
         let original = fixture.pin_directory.join("original-pin");
         fs::rename(fixture.pin_path(1), &original).unwrap();
@@ -1902,9 +2177,93 @@ mod tests {
         fs::remove_dir(fixture.pin_path(1)).unwrap();
         fs::rename(original, fixture.pin_path(1)).unwrap();
         fs::set_permissions(fixture.pin_path(1), fs::Permissions::from_mode(0o777)).unwrap();
+        let recovered = fixture.open([81; 16]).unwrap();
+        assert_eq!(inventory(&recovered).workspaces().len(), 1);
+    }
+
+    #[test]
+    fn persisted_proof_rejects_same_filesystem_identity_with_a_new_mount_id() {
+        let fixture = Fixture::new(2);
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        let publication = fixture.publication(1, [81; 16]);
+        let original_proof = publication.pin_proof.clone();
+        catalog.publish(publication).unwrap();
+
+        let mut substituted = catalog.records[&[1; 32]].clone();
+        substituted.pin_proof = proof_with(
+            &original_proof,
+            original_proof.kernel_boot_id(),
+            original_proof.mount_namespace_device(),
+            original_proof.mount_namespace_inode(),
+            original_proof.mount_id() + 1,
+            original_proof.superblock_source(),
+        );
+        substituted.refresh_digest().unwrap();
+        substituted.validate().unwrap();
+        catalog.commit(substituted, [201; 16]).unwrap();
+        drop(catalog);
+
         assert!(matches!(
             fixture.open([81; 16]),
             Err(StorageWorkspaceCatalogError::RootPin(_))
+        ));
+    }
+
+    #[test]
+    fn publication_rejects_boot_namespace_and_live_source_substitution() {
+        let fixture = Fixture::new(2);
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        let baseline = fixture.publication(1, [81; 16]);
+        let proof = &baseline.pin_proof;
+
+        let mut wrong_boot = baseline.clone();
+        wrong_boot.pin_proof = proof_with(
+            proof,
+            [82; 16],
+            proof.mount_namespace_device(),
+            proof.mount_namespace_inode(),
+            proof.mount_id(),
+            proof.superblock_source(),
+        );
+        assert!(matches!(
+            catalog.publish(wrong_boot),
+            Err(StorageWorkspaceCatalogError::RootPin(_))
+        ));
+
+        let mut wrong_namespace = baseline.clone();
+        wrong_namespace.pin_proof = proof_with(
+            proof,
+            proof.kernel_boot_id(),
+            proof.mount_namespace_device() + 1,
+            proof.mount_namespace_inode(),
+            proof.mount_id(),
+            proof.superblock_source(),
+        );
+        assert!(matches!(
+            catalog.publish(wrong_namespace),
+            Err(StorageWorkspaceCatalogError::RootPin(_))
+        ));
+
+        let mut renamed_dataset = mount_observation(proof);
+        renamed_dataset.superblock_source = OsString::from("tank/aos/project/renamed");
+        assert!(!mount_matches_proof(&renamed_dataset, proof));
+        assert!(mount_matches_proof(&mount_observation(proof), proof));
+    }
+
+    #[test]
+    fn legacy_record_envelope_version_is_rejected() {
+        let fixture = Fixture::new(2);
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog.publish(fixture.publication(1, [81; 16])).unwrap();
+        let record = catalog.records[&[1; 32]].clone();
+        let legacy = serde_json::to_vec(&RecordEnvelopeV1 { version: 1, record }).unwrap();
+
+        assert!(matches!(
+            decode_record(&legacy),
+            Err(StorageWorkspaceCatalogError::CorruptRecord)
         ));
     }
 
@@ -1915,10 +2274,10 @@ mod tests {
         fixture.create_pin(2);
         fixture.create_pin(3);
         let mut catalog = fixture.open([81; 16]).unwrap();
-        let first = publication(1);
+        let first = fixture.publication(1, [81; 16]);
         catalog.publish(first.clone()).unwrap();
 
-        let mut rebound = publication(2);
+        let mut rebound = fixture.publication(2, [81; 16]);
         rebound.assignment = BrokerAssignment::new(
             first.assignment.sandbox(),
             first.assignment.incarnation(),
@@ -1931,9 +2290,9 @@ mod tests {
             catalog.publish(rebound),
             Err(StorageWorkspaceCatalogError::IdentityConflict)
         ));
-        catalog.publish(publication(2)).unwrap();
+        catalog.publish(fixture.publication(2, [81; 16])).unwrap();
         assert!(matches!(
-            catalog.publish(publication(3)),
+            catalog.publish(fixture.publication(3, [81; 16])),
             Err(StorageWorkspaceCatalogError::IdentityConflict)
         ));
         assert!(matches!(

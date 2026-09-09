@@ -109,6 +109,18 @@ impl StorageStateKey {
             Ok(Self { key_id, secret })
         }
     }
+
+    /// Authenticates one workspace-pin record using its embedded exact location.
+    ///
+    /// The untrusted record's attempt ID is covered both by the body MAC and by
+    /// the record-location domain. The returned value has also passed complete
+    /// canonical and semantic validation.
+    pub(crate) fn open_workspace_pin_attempt(
+        &self,
+        bytes: &[u8],
+    ) -> Result<WorkspacePinAttemptV1, StorageStateError> {
+        crate::workspace_pin::decode_attempt(bytes, self.key_id, &self.secret)
+    }
 }
 
 impl Drop for StorageStateKey {
@@ -931,6 +943,23 @@ impl StorageTransactionStore {
         Ok(self.pin_attempts.values().cloned().collect())
     }
 
+    pub(crate) fn workspace_pin_attempt_record(
+        &self,
+        attempt: &WorkspacePinAttemptV1,
+    ) -> Result<Vec<u8>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        if self.pin_attempts.get(&attempt.attempt_id()) != Some(attempt) {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        self.journal
+            .get(
+                RecordNamespace::StorageWorkspacePinAttempt,
+                &attempt.attempt_id(),
+            )
+            .map(ToOwned::to_owned)
+            .ok_or(StorageStateError::MissingAuthorityLink)
+    }
+
     pub(crate) fn require_satisfied_workspace_pin_effect(
         &self,
         effect_operation_id: [u8; 16],
@@ -951,6 +980,43 @@ impl StorageTransactionStore {
             return Err(StorageStateError::InvalidTransition);
         }
         Ok(())
+    }
+
+    pub(crate) fn require_satisfied_workspace_ensure_pin_effect(
+        &self,
+        effect_operation_id: [u8; 16],
+        workspace_handle: [u8; 32],
+    ) -> Result<WorkspaceRootPinProofV1, StorageStateError> {
+        self.require_satisfied_workspace_pin_effect(
+            effect_operation_id,
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+        )?;
+        self.satisfied_workspace_pin_proof_for_effect(
+            effect_operation_id,
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+        )
+    }
+
+    pub(crate) fn satisfied_workspace_pin_proof_for_effect(
+        &self,
+        effect_operation_id: [u8; 16],
+        workspace_handle: [u8; 32],
+        action: WorkspacePinActionV1,
+    ) -> Result<WorkspaceRootPinProofV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        self.pin_attempts
+            .values()
+            .filter(|attempt| {
+                attempt.effect_operation_id() == effect_operation_id
+                    && attempt.workspace_handle() == workspace_handle
+                    && attempt.action() == action
+                    && attempt.phase() == WorkspacePinAttemptPhaseV1::Satisfied
+            })
+            .max_by_key(|attempt| attempt.attempt_ordinal())
+            .and_then(|attempt| attempt.satisfied_pin().cloned())
+            .ok_or(StorageStateError::MissingAuthorityLink)
     }
 
     pub(crate) fn plan_workspace_pin_ensure(
@@ -1345,7 +1411,7 @@ impl StorageTransactionStore {
         Ok(workspace_projection)
     }
 
-    fn managed_workspace_creation(
+    pub(crate) fn managed_workspace_creation(
         &self,
         object_guid: u64,
     ) -> Result<Option<CommittedStorageResultV1>, StorageStateError> {

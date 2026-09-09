@@ -41,6 +41,8 @@
     checkType = "debug";
     cargoBuildCommands = [
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-zfs-worker"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-workspace-pin-worker"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-workspace-pin-observer"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage"
     ];
     buildDeps = [buildProtobuf];
@@ -51,7 +53,7 @@ in
     pname = "aos-sandbox-zfs-worker";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-storage --bin aos-sandbox-zfs-worker";
+    cargoFlags = "-p aos-sandbox-storage";
     cargoTestFlags = "-p aos-sandbox-storage";
     cargoNextest = true;
     doCheck = true;
@@ -60,6 +62,8 @@ in
 
     postInstall = ''
       test -x "$out/bin/aos-sandbox-zfs-worker"
+      test -x "$out/bin/aos-sandbox-workspace-pin-worker"
+      test -x "$out/bin/aos-sandbox-workspace-pin-observer"
     '';
 
     passthru = {

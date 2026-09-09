@@ -203,6 +203,14 @@ impl PreobservedZfsMutation {
     pub(crate) const fn entry(&self) -> StorageRecoveryEntry {
         self.context.entry
     }
+
+    pub(crate) const fn catalog(&self) -> &ResolvedCatalogCommitmentV1 {
+        &self.context.catalog
+    }
+
+    pub(crate) const fn operation(&self) -> StorageOperation {
+        self.context.operation
+    }
 }
 
 impl<B: ZfsProcessBackend> StorageMutationHelper<B> {

@@ -6,6 +6,23 @@
   ...
 }: let
   cfg = config.aos.sandbox.storageWorker;
+
+  landlockReadOnlyPrefix = lib.concatStringsSep " " [
+    "${pkgs.aos-landlock}/bin/aos-landlock"
+    "--require-abi 4"
+    "--fs-read /"
+    "--fs-ro /nix/store"
+    "--fs-rw /dev/zfs"
+    "--"
+  ];
+
+  # systemd 259 implements RestrictSUIDSGID by rejecting every openat2 call.
+  # These fixed workers require strict openat2 resolution for cgroup and
+  # descriptor authority, so they cannot use that filter. This relinquishes
+  # setid-file-creation filtering. The effect worker therefore remains outside
+  # production qualification until an enforcing MAC policy covers its required
+  # move_mount and unmount operations without exposing other host mutations.
+  workerRestrictSuidSgid = false;
 in {
   options.aos.sandbox.storageWorker = {
     enable = lib.mkEnableOption "the fixed one-transaction OpenZFS worker";
@@ -37,6 +54,24 @@ in {
       internal = true;
       description = "Allow a test-only executable package distinct from the module package.";
     };
+
+    authorityDirectory = lib.mkOption {
+      type = lib.types.str;
+      default = "/etc/aos/sandbox-storage-authority";
+      description = "Root-owned protected Storage authority directory opened independently by pin workers.";
+    };
+
+    workerUid = lib.mkOption {
+      type = lib.types.int;
+      default = 992;
+      description = "Stable non-root UID of the serialized OpenZFS transaction worker.";
+    };
+
+    workerGid = lib.mkOption {
+      type = lib.types.int;
+      default = 992;
+      description = "Stable non-root GID of the serialized OpenZFS transaction worker.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -47,7 +82,32 @@ in {
           || toString cfg.zfsPackage == toString cfg.zfsModulePackage;
         message = "aos.sandbox.storageWorker requires matching OpenZFS module and executable packages";
       }
+      {
+        assertion = cfg.workerUid > 0 && cfg.workerUid < 65536;
+        message = "aos.sandbox.storageWorker.workerUid must be in 1..65535";
+      }
+      {
+        assertion = cfg.workerGid > 0 && cfg.workerGid < 65536;
+        message = "aos.sandbox.storageWorker.workerGid must be in 1..65535";
+      }
     ];
+
+    # DynamicUser unconditionally enables systemd's RestrictSUIDSGID helper,
+    # whose indirect-flag defense rejects openat2. The socket serializes this
+    # dedicated identity, while the broker independently proves whole-cgroup
+    # quiescence before another transaction may be dispatched.
+    aos.users.users.aos-sandbox-zfs-worker = {
+      uid = cfg.workerUid;
+      group = "aos-sandbox-zfs-worker";
+      home = "/";
+      shell = "/sbin/nologin";
+      description = "AOS serialized OpenZFS transaction worker";
+      extraGroups = [];
+    };
+    aos.users.groups.aos-sandbox-zfs-worker = {
+      gid = cfg.workerGid;
+      members = [];
+    };
 
     aos.kernel.modulePackages = [cfg.zfsModulePackage];
     aos.kernel.modules = ["zfs"];
@@ -60,7 +120,6 @@ in {
       socketConfig = {
         ListenSequentialPacket = "/run/aos/sandbox-zfs-worker/control.sock";
         Accept = true;
-        Service = "aos-sandbox-zfs-worker@.service";
         PassCredentials = true;
         PassPIDFD = true;
         SocketUser = "root";
@@ -68,7 +127,45 @@ in {
         SocketMode = "0600";
         DirectoryMode = "0700";
         RemoveOnStop = true;
-        MaxConnections = 64;
+        MaxConnections = 1;
+      };
+    };
+
+    systemd.sockets.aos-sandbox-workspace-pin-worker = {
+      description = "AOS authenticated workspace root-pin worker socket";
+      wantedBy = ["sockets.target"];
+      requires = ["aos-sandbox-zfs-ready.service"];
+      after = ["aos-sandbox-zfs-ready.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-workspace-pin-worker/control.sock";
+        Accept = true;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0700";
+        RemoveOnStop = true;
+        MaxConnections = 1;
+      };
+    };
+
+    systemd.sockets.aos-sandbox-workspace-pin-observer = {
+      description = "AOS authenticated workspace root-pin observer socket";
+      wantedBy = ["sockets.target"];
+      requires = ["aos-sandbox-zfs-ready.service"];
+      after = ["aos-sandbox-zfs-ready.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-workspace-pin-observer/control.sock";
+        Accept = true;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0700";
+        RemoveOnStop = true;
+        MaxConnections = 1;
       };
     };
 
@@ -152,7 +249,7 @@ in {
       };
       serviceConfig = {
         Type = "exec";
-        ExecStart = "${cfg.package}/bin/aos-sandbox-zfs-worker ${cfg.zfsPackage}/sbin/zfs";
+        ExecStart = "${landlockReadOnlyPrefix} ${cfg.package}/bin/aos-sandbox-zfs-worker ${cfg.zfsPackage}/sbin/zfs";
         StandardInput = "socket";
         StandardOutput = "socket";
         StandardError = "journal";
@@ -164,13 +261,15 @@ in {
         SendSIGKILL = true;
         Restart = "no";
         UMask = "0077";
-        DynamicUser = true;
+        User = "aos-sandbox-zfs-worker";
+        Group = "aos-sandbox-zfs-worker";
 
         CapabilityBoundingSet = ["CAP_SYS_ADMIN"];
         AmbientCapabilities = ["CAP_SYS_ADMIN"];
         DevicePolicy = "closed";
         DeviceAllow = ["/dev/zfs rw"];
         LimitNOFILE = 128;
+        LimitCORE = 0;
         LockPersonality = true;
         MemoryMax = "128M";
         MemoryDenyWriteExecute = true;
@@ -190,7 +289,7 @@ in {
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;
         RestrictRealtime = true;
-        RestrictSUIDSGID = true;
+        RestrictSUIDSGID = workerRestrictSuidSgid;
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
         SystemCallFilter = [
@@ -203,6 +302,206 @@ in {
           "~socket"
           "~socketpair"
           "~connect"
+          "landlock_create_ruleset"
+          "landlock_add_rule"
+          "landlock_restrict_self"
+          "~chmod"
+          "~fchmod"
+          "~fchmodat"
+          "~fchmodat2"
+        ];
+        SystemCallErrorNumber = "EPERM";
+        TasksMax = 16;
+      };
+    };
+
+    systemd.services."aos-sandbox-workspace-pin-worker@" = {
+      description = "AOS authenticated workspace root-pin effect worker";
+      requires = ["aos-sandbox-zfs-ready.service"];
+      after = ["aos-sandbox-zfs-ready.service"];
+      unitConfig.RequiresMountsFor = [
+        "/sys/fs/cgroup"
+        cfg.authorityDirectory
+      ];
+      serviceConfig = {
+        Type = "exec";
+        ExecStart = ''
+          ${cfg.package}/bin/aos-sandbox-workspace-pin-worker \
+            ${cfg.zfsPackage}/sbin/zfs \
+            ${cfg.authorityDirectory} \
+            /var/lib/aos-sandbox-workspace-pin-worker
+        '';
+        StandardInput = "socket";
+        StandardOutput = "socket";
+        StandardError = "journal";
+        StateDirectory = "aos-sandbox-workspace-pin-worker";
+        StateDirectoryMode = "0700";
+        RuntimeMaxSec = "32s";
+        TimeoutStopSec = "1s";
+        KillMode = "control-group";
+        KillSignal = "SIGKILL";
+        FinalKillSignal = "SIGKILL";
+        SendSIGKILL = true;
+        Restart = "no";
+        UMask = "0077";
+        User = "root";
+        Group = "root";
+
+        CapabilityBoundingSet = [
+          "CAP_SYS_ADMIN"
+          "CAP_SYS_CHROOT"
+        ];
+        AmbientCapabilities = [
+          "CAP_SYS_ADMIN"
+          "CAP_SYS_CHROOT"
+        ];
+        DevicePolicy = "closed";
+        DeviceAllow = ["/dev/zfs rw"];
+        LimitNOFILE = 128;
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryMax = "128M";
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = false;
+        PrivateNetwork = true;
+        PrivateTmp = true;
+        ProcSubset = "pid";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        ReadOnlyPaths = [cfg.authorityDirectory];
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = ["mnt"];
+        RestrictRealtime = true;
+        RestrictSUIDSGID = workerRestrictSuidSgid;
+        Slice = "aos-control.slice";
+        SystemCallArchitectures = ["native"];
+        SystemCallFilter = [
+          "@system-service"
+          "setns"
+          "fsopen"
+          "fsconfig"
+          "fsmount"
+          "move_mount"
+          "mount_setattr"
+          "umount2"
+          "~@reboot"
+          "~@swap"
+          "~@module"
+          "~@raw-io"
+          "~socket"
+          "~socketpair"
+          "~connect"
+          "~chmod"
+          "~fchmod"
+          "~fchmodat"
+          "~fchmodat2"
+        ];
+        SystemCallErrorNumber = "EPERM";
+        TasksMax = 16;
+      };
+    };
+
+    systemd.services."aos-sandbox-workspace-pin-observer@" = {
+      description = "AOS authenticated workspace root-pin observation helper";
+      requires = ["aos-sandbox-zfs-ready.service"];
+      after = ["aos-sandbox-zfs-ready.service"];
+      unitConfig.RequiresMountsFor = [
+        "/sys/fs/cgroup"
+        cfg.authorityDirectory
+      ];
+      serviceConfig = {
+        Type = "exec";
+        ExecStart = ''
+          ${landlockReadOnlyPrefix} \
+            ${cfg.package}/bin/aos-sandbox-workspace-pin-observer \
+            ${cfg.zfsPackage}/sbin/zfs \
+            ${cfg.authorityDirectory}
+        '';
+        StandardInput = "socket";
+        StandardOutput = "socket";
+        StandardError = "journal";
+        RuntimeMaxSec = "37s";
+        TimeoutStopSec = "1s";
+        KillMode = "control-group";
+        KillSignal = "SIGKILL";
+        FinalKillSignal = "SIGKILL";
+        SendSIGKILL = true;
+        Restart = "no";
+        UMask = "0077";
+        User = "root";
+        Group = "root";
+
+        # CAP_SYS_CHROOT is required by setns(2) when joining a mount
+        # namespace even though chroot(2) itself remains denied below.
+        CapabilityBoundingSet = [
+          "CAP_SYS_ADMIN"
+          "CAP_SYS_CHROOT"
+        ];
+        AmbientCapabilities = [
+          "CAP_SYS_ADMIN"
+          "CAP_SYS_CHROOT"
+        ];
+        DevicePolicy = "closed";
+        DeviceAllow = ["/dev/zfs rw"];
+        LimitNOFILE = 128;
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryMax = "128M";
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = false;
+        PrivateNetwork = true;
+        PrivateTmp = true;
+        ProcSubset = "pid";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        ReadOnlyPaths = [cfg.authorityDirectory];
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = ["mnt"];
+        RestrictRealtime = true;
+        RestrictSUIDSGID = workerRestrictSuidSgid;
+        Slice = "aos-control.slice";
+        SystemCallArchitectures = ["native"];
+        SystemCallFilter = [
+          "@system-service"
+          "setns"
+          "~mount"
+          "~umount2"
+          "~fsopen"
+          "~fsconfig"
+          "~fsmount"
+          "~move_mount"
+          "~mount_setattr"
+          "~open_tree"
+          "~pivot_root"
+          "~chroot"
+          "~@reboot"
+          "~@swap"
+          "~@module"
+          "~@raw-io"
+          "~socket"
+          "~socketpair"
+          "~connect"
+          "landlock_create_ruleset"
+          "landlock_add_rule"
+          "landlock_restrict_self"
+          "~chmod"
+          "~fchmod"
+          "~fchmodat"
+          "~fchmodat2"
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;

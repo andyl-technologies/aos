@@ -8,6 +8,14 @@ license.workspace = true
 name = "aos-sandbox-zfs-worker"
 path = "src/bin/aos-sandbox-zfs-worker.rs"
 
+[[bin]]
+name = "aos-sandbox-workspace-pin-worker"
+path = "src/bin/aos-sandbox-workspace-pin-worker.rs"
+
+[[bin]]
+name = "aos-sandbox-workspace-pin-observer"
+path = "src/bin/aos-sandbox-workspace-pin-observer.rs"
+
 [dependencies]
 aos-proto.workspace = true
 aos-sandbox.workspace = true
