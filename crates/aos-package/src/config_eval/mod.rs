@@ -46,6 +46,7 @@ pub mod dry_run;
 pub mod managed_configuration_ability;
 pub mod materialize;
 mod native_ability_fs;
+pub mod native_resource_map;
 pub mod nginx_ability;
 pub mod runtime;
 pub mod runtime_modules;
