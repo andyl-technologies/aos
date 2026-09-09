@@ -83,6 +83,37 @@ pub(super) fn test_plan() -> FaultSignalPlan {
         SignalResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("test program: {error}"));
+
+    network_availability_plan(program, output)
+}
+
+pub(super) fn future_pulse_plan() -> FaultSignalPlan {
+    let output = signal_id("partition-window");
+    let program = SignalProgram::new(
+        vec![SignalNode {
+            id: output.clone(),
+            domain: SignalDomain::VirtualTime,
+            output: SignalShape::new(SignalValueType::Bool, SignalUnit::Dimensionless, 0)
+                .unwrap_or_else(|error| panic!("future pulse shape: {error}")),
+            inputs: Vec::new(),
+            kind: SignalNodeKind::Source(SignalSourceSpecification::Pulse {
+                start: SignalCoordinate::VirtualTime {
+                    nanos: 8_000_000_000,
+                },
+                duration: 2_000_000_000,
+                inactive: SignalValue::Bool(false),
+                active: SignalValue::Bool(true),
+            }),
+        }],
+        vec![output.clone()],
+        SignalResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("future pulse program: {error}"));
+
+    network_availability_plan(program, output)
+}
+
+fn network_availability_plan(program: SignalProgram, output: SignalId) -> FaultSignalPlan {
     let targets = ResolvedTargetSet::new(
         vec![ResolvedFaultTarget::NetworkSegment {
             segment: object_id("segment-a"),
