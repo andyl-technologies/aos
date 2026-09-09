@@ -102,15 +102,20 @@ impl CrucibleShmemBlockDevice {
     /// Appends the typed `-blockdev`/`-device` argument pair for this device.
     pub(crate) fn append_qemu_args(&self, args: &mut Vec<String>) {
         args.push("-blockdev".to_owned());
-        args.push(format!(
-            "driver=crucible-shmem,node-name={},size={}",
-            self.block_node_name, self.size_bytes
-        ));
+        args.push(self.qemu_blockdev_argument());
         args.push("-device".to_owned());
         args.push(format!(
             "virtio-blk-pci,drive={},id={},ioeventfd=off",
             self.block_node_name, self.device_id
         ));
+    }
+
+    /// Formats the canonical typed `-blockdev` value used by the launch builder.
+    pub(super) fn qemu_blockdev_argument(&self) -> String {
+        format!(
+            "driver=crucible-shmem,node-name={},size={}",
+            self.block_node_name, self.size_bytes
+        )
     }
 
     /// Appends canonical launch-identity lines describing this device.
