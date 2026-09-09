@@ -14,6 +14,7 @@ mod graph;
 mod output;
 mod projection;
 mod schema;
+mod transition_authority;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -25,7 +26,11 @@ pub use authority::{InvocationAuthorizationError, ValueAuthorizationError};
 pub use binding::PreparedBindingCandidates;
 pub use error::ValidationErrors;
 pub use graph::{
-    BindingValidationInputs, CheckedBindingPlan, CheckedEffectPlan, ValidationContext,
+    BindingAuthorityKind, BindingValidationInputs, CheckedBindingPlan, CheckedEffectPlan,
+    ValidationContext,
 };
 pub use output::{InputValidationError, OutputValidationError, ProviderReadinessError};
 pub use schema::{SchemaPath, validate_value};
+pub use transition_authority::{
+    CheckedTransitionAuthority, TransitionAuthorityError, TransitionAuthorityInputs,
+};

@@ -5,7 +5,8 @@
 //! ```text
 //! {"schema":"aos.ability.transition-context/v1",
 //!  "desired_planning":"sha256:...","current_planning":null,
-//!  "provider":{...},"before":null,"after":{...},"observations":{...}}
+//!  "provider":{...},"authorized_bindings":[...],"before":null,
+//!  "after":{...},"observations":{...}}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,9 +15,9 @@ use aos_ability_model::document::{
     Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
 };
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, AggregateOutput, Binding, BindingRequest,
-    ControllerAssignment, EnvironmentId, InstanceId, ProviderImplementationReference,
-    ResourceRevision, RevisionId, ScopePath,
+    ABILITY_LIMITS_V1, AbilityValue, AggregateOutput, Binding, BindingId, BindingRequest,
+    ControllerAssignment, EnvironmentId, InstanceId, ProviderImplementationReference, RequestId,
+    ResourceRevision, RevisionId, ScopePath, TeardownProviderAuthorization,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -100,6 +101,31 @@ pub struct ScopedObservations {
     pub controllers: Vec<ControllerAssignment>,
 }
 
+/// Identifies the sealed authority role of one constructor-visible binding.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "role", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TransitionBindingAuthority {
+    /// Uses a binding from the checked desired-state plan.
+    Desired,
+    /// Uses a prior binding remapped by fresh current policy.
+    Teardown {
+        /// Identifies the exact prior binding that supplied selection evidence.
+        source_binding: BindingId,
+        /// Identifies the exact prior request that supplied contract evidence.
+        source_request: RequestId,
+    },
+}
+
+/// Supplies an exact outgoing binding and its sealed transition authority role.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorizedTransitionBinding {
+    /// Carries the desired or transition-local checked binding.
+    pub binding: Binding,
+    /// Distinguishes desired authority from fresh teardown authority.
+    pub authority: TransitionBindingAuthority,
+}
+
 /// Carries one exact pure provider's scoped transition-construction input.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -120,6 +146,10 @@ pub struct TransitionContext {
     pub package: Sha256Digest,
     /// Assigns the exclusive graph-key scope for this implementation.
     pub operation_scope: ScopePath,
+    /// Lists exact outgoing bindings authorized for this constructor call.
+    pub authorized_bindings: Vec<AuthorizedTransitionBinding>,
+    /// Carries fresh root authority when retiring an operator-enabled provider.
+    pub teardown_provider_authority: Option<TeardownProviderAuthorization>,
     /// Carries scoped prior desired state, absent for first activation.
     pub before: Option<ScopedDesiredState>,
     /// Carries scoped desired state after this transition.

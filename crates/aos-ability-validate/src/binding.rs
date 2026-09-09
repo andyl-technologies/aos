@@ -588,11 +588,17 @@ pub(crate) fn validate_binding_document(
 
     if diagnostics.is_empty() {
         let executable = document.obligations.is_empty() && planned_providers.is_empty();
+        let binding_authority = document
+            .bindings
+            .iter()
+            .map(|binding| (binding.id.clone(), crate::BindingAuthorityKind::Desired))
+            .collect();
         Ok(CheckedBindingPlan {
             id,
             document,
             inputs,
             binding_indices,
+            binding_authority,
             provider_states,
             planned_providers,
             executable,

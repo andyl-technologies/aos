@@ -9,11 +9,14 @@ mod context;
 mod graph;
 mod snapshot;
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use aos_ability_model::{ABILITY_LIMITS_V1, AbilityValue, InstanceId};
-use aos_ability_validate::{CheckedEffectPlan, ValidationContext, ValidationErrors};
+use aos_ability_validate::{
+    BindingAuthorityKind, CheckedEffectPlan, CheckedTransitionAuthority, ValidationContext,
+    ValidationErrors,
+};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -29,12 +32,12 @@ use graph::{
 };
 
 pub use context::{
-    ResourceChange, ResourceChangeKind, ScopedDesiredState, ScopedObservations,
-    TRANSITION_CONTEXT_SCHEMA, TransitionContext,
+    AuthorizedTransitionBinding, ResourceChange, ResourceChangeKind, ScopedDesiredState,
+    ScopedObservations, TRANSITION_CONTEXT_SCHEMA, TransitionBindingAuthority, TransitionContext,
 };
 pub use graph::{
     TRANSITION_FRAGMENT_SCHEMA, TransitionExport, TransitionExportKind, TransitionFragment,
-    TransitionImport, TransitionImportDirection, TransitionLink,
+    TransitionHandoff, TransitionImport, TransitionImportDirection, TransitionLink,
 };
 pub use snapshot::{
     TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA, TransitionEvaluation,
@@ -50,6 +53,8 @@ pub struct TransitionInputs<'a> {
     /// grants live: teardown effects still require exact bindings authorized by
     /// the desired checked plan.
     pub current: Option<&'a VerifiedPlanningSnapshot>,
+    /// Supplies independently authenticated fresh authority for prior bindings.
+    pub authority: Option<&'a CheckedTransitionAuthority>,
 }
 
 /// Bounds pure transition evaluation and the merged effect graph.
@@ -91,6 +96,9 @@ pub enum TransitionError {
         /// Identifies the provider that still needs an authorized transition.
         provider: InstanceId,
     },
+    /// The sealed teardown authority commits to different planning inputs.
+    #[error("transition authority does not match the desired and prior planning snapshots")]
+    MismatchedTeardownAuthority,
     /// A restricted transition constructor rejected its exact input.
     #[error("transition evaluation failed for provider {provider:?}: {message}")]
     Evaluation {
@@ -185,6 +193,7 @@ impl<'a> TransitionPlanner<'a> {
         let snapshot = TransitionSnapshot::from_construction(
             desired,
             inputs.current,
+            inputs.authority,
             evaluations,
             &checked_effect,
         )
@@ -207,8 +216,13 @@ impl<'a> TransitionPlanner<'a> {
         evaluator: &mut impl CompositionEvaluator,
     ) -> Result<(CheckedEffectPlan, Vec<TransitionEvaluation>), TransitionError> {
         let outcome = desired.outcome();
-        let packages = index_packages(outcome.resolution.checked.packages())?;
-        let groups = transition_groups(desired, inputs.current)?;
+        self.validate_authority_inputs(desired, inputs)?;
+        let binding_plan = inputs.authority.map_or_else(
+            || desired.checked_binding(),
+            CheckedTransitionAuthority::binding_plan,
+        );
+        let packages = index_packages(binding_plan.packages())?;
+        let groups = transition_groups(desired, inputs.current, inputs.authority)?;
         let changes = resource_changes(
             outcome
                 .resolution
@@ -227,7 +241,7 @@ impl<'a> TransitionPlanner<'a> {
         let mut budget = TransitionBudget::default();
         let mut fragments = Vec::new();
         let mut evaluations = Vec::new();
-        let mut evaluated_packages = BTreeSet::new();
+        let mut evaluated_packages = BTreeMap::new();
 
         for group in groups.into_values() {
             budget.begin(self.limits)?;
@@ -236,13 +250,59 @@ impl<'a> TransitionPlanner<'a> {
                 continue;
             };
             let operation_scope = operation_scope(&group.provider, group.reference.descriptor)?;
-            let outgoing: Vec<_> = outcome
-                .resolution
-                .checked
+            let outgoing: Vec<_> = binding_plan
                 .bindings()
                 .iter()
-                .filter(|binding| binding.request.consumer == group.provider)
+                .filter(|binding| {
+                    binding.request.consumer == group.provider
+                        && if group.teardown {
+                            inputs.authority.is_some_and(|authority| {
+                                authority
+                                    .document()
+                                    .teardown_bindings
+                                    .iter()
+                                    .any(|entry| entry.binding.id == binding.id)
+                            })
+                        } else {
+                            desired.checked_binding().binding(&binding.id).is_some()
+                                || (group.include_teardown
+                                    && inputs.authority.is_some_and(|authority| {
+                                        authority
+                                            .document()
+                                            .teardown_bindings
+                                            .iter()
+                                            .any(|entry| entry.binding.id == binding.id)
+                                    }))
+                        }
+                })
                 .collect();
+            let authorized_bindings = outgoing
+                .iter()
+                .map(|binding| {
+                    let authority =
+                        binding_plan.binding_authority(&binding.id).ok_or_else(|| {
+                            TransitionError::InvalidFragment {
+                                provider: group.provider.clone(),
+                                reason: "transition binding lacks a sealed authority role"
+                                    .to_string(),
+                            }
+                        })?;
+                    let authority = match authority {
+                        BindingAuthorityKind::Desired => TransitionBindingAuthority::Desired,
+                        BindingAuthorityKind::Teardown {
+                            source_binding,
+                            source_request,
+                        } => TransitionBindingAuthority::Teardown {
+                            source_binding: source_binding.clone(),
+                            source_request: source_request.clone(),
+                        },
+                    };
+                    Ok(AuthorizedTransitionBinding {
+                        binding: (*binding).clone(),
+                        authority,
+                    })
+                })
+                .collect::<Result<Vec<_>, TransitionError>>()?;
             let owned_changes: Vec<_> = changes
                 .iter()
                 .filter(|change| change.resource.provider == group.provider)
@@ -269,6 +329,19 @@ impl<'a> TransitionPlanner<'a> {
                 implementation: group.reference.clone(),
                 package: group.package,
                 operation_scope: operation_scope.clone(),
+                authorized_bindings,
+                teardown_provider_authority: inputs.authority.and_then(|authority| {
+                    authority
+                        .document()
+                        .teardown_providers
+                        .iter()
+                        .find(|entry| {
+                            entry.provider == group.provider
+                                && entry.implementation == group.reference
+                                && entry.package == group.package
+                        })
+                        .cloned()
+                }),
                 before,
                 after,
                 observations,
@@ -319,12 +392,15 @@ impl<'a> TransitionPlanner<'a> {
             validate_fragment(
                 &group.provider,
                 &operation_scope,
+                group.reference.descriptor,
                 package.activation_mode,
                 &outgoing,
                 &fragment,
                 self.limits,
             )?;
-            evaluated_packages.insert(group.package);
+            evaluated_packages
+                .entry(group.package)
+                .or_insert_with(|| group.provider.clone());
             evaluations.push(evaluation);
             fragments.push(AuthoredTransitionFragment {
                 provider: group.provider,
@@ -335,19 +411,77 @@ impl<'a> TransitionPlanner<'a> {
         }
 
         let document = merge_fragments(
-            outcome,
+            binding_plan,
             controllers,
             fragments,
             &packages,
             &evaluated_packages,
             self.limits,
         )?;
-        let checked_effect = self
-            .context
-            .validate_effect_plan(document, outcome.resolution.checked.clone())
-            .map_err(TransitionError::Validation)?;
+        let checked_effect = match inputs.authority {
+            Some(authority) => self
+                .context
+                .validate_transition_effect_plan(document, authority),
+            None => self
+                .context
+                .validate_effect_plan(document, outcome.resolution.checked.clone()),
+        }
+        .map_err(TransitionError::Validation)?;
 
         Ok((checked_effect, evaluations))
+    }
+
+    fn validate_authority_inputs(
+        &self,
+        desired: &VerifiedPlanningSnapshot,
+        inputs: &TransitionInputs<'_>,
+    ) -> Result<(), TransitionError> {
+        match (inputs.current, inputs.authority) {
+            (None, None) => Ok(()),
+            (None, Some(_)) => Err(TransitionError::MismatchedTeardownAuthority),
+            (Some(current), Some(authority))
+                if authority.document().desired_planning == desired.snapshot_digest()
+                    && authority.document().current_planning == current.snapshot_digest()
+                    && authority.document().desired_policy_revision
+                        == desired.checked_binding().document().policy_revision
+                    && authority.document().prior_policy_revision
+                        == current.checked_binding().document().policy_revision =>
+            {
+                if authority
+                    .document()
+                    .teardown_providers
+                    .iter()
+                    .all(|authorization| {
+                        current
+                            .outcome()
+                            .resolution
+                            .policy
+                            .enabled_providers
+                            .iter()
+                            .any(|source| {
+                                source.instance == authorization.provider
+                                    && source.implementation == authorization.implementation
+                            })
+                            && current
+                                .checked_binding()
+                                .desired_state()
+                                .instances
+                                .iter()
+                                .any(|instance| {
+                                    instance.enabled
+                                        && instance.instance == authorization.provider
+                                        && instance.package == authorization.package
+                                })
+                    })
+                {
+                    Ok(())
+                } else {
+                    Err(TransitionError::MismatchedTeardownAuthority)
+                }
+            }
+            (Some(_), Some(_)) => Err(TransitionError::MismatchedTeardownAuthority),
+            (Some(_), None) => Ok(()),
+        }
     }
 }
 

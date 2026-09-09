@@ -18,6 +18,7 @@ use aos_ability_model::{
     ProviderReadiness, ScopePath, ValueExpression, VersionedDocument, compare_edges,
     compare_operation_keys,
 };
+use aos_ability_validate::{CheckedBindingPlan, CheckedTransitionAuthority};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
@@ -96,6 +97,22 @@ pub struct TransitionLink {
     pub kind: DependencyKind,
 }
 
+/// Orders exported boundaries across two exact implementations of one provider.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransitionHandoff {
+    /// Identifies the predecessor implementation descriptor.
+    pub from_implementation: Sha256Digest,
+    /// Names its exported completion boundary.
+    pub from_export: LocalKey,
+    /// Identifies the successor implementation descriptor.
+    pub to_implementation: Sha256Digest,
+    /// Names its exported entry boundary.
+    pub to_export: LocalKey,
+    /// Defines the non-data relationship between both versions.
+    pub kind: DependencyKind,
+}
+
 /// Carries one bounded provider-authored portion of an effect graph.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -116,6 +133,8 @@ pub struct TransitionFragment {
     pub imports: Vec<TransitionImport>,
     /// Connects two exact lower-provider boundaries through checked bindings.
     pub links: Vec<TransitionLink>,
+    /// Connects this provider's exact prior and desired implementation boundaries.
+    pub handoffs: Vec<TransitionHandoff>,
     /// Declares readiness operations for planned child providers.
     pub provider_readiness: Vec<ProviderReadiness>,
     /// Carries explicit unresolved transition inputs that prohibit execution.
@@ -131,6 +150,7 @@ impl TransitionFragment {
             && self.exports.is_empty()
             && self.imports.is_empty()
             && self.links.is_empty()
+            && self.handoffs.is_empty()
             && self.provider_readiness.is_empty()
     }
 }
@@ -140,6 +160,8 @@ pub(super) struct TransitionGroup {
     pub(super) provider: InstanceId,
     pub(super) reference: ProviderImplementationReference,
     pub(super) package: Sha256Digest,
+    pub(super) teardown: bool,
+    pub(super) include_teardown: bool,
 }
 
 pub(super) struct AuthoredTransitionFragment {
@@ -152,14 +174,34 @@ pub(super) struct AuthoredTransitionFragment {
 pub(super) fn transition_groups(
     desired: &VerifiedPlanningSnapshot,
     current: Option<&VerifiedPlanningSnapshot>,
+    authority: Option<&CheckedTransitionAuthority>,
 ) -> Result<BTreeMap<(InstanceId, Sha256Digest), TransitionGroup>, TransitionError> {
     let mut groups = transition_groups_for_outcome(desired.outcome())?;
     let Some(current) = current else {
         return Ok(groups);
     };
 
-    for (key, prior) in transition_groups_for_outcome(current.outcome())? {
-        if !groups.contains_key(&key) && retains_group_for_teardown(desired, &prior)? {
+    for (key, mut prior) in transition_groups_for_outcome(current.outcome())? {
+        if let Some(retained) = groups.get_mut(&key) {
+            if retained.reference != prior.reference {
+                return Err(TransitionError::MissingTeardownAuthority {
+                    provider: prior.provider,
+                });
+            }
+            if retained.package != prior.package
+                || authority_selects_group(authority, current, &prior)
+            {
+                if !authority_selects_group(authority, current, &prior) {
+                    return Err(TransitionError::MissingTeardownAuthority {
+                        provider: prior.provider,
+                    });
+                }
+                retained.include_teardown = true;
+            }
+            continue;
+        }
+        if authority_selects_group(authority, current, &prior) {
+            prior.teardown = true;
             groups.insert(key.clone(), prior.clone());
         }
         let Some(retained) = groups.get(&key) else {
@@ -177,34 +219,28 @@ pub(super) fn transition_groups(
     Ok(groups)
 }
 
-fn retains_group_for_teardown(
-    desired: &VerifiedPlanningSnapshot,
+fn authority_selects_group(
+    authority: Option<&CheckedTransitionAuthority>,
+    current: &VerifiedPlanningSnapshot,
     prior: &TransitionGroup,
-) -> Result<bool, TransitionError> {
-    if !desired
-        .checked_binding()
-        .desired_state()
-        .instances
-        .iter()
-        .any(|instance| instance.instance == prior.provider && instance.package == prior.package)
-    {
-        return Ok(false);
-    }
-
-    let packages = index_packages(desired.checked_binding().packages())?;
-    let Some(package) = packages.get(&prior.package) else {
-        return Ok(false);
+) -> bool {
+    let Some(authority) = authority else {
+        return false;
     };
-    Ok(package
-        .implementation
-        .providers
-        .iter()
-        .any(|implementation| {
-            implementation.artifact == prior.reference.artifact
-                && implementation
-                    .descriptor_digest()
-                    .is_ok_and(|digest| digest == prior.reference.descriptor)
-        }))
+    authority.document().teardown_bindings.iter().any(|entry| {
+        current
+            .checked_binding()
+            .binding(&entry.source_binding)
+            .is_some_and(|source| {
+                source.provider == prior.provider
+                    && source.provider_package == Some(prior.package)
+                    && source.implementation == prior.reference
+            })
+    }) || authority.document().teardown_providers.iter().any(|entry| {
+        entry.provider == prior.provider
+            && entry.implementation == prior.reference
+            && entry.package == prior.package
+    })
 }
 
 fn transition_groups_for_outcome(
@@ -274,6 +310,8 @@ fn insert_group(
             provider,
             reference,
             package,
+            teardown: false,
+            include_teardown: false,
         },
     );
     Ok(())
@@ -363,6 +401,7 @@ pub(super) fn operation_scope(
 pub(super) fn validate_fragment(
     provider: &InstanceId,
     operation_scope: &ScopePath,
+    implementation_descriptor: Sha256Digest,
     activation_mode: AbilityActivationMode,
     outgoing: &[&Binding],
     fragment: &TransitionFragment,
@@ -385,6 +424,7 @@ pub(super) fn validate_fragment(
         || fragment.exports.len() > limits.max_graph_nodes as usize
         || fragment.imports.len() > limits.max_graph_edges as usize
         || fragment.links.len() > limits.max_graph_edges as usize
+        || fragment.handoffs.len() > limits.max_graph_edges as usize
         || fragment.provider_readiness.len() > limits.max_graph_nodes as usize
         || fragment.obligations.len() > limits.max_graph_nodes as usize
     {
@@ -425,6 +465,10 @@ pub(super) fn validate_fragment(
             .links
             .windows(2)
             .any(|pair| compare_transition_links(&pair[0], &pair[1]).is_ge())
+        || fragment
+            .handoffs
+            .windows(2)
+            .any(|pair| compare_transition_handoffs(&pair[0], &pair[1]).is_ge())
         || fragment
             .provider_readiness
             .windows(2)
@@ -519,6 +563,16 @@ pub(super) fn validate_fragment(
             "transition link is not a non-data relationship over outgoing bindings",
         ));
     }
+    if fragment.handoffs.iter().any(|handoff| {
+        handoff.kind == DependencyKind::Data
+            || handoff.from_implementation == handoff.to_implementation
+            || (handoff.from_implementation != implementation_descriptor
+                && handoff.to_implementation != implementation_descriptor)
+    }) {
+        return Err(invalid(
+            "transition handoff must join this exact implementation to another version with a non-data edge",
+        ));
+    }
     if fragment.provider_readiness.iter().any(|readiness| {
         !outgoing.contains_key(&readiness.binding) || readiness.producer.scope != *operation_scope
     }) {
@@ -566,6 +620,18 @@ fn compare_transition_links(left: &TransitionLink, right: &TransitionLink) -> st
         .cmp(&right.from_binding)
         .then_with(|| left.from_export.cmp(&right.from_export))
         .then_with(|| left.to_binding.cmp(&right.to_binding))
+        .then_with(|| left.to_export.cmp(&right.to_export))
+        .then_with(|| left.kind.canonical_rank().cmp(&right.kind.canonical_rank()))
+}
+
+fn compare_transition_handoffs(
+    left: &TransitionHandoff,
+    right: &TransitionHandoff,
+) -> std::cmp::Ordering {
+    left.from_implementation
+        .cmp(&right.from_implementation)
+        .then_with(|| left.from_export.cmp(&right.from_export))
+        .then_with(|| left.to_implementation.cmp(&right.to_implementation))
         .then_with(|| left.to_export.cmp(&right.to_export))
         .then_with(|| left.kind.canonical_rank().cmp(&right.kind.canonical_rank()))
 }
@@ -721,11 +787,11 @@ fn retain_foreign_results(
 }
 
 pub(super) fn merge_fragments(
-    outcome: &CompositionOutcome,
+    binding_plan: &CheckedBindingPlan,
     controllers: Vec<ControllerAssignment>,
     fragments: Vec<AuthoredTransitionFragment>,
     packages: &BTreeMap<Sha256Digest, &PackageDocument>,
-    evaluated_packages: &BTreeSet<Sha256Digest>,
+    evaluated_packages: &BTreeMap<Sha256Digest, InstanceId>,
     limits: TransitionLimits,
 ) -> Result<EffectPlanDocument, TransitionError> {
     let mut exported_boundaries = BTreeMap::new();
@@ -751,14 +817,12 @@ pub(super) fn merge_fragments(
             BTreeMap::new();
         let foreign_results = foreign_results_by_consumer(authored);
         for import in &authored.fragment.imports {
-            let binding = outcome
-                .resolution
-                .checked
-                .binding(&import.binding)
-                .ok_or_else(|| TransitionError::InvalidFragment {
+            let binding = binding_plan.binding(&import.binding).ok_or_else(|| {
+                TransitionError::InvalidFragment {
                     provider: authored.provider.clone(),
                     reason: "transition import names a missing checked binding".to_string(),
-                })?;
+                }
+            })?;
             if binding.request.consumer != authored.provider {
                 return Err(TransitionError::InvalidFragment {
                     provider: authored.provider.clone(),
@@ -817,22 +881,18 @@ pub(super) fn merge_fragments(
             });
         }
         for link in &authored.fragment.links {
-            let from_binding = outcome
-                .resolution
-                .checked
-                .binding(&link.from_binding)
-                .ok_or_else(|| TransitionError::InvalidFragment {
+            let from_binding = binding_plan.binding(&link.from_binding).ok_or_else(|| {
+                TransitionError::InvalidFragment {
                     provider: authored.provider.clone(),
                     reason: "transition link names a missing source binding".to_string(),
-                })?;
-            let to_binding = outcome
-                .resolution
-                .checked
-                .binding(&link.to_binding)
-                .ok_or_else(|| TransitionError::InvalidFragment {
+                }
+            })?;
+            let to_binding = binding_plan.binding(&link.to_binding).ok_or_else(|| {
+                TransitionError::InvalidFragment {
                     provider: authored.provider.clone(),
                     reason: "transition link names a missing target binding".to_string(),
-                })?;
+                }
+            })?;
             if from_binding.request.consumer != authored.provider
                 || to_binding.request.consumer != authored.provider
             {
@@ -879,6 +939,44 @@ pub(super) fn merge_fragments(
                 kind: link.kind,
             });
         }
+        for handoff in &authored.fragment.handoffs {
+            let from_key = (
+                authored.provider.clone(),
+                handoff.from_implementation,
+                handoff.from_export.clone(),
+            );
+            let to_key = (
+                authored.provider.clone(),
+                handoff.to_implementation,
+                handoff.to_export.clone(),
+            );
+            let from_export = exported_boundaries.get(&from_key).ok_or_else(|| {
+                TransitionError::InvalidFragment {
+                    provider: authored.provider.clone(),
+                    reason: "transition handoff has no exact predecessor export".to_string(),
+                }
+            })?;
+            let to_export = exported_boundaries.get(&to_key).ok_or_else(|| {
+                TransitionError::InvalidFragment {
+                    provider: authored.provider.clone(),
+                    reason: "transition handoff has no exact successor export".to_string(),
+                }
+            })?;
+            if from_export.kind != TransitionExportKind::Completion
+                || to_export.kind != TransitionExportKind::Entry
+            {
+                return Err(TransitionError::InvalidFragment {
+                    provider: authored.provider.clone(),
+                    reason: "transition handoff must connect completion to entry boundaries"
+                        .to_string(),
+                });
+            }
+            imported_edges.push(DependencyEdge {
+                from: from_export.node.clone(),
+                to: to_export.node.clone(),
+                kind: handoff.kind,
+            });
+        }
         if foreign_results != allowed_results {
             return Err(TransitionError::InvalidFragment {
                 provider: authored.provider.clone(),
@@ -911,7 +1009,7 @@ pub(super) fn merge_fragments(
     provider_readiness.sort_by(|left, right| left.binding.cmp(&right.binding));
     obligations.sort_by(|left, right| left.key.cmp(&right.key));
 
-    let artifacts = retained_transition_artifacts(outcome, packages, evaluated_packages)?;
+    let artifacts = retained_transition_artifacts(binding_plan, packages, evaluated_packages)?;
 
     let node_count = operations
         .len()
@@ -935,10 +1033,10 @@ pub(super) fn merge_fragments(
         schema: EffectPlanDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
         limits: ABILITY_LIMITS_V1,
-        binding_plan: outcome.resolution.checked.id().0,
+        binding_plan: binding_plan.id().0,
         artifacts,
-        current_revisions: outcome.resolution.checked.environment().resources.clone(),
-        desired_revisions: outcome.resolution.checked.desired_state().resources.clone(),
+        current_revisions: binding_plan.environment().resources.clone(),
+        desired_revisions: binding_plan.desired_state().resources.clone(),
         operations,
         decisions,
         merges,
@@ -950,13 +1048,13 @@ pub(super) fn merge_fragments(
 }
 
 fn retained_transition_artifacts(
-    outcome: &CompositionOutcome,
+    binding_plan: &CheckedBindingPlan,
     packages: &BTreeMap<Sha256Digest, &PackageDocument>,
-    evaluated_packages: &BTreeSet<Sha256Digest>,
+    evaluated_packages: &BTreeMap<Sha256Digest, InstanceId>,
 ) -> Result<Vec<ArtifactReference>, TransitionError> {
     let mut artifacts = BTreeMap::new();
-    let mut retained_packages = evaluated_packages.clone();
-    for binding in outcome.resolution.checked.bindings() {
+    let mut retained_packages: BTreeSet<_> = evaluated_packages.keys().copied().collect();
+    for binding in binding_plan.bindings() {
         insert_artifact(
             &mut artifacts,
             &binding.implementation.artifact,
@@ -972,21 +1070,20 @@ fn retained_transition_artifacts(
                 "evaluated transition package is absent from the retained catalog".to_string(),
             )
         })?;
-        let fallback_provider = outcome
-            .resolution
-            .checked
+        let fallback_provider = binding_plan
             .bindings()
             .iter()
             .find(|binding| binding.provider_package == Some(*package_digest))
             .map(|binding| binding.provider.clone())
             .or_else(|| {
-                outcome
-                    .desired_state
+                binding_plan
+                    .desired_state()
                     .instances
                     .iter()
                     .find(|instance| instance.package == *package_digest)
                     .map(|instance| instance.instance.clone())
             })
+            .or_else(|| evaluated_packages.get(package_digest).cloned())
             .ok_or_else(|| {
                 TransitionError::Encoding(
                     "evaluated package has no retained provider identity".to_string(),

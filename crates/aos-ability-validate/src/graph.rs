@@ -242,6 +242,20 @@ impl ValidationContext {
     ) -> Result<CheckedEffectPlan, ValidationErrors> {
         validate_effect_document(self, document, binding_plan)
     }
+
+    /// Validates an effect graph against sealed current-policy transition authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics when graph content exceeds the desired
+    /// bindings or the explicitly reauthorized teardown bindings.
+    pub fn validate_transition_effect_plan(
+        &self,
+        document: EffectPlanDocument,
+        authority: &crate::CheckedTransitionAuthority,
+    ) -> Result<CheckedEffectPlan, ValidationErrors> {
+        validate_effect_document(self, document, authority.binding_plan().clone())
+    }
 }
 
 /// Supplies the exact documents whose digests a binding plan commits to.
@@ -262,9 +276,29 @@ pub struct CheckedBindingPlan {
     pub(crate) document: BindingPlanDocument,
     pub(crate) inputs: BindingValidationInputs,
     pub(crate) binding_indices: BTreeMap<BindingId, usize>,
+    /// Distinguishes ordinary desired bindings from specialized teardown remaps.
+    pub(crate) binding_authority: BTreeMap<BindingId, BindingAuthorityKind>,
     pub(crate) provider_states: BTreeMap<BindingId, BindingProviderState>,
     pub(crate) planned_providers: BTreeSet<aos_ability_model::InstanceId>,
     pub(crate) executable: bool,
+}
+
+/// Identifies whether a checked binding serves desired state or explicit teardown.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BindingAuthorityKind {
+    /// The binding belongs to the ordinary checked desired-state plan.
+    Desired,
+    /// The binding remaps exact prior selection under fresh transition authority.
+    ///
+    /// Its remapped request preserves historical provenance. Current-policy
+    /// grants govern invocation and may name teardown methods that were not
+    /// requested by the historical desired state.
+    Teardown {
+        /// Identifies the binding in the prior planning snapshot.
+        source_binding: BindingId,
+        /// Identifies the exact request in the prior planning snapshot.
+        source_request: aos_ability_model::RequestId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -300,6 +334,12 @@ impl CheckedBindingPlan {
     #[must_use]
     pub fn bindings(&self) -> &[Binding] {
         &self.document.bindings
+    }
+
+    /// Returns the typed authority role assigned to a checked binding.
+    #[must_use]
+    pub fn binding_authority(&self, id: &BindingId) -> Option<&BindingAuthorityKind> {
+        self.binding_authority.get(id)
     }
 
     /// Returns the checked target environment input.
@@ -373,7 +413,7 @@ impl CheckedEffectPlan {
         &self.document
     }
 
-    /// Returns the exact checked binding plan authorizing this graph.
+    /// Returns the exact checked desired or transition binding plan authorizing this graph.
     #[must_use]
     pub const fn binding_plan(&self) -> &CheckedBindingPlan {
         &self.binding_plan

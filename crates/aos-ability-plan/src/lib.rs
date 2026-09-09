@@ -31,10 +31,11 @@ pub use snapshot::{
     PlanningSnapshotError, ResolutionSnapshot, VerifiedPlanningSnapshot,
 };
 pub use transition::{
-    ResourceChange, ResourceChangeKind, ScopedDesiredState, ScopedObservations,
-    TRANSITION_CONTEXT_SCHEMA, TRANSITION_FRAGMENT_SCHEMA, TRANSITION_SNAPSHOT_MAX_BYTES,
-    TRANSITION_SNAPSHOT_SCHEMA, TransitionContext, TransitionError, TransitionEvaluation,
-    TransitionEvaluationResult, TransitionExport, TransitionExportKind, TransitionFragment,
+    AuthorizedTransitionBinding, ResourceChange, ResourceChangeKind, ScopedDesiredState,
+    ScopedObservations, TRANSITION_CONTEXT_SCHEMA, TRANSITION_FRAGMENT_SCHEMA,
+    TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA, TransitionBindingAuthority,
+    TransitionContext, TransitionError, TransitionEvaluation, TransitionEvaluationResult,
+    TransitionExport, TransitionExportKind, TransitionFragment, TransitionHandoff,
     TransitionImport, TransitionImportDirection, TransitionInputs, TransitionLimits,
     TransitionLink, TransitionPlanner, TransitionReplayInputs, TransitionSnapshot,
     TransitionSnapshotError, VerifiedTransitionPlan,
