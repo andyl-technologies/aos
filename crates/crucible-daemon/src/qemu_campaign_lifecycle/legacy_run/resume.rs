@@ -122,8 +122,11 @@ where
     if request.initial_schedule.decisions().iter().any(|decision| {
         !matches!(
             decision,
+            // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is only checked against the selection-free taxonomy.
             crucible::Decision::DeliveryOrder(_)
+                // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is only checked against the selection-free taxonomy.
                 | crucible::Decision::RngDraw(_)
+                // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is only checked against the selection-free taxonomy.
                 | crucible::Decision::Preemption(_)
         )
     }) {
@@ -145,6 +148,7 @@ where
 
     // Reconstruct the legacy v3 checkpoint rather than trusting caller-owned
     // state, blob references, metadata, or continuation closure fields.
+    // crucible-lint: allow host-nondeterminism-state -- the source configuration is reconstructed only from the authenticated scenario and replay schedule.
     let configuration = Configuration {
         def: request.scenario.scenario_def(),
         schedule: request.initial_schedule.clone(),
@@ -152,6 +156,7 @@ where
     let parent = if configuration.schedule.is_empty() {
         None
     } else {
+        // crucible-lint: allow host-nondeterminism-state -- the parent configuration is the deterministic authenticated schedule prefix and contains no host observation.
         Some(Configuration {
             def: configuration.def.clone(),
             schedule: configuration
