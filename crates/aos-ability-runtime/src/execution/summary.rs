@@ -6,7 +6,7 @@ use aos_ability_model::{OperationId, PlanId, TransactionId};
 
 pub use aos_ability_model::document::TerminalResult;
 
-use crate::execution::{ExecutionTransaction, OperationState};
+use crate::execution::{CompensationState, ExecutionTransaction, OperationHistory, OperationState};
 
 /// Classifies the durable progress of one checked operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,6 +19,8 @@ pub enum OperationStatus {
     Recovering,
     /// The operation completed and released every process-scoped resource.
     Succeeded,
+    /// The original success was explicitly and durably compensated.
+    Compensated,
     /// The operation settled unsuccessfully and released every resource.
     SettledFailure,
     /// An unresolved effect requires an operator decision.
@@ -33,7 +35,11 @@ impl OperationStatus {
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::SettledFailure | Self::InterventionRequired | Self::Skipped
+            Self::Succeeded
+                | Self::Compensated
+                | Self::SettledFailure
+                | Self::InterventionRequired
+                | Self::Skipped
         )
     }
 }
@@ -136,7 +142,7 @@ impl ExecutionTransaction<'_> {
                 let status = if self.operation_is_skipped(&history.operation_id().operation) {
                     OperationStatus::Skipped
                 } else {
-                    operation_status(history.state(), history.resources_released())
+                    operation_status(history)
                 };
 
                 OperationSummary {
@@ -160,7 +166,21 @@ impl ExecutionTransaction<'_> {
     }
 }
 
-fn operation_status(state: &OperationState, resources_released: bool) -> OperationStatus {
+fn operation_status(history: &OperationHistory) -> OperationStatus {
+    let resources_released = history.resources_released();
+    if let Some(compensation) = history.compensation_state() {
+        return match compensation {
+            CompensationState::Completed { .. } if resources_released => {
+                OperationStatus::Compensated
+            }
+            CompensationState::InterventionRequired { .. } => OperationStatus::InterventionRequired,
+            CompensationState::RejectedBeforeEffect { .. } if resources_released => {
+                OperationStatus::InterventionRequired
+            }
+            _ => OperationStatus::Recovering,
+        };
+    }
+    let state = history.state();
     match state {
         OperationState::Pending => OperationStatus::Pending,
         OperationState::Admitted { .. } => OperationStatus::Active,
@@ -170,6 +190,8 @@ fn operation_status(state: &OperationState, resources_released: bool) -> Operati
         | OperationState::Indeterminate { .. }
         | OperationState::ReconciliationIntentDurable { .. }
         | OperationState::RetryAuthorized { .. }
+        | OperationState::RetryBackoff { .. }
+        | OperationState::RetryReady { .. }
         | OperationState::CancellationIntentDurable { .. } => OperationStatus::Recovering,
         OperationState::Completed { .. } if resources_released => OperationStatus::Succeeded,
         OperationState::SettledFailure { .. } if resources_released => {
@@ -198,6 +220,12 @@ fn transaction_result(operations: &[OperationSummary]) -> Option<TerminalResult>
     if operations
         .iter()
         .any(|operation| operation.status == OperationStatus::SettledFailure)
+    {
+        return Some(TerminalResult::SettledFailure);
+    }
+    if operations
+        .iter()
+        .any(|operation| operation.status == OperationStatus::Compensated)
     {
         return Some(TerminalResult::SettledFailure);
     }

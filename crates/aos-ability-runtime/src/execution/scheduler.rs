@@ -9,8 +9,8 @@ use aos_ability_model::{
 };
 
 use crate::execution::{
-    ExecutionEventKind, ExecutionTransaction, InputResolutionError, OperationState, RecoveryAction,
-    TransactionError,
+    CompensationInterventionReason, CompensationState, ExecutionEventKind, ExecutionTransaction,
+    InputResolutionError, OperationState, RecoveryAction, TransactionError,
 };
 
 /// Supplies one operation and its durable next action in dispatch order.
@@ -69,6 +69,9 @@ impl ExecutionTransaction<'_> {
                         .operation(key)
                         .ok_or(TransactionError::OperationMissing)?;
                     let action = self.next_action_with_blocked(key, &blocked_operations)?;
+                    if action == RecoveryAction::CompensationInterventionRequired {
+                        self.derive_compensation_intervention(key)?;
+                    }
                     if !self.branch_is_active(&operation.branch_context)
                         && action != RecoveryAction::SettleFailureBeforeEffect
                     {
@@ -120,6 +123,37 @@ impl ExecutionTransaction<'_> {
             },
         })?;
         Ok(true)
+    }
+
+    fn derive_compensation_intervention(
+        &mut self,
+        key: &ScopedOperationKey,
+    ) -> Result<(), TransactionError> {
+        let operation = self
+            .plan()
+            .operation(key)
+            .ok_or(TransactionError::OperationMissing)?;
+        let history = self.history(key)?;
+        let reason = match history.compensation_state() {
+            Some(CompensationState::Requested { .. } | CompensationState::Admitted) => {
+                CompensationInterventionReason::DeadlineBeforeIntent
+            }
+            Some(
+                CompensationState::IntentDurable
+                | CompensationState::Indeterminate { .. }
+                | CompensationState::ReconciliationIntentDurable,
+            ) if history.elapsed_millis() >= operation.deadline.total_recovery_millis.get() => {
+                CompensationInterventionReason::DeadlineAfterIntent
+            }
+            Some(
+                CompensationState::IntentDurable
+                | CompensationState::Indeterminate { .. }
+                | CompensationState::ReconciliationIntentDurable,
+            ) => CompensationInterventionReason::RecoveryUnavailable,
+            _ => return Ok(()),
+        };
+        let elapsed_millis = history.elapsed_millis();
+        self.record_compensation_intervention(key, reason, elapsed_millis)
     }
 
     fn derive_decision(

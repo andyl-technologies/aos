@@ -564,6 +564,7 @@ impl TrustedAdapter for NativeSystemdAdapter {
             InvocationPurpose::Reconcile | InvocationPurpose::Cancel => {
                 method.method.as_str() == "observe"
             }
+            InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation => false,
         }
     }
 

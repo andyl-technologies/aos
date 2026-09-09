@@ -17,7 +17,8 @@ use crate::adapter::{
     PlanRetentionReceipt, RootRetentionReceipt, TrustedPlanStore, TrustedRootStore,
 };
 use crate::execution::{
-    ExecutionEvent, ExecutionEventKind, OperationHistory, OperationState, StateError,
+    CompensationInterventionReason, ExecutionEvent, ExecutionEventKind, OperationHistory,
+    OperationState, StateError,
 };
 use crate::journal::{FileJournal, JournalError, JournalLimits, JournalOpenResult};
 
@@ -30,9 +31,6 @@ pub enum TransactionError {
     /// Summing operation recovery limits exceeded the version-1 integer range.
     #[error("effect plan total recovery budget is not representable")]
     RecoveryBudgetOverflow,
-    /// The checked plan requests retry delay that this runtime cannot yet enforce durably.
-    #[error("nonzero retry backoff is not supported by this runtime")]
-    UnsupportedRetryBackoff,
     /// The trusted closure store could not retain required recovery artifacts.
     #[error("recovery artifact retention failed: {0}")]
     RootRetention(#[source] anyhow::Error),
@@ -56,6 +54,18 @@ pub enum TransactionError {
     /// The requested operation is absent from the checked plan.
     #[error("operation is absent from the checked effect plan")]
     OperationMissing,
+    /// The operation has no checked compensation method.
+    #[error("operation has no checked compensation method")]
+    CompensationMissing,
+    /// Compensation requires a completed operation with released resources.
+    #[error("operation is not eligible for explicit compensation")]
+    CompensationNotEligible,
+    /// A success-consuming dependent has already advanced durably.
+    #[error("a dependent has already consumed the operation's success")]
+    CompensationDependentProgressed,
+    /// A terminal transaction must use a separately rooted recovery transaction.
+    #[error("terminal transaction cannot be amended with compensation")]
+    CompensationAfterTerminal,
     /// Checked graph metadata or ready input derivation could not advance.
     #[error("execution scheduling failed: {reason}")]
     Scheduling {
@@ -106,8 +116,8 @@ impl<'plan> ExecutionTransaction<'plan> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the plan is not executable, requests unsupported
-    /// retry backoff, its aggregate budget overflows, the journal is unavailable
+    /// Returns an error when the plan is not executable, its aggregate budget
+    /// overflows, the journal is unavailable
     /// or corrupt, or a digest-valid record violates the checked plan or finite
     /// state machines.
     pub fn open<RootStore>(
@@ -123,18 +133,6 @@ impl<'plan> ExecutionTransaction<'plan> {
         if !plan.is_executable() {
             return Err(TransactionError::PlanNotExecutable);
         }
-        if plan.operations().iter().any(|operation| {
-            matches!(
-                operation.recovery.retry,
-                RetryPolicy::Bounded {
-                    backoff_millis,
-                    ..
-                } if backoff_millis != 0
-            )
-        }) {
-            return Err(TransactionError::UnsupportedRetryBackoff);
-        }
-
         let total_recovery_millis = aggregate_recovery_budget(plan)?;
         let runtime_artifacts = required_runtime_artifacts(plan);
         let retained_roots = retained_roots(&runtime_artifacts);
@@ -263,6 +261,50 @@ impl<'plan> ExecutionTransaction<'plan> {
         self.next_action_with_blocked(operation, &blocked)
     }
 
+    /// Durably requests explicit compensation of one completed operation.
+    ///
+    /// This preserves the original completion record separately while making
+    /// its outputs unavailable to future graph consumers immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the transaction remains nonterminal and the
+    /// operation declares compensation, completed successfully, released its
+    /// original resources, has no prior request, and has no progressed
+    /// transitive consumer of its successful result.
+    pub fn request_compensation(
+        &mut self,
+        operation: &ScopedOperationKey,
+        reason: aos_ability_model::AbilityValue,
+    ) -> Result<(), TransactionError> {
+        if self.summary().terminal().is_some() {
+            return Err(TransactionError::CompensationAfterTerminal);
+        }
+        let checked = self
+            .plan
+            .operation(operation)
+            .ok_or(TransactionError::OperationMissing)?;
+        if checked.recovery.compensate.is_none() {
+            return Err(TransactionError::CompensationMissing);
+        }
+        let history = self.history(operation)?;
+        if history.original_completion().is_none()
+            || !history.resources_released()
+            || history.compensation_state().is_some()
+        {
+            return Err(TransactionError::CompensationNotEligible);
+        }
+        if compensation_dependent_has_progressed(self.plan, &self.replay, operation) {
+            return Err(TransactionError::CompensationDependentProgressed);
+        }
+        self.append(ExecutionEventKind::CompensationRequested {
+            transaction: self.transaction().clone(),
+            operation: history.operation_id().clone(),
+            reason,
+            elapsed_millis: history.elapsed_millis(),
+        })
+    }
+
     pub(crate) fn next_action_with_blocked(
         &self,
         operation: &ScopedOperationKey,
@@ -294,6 +336,23 @@ impl<'plan> ExecutionTransaction<'plan> {
                 == aos_ability_model::IndeterminateSemantics::InterventionRequired
             {
                 return Ok(crate::execution::RecoveryAction::InterventionRequired);
+            }
+        }
+        if action == crate::execution::RecoveryAction::ReconcileCompensation {
+            let Some(compensate) = checked.recovery.compensate.as_ref() else {
+                return Ok(crate::execution::RecoveryAction::CompensationInterventionRequired);
+            };
+            let semantics = self
+                .plan
+                .method_outcome_semantics(checked, compensate)
+                .map_err(|source| TransactionError::Scheduling {
+                    reason: format!("compensation outcome semantics are unavailable: {source}"),
+                })?;
+            if checked.recovery.reconcile.is_none()
+                || semantics.indeterminate
+                    == aos_ability_model::IndeterminateSemantics::InterventionRequired
+            {
+                return Ok(crate::execution::RecoveryAction::CompensationInterventionRequired);
             }
         }
         Ok(action)
@@ -436,6 +495,21 @@ impl<'plan> ExecutionTransaction<'plan> {
         }
         self.replay.commit(self.plan, sequence, event.body())?;
         Ok(())
+    }
+
+    pub(crate) fn record_compensation_intervention(
+        &mut self,
+        operation: &ScopedOperationKey,
+        reason: CompensationInterventionReason,
+        elapsed_millis: u64,
+    ) -> Result<(), TransactionError> {
+        let history = self.history(operation)?;
+        self.append(ExecutionEventKind::CompensationInterventionRequired {
+            transaction: self.transaction().clone(),
+            operation: history.operation_id().clone(),
+            reason,
+            elapsed_millis: elapsed_millis.max(history.elapsed_millis()),
+        })
     }
 
     pub(crate) fn ensure_journal_capacity(
@@ -738,6 +812,14 @@ impl ReplayState {
                     ));
                 }
                 validate_checked_operation_event(plan, operation_id, event, sequence)?;
+                if matches!(event, ExecutionEventKind::CompensationRequested { .. })
+                    && compensation_dependent_has_progressed(plan, self, &operation_id.operation)
+                {
+                    return Err(invalid(
+                        sequence,
+                        "compensation request follows a progressed success-consuming dependent",
+                    ));
+                }
                 if matches!(event, ExecutionEventKind::OperationAdmitted { .. }) {
                     ensure_operation_ready(plan, self, &operation_id.operation, sequence)?;
                 }
@@ -829,6 +911,18 @@ fn validate_checked_operation_event(
                 format!("operation outcome semantics are unavailable: {source}"),
             )
         })?;
+    let compensation_outcome = operation
+        .recovery
+        .compensate
+        .as_ref()
+        .map(|method| plan.method_outcome_semantics(operation, method))
+        .transpose()
+        .map_err(|source| {
+            invalid(
+                sequence,
+                format!("compensation outcome semantics are unavailable: {source}"),
+            )
+        })?;
     if event_attempt(event).is_some_and(|attempt| attempt.get() > maximum_attempt) {
         return Err(invalid(
             sequence,
@@ -905,10 +999,126 @@ fn validate_checked_operation_event(
                 ));
             }
         }
+        ExecutionEventKind::RetryBackoffScheduled {
+            observed_at_millis,
+            eligible_at_millis,
+            ..
+        } => {
+            let RetryPolicy::Bounded { backoff_millis, .. } = operation.recovery.retry else {
+                return Err(invalid(
+                    sequence,
+                    "retry backoff lacks a checked retry policy",
+                ));
+            };
+            let expected = observed_at_millis
+                .checked_add(backoff_millis)
+                .ok_or_else(|| invalid(sequence, "retry eligibility timestamp overflowed"))?;
+            if expected != *eligible_at_millis {
+                return Err(invalid(
+                    sequence,
+                    "retry backoff differs from the checked policy",
+                ));
+            }
+        }
+        ExecutionEventKind::CompensationRequested { .. }
+        | ExecutionEventKind::CompensationAdmitted { .. }
+        | ExecutionEventKind::CompensationIntent { .. }
+        | ExecutionEventKind::CompensationCompleted { .. }
+        | ExecutionEventKind::CompensationRejectedBeforeEffect { .. }
+        | ExecutionEventKind::CompensationIndeterminate { .. }
+        | ExecutionEventKind::CompensationReconciliationIntent { .. }
+        | ExecutionEventKind::CompensationReconciliationObserved { .. }
+        | ExecutionEventKind::CompensationInterventionRequired { .. }
+            if operation.recovery.compensate.is_none() =>
+        {
+            return Err(invalid(
+                sequence,
+                "compensation event lacks a checked compensation method",
+            ));
+        }
+        ExecutionEventKind::CompensationIntent {
+            idempotency_key,
+            attempt_timeout_millis,
+            ..
+        } => {
+            if *attempt_timeout_millis > checked_timeout {
+                return Err(invalid(
+                    sequence,
+                    "compensation timeout exceeds the checked deadline",
+                ));
+            }
+            let expected = Sha256Digest::of_canonical(
+                "aos.ability.compensation-idempotency-key/v1",
+                &(event.transaction(), operation_id),
+            )
+            .map_err(|source| {
+                invalid(
+                    sequence,
+                    format!("compensation identity cannot be encoded: {source}"),
+                )
+            })?;
+            if *idempotency_key != expected {
+                return Err(invalid(
+                    sequence,
+                    "compensation idempotency key differs from its durable identity",
+                ));
+            }
+        }
+        ExecutionEventKind::CompensationReconciliationIntent {
+            call_timeout_millis,
+            ..
+        } => {
+            if compensation_outcome.is_some_and(|outcome| {
+                outcome.indeterminate
+                    == aos_ability_model::IndeterminateSemantics::InterventionRequired
+            }) {
+                return Err(invalid(
+                    sequence,
+                    "compensation contract requires intervention instead of reconciliation",
+                ));
+            }
+            if operation.recovery.reconcile.is_none() {
+                return Err(invalid(
+                    sequence,
+                    "compensation reconciliation lacks a checked method",
+                ));
+            }
+            if *call_timeout_millis > checked_timeout {
+                return Err(invalid(
+                    sequence,
+                    "compensation reconciliation timeout exceeds the checked deadline",
+                ));
+            }
+        }
+        ExecutionEventKind::CompensationRejectedBeforeEffect { .. }
+        | ExecutionEventKind::CompensationReconciliationObserved {
+            result: crate::execution::ReconciliationResult::RejectedBeforeEffect,
+            ..
+        } if compensation_outcome
+            .is_some_and(|outcome| !outcome.supports_rejected_before_effect) =>
+        {
+            return Err(invalid(
+                sequence,
+                "compensation claimed rejection-before-effect without checked support",
+            ));
+        }
+        ExecutionEventKind::CompensationReconciliationObserved { .. }
+            if compensation_outcome.is_some_and(|outcome| {
+                outcome.indeterminate
+                    == aos_ability_model::IndeterminateSemantics::InterventionRequired
+            }) =>
+        {
+            return Err(invalid(
+                sequence,
+                "compensation contract requires intervention instead of reconciliation",
+            ));
+        }
         _ => {}
     }
 
-    if let ExecutionEventKind::OperationAdmitted { resources, .. } = event {
+    if let ExecutionEventKind::OperationAdmitted { resources, .. }
+    | ExecutionEventKind::CompensationAdmitted { resources, .. } = event
+    {
         let mut expected: Vec<_> = operation
             .accesses
             .iter()
@@ -959,6 +1169,39 @@ fn validate_checked_operation_event(
             })?;
     }
 
+    let compensation_completed = match event {
+        ExecutionEventKind::CompensationCompleted {
+            evidence, outputs, ..
+        }
+        | ExecutionEventKind::CompensationReconciliationObserved {
+            result: crate::execution::ReconciliationResult::Completed,
+            evidence,
+            outputs,
+            ..
+        } => Some((evidence, outputs)),
+        _ => None,
+    };
+    if let Some((evidence, outputs)) = compensation_completed {
+        let method =
+            operation.recovery.compensate.as_ref().ok_or_else(|| {
+                invalid(sequence, "compensation completion lacks a checked method")
+            })?;
+        plan.validate_method_completion_evidence(operation, method, evidence)
+            .map_err(|source| {
+                invalid(
+                    sequence,
+                    format!("compensation evidence violates the checked schema: {source}"),
+                )
+            })?;
+        plan.validate_method_outputs(operation, method, outputs)
+            .map_err(|source| {
+                invalid(
+                    sequence,
+                    format!("compensation outputs violate the checked schema: {source}"),
+                )
+            })?;
+    }
+
     let observation = match event {
         ExecutionEventKind::EffectRejectedBeforeEffect { evidence, .. }
         | ExecutionEventKind::EffectIndeterminate { evidence, .. } => Some(evidence),
@@ -976,6 +1219,28 @@ fn validate_checked_operation_event(
                 invalid(
                     sequence,
                     format!("observation evidence violates the checked schema: {source}"),
+                )
+            })?;
+    }
+
+    let compensation_observation = match event {
+        ExecutionEventKind::CompensationRejectedBeforeEffect { evidence, .. }
+        | ExecutionEventKind::CompensationIndeterminate { evidence, .. } => Some(evidence),
+        ExecutionEventKind::CompensationReconciliationObserved {
+            result, evidence, ..
+        } if !matches!(result, crate::execution::ReconciliationResult::Completed) => Some(evidence),
+        _ => None,
+    };
+    if let Some(evidence) = compensation_observation {
+        let method =
+            operation.recovery.compensate.as_ref().ok_or_else(|| {
+                invalid(sequence, "compensation observation lacks a checked method")
+            })?;
+        plan.validate_method_observation_evidence(operation, method, evidence)
+            .map_err(|source| {
+                invalid(
+                    sequence,
+                    format!("compensation observation violates the checked schema: {source}"),
                 )
             })?;
     }
@@ -1003,6 +1268,17 @@ fn validate_checked_operation_event(
                 ));
             }
         }
+        ExecutionEventKind::CompensationReconciliationObserved {
+            result, outputs, ..
+        } => {
+            let completed = matches!(result, crate::execution::ReconciliationResult::Completed);
+            if !completed && !outputs.is_empty() {
+                return Err(invalid(
+                    sequence,
+                    "non-completing compensation reconciliation carries outputs",
+                ));
+            }
+        }
         _ => {}
     }
 
@@ -1027,12 +1303,17 @@ fn begins_new_work(event: &ExecutionEventKind) -> bool {
             | ExecutionEventKind::EffectIntent { .. }
             | ExecutionEventKind::ReconciliationIntent { .. }
             | ExecutionEventKind::CancellationRequested { .. }
+            | ExecutionEventKind::CompensationAdmitted { .. }
+            | ExecutionEventKind::CompensationIntent { .. }
+            | ExecutionEventKind::CompensationReconciliationIntent { .. }
     )
 }
 
 fn event_attempt(event: &ExecutionEventKind) -> Option<std::num::NonZeroU32> {
     match event {
         ExecutionEventKind::OperationAdmitted { attempt, .. }
+        | ExecutionEventKind::RetryBackoffScheduled { attempt, .. }
+        | ExecutionEventKind::RetryBackoffElapsed { attempt, .. }
         | ExecutionEventKind::EffectIntent { attempt, .. }
         | ExecutionEventKind::EffectCompleted { attempt, .. }
         | ExecutionEventKind::EffectRejectedBeforeEffect { attempt, .. }
@@ -1047,6 +1328,15 @@ fn event_attempt(event: &ExecutionEventKind) -> Option<std::num::NonZeroU32> {
         | ExecutionEventKind::BranchSelected { .. }
         | ExecutionEventKind::OperationSkipped { .. }
         | ExecutionEventKind::MergeCompleted { .. }
+        | ExecutionEventKind::CompensationRequested { .. }
+        | ExecutionEventKind::CompensationAdmitted { .. }
+        | ExecutionEventKind::CompensationIntent { .. }
+        | ExecutionEventKind::CompensationCompleted { .. }
+        | ExecutionEventKind::CompensationRejectedBeforeEffect { .. }
+        | ExecutionEventKind::CompensationIndeterminate { .. }
+        | ExecutionEventKind::CompensationReconciliationIntent { .. }
+        | ExecutionEventKind::CompensationReconciliationObserved { .. }
+        | ExecutionEventKind::CompensationInterventionRequired { .. }
         | ExecutionEventKind::OwnershipTransferred { .. }
         | ExecutionEventKind::ResourcesReleased { .. } => None,
     }
@@ -1114,10 +1404,10 @@ fn ensure_node_predecessors(
 
 fn node_succeeded(replay: &ReplayState, node: &PlanNodeKey) -> bool {
     match node {
-        PlanNodeKey::Operation { key } => replay
-            .operations
-            .get(key)
-            .is_some_and(|history| matches!(history.state(), OperationState::Completed { .. })),
+        PlanNodeKey::Operation { key } => replay.operations.get(key).is_some_and(|history| {
+            history.compensation_state().is_none()
+                && matches!(history.state(), OperationState::Completed { .. })
+        }),
         PlanNodeKey::Decision { key } => replay.selections.contains_key(key),
         PlanNodeKey::Merge { key } => replay.merged.contains_key(key),
     }
@@ -1212,7 +1502,10 @@ fn operation_blockage(
         return (true, true);
     }
     match history.state() {
-        OperationState::Completed { .. } => return (false, false),
+        OperationState::Completed { .. } if history.compensation_state().is_none() => {
+            return (false, false);
+        }
+        OperationState::Completed { .. } => return (true, false),
         OperationState::SettledFailure { .. } => return (true, false),
         OperationState::InterventionRequired { .. } => return (true, true),
         OperationState::Pending => {}
@@ -1268,6 +1561,58 @@ fn success_is_required(kind: DependencyKind) -> bool {
             | DependencyKind::Readiness
             | DependencyKind::BranchGuard
     )
+}
+
+fn compensation_dependent_has_progressed(
+    plan: &CheckedEffectPlan,
+    replay: &ReplayState,
+    operation: &ScopedOperationKey,
+) -> bool {
+    let mut pending = vec![PlanNodeKey::Operation {
+        key: operation.clone(),
+    }];
+    let mut visited = BTreeSet::new();
+
+    while let Some(predecessor) = pending.pop() {
+        if !visited.insert(predecessor.clone()) {
+            continue;
+        }
+        for edge in plan.edges().iter().filter(|edge| {
+            edge.from == predecessor && compensation_success_flows_through(edge.kind)
+        }) {
+            if node_has_progressed(replay, &edge.to) {
+                return true;
+            }
+            pending.push(edge.to.clone());
+        }
+    }
+
+    false
+}
+
+fn compensation_success_flows_through(kind: DependencyKind) -> bool {
+    matches!(
+        kind,
+        DependencyKind::Data
+            | DependencyKind::RequiredSuccess
+            | DependencyKind::Readiness
+            | DependencyKind::BranchGuard
+            | DependencyKind::BranchMerge
+    )
+}
+
+fn node_has_progressed(replay: &ReplayState, node: &PlanNodeKey) -> bool {
+    match node {
+        PlanNodeKey::Operation { key } => {
+            replay.skipped.contains(key)
+                || replay
+                    .operations
+                    .get(key)
+                    .is_some_and(|history| !matches!(history.state(), OperationState::Pending))
+        }
+        PlanNodeKey::Decision { key } => replay.selections.contains_key(key),
+        PlanNodeKey::Merge { key } => replay.merged.contains_key(key),
+    }
 }
 
 fn branch_context_selected(
@@ -1336,6 +1681,12 @@ fn resolve_result_json<'replay>(
                     "result reference producer has not completed successfully",
                 ));
             };
+            if history.compensation_state().is_some() {
+                return Err(invalid(
+                    sequence,
+                    "result reference producer has entered compensation",
+                ));
+            }
             outputs
                 .get(&reference.output)
                 .map(aos_ability_model::AbilityValue::as_json)

@@ -880,6 +880,43 @@ fn runtime_output_rechecks_nested_resource_authority() {
     ));
 }
 
+#[test]
+fn runtime_method_validation_rejects_an_authorized_but_undeclared_method() {
+    let mut fixture = plan_fixture();
+    let foreign_method = key("foreign-observe");
+    let descriptor = fixture.interfaces[0].interface.methods[&key("observe")].clone();
+    fixture.interfaces[0]
+        .interface
+        .methods
+        .insert(foreign_method.clone(), descriptor);
+    fixture.binding_plan.bindings[0]
+        .caller_grant
+        .methods
+        .push(foreign_method.clone());
+    fixture.binding_plan.bindings[0].caller_grant.methods.sort();
+    fixture.binding_plan.bindings[0].caller_grant.resources[0]
+        .operations
+        .push(foreign_method.clone());
+    fixture.binding_plan.bindings[0].caller_grant.resources[0]
+        .operations
+        .sort();
+    fixture.refresh_interface();
+    fixture.refresh_commitments();
+    let plan = fixture
+        .validate()
+        .expect("an unused authorized interface method does not alter the operation");
+    let operation = &plan.operations()[0];
+    let foreign = MethodReference {
+        interface: operation.interface.clone(),
+        method: foreign_method,
+    };
+
+    assert!(matches!(
+        plan.method_outcome_semantics(operation, &foreign),
+        Err(crate::OutputValidationError::UndeclaredMethod)
+    ));
+}
+
 fn install_controller(fixture: &mut PlanFixture) -> AggregateId {
     let resource = fixture.effect_plan.current_revisions[0].resource.clone();
     let assigned = controller(fixture, "service");

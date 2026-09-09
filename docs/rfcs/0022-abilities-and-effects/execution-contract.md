@@ -178,6 +178,29 @@ still run old or unknown revisions. It does not silently change the committed
 target back. Explicit compensation or rollback is a separately validated
 transition with its own outcome.
 
+Compensation begins only through an explicit durable request for a completed
+operation. The request does not reverse the operation graph. It preserves the
+original completion evidence and records compensation admission, intent,
+outcome, and reconciliation separately. Primary admission preflights adapter
+support and current authorization for every declared compensation and
+compensation-reconciliation method before the original effect can run. A
+compensation request is rejected after any transitive data, required-success,
+readiness, branch, or merge consumer has durably advanced; once accepted, the
+original outputs cannot satisfy new dependents. Each compensation admission
+reacquires resources and rechecks current authority for the exact compensation
+method. If its effect is ambiguous, recovery invokes the compensation
+reconciliation path rather than observing or repeating the primary effect.
+An admitted token is bound to the exact durable operation sequence, invocation
+purpose, and current resource set that produced it. Any intervening transition
+requires fresh admission, including the transition from primary execution to
+compensation and from ambiguous compensation to compensation reconciliation.
+Deadline or adapter failure records a durable compensation-intervention reason,
+distinguishing failure before intent from uncertainty after intent, and retains
+owned resources for explicit transfer or operator handling.
+After a transaction has published terminal state, compensation uses a separately
+rooted recovery transaction and lifecycle; the completed journal is not amended
+behind its terminal marker.
+
 An explicitly supported degraded boot may commit a validated subset. The
 controller records the original intent, omitted consumers, recomputed aggregate,
 and committed subset. Missing required enforcement excludes its consumer or
@@ -199,6 +222,14 @@ idempotency/reconciliation for the logical operation. Authorization/schema
 errors are not transient retries. An indeterminate result first invokes the
 declared observation/reconciliation path; inability to determine the result
 becomes intervention required, not blind repeated execution.
+
+A nonzero retry backoff is a durable eligibility gate. The controller journals
+the trusted native timestamp used to schedule it and the exact eligible
+timestamp, while excluding both from semantic plan and operation identities.
+After restart it reuses that eligibility point, rejects a clock observation
+older than the persisted observation, and charges the actual wait to the
+remaining recovery budget. Timestamp overflow and deadline exhaustion fail
+closed before another attempt is admitted.
 
 Cancellation stops admission of new ordinary operations, requests cancellation
 of in-flight methods according to their contracts, and records their actual

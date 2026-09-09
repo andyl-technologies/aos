@@ -53,6 +53,26 @@ pub enum DispatchAbortReason {
     DeadlineExpired,
 }
 
+/// Records why compensation stopped and now requires an operator decision.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompensationInterventionReason {
+    /// The finite budget expired before compensation intent became durable.
+    DeadlineBeforeIntent,
+    /// The finite budget expired after compensation intent became durable.
+    DeadlineAfterIntent,
+    /// Cancellation was observed before compensation intent became durable.
+    CancelledBeforeIntent,
+    /// Cancellation was observed after compensation intent became durable.
+    CancelledAfterIntent,
+    /// The admitted adapter did not provide the required compensation call.
+    AdapterUnavailable,
+    /// The checked contract has no safe automatic observation after intent.
+    RecoveryUnavailable,
+    /// The provider's bounded observation explicitly required intervention.
+    ProviderRequired,
+}
+
 /// Describes one immutable execution history event.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "event", rename_all = "kebab-case", deny_unknown_fields)]
@@ -80,6 +100,143 @@ pub enum ExecutionEventKind {
         attempt: NonZeroU32,
         /// Lists held logical resources in canonical identity order.
         resources: Vec<ResourceId>,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Persists a restart-safe eligibility gate before a delayed retry.
+    RetryBackoffScheduled {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the exact operation under the plan.
+        operation: OperationId,
+        /// Identifies the completed attempt preceding the delay.
+        attempt: NonZeroU32,
+        /// Records the trusted native timestamp observed while scheduling.
+        observed_at_millis: u64,
+        /// Records the earliest trusted native timestamp eligible for retry.
+        eligible_at_millis: u64,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Records that a persisted retry delay has elapsed under a trusted clock.
+    RetryBackoffElapsed {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the exact operation under the plan.
+        operation: OperationId,
+        /// Identifies the completed attempt preceding the delay.
+        attempt: NonZeroU32,
+        /// Records the trusted native timestamp that satisfied eligibility.
+        observed_at_millis: u64,
+        /// Retains the recovery budget charged through this observation.
+        elapsed_millis: u64,
+    },
+    /// Records an explicit request to compensate a completed operation.
+    CompensationRequested {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the completed operation selected for compensation.
+        operation: OperationId,
+        /// Retains a bounded caller-supplied audit reason.
+        reason: AbilityValue,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Records fresh compensation authority and resource ownership.
+    CompensationAdmitted {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the operation being compensated.
+        operation: OperationId,
+        /// Lists freshly held resources in canonical identity order.
+        resources: Vec<ResourceId>,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Records compensation intent before its external effect.
+    CompensationIntent {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the operation being compensated.
+        operation: OperationId,
+        /// Retains the exact primary request accepted by the recovery contract.
+        request: AbilityValue,
+        /// Identifies this logical compensation consistently across recovery.
+        idempotency_key: Sha256Digest,
+        /// Bounds the compensation adapter call.
+        attempt_timeout_millis: u64,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Records a successful, separately validated compensation outcome.
+    CompensationCompleted {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the compensated operation.
+        operation: OperationId,
+        /// Retains typed compensation completion evidence.
+        evidence: AbilityValue,
+        /// Retains the compensation method's exact typed output set.
+        outputs: BTreeMap<LocalKey, AbilityValue>,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Records proof that compensation was rejected before any effect.
+    CompensationRejectedBeforeEffect {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the operation whose compensation was rejected.
+        operation: OperationId,
+        /// Retains typed rejection evidence.
+        evidence: AbilityValue,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Records an ambiguous compensation effect.
+    CompensationIndeterminate {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the operation with ambiguous compensation.
+        operation: OperationId,
+        /// Retains typed ambiguity evidence.
+        evidence: AbilityValue,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Records intent to reconcile the compensation effect.
+    CompensationReconciliationIntent {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the ambiguous compensation being observed.
+        operation: OperationId,
+        /// Conservatively reserves this budget if observation is interrupted.
+        call_timeout_millis: u64,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Records the authoritative disposition of compensation reconciliation.
+    CompensationReconciliationObserved {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the compensation that was observed.
+        operation: OperationId,
+        /// States the authoritative compensation disposition.
+        result: ReconciliationResult,
+        /// Retains typed completion or observation evidence.
+        evidence: AbilityValue,
+        /// Retains outputs only when compensation completion was established.
+        outputs: BTreeMap<LocalKey, AbilityValue>,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Records a durable fail-closed compensation stop requiring intervention.
+    CompensationInterventionRequired {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the compensation that cannot proceed automatically.
+        operation: OperationId,
+        /// States why automatic compensation recovery stopped.
+        reason: CompensationInterventionReason,
         /// Retains consumed operation recovery budget across reboot.
         elapsed_millis: u64,
     },
@@ -281,6 +438,17 @@ impl ExecutionEventKind {
         match self {
             Self::TransactionPlanned { transaction, .. }
             | Self::OperationAdmitted { transaction, .. }
+            | Self::RetryBackoffScheduled { transaction, .. }
+            | Self::RetryBackoffElapsed { transaction, .. }
+            | Self::CompensationRequested { transaction, .. }
+            | Self::CompensationAdmitted { transaction, .. }
+            | Self::CompensationIntent { transaction, .. }
+            | Self::CompensationCompleted { transaction, .. }
+            | Self::CompensationRejectedBeforeEffect { transaction, .. }
+            | Self::CompensationIndeterminate { transaction, .. }
+            | Self::CompensationReconciliationIntent { transaction, .. }
+            | Self::CompensationReconciliationObserved { transaction, .. }
+            | Self::CompensationInterventionRequired { transaction, .. }
             | Self::BranchSelected { transaction, .. }
             | Self::OperationSkipped { transaction, .. }
             | Self::MergeCompleted { transaction, .. }
@@ -304,6 +472,17 @@ impl ExecutionEventKind {
     pub const fn operation(&self) -> Option<&OperationId> {
         match self {
             Self::OperationAdmitted { operation, .. }
+            | Self::RetryBackoffScheduled { operation, .. }
+            | Self::RetryBackoffElapsed { operation, .. }
+            | Self::CompensationRequested { operation, .. }
+            | Self::CompensationAdmitted { operation, .. }
+            | Self::CompensationIntent { operation, .. }
+            | Self::CompensationCompleted { operation, .. }
+            | Self::CompensationRejectedBeforeEffect { operation, .. }
+            | Self::CompensationIndeterminate { operation, .. }
+            | Self::CompensationReconciliationIntent { operation, .. }
+            | Self::CompensationReconciliationObserved { operation, .. }
+            | Self::CompensationInterventionRequired { operation, .. }
             | Self::EffectIntent { operation, .. }
             | Self::EffectCompleted { operation, .. }
             | Self::EffectRejectedBeforeEffect { operation, .. }
@@ -328,6 +507,17 @@ impl ExecutionEventKind {
     pub const fn elapsed_millis(&self) -> Option<u64> {
         match self {
             Self::OperationAdmitted { elapsed_millis, .. }
+            | Self::RetryBackoffScheduled { elapsed_millis, .. }
+            | Self::RetryBackoffElapsed { elapsed_millis, .. }
+            | Self::CompensationRequested { elapsed_millis, .. }
+            | Self::CompensationAdmitted { elapsed_millis, .. }
+            | Self::CompensationIntent { elapsed_millis, .. }
+            | Self::CompensationCompleted { elapsed_millis, .. }
+            | Self::CompensationRejectedBeforeEffect { elapsed_millis, .. }
+            | Self::CompensationIndeterminate { elapsed_millis, .. }
+            | Self::CompensationReconciliationIntent { elapsed_millis, .. }
+            | Self::CompensationReconciliationObserved { elapsed_millis, .. }
+            | Self::CompensationInterventionRequired { elapsed_millis, .. }
             | Self::EffectIntent { elapsed_millis, .. }
             | Self::EffectCompleted { elapsed_millis, .. }
             | Self::EffectRejectedBeforeEffect { elapsed_millis, .. }
@@ -384,9 +574,12 @@ impl JournalPayload for ExecutionEvent {
         let collection_length = match &self.body {
             ExecutionEventKind::TransactionPlanned { retained_roots, .. } => retained_roots.len(),
             ExecutionEventKind::OperationAdmitted { resources, .. }
+            | ExecutionEventKind::CompensationAdmitted { resources, .. }
             | ExecutionEventKind::OwnershipTransferred { resources, .. }
             | ExecutionEventKind::ResourcesReleased { resources, .. } => resources.len(),
             ExecutionEventKind::EffectCompleted { outputs, .. }
+            | ExecutionEventKind::CompensationCompleted { outputs, .. }
+            | ExecutionEventKind::CompensationReconciliationObserved { outputs, .. }
             | ExecutionEventKind::ReconciliationObserved { outputs, .. }
             | ExecutionEventKind::CancellationObserved { outputs, .. } => outputs.len(),
             ExecutionEventKind::MergeCompleted { merged, .. } => merged.outputs.len(),
@@ -412,11 +605,21 @@ impl JournalPayload for ExecutionEvent {
             } if *attempt_timeout_millis == 0 => Err(JournalError::Limit(
                 "effect attempt timeout must be nonzero".to_string(),
             )),
+            ExecutionEventKind::CompensationIntent {
+                attempt_timeout_millis,
+                ..
+            } if *attempt_timeout_millis == 0 => Err(JournalError::Limit(
+                "compensation attempt timeout must be nonzero".to_string(),
+            )),
             ExecutionEventKind::ReconciliationIntent {
                 call_timeout_millis,
                 ..
             }
             | ExecutionEventKind::CancellationRequested {
+                call_timeout_millis,
+                ..
+            }
+            | ExecutionEventKind::CompensationReconciliationIntent {
                 call_timeout_millis,
                 ..
             } if *call_timeout_millis == 0 => Err(JournalError::Limit(

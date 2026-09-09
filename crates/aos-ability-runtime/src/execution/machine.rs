@@ -12,7 +12,8 @@ use crate::adapter::{
     TrustedAdapter,
 };
 use crate::execution::event::{
-    CancellationResult, DispatchAbortReason, ExecutionEventKind, ReconciliationResult,
+    CancellationResult, CompensationInterventionReason, DispatchAbortReason, ExecutionEventKind,
+    ReconciliationResult,
 };
 use crate::execution::{ExecutionTransaction, TransactionError};
 use crate::journal::{FileJournal, JournalError};
@@ -359,6 +360,198 @@ where
         Ok(step)
     }
 
+    /// Persists and dispatches an explicitly requested compensation effect.
+    pub(crate) fn compensate(
+        &mut self,
+        journal: &mut impl ExecutionEventSink,
+        context: AttemptContext<'_>,
+        request: &PreparedRequest<Adapter::Request>,
+    ) -> Result<ExecutionStep, ExecutionError> {
+        journal.ensure_capacity(4)?;
+        let control = LiveControl::new(
+            self.clock,
+            self.cancellation,
+            context.elapsed_millis,
+            context.attempt_timeout_millis,
+            context.total_recovery_millis,
+        );
+        if control.is_cancelled() || deadline_expired(&control) {
+            let reason = if control.is_cancelled() {
+                CompensationInterventionReason::CancelledBeforeIntent
+            } else {
+                CompensationInterventionReason::DeadlineBeforeIntent
+            };
+            journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
+                transaction: context.transaction.clone(),
+                operation: context.operation.clone(),
+                reason,
+                elapsed_millis: control.elapsed_millis(),
+            })?;
+            return Ok(ExecutionStep::InterventionRequired);
+        }
+        journal.append_event(ExecutionEventKind::CompensationIntent {
+            transaction: context.transaction.clone(),
+            operation: context.operation.clone(),
+            request: request.durable().clone(),
+            idempotency_key: context.idempotency_key,
+            attempt_timeout_millis: context.attempt_timeout_millis,
+            elapsed_millis: control.elapsed_millis(),
+        })?;
+        self.observe(Boundary::EffectIntentDurable)?;
+        if control.is_cancelled() || deadline_expired(&control) {
+            let reason = if control.is_cancelled() {
+                CompensationInterventionReason::CancelledAfterIntent
+            } else {
+                CompensationInterventionReason::DeadlineAfterIntent
+            };
+            journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
+                transaction: context.transaction.clone(),
+                operation: context.operation.clone(),
+                reason,
+                elapsed_millis: control.elapsed_millis(),
+            })?;
+            self.observe(Boundary::EffectOutcomeDurable)?;
+            return Ok(ExecutionStep::InterventionRequired);
+        }
+
+        let Some(disposition) = self.adapter.compensate(request.request(), &control) else {
+            journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
+                transaction: context.transaction.clone(),
+                operation: context.operation.clone(),
+                reason: CompensationInterventionReason::AdapterUnavailable,
+                elapsed_millis: control.elapsed_millis(),
+            })?;
+            self.observe(Boundary::EffectOutcomeDurable)?;
+            return Ok(ExecutionStep::InterventionRequired);
+        };
+        self.observe(Boundary::EffectReturned)?;
+        let (event, step) = match disposition {
+            EffectDisposition::Completed(evidence) => (
+                ExecutionEventKind::CompensationCompleted {
+                    transaction: context.transaction.clone(),
+                    operation: context.operation.clone(),
+                    evidence: evidence.durable().clone(),
+                    outputs: evidence.outputs().clone(),
+                    elapsed_millis: control.elapsed_millis(),
+                },
+                ExecutionStep::Completed,
+            ),
+            EffectDisposition::RejectedBeforeEffect(evidence) => (
+                ExecutionEventKind::CompensationRejectedBeforeEffect {
+                    transaction: context.transaction.clone(),
+                    operation: context.operation.clone(),
+                    evidence: evidence.durable().clone(),
+                    elapsed_millis: control.elapsed_millis(),
+                },
+                ExecutionStep::RejectedBeforeEffect,
+            ),
+            EffectDisposition::Indeterminate(evidence) => (
+                ExecutionEventKind::CompensationIndeterminate {
+                    transaction: context.transaction.clone(),
+                    operation: context.operation.clone(),
+                    evidence: evidence.durable().clone(),
+                    elapsed_millis: control.elapsed_millis(),
+                },
+                ExecutionStep::Indeterminate,
+            ),
+        };
+        journal.append_event(event)?;
+        self.observe(Boundary::EffectOutcomeDurable)?;
+        Ok(step)
+    }
+
+    /// Reconciles the compensation effect without observing the primary effect.
+    pub(crate) fn reconcile_compensation(
+        &mut self,
+        journal: &mut impl ExecutionEventSink,
+        context: AttemptContext<'_>,
+        request: &Adapter::Request,
+    ) -> Result<ExecutionStep, ExecutionError> {
+        journal.ensure_capacity(2)?;
+        let control = LiveControl::new(
+            self.clock,
+            self.cancellation,
+            context.elapsed_millis,
+            context.attempt_timeout_millis,
+            context.total_recovery_millis,
+        );
+        if deadline_expired(&control) {
+            journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
+                transaction: context.transaction.clone(),
+                operation: context.operation.clone(),
+                reason: CompensationInterventionReason::DeadlineAfterIntent,
+                elapsed_millis: control.elapsed_millis(),
+            })?;
+            return Ok(ExecutionStep::InterventionRequired);
+        }
+        journal.append_event(ExecutionEventKind::CompensationReconciliationIntent {
+            transaction: context.transaction.clone(),
+            operation: context.operation.clone(),
+            call_timeout_millis: context.attempt_timeout_millis,
+            elapsed_millis: control.elapsed_millis(),
+        })?;
+        self.observe(Boundary::ReconciliationIntentDurable)?;
+        if deadline_expired(&control) {
+            journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
+                transaction: context.transaction.clone(),
+                operation: context.operation.clone(),
+                reason: CompensationInterventionReason::DeadlineAfterIntent,
+                elapsed_millis: control.elapsed_millis(),
+            })?;
+            self.observe(Boundary::ReconciliationOutcomeDurable)?;
+            return Ok(ExecutionStep::InterventionRequired);
+        }
+
+        let Some(disposition) = self.adapter.reconcile_compensation(request, &control) else {
+            journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
+                transaction: context.transaction.clone(),
+                operation: context.operation.clone(),
+                reason: CompensationInterventionReason::AdapterUnavailable,
+                elapsed_millis: control.elapsed_millis(),
+            })?;
+            self.observe(Boundary::ReconciliationOutcomeDurable)?;
+            return Ok(ExecutionStep::InterventionRequired);
+        };
+        self.observe(Boundary::ReconciliationReturned)?;
+        let (result, evidence, outputs, step) = match disposition {
+            ReconcileDisposition::Completed(evidence) => (
+                ReconciliationResult::Completed,
+                evidence.durable().clone(),
+                evidence.outputs().clone(),
+                ExecutionStep::Completed,
+            ),
+            ReconcileDisposition::RejectedBeforeEffect(evidence) => (
+                ReconciliationResult::RejectedBeforeEffect,
+                evidence.durable().clone(),
+                BTreeMap::new(),
+                ExecutionStep::RejectedBeforeEffect,
+            ),
+            ReconcileDisposition::StillIndeterminate(evidence) => (
+                ReconciliationResult::StillIndeterminate,
+                evidence.durable().clone(),
+                BTreeMap::new(),
+                ExecutionStep::Indeterminate,
+            ),
+            ReconcileDisposition::SafeToRetry(evidence)
+            | ReconcileDisposition::InterventionRequired(evidence) => (
+                ReconciliationResult::InterventionRequired,
+                evidence.durable().clone(),
+                BTreeMap::new(),
+                ExecutionStep::InterventionRequired,
+            ),
+        };
+        journal.append_event(ExecutionEventKind::CompensationReconciliationObserved {
+            transaction: context.transaction.clone(),
+            operation: context.operation.clone(),
+            result,
+            evidence,
+            outputs,
+            elapsed_millis: control.elapsed_millis(),
+        })?;
+        self.observe(Boundary::ReconciliationOutcomeDurable)?;
+        Ok(step)
+    }
+
     /// Requests cancellation and records what the adapter actually established.
     ///
     /// # Errors
@@ -535,7 +728,7 @@ mod tests {
 
     use super::*;
     use crate::adapter::{AdapterRecord, ResourceHandle};
-    use crate::execution::{ExecutionEvent, OperationHistory, RecoveryAction};
+    use crate::execution::{CompensationState, ExecutionEvent, OperationHistory, RecoveryAction};
     use crate::journal::{FileJournal, JournalLimits};
 
     #[test]
@@ -707,6 +900,42 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn compensation_deadline_after_intent_records_durable_intervention()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new()?;
+        let mut journal = fixture.journal_with_compensation_admission()?;
+        let clock = TestClock::default();
+        let cancellation = CancellationToken::default();
+        let mut hook = AdvanceAtEffectIntent {
+            clock: clock.now.clone(),
+            now: 100,
+        };
+        let mut adapter = TestAdapter::completed(fixture.evidence()?);
+        let request_value = AbilityValue::new(json!({"revision": 2}))?;
+        let request = PreparedRequest::new(request_value.clone(), request_value);
+
+        let step = OperationExecutor::new(&mut adapter, &clock, &cancellation, &mut hook)
+            .compensate(&mut journal, fixture.context(), &request)?;
+        assert_eq!(step, ExecutionStep::InterventionRequired);
+        assert_eq!(adapter.execute_calls, 0);
+        drop(journal);
+
+        let recovered = fixture.recover_history()?;
+        assert!(matches!(
+            recovered.compensation_state(),
+            Some(CompensationState::InterventionRequired {
+                reason: CompensationInterventionReason::DeadlineAfterIntent,
+                evidence: None,
+            })
+        ));
+        assert_eq!(
+            recovered.recovery_action(&aos_ability_model::RetryPolicy::Disabled, 100),
+            RecoveryAction::CompensationInterventionRequired
+        );
+        Ok(())
+    }
+
     #[derive(Default)]
     struct TestClock {
         now: Rc<Cell<u64>>,
@@ -714,6 +943,10 @@ mod tests {
 
     impl MonotonicClock for TestClock {
         fn now_millis(&self) -> u64 {
+            self.now.get()
+        }
+
+        fn restart_stable_millis(&self) -> u64 {
             self.now.get()
         }
     }
@@ -756,6 +989,20 @@ mod tests {
         fn continue_after(&mut self, boundary: Boundary) -> bool {
             if boundary == Boundary::EffectIntentDurable {
                 self.0.cancel();
+            }
+            true
+        }
+    }
+
+    struct AdvanceAtEffectIntent {
+        clock: Rc<Cell<u64>>,
+        now: u64,
+    }
+
+    impl BoundaryHook for AdvanceAtEffectIntent {
+        fn continue_after(&mut self, boundary: Boundary) -> bool {
+            if boundary == Boundary::EffectIntentDurable {
+                self.clock.set(self.now);
             }
             true
         }
@@ -944,6 +1191,37 @@ mod tests {
                 attempt_timeout_millis: 10,
                 elapsed_millis: 0,
             }))?;
+            Ok(journal)
+        }
+
+        fn journal_with_compensation_admission(
+            &self,
+        ) -> Result<FileJournal<ExecutionEvent>, Box<dyn std::error::Error>> {
+            let mut journal = self.journal_with_intent()?;
+            journal.append(&ExecutionEvent::new(ExecutionEventKind::EffectCompleted {
+                transaction: self.transaction.clone(),
+                operation: self.operation.clone(),
+                attempt: NonZeroU32::MIN,
+                evidence: self.evidence()?,
+                outputs: BTreeMap::new(),
+                elapsed_millis: 0,
+            }))?;
+            journal.append(&ExecutionEvent::new(
+                ExecutionEventKind::CompensationRequested {
+                    transaction: self.transaction.clone(),
+                    operation: self.operation.clone(),
+                    reason: AbilityValue::new(json!("test rollback"))?,
+                    elapsed_millis: 0,
+                },
+            ))?;
+            journal.append(&ExecutionEvent::new(
+                ExecutionEventKind::CompensationAdmitted {
+                    transaction: self.transaction.clone(),
+                    operation: self.operation.clone(),
+                    resources: Vec::new(),
+                    elapsed_millis: 0,
+                },
+            ))?;
             Ok(journal)
         }
 
