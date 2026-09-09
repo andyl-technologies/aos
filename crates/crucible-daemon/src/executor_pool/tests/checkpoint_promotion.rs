@@ -2,6 +2,24 @@
 
 use super::*;
 
+struct PromotionCompletionObserver {
+    completed: std::sync::mpsc::SyncSender<(ExactCheckpointId, ExactCheckpointId)>,
+}
+
+impl PausedCheckpointObserver for PromotionCompletionObserver {
+    fn checkpoint_paused(&self, _checkpoint: ExactCheckpointId) -> Result<(), ()> {
+        Ok(())
+    }
+
+    fn checkpoint_promoted(
+        &self,
+        source: ExactCheckpointId,
+        promoted: ExactCheckpointId,
+    ) -> Result<(), ()> {
+        self.completed.send((source, promoted)).map_err(|_| ())
+    }
+}
+
 #[test]
 fn fixed_promotion_worker_promotes_raw_restart_work_without_semantic_execution() {
     let checkpoints = checkpoint_store();
@@ -53,7 +71,12 @@ fn fixed_promotion_worker_promotes_raw_restart_work_without_semantic_execution()
     let executor = LocalExecutorCapabilityService::new(supervisor, description(epoch))
         .expect("promotion executor capability");
     let calls = Arc::new(AtomicUsize::new(0));
-    let pool = LocalExecutorWorkerPool::start_with_checkpoint_promotions(
+    let (completion_sender, completion_receiver) = std::sync::mpsc::sync_channel(1);
+    let checkpoint_observer: Arc<dyn PausedCheckpointObserver> =
+        Arc::new(PromotionCompletionObserver {
+            completed: completion_sender,
+        });
+    let pool = LocalExecutorWorkerPool::start_with_checkpoint_promotions_and_observer(
         executor,
         store(),
         Arc::clone(&checkpoints),
@@ -64,23 +87,24 @@ fn fixed_promotion_worker_promotes_raw_restart_work_without_semantic_execution()
             checkpoints,
             calls: Arc::clone(&calls),
         }],
+        checkpoint_observer,
+        None,
     )
     .expect("start promotion-enabled pool");
     let service = pool.service();
 
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let report = service.report().expect("promotion report");
-        if report.promotions_reconciled() == 1 {
-            assert_eq!(report.promotion_workers(), 1);
-            assert_eq!(report.promotions_active(), 0);
-            assert_eq!(report.promotions_queued(), 0);
-            assert_eq!(report.executions(), 0);
-            break;
-        }
-        assert!(Instant::now() < deadline, "promotion worker timed out");
-        thread::sleep(Duration::from_millis(1));
-    }
+    assert_eq!(
+        completion_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("promotion worker timed out"),
+        (raw, expected),
+    );
+    let report = pool.shutdown_and_join().expect("promotion pool shutdown");
+    assert_eq!(report.promotions_reconciled(), 1);
+    assert_eq!(report.promotion_workers(), 1);
+    assert_eq!(report.promotions_active(), 0);
+    assert_eq!(report.promotions_queued(), 0);
+    assert_eq!(report.executions(), 0);
     assert_eq!(calls.load(Ordering::Acquire), 1);
     let executor = service
         .shared
@@ -103,7 +127,6 @@ fn fixed_promotion_worker_promotes_raw_restart_work_without_semantic_execution()
         })
     );
     drop(executor);
-    pool.shutdown_and_join().expect("promotion pool shutdown");
 }
 
 #[test]
