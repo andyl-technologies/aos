@@ -472,7 +472,7 @@ fn process_promotion_work<L, V, W>(
         };
         match prepared {
             PreparedPausedCheckpointPromotionRestart::AlreadyValidated(authenticated) => {
-                reconcile_already_validated(shared, authenticated);
+                reconcile_already_validated(shared, *authenticated);
                 return;
             }
             PreparedPausedCheckpointPromotionRestart::Stage(prepared) => {

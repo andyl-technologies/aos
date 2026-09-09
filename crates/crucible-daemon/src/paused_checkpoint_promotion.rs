@@ -488,7 +488,7 @@ pub enum PausedCheckpointPromotionRecoveryResolutionError {
 #[derive(Debug)]
 pub enum PreparedPausedCheckpointPromotionRestart {
     /// A legacy paused root was already replay validated and needs only a ledger migration.
-    AlreadyValidated(AuthenticatedPausedCheckpointPromotion),
+    AlreadyValidated(Box<AuthenticatedPausedCheckpointPromotion>),
     /// A raw pause passed semantic resolution and guarded replay comparison.
     Stage(Box<PreparedPausedCheckpointPromotion>),
     /// A staged replacement was already complete and reauthenticated.
@@ -672,7 +672,7 @@ where
             ) {
                 Ok(()) => {
                     return Ok(PreparedPausedCheckpointPromotionRestart::AlreadyValidated(
-                        AuthenticatedPausedCheckpointPromotion { recovery },
+                        Box::new(AuthenticatedPausedCheckpointPromotion { recovery }),
                     ));
                 }
                 Err(ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady { .. }) => {}
