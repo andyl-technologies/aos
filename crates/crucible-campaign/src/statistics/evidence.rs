@@ -341,56 +341,67 @@ impl StatisticalExecutionEvidence {
     pub const fn request(&self) -> &BranchRequest {
         &self.request
     }
+
     /// Returns the request parent artifact.
     #[must_use]
     pub const fn parent(&self) -> &ConfigurationArtifact {
         &self.parent
     }
+
     /// Returns the requested opportunity closure.
     #[must_use]
     pub const fn request_opportunity(&self) -> &StatisticalOpportunityEvidence {
         &self.request_opportunity
     }
+
     /// Returns the selected proposal.
     #[must_use]
     pub const fn proposal(&self) -> &Proposal {
         &self.proposal
     }
+
     /// Returns the proposal-linked admission.
     #[must_use]
     pub const fn proposal_admission(&self) -> &AttemptAdmission {
         &self.proposal_admission
     }
+
     /// Returns the attempt execution basis.
     #[must_use]
     pub const fn execution_basis(&self) -> &StatisticalExecutionBasisEvidence {
         &self.execution_basis
     }
+
     /// Returns the admitted attempt.
     #[must_use]
     pub const fn attempt(&self) -> &Attempt {
         &self.attempt
     }
+
     /// Returns the attempt selection closure.
     #[must_use]
     pub const fn choice(&self) -> &StatisticalChoiceEvidence {
         &self.choice
     }
+
     /// Returns the resulting branch path.
     #[must_use]
     pub const fn path(&self) -> &BranchPath {
         &self.path
     }
+
     /// Returns the canonical observation.
     #[must_use]
     pub const fn observation(&self) -> &Observation {
         &self.observation
     }
+
     /// Returns the observation child artifact.
     #[must_use]
     pub const fn child(&self) -> &ConfigurationArtifact {
         &self.child
     }
+
     /// Returns every discovered opportunity closure in identity order.
     #[must_use]
     pub fn discovered_opportunities(&self) -> &[StatisticalOpportunityEvidence] {
@@ -458,6 +469,7 @@ impl StatisticalDrawEvidence {
     pub const fn coordinate(&self) -> u64 {
         self.coordinate
     }
+
     /// Returns the draw execution closure.
     #[must_use]
     pub const fn execution(&self) -> &StatisticalExecutionEvidence {
@@ -530,21 +542,25 @@ impl FiniteStatisticalEvidence {
     pub const fn snapshot(&self) -> &CampaignSnapshot {
         &self.snapshot
     }
+
     /// Returns the planning view embedded in the pinned snapshot.
     #[must_use]
     pub const fn planning_view(&self) -> &CampaignPlanningView {
         &self.planning_view
     }
+
     /// Returns the active policy.
     #[must_use]
     pub const fn policy(&self) -> &CampaignPolicy {
         &self.policy
     }
+
     /// Returns the campaign lineage.
     #[must_use]
     pub const fn lineage(&self) -> &CampaignLineage {
         &self.lineage
     }
+
     /// Returns finite draws in coordinate order.
     #[must_use]
     pub fn draws(&self) -> &[StatisticalDrawEvidence] {
@@ -641,11 +657,13 @@ impl SmcTransitionEvidence {
     pub const fn stage(&self) -> u32 {
         self.stage
     }
+
     /// Returns the stable slot within the stage.
     #[must_use]
     pub const fn slot(&self) -> u32 {
         self.slot
     }
+
     /// Returns the transition execution closure.
     #[must_use]
     pub const fn execution(&self) -> &StatisticalExecutionEvidence {
@@ -711,6 +729,7 @@ impl SequentialMonteCarloEvidence {
     pub const fn initial(&self) -> &FiniteStatisticalEvidence {
         &self.initial
     }
+
     /// Returns transitions ordered by stage and slot.
     #[must_use]
     pub fn transitions(&self) -> &[SmcTransitionEvidence] {
