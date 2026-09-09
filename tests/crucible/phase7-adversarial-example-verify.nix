@@ -42,28 +42,28 @@
         needle = "crucible::FAULT_CAMPAIGN_FAMILY_NAME";
       }
       {
-        label = "randomized scheduler hostile profile";
-        needle = "\"randomized-host-scheduler\"";
+        label = "state-first extra-yield observer profile";
+        needle = "\"state-first-extra-yields\"";
       }
       {
-        label = "wall clock jitter hostile profile";
-        needle = "\"wall-clock-jitter\"";
+        label = "event-first varied-timeout observer profile";
+        needle = "\"event-first-varied-timeouts\"";
       }
       {
-        label = "varied core count hostile profile";
-        needle = "\"varied-core-count\"";
+        label = "state-first pre-poll-yield observer profile";
+        needle = "\"state-first-prepoll-yields\"";
       }
       {
-        label = "hostile profile applied to run plan";
+        label = "observer profile applied to run plan";
         needle = "observer_profile: reduction.host_profile";
       }
       {
-        label = "adversarial reduction expansion";
-        needle = "VERIFY_HOSTILE_PROFILES";
+        label = "observer perturbation reduction expansion";
+        needle = "VERIFY_OBSERVER_PROFILES";
       }
       {
-        label = "built-in adversarial verify test";
-        needle = "cli_verify_builtin_example_corpus_adversarial";
+        label = "built-in observer-perturbation verify test";
+        needle = "cli_verify_builtin_corpus_observer_profiles";
       }
       {
         label = "divergence report line";
@@ -145,7 +145,7 @@ in
               --target-dir "$TMPDIR/crucible-adversarial-example-verify-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-cli \
-              cli_verify_builtin_example_corpus_adversarial \
+              cli_verify_builtin_corpus_observer_profiles \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -165,9 +165,9 @@ in
             attr=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             adversarial_profiles=${builtins.concatStringsSep "," [
-              "randomized-host-scheduler"
-              "wall-clock-jitter"
-              "varied-core-count"
+              "state-first-extra-yields"
+              "event-first-varied-timeouts"
+              "state-first-prepoll-yields"
             ]}
             built_in_verify=true
             divergence_report_shape=golden-tested

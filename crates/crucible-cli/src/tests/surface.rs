@@ -1535,7 +1535,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
         (
             "verify",
             &["scenario", "runs", "adversarial", "bisect", "compare"][..],
-            "about=Prove determinism: run N times, diff fingerprints + causal logs\nusage=Usage: crucible verify [OPTIONS] <SCENARIO|--compare <a> <b>>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nruns=Number of runs to compare. Default: 2\nadversarial=Run under the hostile host-condition matrix (24 §7)\nbisect=On divergence, run divergence-bisection (24 §5) and print the report\ncompare=Diff two existing reproduction artifacts instead of running\n",
+            "about=Prove determinism: run N times, diff fingerprints + causal logs\nusage=Usage: crucible verify [OPTIONS] <SCENARIO|--compare <a> <b>>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nruns=Number of runs to compare. Default: 2\nadversarial=Perturb observer polling order, yields, and timeouts\nbisect=On divergence, run divergence-bisection (24 §5) and print the report\ncompare=Diff two existing reproduction artifacts instead of running\n",
         ),
         (
             "selftest",

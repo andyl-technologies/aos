@@ -763,7 +763,7 @@ mod tests {
         assert!(!guarded_campaign_run_eligible(&plan));
 
         let mut plan = default.clone();
-        plan.observer_profile = VERIFY_HOSTILE_PROFILES[0];
+        plan.observer_profile = VERIFY_OBSERVER_PROFILES[0];
         assert!(!guarded_campaign_run_eligible(&plan));
 
         let mut plan = default;

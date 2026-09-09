@@ -2364,8 +2364,8 @@ pub(super) fn cli_verify_workflow_plans_runs_adversarial_matrix_and_bisection()
 
     assert!(matches!(plan.mode, VerifyMode::RunScenario { .. }));
     assert_eq!(plan.requested_runs, 3);
-    assert_eq!(plan.reductions.len(), 3 * VERIFY_HOSTILE_PROFILES.len());
-    assert!(plan.applies_hostile_condition_matrix);
+    assert_eq!(plan.reductions.len(), 3 * VERIFY_OBSERVER_PROFILES.len());
+    assert!(plan.applies_observer_perturbation_matrix);
     assert!(plan.bisection_on_divergence);
     assert!(plan.print_bisection_state_dump);
     assert!(plan.compare_canonical_logs);
@@ -2378,7 +2378,7 @@ pub(super) fn cli_verify_workflow_plans_runs_adversarial_matrix_and_bisection()
 }
 
 #[test]
-pub(super) fn cli_verify_builtin_example_corpus_adversarial() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_verify_builtin_corpus_observer_profiles() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     for scenario_name in [
         crucible::HAPPY_PATH_SCENARIO_NAME,
@@ -2412,9 +2412,9 @@ pub(super) fn cli_verify_builtin_example_corpus_adversarial() -> Result<(), Box<
         ));
         assert_eq!(
             verify_plan.reductions.len(),
-            2 * VERIFY_HOSTILE_PROFILES.len()
+            2 * VERIFY_OBSERVER_PROFILES.len()
         );
-        assert!(verify_plan.applies_hostile_condition_matrix);
+        assert!(verify_plan.applies_observer_perturbation_matrix);
         assert!(verify_plan.print_bisection_state_dump);
 
         let seed_plan = plan_determinism_ergonomics(
@@ -2440,15 +2440,15 @@ pub(super) fn cli_verify_builtin_example_corpus_adversarial() -> Result<(), Box<
                 .iter()
                 .filter(|line| line.starts_with("verify-run\t"))
                 .count(),
-            2 * VERIFY_HOSTILE_PROFILES.len()
+            2 * VERIFY_OBSERVER_PROFILES.len()
         );
-        for profile in VERIFY_HOSTILE_PROFILES {
+        for profile in VERIFY_OBSERVER_PROFILES {
             assert!(
                 outcome
                     .stdout
                     .iter()
                     .any(|line| line.contains(&format!("\tprofile={}", profile.label()))),
-                "missing verify output for hostile profile {}",
+                "missing verify output for observer profile {}",
                 profile.label()
             );
         }

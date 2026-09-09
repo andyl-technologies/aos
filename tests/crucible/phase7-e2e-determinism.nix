@@ -156,8 +156,36 @@
         needle = ''distinct_fingerprints="$('';
       }
       {
-        label = "native slice leaves cross-machine replay open";
-        needle = "missing_evidence=artifact-replay-on-different-machine-profile";
+        label = "native artifact replay uses bounded host preemption";
+        needle = "CRUCIBLE_REPLAY_BOUNDED_SCHEDULER_PREEMPTION=1";
+      }
+      {
+        label = "native slice retains the built-in corpus";
+        needle = "scenario_corpus=happy-path.scn,partition-recovery.scn,crash-restart.scn,fault-campaign.fam,e2e-determinism.scenario.toml";
+      }
+      {
+        label = "native slice records the required different machine profile";
+        needle = "different_machine_profile_reproduction=true";
+      }
+      {
+        label = "native slice records its physical-host scope";
+        needle = "physical_cross_host_reproduction=false";
+      }
+      {
+        label = "native slice records completed profile replay evidence";
+        needle = "completed_requirements=HARN-23";
+      }
+      {
+        label = "native slice keeps the real HARN-22 host-matrix gap explicit";
+        needle = "missing_evidence=representative-native-randomized-worker-wall-clock-io-stall-varied-core-matrix";
+      }
+      {
+        label = "distributed exploration reports its narrow component status";
+        needle = "component=distributed-continuous-exploration-surface";
+      }
+      {
+        label = "distributed exploration propagates the canonical e2e blocker";
+        needle = "canonical_gate_blocked_by=gate:e2e-determinism";
       }
     ];
 in

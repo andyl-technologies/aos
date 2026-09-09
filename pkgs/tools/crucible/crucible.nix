@@ -296,6 +296,13 @@
         -j$NIX_BUILD_CORES \
         -p crucible \
         --example crucible-debugger-live-fixture
+      cargo build \
+        --release \
+        --frozen \
+        --offline \
+        -j$NIX_BUILD_CORES \
+        -p crucible-api \
+        --example crucible-e2e-determinism-scenario
     '';
 
     postInstall = ''
@@ -306,6 +313,12 @@
         else "target/release/examples/crucible-debugger-live-fixture"
       } \
         "$out/bin/crucible-debugger-live-fixture"
+      cp ${
+        if isDarwinCross
+        then ''"target/$CARGO_BUILD_TARGET/release/examples/crucible-e2e-determinism-scenario"''
+        else "target/release/examples/crucible-e2e-determinism-scenario"
+      } \
+        "$out/bin/crucible-e2e-determinism-scenario"
       ${
         if isDarwinCross
         then ''

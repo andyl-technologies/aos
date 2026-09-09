@@ -26,8 +26,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-22 completed evidence note";
-        needle = "Completed by `checks.crucible.phase3.gates.adversarialDeterminism`";
+        label = "T-HARN-22 modeled-scope completion note";
+        needle = "Completed at modeled scope by";
       }
       {
         label = "modeled hostile-condition phase table scope";
@@ -36,6 +36,10 @@
       {
         label = "production fleet component boundary";
         needle = "complemented by the live-QEMU production fleet run";
+      }
+      {
+        label = "modeled gate does not claim native HARN-11 completion";
+        needle = "does not claim that the native executor satisfies [HARN-11]";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/adversarial.rs" adversarial [

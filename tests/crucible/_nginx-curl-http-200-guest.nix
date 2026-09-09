@@ -52,7 +52,7 @@ in
             done < closure-paths
           }
 
-          mkdir -p rootfs/bin rootfs/dev rootfs/etc/nginx rootfs/nix/store
+          mkdir -p rootfs/bin rootfs/dev rootfs/etc/nginx rootfs/mnt rootfs/nix/store
           mkdir -p rootfs/proc rootfs/run/nginx rootfs/sys rootfs/tmp
           mkdir -p rootfs/usr/bin rootfs/usr/sbin rootfs/var/lib/nginx
           mkdir -p rootfs/var/log/nginx rootfs/var/tmp
@@ -118,6 +118,17 @@ in
               ;;
             *" crucible.workload=httpget "*)
               ip address add 10.0.0.3/24 dev eth0
+              case "$cmdline" in
+                *" probe-block=1 "*)
+                  block_prefix=$(dd if=/dev/vdb bs=18 count=1 2>/dev/null)
+                  test "$block_prefix" = CRUCIBLE-BLOCK-OK
+                  crucible-guest sometimes \
+                    curl-block-read-complete \
+                    'Curl read its block sub-node' \
+                    1
+                  ;;
+              esac
+              reported=0
               while :; do
                 status=$(curl \
                   --connect-timeout 30 \
@@ -127,14 +138,35 @@ in
                   --write-out '%{http_code}' \
                   http://10.0.0.2:8080/ || true)
                 if [ "$status" = 200 ]; then
-                  crucible-guest sometimes \
-                    curl-receives-http-200 \
-                    'Curl receives an HTTP 200 response from Nginx' \
-                    1
-                  while :; do
-                    sleep 3600
-                  done
+                  if [ "$reported" = 0 ]; then
+                    crucible-guest sometimes \
+                      curl-receives-http-200 \
+                      'Curl receives an HTTP 200 response from Nginx' \
+                      1
+                    reported=1
+                  fi
+                  case "$cmdline" in
+                    *" continue=1 "*) ;;
+                    *)
+                      while :; do
+                        sleep 3600
+                      done
+                      ;;
+                  esac
                 fi
+              done
+              ;;
+            *" crucible.workload=bench "*)
+              mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192 crucible /mnt
+              ninep_content=$(cat /mnt/probe.txt)
+              test "$ninep_content" = CRUCIBLE-9P-OK
+
+              crucible-guest sometimes \
+                io-probe-complete \
+                'The I/O probe read its 9p sub-node' \
+                1
+              while :; do
+                sleep 3600
               done
               ;;
             *)

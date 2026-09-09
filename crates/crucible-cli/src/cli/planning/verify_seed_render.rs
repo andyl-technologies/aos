@@ -57,7 +57,7 @@ pub(crate) fn plan_verify_invocation(
         bisection_on_divergence: true,
         print_bisection_state_dump: args.bisect,
         writes_side_artifacts_on_divergence: true,
-        applies_hostile_condition_matrix: args.adversarial,
+        applies_observer_perturbation_matrix: args.adversarial,
         outcome_exit_codes: vec![
             (
                 BackendCommandStatus::Passed,
@@ -105,7 +105,7 @@ pub(crate) fn verify_reduction_plans(
         ];
     }
     let profiles = if adversarial {
-        VERIFY_HOSTILE_PROFILES
+        VERIFY_OBSERVER_PROFILES
     } else {
         &[VERIFY_BASELINE_PROFILE]
     };

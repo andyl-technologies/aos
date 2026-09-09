@@ -1622,8 +1622,8 @@ in rec {
     cliVerifyWorkflow = import ./phase5-cli-verify-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliVerifyWorkflow";
-      taskIds = ["T-CLI-7"];
-      openTaskIds = [];
+      taskIds = [];
+      openTaskIds = ["T-CLI-7"];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.e2eDeterminism.rawGate
@@ -2876,7 +2876,7 @@ in rec {
         };
         dependencies = [phase1.gates.licenseBoundary perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
         phase = "phase7";
-        reason = "native artifact replay on a different machine profile is not implemented";
+        reason = "representative native hostile host-matrix evidence is not yet complete";
         taskIds = ["T-HARN-23"];
         gateName = "gate:e2e-determinism";
         owner = "crucible-harness";
