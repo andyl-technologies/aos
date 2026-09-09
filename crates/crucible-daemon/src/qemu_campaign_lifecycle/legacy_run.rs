@@ -68,7 +68,10 @@ pub use exploration::{
 };
 
 mod replay_closure;
-pub use replay_closure::{GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError};
+pub use replay_closure::{
+    GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
+    validate_remote_resume_replay_closure,
+};
 
 mod resume;
 pub use resume::GuardedDefaultCampaignResumeProof;

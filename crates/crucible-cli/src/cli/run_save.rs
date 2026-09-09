@@ -557,13 +557,35 @@ pub(super) async fn run_remote_control_client_resume_from_evidence_with_driver_a
 where
     C: ControlClient + Sync,
 {
-    ensure_session_replay_evidence_supported("remote control-client resume", &evidence)?;
-    let request = ResumeSessionRequest::new(
+    let mut request = ResumeSessionRequest::new(
         evidence.scenario_form.clone(),
         evidence.schedule.clone(),
         evidence.checkpoint.clone(),
         evidence.scenario.seed(),
     );
+    let requires_replay_closure = evidence
+        .schedule
+        .decisions()
+        .iter()
+        .any(|decision| matches!(decision, crucible::Decision::Selection(_)));
+    if requires_replay_closure {
+        let replay_closure_payload =
+            evidence
+                .replay_closure
+                .to_canonical_bytes()
+                .map_err(|error| {
+                    artifact_error(format!("encode remote resume replay closure: {error}"))
+                })?;
+        let replay_closure = crucible_api::ResumeReplayClosure::new(
+            &evidence.scenario_form,
+            &evidence.schedule,
+            &evidence.checkpoint,
+            crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::SCHEMA_VERSION,
+            replay_closure_payload,
+        )
+        .map_err(|error| artifact_error(error.to_string()))?;
+        request = request.with_replay_closure(replay_closure);
+    }
     let resumed = client
         .resume_session(request)
         .await
