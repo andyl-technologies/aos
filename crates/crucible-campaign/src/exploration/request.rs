@@ -148,9 +148,23 @@ pub enum StopCondition {
     },
     /// Stop only after a newly completed quantum satisfies an observation.
     Observation(ObservationCondition),
+    /// Stop at the next typed choice or an absolute scheduler-quantum timeout.
+    NextChoiceOrExecutionQuanta {
+        /// Absolute scheduler-quantum coordinate from scenario genesis.
+        execution_quanta: u64,
+    },
 }
 
 impl StopCondition {
+    /// Returns whether reaching a typed choice satisfies this boundary.
+    #[must_use]
+    pub const fn accepts_next_choice(&self) -> bool {
+        matches!(
+            self,
+            Self::NextChoice | Self::NextChoiceOrExecutionQuanta { .. }
+        )
+    }
+
     pub(crate) fn validate(&self) -> Result<(), CampaignCodecError> {
         match self {
             Self::NamedBoundary(name) => validate_identifier(name, "stop boundary is invalid"),
@@ -164,6 +178,9 @@ impl StopCondition {
             | Self::VirtualTimeOrExecutionQuanta {
                 execution_quanta: 0,
                 ..
+            }
+            | Self::NextChoiceOrExecutionQuanta {
+                execution_quanta: 0,
             } => Err(CampaignCodecError::InvalidValue {
                 reason: "stop condition has a zero bound",
             }),
@@ -176,6 +193,7 @@ impl StopCondition {
         matches!(
             self,
             Self::ExecutionQuanta(_) | Self::VirtualTimeOrExecutionQuanta { .. }
+                | Self::NextChoiceOrExecutionQuanta { .. }
         )
     }
 
@@ -213,6 +231,10 @@ impl Canonical for StopCondition {
                 virtual_time_nanoseconds.encode(encoder);
                 execution_quanta.encode(encoder);
             }
+            Self::NextChoiceOrExecutionQuanta { execution_quanta } => {
+                encoder.u8(7);
+                execution_quanta.encode(encoder);
+            }
             Self::Observation(condition) => {
                 encoder.u8(8);
                 condition.encode(encoder);
@@ -232,6 +254,9 @@ impl Canonical for StopCondition {
             5 => Self::ExecutionQuanta(u64::decode(decoder)?),
             6 => Self::VirtualTimeOrExecutionQuanta {
                 virtual_time_nanoseconds: u64::decode(decoder)?,
+                execution_quanta: u64::decode(decoder)?,
+            },
+            7 => Self::NextChoiceOrExecutionQuanta {
                 execution_quanta: u64::decode(decoder)?,
             },
             8 => Self::Observation(ObservationCondition::decode(decoder)?),

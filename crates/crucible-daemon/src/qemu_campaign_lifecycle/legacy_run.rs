@@ -28,13 +28,14 @@ use crucible_campaign::{
     CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
     CandidateSource, CreateCampaignRequest, DaemonEpoch, DebuggerAuthorityKey, DiscoveryRequest,
     ExactCheckpointId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, Observation,
-    ObservationId, ObservationStopProof, PlannerAuthorityKey, PlannerDisposition,
+    ObservationId, ObservationStopProof, PlannerAuthorityKey, PlannerDisposition, PropertyVerdict,
     RepositoryCampaignService, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointContinuationSelection, StopCondition, StopOutcome, SubmitCampaignBranchRequest,
-    SubmitCampaignDiscoveryRequest,
+    SavepointContinuationSelection, ScenarioDefId, StopCondition, StopOutcome,
+    SubmitCampaignBranchRequest, SubmitCampaignDiscoveryRequest,
 };
 use crucible_cas::content_store::{
-    ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, MutableRefBackend,
+    ContentId, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, MutableRefBackend,
+    ObjectKind,
 };
 use thiserror::Error;
 
@@ -51,9 +52,10 @@ use crate::{
     CrucibleMeasurementError, CrucibleMeasurementReplayEvidence, ExactCheckpointStore,
     ExactCheckpointStoreError, ExecutorCapacityError, LinuxQemuAttemptHostConfig,
     LinuxQemuAttemptHostResourceFactory, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
-    QemuFreshModeledDriver, QemuFreshModeledDriverError, RepositoryAttemptAdmission,
+    QemuFreshModeledDriverError, RepositoryAttemptAdmission,
     decode_crucible_configuration_artifact_with_selections,
 };
+use crate::qemu_campaign_driver::QemuFreshSupplementalModeledDriver;
 
 mod executor;
 use executor::{SynchronousCampaignExecutor, SynchronousCampaignExecutorError};
@@ -174,6 +176,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     capture_reached_stop: Option<Arc<ExactCheckpointStore>>,
     resume_source: Option<GuardedDefaultCampaignResumeSource>,
     exploration: Option<GuardedCampaignExploration>,
+    supplemental_finding_oracle: Option<Arc<dyn GuardedCampaignFindingOracle>>,
 }
 
 impl GuardedDefaultCampaignRunRequest {
@@ -203,6 +206,7 @@ impl GuardedDefaultCampaignRunRequest {
             capture_reached_stop: None,
             resume_source: None,
             exploration: None,
+            supplemental_finding_oracle: None,
         }
     }
 
@@ -247,8 +251,22 @@ impl GuardedDefaultCampaignRunRequest {
     /// with the single-run savepoint or resume adapters.
     #[must_use]
     pub fn with_exploration(mut self, exploration: GuardedCampaignExploration) -> Self {
-        self.discovery_stop = StopCondition::NextChoice;
+        self.discovery_stop = exploration.attempt_stop();
         self.exploration = Some(exploration);
+        self
+    }
+
+    /// Evaluates an immutable supplemental search oracle inside owner progression.
+    ///
+    /// The oracle source identity is bound into the authenticated campaign
+    /// policy. Every accepted observation is evaluated before the owner admits
+    /// another branch, so `stop_on_finding` retains its exact meaning.
+    #[must_use]
+    pub fn with_supplemental_finding_oracle(
+        mut self,
+        oracle: Box<dyn GuardedCampaignFindingOracle>,
+    ) -> Self {
+        self.supplemental_finding_oracle = Some(Arc::from(oracle));
         self
     }
 
@@ -406,6 +424,8 @@ pub struct GuardedDefaultCampaignObservation {
     evidence: QemuAttemptExecutionEvidenceSnapshot,
     observation_evidence: Option<CrucibleMeasurementReplayEvidence>,
     replay_closure: GuardedCampaignReplayClosure,
+    supplemental_finding: Option<GuardedCampaignSupplementalFinding>,
+    timeout: Option<GuardedCampaignTimeoutEvidence>,
 }
 
 impl GuardedDefaultCampaignObservation {
@@ -462,6 +482,368 @@ impl GuardedDefaultCampaignObservation {
     #[must_use]
     pub const fn replay_closure(&self) -> &GuardedCampaignReplayClosure {
         &self.replay_closure
+    }
+
+    /// Returns the owner-evaluated supplemental finding, when present.
+    #[must_use]
+    pub const fn supplemental_finding(&self) -> Option<&GuardedCampaignSupplementalFinding> {
+        self.supplemental_finding.as_ref()
+    }
+
+    /// Returns the timeout bound and reached scheduler coordinate, when present.
+    #[must_use]
+    pub const fn timeout(&self) -> Option<GuardedCampaignTimeoutEvidence> {
+        self.timeout
+    }
+}
+
+/// Authenticated modeled-timeout evidence reconstructed from an accepted attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuardedCampaignTimeoutEvidence {
+    observation: ObservationId,
+    execution_quanta_limit: u64,
+    observed_execution_quanta: u64,
+    frontier: crucible::VirtualTime,
+}
+
+impl GuardedCampaignTimeoutEvidence {
+    /// Returns the observation that durably owns the modeled timeout.
+    #[must_use]
+    pub const fn observation(self) -> ObservationId {
+        self.observation
+    }
+
+    /// Returns the absolute scheduler-quantum timeout from the accepted attempt.
+    #[must_use]
+    pub const fn execution_quanta_limit(self) -> u64 {
+        self.execution_quanta_limit
+    }
+
+    /// Returns the scheduler quanta observed when the attempt stopped.
+    #[must_use]
+    pub const fn observed_execution_quanta(self) -> u64 {
+        self.observed_execution_quanta
+    }
+
+    /// Returns the modeled virtual-time frontier at the timeout boundary.
+    #[must_use]
+    pub const fn frontier(self) -> crucible::VirtualTime {
+        self.frontier
+    }
+}
+
+/// Immutable identity of one supplemental finding accepted by the owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedCampaignSupplementalFinding {
+    source: CampaignHash,
+    fingerprint: CampaignHash,
+    property: String,
+}
+
+const SUPPLEMENTAL_FINDING_SOURCE_MAGIC: &[u8; 8] = b"GCSO\0\0\0\x01";
+const SUPPLEMENTAL_FINDING_SOURCE_SCHEMA: u32 = 1;
+const MAX_SUPPLEMENTAL_FINDING_SOURCE_MEDIA_TYPE_BYTES: usize = 1_024;
+const MAX_SUPPLEMENTAL_FINDING_SOURCE_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
+
+/// Versioned immutable input used to reconstruct a supplemental finding oracle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedCampaignFindingOracleSource {
+    scenario: ScenarioDefId,
+    media_type: String,
+    payload: Vec<u8>,
+}
+
+impl GuardedCampaignFindingOracleSource {
+    /// Builds one bounded oracle source bound to an exact scenario definition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuardedCampaignFindingOracleError`] when the media type is
+    /// empty, non-ASCII, or too long, or when the payload exceeds 32 MiB.
+    pub fn new(
+        scenario: ScenarioDefId,
+        media_type: impl Into<String>,
+        payload: Vec<u8>,
+    ) -> Result<Self, GuardedCampaignFindingOracleError> {
+        let media_type = media_type.into();
+        if media_type.is_empty()
+            || media_type.len() > MAX_SUPPLEMENTAL_FINDING_SOURCE_MEDIA_TYPE_BYTES
+            || !media_type
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && !byte.is_ascii_whitespace())
+        {
+            return Err(GuardedCampaignFindingOracleError::new(
+                "supplemental finding source media type is invalid",
+            ));
+        }
+        if payload.len() > MAX_SUPPLEMENTAL_FINDING_SOURCE_PAYLOAD_BYTES {
+            return Err(GuardedCampaignFindingOracleError::new(
+                "supplemental finding source payload exceeds 32 MiB",
+            ));
+        }
+        Ok(Self {
+            scenario,
+            media_type,
+            payload,
+        })
+    }
+
+    /// Returns the scenario whose configurations the source can evaluate.
+    #[must_use]
+    pub const fn scenario(&self) -> ScenarioDefId {
+        self.scenario
+    }
+
+    /// Returns the registered payload media type.
+    #[must_use]
+    pub fn media_type(&self) -> &str {
+        &self.media_type
+    }
+
+    /// Returns the exact source payload.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    /// Encodes the portable source record.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(
+            SUPPLEMENTAL_FINDING_SOURCE_MAGIC.len()
+                + 32
+                + std::mem::size_of::<u32>()
+                + std::mem::size_of::<u64>()
+                + self.media_type.len()
+                + self.payload.len(),
+        );
+        bytes.extend_from_slice(SUPPLEMENTAL_FINDING_SOURCE_MAGIC);
+        bytes.extend_from_slice(&self.scenario.as_hash().as_bytes());
+        bytes.extend_from_slice(&(self.media_type.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(self.payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(self.media_type.as_bytes());
+        bytes.extend_from_slice(&self.payload);
+        bytes
+    }
+
+    /// Decodes and validates a portable source record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuardedCampaignFindingOracleError`] for malformed,
+    /// noncanonical, oversized, or unsupported bytes.
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+    ) -> Result<Self, GuardedCampaignFindingOracleError> {
+        const HEADER_BYTES: usize = 8 + 32 + 4 + 8;
+        if bytes.len() < HEADER_BYTES
+            || bytes.get(..8) != Some(SUPPLEMENTAL_FINDING_SOURCE_MAGIC.as_slice())
+        {
+            return Err(GuardedCampaignFindingOracleError::new(
+                "supplemental finding source header is invalid",
+            ));
+        }
+        let scenario_bytes: [u8; 32] = bytes[8..40].try_into().map_err(|_| {
+            GuardedCampaignFindingOracleError::new(
+                "supplemental finding source scenario is truncated",
+            )
+        })?;
+        let media_length = u32::from_le_bytes(bytes[40..44].try_into().map_err(|_| {
+            GuardedCampaignFindingOracleError::new(
+                "supplemental finding source media length is truncated",
+            )
+        })?) as usize;
+        let payload_length = u64::from_le_bytes(bytes[44..52].try_into().map_err(|_| {
+            GuardedCampaignFindingOracleError::new(
+                "supplemental finding source payload length is truncated",
+            )
+        })?);
+        let payload_length = usize::try_from(payload_length).map_err(|_| {
+            GuardedCampaignFindingOracleError::new(
+                "supplemental finding source payload length is not representable",
+            )
+        })?;
+        let media_end = HEADER_BYTES.checked_add(media_length).ok_or_else(|| {
+            GuardedCampaignFindingOracleError::new(
+                "supplemental finding source media length overflows",
+            )
+        })?;
+        let payload_end = media_end.checked_add(payload_length).ok_or_else(|| {
+            GuardedCampaignFindingOracleError::new(
+                "supplemental finding source payload length overflows",
+            )
+        })?;
+        if payload_end != bytes.len() {
+            return Err(GuardedCampaignFindingOracleError::new(
+                "supplemental finding source lengths disagree with its bytes",
+            ));
+        }
+        let media_type = std::str::from_utf8(&bytes[HEADER_BYTES..media_end])
+            .map_err(|_| {
+                GuardedCampaignFindingOracleError::new(
+                    "supplemental finding source media type is not UTF-8",
+                )
+            })?
+            .to_owned();
+        let source = Self::new(
+            ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario_bytes)),
+            media_type,
+            bytes[media_end..].to_vec(),
+        )?;
+        if source.canonical_bytes() != bytes {
+            return Err(GuardedCampaignFindingOracleError::new(
+                "supplemental finding source is not canonically encoded",
+            ));
+        }
+        Ok(source)
+    }
+
+    /// Returns the exact retained trace-leaf identity.
+    #[must_use]
+    pub fn content_id(&self) -> ContentId {
+        ContentId::for_bytes(
+            ObjectKind::Trace,
+            SUPPLEMENTAL_FINDING_SOURCE_SCHEMA,
+            &self.canonical_bytes(),
+        )
+    }
+
+    /// Returns the source identity bound into campaign policy and findings.
+    #[must_use]
+    pub fn identity(&self) -> CampaignHash {
+        CampaignHash::from_bytes(self.content_id().digest())
+    }
+
+    /// Reopens and decodes one exact retained source leaf.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuardedCampaignFindingOracleSourceLoadError`] when the leaf
+    /// is absent or corrupt, uses another schema, or does not decode exactly.
+    pub fn load(
+        store: &CampaignExecutorStore,
+        content: ContentId,
+    ) -> Result<Self, GuardedCampaignFindingOracleSourceLoadError> {
+        if content.kind() != ObjectKind::Trace
+            || content.schema_version() != SUPPLEMENTAL_FINDING_SOURCE_SCHEMA
+        {
+            return Err(GuardedCampaignFindingOracleSourceLoadError::WrongSchema);
+        }
+        let bytes = store
+            .load_executor_trace_leaf(
+                content,
+                (MAX_SUPPLEMENTAL_FINDING_SOURCE_PAYLOAD_BYTES
+                    + MAX_SUPPLEMENTAL_FINDING_SOURCE_MEDIA_TYPE_BYTES
+                    + 64) as u64,
+            )
+            .map_err(GuardedCampaignFindingOracleSourceLoadError::Repository)?;
+        let source = Self::from_canonical_bytes(&bytes)
+            .map_err(GuardedCampaignFindingOracleSourceLoadError::Decode)?;
+        if source.content_id() != content {
+            return Err(GuardedCampaignFindingOracleSourceLoadError::Identity);
+        }
+        Ok(source)
+    }
+}
+
+/// Failure while reopening a retained supplemental-oracle source.
+#[derive(Debug, Error)]
+pub enum GuardedCampaignFindingOracleSourceLoadError {
+    /// The requested leaf does not use the registered trace schema.
+    #[error("supplemental finding source has the wrong object kind or schema")]
+    WrongSchema,
+    /// The immutable repository leaf could not be read and authenticated.
+    #[error("load supplemental finding source: {0}")]
+    Repository(#[source] CampaignRepositoryError),
+    /// The retained bytes do not decode as the registered source format.
+    #[error("decode supplemental finding source: {0}")]
+    Decode(#[source] GuardedCampaignFindingOracleError),
+    /// The decoded source derives another content identity.
+    #[error("supplemental finding source identity mismatch")]
+    Identity,
+}
+
+impl GuardedCampaignSupplementalFinding {
+    /// Returns the authenticated supplemental-oracle source identity.
+    #[must_use]
+    pub const fn source(&self) -> CampaignHash {
+        self.source
+    }
+
+    /// Returns the exact failure fingerprint reported for the configuration.
+    #[must_use]
+    pub const fn fingerprint(&self) -> CampaignHash {
+        self.fingerprint
+    }
+
+    /// Returns the scenario-declared property selected by the oracle.
+    #[must_use]
+    pub fn property(&self) -> &str {
+        &self.property
+    }
+}
+
+/// One deterministic property failure returned by a supplemental oracle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedCampaignFindingOracleEvaluation {
+    property: String,
+    fingerprint: CampaignHash,
+}
+
+impl GuardedCampaignFindingOracleEvaluation {
+    /// Builds one scenario-property result and its stable failure fingerprint.
+    #[must_use]
+    pub fn new(property: String, fingerprint: CampaignHash) -> Self {
+        Self {
+            property,
+            fingerprint,
+        }
+    }
+
+    /// Returns the scenario-declared property selected by the oracle.
+    #[must_use]
+    pub fn property(&self) -> &str {
+        &self.property
+    }
+
+    /// Returns the stable failure fingerprint for the evaluated configuration.
+    #[must_use]
+    pub const fn fingerprint(&self) -> CampaignHash {
+        self.fingerprint
+    }
+}
+
+/// Deterministic configuration oracle evaluated by the campaign owner.
+pub trait GuardedCampaignFindingOracle: Send + Sync {
+    /// Returns the versioned source bound into policy and retained as evidence.
+    fn source(&self) -> &GuardedCampaignFindingOracleSource;
+
+    /// Evaluates one repository-authenticated child configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuardedCampaignFindingOracleError`] when the immutable source
+    /// cannot evaluate the accepted configuration exactly.
+    fn evaluate(
+        &self,
+        configuration: &Configuration,
+    ) -> Result<Option<GuardedCampaignFindingOracleEvaluation>, GuardedCampaignFindingOracleError>;
+}
+
+/// Failure returned by an owner-attached supplemental finding oracle.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("{message}")]
+pub struct GuardedCampaignFindingOracleError {
+    message: String,
+}
+
+impl GuardedCampaignFindingOracleError {
+    /// Builds an oracle error from stable diagnostic text.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -727,6 +1109,9 @@ where
     /// A published physical checkpoint closure failed authentication.
     #[error("guarded default campaign exact checkpoint failed: {0}")]
     ExactCheckpoint(#[source] ExactCheckpointStoreError),
+    /// An authenticated supplemental search oracle could not evaluate an observation.
+    #[error("guarded default campaign supplemental finding evaluation failed: {0}")]
+    SupplementalFinding(#[source] GuardedCampaignFindingOracleError),
     /// A legacy logical resume checkpoint could not be reconstructed exactly.
     #[error("guarded default campaign resume checkpoint failed: {0}")]
     ResumeCheckpoint(#[source] crucible::EngineError),
@@ -750,6 +1135,15 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// The completed campaign did not retain a terminal observation.
     #[error("the completed campaign retained no terminal observation")]
     MissingTerminalObservation,
+    /// A decoded child configuration did not match its accepted observation.
+    #[error("an accepted observation names a different decoded configuration")]
+    ObservationConfigurationMismatch,
+    /// A modeled timeout did not match its accepted compound stop and scheduler evidence.
+    #[error("an accepted modeled timeout has inconsistent attempt or scheduler evidence")]
+    TimeoutEvidenceMismatch,
+    /// A supplemental result was not retained by the accepted property evidence.
+    #[error("an accepted supplemental finding lacks its exact retained source evidence")]
+    SupplementalFindingEvidenceMismatch,
     /// A bounded control-command ordinal overflowed.
     #[error("the campaign control-command ordinal overflowed")]
     CommandOrdinalOverflow,
@@ -833,7 +1227,10 @@ pub fn run_guarded_default_campaign(
     );
     let (lifecycle_factory, execution_evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(production);
-    let runner = QemuFreshExecutionRunner::new(lifecycle_factory, QemuFreshModeledDriver);
+    let driver = QemuFreshSupplementalModeledDriver::new(
+        request.supplemental_finding_oracle.clone(),
+    );
+    let runner = QemuFreshExecutionRunner::new(lifecycle_factory, driver);
 
     run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
 }
@@ -906,11 +1303,17 @@ where
     }
     .map_err(GuardedDefaultCampaignRunError::Artifact)?;
     let lineage = default_run_lineage(&request, scenario_content, genesis_content)?;
+    let supplemental_finding_source = request
+        .supplemental_finding_oracle
+        .as_deref()
+        .map(GuardedCampaignFindingOracle::source)
+        .map(GuardedCampaignFindingOracleSource::identity);
     let policy = local_campaign_policy(
         &lineage,
         request.seed,
         &request.discovery_stop,
         request.exploration,
+        supplemental_finding_source,
     )?;
     let campaign = CampaignName::new(format!(
         "legacy-run-{:016x}",
@@ -1002,12 +1405,34 @@ where
         .map_err(GuardedDefaultCampaignRunError::Service)?;
 
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    if let Some(oracle) = request.supplemental_finding_oracle.as_deref() {
+        let source_record = oracle.source();
+        let expected_scenario = ScenarioDefId::from_hash(CampaignHash::from_bytes(
+            request.scenario.id().bytes,
+        ));
+        if source_record.scenario() != expected_scenario {
+            return Err(GuardedDefaultCampaignRunError::Codec(
+                CampaignCodecError::InvalidValue {
+                    reason: "supplemental finding source names another scenario",
+                },
+            ));
+        }
+        let source = source_record.content_id();
+        let source_bytes = source_record.canonical_bytes();
+        store
+            .publish_executor_trace_leaf(
+                source,
+                SUPPLEMENTAL_FINDING_SOURCE_SCHEMA,
+                &source_bytes,
+            )
+            .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    }
     let model = CrucibleExecutionModel::new(store.clone(), runner);
     let executor_profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
     let daemon_epoch =
         DaemonEpoch::from_bytes([0x59; 16]).map_err(GuardedDefaultCampaignRunError::Codec)?;
     let executor_service = SynchronousCampaignExecutor::new(
-        store,
+        store.clone(),
         model,
         RepositoryAttemptAdmission::new(Arc::clone(&repository), executor_profile),
         daemon_epoch,
@@ -1082,6 +1507,10 @@ where
             initial_configuration_content: genesis_content,
             exploration: request.exploration,
             all_candidates,
+            scenario: &request.scenario,
+            scenario_content,
+            executor_store: &store,
+            supplemental_finding_oracle: request.supplemental_finding_oracle.as_deref(),
         },
         vec![created_state, running_state],
         watch_frames,
@@ -1231,6 +1660,7 @@ struct DefaultRunAcceptedObservation {
     id: ObservationId,
     virtual_time_ticks: u64,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
+    supplemental_finding: Option<GuardedCampaignSupplementalFinding>,
 }
 
 struct DefaultRunPendingSavepointCapture {
@@ -1262,6 +1692,62 @@ struct DefaultRunContext<'a, S> {
     initial_configuration_content: crucible_campaign::ConfigurationArtifactId,
     exploration: Option<GuardedCampaignExploration>,
     all_candidates: Option<crucible_campaign::CandidateGeneratorSpecId>,
+    scenario: &'a ScenarioDefForm,
+    scenario_content: crucible_campaign::ScenarioArtifactId,
+    executor_store: &'a CampaignExecutorStore,
+    supplemental_finding_oracle: Option<&'a dyn GuardedCampaignFindingOracle>,
+}
+
+fn evaluate_supplemental_finding<S, E>(
+    context: &DefaultRunContext<'_, S>,
+    observation: &Observation,
+) -> Result<Option<GuardedCampaignSupplementalFinding>, GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
+    let Some(oracle) = context.supplemental_finding_oracle else {
+        return Ok(None);
+    };
+    let child = context
+        .repository
+        .load_configuration_artifact(observation.child_content())
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let scenario_artifact = context
+        .repository
+        .load_scenario_artifact(context.scenario_content)
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let configuration = decode_crucible_configuration_artifact_with_selections(
+        context.scenario,
+        &scenario_artifact,
+        &child,
+        context.executor_store,
+    )
+    .map_err(GuardedDefaultCampaignRunError::Artifact)?;
+    if configuration.id().bytes != observation.child().as_hash().as_bytes() {
+        return Err(GuardedDefaultCampaignInvariantError::ObservationConfigurationMismatch.into());
+    }
+    let evaluation = oracle
+        .evaluate(&configuration)
+        .map_err(GuardedDefaultCampaignRunError::SupplementalFinding)?;
+    let Some(evaluation) = evaluation else {
+        return Ok(None);
+    };
+    let source = oracle.source().content_id();
+    let properties = context
+        .repository
+        .load_property_verdict_set(observation.properties())
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let Some(property) = properties.properties().get(evaluation.property()) else {
+        return Err(GuardedDefaultCampaignInvariantError::SupplementalFindingEvidenceMismatch.into());
+    };
+    if property.verdict() != PropertyVerdict::Failed || !property.evidence().contains(&source) {
+        return Err(GuardedDefaultCampaignInvariantError::SupplementalFindingEvidenceMismatch.into());
+    }
+    Ok(Some(GuardedCampaignSupplementalFinding {
+        source: oracle.source().identity(),
+        fingerprint: evaluation.fingerprint(),
+        property: evaluation.property().to_owned(),
+    }))
 }
 
 fn drive_default_campaign<R, S>(
@@ -1552,10 +2038,13 @@ where
             .repository
             .load_observation(observation_id)
             .map_err(GuardedDefaultCampaignRunError::Repository)?;
+        let supplemental_finding = evaluate_supplemental_finding(&context, &observation)?;
+        let has_supplemental_finding = supplemental_finding.is_some();
         observations.push(DefaultRunAcceptedObservation {
             id: observation_id,
             virtual_time_ticks,
             evidence: execution_boundary.clone(),
+            supplemental_finding,
         });
         if collect_watch_frames {
             watch_frames.push(campaign_watch_frame(
@@ -1685,7 +2174,8 @@ where
                 });
         if let Some(exploration) = context.exploration
             && exploration.stop_on_finding()
-            && observation_has_finding(context.repository, &observation)?
+            && (has_supplemental_finding
+                || observation_has_finding(context.repository, &observation)?)
         {
             let final_snapshot = complete_default_campaign(
                 &context,
@@ -1714,7 +2204,7 @@ where
                 resume: None,
             });
         }
-        if observation.stop() == &StopOutcome::Reached(StopCondition::NextChoice)
+        if matches!(observation.stop(), StopOutcome::Reached(stop) if stop.accepts_next_choice())
             && !resume_final_stop_reached
         {
             if let Some(exploration) = context.exploration {
@@ -2073,6 +2563,12 @@ where
             GuardedCampaignReplayClosure::collect(&store, &scenario, &configuration.schedule)
                 .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
         let observation_evidence = load_observation_stop_evidence(repository, &observation)?;
+        let timeout = authenticated_timeout_evidence(
+            repository,
+            accepted.id,
+            &observation,
+            &accepted.evidence,
+        )?;
         if index + 1 == observation_count {
             terminal_configuration = Some(configuration.clone());
         }
@@ -2086,6 +2582,8 @@ where
             evidence: accepted.evidence,
             observation_evidence,
             replay_closure,
+            supplemental_finding: accepted.supplemental_finding,
+            timeout,
         });
     }
     let terminal = observations
@@ -2231,6 +2729,35 @@ where
     Ok(Some(evidence))
 }
 
+fn authenticated_timeout_evidence<E>(
+    repository: &CampaignRepository,
+    observation_id: ObservationId,
+    observation: &Observation,
+    evidence: &QemuAttemptExecutionEvidenceSnapshot,
+) -> Result<Option<GuardedCampaignTimeoutEvidence>, GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
+    let StopOutcome::ModeledTimeout(name) = observation.stop() else {
+        return Ok(None);
+    };
+    let attempt = repository
+        .load_attempt(observation.attempt())
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } = attempt.stop() else {
+        return Err(GuardedDefaultCampaignInvariantError::TimeoutEvidenceMismatch.into());
+    };
+    if name != "execution-quanta" || evidence.quanta() < *execution_quanta {
+        return Err(GuardedDefaultCampaignInvariantError::TimeoutEvidenceMismatch.into());
+    }
+    Ok(Some(GuardedCampaignTimeoutEvidence {
+        observation: observation_id,
+        execution_quanta_limit: *execution_quanta,
+        observed_execution_quanta: evidence.quanta(),
+        frontier: evidence.frontier(),
+    }))
+}
+
 fn capture_evidence_reaches_stop(
     evidence: &QemuAttemptExecutionEvidenceSnapshot,
     stop: &StopCondition,
@@ -2246,6 +2773,7 @@ fn capture_evidence_reaches_stop(
                 || evidence.quanta() >= *execution_quanta
         }
         StopCondition::NextChoice
+        | StopCondition::NextChoiceOrExecutionQuanta { .. }
         | StopCondition::NamedBoundary(_)
         | StopCondition::EventCount(_)
         | StopCondition::Terminal

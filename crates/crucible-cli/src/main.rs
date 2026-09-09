@@ -45,6 +45,8 @@ use crucible_session::engine as crucible_model;
 use crucible_session::engine::QuantumLoop as EngineLoop;
 #[cfg(any(test, feature = "test-double"))]
 use crucible_session::engine::SearchDiscoveredFailure;
+#[cfg(any(test, feature = "test-double"))]
+use crucible_session::engine::{MaterializationPolicy, MaterializationTrigger};
 use crucible_session::validation::{
     ValidationDag, ValidationDagStoreError, recorded_checkpoint_for_configuration,
     validation_dag_with_baked_genesis,
@@ -55,9 +57,8 @@ use crucible_session::{
     SessionCommandKind, StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
-        FindingReproductionArtifact, MaterializationPolicy, MaterializationTrigger, MemoryDagStore,
-        OverrideDecision, RecordedAssertionLog, Schedule, SchedulingPoint,
-        SearchRetainedLogAssertionEvidence, SimDuration, VirtualTime,
+        FindingReproductionArtifact, MemoryDagStore, OverrideDecision, RecordedAssertionLog,
+        Schedule, SchedulingPoint, SearchRetainedLogAssertionEvidence, SimDuration, VirtualTime,
     },
 };
 #[cfg(test)]
@@ -93,11 +94,9 @@ const SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE: &str =
     "application/vnd.crucible.signal-mutation-provenance.v1+json";
 const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
-#[cfg(any(test, feature = "test-double"))]
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-schedule-named-truths+toml";
 const SEARCH_RETAINED_EVIDENCE_SCHEMA: &str = "crucible.search-retained-evidence.v1";
-#[cfg(any(test, feature = "test-double"))]
 const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-retained-evidence+toml";
 const CRUCIBLE_SEED_ENV: &str = "CRUCIBLE_SEED";

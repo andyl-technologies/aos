@@ -525,6 +525,9 @@ impl CampaignRepository {
             let use_beam = engine
                 .capabilities()
                 .contains(crate::CANONICAL_BEAM_SURVIVORS_CAPABILITY);
+            let use_search_order = engine
+                .capabilities()
+                .contains(crate::CANONICAL_FRONTIER_SEARCH_ORDER_CAPABILITY);
             let beam_projection = use_beam
                 .then(|| self.project_beam_planner(&snapshot, &policy))
                 .transpose()?;
@@ -547,7 +550,10 @@ impl CampaignRepository {
                     self.read_envelope(projection.id()?.content_id())?,
                 )?;
                 if projection.state() != crate::ContinuationState::Ready
-                    || (!use_puct && budget.is_none() && !ready_positions.is_empty())
+                    || (!use_puct
+                        && !use_search_order
+                        && budget.is_none()
+                        && !ready_positions.is_empty())
                 {
                     continue;
                 }
@@ -614,6 +620,66 @@ impl CampaignRepository {
                         offer.canonical_bytes(),
                     )?,
                 )?;
+                if use_search_order {
+                    let branch_request = self.read_branch_request(offer.request().content_id())?;
+                    let domain = self.read_choice_domain(offer.domain().content_id())?;
+                    let edge = crate::Selection::campaign_edge_id(
+                        offer.branch_point(),
+                        domain.semantic_id(),
+                        offer.value(),
+                    );
+                    let lineage = self.read_lineage(snapshot.snapshot.lineage().content_id())?;
+                    let parent_path =
+                        self.planner_issue_parent_path(&snapshot, &lineage, &branch_request)?;
+                    let mut segments = parent_path
+                        .segments()
+                        .ok_or_else(|| integrity("planner-search-parent-path-is-legacy"))?
+                        .to_vec();
+                    segments.push(crate::BranchPathSegment::new(offer.branch_point(), edge));
+                    let path = crate::BranchPath::new(segments)?;
+                    let depth = u64::try_from(path.edges().len()).map_err(|_| {
+                        CampaignRepositoryError::Codec(CampaignCodecError::LimitExceeded {
+                            limit: "planner-search-candidate-depth",
+                        })
+                    })?;
+                    let candidate = crate::PlannerSearchCandidate::new(
+                        snapshot.snapshot.planning_view().id()?,
+                        snapshot.snapshot.active_policy(),
+                        position,
+                        offer.domain(),
+                        domain.semantic_id(),
+                        offer.value().clone(),
+                        offer.ordinal(),
+                        edge,
+                        parent_path.id()?,
+                        path.id()?,
+                        depth,
+                    )?;
+                    push_retained_planner_input(
+                        &mut retained,
+                        &mut retained_bytes,
+                        ObjectEnvelope::for_branch_path(&parent_path)?,
+                    )?;
+                    push_retained_planner_input(
+                        &mut retained,
+                        &mut retained_bytes,
+                        ObjectEnvelope::for_branch_path(&path)?,
+                    )?;
+                    push_retained_planner_input(
+                        &mut retained,
+                        &mut retained_bytes,
+                        self.read_envelope(offer.domain().content_id())?,
+                    )?;
+                    push_retained_planner_input(
+                        &mut retained,
+                        &mut retained_bytes,
+                        ObjectEnvelope::for_record(
+                            crate::CampaignRecordKind::PlannerSearchCandidate,
+                            crate::object::content_children(candidate.content_children())?,
+                            candidate.canonical_bytes(),
+                        )?,
+                    )?;
+                }
                 if use_puct {
                     let guidance = self.planner_candidate_guidance(
                         &snapshot,
@@ -940,6 +1006,10 @@ impl CampaignRepository {
                 Some(CanonicalPuctPlanner::initial_state_for_engine(&engine)?)
             } else if CanonicalBeamPlanner::supports_descriptor(&engine)? {
                 Some(CanonicalBeamPlanner::initial_state_for_engine(&engine)?)
+            } else if crate::CanonicalSearchPlanner::supports_descriptor(&engine)? {
+                Some(crate::CanonicalSearchPlanner::initial_state_for_engine(
+                    &engine,
+                )?)
             } else {
                 None
             };

@@ -139,6 +139,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Search(args) => {
             let mut plan =
                 plan_search_invocation_with_artifact_dir(args, &run_store_root, &cli.artifact_dir)?;
+            plan.campaign_deployment = cli.campaign_deployment.clone();
             if let Some(seed) = run_identity_seed {
                 pin_search_invocation_seed(&mut plan, seed)?;
             }

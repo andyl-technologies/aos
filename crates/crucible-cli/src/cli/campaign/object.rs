@@ -433,6 +433,9 @@ pub(super) fn campaign_stop_condition_label(stop: &StopCondition) -> String {
         StopCondition::Observation(ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
             execution_quanta,
         }) => format!("observation:scheduler-quiescent-or-execution-quanta:{execution_quanta}"),
+        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => {
+            format!("next-choice-or-execution-quanta:{execution_quanta}")
+        }
     }
 }
 

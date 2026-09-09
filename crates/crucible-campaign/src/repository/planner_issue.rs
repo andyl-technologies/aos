@@ -1006,7 +1006,7 @@ impl CampaignRepository {
         Ok(attempt)
     }
 
-    fn planner_issue_parent_path(
+    pub(in crate::repository) fn planner_issue_parent_path(
         &self,
         snapshot: &LoadedSnapshot,
         lineage: &CampaignLineage,

@@ -205,6 +205,7 @@ pub(crate) struct ForkDecisionOverride {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SearchDriverPlan {
+    pub(crate) campaign_deployment: Option<PathBuf>,
     pub(crate) scenario: RunScenarioRef,
     pub(crate) strategy_arg: SearchStrategyArg,
     pub(crate) engine_strategy: crucible::SearchStrategy,
@@ -254,6 +255,7 @@ pub(crate) struct LocalDoubleSearchReport {
     pub(crate) retained_evidence: String,
     pub(crate) retained_evidence_digest: String,
     pub(crate) counterexample: Option<LocalDoubleSearchCounterexample>,
+    pub(crate) replay_oracle_sampling: String,
     pub(crate) replay_oracle_considered: usize,
     pub(crate) replay_oracle_sampled: usize,
     pub(crate) replay_oracle_skipped: usize,
@@ -1445,6 +1447,7 @@ pub(crate) fn plan_search_invocation_with_artifact_dir(
         .transpose()?;
 
     Ok(SearchDriverPlan {
+        campaign_deployment: None,
         scenario,
         strategy_arg: args.strategy,
         engine_strategy,

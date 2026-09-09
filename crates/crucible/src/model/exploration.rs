@@ -1317,6 +1317,33 @@ pub struct SearchFailureOracle {
     pub(super) failures: BTreeMap<ContentHash, ContentHash>,
 }
 
+/// One prefix-safe assertion finding evaluated for an exact search configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SearchAssertionFinding {
+    pub(super) fingerprint: ContentHash,
+    pub(super) violation: HostAssertionViolation,
+}
+
+impl SearchAssertionFinding {
+    /// Returns the canonical failure fingerprint used by search deduplication.
+    #[must_use]
+    pub const fn fingerprint(&self) -> ContentHash {
+        self.fingerprint
+    }
+
+    /// Returns the assertion violation that produced the finding.
+    #[must_use]
+    pub const fn violation(&self) -> &HostAssertionViolation {
+        &self.violation
+    }
+
+    /// Consumes the finding and returns its assertion violation.
+    #[must_use]
+    pub fn into_violation(self) -> HostAssertionViolation {
+        self.violation
+    }
+}
+
 impl SearchFailureOracle {
     /// Builds an oracle that reports no failures.
     #[must_use]
@@ -1331,6 +1358,84 @@ impl SearchFailureOracle {
     pub fn with_failure(mut self, configuration: ContentHash, fingerprint: ContentHash) -> Self {
         self.failures.insert(configuration, fingerprint);
         self
+    }
+
+    /// Evaluates schedule-derived prefix-safe assertions for one configuration.
+    ///
+    /// The returned violation carries a placeholder reproduction-artifact
+    /// identity. A caller that captures a finding artifact must replace that
+    /// public field with the captured artifact identity before recording
+    /// triage evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// and `configuration` disagree, or a scenario-serialization error when
+    /// the schedule log cannot be reconstructed or checked.
+    pub fn evaluate_configuration(
+        scenario: &ScenarioDefForm,
+        configuration: &Configuration,
+    ) -> Result<Option<SearchAssertionFinding>, EngineError> {
+        validate_search_configuration_scenario(scenario, configuration)?;
+        let mut oracle = BlackBoxHostOracle;
+        search_assertion_finding(
+            scenario,
+            configuration,
+            &mut oracle,
+            SearchAssertionPredicateScope::ScheduleOnly,
+        )
+    }
+
+    /// Evaluates schedule and named-truth assertions for one configuration.
+    ///
+    /// A finding is withheld when any named predicate needed by the selected
+    /// assertion is absent from `named_predicates`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// and `configuration` disagree, or a scenario-serialization error when
+    /// the schedule log cannot be reconstructed or checked.
+    pub fn evaluate_configuration_with_named_predicates(
+        scenario: &ScenarioDefForm,
+        configuration: &Configuration,
+        named_predicates: &SearchScheduleNamedPredicateTruths,
+    ) -> Result<Option<SearchAssertionFinding>, EngineError> {
+        validate_search_configuration_scenario(scenario, configuration)?;
+        let mut oracle = SearchScheduleNamedPredicateHostOracle::new(named_predicates);
+        oracle.clear_missing_truths();
+        let finding = search_assertion_finding(
+            scenario,
+            configuration,
+            &mut oracle,
+            SearchAssertionPredicateScope::ScheduleAndNamedTruths,
+        )?;
+        if oracle.has_missing_truths() {
+            return Ok(None);
+        }
+        Ok(finding)
+    }
+
+    /// Evaluates prefix-safe assertions from retained configuration evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// and `configuration` disagree, or a scenario-serialization error when
+    /// retained evidence cannot be checked.
+    pub fn evaluate_configuration_with_retained_log_evidence(
+        scenario: &ScenarioDefForm,
+        configuration: &Configuration,
+        evidence: &SearchRetainedLogAssertionEvidence,
+    ) -> Result<Option<SearchAssertionFinding>, EngineError> {
+        validate_search_configuration_scenario(scenario, configuration)?;
+        search_assertion_finding_from_retained_log(
+            scenario,
+            configuration,
+            evidence.recorded_log(),
+            evidence.resolutions(),
+            evidence.terminal_quiescence(),
+        )
     }
 
     /// Builds an oracle from prefix-safe assertion violations found by a search run.

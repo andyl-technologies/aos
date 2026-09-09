@@ -1308,7 +1308,7 @@ where
                         materialization,
                     )
                     .map_err(map_hot_fork_start_replay_failure)?;
-                if input.attempt().stop() == &crucible_campaign::StopCondition::NextChoice {
+                if input.attempt().stop().accepts_next_choice() {
                     lifecycle.enable_signal_fault_campaign_promotion();
                 }
                 let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
