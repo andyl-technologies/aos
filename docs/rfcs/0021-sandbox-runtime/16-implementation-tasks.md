@@ -6346,10 +6346,43 @@ passed all 176 Network library tests; an exact-file format check also passed.
 These results qualify only the Rust authentication logic and injected mismatch
 tests, not real procfs, SELinux, cgroup, socket, or manager behavior.
 
-Production authentication remains blocked on typed exposure and fresh checking
-of Linux 6.18 PIDFD credential fields; the current public wrapper exposes no
-credentials, so this adapter retains only the earlier `SO_PEERCRED` or
-`SCM_CREDENTIALS` snapshot. Enforcing qualification must also prove the exact
+Commit `0ceab37c6` exposes Linux 6.18 `PIDFD_INFO_CREDS` through an optional
+typed credential observation. It preserves all eight real, effective,
+saved-set, and filesystem user/group IDs from the kernel's single coherent
+credential object, with documented caller-user-namespace mapping. The wider
+PID, parent, cgroup, and credential result is correctly modeled as one ioctl
+observation rather than a globally atomic process snapshot. A raw-response unit
+test covers all eight mappings and omission of the credentials mask bit.
+
+Qualification used a clean archive of exact parent `d79866de2` plus only
+`crates/aos-sandbox-linux/src/pidfd.rs`; its final SHA-256 was
+`d9c22dda5258c15f342e42a482c60222b3c8f3f5f4ea859d38cf55ca829e2f39`.
+The live shared file differed from that frozen source only by a pre-existing,
+separately owned 19-line `terminate` method. The pinned realized AOS development
+environment passed the exact-file format check, all 128 non-ignored Linux
+library tests with two fixture helpers ignored, and all 176 Network library
+tests.
+
+The first cold combined library run used the same behavior with the earlier,
+overbroad atomicity wording. It compiled successfully, then reported 127 Linux
+passes, two ignored helpers, and one failure at the seqpacket listener's
+send-after-close assertion. That rejection path does not execute the new pidfd
+credential decoder. The original failure was retained in the command transcript
+but, due to an evidence-handling error, not in a filesystem log. The exact test
+then passed alone, and both full final frozen-source library reruns passed as
+reported above; this history is not represented as a clean first run.
+
+The feature-gated effective-credential self-test was separately executed on the
+Linux 6.18.44 build host and passed once. It compares the returned effective UID
+and GID with the calling process; it does not provide live-kernel coverage of
+the other six fields. Their coverage remains the raw-structure mapping test.
+No guest, enforcing-MAC, or production adapter consumed this API, and no
+readiness checkbox changes.
+
+Production authentication still lacks a consumer that freshly checks these
+pidfd credentials at the effect boundary; the current runtime adapter retains
+only the earlier `SO_PEERCRED` or `SCM_CREDENTIALS` snapshot. Enforcing
+qualification must also prove the exact
 target-SID-wide procfs access needed for `stat`, `exe`, and `attr/current`,
 including the actual behavior of sensitive same-target
 `mem`, `fd`, `fdinfo`, `root`, `cwd`, `environ`, `maps`, and `map_files`
