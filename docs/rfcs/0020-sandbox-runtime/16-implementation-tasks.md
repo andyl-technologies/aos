@@ -4671,6 +4671,43 @@ remains distinct from the production detached-root transient-unit compiler,
 controller cgroup-identity reconciliation, enforcing MAC, guardian, and
 publisher paths. `SBX-P0-04` and `SBX-P0-05` therefore remain open.
 
+### Production Host worker cross-architecture qualification (in progress)
+
+The current integrated `checks.fleet.sandbox-host-worker` candidate includes
+the reviewed target-aware Rust-test fixture discovery and a unit regression
+which rejects nonleader process churn without weakening exact payload snapshot
+equality. Its diagnostic-free immutable source is
+`/nix/store/f5d57l3a2a7qs4zzpsf61l99arsb2h5p-aos-workspace-src`; the Host worker
+source has SHA-256
+`436c4477b2e9f0712d7de50293e8d9e6c247cc537a90cb83d84d9d6757d48a6d`.
+The native derivation
+`/nix/store/1794v6540fpjqf2nxw2yglbl99yn6dwi-aos-fleet-test-sandbox-host-worker-0.drv`
+passed under KVM and produced
+`/nix/store/csbj5xn0hy638qn3v84sw5agmx6xq3l5-aos-fleet-test-sandbox-host-worker-0`.
+The exact AArch64 derivation
+`/nix/store/shggg3k6dn036flsq38wa05cadwxibm2-aos-fleet-test-sandbox-host-worker-0.drv`
+reached the production kernel test but failed during payload discovery with
+`pidfd_open failed: No such process (os error 3)`.
+
+A source-only diagnostic candidate added bounded error context to that existing
+failure return without retrying, filtering candidates, changing snapshot
+equality, or altering the success path. Its immutable source is
+`/nix/store/r4n4j6j3dj1lv05pbfn3wkm42cyihd7k-aos-workspace-src`; the Host worker
+source has SHA-256
+`7ed1af98d5cf9d6622810d3330e03ac231cc41cc6ee0cd721021420e7cc3a9f9`.
+The exact AArch64 diagnostic derivation
+`/nix/store/jny16hgk6m38y0wwfidjz76z6qvc95zv-aos-fleet-test-sandbox-host-worker-0.drv`
+passed all three payload generations, two internal reboots, and final stop,
+producing
+`/nix/store/ig4digifd0ynvqdxmr1dqrr46npycwc9-aos-fleet-test-sandbox-host-worker-0`.
+Because the failure did not recur, no diagnostic record was emitted and the
+identity of the disappearing snapshot candidate remains unknown. The
+diagnostic was not promoted to the working-tree Host worker. The fixture's
+repeated external 50-millisecond `sleep` child is a source-supported race
+hypothesis, not an established cause. This evidence therefore does not qualify
+the intermittent AArch64 production-worker path; the inert guardian limitation
+also remains, and `SBX-P0-04` and `SBX-P0-05` stay open.
+
 ### Production Storage worker and deadline qualification (in progress)
 
 The current Storage increment adds a fixed typed, systemd-contained mutation
