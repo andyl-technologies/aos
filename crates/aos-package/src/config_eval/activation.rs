@@ -167,6 +167,20 @@ pub fn activate_config(params: &ActivateConfigParams) -> Result<u32> {
     )
 }
 
+/// Rejects structured manifests until the native activation dispatcher owns the commit path.
+///
+/// # Errors
+///
+/// Returns an error when the manifest carries structured activation inputs.
+pub(crate) fn reject_structured_activation_on_legacy_path(manifest: &ConfigManifest) -> Result<()> {
+    if manifest.inputs.ability_activation.is_some() {
+        bail!(
+            "structured ability activation requires the native dispatcher; refusing the legacy activation path"
+        );
+    }
+    Ok(())
+}
+
 const CREDENTIAL_STAGED_VIEW_READY: &str = "AOS_CREDENTIAL_STAGED_VIEW_READY ";
 const CREDENTIAL_STAGED_VIEW_CONTINUE: &[u8] = b"AOS_CREDENTIAL_STAGED_VIEW_CONTINUE\n";
 const CREDENTIAL_BARRIER_READY: &str = "AOS_CREDENTIAL_BARRIER_READY ";
@@ -401,6 +415,7 @@ where
     manifest
         .validate()
         .with_context(|| format!("validating {}", params.manifest.display()))?;
+    reject_structured_activation_on_legacy_path(&manifest)?;
     if manifest.module_abi != params.module_abi || manifest.module_abi != running_image.module_abi {
         bail!(
             "manifest module_abi {} does not match running image ABI {}",
@@ -1302,6 +1317,60 @@ mod tests {
             error.to_string().contains("required manifest store path"),
             "{error}"
         );
+        assert!(!params.profile.join("gen-2").exists());
+    }
+
+    #[test]
+    fn direct_activation_rejects_structured_effects_before_generation_mutation() {
+        let (_root, params, mut manifest) = setup();
+        manifest["schema"] = json!(ConfigManifest::SCHEMA_V3);
+        manifest["inputs"]["expected_current_generation"] = json!(1);
+        manifest["inputs"]["ability_activation"] = json!({
+            "schema": "aos.ability.activation-input/v1",
+            "required_features": ["abilities-v1", "ability-effects-v1"],
+            "desired_state": {
+                "store_path": "/nix/store/99999999999999999999999999999999-desired",
+                "nar_hash": format!("sha256:{}", "0".repeat(52)),
+                "nar_size": 1,
+                "document": "desired.json",
+                "document_sha256": format!("sha256:{}", "a".repeat(64)),
+                "document_size": 1
+            },
+            "authenticated_policy_set": {
+                "store_path": "/nix/store/88888888888888888888888888888888-policy",
+                "nar_hash": format!("sha256:{}", "0".repeat(52)),
+                "nar_size": 1,
+                "document": "policy.json",
+                "document_sha256": format!("sha256:{}", "b".repeat(64)),
+                "document_size": 1
+            },
+            "packages": []
+        });
+        for package in ["firewall", "web"] {
+            let nar_hash = format!("sha256:{}", "0".repeat(52));
+            manifest["packageOutputs"][package]["nar_hash"] = json!(nar_hash);
+            manifest["packageOutputs"][package]["nar_size"] = json!(1);
+            manifest["packageOutputs"][package]["closure"][0]["realisations"][0]["nar_hash"] =
+                json!(nar_hash);
+        }
+        let validated: ConfigManifest = serde_json::from_value(manifest.clone()).unwrap();
+        validated.validate().unwrap();
+        write_json_atomic(&params.manifest, &manifest).unwrap();
+
+        let error = activate_config_with(
+            &params,
+            false,
+            false,
+            false,
+            |_activate, _number, _nonce, _barrier| {
+                panic!("legacy activation must not execute structured effects")
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("native dispatcher"), "{error:#}");
+        let state = load_generation_state_pub(&params.profile).unwrap();
+        assert_eq!(state.current, 1);
         assert!(!params.profile.join("gen-2").exists());
     }
 

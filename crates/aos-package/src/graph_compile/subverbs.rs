@@ -993,6 +993,8 @@ mod subverb_tests {
             registry: "test".into(),
             origin: RuntimePackageOrigin::Registry,
             store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example".into(),
+            nar_hash: format!("sha256:{}", "0".repeat(52)),
+            nar_size: 42,
             config_dependency_outputs: BTreeMap::new(),
             closure: vec![RuntimeClosurePin {
                 store_path_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
@@ -1005,6 +1007,7 @@ mod subverb_tests {
             expose: None,
             expose_artifact: None,
             config_projection: None,
+            ability: None,
             legacy_config: None,
         }
     }

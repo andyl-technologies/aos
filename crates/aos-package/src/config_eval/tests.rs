@@ -389,6 +389,8 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
                 registry: "aos-core".to_string(),
                 origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
+                nar_hash: "sha256:0000000000000000000000000000000000000000000000000000".to_string(),
+                nar_size: 1,
                 config_dependency_outputs: BTreeMap::new(),
                 closure: vec![RuntimeClosurePin {
                     store_path_hash: "0000000000000000000000000000000a".to_string(),
@@ -402,6 +404,7 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
                 expose: None,
                 expose_artifact: None,
                 config_projection: None,
+                ability: None,
                 legacy_config: None,
             },
         )]),
@@ -487,11 +490,14 @@ fn runtime_enrichment_preserves_authorized_image_store_ownership() {
                 registry: "aos-core".to_string(),
                 origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
+                nar_hash: format!("sha256:{}", "0".repeat(52)),
+                nar_size: 1,
                 config_dependency_outputs: BTreeMap::new(),
                 closure: Vec::new(),
                 expose: None,
                 expose_artifact: None,
                 config_projection: None,
+                ability: None,
                 legacy_config: None,
             },
         )]),
@@ -558,6 +564,8 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
                 registry: "aos-core".to_string(),
                 origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
+                nar_hash: nar_hash.clone(),
+                nar_size: 1,
                 config_dependency_outputs: BTreeMap::new(),
                 closure: vec![
                     RuntimeClosurePin {
@@ -592,6 +600,7 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
                     nar_size: 1,
                 }),
                 config_projection: None,
+                ability: None,
                 legacy_config: Some(ExposeConfigMeta::default()),
             },
         )]),
@@ -642,6 +651,25 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
             .unwrap()
             .contains(&serde_json::json!(artifact))
     );
+}
+
+#[test]
+fn ability_activation_input_survives_removal_of_the_last_structured_package() {
+    let input = serde_json::json!({
+        "schema": "aos.ability.activation-input/v1",
+        "required_features": ["abilities-v1", "ability-effects-v1"],
+        "desired_state": {},
+        "authenticated_policy_set": {}
+    });
+
+    let enriched = super::enrich_ability_activation(
+        Some(input),
+        &super::runtime::RuntimeResolution::default(),
+    )
+    .expect("retained activation input must authorize native teardown planning")
+    .expect("activation input remains selected");
+
+    assert_eq!(enriched["packages"], serde_json::json!([]));
 }
 
 #[test]

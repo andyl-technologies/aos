@@ -73,7 +73,7 @@ impl AbilityRetentionVerifier for NativeAbilityRetentionVerifier {
     }
 }
 
-fn verify_store_object(
+pub(crate) fn verify_store_object(
     store_path: &str,
     expected_hash: Sha256Digest,
     expected_size: u64,

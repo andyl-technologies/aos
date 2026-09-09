@@ -840,6 +840,7 @@ impl RegistryConfigModules {
                         expose: apm.expose,
                         expose_artifact: apm.expose_artifact,
                         config_module,
+                        ability: apm.ability,
                         closure: std::cell::RefCell::new(None),
                     },
                 );
