@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 aos-ability-model.workspace = true
+aos-ability-plan.workspace = true
 aos-ability-validate.workspace = true
 aos-contract.workspace = true
 serde = { workspace = true }
@@ -15,6 +16,7 @@ thiserror = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
+aos-ability-plan = { workspace = true, features = ["test-support"] }
 aos-ability-validate = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
 

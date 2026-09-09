@@ -14,5 +14,6 @@
 #![forbid(unsafe_code)]
 
 pub mod adapter;
+pub mod bundle;
 pub mod execution;
 pub mod journal;

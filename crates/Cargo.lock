@@ -245,6 +245,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-ability-model",
+ "aos-ability-plan",
  "aos-ability-validate",
  "aos-contract",
  "rustix 1.1.4",
