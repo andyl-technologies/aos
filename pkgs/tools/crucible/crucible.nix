@@ -183,10 +183,14 @@
     cargoEnv = controllerCargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # Keep runtime tests within a bounded share of the allocated build cores.
+    # Several controller suites run real subprocesses with production-sized
+    # deadlines and must retain scheduler time under large host allocations.
+    cargoNextestMaxTestThreads = 16;
     # Nextest lists hundreds of controller test binaries concurrently. The
     # sandbox's default 1,024-descriptor soft limit is below that bounded
     # inventory, so raise only the soft descriptor ceiling. This does not
-    # change Cargo, Nextest, Nix, or Ninja parallelism.
+    # change Cargo, Nix, or Ninja parallelism.
     cargoNextestOpenFilesLimit = 4096;
     passthru = {
       cargoArtifacts = controllerArtifacts;
