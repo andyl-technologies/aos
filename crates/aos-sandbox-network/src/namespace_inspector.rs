@@ -47,6 +47,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 
+mod store;
+
 const REQUEST_MAGIC: &[u8; 8] = b"AOSNIQ01";
 const RESPONSE_MAGIC: &[u8; 8] = b"AOSNIR01";
 const VERSION: u16 = 1;
@@ -111,12 +113,39 @@ pub(crate) enum NetworkNamespaceInspectorError {
     /// The one-shot nonce had already been spent.
     #[error("namespace-inspector attempt was replayed")]
     Replay,
+    /// Protected expected-policy lookup failed without being collapsed to absence.
+    #[error("namespace-inspector protected policy lookup failed")]
+    ProtectedPolicy,
     /// The pidfd, cgroup, or namespace observation differed from policy.
     #[error("namespace-inspector kernel observation did not match")]
     ObservationMismatch,
     /// A prior error permanently closed this one-record session.
     #[error("namespace-inspector session is terminal")]
     Terminal,
+}
+
+/// Preserves model rejection or backend-specific spent-claim recovery evidence.
+///
+/// The protected filesystem ledger returns a lifetime-bound error containing
+/// its pinned private inode on publication failure. Keeping that error generic
+/// prevents admission from erasing ambiguous rename evidence merely to fit the
+/// pure model's copyable error type.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum NetworkNamespaceInspectorAdmissionError<SpentError> {
+    /// Pure protocol, identity, policy, clock, or observation admission failed.
+    #[error("{0}")]
+    Model(NetworkNamespaceInspectorError),
+    /// The configured replay ledger failed and retained its backend evidence.
+    #[error("namespace-inspector spent claim failed: {0}")]
+    Spent(SpentError),
+}
+
+impl<SpentError> From<NetworkNamespaceInspectorError>
+    for NetworkNamespaceInspectorAdmissionError<SpentError>
+{
+    fn from(error: NetworkNamespaceInspectorError) -> Self {
+        Self::Model(error)
+    }
 }
 
 /// Names one exact process and cgroup identity observed through a pidfd.
@@ -330,24 +359,41 @@ impl InspectorExpectedAttemptCatalogV1 {
 
 /// Provides read-only access to broker-written expected-attempt policy.
 pub(crate) trait InspectorAttemptPolicyLookupV1 {
-    /// Looks up one immutable expected attempt by its fresh nonce.
-    fn lookup(&self, nonce: &[u8; 32]) -> Option<&ExpectedInspectorAttemptV1>;
+    /// Looks up one owned immutable expected attempt by its fresh nonce.
+    ///
+    /// Only exact initial absence returns `Ok(None)`; observation and decoding
+    /// failures remain distinguishable errors.
+    fn lookup(
+        &self,
+        nonce: &[u8; 32],
+    ) -> Result<Option<ExpectedInspectorAttemptV1>, NetworkNamespaceInspectorError>;
 }
 
 impl InspectorAttemptPolicyLookupV1 for InspectorExpectedAttemptCatalogV1 {
-    fn lookup(&self, nonce: &[u8; 32]) -> Option<&ExpectedInspectorAttemptV1> {
-        self.records.get(nonce)
+    fn lookup(
+        &self,
+        nonce: &[u8; 32],
+    ) -> Result<Option<ExpectedInspectorAttemptV1>, NetworkNamespaceInspectorError> {
+        Ok(self.records.get(nonce).cloned())
     }
 }
 
 /// Claims nonces in storage separate from immutable expected-attempt policy.
 pub(crate) trait InspectorSpentNonceLedgerV1 {
+    /// Error returned by one claim while the ledger remains borrowed.
+    type Error<'ledger>: std::fmt::Debug + std::fmt::Display
+    where
+        Self: 'ledger;
+
     /// Atomically marks `nonce` spent and reports whether this call claimed it.
     ///
     /// The eventual implementation must be root-owned, persistent for the
     /// deployment's replay horizon, and writable by the inspector only through
     /// its MAC-confined one-shot claim operation.
-    fn claim_once(&mut self, nonce: [u8; 32]) -> Result<bool, NetworkNamespaceInspectorError>;
+    fn claim_once<'ledger>(
+        &'ledger mut self,
+        expected: &ExpectedInspectorAttemptV1,
+    ) -> Result<bool, Self::Error<'ledger>>;
 }
 
 /// Captures one trusted monotonic clock observation in the current boot.
@@ -553,21 +599,27 @@ impl NetworkNamespaceInspectorAdmissionV1 {
     ///
     /// Policy lookup and spent-nonce claim are separate authorities. An error at
     /// any boundary permanently closes this admission object.
-    fn authenticate_and_claim(
+    fn authenticate_and_claim<'ledger, SpentLedger>(
         &mut self,
         deployment: &ProvisionedNetworkNamespaceInspectorV1,
         connection_peer: KernelAuthenticatedInspectorPeerV1,
         record_subject: KernelAuthenticatedInspectorPeerV1,
         launch: &AuthenticatedLifecycleWorkerLaunchObservationV1,
         policy: &impl InspectorAttemptPolicyLookupV1,
-        spent: &mut impl InspectorSpentNonceLedgerV1,
+        spent: &'ledger mut SpentLedger,
         clock: &mut impl InspectorTrustedClockV1,
         request: NetworkNamespaceInspectionRequestV1,
         envelope: InspectorDescriptorEnvelopeV1,
         observed_worker: InspectorProcessIdentityV1,
-    ) -> Result<AuthorizedNamespaceInspectionV1, NetworkNamespaceInspectorError> {
+    ) -> Result<
+        AuthorizedNamespaceInspectionV1,
+        NetworkNamespaceInspectorAdmissionError<SpentLedger::Error<'ledger>>,
+    >
+    where
+        SpentLedger: InspectorSpentNonceLedgerV1,
+    {
         if self.terminal {
-            return Err(NetworkNamespaceInspectorError::Terminal);
+            return Err(NetworkNamespaceInspectorError::Terminal.into());
         }
         self.terminal = true;
 
@@ -576,23 +628,24 @@ impl NetworkNamespaceInspectorAdmissionV1 {
         validate_provisioned_peer(deployment.broker, record_subject)?;
 
         let expected = policy
-            .lookup(&request.expected.nonce)
+            .lookup(&request.expected.nonce)?
             .ok_or(NetworkNamespaceInspectorError::PolicyMismatch)?;
-        if expected != &request.expected || expected.policy_digest != expected.compute_digest()? {
-            return Err(NetworkNamespaceInspectorError::PolicyMismatch);
+        if expected != request.expected || expected.policy_digest != expected.compute_digest()? {
+            return Err(NetworkNamespaceInspectorError::PolicyMismatch.into());
         }
-        validate_launch_observation(deployment, launch, expected)?;
-        validate_fresh_time(expected, clock.observe()?)?;
+        validate_launch_observation(deployment, launch, &expected)?;
+        validate_fresh_time(&expected, clock.observe()?)?;
         if observed_worker != expected.process {
-            return Err(NetworkNamespaceInspectorError::ObservationMismatch);
+            return Err(NetworkNamespaceInspectorError::ObservationMismatch.into());
         }
-        if !spent.claim_once(expected.nonce)? {
-            return Err(NetworkNamespaceInspectorError::Replay);
+        if !spent
+            .claim_once(&expected)
+            .map_err(NetworkNamespaceInspectorAdmissionError::Spent)?
+        {
+            return Err(NetworkNamespaceInspectorError::Replay.into());
         }
-        validate_fresh_time(expected, clock.observe()?)?;
-        Ok(AuthorizedNamespaceInspectionV1 {
-            expected: expected.clone(),
-        })
+        validate_fresh_time(&expected, clock.observe()?)?;
+        Ok(AuthorizedNamespaceInspectionV1 { expected })
     }
 }
 
@@ -1016,8 +1069,45 @@ mod tests {
     }
 
     impl InspectorSpentNonceLedgerV1 for SpentLedger {
-        fn claim_once(&mut self, nonce: [u8; 32]) -> Result<bool, NetworkNamespaceInspectorError> {
-            Ok(self.nonces.insert(nonce))
+        type Error<'ledger> = NetworkNamespaceInspectorError;
+
+        fn claim_once<'ledger>(
+            &'ledger mut self,
+            expected: &ExpectedInspectorAttemptV1,
+        ) -> Result<bool, Self::Error<'ledger>> {
+            Ok(self.nonces.insert(expected.nonce))
+        }
+    }
+
+    struct FailingPolicy;
+
+    impl InspectorAttemptPolicyLookupV1 for FailingPolicy {
+        fn lookup(
+            &self,
+            _nonce: &[u8; 32],
+        ) -> Result<Option<ExpectedInspectorAttemptV1>, NetworkNamespaceInspectorError> {
+            Err(NetworkNamespaceInspectorError::ProtectedPolicy)
+        }
+    }
+
+    struct UnreachableSpentLedger;
+
+    impl InspectorSpentNonceLedgerV1 for UnreachableSpentLedger {
+        type Error<'ledger> = NetworkNamespaceInspectorError;
+
+        fn claim_once<'ledger>(
+            &'ledger mut self,
+            _expected: &ExpectedInspectorAttemptV1,
+        ) -> Result<bool, Self::Error<'ledger>> {
+            panic!("spent claim must not run after protected lookup failure")
+        }
+    }
+
+    struct UnreachableClock;
+
+    impl InspectorTrustedClockV1 for UnreachableClock {
+        fn observe(&mut self) -> Result<InspectorTrustedTimeV1, NetworkNamespaceInspectorError> {
+            panic!("clock observation must not run after protected lookup failure")
         }
     }
 
@@ -1096,7 +1186,7 @@ mod tests {
         }
     }
 
-    fn pending(nonce: u8) -> PendingLifecycleWorkerInspectionV1 {
+    pub(super) fn pending(nonce: u8) -> PendingLifecycleWorkerInspectionV1 {
         let deployment = deployment();
         PendingLifecycleWorkerInspectionV1::from_validated_ready(
             ValidatedLifecycleWorkerLeaderV1 {
@@ -1138,6 +1228,18 @@ mod tests {
         }
     }
 
+    fn flatten_admission<T>(
+        result: Result<T, NetworkNamespaceInspectorAdmissionError<NetworkNamespaceInspectorError>>,
+    ) -> Result<T, NetworkNamespaceInspectorError> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(
+                NetworkNamespaceInspectorAdmissionError::Model(error)
+                | NetworkNamespaceInspectorAdmissionError::Spent(error),
+            ) => Err(error),
+        }
+    }
+
     fn authorize(
         pending: &PendingLifecycleWorkerInspectionV1,
         catalog: &InspectorExpectedAttemptCatalogV1,
@@ -1146,17 +1248,19 @@ mod tests {
         let request =
             NetworkNamespaceInspectionRequestV1::decode(&pending.encode_request().unwrap())?;
         let mut clock = Clock::fixed([7; 16], 15);
-        NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
-            &deployment(),
-            peer(100),
-            peer(100),
-            &launch(pending),
-            catalog,
-            spent,
-            &mut clock,
-            request,
-            envelope(),
-            process(300),
+        flatten_admission(
+            NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
+                &deployment(),
+                peer(100),
+                peer(100),
+                &launch(pending),
+                catalog,
+                spent,
+                &mut clock,
+                request,
+                envelope(),
+                process(300),
+            ),
         )
     }
 
@@ -1257,22 +1361,53 @@ mod tests {
             NetworkNamespaceInspectionRequestV1::decode(&attacker.encode_request().unwrap())
                 .unwrap();
         let mut clock = Clock::fixed([7; 16], 15);
-        let result = NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
-            &deployment(),
-            peer(100),
-            peer(100),
-            &launch(&attacker),
-            &catalog,
-            &mut SpentLedger::default(),
-            &mut clock,
-            request,
-            envelope(),
-            process(300),
+        let result = flatten_admission(
+            NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
+                &deployment(),
+                peer(100),
+                peer(100),
+                &launch(&attacker),
+                &catalog,
+                &mut SpentLedger::default(),
+                &mut clock,
+                request,
+                envelope(),
+                process(300),
+            ),
         );
         assert!(matches!(
             result,
             Err(NetworkNamespaceInspectorError::PolicyMismatch)
         ));
+    }
+
+    #[test]
+    fn protected_lookup_error_is_not_absence_and_precedes_claim_or_clock() {
+        let pending = pending(1);
+        let request =
+            NetworkNamespaceInspectionRequestV1::decode(&pending.encode_request().unwrap())
+                .unwrap();
+        let mut admission = NetworkNamespaceInspectorAdmissionV1::default();
+        let result = admission.authenticate_and_claim(
+            &deployment(),
+            peer(100),
+            peer(100),
+            &launch(&pending),
+            &FailingPolicy,
+            &mut UnreachableSpentLedger,
+            &mut UnreachableClock,
+            request,
+            envelope(),
+            process(300),
+        );
+
+        assert!(matches!(
+            result,
+            Err(NetworkNamespaceInspectorAdmissionError::Model(
+                NetworkNamespaceInspectorError::ProtectedPolicy
+            ))
+        ));
+        assert!(admission.terminal);
     }
 
     #[test]
@@ -1293,7 +1428,7 @@ mod tests {
         let mut stale = NetworkNamespaceInspectorAdmissionV1::default();
         let mut stale_clock = Clock::fixed([7; 16], 20);
         assert!(matches!(
-            stale.authenticate_and_claim(
+            flatten_admission(stale.authenticate_and_claim(
                 &deployment(),
                 peer(100),
                 peer(100),
@@ -1304,12 +1439,12 @@ mod tests {
                 request.clone(),
                 envelope(),
                 process(300),
-            ),
+            )),
             Err(NetworkNamespaceInspectorError::Stale)
         ));
         let mut current_clock = Clock::fixed([7; 16], 15);
         assert!(matches!(
-            stale.authenticate_and_claim(
+            flatten_admission(stale.authenticate_and_claim(
                 &deployment(),
                 peer(100),
                 peer(100),
@@ -1320,14 +1455,14 @@ mod tests {
                 request.clone(),
                 envelope(),
                 process(300),
-            ),
+            )),
             Err(NetworkNamespaceInspectorError::Terminal)
         ));
 
         let mut foreign = NetworkNamespaceInspectorAdmissionV1::default();
         let mut clock = Clock::fixed([7; 16], 15);
         assert!(matches!(
-            foreign.authenticate_and_claim(
+            flatten_admission(foreign.authenticate_and_claim(
                 &deployment(),
                 peer(101),
                 peer(100),
@@ -1338,7 +1473,7 @@ mod tests {
                 request,
                 envelope(),
                 process(300),
-            ),
+            )),
             Err(NetworkNamespaceInspectorError::PeerMismatch)
         ));
     }
@@ -1369,17 +1504,19 @@ mod tests {
                 after_claim,
             ]);
             let mut spent = SpentLedger::default();
-            let result = NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
-                &deployment(),
-                peer(100),
-                peer(100),
-                &launch(&pending),
-                &catalog,
-                &mut spent,
-                &mut clock,
-                request,
-                envelope(),
-                process(300),
+            let result = flatten_admission(
+                NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
+                    &deployment(),
+                    peer(100),
+                    peer(100),
+                    &launch(&pending),
+                    &catalog,
+                    &mut spent,
+                    &mut clock,
+                    request,
+                    envelope(),
+                    process(300),
+                ),
             );
             assert!(matches!(result, Err(NetworkNamespaceInspectorError::Stale)));
             assert!(spent.nonces.contains(&[1; 32]));
@@ -1416,17 +1553,19 @@ mod tests {
                 NetworkNamespaceInspectionRequestV1::decode(&pending.encode_request().unwrap())
                     .unwrap();
             let mut clock = Clock::fixed([7; 16], 15);
-            let result = NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
-                &deployment(),
-                peer(100),
-                peer(100),
-                &wrong,
-                &catalog,
-                &mut SpentLedger::default(),
-                &mut clock,
-                request,
-                envelope(),
-                process(300),
+            let result = flatten_admission(
+                NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
+                    &deployment(),
+                    peer(100),
+                    peer(100),
+                    &wrong,
+                    &catalog,
+                    &mut SpentLedger::default(),
+                    &mut clock,
+                    request,
+                    envelope(),
+                    process(300),
+                ),
             );
             assert!(matches!(
                 result,
@@ -1464,17 +1603,19 @@ mod tests {
         foreign_deployment.boot_id = [8; 16];
         let mut clock = Clock::fixed([7; 16], 15);
 
-        let result = NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
-            &foreign_deployment,
-            peer(100),
-            peer(100),
-            &launch(&pending),
-            &catalog,
-            &mut SpentLedger::default(),
-            &mut clock,
-            request,
-            envelope(),
-            process(300),
+        let result = flatten_admission(
+            NetworkNamespaceInspectorAdmissionV1::default().authenticate_and_claim(
+                &foreign_deployment,
+                peer(100),
+                peer(100),
+                &launch(&pending),
+                &catalog,
+                &mut SpentLedger::default(),
+                &mut clock,
+                request,
+                envelope(),
+                process(300),
+            ),
         );
         assert!(matches!(
             result,
@@ -1503,7 +1644,7 @@ mod tests {
             let mut admission = NetworkNamespaceInspectorAdmissionV1::default();
             let mut clock = Clock::fixed([7; 16], 15);
             assert!(matches!(
-                admission.authenticate_and_claim(
+                flatten_admission(admission.authenticate_and_claim(
                     &deployment(),
                     peer(100),
                     peer(100),
@@ -1514,7 +1655,7 @@ mod tests {
                     request,
                     bad_envelope,
                     process(300),
-                ),
+                )),
                 Err(NetworkNamespaceInspectorError::Protocol(_))
             ));
             assert!(admission.terminal);

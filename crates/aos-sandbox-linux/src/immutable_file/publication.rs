@@ -372,6 +372,24 @@ impl FsVerityPublicationRoot {
         })
     }
 
+    /// Returns the session-local device number of the retained directory.
+    ///
+    /// This is mechanical identity for comparing already-admitted roots. It is
+    /// not durable placement or access-control authority.
+    #[must_use]
+    pub const fn device(&self) -> u64 {
+        self.identity.device
+    }
+
+    /// Returns the session-local inode number of the retained directory.
+    ///
+    /// This is mechanical identity for comparing already-admitted roots. It is
+    /// not durable placement or access-control authority.
+    #[must_use]
+    pub const fn inode(&self) -> u64 {
+        self.identity.inode
+    }
+
     /// Copies, caller-verifies, synchronizes, and seals one fresh private inode.
     ///
     /// Positional reads start at source offset zero and do not consume or depend
