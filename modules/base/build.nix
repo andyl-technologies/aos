@@ -30,6 +30,51 @@
   etc' = lib.filter (e: e.enable) (lib.attrValues config.environment.etc);
   etcHardlinks =
     lib.filter (e: e.mode != "symlink" && e.mode != "direct-symlink") etc';
+  immutableSelinuxPolicy = config.system.build.immutableSelinuxPolicy;
+  policySupport = ../../pkgs/security/_aos-selinux-production-policy;
+  etcJson = pkgs.writeTextFile {
+    name = "etc-json";
+    text = builtins.toJSON etc';
+    destination = "/etc.json";
+  };
+
+  # The first dump is the exact inode inventory for the SELinux plan. Image
+  # paths are internal to the /etc lower, so the planner resolves them against
+  # their runtime /etc prefix while preserving internal paths in its map.
+  etcUnlabeledDump = pkgs.runCommand "etc-dump-unlabeled" {} ''
+    rmdir "$out"
+    ${pkgs.buildPackages.python3}/bin/python3 \
+      ${../../pkgs/system/build-composefs-dump.py} \
+      ${etcJson}/etc.json > "$out"
+  '';
+  etcSelinuxContextPlan = let
+    policyRoot = "${immutableSelinuxPolicy}/etc/selinux/aos";
+    nativeLibselinux = pkgs.buildPackages.libselinux;
+    nativePython = pkgs.buildPackages.python3;
+  in
+    pkgs.runCommand "etc-selinux-context-plan" {} ''
+      set -eu
+      mkdir -p "$out"
+
+      ${nativePython}/bin/python3 -B ${policySupport}/context_plan.py \
+        --composefs-dump ${etcUnlabeledDump} \
+        --lookup-prefix /etc \
+        --file-contexts ${policyRoot}/contexts/files/file_contexts \
+        --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+        --output-file-contexts "$out/file_contexts" \
+        --output-map "$out/context-map.json"
+      ${nativeLibselinux}/sbin/sefcontext_compile \
+        -p ${policyRoot}/policy/policy.33 \
+        -o "$out/file_contexts.bin" \
+        "$out/file_contexts"
+      ${nativePython}/bin/python3 -B \
+        ${policySupport}/verify_context_lookups.py \
+        --file-contexts "$out/file_contexts" \
+        --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+        --expected "$out/context-map.json" \
+        --lookup-prefix /etc
+      cp ${etcUnlabeledDump} "$out/unlabeled.dump"
+    '';
 
   makeBinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
   makeSbinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/sbin") pkgsList);
@@ -325,6 +370,31 @@ in {
         description = "The initrd derivation providing initrd.img.";
       };
 
+      ## Optional policy authority for immutable filesystem labels. Production
+      ## profiles set this to their prebuilt, loadable SELinux policy; null
+      ## deliberately preserves the existing unlabeled image path.
+      immutableSelinuxPolicy = lib.mkOption {
+        type = lib.types.nullOr lib.types.package;
+        default = null;
+        internal = true;
+        description = ''
+          Policy package used to derive exact SELinux labels for immutable
+          filesystem images. A null value leaves those images unlabeled.
+        '';
+      };
+
+      ## Exact /etc context plan retained for build checks and downstream
+      ## immutable-image consumers when policy labeling is enabled.
+      etcSelinuxContextPlan = lib.mkOption {
+        type = lib.types.nullOr lib.types.package;
+        readOnly = true;
+        internal = true;
+        description = ''
+          Generated file-context database and context map for the /etc
+          composefs image, or null when immutable labeling is disabled.
+        '';
+      };
+
       ## Colon-joined PATH derived from `environment.systemPackages`.
       systemPath = lib.mkOption {
         type = lib.types.str;
@@ -411,38 +481,70 @@ in {
         etcHardlinks}
     '';
 
-    # `etcDump` runs build-composefs-dump.py against the JSON
-    # description of every enabled entry. Plain text output so the
-    # merge-safety check (§5.7) can inspect it without mounting EROFS.
-    system.build.etcDump = let
-      etcJson = pkgs.writeTextFile {
-        name = "etc-json";
-        text = builtins.toJSON etc';
-        destination = "/etc.json";
-      };
-    in
-      pkgs.runCommand "etc-dump" {} ''
-        # AOS stdenv pre-creates $out as a directory (stdenv/setup.sh).
-        # The dump is a single text file, so drop the dir and write
-        # straight to $out.
-        rmdir "$out"
-        ${pkgs.buildPackages.python3}/bin/python3 \
-          ${../../pkgs/system/build-composefs-dump.py} \
-          ${etcJson}/etc.json > $out
-      '';
+    system.build.etcSelinuxContextPlan =
+      if immutableSelinuxPolicy == null
+      then null
+      else etcSelinuxContextPlan;
+
+    # `etcDump` runs build-composefs-dump.py against the JSON description of
+    # every enabled entry. With a policy authority, it applies the exact map
+    # planned from a separate dump of this same inventory.
+    system.build.etcDump =
+      if immutableSelinuxPolicy == null
+      then
+        pkgs.runCommand "etc-dump" {} ''
+          # AOS stdenv pre-creates $out as a directory (stdenv/setup.sh).
+          # The dump is a single text file, so drop the dir and write
+          # straight to $out.
+          rmdir "$out"
+          ${pkgs.buildPackages.python3}/bin/python3 \
+            ${../../pkgs/system/build-composefs-dump.py} \
+            ${etcJson}/etc.json > $out
+        ''
+      else
+        pkgs.runCommand "etc-dump-labeled" {} ''
+          # AOS stdenv pre-creates $out as a directory (stdenv/setup.sh).
+          # The dump is a single text file, so drop the dir and write
+          # straight to $out.
+          rmdir "$out"
+          ${pkgs.buildPackages.python3}/bin/python3 \
+            ${../../pkgs/system/build-composefs-dump.py} \
+            ${etcJson}/etc.json \
+            --context-map ${etcSelinuxContextPlan}/context-map.json > $out
+        '';
 
     # `etcMetadataImage` is the EROFS image consumed by overlayfs
     # `lowerdir+=`. The `fsck.erofs` sanity check is wired in once
     # `pkgs.erofs-utils` lands (delegated to a separate task; see
     # spec v12 step 3).
-    system.build.etcMetadataImage = pkgs.runCommand "etc-metadata.erofs" {} ''
-      # AOS stdenv pre-creates $out as a directory; the EROFS image is
-      # a single file, so drop the dir first.
-      rmdir "$out"
-      ${pkgs.buildPackages.composefs}/bin/mkcomposefs \
-        --from-file ${config.system.build.etcDump} $out
-      ${pkgs.buildPackages.erofs-utils}/bin/fsck.erofs $out
-    '';
+    system.build.etcMetadataImage =
+      if immutableSelinuxPolicy == null
+      then
+        pkgs.runCommand "etc-metadata.erofs" {} ''
+          # AOS stdenv pre-creates $out as a directory; the EROFS image is
+          # a single file, so drop the dir first.
+          rmdir "$out"
+          ${pkgs.buildPackages.composefs}/bin/mkcomposefs \
+            --from-file ${config.system.build.etcDump} $out
+          ${pkgs.buildPackages.erofs-utils}/bin/fsck.erofs $out
+        ''
+      else
+        pkgs.runCommand "etc-metadata-labeled.erofs" {} ''
+          set -eu
+          rmdir "$out"
+
+          ${pkgs.buildPackages.composefs}/bin/mkcomposefs \
+            --from-file ${config.system.build.etcDump} "$TMPDIR/image.erofs"
+          ${pkgs.buildPackages.erofs-utils}/bin/fsck.erofs "$TMPDIR/image.erofs"
+          ${pkgs.buildPackages.composefs}/bin/composefs-info \
+            dump "$TMPDIR/image.erofs" > "$TMPDIR/observed.dump"
+          ${pkgs.buildPackages.python3}/bin/python3 -B \
+            ${policySupport}/verify_context_dump.py \
+            --dump "$TMPDIR/observed.dump" \
+            --expected ${etcSelinuxContextPlan}/context-map.json
+
+          mv "$TMPDIR/image.erofs" "$out"
+        '';
 
     # Enforce `config.assertions` and surface `config.warnings` at
     # `system.build.toplevel` construction time. Matches the nixpkgs

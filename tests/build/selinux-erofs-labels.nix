@@ -1,11 +1,36 @@
 # tests/build/selinux-erofs-labels.nix - SELinux-labeled EROFS conformance
-{pkgs, ...}: let
+{
+  lib,
+  pkgs,
+  system,
+  ...
+}: let
   policy = pkgs.aos-selinux-production-policy;
   policyRoot = "${policy}/etc/selinux/aos";
   policySupport = ../../pkgs/security/_aos-selinux-production-policy;
   composefsDump = ../../pkgs/system/build-composefs-dump.py;
   composefsDumpTest = ../../pkgs/system/build-composefs-dump_test.py;
   dynamicLinker = pkgs.stdenv.hostPlatform.dynamicLinker;
+  legacySystem = system.extendModules {
+    modules = [
+      {system.build.immutableSelinuxPolicy = lib.mkForce null;}
+    ];
+  };
+  legacyEtcDump = legacySystem.config.system.build.etcDump;
+  legacyEtcImage = legacySystem.config.system.build.etcMetadataImage;
+  labeledSystem = system.extendModules {
+    modules = [
+      {
+        system.build.immutableSelinuxPolicy = lib.mkForce policy;
+        environment.etc."selinux/runtime-prefix-fixture".text = ''
+          runtime-prefix fixture
+        '';
+      }
+    ];
+  };
+  labeledEtcDump = labeledSystem.config.system.build.etcDump;
+  labeledEtcImage = labeledSystem.config.system.build.etcMetadataImage;
+  labeledEtcPlan = labeledSystem.config.system.build.etcSelinuxContextPlan;
 in
   pkgs.mkDerivation {
     pname = "selinux-erofs-labels-check";
@@ -17,6 +42,11 @@ in
       pkgs.erofs-utils
       pkgs.libselinux
       pkgs.python3
+      legacyEtcDump
+      legacyEtcImage
+      labeledEtcDump
+      labeledEtcImage
+      labeledEtcPlan
     ];
     runtimeDeps = [];
     propagatedDeps = [];
@@ -33,6 +63,33 @@ in
           cp ${composefsDumpTest} "$TMPDIR/composefs-test/build-composefs-dump_test.py"
           ${pkgs.python3}/bin/python3 -B \
             "$TMPDIR/composefs-test/build-composefs-dump_test.py"
+
+          # The nullable module input preserves the existing unlabeled image,
+          # while the enabled path labels and verifies its exact /etc inode
+          # inventory before exposing the EROFS output.
+          ${pkgs.composefs}/bin/composefs-info dump ${legacyEtcImage} \
+            > module-legacy-observed.dump
+          if grep -Fq 'security.selinux=' ${legacyEtcDump} \
+            || grep -Fq 'security.selinux=' module-legacy-observed.dump; then
+            echo 'null immutable policy unexpectedly labeled the /etc image' >&2
+            exit 1
+          fi
+
+          grep -F 'security.selinux=' ${labeledEtcDump} >/dev/null
+          ${pkgs.composefs}/bin/composefs-info dump ${labeledEtcImage} \
+            > module-labeled-observed.dump
+          ${pkgs.python3}/bin/python3 -B ${policySupport}/verify_context_dump.py \
+            --dump module-labeled-observed.dump \
+            --expected ${labeledEtcPlan}/context-map.json
+          ${pkgs.python3}/bin/python3 -c '
+          import json, sys
+          document = json.load(open(sys.argv[1], encoding="utf-8"))
+          entries = {entry["path"]: entry for entry in document["entries"]}
+          fixture = entries["/selinux/runtime-prefix-fixture"]
+          assert fixture["kind"] == "symlink", fixture
+          assert fixture["context"].split(":", 3)[2] == "selinux_config_t", fixture
+          assert "/etc/selinux/runtime-prefix-fixture" not in entries, entries
+          ' ${labeledEtcPlan}/context-map.json
 
           root=$TMPDIR/root
           coreutils_store=/nix/store/$(basename ${pkgs.coreutils})
@@ -165,6 +222,8 @@ in
             codec-contexts.json \
             codec-input.dump \
             codec-observed.dump \
+            module-legacy-observed.dump \
+            module-labeled-observed.dump \
             "$out/share/aos/selinux-erofs-labels/"
           printf 'PASS\n' > "$out/result"
         '';

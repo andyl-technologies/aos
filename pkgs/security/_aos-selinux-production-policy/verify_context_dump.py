@@ -6,12 +6,24 @@ import argparse
 import json
 import stat
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 
 class VerificationError(ValueError):
     """Reports a mismatch between an image dump and its label plan."""
+
+
+@dataclass(frozen=True)
+class DumpRecord:
+    """Describes one validated inode record from a composefs dump."""
+
+    path: str
+    kind: str
+    link_count: int
+    payload: bytes
+    selinux_context: bytes | None
 
 
 def unescape_field(field: str) -> bytes:
@@ -70,37 +82,125 @@ def kind_from_dump_mode(field: str) -> str:
         raise VerificationError(f"unsupported dump mode {field!r}") from error
 
 
-def parse_dump(path: Path) -> dict[tuple[str, str], bytes | None]:
-    """Reads every path, inode kind, and SELinux xattr from a dump."""
+def _parse_nonnegative_decimal(field: str, description: str) -> int:
+    """Parses one canonical nonnegative decimal dump field."""
 
-    entries: dict[tuple[str, str], bytes | None] = {}
+    if not field or not field.isascii() or not field.isdecimal():
+        raise VerificationError(f"invalid {description} {field!r}")
+    if len(field) > 1 and field.startswith("0"):
+        raise VerificationError(f"noncanonical {description} {field!r}")
+    return int(field, 10)
+
+
+def _decode_utf8_field(field: str, description: str) -> str:
+    """Decodes one escaped UTF-8 dump field without control characters."""
+
+    try:
+        decoded = unescape_field(field).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise VerificationError(f"non-UTF-8 {description}") from error
+    if "\x00" in decoded or "\n" in decoded or "\r" in decoded:
+        raise VerificationError(f"control character in {description}")
+    return decoded
+
+
+def _validate_image_path(path: str) -> None:
+    """Requires one canonical absolute path in an image namespace."""
+
+    if not path.startswith("/"):
+        raise VerificationError(f"image path is not absolute: {path!r}")
+    if path == "/":
+        return
+    if path != "/" and path.endswith("/"):
+        raise VerificationError(f"image path has a trailing slash: {path!r}")
+    components = path.split("/")[1:]
+    if any(component in {"", ".", ".."} for component in components):
+        raise VerificationError(f"image path is not canonical: {path!r}")
+
+
+def parse_dump_records(path: Path) -> list[DumpRecord]:
+    """Reads and validates every inode record from a composefs dump."""
+
+    records: list[DumpRecord] = []
+    seen_paths: set[str] = set()
     for line_number, raw_line in enumerate(
         path.read_text(encoding="ascii").splitlines(), start=1
     ):
         fields = raw_line.split(" ")
         if len(fields) < 11:
             raise VerificationError(f"line {line_number}: fewer than 11 fields")
-        image_path = unescape_field(fields[0]).decode("utf-8")
+
+        image_path = _decode_utf8_field(fields[0], "image path")
+        _validate_image_path(image_path)
+        _parse_nonnegative_decimal(fields[1], "file size")
         kind = kind_from_dump_mode(fields[2])
+        link_count = _parse_nonnegative_decimal(fields[3], "link count")
+        if link_count == 0:
+            raise VerificationError("link count must be positive")
+        _parse_nonnegative_decimal(fields[4], "uid")
+        _parse_nonnegative_decimal(fields[5], "gid")
+        _parse_nonnegative_decimal(fields[6], "device number")
+        payload = unescape_field(fields[8])
+
         context = None
+        xattr_keys: set[bytes] = set()
         for encoded_xattr in fields[11:]:
             if "=" not in encoded_xattr:
                 raise VerificationError(f"line {line_number}: malformed xattr")
             encoded_key, encoded_value = encoded_xattr.split("=", 1)
             key = unescape_field(encoded_key)
+            if key in xattr_keys:
+                raise VerificationError(
+                    f"line {line_number}: duplicate xattr {key!r}"
+                )
+            xattr_keys.add(key)
             if key != b"security.selinux":
                 continue
-            if context is not None:
-                raise VerificationError(
-                    f"line {line_number}: duplicate security.selinux xattr"
-                )
             context = unescape_field(encoded_value)
 
-        key = (image_path, kind)
-        if key in entries:
-            raise VerificationError(f"duplicate image path and kind: {key}")
-        entries[key] = context
-    return entries
+        if image_path in seen_paths:
+            raise VerificationError(f"duplicate image path: {image_path}")
+        seen_paths.add(image_path)
+        records.append(
+            DumpRecord(
+                path=image_path,
+                kind=kind,
+                link_count=link_count,
+                payload=payload,
+                selinux_context=context,
+            )
+        )
+
+    if not records:
+        raise VerificationError("composefs dump is empty")
+
+    records_by_path = {record.path: record for record in records}
+    root = records_by_path.get("/")
+    if root is None or root.kind != "directory":
+        raise VerificationError("composefs dump has no root directory")
+    for record in records:
+        if record.path == "/":
+            continue
+        parent_path = record.path.rsplit("/", 1)[0] or "/"
+        parent = records_by_path.get(parent_path)
+        if parent is None:
+            raise VerificationError(
+                f"image path has no explicit parent directory: {record.path}"
+            )
+        if parent.kind != "directory":
+            raise VerificationError(
+                f"image path has a non-directory parent: {record.path}"
+            )
+    return records
+
+
+def parse_dump(path: Path) -> dict[tuple[str, str], bytes | None]:
+    """Reads every path, inode kind, and SELinux xattr from a dump."""
+
+    return {
+        (record.path, record.kind): record.selinux_context
+        for record in parse_dump_records(path)
+    }
 
 
 def load_expected(path: Path) -> dict[tuple[str, str], bytes | None]:

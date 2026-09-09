@@ -27,6 +27,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
+from verify_context_dump import VerificationError, parse_dump_records
+
 
 DEFAULT_CONTEXT_TYPES = frozenset({"default_t", "unlabeled_t"})
 GENERIC_CONTEXT_TYPES = frozenset({"bin_t", "lib_t", "usr_t"})
@@ -108,7 +110,7 @@ class InventoryEntry:
     """Describes one inode in an image staging tree."""
 
     path: str
-    source: Path
+    source: Path | None
     mode: int
     kind: InodeKind
     inode_key: tuple[int, int] | None
@@ -391,6 +393,113 @@ def inventory_tree(root: Path) -> list[InventoryEntry]:
     return entries
 
 
+def inventory_composefs_dump(path: Path) -> list[InventoryEntry]:
+    """Returns the exact inode inventory described by a composefs dump.
+
+    Composefs metadata images contain only directories, regular files, and
+    symlinks. Each record must describe its own inode: hard-link identity
+    cannot be reconstructed safely from the text format, so link counts other
+    than one are rejected.
+
+    Raises:
+        OSError: If the dump cannot be read.
+        PlanError: If a record is unsafe or cannot be represented exactly.
+    """
+
+    kind_by_name = {
+        "directory": InodeKind.directory,
+        "regular": InodeKind.regular,
+        "symlink": InodeKind.symlink,
+    }
+    try:
+        records = parse_dump_records(path)
+    except VerificationError as error:
+        raise PlanError(f"invalid composefs dump: {error}") from error
+
+    entries: list[InventoryEntry] = []
+    for index, record in enumerate(records):
+        try:
+            kind = kind_by_name[record.kind]
+        except KeyError as error:
+            raise PlanError(
+                f"unsupported composefs inode kind {record.kind}: {record.path}"
+            ) from error
+        if record.link_count != 1:
+            raise PlanError(
+                f"composefs hard-link identity is ambiguous: {record.path}"
+            )
+        symlink_target = None
+        if kind is InodeKind.symlink:
+            try:
+                symlink_target = record.payload.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise PlanError(
+                    f"non-UTF-8 symlink target for {record.path}"
+                ) from error
+            if any(character in symlink_target for character in "\x00\r\n"):
+                raise PlanError(
+                    f"control character in symlink target for {record.path}"
+                )
+
+        entries.append(
+            InventoryEntry(
+                path=record.path,
+                source=None,
+                mode=kind_mode(kind),
+                kind=kind,
+                inode_key=(0, index),
+                symlink_target=symlink_target,
+            )
+        )
+    return entries
+
+
+def normalize_lookup_prefix(prefix: str) -> str:
+    """Returns one canonical absolute runtime lookup prefix.
+
+    Raises:
+        PlanError: If the prefix is relative, noncanonical, or contains a
+            control character.
+    """
+
+    if any(character in prefix for character in "\x00\r\n"):
+        raise PlanError("lookup prefix contains a control character")
+    if not prefix.startswith("/"):
+        raise PlanError(f"lookup prefix is not absolute: {prefix!r}")
+    if prefix == "/":
+        return prefix
+    if prefix != "/" and prefix.endswith("/"):
+        raise PlanError(f"lookup prefix has a trailing slash: {prefix!r}")
+    components = prefix.split("/")[1:]
+    if any(component in {"", ".", ".."} for component in components):
+        raise PlanError(f"lookup prefix is not canonical: {prefix!r}")
+    return prefix
+
+
+def runtime_lookup_path(image_path: str, lookup_prefix: str) -> str:
+    """Maps an image-internal path to its absolute runtime mount path."""
+
+    prefix = normalize_lookup_prefix(lookup_prefix)
+    if image_path == "/":
+        return prefix
+    if prefix == "/":
+        return image_path
+    return prefix + image_path
+
+
+def _image_path_from_runtime(path: str, lookup_prefix: str) -> str | None:
+    """Maps an absolute runtime path back into an image namespace."""
+
+    prefix = normalize_lookup_prefix(lookup_prefix)
+    if prefix == "/":
+        return path
+    if path == prefix:
+        return "/"
+    if path.startswith(prefix + "/"):
+        return path[len(prefix) :]
+    return None
+
+
 class _SelinuxOption(ctypes.Structure):
     _fields_ = [("type", ctypes.c_int), ("value", ctypes.c_void_p)]
 
@@ -509,13 +618,15 @@ def kind_mode(kind: InodeKind) -> int:
 
 
 def _resolve_symlink_target(
-    entry: InventoryEntry, entries_by_path: Mapping[str, InventoryEntry]
+    entry: InventoryEntry,
+    entries_by_path: Mapping[str, InventoryEntry],
+    lookup_prefix: str = "/",
 ) -> InventoryEntry | None:
     def absolute_components(path: str) -> list[str]:
         if not path.startswith("/"):
             raise PlanError(f"symlink escaped image namespace: {entry.path}")
         components = path.split("/")[1:]
-        if (
+        if lookup_prefix == "/" and (
             components[:2] == ["nix", "store"]
             and "/nix.lower/store" in entries_by_path
         ):
@@ -550,8 +661,13 @@ def _resolve_symlink_target(
             raise PlanError(f"too many symlinks while resolving {entry.path}")
 
         if current.symlink_target.startswith("/"):
+            target_path = _image_path_from_runtime(
+                current.symlink_target, lookup_prefix
+            )
+            if target_path is None:
+                return None
             resolved = []
-            target_components = absolute_components(current.symlink_target)
+            target_components = absolute_components(target_path)
         else:
             target_components = current.symlink_target.split("/")
         pending = [*target_components, *pending]
@@ -584,6 +700,7 @@ def _choose_alias_context(path: str, contexts: Iterable[str]) -> str | None:
 def _alias_targets(
     entries: Sequence[InventoryEntry],
     entries_by_path: Mapping[str, InventoryEntry],
+    lookup_prefix: str,
 ) -> Iterable[tuple[str, InventoryEntry]]:
     """Yields concrete targets for file and directory symlink aliases."""
 
@@ -591,7 +708,7 @@ def _alias_targets(
     for alias in entries:
         if alias.kind is not InodeKind.symlink:
             continue
-        target = _resolve_symlink_target(alias, entries_by_path)
+        target = _resolve_symlink_target(alias, entries_by_path, lookup_prefix)
         if target is None:
             continue
 
@@ -603,7 +720,9 @@ def _alias_targets(
             )
 
         for candidate in candidates:
-            resolved = _resolve_symlink_target(candidate, entries_by_path)
+            resolved = _resolve_symlink_target(
+                candidate, entries_by_path, lookup_prefix
+            )
             if resolved is None:
                 continue
             suffix = candidate.path[len(target.path) :]
@@ -619,6 +738,7 @@ def plan_labels(
     entries: Sequence[InventoryEntry],
     resolver: FileContextResolver,
     dynamic_loaders: Iterable[str] = (),
+    lookup_prefix: str = "/",
 ) -> list[PlannedLabel]:
     """Returns one deterministic, complete label decision per image path.
 
@@ -627,20 +747,31 @@ def plan_labels(
         PlanError: If any label is missing, unsafe, or ambiguous.
     """
 
+    lookup_prefix = normalize_lookup_prefix(lookup_prefix)
     entries_by_path = {entry.path: entry for entry in entries}
+    if len(entries_by_path) != len(entries):
+        raise PlanError("inventory contains duplicate image paths")
     loader_paths = frozenset(dynamic_loaders)
     direct_contexts = {
-        entry.path: resolver.lookup(entry.path, entry.kind) for entry in entries
+        entry.path: resolver.lookup(
+            runtime_lookup_path(entry.path, lookup_prefix), entry.kind
+        )
+        for entry in entries
     }
     alias_contexts: dict[tuple[int, int], list[str]] = {}
 
-    for alias_path, target in _alias_targets(entries, entries_by_path):
+    for alias_path, target in _alias_targets(
+        entries, entries_by_path, lookup_prefix
+    ):
         if target.inode_key is None:
             continue
-        if _store_relative_path(target.path) is None:
+        target_runtime_path = runtime_lookup_path(target.path, lookup_prefix)
+        if _store_relative_path(target_runtime_path) is None:
             continue
 
-        context = resolver.lookup(alias_path, target.kind)
+        context = resolver.lookup(
+            runtime_lookup_path(alias_path, lookup_prefix), target.kind
+        )
         if context is not None:
             alias_contexts.setdefault(target.inode_key, []).append(context)
 
@@ -651,7 +782,12 @@ def plan_labels(
 
     inode_contexts: dict[tuple[int, int], str | None] = {}
     for inode_key, members in inode_members.items():
-        in_store = any(_is_nix_namespace_path(member.path) for member in members)
+        in_store = any(
+            _is_nix_namespace_path(
+                runtime_lookup_path(member.path, lookup_prefix)
+            )
+            for member in members
+        )
         if in_store and members[0].kind not in {
             InodeKind.directory,
             InodeKind.regular,
@@ -668,7 +804,12 @@ def plan_labels(
         selected = _choose_alias_context(members[0].path, candidates)
 
         loader_member = next(
-            (member for member in members if member.path in loader_paths), None
+            (
+                member
+                for member in members
+                if runtime_lookup_path(member.path, lookup_prefix) in loader_paths
+            ),
+            None,
         )
         if loader_member is not None:
             conflicting = [
@@ -689,8 +830,15 @@ def plan_labels(
             if representative.kind is InodeKind.directory:
                 fallback_type = "usr_t"
             elif representative.kind is InodeKind.regular:
+                if representative.source is None:
+                    raise PlanError(
+                        "store regular inode has no authoritative source: "
+                        f"{representative.path}"
+                    )
                 fallback_type = classify_store_regular(
-                    representative.path, representative.source, representative.mode
+                    runtime_lookup_path(representative.path, lookup_prefix),
+                    representative.source,
+                    representative.mode,
                 )
             else:
                 raise PlanError(
@@ -700,8 +848,11 @@ def plan_labels(
             selected = _context_with_type(candidates, fallback_type, representative.path)
 
         if selected is None:
-            paths = {member.path for member in members}
-            if not paths.issubset(EXPLICIT_NO_LABEL_PATHS):
+            runtime_paths = {
+                runtime_lookup_path(member.path, lookup_prefix)
+                for member in members
+            }
+            if not runtime_paths.issubset(EXPLICIT_NO_LABEL_PATHS):
                 raise PlanError(f"no SELinux label for {members[0].path}")
         elif context_type(selected) in DEFAULT_CONTEXT_TYPES:
             raise PlanError(
@@ -715,7 +866,8 @@ def plan_labels(
             selected = inode_contexts[entry.inode_key]
         else:
             selected = direct_contexts[entry.path]
-            if _is_nix_namespace_path(entry.path):
+            entry_runtime_path = runtime_lookup_path(entry.path, lookup_prefix)
+            if _is_nix_namespace_path(entry_runtime_path):
                 if entry.kind is not InodeKind.symlink:
                     raise PlanError(f"untracked store inode: {entry.path}")
                 if selected is None or context_type(selected) in DEFAULT_CONTEXT_TYPES:
@@ -724,7 +876,10 @@ def plan_labels(
                         "usr_t",
                         entry.path,
                     )
-            if selected is None and entry.path not in EXPLICIT_NO_LABEL_PATHS:
+            if (
+                selected is None
+                and entry_runtime_path not in EXPLICIT_NO_LABEL_PATHS
+            ):
                 raise PlanError(f"no SELinux label for {entry.path}")
             if selected is not None and context_type(selected) in DEFAULT_CONTEXT_TYPES:
                 raise PlanError(f"unsafe default SELinux label for {entry.path}: {selected}")
@@ -746,6 +901,7 @@ def write_outputs(
     labels: Sequence[PlannedLabel],
     output_file_contexts: Path,
     output_map: Path,
+    lookup_prefix: str = "/",
 ) -> None:
     """Writes the merged exact file-context database and canonical JSON map."""
 
@@ -761,8 +917,9 @@ def write_outputs(
         for label in ordered_labels:
             if label.context is None:
                 continue
+            lookup_path = runtime_lookup_path(label.path, lookup_prefix)
             output.write(
-                f"{_escape_file_context_path(label.path)}"
+                f"{_escape_file_context_path(lookup_path)}"
                 f"\t{label.kind.file_context_qualifier}\t{label.context}\n"
             )
 
@@ -787,28 +944,44 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     """Parses the standalone planner command line."""
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path, required=True)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--root", type=Path)
+    inputs.add_argument("--composefs-dump", type=Path)
     parser.add_argument("--file-contexts", type=Path, required=True)
     parser.add_argument("--libselinux", type=Path, required=True)
     parser.add_argument("--output-file-contexts", type=Path, required=True)
     parser.add_argument("--output-map", type=Path, required=True)
     parser.add_argument("--dynamic-loader", action="append", default=[])
-    return parser.parse_args(argv)
+    parser.add_argument("--lookup-prefix", default="/")
+    options = parser.parse_args(argv)
+    if options.composefs_dump is not None and options.dynamic_loader:
+        parser.error("--dynamic-loader cannot be used with --composefs-dump")
+    return options
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Builds a complete label plan from a staged image tree."""
 
     options = parse_args(sys.argv[1:] if argv is None else argv)
-    root = options.root.resolve(strict=True)
-    entries = inventory_tree(root)
+    lookup_prefix = normalize_lookup_prefix(options.lookup_prefix)
+    if options.root is not None:
+        root = options.root.resolve(strict=True)
+        entries = inventory_tree(root)
+    else:
+        entries = inventory_composefs_dump(options.composefs_dump)
     with FileContextResolver(options.libselinux, options.file_contexts) as resolver:
-        labels = plan_labels(entries, resolver, options.dynamic_loader)
+        labels = plan_labels(
+            entries,
+            resolver,
+            options.dynamic_loader,
+            lookup_prefix,
+        )
     write_outputs(
         options.file_contexts,
         labels,
         options.output_file_contexts,
         options.output_map,
+        lookup_prefix,
     )
     return 0
 

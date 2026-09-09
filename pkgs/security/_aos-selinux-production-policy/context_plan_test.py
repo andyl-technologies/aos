@@ -315,5 +315,266 @@ class PlanSemanticsTest(unittest.TestCase):
         )
 
 
+class ComposefsPlanningTest(unittest.TestCase):
+    """Covers exact dump inventory and runtime mount-prefix semantics."""
+
+    def write_dump(self, directory: str, contents: str) -> Path:
+        path = Path(directory, "input.dump")
+        path.write_text(contents, encoding="ascii")
+        return path
+
+    def test_runtime_lookup_prefix_preserves_image_map_paths(self) -> None:
+        class Resolver:
+            def __init__(self) -> None:
+                self.paths: list[str] = []
+
+            def lookup(
+                self, path: str, _kind: context_plan.InodeKind
+            ) -> str | None:
+                self.paths.append(path)
+                contexts = {
+                    "/etc": "system_u:object_r:etc_t",
+                    "/etc/sample": "system_u:object_r:selinux_config_t",
+                    "/etc/link": "system_u:object_r:etc_t",
+                    "/etc/store-link": "system_u:object_r:etc_t",
+                }
+                return contexts[path]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            dump = self.write_dump(
+                temporary,
+                "/ 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/link 100 120777 1 0 0 0 1.0 sample - -\n"
+                "/sample 4 100644 1 0 0 0 1.0 sample - -\n"
+                "/store-link 100 120777 1 0 0 0 1.0 "
+                "/nix/store/hash-package/etc/config - -\n",
+            )
+            entries = context_plan.inventory_composefs_dump(dump)
+            resolver = Resolver()
+            labels = context_plan.plan_labels(
+                entries,
+                resolver,
+                lookup_prefix="/etc",
+            )
+
+            self.assertEqual(
+                resolver.paths,
+                ["/etc", "/etc/link", "/etc/sample", "/etc/store-link"],
+            )
+            self.assertEqual(
+                [label.path for label in labels],
+                ["/", "/link", "/sample", "/store-link"],
+            )
+
+            base = Path(temporary, "base-file-contexts")
+            output = Path(temporary, "exact-file-contexts")
+            context_map = Path(temporary, "contexts.json")
+            base.write_text("/base system_u:object_r:etc_t\n", encoding="utf-8")
+            context_plan.write_outputs(
+                base,
+                labels,
+                output,
+                context_map,
+                lookup_prefix="/etc",
+            )
+
+            exact = output.read_text(encoding="utf-8")
+            self.assertIn(
+                "/etc\t-d\tsystem_u:object_r:etc_t\n",
+                exact,
+            )
+            self.assertIn(
+                "/etc/sample\t--\tsystem_u:object_r:selinux_config_t\n",
+                exact,
+            )
+            self.assertNotIn("/etc/etc", exact)
+
+    def test_invalid_lookup_prefixes_are_rejected(self) -> None:
+        for prefix in ("etc", "/etc/", "/etc//lower", "/etc/../var", "/etc/."):
+            with self.subTest(prefix=prefix):
+                with self.assertRaises(context_plan.PlanError):
+                    context_plan.normalize_lookup_prefix(prefix)
+
+    def test_default_lookup_prefix_preserves_image_path(self) -> None:
+        self.assertEqual(context_plan.normalize_lookup_prefix("/"), "/")
+        self.assertEqual(context_plan.runtime_lookup_path("/", "/"), "/")
+        self.assertEqual(
+            context_plan.runtime_lookup_path("/nix/store/package", "/"),
+            "/nix/store/package",
+        )
+
+    def test_composefs_hardlink_identity_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            dump = self.write_dump(
+                temporary,
+                "/ 4096 40755 2 0 0 0 0.0 - - -\n",
+            )
+            with self.assertRaisesRegex(context_plan.PlanError, "hard-link identity"):
+                context_plan.inventory_composefs_dump(dump)
+
+    def test_prefixed_internal_nix_subtree_is_not_store_content(self) -> None:
+        class Resolver:
+            def __init__(self) -> None:
+                self.paths: list[str] = []
+
+            def lookup(
+                self, path: str, _kind: context_plan.InodeKind
+            ) -> str | None:
+                self.paths.append(path)
+                return "system_u:object_r:etc_t"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            dump = self.write_dump(
+                temporary,
+                "/ 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/alias 100 120777 1 0 0 0 1.0 nix/store/config - -\n"
+                "/nix 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/nix/store 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/nix/store/config 4 100644 1 0 0 0 1.0 config - -\n",
+            )
+            resolver = Resolver()
+            labels = context_plan.plan_labels(
+                context_plan.inventory_composefs_dump(dump),
+                resolver,
+                lookup_prefix="/etc",
+            )
+            self.assertEqual(
+                [label.path for label in labels],
+                ["/", "/alias", "/nix", "/nix/store", "/nix/store/config"],
+            )
+            self.assertEqual(
+                resolver.paths,
+                [
+                    "/etc",
+                    "/etc/alias",
+                    "/etc/nix",
+                    "/etc/nix/store",
+                    "/etc/nix/store/config",
+                ],
+            )
+
+    def test_dynamic_loader_authority_uses_runtime_path(self) -> None:
+        class Resolver:
+            def lookup(
+                self, path: str, _kind: context_plan.InodeKind
+            ) -> str | None:
+                if path == "/etc":
+                    return "system_u:object_r:etc_t"
+                return "system_u:object_r:lib_t"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            loader = root / "loader"
+            loader.write_bytes(elf64(context_plan.ET_DYN))
+            loader.chmod(0o755)
+
+            labels = context_plan.plan_labels(
+                context_plan.inventory_tree(root),
+                Resolver(),
+                dynamic_loaders=["/etc/loader"],
+                lookup_prefix="/etc",
+            )
+            contexts = {label.path: label.context for label in labels}
+            self.assertEqual(
+                contexts["/loader"],
+                "system_u:object_r:ld_so_t",
+            )
+
+    def test_prefixed_proc_path_is_not_a_pseudo_filesystem_mountpoint(self) -> None:
+        class Resolver:
+            def lookup(
+                self, path: str, _kind: context_plan.InodeKind
+            ) -> str | None:
+                if path == "/etc":
+                    return "system_u:object_r:etc_t"
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            dump = self.write_dump(
+                temporary,
+                "/ 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/proc 4096 40755 1 0 0 0 0.0 - - -\n",
+            )
+            with self.assertRaisesRegex(context_plan.PlanError, "no SELinux label"):
+                context_plan.plan_labels(
+                    context_plan.inventory_composefs_dump(dump),
+                    Resolver(),
+                    lookup_prefix="/etc",
+                )
+
+    def test_default_prefix_store_regular_requires_authoritative_source(self) -> None:
+        class Resolver:
+            def lookup(
+                self, path: str, _kind: context_plan.InodeKind
+            ) -> str | None:
+                if path == "/":
+                    return "system_u:object_r:root_t"
+                return "system_u:object_r:default_t"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            dump = self.write_dump(
+                temporary,
+                "/ 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/nix 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/nix/store 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/nix/store/program 4 100755 1 0 0 0 1.0 program - -\n",
+            )
+            with self.assertRaisesRegex(
+                context_plan.PlanError, "store regular inode has no authoritative source"
+            ):
+                context_plan.plan_labels(
+                    context_plan.inventory_composefs_dump(dump),
+                    Resolver(),
+                )
+
+    def test_prefixed_absolute_symlink_resolves_inside_runtime_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            dump = self.write_dump(
+                temporary,
+                "/ 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/alias 100 120777 1 0 0 0 1.0 /etc/target - -\n"
+                "/target 4 100644 1 0 0 0 1.0 target - -\n",
+            )
+            entries = context_plan.inventory_composefs_dump(dump)
+            entries_by_path = {entry.path: entry for entry in entries}
+            resolved = context_plan._resolve_symlink_target(
+                entries_by_path["/alias"],
+                entries_by_path,
+                lookup_prefix="/etc",
+            )
+            self.assertIsNotNone(resolved)
+            self.assertEqual(resolved.path, "/target")
+
+    def test_prefixed_absolute_symlink_outside_mount_is_external(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            dump = self.write_dump(
+                temporary,
+                "/ 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/alias 100 120777 1 0 0 0 1.0 /nix/store/config - -\n"
+                "/nix 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/nix/store 4096 40755 1 0 0 0 0.0 - - -\n"
+                "/nix/store/config 4 100644 1 0 0 0 1.0 config - -\n",
+            )
+            entries = context_plan.inventory_composefs_dump(dump)
+            entries_by_path = {entry.path: entry for entry in entries}
+            resolved = context_plan._resolve_symlink_target(
+                entries_by_path["/alias"],
+                entries_by_path,
+                lookup_prefix="/etc",
+            )
+            self.assertIsNone(resolved)
+
+    def test_malformed_dump_escape_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            dump = self.write_dump(
+                temporary,
+                "/ 4096 40755 1 0 0 0 0.0 - - -\n"
+                + r"/bad\xzz 1 100644 1 0 0 0 0.0 - - -"
+                + "\n",
+            )
+            with self.assertRaisesRegex(context_plan.PlanError, "invalid composefs dump"):
+                context_plan.inventory_composefs_dump(dump)
+
+
 if __name__ == "__main__":
     unittest.main()

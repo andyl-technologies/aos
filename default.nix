@@ -1180,7 +1180,10 @@ in {
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
       sandbox-linux-uapi = import ./tests/build/sandbox-linux-uapi.nix {inherit pkgs;};
-      selinux-erofs-labels = import ./tests/build/selinux-erofs-labels.nix {inherit pkgs;};
+      selinux-erofs-labels = import ./tests/build/selinux-erofs-labels.nix {
+        inherit pkgs lib;
+        system = discoverSystems.server;
+      };
       linux-cross-smoke = import ./tests/build/linux-cross-smoke.nix {
         pkgs = buildPackages;
       };
