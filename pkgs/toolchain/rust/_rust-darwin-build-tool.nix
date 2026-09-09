@@ -17,6 +17,7 @@
 }: let
   buildTriple = buildPackages.stdenv.buildPlatform.config;
   hostTriple = hostPlatform.config;
+  hostTripleEnv = builtins.replaceStrings ["-"] ["_"] hostTriple;
 in
   buildPackages.mkDerivation {
     pname = "rust-cross-build-tool-${hostPlatform.system}";
@@ -122,6 +123,11 @@ in
           # platform defaults instead of forwarding that selection.
           unset AOS_HARDENING_ENABLE AOS_HARDENING_DISABLE
 
+          # Rust's remapping does not cover compiler-rt's C profiling runtime.
+          # Remap __FILE__ and debug paths without dropping profiling support.
+          export CFLAGS_${hostTripleEnv}="-ffile-prefix-map=$PWD=/rustc/${version}"
+          export CXXFLAGS_${hostTripleEnv}="-ffile-prefix-map=$PWD=/rustc/${version}"
+
           # local-rebuild permits the matching source-built AOS compiler to
           # produce a stage-0 standard library for another target.  Only the
           # Linux bootstrap and build scripts execute.
@@ -202,6 +208,9 @@ in
 
           if not any(target.glob("libstd-*.rlib")):
               raise SystemExit("Rust artifact manifest lacks the target standard library")
+          for artifact in target.rglob("*"):
+              if artifact.is_file() and b"/build/rustc-${version}-src" in artifact.read_bytes():
+                  raise SystemExit(f"Rust target artifact retains its build root: {artifact}")
           PYTHON
 
           for executable in ${nativeRust}/bin/*; do
