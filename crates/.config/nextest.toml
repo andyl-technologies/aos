@@ -24,6 +24,14 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 filter = 'test(real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_graph)'
 threads-required = "num-test-threads"
 
+# This manifest-admission race intentionally holds one digest claim while a
+# second request polls the bounded finalization window. Isolate the two-request
+# test from unrelated workspace I/O so the application deadline remains the
+# behavior under test.
+[[profile.default.overrides]]
+filter = 'test(manifest_admission_stages_before_validation_and_claims_each_digest_once)'
+threads-required = "num-test-threads"
+
 [profile.ci]
 inherits = "default"
 fail-fast = false
