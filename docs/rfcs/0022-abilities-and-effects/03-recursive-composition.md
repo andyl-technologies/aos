@@ -329,8 +329,9 @@ when recursive implementation expansion or initialization would not be.
 
 Before executing, every required child request must reach an authorized
 implementation or an explicit external deployment obligation. Obligations
-must be discharged at admission. Terminal operations must be recognized by
-the executor or an authenticated, authorized handler. An unknown leaf fails
+must be discharged before execution; planned providers follow the staged
+admission rules in the implementation contract. Terminal operations must be
+recognized by the executor or an authenticated, authorized handler. An unknown leaf fails
 validation; it is not converted into shell execution.
 
 ## Qualification of the authoring API

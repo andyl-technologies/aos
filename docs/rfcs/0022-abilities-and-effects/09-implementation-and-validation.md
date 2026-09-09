@@ -168,6 +168,12 @@ whether a retained target is currently activatable.
 
 ## Qualification matrix
 
+The [completion map](implementation-completeness.md) assigns responsibility
+and evidence to the full feature set and specifies the common end-to-end
+reference fixture. The nginx vertical slice is an early delivery milestone;
+it does not satisfy the later platform, consumption, tooling, and qualification
+requirements on its own.
+
 | Scenario | Required result |
 | --- | --- |
 | Same canonical source and registry inputs | Equivalent normalized bindings and effects |
