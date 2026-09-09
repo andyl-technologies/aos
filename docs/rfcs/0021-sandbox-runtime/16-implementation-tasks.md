@@ -6023,3 +6023,29 @@ compensation, composite Stop integration, renewal, early freeze, Network
 default-drop coupling, and a VM test proving expiry or Guardian death contains
 the payload also remain open. No `SBX-GUARD-01` or end-to-end Host task is
 closed by these slices.
+
+### Qualified fleet firmware-variable stores (harness foundation)
+
+Commit `a0e888953` adds opt-in image-machine firmware-variable seeds and
+exported stores to the fleet schema, validator, harness, and QEMU driver.
+Kernel-boot seeds and exports and unsafe export names fail evaluation. After a
+successful test, export waits for an accepted guest shutdown and natural
+status-zero QEMU exit, then requires a regular non-symlink store of the seed's
+exact size before installing it read-only. Non-export cleanup behavior is
+unchanged.
+
+All 22 focused Python driver tests pass. The final schema derivation
+`/nix/store/qwclvnsrhzr5py4whaf2cavyz4r8gzic-fleet-spec-check-0.drv` passes
+all nine assertions at
+`/nix/store/vp9khjcbdwn3z5mvlfnpyy1al5lpwbx5-fleet-spec-check-0`. Capture-only
+evaluation produced enrollment derivation
+`/nix/store/x8kn05rrlg15zgap8y87lb6hj941cjdm-aos-fleet-test-secure-boot-enrolled-vars-0.drv`
+and strict gate
+`/nix/store/d5dz3jcpb71bpgsann7g9g52kv3g65j6-aos-fleet-test-selinux-stage0-admission-0.drv`;
+the strict manifest depends on that exact enrollment producer.
+
+At this capture-only checkpoint, neither VM output was realized. Firmware
+enrollment, exported-store reproducibility, and the three-machine immutable
+SELinux admission gate therefore remain pending. This harness foundation alone
+qualifies no stage-0 boot or enforcing host-MAC behavior, and `SBX-P0-10`
+remains open.
