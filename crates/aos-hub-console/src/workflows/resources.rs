@@ -948,7 +948,7 @@ fn RegistryInventory(
                 <label class="full-field"><span>"Pinned trust anchors (optional)"</span>
                     <textarea rows="3" spellcheck="false" placeholder="key-name:Ed25519:base64-public-key"
                         prop:value=move || trust_keys.get() on:input=move |event| trust_keys.set(event_target_value(&event))/>
-                    <span class="field-note">"One public key per line in name:Ed25519:base64 format."</span>
+                    <small class="field-note">"One public key per line in name:Ed25519:base64 format."</small>
                 </label>
                 <div class="form-actions"><a class="secondary-button" href=cancel_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
             </form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}
@@ -1257,7 +1257,7 @@ fn RegistryEditor(
                 <textarea rows="4" spellcheck="false" placeholder="key-name:Ed25519:base64-public-key"
                     prop:value=move || trust_keys.get()
                     on:input=move |event| trust_keys.set(event_target_value(&event))/>
-                <span class="field-note">"One public key per line in name:Ed25519:base64 format. Removing a key changes which registry signatures are trusted."</span>
+                <small class="field-note">"One public key per line in name:Ed25519:base64 format. Removing a key changes which registry signatures are trusted."</small>
             </label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form> }.into_any() } else { view! { <p class="muted">"You have read-only access to this registry."</p> }.into_any() }}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</details></div> }
 }
 
