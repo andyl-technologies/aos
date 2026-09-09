@@ -3707,9 +3707,10 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   that campaign owner, replay the accepted attempt once through scoped exact
   capture, authenticate the Ready request/resolution, source attempt, stop,
   configuration, physical closure, and scheduler evidence, and remove the
-  temporary physical closure before returning. They preserve the version-3
-  legacy handle and logical DAG closure, so existing resume and fork readers
-  consume the result without native exact-resume acceleration. Campaign-backed
+  temporary physical closure before returning. They export the version-5
+  handle and version-3 logical DAG closure index described below, so current
+  resume and fork readers consume the result without native exact-resume
+  acceleration. Campaign-backed
   marker saves now use the same exact-capture owner with a named-boundary stop.
   They export a version-5 handle with a campaign-marker-event proof containing
   the retained, canonically recomputable scheduler event and a required,
@@ -3728,9 +3729,14 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   guest Selection schedules authenticate the logical source and replay closure,
   capture and restore the exact source, continue to quiescence, virtual-time, or
   terminal completion, apply replayed guest replies through the live selectable
-  boundary, and replay-validate the descendant checkpoint. Session-owned,
-  remote, interactive, and fork fallbacks reject typed Selection evidence before
-  launch. Historical override/application-randomness resume schedules, typed
+  boundary, and replay-validate the descendant checkpoint. Standard unattended
+  unchanged local-QEMU fork targeting virtual time or stopped completion uses
+  the same continuation owner and projects its source and terminal proof through
+  the fork contract. Its reproduction artifact retains the authenticated replay
+  closure and rematerializes the full schedule through campaign replay.
+  Session-owned, remote, interactive, quiescence/property, reseeded, and
+  overridden fork fallbacks reject typed Selection evidence before launch.
+  Historical override/application-randomness resume schedules, divergent typed
   fork execution, property stops, quiescence and property saves, search, fuzz,
   remaining replay producers, triage, and long-lived session migration remain
   open.

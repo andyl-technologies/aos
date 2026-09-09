@@ -1372,6 +1372,14 @@ branch on the verdict without parsing output:
   the exact saved configuration; the app-random plugin carries exact branch and
   relaunch cursors, and the patched-QEMU white-box gate proves the first
   post-branch guest request comes from cursor zero under the branch seed.
+  Standard unattended local-QEMU forks without reseeding or overrides now use
+  the shared campaign continuation owner for virtual-time and stopped targets.
+  They accept handle- and store-backed typed Selection prefixes only when the
+  v5/v3 portable savepoint evidence authenticates the exact campaign replay
+  closure. The projected fork retains the source checkpoint as its branch point
+  and carries the campaign closure into its child reproduction artifact;
+  divergent, interactive, property, and quiescence recipes stay on the session
+  owner and reject typed evidence before launch.
 - [x] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
@@ -1677,8 +1685,11 @@ branch on the verdict without parsing output:
     only strictly increasing post-branch fault/network choice indices may be
     forced during child execution. Fresh-QEMU replay reconstructs validated
     checkpoint evidence for that retained base and re-enters the resume
-    lifecycle used by the fork producer; treating a fork artifact as a genesis
-    run changes both boundary commands and their acknowledgement transcript.
+    lifecycle used by a session-owned fork producer. A newer unchanged-fork
+    artifact can instead carry an authenticated campaign replay closure. Replay
+    validates its retained branch coordinate and rematerializes the complete
+    schedule through the campaign owner, while legacy, reseeded, and overridden
+    fork artifacts preserve the session path.
     Search recipes also retain the exploration run-ceiling and quantum-budget
     values that bounded the finding.
   - Interactive artifact capture fails closed. A command name without its

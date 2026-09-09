@@ -198,6 +198,7 @@ where
     Ok(())
 }
 
+// crucible-lint: allow rust-allow -- the explicit inputs keep every repository, lineage, terminal-evidence, and source binding visible at resume-proof materialization.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn materialize_resume_proof<E>(
     repository: &Arc<CampaignRepository>,

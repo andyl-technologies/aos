@@ -191,7 +191,7 @@ fn replay_live_qemu_evidence(
         contract.producer.as_str(),
         campaign_replay_closure_bytes,
     ) {
-        ("campaign-run", Some(bytes)) => Some(
+        ("campaign-run" | "fork", Some(bytes)) => Some(
             crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(bytes)
                 .map_err(|error| artifact_error(format!("decode campaign replay closure: {error}")))?,
         ),
@@ -297,7 +297,11 @@ fn replay_live_qemu_evidence(
     let preemption_evidence =
         bounded_scheduler_preemption_evidence_from_env(REPLAY_BOUNDED_SCHEDULER_PREEMPTION_ENV, 1)?
             .and_then(|mut evidence| evidence.pop());
-    let expected_execution_owner = expected_live_qemu_execution_owner(&contract, model.schedule());
+    let expected_execution_owner = expected_live_qemu_execution_owner(
+        &contract,
+        model.schedule(),
+        campaign_replay_closure.is_some(),
+    );
     if preemption_evidence.is_some() && expected_execution_owner == RunExecutionOwner::Campaign {
         return Err(backend_error(
             "bounded scheduler-preemption artifact replay requires a session-owned replay contract",

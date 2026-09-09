@@ -87,9 +87,10 @@ opaque content-addressed replay-closure object. Explicit garbage collection
 traverses both references. Readers continue to accept selection-free v3 session
 handles, v4 campaign-marker handles, and v2 local closure indexes. A typed
 Selection schedule without an authenticated replay closure fails before QEMU or
-session execution; standard non-interactive local-QEMU resume consumes the
-closure through the campaign owner, while session-owned, remote, and fork paths
-reject that schedule before launch.
+session execution. Standard non-interactive local-QEMU resume and unchanged
+forks to a virtual-time or stopped boundary consume the closure through the
+campaign owner. Session-owned and remote paths, including reseeded, overridden,
+interactive, property, or quiescence forks, reject that schedule before launch.
 
 Use:
 

@@ -1515,6 +1515,7 @@ fn default_choice_continuation_stop(
     }
 }
 
+// crucible-lint: allow rust-allow -- the explicit inputs bind the control snapshot, observation, requested stop, capture reason, expected evidence, and optional resume source in one request.
 #[allow(clippy::too_many_arguments)]
 fn request_default_savepoint_capture<S, E>(
     context: &DefaultRunContext<'_, S>,

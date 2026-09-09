@@ -213,11 +213,11 @@ source node's white-box channel. The campaign owner authenticates actual event
 observation while capturing the save; later reads verify the self-contained
 event record and its scenario relationship. Crucible continues to read v3
 handles, and session-owned saves continue to write v3. A campaign-backed save
-currently exports only when its schedule contains delivery-order, random-draw,
-and preemption decisions. A boundary after a typed selection, historical
-override, or application-random decision fails before handle or closure storage
-is written because the portable format does not yet include the authenticated
-records needed to replay it.
+writes a v5 handle and a v3 local closure index. Both retain the
+content-addressed canonical campaign replay closure needed for delivery-order,
+random-draw, preemption, and typed Selection schedules. Historical override or
+application-random decisions still fail before handle or closure storage is
+written because the portable format does not carry their replay authority.
 
 If a selector does not fire before quiescence, Crucible creates no handle and
 returns exit 3. With `--trace <path>`, it still writes the commands and state
@@ -289,7 +289,12 @@ inherits the savepoint's seed and does not generate a second run identity.
 
 Non-interactive fork writes a child `.crucible` artifact below `--artifact-dir`.
 It is currently a local workflow; remote daemon fork is not implemented. An
-unchanged fork records an explicit resume recipe from the retained base.
+unchanged standard local-QEMU fork targeting virtual time or stopped completion
+continues from the retained base through the campaign owner and records its
+authenticated replay closure in the artifact. This route accepts a typed
+Selection schedule when the savepoint carries the matching closure. A reseeded,
+overridden, interactive, property, or quiescence fork remains session-owned;
+typed Selection evidence fails before that path launches.
 Reseeded and override forks record their branch coordinates, and replay forces
 only decisions owned by the post-branch suffix.
 
@@ -302,11 +307,13 @@ crashed, and timed-out sessions retain their normal nonzero outcome exits. Use
 a non-interactive fork when a replayable child artifact is required. The CLI
 does not claim that a partial interactive recipe is replayable.
 
-Replaying any of these fork artifacts reconstructs the retained checkpoint and
-uses the same resume lifecycle as the original fork. The replay therefore
-checks the fork's exact control acknowledgements as well as its terminal
-configuration, event bytes, and terminal fingerprints. A fork artifact is not
-reinterpreted as a new run from genesis.
+Replaying a session-owned fork artifact reconstructs the retained checkpoint
+and uses the same resume lifecycle as the original fork. Replaying an unchanged
+campaign-owned fork authenticates the retained branch coordinate and embedded
+closure, then rematerializes the complete terminal schedule through the campaign
+owner. Both routes compare the terminal configuration, event bytes, and terminal
+fingerprints; session-owned replay additionally checks exact control
+acknowledgements.
 
 A successful live replay reports `validation=passed` separately from
 `reproduced_status` and `reproduced_outcome`. The command exits zero when the

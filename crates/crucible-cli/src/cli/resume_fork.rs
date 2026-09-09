@@ -40,6 +40,22 @@ pub(super) fn run_local_qemu_fork_workflow(
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU fork requires a resolved backend"))?;
     let evidence = fork_handle_evidence(fork_plan)?;
+    if guarded_campaign_fork_eligible(fork_plan, &evidence) {
+        let report = run_local_qemu_campaign_fork_workflow(backend, fork_plan, &evidence)?;
+        let mut outcome = finish_fork_workflow_outcome(
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+            fork_plan,
+            report,
+        )?;
+        append_qemu_control_plane_execution_proof(
+            &mut outcome,
+            backend,
+            "fork-campaign-default-path",
+        );
+        return Ok(outcome);
+    }
     ensure_session_replay_evidence_supported("local QEMU fork", &evidence)?;
     let mut config = production_qemu_lifecycle_config(backend)?;
     let override_decisions = fork_override_decisions(fork_plan);
