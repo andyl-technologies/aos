@@ -81,11 +81,11 @@ use crate::{
     CrucibleAcceleratorDevice, CrucibleShmem9pDevice, CrucibleShmemBlockDevice,
     CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
     LivePluginGuestArchitecture, ProductionFaultActionSink, ProductionFaultRuntime,
-    QemuAsyncDriverPolicy, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostPluginSetupError,
-    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommandBuilder,
-    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
-    QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
+    QemuAsyncDriverPolicy, QemuCrashDetector, QemuFingerprintSamplingMode,
+    QemuGdbstubChannelConfig, QemuHostPluginSetupError, QemuLaunchAppRandomConfig,
+    QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
+    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
+    QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
     QemuNodeRestorePlan, QemuNodeSet, QemuPreparedRunDirectory, QemuQmpChannelConfig,
     QemuQuantumShmemConfig, QemuRootImageFormat, QemuShmemHotPathChannel, QemuShutdownPolicy,
     QemuVmLaunchConfig, QemuVmSnapshot, QemuVmStateBinding, QemuWhiteboxSetupError, QmpError,
@@ -240,6 +240,7 @@ pub struct QemuLiveNodeStepGateConfig {
         Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
+    fingerprint_mode: QemuFingerprintSamplingMode,
     shmem_network_mac: Option<String>,
     boot_network_backpressure_capture: Option<QemuLiveNodeStepNetworkCapture>,
     shmem_block: Option<QemuLiveNodeStepBlockConfig>,
@@ -372,6 +373,7 @@ impl QemuLiveNodeStepGateConfig {
             selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
+            fingerprint_mode: QemuFingerprintSamplingMode::EveryQuantum,
             shmem_network_mac: None,
             boot_network_backpressure_capture: None,
             shmem_block: None,
@@ -430,6 +432,7 @@ impl QemuLiveNodeStepGateConfig {
             selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
+            fingerprint_mode: QemuFingerprintSamplingMode::EveryQuantum,
             shmem_network_mac: None,
             boot_network_backpressure_capture: None,
             shmem_block: None,
@@ -584,6 +587,19 @@ impl QemuLiveNodeStepGateConfig {
     pub const fn with_fingerprint(mut self, fingerprint: QemuLaunchPluginSwitch) -> Self {
         self.fingerprint = fingerprint;
         self
+    }
+
+    /// Returns this configuration with the launch-bound fingerprint capture mode.
+    #[must_use]
+    pub const fn with_fingerprint_mode(mut self, mode: QemuFingerprintSamplingMode) -> Self {
+        self.fingerprint_mode = mode;
+        self
+    }
+
+    /// Returns the immutable fingerprint capture mode for this launch profile.
+    #[must_use]
+    pub const fn fingerprint_mode(&self) -> QemuFingerprintSamplingMode {
+        self.fingerprint_mode
     }
 
     /// Returns this configuration with a hostless shared-memory NIC.
@@ -2236,6 +2252,7 @@ fn build_live_node_with_authority(
             setup.region().region_len,
             GATE_SLOT,
         )
+        .map(|runtime| runtime.with_fingerprint_sampling_mode(config.fingerprint_mode))
         .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })
     );
     let mut runtime = match (console_observation, console_spool.as_ref()) {

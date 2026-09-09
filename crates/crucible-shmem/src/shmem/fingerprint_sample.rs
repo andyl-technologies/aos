@@ -17,7 +17,7 @@
 //! ```text
 //! offset  size  field
 //! 0       4     sample_gen (even = stable, odd = writing)
-//! 4       4     reserved (zero)
+//! 4       4     capture_request (even = acknowledged, odd = requested)
 //! 8       W*8   payload words (little-endian u64)
 //! ```
 //!
@@ -182,16 +182,19 @@ impl FingerprintSample {
 #[repr(C, align(128))]
 pub struct FingerprintSampleSlot {
     sample_gen: AtomicU32,
-    _reserved: u32,
+    capture_request: AtomicU32,
     words: [AtomicU64; FINGERPRINT_SAMPLE_WORDS],
 }
 
 /// Byte offset of [`FingerprintSampleSlot`]'s generation seqlock.
 pub const FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET: usize =
     core::mem::offset_of!(FingerprintSampleSlot, sample_gen);
-/// Byte offset of [`FingerprintSampleSlot`]'s reserved word.
+/// Byte offset of [`FingerprintSampleSlot`]'s v1 capture request/acknowledgement word.
+pub const FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET: usize =
+    core::mem::offset_of!(FingerprintSampleSlot, capture_request);
+/// Compatibility alias for the offset formerly documented as reserved.
 pub const FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET: usize =
-    core::mem::offset_of!(FingerprintSampleSlot, _reserved);
+    FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET;
 /// Byte offset of [`FingerprintSampleSlot`]'s payload words.
 pub const FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET: usize =
     core::mem::offset_of!(FingerprintSampleSlot, words);
@@ -201,7 +204,7 @@ pub const FINGERPRINT_SAMPLE_SLOT_SIZE: usize = core::mem::size_of::<Fingerprint
 pub const FINGERPRINT_SAMPLE_SLOT_ALIGN: usize = core::mem::align_of::<FingerprintSampleSlot>();
 
 const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET == 0);
-const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET == 4);
+const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET == 4);
 const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET == 8);
 const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_ALIGN == 128);
 
@@ -217,7 +220,7 @@ impl FingerprintSampleSlot {
     pub const fn new() -> Self {
         Self {
             sample_gen: AtomicU32::new(0),
-            _reserved: 0,
+            capture_request: AtomicU32::new(0),
             words: [const { AtomicU64::new(0) }; FINGERPRINT_SAMPLE_WORDS],
         }
     }
@@ -226,6 +229,59 @@ impl FingerprintSampleSlot {
     #[must_use]
     pub fn published_generation(&self) -> u32 {
         self.sample_gen.load(Ordering::Acquire)
+    }
+
+    /// Requests one exact sample publication and returns its odd generation.
+    ///
+    /// Repeated requests coalesce while the current request remains pending.
+    #[must_use]
+    pub fn request_capture_v1(&self) -> u32 {
+        loop {
+            let observed = self.capture_request.load(Ordering::Acquire);
+            if observed & 1 == 1 {
+                return observed;
+            }
+            let request = observed.wrapping_add(1);
+            if self
+                .capture_request
+                .compare_exchange(observed, request, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return request;
+            }
+        }
+    }
+
+    /// Returns whether an exact sample publication is currently requested.
+    #[must_use]
+    pub fn pending_capture_request_v1(&self) -> Option<u32> {
+        let request = self.capture_request.load(Ordering::Acquire);
+        (request & 1 == 1).then_some(request)
+    }
+
+    /// Acknowledges the current exact sample request after publication.
+    ///
+    /// Returns `true` only when `request` is odd and the compare-and-exchange
+    /// advances that exact current request to its wrapping even
+    /// acknowledgement. Returns `false` for an even or superseded request.
+    #[must_use]
+    pub fn acknowledge_capture_v1(&self, request: u32) -> bool {
+        request & 1 == 1
+            && self
+                .capture_request
+                .compare_exchange(
+                    request,
+                    request.wrapping_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+    }
+
+    /// Returns the request/acknowledgement generation.
+    #[must_use]
+    pub fn capture_request_generation(&self) -> u32 {
+        self.capture_request.load(Ordering::Acquire)
     }
 
     /// Publishes `sample` into the slot under the generation seqlock.
@@ -403,7 +459,32 @@ mod tests {
     fn unpublished_slot_snapshots_to_none() {
         let slot = FingerprintSampleSlot::new();
         assert_eq!(slot.published_generation(), 0);
+        assert_eq!(slot.capture_request_generation(), 0);
         assert_eq!(slot.snapshot(), None);
+    }
+
+    #[test]
+    fn capture_request_is_odd_until_acknowledged() {
+        let slot = FingerprintSampleSlot::new();
+
+        assert_eq!(slot.request_capture_v1(), 1);
+        assert_eq!(slot.request_capture_v1(), 1);
+        assert_eq!(slot.pending_capture_request_v1(), Some(1));
+        assert!(!slot.acknowledge_capture_v1(3));
+        assert!(slot.acknowledge_capture_v1(1));
+        assert_eq!(slot.pending_capture_request_v1(), None);
+        assert_eq!(slot.request_capture_v1(), 3);
+    }
+
+    #[test]
+    fn capture_request_wraps_without_acknowledging_a_different_token() {
+        let slot = FingerprintSampleSlot::new();
+        slot.capture_request.store(u32::MAX, Ordering::Release);
+
+        assert!(!slot.acknowledge_capture_v1(u32::MAX - 2));
+        assert!(slot.acknowledge_capture_v1(u32::MAX));
+        assert_eq!(slot.capture_request_generation(), 0);
+        assert_eq!(slot.request_capture_v1(), 1);
     }
 
     #[test]

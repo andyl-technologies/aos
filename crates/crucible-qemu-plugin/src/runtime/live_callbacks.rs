@@ -314,6 +314,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 args.process_generation(),
                 capabilities.fault_commands,
                 fingerprint,
+                args.fingerprint_mode(),
                 args.fingerprint_oracle().is_on(),
                 state_dump,
             )
@@ -528,6 +529,7 @@ impl StableFingerprintSlotHandle {
 /// per-node [`FingerprintSampleSlot`].
 struct LiveFingerprintCallbackState {
     sampling: PluginFingerprintSampling,
+    mode: crate::PluginFingerprintSamplingMode,
     slot: StableFingerprintSlotHandle,
     worker: LiveFingerprintDigestWorker,
     last_capture_icount: AtomicU64,
@@ -888,6 +890,7 @@ impl LiveVcpuTimeCallbackState {
         mut self,
         sampling: PluginFingerprintSampling,
         slot: &FingerprintSampleSlot,
+        mode: crate::PluginFingerprintSamplingMode,
         synchronous_oracle: bool,
         worker_quiescence: Arc<LiveWorkerQuiescence>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
@@ -895,6 +898,7 @@ impl LiveVcpuTimeCallbackState {
         let worker = LiveFingerprintDigestWorker::spawn(slot, worker_quiescence)?;
         self.fingerprint = Some(LiveFingerprintCallbackState {
             sampling,
+            mode,
             slot,
             worker,
             last_capture_icount: AtomicU64::new(0),
@@ -956,6 +960,7 @@ impl LiveVcpuTimeCallbackState {
         wait_for_publication: bool,
         cross_vcpu_quiesced: bool,
         boundary: &'static str,
+        capture_request: Option<u32>,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         let Some(fingerprint) = self.fingerprint.as_ref() else {
             return Ok(());
@@ -967,7 +972,8 @@ impl LiveVcpuTimeCallbackState {
             // sample until the host requests a BQL-held control boundary.
             return Ok(());
         }
-        if fingerprint.capture_submitted.load(Ordering::Acquire)
+        if capture_request.is_none()
+            && fingerprint.capture_submitted.load(Ordering::Acquire)
             && fingerprint.last_capture_icount.load(Ordering::Acquire) == icount
         {
             return Ok(());
@@ -991,6 +997,16 @@ impl LiveVcpuTimeCallbackState {
                     message: source.to_string(),
                 }
             })?;
+        }
+        if let Some(request) = capture_request
+            && !fingerprint.slot.get().acknowledge_capture_v1(request)
+        {
+            return Err(
+                LiveVcpuTimeCallbackError::FingerprintCaptureRequestChanged {
+                    request,
+                    observed: fingerprint.slot.get().capture_request_generation(),
+                },
+            );
         }
         Ok(())
     }
@@ -1211,7 +1227,7 @@ impl LiveVcpuTimeCallbackState {
         raw_icount: u64,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         self.require_initialized_vcpu(vcpu_index)?;
-        if self.publish_pause_for_boundary(raw_icount, true, false, false, "vcpu-resume")? {
+        if self.publish_pause_for_boundary(raw_icount, true, false, false, None, "vcpu-resume")? {
             return Ok(());
         }
         if PluginShmemOrdering::control_boundary_is_requested(self.slot.get()) {
@@ -1261,12 +1277,26 @@ impl LiveVcpuTimeCallbackState {
         // idle/resume callbacks.
         let boundary_requested =
             PluginShmemOrdering::control_boundary_is_requested(self.slot.get());
+        let fingerprint_capture_request = boundary_requested
+            .then(|| {
+                self.fingerprint
+                    .as_ref()
+                    .and_then(|fingerprint| fingerprint.slot.get().pending_capture_request_v1())
+            })
+            .flatten();
+        let fingerprint_due = boundary_requested
+            && self.fingerprint.as_ref().is_some_and(|fingerprint| {
+                control_boundary_fingerprint_is_due(
+                    fingerprint.mode,
+                    fingerprint_capture_request.is_some(),
+                )
+            });
         // Fault-result polling uses this same control wake. Apply every command
         // first so a same-icount fingerprint captures the committed state, not
         // the pre-mutation state that happened to share its coordinate. The
         // pump's reentrancy guard keeps nested max-advance queries inert.
         let fault_pump_drained = self.pump_fault_commands(raw_icount)?;
-        if boundary_requested && let Some(fingerprint) = self.fingerprint.as_ref() {
+        if fingerprint_due && let Some(fingerprint) = self.fingerprint.as_ref() {
             // A checkpoint control wake can revisit an icount already sampled
             // by the preceding scheduler quantum. Replace that sample with the
             // exact stopped-state capture before acknowledging the boundary.
@@ -1274,11 +1304,17 @@ impl LiveVcpuTimeCallbackState {
                 .capture_submitted
                 .store(false, Ordering::Release);
         }
-        let paused =
-            self.publish_pause_for_boundary(raw_icount, true, true, true, "control-boundary")?;
+        let paused = self.publish_pause_for_boundary(
+            raw_icount,
+            true,
+            true,
+            true,
+            fingerprint_capture_request,
+            "control-boundary",
+        )?;
         if !paused {
             let current_icount = self.logical_icount_for_raw(raw_icount)?;
-            if boundary_requested {
+            if fingerprint_due {
                 // The main-loop callback holds the BQL after every vCPU has
                 // quiesced, making cross-vCPU register capture safe even when
                 // the serialized RR owner is intentionally absent at idle.
@@ -1287,6 +1323,7 @@ impl LiveVcpuTimeCallbackState {
                     true,
                     true,
                     "requested-control-boundary",
+                    fingerprint_capture_request,
                 )?;
             }
             PluginShmemOrdering::publish_control_boundary(
@@ -1333,6 +1370,7 @@ impl LiveVcpuTimeCallbackState {
             checkpoint_handoff,
             false,
             false,
+            None,
             boundary,
         )? {
             return Ok(());
@@ -1380,8 +1418,17 @@ impl LiveVcpuTimeCallbackState {
         // how many intermediate progress publishes the busy advance emitted, so
         // the guest-RAM SHA-256 runs once per host-read boundary rather than on
         // every publish.
-        if sample_exact_ceiling && current_icount == ceiling_icount {
-            self.publish_fingerprint_sample(current_icount, false, false, boundary)?;
+        let fingerprint_mode = self
+            .fingerprint
+            .as_ref()
+            .map(|fingerprint| fingerprint.mode);
+        if exact_ceiling_fingerprint_is_due(
+            fingerprint_mode,
+            sample_exact_ceiling,
+            current_icount,
+            ceiling_icount,
+        ) {
+            self.publish_fingerprint_sample(current_icount, false, false, boundary, None)?;
         }
         PluginShmemOrdering::publish_reached_icount(
             self.slot.get(),
@@ -1405,7 +1452,14 @@ impl LiveVcpuTimeCallbackState {
         &self,
         raw_icount: u64,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
-        self.publish_pause_for_boundary(raw_icount, true, false, false, "progress-publication")
+        self.publish_pause_for_boundary(
+            raw_icount,
+            true,
+            false,
+            false,
+            None,
+            "progress-publication",
+        )
     }
 
     fn publish_pause_for_boundary(
@@ -1414,6 +1468,7 @@ impl LiveVcpuTimeCallbackState {
         checkpoint_handoff: bool,
         wait_for_fingerprint_publication: bool,
         control_boundary_dispatch: bool,
+        fingerprint_capture_request: Option<u32>,
         boundary: &'static str,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
         self.restore_logical_time_if_requested(raw_icount, true)?;
@@ -1452,12 +1507,20 @@ impl LiveVcpuTimeCallbackState {
                         ceiling_icount,
                     });
                 }
-                if current_icount == ceiling_icount {
+                let fingerprint_due = self.fingerprint.as_ref().is_some_and(|fingerprint| {
+                    paused_boundary_fingerprint_is_due(
+                        fingerprint.mode,
+                        current_icount == ceiling_icount,
+                        fingerprint_capture_request.is_some(),
+                    )
+                });
+                if fingerprint_due {
                     self.publish_fingerprint_sample(
                         current_icount,
                         wait_for_fingerprint_publication,
                         control_boundary_dispatch,
                         boundary,
+                        fingerprint_capture_request,
                     )?;
                 }
                 PluginShmemOrdering::publish_pause_quiesced(
@@ -2021,7 +2084,7 @@ impl LiveVcpuTimeCallbackState {
             }
             let raw_icount = (self.icount_raw)();
             let _pause_observed =
-                self.publish_pause_for_boundary(raw_icount, true, true, false, boundary)?;
+                self.publish_pause_for_boundary(raw_icount, true, true, false, None, boundary)?;
         }
         Ok(())
     }
@@ -2108,7 +2171,7 @@ impl LiveVcpuTimeCallbackState {
     /// patch.
     fn max_advance_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
         let raw_icount = (self.icount_raw)();
-        if self.publish_pause_for_boundary(raw_icount, true, false, false, "max-advance")? {
+        if self.publish_pause_for_boundary(raw_icount, true, false, false, None, "max-advance")? {
             return Ok(raw_icount);
         }
         let _fault_pump_drained = self.pump_fault_commands(raw_icount)?;
@@ -2246,6 +2309,34 @@ impl LiveVcpuTimeCallbackState {
             Err(LiveVcpuTimeCallbackError::VcpuNotInitialized { vcpu_index })
         }
     }
+}
+
+fn exact_ceiling_fingerprint_is_due(
+    mode: Option<crate::PluginFingerprintSamplingMode>,
+    boundary_allows_sample: bool,
+    current_icount: u64,
+    ceiling_icount: u64,
+) -> bool {
+    boundary_allows_sample
+        && mode == Some(crate::PluginFingerprintSamplingMode::EveryQuantum)
+        && current_icount == ceiling_icount
+}
+
+fn control_boundary_fingerprint_is_due(
+    mode: crate::PluginFingerprintSamplingMode,
+    explicit_capture_requested: bool,
+) -> bool {
+    mode == crate::PluginFingerprintSamplingMode::EveryQuantum || explicit_capture_requested
+}
+
+fn paused_boundary_fingerprint_is_due(
+    mode: crate::PluginFingerprintSamplingMode,
+    current_is_scheduler_ceiling: bool,
+    explicit_capture_requested: bool,
+) -> bool {
+    explicit_capture_requested
+        || (mode == crate::PluginFingerprintSamplingMode::EveryQuantum
+            && current_is_scheduler_ceiling)
 }
 
 fn raw_icount_publication_is_superseded(

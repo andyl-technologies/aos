@@ -56,6 +56,8 @@ pub const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
 pub const PLUGIN_ARG_COVERAGE: &str = "coverage";
 /// The optional single-VM fingerprint sampling switch argument key.
 pub const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
+/// The optional fingerprint capture-mode argument key.
+pub const PLUGIN_ARG_FINGERPRINT_MODE: &str = "fingerprint_mode";
 /// The optional gate-only synchronous fingerprint-oracle switch argument key.
 pub const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
 /// Parsed QEMU plugin launch arguments.
@@ -73,6 +75,7 @@ pub struct PluginArgs {
     app_random: Option<PluginAppRandomConfig>,
     coverage: PluginSwitch,
     fingerprint: PluginSwitch,
+    fingerprint_mode: PluginFingerprintSamplingMode,
     fingerprint_oracle: PluginSwitch,
     state_dump: Option<PluginStateDumpConfig>,
 }
@@ -100,11 +103,18 @@ impl PluginArgs {
         let app_random = app_random::parse(&parsed, whitebox)?;
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
+        let fingerprint_mode = parse_optional_fingerprint_mode(&parsed)?;
+        if fingerprint_mode == PluginFingerprintSamplingMode::OnDemand && !fingerprint.is_on() {
+            return Err(PluginArgsParseError::FingerprintModeWithoutFingerprint);
+        }
         let fingerprint_oracle = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT_ORACLE)?;
         if fingerprint_oracle.is_on() && !fingerprint.is_on() {
             return Err(PluginArgsParseError::FingerprintOracleWithoutFingerprint);
         }
         let state_dump = state_dump::parse(&parsed, fingerprint)?;
+        if fingerprint_mode == PluginFingerprintSamplingMode::OnDemand && state_dump.is_some() {
+            return Err(PluginArgsParseError::StateDumpWithOnDemandFingerprint);
+        }
         let inherited_fds = parse_inherited_fds(&parsed)?;
 
         Ok(Self {
@@ -120,6 +130,7 @@ impl PluginArgs {
             app_random,
             coverage,
             fingerprint,
+            fingerprint_mode,
             fingerprint_oracle,
             state_dump,
         })
@@ -197,6 +208,12 @@ impl PluginArgs {
         self.fingerprint
     }
 
+    /// Returns the immutable fingerprint capture mode for this process.
+    #[must_use]
+    pub const fn fingerprint_mode(&self) -> PluginFingerprintSamplingMode {
+        self.fingerprint_mode
+    }
+
     /// Returns whether gate-only synchronous fingerprint comparison is enabled.
     #[must_use]
     pub const fn fingerprint_oracle(&self) -> PluginSwitch {
@@ -255,6 +272,16 @@ impl PluginSwitch {
     pub const fn is_on(self) -> bool {
         matches!(self, Self::On)
     }
+}
+
+/// Controls when an enabled sampler captures exact guest state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PluginFingerprintSamplingMode {
+    /// Captures at every exact scheduler quantum and explicit control boundary.
+    #[default]
+    EveryQuantum,
+    /// Captures only at an explicitly requested control boundary.
+    OnDemand,
 }
 
 /// An error produced while parsing QEMU plugin launch arguments.
@@ -367,6 +394,18 @@ pub enum PluginArgsParseError {
     /// The synchronous oracle was requested without fingerprint boundary sampling.
     #[error("plugin fingerprint oracle requires `fingerprint=on`")]
     FingerprintOracleWithoutFingerprint,
+    /// A non-default fingerprint mode was requested without fingerprint sampling.
+    #[error("plugin fingerprint capture mode requires `fingerprint=on`")]
+    FingerprintModeWithoutFingerprint,
+    /// A terminal state dump depends on automatic exact-ceiling sampling.
+    #[error("plugin terminal state dump is incompatible with on-demand fingerprint mode")]
+    StateDumpWithOnDemandFingerprint,
+    /// The fingerprint capture mode was not a supported canonical value.
+    #[error("plugin fingerprint mode is invalid: `{value}`")]
+    InvalidFingerprintMode {
+        /// Rejected mode text.
+        value: String,
+    },
     /// The terminal state-dump target was not a nonzero instruction count.
     #[error("plugin state-dump target is invalid: `{value}`")]
     InvalidStateDumpTarget {
@@ -553,6 +592,18 @@ fn parse_optional_switch(
     }
 }
 
+fn parse_optional_fingerprint_mode(
+    parsed: &ParsedPluginArgs<'_>,
+) -> Result<PluginFingerprintSamplingMode, PluginArgsParseError> {
+    match parsed.value(PLUGIN_ARG_FINGERPRINT_MODE) {
+        Some("every-quantum") | None => Ok(PluginFingerprintSamplingMode::EveryQuantum),
+        Some("on-demand-v1") => Ok(PluginFingerprintSamplingMode::OnDemand),
+        Some(value) => Err(PluginArgsParseError::InvalidFingerprintMode {
+            value: value.to_owned(),
+        }),
+    }
+}
+
 fn parse_inherited_fds(
     parsed: &ParsedPluginArgs<'_>,
 ) -> Result<Option<PluginInheritedFds>, PluginArgsParseError> {
@@ -582,6 +633,7 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_WHITEBOX_SETUP
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
+            | PLUGIN_ARG_FINGERPRINT_MODE
             | PLUGIN_ARG_FINGERPRINT_ORACLE
     ) || app_random::is_key(key)
         || resource_limits::is_key(key)

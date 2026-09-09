@@ -72,6 +72,9 @@ pub enum QemuLaunchCommandError {
         "terminal state dump requires fingerprint mode, a nonzero target, and an absolute comma-free path"
     )]
     InvalidStateDumpConfiguration,
+    /// A non-default fingerprint capture mode was configured without sampling.
+    #[error("QEMU fingerprint capture mode requires fingerprint sampling")]
+    FingerprintModeWithoutFingerprint,
     /// A translation-prefetch experiment lacked a safe absolute report path.
     #[error("translation-prefetch report path must be absolute and comma-free")]
     InvalidTranslationPrefetchReportPath,

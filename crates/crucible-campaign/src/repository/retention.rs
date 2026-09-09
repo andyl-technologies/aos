@@ -173,7 +173,12 @@ impl CampaignRepository {
                 let fact_id = CampaignFactId::from_content_id(*fact_content)?;
                 let request = match self.read_fact(*fact_content)? {
                     CampaignFact::PinCommandAccepted(request) => request,
-                    _ => return Err(integrity("pin-retention-value-is-not-pin-command")),
+                    CampaignFact::SavepointCaptureRequested(capture) => PinRequest {
+                        command: capture.command,
+                        expected_snapshot: capture.expected_snapshot,
+                        change: capture.pin_change()?,
+                    },
+                    _ => return Err(integrity("pin-retention-value-is-not-retention-command")),
                 };
                 if *key != pin_configuration_key(request.change.configuration()) {
                     return Err(integrity("pin-retention-key-mismatch"));

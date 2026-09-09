@@ -23,9 +23,49 @@ fn plugin_args_parse_required_simfd_and_slot() {
     assert_eq!(args.app_random(), None);
     assert_eq!(args.coverage(), PluginSwitch::Off);
     assert_eq!(args.fingerprint(), PluginSwitch::Off);
+    assert_eq!(
+        args.fingerprint_mode(),
+        PluginFingerprintSamplingMode::EveryQuantum
+    );
     assert_eq!(args.fingerprint_oracle(), PluginSwitch::Off);
     assert_eq!(args.state_dump(), None);
     assert_eq!(args.validate_slot_index(3), Ok(()));
+}
+
+#[test]
+fn plugin_args_parse_on_demand_fingerprint_mode() {
+    let args = PluginArgs::parse(
+        "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,fingerprint=on,fingerprint_mode=on-demand-v1",
+    )
+    .unwrap_or_else(|error| panic!("on-demand fingerprint args should parse: {error}"));
+
+    assert_eq!(
+        args.fingerprint_mode(),
+        PluginFingerprintSamplingMode::OnDemand
+    );
+}
+
+#[test]
+fn plugin_args_reject_invalid_on_demand_fingerprint_combinations() {
+    let prefix = "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576";
+    assert_eq!(
+        PluginArgs::parse(&format!("{prefix},fingerprint_mode=on-demand-v1")),
+        Err(PluginArgsParseError::FingerprintModeWithoutFingerprint)
+    );
+    assert_eq!(
+        PluginArgs::parse(&format!(
+            "{prefix},fingerprint=on,fingerprint_mode=periodic"
+        )),
+        Err(PluginArgsParseError::InvalidFingerprintMode {
+            value: String::from("periodic"),
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(&format!(
+            "{prefix},fingerprint=on,fingerprint_mode=on-demand-v1,state_dump_target=1,state_dump_path=/tmp/dump.bin"
+        )),
+        Err(PluginArgsParseError::StateDumpWithOnDemandFingerprint)
+    );
 }
 
 #[test]

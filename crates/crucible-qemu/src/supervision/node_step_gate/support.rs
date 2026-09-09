@@ -414,6 +414,7 @@ fn live_node_plugin_base(config: &QemuLiveNodeStepGateConfig) -> QemuLaunchPlugi
         )
         .with_coverage(config.coverage)
         .with_fingerprint(config.fingerprint)
+        .with_fingerprint_mode(config.fingerprint_mode)
 }
 
 /// Returns a shutdown policy with real bounded waits for a gate teardown.

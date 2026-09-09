@@ -100,6 +100,36 @@ fn coverage_switch_reaches_plugin_and_host_drain_configuration() {
 }
 
 #[test]
+fn on_demand_fingerprint_mode_reaches_relaunch_plugin_arguments() {
+    let config = QemuLiveNodeStepGateConfig::new_with_root_image(
+        "/aos/bin/qemu-system-x86_64",
+        "/aos/lib/crucible-plugin.so",
+        "/aos/kernel",
+        "/aos/root.raw",
+        "/run/crucible/generation-1",
+    )
+    .with_fingerprint(QemuLaunchPluginSwitch::On)
+    .with_fingerprint_mode(QemuFingerprintSamplingMode::OnDemand);
+    let relaunched = config
+        .clone()
+        .with_run_directory("/run/crucible/generation-2");
+
+    assert_eq!(
+        relaunched.fingerprint_mode(),
+        QemuFingerprintSamplingMode::OnDemand
+    );
+    assert_eq!(
+        live_node_plugin_base(&relaunched).fingerprint_mode(),
+        QemuFingerprintSamplingMode::OnDemand
+    );
+    assert!(
+        live_node_plugin_base(&relaunched)
+            .plugin_args_raw()
+            .contains("fingerprint_mode=on-demand-v1")
+    );
+}
+
+#[test]
 fn selectable_catalog_plan_reaches_the_launch_bound_plugin_setup_plan() {
     use crucible_protocol::selectable_catalog_plan::{
         SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,

@@ -316,6 +316,26 @@ pub struct PluginFingerprintSampling {
 }
 
 impl PluginFingerprintSampling {
+    /// Binds deterministic exports for callback integration tests.
+    #[cfg(test)]
+    pub(crate) const fn from_test_exports(
+        introspector: PluginVcpuIntrospector,
+        digester: PluginFingerprintDigester,
+        capture: QemuFingerprintCaptureFn,
+        sha256_bytes: QemuSha256BytesFn,
+        free: QemuFingerprintCaptureFreeFn,
+    ) -> Self {
+        Self {
+            introspector,
+            digester,
+            capture: PluginFingerprintCaptureExports {
+                capture,
+                sha256_bytes,
+                free,
+            },
+        }
+    }
+
     /// Resolves the complete fingerprint sampling capability from loaded QEMU.
     ///
     /// Returns `None` (fail closed) when any register, RR-cursor, or digest

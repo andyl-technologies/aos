@@ -143,6 +143,7 @@
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_SIZE 640u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_ALIGN 128u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET 0u
+#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET 4u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET 4u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET 8u
 
@@ -320,14 +321,14 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, reserved) =
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_fingerprint_sample_slot {
     _Atomic uint32_t sample_gen;
-    uint32_t reserved;
+    _Atomic uint32_t capture_request;
     _Atomic uint64_t words[CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_WORDS];
 } crucible_shmem_fingerprint_sample_slot;
 
 CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_fingerprint_sample_slot) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_SIZE, "crucible_shmem_fingerprint_sample_slot size");
 CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_fingerprint_sample_slot) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_ALIGN, "crucible_shmem_fingerprint_sample_slot alignment");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, sample_gen) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET, "crucible_shmem_fingerprint_sample_slot.sample_gen offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, reserved) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET, "crucible_shmem_fingerprint_sample_slot.reserved offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, capture_request) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET, "crucible_shmem_fingerprint_sample_slot.capture_request offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, words) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET, "crucible_shmem_fingerprint_sample_slot.words offset");
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_shmem_whitebox_marker_entry {

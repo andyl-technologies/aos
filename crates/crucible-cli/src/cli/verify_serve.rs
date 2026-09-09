@@ -1157,7 +1157,7 @@ where
         ) {
             config = config.with_rendezvous_interval_icount(interval);
         }
-        Some(config.with_debug_gdbstubs_for_all_nodes("127.0.0.1:0"))
+        Some(config)
     } else {
         None
     };
@@ -1193,9 +1193,10 @@ where
         LifecycleServerMode::read_write()
     };
     if args.production_qemu {
-        let config = production_config
+        let campaign_config = production_config
             .take()
             .ok_or_else(|| serve_error("production QEMU configuration disappeared"))?;
+        let config = production_session_lifecycle_config(campaign_config, &debug_authorization);
         let resume_config = config.clone();
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
@@ -1250,6 +1251,13 @@ where
         campaign_service,
     )
     .await
+}
+
+pub(super) fn production_session_lifecycle_config(
+    campaign_config: crucible_api::ProductionVmLifecycleConfig,
+    debug_authorization: &DebugAuthorizationPolicy,
+) -> crucible_api::ProductionVmLifecycleConfig {
+    campaign_config.with_authorized_debug_gdbstubs_for_all_nodes("127.0.0.1:0", debug_authorization)
 }
 
 pub(super) struct PreparedLocalCampaignService {
@@ -1829,7 +1837,9 @@ fn validate_campaign_runtime_attachments(args: &ServeArgs) -> Result<(), CliErro
     Ok(())
 }
 
-fn debug_authorization_policy(args: &ServeArgs) -> Result<DebugAuthorizationPolicy, CliError> {
+pub(super) fn debug_authorization_policy(
+    args: &ServeArgs,
+) -> Result<DebugAuthorizationPolicy, CliError> {
     let mut policy = DebugAuthorizationPolicy::deny_all();
     if args.trusted_unauthenticated_bind {
         policy.grant_trusted_unauthenticated_role(DebugRole::new([

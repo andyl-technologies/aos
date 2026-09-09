@@ -304,6 +304,32 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
+    /// Returns this configuration with all-node debugging when policy authorizes it.
+    ///
+    /// Production debugger replay records an exact execution fingerprint at
+    /// every scheduler boundary. The daemon therefore configures gdbstubs and
+    /// their evidence capture only when its immutable startup authorization
+    /// policy admits at least one debugger principal.
+    #[must_use]
+    pub fn with_authorized_debug_gdbstubs_for_all_nodes(
+        mut self,
+        operator_listen: impl Into<String>,
+        authorization: &crate::DebugAuthorizationPolicy,
+    ) -> Self {
+        if authorization.admits_debugging() {
+            self.with_debug_gdbstubs_for_all_nodes(operator_listen)
+        } else {
+            self.debug = None;
+            self
+        }
+    }
+
+    /// Returns whether this lifecycle will expose mediated QEMU gdbstubs.
+    #[must_use]
+    pub const fn debug_gdbstubs_enabled(&self) -> bool {
+        self.debug.is_some()
+    }
+
     /// Returns this configuration with explorer overrides admitted at `frontier`.
     ///
     /// The lifecycle waits until deterministic replay reaches both the exact
@@ -431,6 +457,8 @@ impl ProductionVmLifecycleConfig {
 
 #[cfg(test)]
 mod tests {
+    use crucible_session::DebugRole;
+
     use super::*;
 
     #[test]
@@ -488,5 +516,30 @@ mod tests {
         drop(second_claim);
         assert!(first.claim().is_err());
         assert!(second.claim().is_err());
+    }
+
+    #[test]
+    fn daemon_debug_evidence_follows_startup_authorization() {
+        let base =
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
+        let denied = base
+            .clone()
+            .with_debug_gdbstubs_for_all_nodes("127.0.0.1:1")
+            .with_authorized_debug_gdbstubs_for_all_nodes(
+                "127.0.0.1:0",
+                &crate::DebugAuthorizationPolicy::deny_all(),
+            );
+        assert!(denied.debug.is_none());
+
+        let mut authorized = crate::DebugAuthorizationPolicy::deny_all();
+        authorized.grant_trusted_unauthenticated_role(DebugRole::observer());
+        let enabled = base.with_authorized_debug_gdbstubs_for_all_nodes("127.0.0.1:0", &authorized);
+        let debug = enabled
+            .debug
+            .as_ref()
+            .unwrap_or_else(|| panic!("authorized daemon debugging should be configured"));
+        assert!(debug.all_nodes);
+        assert!(debug.allow_requested_loopback_listen);
+        assert_eq!(debug.operator_listen, "127.0.0.1:0");
     }
 }

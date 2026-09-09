@@ -7,9 +7,13 @@
 use super::*;
 use crucible_session::engine::{
     Action, ContentAddressedBlobRef, ContentHash, EventGraph, EventId, Icount, NodeId, Plan,
-    Predicate, Properties, ReadyPoint, ScenarioDefForm, Seed, SimDuration, TimerId, VirtualTime,
-    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    Predicate, Properties, ReadyPoint, ScenarioDefForm, ScenarioSelectableLimits,
+    ScenarioSelectables, Seed, SimDuration, TimerId, VirtualTime, VmArchitecture, WhiteBoxPolicy,
+    World, WorldNode,
 };
+
+#[path = "campaign_packaged_process/guest_choice.rs"]
+mod guest_choice;
 
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]

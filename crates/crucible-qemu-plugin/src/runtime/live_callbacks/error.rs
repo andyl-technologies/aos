@@ -114,6 +114,16 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying plugin fingerprint sampler error.
         source: FingerprintSamplerError,
     },
+    /// The exact on-demand request changed before its completed capture was acknowledged.
+    #[error(
+        "fingerprint capture request changed before acknowledgement: expected {request}, observed {observed}"
+    )]
+    FingerprintCaptureRequestChanged {
+        /// Odd request generation captured before sampling began.
+        request: u32,
+        /// Request generation observed after synchronous sample publication.
+        observed: u32,
+    },
     /// The dedicated fingerprint digest worker could not be created.
     #[error("fingerprint digest worker could not start: {message}")]
     FingerprintWorkerSpawn {
