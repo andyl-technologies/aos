@@ -3860,6 +3860,94 @@ mod tests {
     }
 
     #[test]
+    fn preparation_expiry_stays_within_fractional_clock_lease_fail_stop() {
+        let fixture = Fixture::new();
+        let catalog = vm_create_catalog(41, 42, "aosproof/aos/project/pinned-workspace");
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let admission_clock = clock_at([50; 16], 1_750_000_000, 123_456_789_123);
+
+        let excessive_deadline = admission_clock
+            .boottime_nanoseconds()
+            .checked_add(600_000_000_000)
+            .unwrap();
+        let excessive_request = vm_create_request(manifest.digest(), excessive_deadline);
+        let excessive_artifacts = fixture.artifacts_for_kernel_clock(
+            &excessive_request,
+            &catalog,
+            admission_clock.wall_seconds(),
+        );
+        let excessive_state = TempDir::new().unwrap();
+        let mut excessive = initialized_coordinator(&excessive_state, &fixture, &catalog);
+        let excessive_head = excessive.transactions.catalog_head_binding().unwrap();
+        let (excessive_preparation, inventory, _) =
+            preparation_request_at_head(&excessive_request, &catalog, excessive_head);
+        let excessive_semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            &excessive_preparation,
+            peer(),
+            peer_policy(),
+            admission_clock.boottime_nanoseconds(),
+        )
+        .unwrap();
+        let admission = excessive
+            .authority
+            .admit_preparation(
+                &excessive_artifacts,
+                &excessive_semantics,
+                &excessive_preparation,
+                ProtocolVersion::new(1, 3),
+                &admission_clock,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            admission.effect.effect_deadline_boottime_nanoseconds(),
+            admission_clock
+                .boottime_nanoseconds()
+                .checked_add(285_000_000_000)
+                .unwrap()
+        );
+        assert!(matches!(
+            excessive.prepare_catalog(
+                &excessive_preparation,
+                &excessive_artifacts,
+                inventory,
+                &StaticCatalogResolver { catalog: &catalog },
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &admission_clock,
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::ResolutionMismatch
+            ))
+        ));
+
+        let bounded_deadline = admission_clock
+            .boottime_nanoseconds()
+            .checked_add(240_000_000_000)
+            .unwrap();
+        let bounded_request = vm_create_request(manifest.digest(), bounded_deadline);
+        let bounded_artifacts = fixture.artifacts_for_kernel_clock(
+            &bounded_request,
+            &catalog,
+            admission_clock.wall_seconds(),
+        );
+        let bounded_state = TempDir::new().unwrap();
+        let mut bounded = initialized_coordinator(&bounded_state, &fixture, &catalog);
+        let outcome = prepare_for_apply(
+            &mut bounded,
+            &bounded_request,
+            &bounded_artifacts,
+            &catalog,
+            &admission_clock,
+        );
+
+        assert_eq!(outcome.expires_boottime_nanoseconds(), bounded_deadline - 1);
+    }
+
+    #[test]
     #[ignore = "requires the installed generic and root-pin systemd workers"]
     fn systemd_workspace_pin_vm_client() {
         let executable = std::env::var_os("AOS_ZFS_EXECUTABLE")
@@ -5046,9 +5134,10 @@ mod tests {
         let specification = sandbox_spec(74);
         let manifest = assignment_manifest(&specification);
         let admission_clock = vm_clock();
+        // Stay below the fixture lease's 285-second conservative local fail-stop.
         let create_deadline = admission_clock
             .boottime_nanoseconds()
-            .checked_add(600_000_000_000)
+            .checked_add(240_000_000_000)
             .unwrap();
         let create_request = vm_create_request(manifest.digest(), create_deadline);
         let create_artifacts = fixture.artifacts_for_kernel_clock(
