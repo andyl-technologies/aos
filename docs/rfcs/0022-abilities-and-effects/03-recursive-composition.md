@@ -214,6 +214,13 @@ Shared resources require an explicit lifetime and release contract.
 
 ## Composition includes transitions through lower abilities
 
+Each mutable resource has one lifecycle controller. Declaring desired child
+resources does not independently schedule their activation: the parent invokes
+lower-provider methods, and those methods compose into suboperations. This
+prevents duplicate publication/start/reload by both parent and child. Shared
+provider instances use their declared aggregation/controller group as described
+in the [implementation contract](implementation-contract.md#one-owner-schedules-each-transition).
+
 The provider also owns a pure transition constructor. Given a validated old
 and desired aggregate, exact bindings, and declared observation inputs, it
 returns an operation subgraph. These operations invoke methods of the bound
@@ -326,10 +333,11 @@ must be discharged at admission. Terminal operations must be recognized by
 the executor or an authenticated, authorized handler. An unknown leaf fails
 validation; it is not converted into shell execution.
 
-## What remains to prove before stabilizing the API
+## Qualification of the authoring API
 
-The shape above establishes the architectural responsibilities, not a finished
-Nix library signature. A vertical prototype must demonstrate schema agreement
+The shape above abbreviates the method schemas and helper signatures; the
+detailed implementation and execution contracts fix their required semantics.
+A vertical prototype must demonstrate schema agreement
 between Nix and Rust, checked symbolic result references, multi-consumer
 aggregation, conditional lower requirements, bounded expansion, provenance
 through module merging, and provider-authored transition construction.

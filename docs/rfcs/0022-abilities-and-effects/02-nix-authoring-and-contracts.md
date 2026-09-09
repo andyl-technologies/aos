@@ -145,9 +145,9 @@ The implementation must version at least these distinct concepts:
 | Effect plan | Operations, inputs, dependencies, authority, commit and recovery rules |
 | Execution record | Attempts, observations, commit outcomes, active consumer associations |
 
-Canonical encoding, size/depth bounds, stable ordering, unknown-field handling,
-and digest domains must be specified before these contracts become persistent
-APIs. Interface ABI, module ABI, operation-handler ABI, and wire format version
+The [implementation contract](implementation-contract.md) specifies the initial
+format families, encoding, identity, bounded profile, and matching policy.
+Interface ABI, module ABI, operation-handler ABI, and wire format version
 are separate compatibility dimensions. Documentation prose has a separate
 identity and MUST NOT cause runtime restarts or measurement churn by itself.
 

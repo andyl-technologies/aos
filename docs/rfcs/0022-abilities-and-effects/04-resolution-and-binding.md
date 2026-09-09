@@ -43,6 +43,10 @@ adds a device, endpoint, service dependency, or stronger enforcement request.
 
 ## Solver discipline
 
+The [binding policy](implementation-contract.md#deterministic-binding-policy)
+fixes selection precedence, ambiguity behavior, supported constraints, and
+bounded backtracking. Existing pins do not silently upgrade to repair a plan.
+
 Provider selection uses finite authenticated candidates and a versioned,
 bounded constraint language. Constraints cover interface compatibility,
 platform, phase, environment, operations, guarantees, sharing/exclusivity, and

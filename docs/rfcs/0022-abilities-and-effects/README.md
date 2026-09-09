@@ -118,6 +118,15 @@ transaction's ordering or failure semantics.
 | [11 — Crucible guest integration](11-crucible-integration.md) | Keep integration AOS-owned and identify pending PR #194 dependencies |
 | [12 — Alternatives and open questions](12-alternatives-and-open-questions.md) | Record choices, prior art, and details requiring prototypes |
 
+Implementors should also read the detailed contracts before designing APIs:
+
+- [Data, composition, identity, binding, and compatibility](implementation-contract.md).
+- [Operation lifecycle, publication, scheduling, and recovery](execution-contract.md).
+
+These contracts fix semantics abbreviated by the examples. Internal code
+organization and frontend wording remain implementation choices; changes to
+the specified behavior require an explicit design revision.
+
 ## Architecture
 
 ```text
