@@ -100,7 +100,7 @@ pub enum ValueSchema {
     ArtifactReference,
     /// Accepts a scoped [`crate::ResourceReference`].
     ResourceReference,
-    /// Accepts an authenticated [`crate::ProviderAssignment`].
+    /// Accepts the closed shape of a [`crate::ProviderAssignment`] record.
     ProviderAssignment,
     /// Accepts a typed [`crate::OperationResultReference`].
     OperationResultReference,

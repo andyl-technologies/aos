@@ -26,9 +26,9 @@ pub mod value;
 
 pub use diagnostic::{Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase};
 pub use document::{
-    BindingPlanDocument, DesiredStateDocument, EffectPlanDocument, EnvironmentDocument,
-    ExecutionDocument, InterfaceDocument, PackageDocument, RequiredFeature, VersionedDocument,
-    decode_canonical, encode_canonical,
+    BindingPlanDocument, BranchSelection, DesiredStateDocument, EffectPlanDocument,
+    EnvironmentDocument, ExecutionDocument, InterfaceDocument, MergeRecord, PackageDocument,
+    RequiredFeature, SkippedOperationRecord, VersionedDocument, decode_canonical, encode_canonical,
 };
 pub use identity::{
     AggregateId, EnvironmentId, ExecutionStage, IncarnationId, InstanceId, InterfaceKey,

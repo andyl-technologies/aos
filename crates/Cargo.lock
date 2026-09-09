@@ -227,6 +227,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-ability-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-ability-model",
+ "aos-ability-validate",
+ "aos-contract",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-ability-validate"
+version = "0.1.0"
+dependencies = [
+ "aos-ability-model",
+ "aos-contract",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-boot-identity"
 version = "0.1.0"
 

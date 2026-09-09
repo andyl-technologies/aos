@@ -3,6 +3,7 @@
 //! Persisted identities use structured records. Display formatting is for
 //! diagnostics and is never parsed as authority.
 
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
 use std::num::NonZeroU32;
@@ -57,6 +58,12 @@ impl LocalKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Borrow<str> for LocalKey {
+    fn borrow(&self) -> &str {
+        self.as_str()
     }
 }
 
