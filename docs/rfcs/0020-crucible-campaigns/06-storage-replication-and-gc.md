@@ -1601,6 +1601,10 @@ apply reacquires that fence, requires the exact manifest identity, and retains
 the fence through candidate deletion. No separate generation field is needed
 in the v1 GC plan header because the exact root-manifest identity binds the
 complete active set and the held fence excludes changes during apply.
+Each pending ID is a direct exact-object root because the journal owns its
+transfer independently; this includes internal Merkle nodes whose root-relative
+depth is unavailable without an ancestor path. Authoritative refs remain
+transitive roots and retain their complete authenticated closures.
 
 Hot exact/thin correctness fallbacks use a separate fixed 65,536-slot
 single-writer operational catalog. Each occupied slot stores one exact

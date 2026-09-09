@@ -25,10 +25,10 @@ use crucible_campaign::{
     FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingKind,
     FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
     FindingSignatureMinimizationEvidence, FindingTarget, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, MeasurementSet, Observation, ObservationId, PropertyVerdictSet,
-    RetentionPolicy, ScenarioDefId, StopOutcome, SubmitAttemptRequest,
+    GetAttemptExecutionRequest, MeasurementSet, MerkleMap, Observation, ObservationId,
+    PropertyVerdictSet, RetentionPolicy, ScenarioDefId, StopOutcome, SubmitAttemptRequest,
 };
-use crucible_cas::content_envelope::ContentEnvelope;
+use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
     BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
     ContentId, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MemoryBlobBackend,
@@ -2157,6 +2157,210 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
     ));
     assert!(staging_leaf.contains(orphan_id).expect("orphan retained"));
     assert_eq!(gc_journal.phase(), CampaignGcJournalPhase::Planned);
+}
+
+#[test]
+fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
+    let temp = tempfile::TempDir::new().expect("temporary exact write-back GC root");
+    let staging_root = temp.path().join("staging");
+    let destination_root = temp.path().join("destination");
+    let write_back = StoreNodeId::new("write-back").expect("write-back node");
+    let staging = StoreNodeId::new("staging").expect("staging node");
+    let destination = StoreNodeId::new("destination").expect("destination node");
+    let graph = Arc::new(
+        StoreGraph::build(StoreGraphConfig {
+            root: write_back.clone(),
+            admitted_kinds: BTreeSet::from([
+                ObjectKind::ExactManifest,
+                ObjectKind::MerkleNode,
+                ObjectKind::Trace,
+            ]),
+            nodes: BTreeMap::from([
+                (
+                    write_back,
+                    StoreNodeSpec::WriteBack {
+                        staging: staging.clone(),
+                        destination: destination.clone(),
+                        journal_root: temp.path().join("write-back-journal"),
+                        maximum_pending_objects: 64,
+                        maximum_pending_bytes: 1024 * 1024,
+                    },
+                ),
+                (
+                    staging,
+                    StoreNodeSpec::Directory {
+                        root: staging_root.clone(),
+                    },
+                ),
+                (
+                    destination,
+                    StoreNodeSpec::Directory {
+                        root: destination_root.clone(),
+                    },
+                ),
+            ]),
+        })
+        .expect("exact write-back graph"),
+    );
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+
+    let pending_child = ContentEnvelope::new(
+        "crucible.test.gc-write-back-child",
+        1,
+        BTreeSet::new(),
+        b"pending child".to_vec(),
+    )
+    .expect("pending child envelope");
+    let pending_child_id = pending_child.content_id(ObjectKind::ExactManifest);
+    graph
+        .put_if_absent(
+            pending_child_id,
+            &BlobHandle::from_bytes(pending_child.canonical_bytes()),
+        )
+        .expect("stage pending child");
+    let pending_parent = ContentEnvelope::new(
+        "crucible.test.gc-write-back-parent",
+        1,
+        BTreeSet::from([
+            ContentChild::new("child", pending_child_id).expect("pending child reference")
+        ]),
+        b"pending parent".to_vec(),
+    )
+    .expect("pending parent envelope");
+    let pending_parent_id = pending_parent.content_id(ObjectKind::ExactManifest);
+    graph
+        .put_if_absent(
+            pending_parent_id,
+            &BlobHandle::from_bytes(pending_parent.canonical_bytes()),
+        )
+        .expect("stage pending parent");
+
+    let merkle = MerkleMap::new(graph.clone());
+    let empty = merkle.empty().expect("empty pending map");
+    let first_key = hash("crucible.test.gc.write-back-merkle-key", 0);
+    let first_nibble = first_key.as_bytes()[0] >> 4;
+    let second_key = (1_u8..=u8::MAX)
+        .map(|value| hash("crucible.test.gc.write-back-merkle-key", value))
+        .find(|key| key.as_bytes()[0] >> 4 == first_nibble && *key != first_key)
+        .expect("second key sharing the first trie nibble");
+    let first_root = merkle
+        .insert(empty.content_id(), first_key, pending_parent_id)
+        .expect("insert first pending map value");
+    let final_root = merkle
+        .insert(first_root.content_id(), second_key, pending_child_id)
+        .expect("insert second pending map value");
+
+    let staging_leaf = DirectoryBlobBackend::new("staging", &staging_root);
+    let retained_child = ContentEnvelope::new(
+        "crucible.test.gc-write-back-ref-child",
+        1,
+        BTreeSet::new(),
+        b"retained ref child".to_vec(),
+    )
+    .expect("retained child envelope");
+    let retained_child_id = retained_child.content_id(ObjectKind::ExactManifest);
+    staging_leaf
+        .put_if_absent(
+            retained_child_id,
+            &BlobHandle::from_bytes(retained_child.canonical_bytes()),
+        )
+        .expect("store retained ref child outside journal");
+    let retained_parent = ContentEnvelope::new(
+        "crucible.test.gc-write-back-ref-parent",
+        1,
+        BTreeSet::from([
+            ContentChild::new("child", retained_child_id).expect("retained child reference")
+        ]),
+        b"retained ref parent".to_vec(),
+    )
+    .expect("retained parent envelope");
+    let retained_parent_id = retained_parent.content_id(ObjectKind::ExactManifest);
+    staging_leaf
+        .put_if_absent(
+            retained_parent_id,
+            &BlobHandle::from_bytes(retained_parent.canonical_bytes()),
+        )
+        .expect("store retained ref parent outside journal");
+    refs.compare_exchange(
+        &RefName::new("retained/write-back-closure").expect("retained ref name"),
+        None,
+        retained_parent_id,
+    )
+    .expect("publish retained closure");
+
+    let orphan = ContentEnvelope::new(
+        "crucible.test.gc-write-back-exact-orphan",
+        1,
+        BTreeSet::new(),
+        b"orphan".to_vec(),
+    )
+    .expect("orphan envelope");
+    let orphan_id = orphan.content_id(ObjectKind::Trace);
+    staging_leaf
+        .put_if_absent(orphan_id, &BlobHandle::from_bytes(orphan.canonical_bytes()))
+        .expect("store orphan outside journal");
+
+    let destination_leaf = DirectoryBlobBackend::new("destination", &destination_root);
+    let destination_physical = CampaignGcPhysicalStore::new("destination", &destination_leaf)
+        .expect("destination physical");
+    let staging_physical =
+        CampaignGcPhysicalStore::new("staging", &staging_leaf).expect("staging physical");
+    let graph_id = hash("crucible.test.gc.write-back-exact-store-graph.v1", 0x51);
+    let mut ledger = MemoryAssignmentLedger::default();
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        graph_id,
+        &[destination_physical, staging_physical],
+    )
+    .expect("plan exact write-back roots");
+
+    let roots = prepared.roots().iter().collect::<BTreeSet<_>>();
+    assert!(roots.contains(&pending_child_id));
+    assert!(roots.contains(&pending_parent_id));
+    assert!(roots.contains(&retained_parent_id));
+    assert!(roots.contains(&final_root.content_id()));
+    assert!(
+        roots
+            .iter()
+            .any(|id| { id.kind() == ObjectKind::MerkleNode && *id != final_root.content_id() })
+    );
+    assert_eq!(
+        prepared
+            .candidates()
+            .iter()
+            .map(CampaignGcCandidate::id)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([orphan_id])
+    );
+
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("gc-journal"), &prepared)
+            .expect("create exact write-back GC journal");
+    let applied = apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(
+            &repository,
+            refs.as_ref(),
+            &mut ledger,
+            Some(graph.as_ref()),
+            None,
+        ),
+        graph_id,
+        &[destination_physical, staging_physical],
+    )
+    .expect("apply exact write-back roots");
+    assert_eq!(applied.status(), CampaignGcApplyStatus::Applied);
+    assert!(!staging_leaf.contains(orphan_id).expect("orphan deleted"));
+    assert!(
+        staging_leaf
+            .contains(retained_child_id)
+            .expect("ref child retained")
+    );
 }
 
 #[test]
