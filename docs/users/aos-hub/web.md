@@ -87,6 +87,31 @@ After signing in, use:
 - the organization and instance settings under `/-/` for administrative work;
 - `/<org>/<registry>/-/settings` for registry configuration.
 
+The registry settings overview includes **Registry details** for its committed
+name, description, homepage introduction, default browser release, and release
+support policy. The registry needs an indexed publication before these fields
+can be edited. Changing the committed name does not rename its URL or move it
+to another organization or project.
+
+Choose **Review metadata draft** to inspect the exact `registry.toml` diff,
+then **Create draft**. The console shows the `apr change merge` command a
+maintainer runs with a registry signing key. The published details change only
+after that merge is published and indexed. Editing a field invalidates an
+earlier review; if another publication changes the indexed commit, reload the
+settings before creating a new draft.
+
+An empty introduction or description removes that text. An empty default
+browser release restores automatic selection without changing package-manager
+tracking. The advanced support-policy editor accepts TOML with `[default]` and
+`[trains]` tables; keep it consistent with the release qualification contract.
+Clearing it removes the explicit support policy.
+
+**Edit registry policy** manages visibility, crawler policy, `llms.txt`, and
+pinned trust anchors. Enter one public anchor per line as
+`name:Ed25519:base64-public-key`. Review lists the anchors being added or
+removed; applying these operational settings takes effect directly. Trust
+anchors can also be supplied when creating a registry.
+
 Organization resource inventories keep creation separate from browsing:
 `/-/org/<org>/projects/new`, `registries/new`, `caches/new`,
 `bindings/new`, `domains/new`, `network-policies/new`,
