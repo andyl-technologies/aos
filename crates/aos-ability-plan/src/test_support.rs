@@ -6,11 +6,15 @@ use std::collections::BTreeMap;
 
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, AggregationContract, AggregationScope, ExportDeclaration,
-    ImplementationKind, InstanceId, LocalKey, PackageDocument, PackageImplementation,
-    ProviderImplementation, ProviderImplementationReference, ResourceLifetime, VersionedDocument,
+    AbilityActivationMode, AbilityValue, AggregationContract, AggregationScope, BindingId,
+    ExportDeclaration, ImplementationKind, InstanceId, LocalKey, PackageDocument,
+    PackageImplementation, ProviderImplementation, ProviderImplementationReference,
+    ResourceLifetime, TeardownBindingAuthorization, TransitionAuthorizationDocument,
+    VersionedDocument,
 };
-use aos_ability_validate::{CheckedEffectPlan, ValidationContext};
+use aos_ability_validate::{
+    CheckedEffectPlan, CheckedTransitionAuthority, TransitionAuthorityInputs, ValidationContext,
+};
 
 use crate::{
     BindingCandidate, CompositionContext, CompositionEvaluator, CompositionFragment,
@@ -84,12 +88,140 @@ pub fn verified_planning_transition_with_distinct_current() -> (
             &desired,
             TransitionInputs {
                 current: Some(&current),
+                authority: None,
             },
             &mut EmptyTransitionEvaluator,
         )
         .expect("test transition from a distinct prior plan must validate");
 
     (desired, current, transition)
+}
+
+/// Builds a removed-provider transition with nonempty sealed teardown authority.
+///
+/// The desired plan contains no binding or package for the prior pure provider.
+/// The independently checked authorization remaps its exact prior binding to a
+/// transition-local identity and the resulting effect snapshot commits that
+/// authorization.
+///
+/// # Panics
+///
+/// Panics only when the statically constructed fixture stops satisfying a
+/// production planning, authorization, or transition invariant.
+#[must_use]
+pub fn verified_planning_authorized_removal_fixture() -> (
+    VerifiedPlanningSnapshot,
+    VerifiedPlanningSnapshot,
+    CheckedTransitionAuthority,
+    VerifiedTransitionPlan,
+) {
+    let (context, current) = build_verified_planning_fixture(false);
+    let environment = current.checked_binding().environment().clone();
+    let environment_digest = environment
+        .content_digest()
+        .expect("test environment must have a digest");
+    let mut seed = current.outcome().seed.clone();
+    seed.environment = environment_digest;
+    seed.instances.clear();
+    seed.contributions.clear();
+    seed.child_requests.clear();
+    seed.outputs.clear();
+    seed.controllers.clear();
+    let desired_state_digest = seed
+        .content_digest()
+        .expect("removed-provider desired state must digest");
+    let policy = ResolutionPolicyDocument {
+        schema: ResolutionPolicyDocument::SCHEMA.to_string(),
+        required_features: Vec::new(),
+        desired_state: desired_state_digest,
+        environment: environment_digest,
+        policy_revision: environment.policy_revision,
+        candidates: Vec::new(),
+        explicit_bindings: Vec::new(),
+        existing_pins: Vec::new(),
+        operator_orders: Vec::new(),
+        enabled_providers: Vec::new(),
+        obligations: Vec::new(),
+    };
+    let policies = vec![policy];
+    let packages = Vec::new();
+    let outcome = RecursiveComposer::new(&context)
+        .compose(
+            &policies,
+            seed.clone(),
+            environment.clone(),
+            packages.clone(),
+            &mut EmptyEvaluator,
+        )
+        .expect("removed-provider desired state must compose");
+    let snapshot = PlanningSnapshot::from_outcome(&outcome)
+        .expect("removed-provider planning snapshot must encode");
+    let snapshot_digest = snapshot
+        .digest()
+        .expect("removed-provider planning snapshot must digest");
+    let desired = snapshot
+        .verify_structure(
+            &RecursiveComposer::new(&context),
+            PlanningReplayInputs {
+                expected_digest: snapshot_digest,
+                authenticated_policies: &policies,
+                seed,
+                environment,
+                packages,
+            },
+        )
+        .expect("removed-provider planning snapshot must replay");
+
+    let source = current.checked_binding().bindings()[0].clone();
+    let mut request = current.checked_binding().document().requests[0].clone();
+    request.id.key = key("transition-prior-request");
+    let mut binding = source.clone();
+    binding.id = BindingId(key("transition-prior-binding"));
+    binding.request = request.id.clone();
+    binding.policy_revision = desired.checked_binding().document().policy_revision;
+    let authorization_document = TransitionAuthorizationDocument {
+        schema: TransitionAuthorizationDocument::SCHEMA.to_string(),
+        required_features: Vec::new(),
+        desired_planning: desired.snapshot_digest(),
+        current_planning: current.snapshot_digest(),
+        desired_policy_revision: desired.checked_binding().document().policy_revision,
+        prior_policy_revision: current.checked_binding().document().policy_revision,
+        authorization_policy_revision: desired.checked_binding().document().policy_revision,
+        teardown_bindings: vec![TeardownBindingAuthorization {
+            source_binding: source.id,
+            request,
+            binding,
+        }],
+        teardown_providers: Vec::new(),
+    };
+    let authorization_digest = authorization_document
+        .content_digest()
+        .expect("test transition authorization must digest");
+    let authority = context
+        .validate_transition_authority(
+            authorization_document,
+            TransitionAuthorityInputs {
+                expected_digest: authorization_digest,
+                desired_planning: desired.snapshot_digest(),
+                current_planning: current.snapshot_digest(),
+                authorization_policy_revision: desired.checked_binding().document().policy_revision,
+                desired: desired.checked_binding(),
+                current: current.checked_binding(),
+            },
+        )
+        .expect("test transition authority must validate");
+    let transition = TransitionPlanner::new(&context)
+        .plan(
+            &desired,
+            TransitionInputs {
+                current: Some(&current),
+                authority: Some(&authority),
+            },
+            &mut EmptyTransitionEvaluator,
+        )
+        .expect("authorized removed-provider transition must validate");
+
+    (desired, current, authority, transition)
 }
 
 /// Builds a validation context with sealed planning and transition provenance.
@@ -120,6 +252,7 @@ fn build_verified_planning_transition_fixture(
             &verified,
             TransitionInputs {
                 current: include_current.then_some(&verified),
+                authority: None,
             },
             &mut EmptyTransitionEvaluator,
         )
@@ -335,6 +468,7 @@ impl CompositionEvaluator for EmptyTransitionEvaluator {
             exports: Vec::new(),
             imports: Vec::new(),
             links: Vec::new(),
+            handoffs: Vec::new(),
             provider_readiness: Vec::new(),
             obligations: Vec::new(),
         };

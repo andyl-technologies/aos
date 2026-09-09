@@ -12,6 +12,7 @@
 //! - [`interface`] defines public interfaces and provider implementations.
 //! - [`plan`] defines bindings, resources, and finite operation graphs.
 //! - [`schema`] defines the portable value-schema vocabulary.
+//! - [`transition`] defines fresh authority for retiring prior providers.
 //! - [`value`] defines typed values carried by plans.
 
 #![forbid(unsafe_code)]
@@ -24,6 +25,7 @@ pub mod interface;
 pub mod limits;
 pub mod plan;
 pub mod schema;
+pub mod transition;
 pub mod value;
 
 pub use diagnostic::{Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase};
@@ -42,4 +44,5 @@ pub use interface::*;
 pub use limits::{ABILITY_LIMITS_V1, LimitProfile};
 pub use plan::*;
 pub use schema::*;
+pub use transition::*;
 pub use value::*;

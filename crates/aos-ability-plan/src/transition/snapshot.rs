@@ -16,6 +16,7 @@ use aos_ability_model::{
     ProviderImplementationReference, VersionedDocument, encode_canonical,
 };
 use aos_ability_validate::CheckedEffectPlan;
+use aos_ability_validate::CheckedTransitionAuthority;
 use aos_contract::Sha256Digest;
 use aos_contract::limits::JsonLimits;
 use serde::{Deserialize, Serialize};
@@ -73,6 +74,7 @@ pub struct TransitionSnapshot {
     schema: String,
     desired_planning: Sha256Digest,
     current_planning: Option<Sha256Digest>,
+    transition_authority: Option<Sha256Digest>,
     evaluations: Vec<TransitionEvaluation>,
     effect_plan: PlanId,
     effect_document: EffectPlanDocument,
@@ -98,6 +100,8 @@ pub struct TransitionReplayInputs<'a> {
     pub desired: &'a VerifiedPlanningSnapshot,
     /// Supplies the exact verified prior planning snapshot, when one existed.
     pub current: Option<&'a VerifiedPlanningSnapshot>,
+    /// Supplies sealed fresh teardown authority when prior bindings are used.
+    pub authority: Option<&'a CheckedTransitionAuthority>,
 }
 
 impl VerifiedTransitionPlan {
@@ -117,6 +121,12 @@ impl VerifiedTransitionPlan {
     #[must_use]
     pub const fn current_planning_digest(&self) -> Option<Sha256Digest> {
         self.snapshot.current_planning
+    }
+
+    /// Returns the fresh transition-authority commitment, when supplied.
+    #[must_use]
+    pub const fn transition_authority_digest(&self) -> Option<Sha256Digest> {
+        self.snapshot.transition_authority
     }
 
     /// Returns the checked effect-plan identity linked by the snapshot.
@@ -183,6 +193,7 @@ impl TransitionSnapshot {
     pub(super) fn from_construction(
         desired: &VerifiedPlanningSnapshot,
         current: Option<&VerifiedPlanningSnapshot>,
+        authority: Option<&CheckedTransitionAuthority>,
         evaluations: Vec<TransitionEvaluation>,
         checked_effect: &CheckedEffectPlan,
     ) -> Result<Self, TransitionSnapshotError> {
@@ -190,6 +201,7 @@ impl TransitionSnapshot {
             schema: TRANSITION_SNAPSHOT_SCHEMA.to_string(),
             desired_planning: desired.snapshot_digest(),
             current_planning: current.map(VerifiedPlanningSnapshot::snapshot_digest),
+            transition_authority: authority.map(CheckedTransitionAuthority::digest),
             evaluations,
             effect_plan: checked_effect.id(),
             effect_document: checked_effect.document().clone(),
@@ -209,6 +221,12 @@ impl TransitionSnapshot {
     #[must_use]
     pub const fn current_planning_digest(&self) -> Option<Sha256Digest> {
         self.current_planning
+    }
+
+    /// Returns the fresh transition-authority commitment, when supplied.
+    #[must_use]
+    pub const fn transition_authority_digest(&self) -> Option<Sha256Digest> {
+        self.transition_authority
     }
 
     /// Returns every retained transition-constructor exchange.
@@ -310,6 +328,7 @@ impl TransitionSnapshot {
         let mut evaluator = TransitionTranscriptEvaluator::new(&self.evaluations);
         let transition_inputs = TransitionInputs {
             current: inputs.current,
+            authority: inputs.authority,
         };
         let (checked_effect, evaluations) = planner
             .construct(inputs.desired, &transition_inputs, &mut evaluator)
@@ -333,6 +352,7 @@ impl TransitionSnapshot {
         self.validate_replay_inputs(&inputs)?;
         let transition_inputs = TransitionInputs {
             current: inputs.current,
+            authority: inputs.authority,
         };
         let (checked_effect, evaluations) = planner
             .construct(inputs.desired, &transition_inputs, evaluator)
@@ -355,6 +375,9 @@ impl TransitionSnapshot {
         {
             return Err(TransitionSnapshotError::PlanningCommitmentMismatch);
         }
+        if self.transition_authority != inputs.authority.map(CheckedTransitionAuthority::digest) {
+            return Err(TransitionSnapshotError::PlanningCommitmentMismatch);
+        }
         Ok(())
     }
 
@@ -368,6 +391,7 @@ impl TransitionSnapshot {
             schema: TRANSITION_SNAPSHOT_SCHEMA.to_string(),
             desired_planning: self.desired_planning,
             current_planning: self.current_planning,
+            transition_authority: self.transition_authority,
             evaluations,
             effect_plan: checked_effect.id(),
             effect_document: checked_effect.document().clone(),

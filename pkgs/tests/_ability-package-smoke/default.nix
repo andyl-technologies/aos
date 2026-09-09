@@ -18,6 +18,7 @@
     exports = [];
     imports = [];
     links = [];
+    handoffs = [];
     provider_readiness = [];
     obligations = [];
   };

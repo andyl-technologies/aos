@@ -128,6 +128,88 @@ pub fn checked_effect_plan() -> CheckedEffectPlan {
         .expect("static test plan must pass production validation")
 }
 
+/// Builds a checked start operation against the exact built-in systemd contract.
+///
+/// The fixture uses the production built-in interface and provider descriptor,
+/// includes observation-based reconciliation, and requires the protected
+/// `active` result port on successful lifecycle completion.
+///
+/// # Panics
+///
+/// Panics only when the built-in contract and this static effect fixture stop
+/// satisfying the production validator.
+#[must_use]
+pub fn checked_systemd_manager_effect_plan() -> CheckedEffectPlan {
+    let mut fixture = plan_fixture();
+    let artifact = fixture.binding_plan.bindings[0]
+        .implementation
+        .artifact
+        .clone();
+    fixture.interfaces = vec![
+        builtin::systemd_manager_interface().expect("built-in systemd interface must construct"),
+    ];
+    fixture.refresh_interface();
+
+    let provider = builtin::systemd_manager_provider(artifact.clone())
+        .expect("built-in systemd provider must construct");
+    let implementation = ProviderImplementationReference {
+        descriptor: provider
+            .descriptor_digest()
+            .expect("built-in systemd provider must have a digest"),
+        artifact,
+        handler: Some(
+            builtin::systemd_manager_handler_key()
+                .expect("built-in systemd handler key must construct"),
+        ),
+    };
+    fixture.binding_inputs.environment.providers[0].implementation = implementation.clone();
+    fixture.binding_plan.bindings[0].implementation = implementation;
+
+    let methods = vec![key("observe"), key("start")];
+    fixture.binding_inputs.desired_state.child_requests[0].methods = methods.clone();
+    fixture.binding_plan.requests[0].methods = methods.clone();
+    fixture.binding_plan.bindings[0].caller_grant.methods = methods;
+    fixture.binding_plan.bindings[0].caller_grant.resources[0].access = AccessMode::ExclusiveWrite;
+    fixture.binding_plan.bindings[0].caller_grant.resources[0].operations =
+        vec![key("observe"), key("start")];
+
+    let resource = fixture.effect_plan.current_revisions[0].resource.clone();
+    let controller = AggregateId {
+        provider: resource.provider.clone(),
+        group: key("systemd"),
+    };
+    let controller_assignment = ControllerAssignment {
+        resource,
+        controller: controller.clone(),
+    };
+    fixture.binding_inputs.environment.controllers = vec![controller_assignment.clone()];
+    fixture.binding_inputs.desired_state.controllers = vec![controller_assignment.clone()];
+    fixture.effect_plan.controllers = vec![controller_assignment];
+
+    let operation = &mut fixture.effect_plan.operations[0];
+    operation.method = key("start");
+    operation.family = OperationFamily::ServiceLifecycle {
+        action: ServiceAction::Start,
+    };
+    operation.input_phase = ValuePhase::Planning;
+    operation.target.operations = vec![key("start")];
+    operation.inputs = ValueExpression::Literal {
+        value: AbilityValue::new(serde_json::json!({"unit": "example.service"}))
+            .expect("systemd fixture input must be bounded"),
+    };
+    operation.accesses[0].mode = AccessMode::ExclusiveWrite;
+    operation.controller = Some(controller);
+    operation.recovery.reconcile = Some(MethodReference {
+        interface: operation.interface.clone(),
+        method: key("observe"),
+    });
+    fixture.refresh_commitments();
+
+    fixture
+        .validate()
+        .expect("built-in systemd fixture must pass production validation")
+}
+
 /// Builds mutable unchecked documents for focused validator regression tests.
 ///
 /// # Panics
@@ -617,7 +699,7 @@ fn digest(digit: char) -> Sha256Digest {
 
 #[cfg(test)]
 mod tests {
-    use super::checked_effect_plan;
+    use super::{checked_effect_plan, checked_systemd_manager_effect_plan};
 
     #[test]
     fn fixture_passes_production_validators() {
@@ -625,5 +707,13 @@ mod tests {
 
         assert!(plan.is_executable());
         assert_eq!(plan.operations().len(), 1);
+    }
+
+    #[test]
+    fn builtin_systemd_fixture_passes_production_validators() {
+        let plan = checked_systemd_manager_effect_plan();
+
+        assert!(plan.is_executable());
+        assert_eq!(plan.operations()[0].method.as_str(), "start");
     }
 }
