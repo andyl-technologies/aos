@@ -537,6 +537,86 @@ fn two_stage_smc_executes_and_replays_the_same_estimate_after_restart() {
         .repository
         .project_sequential_monte_carlo_estimate(campaign, fixture.head)
         .expect("project complete SMC estimate");
+    let evidence = fixture
+        .repository
+        .collect_sequential_monte_carlo_evidence(campaign, fixture.head)
+        .expect("collect complete SMC evidence");
+    assert_eq!(
+        crate::verify_sequential_monte_carlo_evidence(&evidence)
+            .expect("verify complete SMC evidence"),
+        report
+    );
+    assert_eq!(
+        crate::SequentialMonteCarloEvidence::from_canonical_bytes(&evidence.canonical_bytes())
+            .expect("round-trip complete SMC evidence"),
+        evidence
+    );
+    let root_lookups = evidence
+        .required_root_lookups()
+        .expect("derive SMC evidence root lookups");
+    assert!(!root_lookups.is_empty());
+    assert_statistical_evidence_root_lookups(
+        fixture.repository.as_ref(),
+        fixture.head,
+        &root_lookups,
+    );
+
+    let design = evidence
+        .initial()
+        .policy()
+        .sequential_monte_carlo_design()
+        .expect("SMC evidence policy design");
+    let planned_selector = design.stage(1).expect("first SMC stage").selector();
+    let distribution = design
+        .distributions()
+        .get(&planned_selector.model())
+        .expect("first SMC stage distribution");
+    let corrupted_selector = crate::SmcOpportunitySelector::new(
+        planned_selector.declaration(),
+        planned_selector.domain(),
+        "corrupted-selector-instance",
+        planned_selector.model(),
+        planned_selector.stop().clone(),
+    )
+    .expect("structurally valid corrupted selector");
+    assert!(matches!(
+        crate::statistics::verify_smc_source_selector(
+            evidence.initial().draws()[0].execution(),
+            &corrupted_selector,
+            distribution,
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "SMC selector does not match exactly one opportunity"
+        })
+    ));
+
+    let first_transition = &evidence.transitions()[0];
+    let execution = first_transition.execution();
+    let original = execution.request_opportunity();
+    let corrupted_opportunity = ChoiceOpportunity::new(
+        original.opportunity().scenario(),
+        original.declaration(),
+        original.domain(),
+        original.opportunity().coordinate(),
+        "corrupted-selector-instance",
+        original.opportunity().model_prior(),
+    )
+    .expect("structurally valid corrupted selector opportunity");
+    let corrupted_closure = crate::StatisticalOpportunityEvidence::new(
+        corrupted_opportunity,
+        original.declaration().clone(),
+        original.domain().clone(),
+    );
+    let mut corrupted_transitions = evidence.transitions().to_vec();
+    corrupted_transitions[0] = crate::SmcTransitionEvidence::new(
+        first_transition.stage(),
+        first_transition.slot(),
+        statistical_execution_with_request_opportunity(execution, corrupted_closure),
+    );
+    let corrupted =
+        crate::SequentialMonteCarloEvidence::new(evidence.initial().clone(), corrupted_transitions);
+    assert!(crate::verify_sequential_monte_carlo_evidence(&corrupted).is_err());
+
     assert_eq!(report.snapshot(), fixture.head);
     assert_eq!(report.generations().len(), 2);
     assert_eq!(report.generations()[0], generation);

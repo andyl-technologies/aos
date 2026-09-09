@@ -18,6 +18,9 @@ use crate::{
 ///
 /// The caller must first authenticate the snapshot and every membership from
 /// [`FiniteStatisticalEvidence::required_root_lookups`].
+/// Proposal membership and its content envelope authenticate the historical
+/// guidance and planner-invocation identities; this estimator replay does not
+/// reconstruct historical planner ranking decisions.
 ///
 /// # Errors
 ///
@@ -29,10 +32,19 @@ pub fn verify_finite_statistical_evidence(
     verify_finite(evidence, false)
 }
 
+pub(crate) fn verify_initial_smc_statistical_evidence(
+    evidence: &FiniteStatisticalEvidence,
+) -> Result<StatisticalEstimateReport, CampaignCodecError> {
+    verify_finite(evidence, true)
+}
+
 /// Replays the semantics of a complete sequential Monte Carlo evidence bundle.
 ///
 /// The caller must first authenticate the snapshot and every membership from
 /// [`SequentialMonteCarloEvidence::required_root_lookups`].
+/// Proposal membership and its content envelope authenticate the historical
+/// guidance and planner-invocation identities; this estimator replay does not
+/// reconstruct historical planner ranking decisions.
 ///
 /// # Errors
 ///
@@ -112,7 +124,7 @@ pub fn verify_sequential_monte_carlo_evidence(
             }
 
             let source = source_executions
-                .get(&particle.observation())
+                .get(&(particle.observation(), particle.proposal()))
                 .ok_or_else(|| invalid("SMC source observation evidence is missing"))?;
             validate_extended_path(source.path(), execution.path())?;
 
@@ -317,7 +329,6 @@ fn verify_execution_common(
     )?;
     proposal.validate_resolved(request, execution.request_opportunity().domain())?;
     if proposal.policy() != bundle.snapshot().active_policy()
-        || proposal.guidance_basis() != bundle.planning_view().id()?
         || proposal.request() != request_id
         || proposal.statistical_evidence().is_none()
     {
@@ -353,7 +364,6 @@ fn verify_execution_common(
         || basis_proposal != basis.proposal().id()?
         || basis.proposal().request() != basis.request().id()?
         || basis.proposal().policy() != bundle.snapshot().active_policy()
-        || basis.proposal().guidance_basis() != bundle.planning_view().id()?
         || basis.request().cause() != basis_cause
         || !matches!(
             basis.request().source(),
@@ -519,7 +529,7 @@ fn validate_smc_request(
     generation: &StatisticalGeneration,
     particle: &crate::StatisticalParticleSlot,
     execution: &StatisticalExecutionEvidence,
-    source_executions: &BTreeMap<ObservationId, &StatisticalExecutionEvidence>,
+    source_executions: &BTreeMap<(ObservationId, crate::ProposalId), &StatisticalExecutionEvidence>,
 ) -> Result<(), CampaignCodecError> {
     let CandidateSource::StatisticalSmc(source) = execution.request().source() else {
         return Err(invalid("SMC transition request source is invalid"));
@@ -544,7 +554,7 @@ fn validate_smc_request(
         .get(&selector.model())
         .ok_or_else(|| invalid("SMC selector model is not planned"))?;
     let source_execution = source_executions
-        .get(&particle.observation())
+        .get(&(particle.observation(), particle.proposal()))
         .ok_or_else(|| invalid("SMC source observation evidence is missing"))?;
     if source_execution.observation().path() != particle.path()
         || source_execution.observation().stop()
@@ -555,32 +565,11 @@ fn validate_smc_request(
         return Err(invalid("SMC source observation is inconsistent"));
     }
 
-    let matches = source_execution
-        .discovered_opportunities()
-        .iter()
-        .filter(|evidence| {
-            let opportunity = evidence.opportunity();
-            opportunity.declaration_semantics() == selector.declaration()
-                && opportunity.domain_semantics() == selector.domain()
-                && opportunity.instance() == selector.instance()
-                && opportunity.model_prior() == Some(selector.model())
-        })
-        .collect::<Vec<_>>();
-    if matches.len() != 1 {
-        return Err(invalid(
-            "SMC selector does not match exactly one opportunity",
-        ));
-    }
-    let selected = matches[0];
+    let selected = select_smc_opportunity(source_execution, selector, distribution)?;
     if selected.opportunity().id()? != execution.request_opportunity().opportunity().id()?
         || selected.domain().id()? != execution.request_opportunity().domain().id()?
-        || selected.domain().cardinality() != distribution.target_masses().len() as u128
-        || distribution
-            .target_masses()
-            .keys()
-            .any(|value| !selected.domain().contains(value))
     {
-        return Err(invalid("SMC selector support or opportunity drifted"));
+        return Err(invalid("SMC selector opportunity closure drifted"));
     }
     let BranchRequestCause::Planner(invocation) = execution.request().cause() else {
         return Err(invalid("SMC transition request cause is not a planner"));
@@ -611,13 +600,55 @@ fn validate_smc_request(
     Ok(())
 }
 
+fn select_smc_opportunity<'a>(
+    source_execution: &'a StatisticalExecutionEvidence,
+    selector: &crate::SmcOpportunitySelector,
+    distribution: &crate::StatisticalDistribution,
+) -> Result<&'a StatisticalOpportunityEvidence, CampaignCodecError> {
+    let matches = source_execution
+        .discovered_opportunities()
+        .iter()
+        .filter(|evidence| {
+            let opportunity = evidence.opportunity();
+            opportunity.declaration_semantics() == selector.declaration()
+                && opportunity.domain_semantics() == selector.domain()
+                && opportunity.instance() == selector.instance()
+                && opportunity.model_prior() == Some(selector.model())
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(invalid(
+            "SMC selector does not match exactly one opportunity",
+        ));
+    }
+    let selected = matches[0];
+    if selected.domain().cardinality() != distribution.target_masses().len() as u128
+        || distribution
+            .target_masses()
+            .keys()
+            .any(|value| !selected.domain().contains(value))
+    {
+        return Err(invalid("SMC selector support drifted"));
+    }
+    Ok(selected)
+}
+
+#[cfg(test)]
+pub(crate) fn verify_smc_source_selector(
+    source_execution: &StatisticalExecutionEvidence,
+    selector: &crate::SmcOpportunitySelector,
+    distribution: &crate::StatisticalDistribution,
+) -> Result<(), CampaignCodecError> {
+    select_smc_opportunity(source_execution, selector, distribution).map(|_| ())
+}
+
 fn insert_source_execution<'a>(
-    sources: &mut BTreeMap<ObservationId, &'a StatisticalExecutionEvidence>,
+    sources: &mut BTreeMap<(ObservationId, crate::ProposalId), &'a StatisticalExecutionEvidence>,
     execution: &'a StatisticalExecutionEvidence,
 ) -> Result<(), CampaignCodecError> {
-    let observation = execution.observation().id()?;
+    let source = (execution.observation().id()?, execution.proposal().id()?);
     if sources
-        .insert(observation, execution)
+        .insert(source, execution)
         .is_some_and(|prior| prior != execution)
     {
         return Err(invalid(

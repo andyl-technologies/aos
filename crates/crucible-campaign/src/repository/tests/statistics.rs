@@ -1,10 +1,111 @@
 //! Statistical campaign policy and estimator regressions.
 
 use super::*;
+use crate::StatisticalProposalEvidence;
 use crate::repository::projection::{smc_weighted_categorical_draw, weighted_categorical_draw};
 use std::sync::Arc;
 
 mod smc;
+
+fn statistical_execution_with_proposal(
+    execution: &crate::StatisticalExecutionEvidence,
+    proposal: Proposal,
+) -> crate::StatisticalExecutionEvidence {
+    crate::StatisticalExecutionEvidence::new(
+        execution.request().clone(),
+        execution.parent().clone(),
+        execution.request_opportunity().clone(),
+        proposal,
+        *execution.proposal_admission(),
+        execution.execution_basis().clone(),
+        execution.attempt().clone(),
+        execution.choice().clone(),
+        execution.path().clone(),
+        execution.observation().clone(),
+        execution.child().clone(),
+        execution.discovered_opportunities().to_vec(),
+    )
+}
+
+fn statistical_execution_with_observation(
+    execution: &crate::StatisticalExecutionEvidence,
+    observation: Observation,
+) -> crate::StatisticalExecutionEvidence {
+    crate::StatisticalExecutionEvidence::new(
+        execution.request().clone(),
+        execution.parent().clone(),
+        execution.request_opportunity().clone(),
+        execution.proposal().clone(),
+        *execution.proposal_admission(),
+        execution.execution_basis().clone(),
+        execution.attempt().clone(),
+        execution.choice().clone(),
+        execution.path().clone(),
+        observation,
+        execution.child().clone(),
+        execution.discovered_opportunities().to_vec(),
+    )
+}
+
+fn statistical_execution_with_request_opportunity(
+    execution: &crate::StatisticalExecutionEvidence,
+    request_opportunity: crate::StatisticalOpportunityEvidence,
+) -> crate::StatisticalExecutionEvidence {
+    crate::StatisticalExecutionEvidence::new(
+        execution.request().clone(),
+        execution.parent().clone(),
+        request_opportunity,
+        execution.proposal().clone(),
+        *execution.proposal_admission(),
+        execution.execution_basis().clone(),
+        execution.attempt().clone(),
+        execution.choice().clone(),
+        execution.path().clone(),
+        execution.observation().clone(),
+        execution.child().clone(),
+        execution.discovered_opportunities().to_vec(),
+    )
+}
+
+fn finite_evidence_with_draws(
+    evidence: &crate::FiniteStatisticalEvidence,
+    draws: Vec<crate::StatisticalDrawEvidence>,
+) -> crate::FiniteStatisticalEvidence {
+    crate::FiniteStatisticalEvidence::new(
+        evidence.snapshot().clone(),
+        *evidence.planning_view(),
+        evidence.policy().clone(),
+        evidence.lineage().clone(),
+        draws,
+    )
+}
+
+fn assert_statistical_evidence_root_lookups(
+    repository: &CampaignRepository,
+    snapshot: CampaignSnapshotId,
+    lookups: &[crate::StatisticalRootLookup],
+) {
+    let snapshot = repository
+        .read_snapshot(snapshot.content_id())
+        .expect("load statistical evidence snapshot");
+    let roots = snapshot.snapshot.roots();
+
+    for lookup in lookups {
+        let root = match lookup.root() {
+            crate::StatisticalRoot::Graph => roots.graph,
+            crate::StatisticalRoot::Exploration => roots.exploration,
+            crate::StatisticalRoot::Observations => roots.observations,
+            crate::StatisticalRoot::Accounting => roots.accounting,
+        };
+        assert_eq!(
+            repository
+                .merkle
+                .get(root, lookup.key())
+                .expect("read statistical evidence root lookup"),
+            Some(lookup.object())
+        );
+    }
+}
 
 #[derive(Clone, Copy)]
 struct StatisticalPlannerSupervisor;
@@ -726,6 +827,103 @@ fn two_edge_statistical_flight_reports_the_full_unequal_probability_product() {
     let report = repository
         .project_statistical_estimate(campaign, leaf_observed.new_snapshot)
         .expect("project statistical report");
+    let evidence = repository
+        .collect_finite_statistical_evidence(campaign, leaf_observed.new_snapshot)
+        .expect("collect finite statistical evidence");
+    assert_eq!(
+        crate::verify_finite_statistical_evidence(&evidence)
+            .expect("verify finite statistical evidence"),
+        report
+    );
+    assert_eq!(
+        crate::FiniteStatisticalEvidence::from_canonical_bytes(&evidence.canonical_bytes())
+            .expect("round-trip finite statistical evidence"),
+        evidence
+    );
+    let root_lookups = evidence
+        .required_root_lookups()
+        .expect("derive finite evidence root lookups");
+    assert!(!root_lookups.is_empty());
+    assert_statistical_evidence_root_lookups(
+        repository.as_ref(),
+        leaf_observed.new_snapshot,
+        &root_lookups,
+    );
+
+    let first_execution = evidence.draws()[0].execution();
+    let proposal = first_execution.proposal();
+    let probability = proposal
+        .statistical_evidence()
+        .expect("statistical proposal evidence");
+    let corrupted_probability = StatisticalProposalEvidence::new(
+        probability.target_mass(),
+        probability
+            .target_total()
+            .checked_add(1)
+            .expect("corrupted target total"),
+        probability.proposal_mass(),
+        probability.proposal_total(),
+    )
+    .expect("structurally valid corrupted probability");
+    let corrupted_proposal = Proposal::new_with_statistical_evidence(
+        proposal.branch_point(),
+        proposal.request(),
+        proposal.domain(),
+        proposal.value().clone(),
+        proposal.policy(),
+        proposal.planner_invocation(),
+        proposal.ordinal(),
+        proposal.guidance_basis(),
+        corrupted_probability,
+    )
+    .expect("structurally valid corrupted proposal");
+    let mut corrupted_draws = evidence.draws().to_vec();
+    corrupted_draws[0] = crate::StatisticalDrawEvidence::new(
+        corrupted_draws[0].coordinate(),
+        statistical_execution_with_proposal(first_execution, corrupted_proposal),
+    );
+    assert!(matches!(
+        crate::verify_finite_statistical_evidence(&finite_evidence_with_draws(
+            &evidence,
+            corrupted_draws,
+        )),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "proposal disagrees with its request, source, domain, or budget"
+        })
+    ));
+
+    let observation = first_execution.observation();
+    assert!(observation.produced_selections().is_empty());
+    let corrupted_observation = Observation::new(
+        observation.attempt(),
+        ConfigurationId::from_hash(CampaignHash::derive(
+            "test.corrupted-statistical-observation-child",
+            b"child",
+        )),
+        observation.child_content(),
+        observation.path(),
+        observation.stop().clone(),
+        observation.measurements(),
+        observation.properties(),
+        observation.coverage(),
+        observation.discovered_choices().clone(),
+    )
+    .expect("structurally valid corrupted observation");
+    let mut corrupted_draws = evidence.draws().to_vec();
+    corrupted_draws[0] = crate::StatisticalDrawEvidence::new(
+        corrupted_draws[0].coordinate(),
+        statistical_execution_with_observation(first_execution, corrupted_observation),
+    );
+    assert!(matches!(
+        crate::verify_finite_statistical_evidence(&finite_evidence_with_draws(
+            &evidence,
+            corrupted_draws,
+        )),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "statistical observation is inconsistent"
+        })
+    ));
+
     assert_eq!(report.endpoints().len(), 1);
     let endpoint = &report.endpoints()[0];
     let root_evidence = root_proposal.statistical_evidence().expect("root evidence");

@@ -252,8 +252,9 @@ pub use repository::{
     SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
 };
 pub use statistics::{
-    FiniteStatisticalEvidence, SequentialMonteCarloEstimateReport, SequentialMonteCarloEvidence,
-    SmcEstimateLabel, SmcSupportValidation, SmcTransitionEvidence, SmcUncertaintyStatement,
+    FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
+    SequentialMonteCarloEstimateReport, SequentialMonteCarloEvidence, SmcEstimateLabel,
+    SmcSupportValidation, SmcTransitionEvidence, SmcUncertaintyStatement,
     StatisticalChoiceEvidence, StatisticalDrawEvidence, StatisticalEndpointEstimate,
     StatisticalEstimateReport, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
     StatisticalGeneration, StatisticalOpportunityEvidence, StatisticalParticleOutcome,
