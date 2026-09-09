@@ -29,7 +29,7 @@ impl VerifiedAbilityPlanningCatalog {
         RecursiveComposer::new(&self.context)
     }
 
-    /// Returns the exact package documents in registry coordinate order.
+    /// Returns the exact package documents in semantic package-digest order.
     #[must_use]
     pub fn packages(&self) -> &[PackageDocument] {
         &self.packages
@@ -90,11 +90,13 @@ impl VerifiedAbilityPackageSet {
 
         let context = ValidationContext::new(supported_features, interfaces.into_values())
             .context("validating authenticated registry ability interfaces")?;
-        let packages = self
+        let mut packages = self
             .packages
             .iter()
-            .map(|sealed| sealed.package.clone())
-            .collect();
+            .map(|sealed| (sealed.package_digest(), sealed.package().clone()))
+            .collect::<Vec<_>>();
+        packages.sort_by_key(|(digest, _)| *digest);
+        let packages = packages.into_iter().map(|(_, package)| package).collect();
         Ok(VerifiedAbilityPlanningCatalog { context, packages })
     }
 }

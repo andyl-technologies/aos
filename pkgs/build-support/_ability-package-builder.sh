@@ -83,12 +83,15 @@ while IFS= read -r spec; do
       references=$(jq -c --arg value "$reference_hash" '. + [$value] | sort | unique' <<<"$references")
     done < <(jq -r '.references[]' <<<"$member")
 
+    # The registry schema omits an empty references field during canonical
+    # encoding, so closure identities must use that same representation.
     jq -cn \
       --arg store_path "$member_path" \
       --arg nar_hash "$member_nar" \
       --argjson nar_size "$(jq -r .narSize <<<"$member")" \
       --argjson references "$references" \
-      '{store_path:$store_path,nar_hash:$nar_hash,nar_size:$nar_size,references:$references}' \
+      '{store_path:$store_path,nar_hash:$nar_hash,nar_size:$nar_size}
+       + if $references == [] then {} else {references:$references} end' \
       >> work/closure-members.jsonl
   done < work/graph.jsonl
 
