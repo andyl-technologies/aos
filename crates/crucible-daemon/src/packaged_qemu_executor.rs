@@ -76,6 +76,7 @@ use crate::{
     SharedManagedQemuHotForkSourceWorldPool, SharedManagedQemuHotForkSourceWorldShutdownError,
     SharedQemuAttemptHostResourceFactory, SharedQemuHotForkSourceWorldProviderConstructionError,
     UnixPeerExecutorIdentity, capture_production_baked_genesis, decode_crucible_scenario_artifact,
+    reconcile_pending_finding_candidates,
 };
 
 mod exact_pin_materializer;
@@ -1082,7 +1083,7 @@ where
     // Acquire process-wide ownership before mutating any native run-state
     // namespace. A competing daemon must fail without retiring live state.
     let gc_exclusion = repository.acquire_gc_exclusion_guard()?;
-    let ledger = DirectoryAssignmentLedger::open(&config.ledger_root)?;
+    let mut ledger = DirectoryAssignmentLedger::open(&config.ledger_root)?;
     reconcile_packaged_native_catalogs(config.lifecycle.run_state_root())?;
     let prepared_result_root =
         prepare_packaged_prepared_result_namespace(config.lifecycle.run_state_root())?;
@@ -1096,6 +1097,22 @@ where
     )?;
     drop(gc_exclusion);
 
+    for campaign in &config.campaigns {
+        loop {
+            let summary =
+                reconcile_pending_finding_candidates(repository.as_ref(), &mut ledger, campaign)
+                    .map_err(PackagedQemuExecutorError::FindingRestart)?;
+            if summary.remaining() == 0 {
+                break;
+            }
+            if summary.released() == 0 {
+                return Err(PackagedQemuExecutorError::FindingRestartNoProgress {
+                    campaign: campaign.clone(),
+                    remaining: summary.remaining(),
+                });
+            }
+        }
+    }
     let checkpoints = Arc::new(ExactCheckpointStore::new(
         checkpoint_backend,
         config.maximum_checkpoint_bytes,
@@ -1632,6 +1649,20 @@ pub enum PackagedQemuExecutorError {
     /// Durable assignment-ledger acquisition failed.
     #[error(transparent)]
     Ledger(#[from] AssignmentLedgerError),
+    /// Pending finding incorporation could not be resumed safely.
+    #[error("reconcile pending finding candidates after packaged executor restart")]
+    FindingRestart(#[source] crate::FindingCandidateRestartError<AssignmentLedgerError>),
+    /// A bounded restart pass left work without releasing any matching root.
+    #[error(
+        "campaign `{}` finding restart made no progress with {remaining} roots remaining",
+        campaign.as_str()
+    )]
+    FindingRestartNoProgress {
+        /// Campaign whose pending finding roots could not advance.
+        campaign: CampaignName,
+        /// Roots deferred after the stalled pass.
+        remaining: usize,
+    },
     /// Abandoned attempt-local native checkpoint state could not be reconciled.
     #[error(transparent)]
     NativeCatalogRecovery(#[from] PackagedNativeCatalogRecoveryError),

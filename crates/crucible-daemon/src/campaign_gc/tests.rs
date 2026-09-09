@@ -25,8 +25,9 @@ use crucible_campaign::{
     FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingKind,
     FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
     FindingSignatureMinimizationEvidence, FindingTarget, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, MeasurementSet, MerkleMap, Observation, ObservationId,
-    PropertyVerdictSet, RetentionPolicy, ScenarioDefId, StopOutcome, SubmitAttemptRequest,
+    GetAttemptExecutionRequest, MeasurementSet, MerkleMap, Observation, ObservationCandidate,
+    ObservationId, PropertyVerdictSet, RetentionPolicy, ScenarioDefId, StopOutcome,
+    SubmitAttemptRequest,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
@@ -55,6 +56,7 @@ use crate::{
     HotCheckpointFallbackRetentionStore, HotCheckpointFallbackSlot, MemoryAssignmentLedger,
     MemoryHotCheckpointFallbackRetentionStore, QemuHotForkTemplateKey, RepositoryAttemptAdmission,
     acknowledge_incorporated_finding_candidate, incorporate_and_acknowledge_finding_candidate,
+    reconcile_pending_finding_candidates,
 };
 use crate::{
     CampaignTransferJournalError, CampaignTransferRetentionAdmin, CampaignTransferRetentionFence,
@@ -283,6 +285,18 @@ fn publish_pending_finding_fixture(
     ObservationId,
     FindingCandidateBundleId,
 ) {
+    publish_pending_finding_fixture_with_observation(repository, true)
+}
+
+fn publish_pending_finding_fixture_with_observation(
+    repository: &CampaignRepository,
+    publish_observation: bool,
+) -> (
+    CampaignLineageId,
+    AttemptId,
+    ObservationId,
+    FindingCandidateBundleId,
+) {
     const CAMPAIGN: &str = "pending-finding-gc-fixture";
 
     let scenario = ScenarioDefId::from_hash(hash("crucible.test.pending-finding.scenario", 0x11));
@@ -410,16 +424,47 @@ fn publish_pending_finding_fixture(
         BTreeSet::new(),
     )
     .expect("pending finding observation");
-    let observed = repository
-        .publish_observation(
-            CAMPAIGN,
+    let observation = if publish_observation {
+        repository
+            .publish_observation(
+                CAMPAIGN,
+                repository
+                    .head(CAMPAIGN)
+                    .expect("pending finding admission head")
+                    .snapshot_id(),
+                &observation_record,
+            )
+            .expect("publish pending finding observation")
+            .observation
+    } else {
+        let observation = observation_record
+            .id()
+            .expect("pending finding observation identity");
+        let candidate = ObservationCandidate::new(
             repository
-                .head(CAMPAIGN)
-                .expect("pending finding admission head")
-                .snapshot_id(),
-            &observation_record,
+                .load_configuration_artifact(child_artifact)
+                .expect("load pending finding child"),
+            repository
+                .load_measurement_set(measurements)
+                .expect("load pending finding measurements"),
+            repository
+                .load_property_verdict_set(properties)
+                .expect("load pending finding properties"),
+            repository
+                .load_coverage_projection(coverage)
+                .expect("load pending finding coverage"),
+            Vec::new(),
+            observation_record,
         )
-        .expect("publish pending finding observation");
+        .expect("build pending finding observation candidate");
+        assert_eq!(
+            repository
+                .publish_observation_candidate(&candidate)
+                .expect("store pending finding observation body"),
+            observation
+        );
+        observation
+    };
 
     let fingerprint = hash("crucible.test.pending-finding.fingerprint", 0x17);
     let original = repository
@@ -479,7 +524,7 @@ fn publish_pending_finding_fixture(
     )
     .expect("pending finding signature minimization");
     let bundle = FindingCandidateBundle::new(
-        observed.observation,
+        observation,
         signature,
         original,
         minimized,
@@ -494,7 +539,7 @@ fn publish_pending_finding_fixture(
     (
         lineage.id().expect("pending finding lineage identity"),
         attempt,
-        observed.observation,
+        observation,
         candidate,
     )
 }
@@ -1550,6 +1595,73 @@ fn incorporated_finding_releases_exact_candidate_root_across_restart() {
                 .expect("incorporated candidate closure retained")
         );
     }
+}
+
+#[test]
+fn pending_finding_restart_publishes_observation_before_finding_and_release() {
+    const CAMPAIGN: &str = "pending-finding-gc-fixture";
+
+    let repository = CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "pending-finding-restart",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    );
+    let (lineage, attempt, observation, candidate) =
+        publish_pending_finding_fixture_with_observation(&repository, false);
+    let request = pending_finding_request(lineage, attempt);
+    let key = AttemptExecutionKey::new(lineage, attempt);
+    let execution = ExecutionId::from_bytes([0x66; 16]).expect("execution");
+    let completed = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution,
+        observation,
+        finding_candidate: CompletedFindingCandidate::Pending(candidate),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(completed))
+            .expect("retain pending restart candidate"),
+        AttemptStateCas::Advanced
+    );
+
+    let campaign = CampaignName::new(CAMPAIGN).expect("campaign name");
+    let summary = reconcile_pending_finding_candidates(&repository, &mut ledger, &campaign)
+        .expect("restart publishes the complete observation and finding handoff");
+    assert_eq!(summary.pending(), 1);
+    assert_eq!(summary.remaining(), 0);
+    assert_eq!(summary.released(), 1);
+    assert_eq!(summary.replayed_publications(), 0);
+    assert_eq!(summary.not_current(), 0);
+    assert!(matches!(
+        ledger
+            .load_attempt(key)
+            .expect("load reconciled restart completion"),
+        Some(AttemptRuntimeState::Completed {
+            finding_candidate: CompletedFindingCandidate::Acknowledged(retained),
+            ..
+        }) if retained == candidate
+    ));
+
+    let current = repository
+        .head(CAMPAIGN)
+        .expect("reconciled campaign head")
+        .snapshot_id();
+    let replayed = repository
+        .incorporate_finding_candidate_bundle(CAMPAIGN, current, candidate)
+        .expect("replay restart-incorporated finding");
+    assert!(replayed.replayed);
+    repository
+        .authenticate_current_finding_candidate_incorporation(
+            &campaign,
+            replayed.finding,
+            candidate,
+        )
+        .expect("finding and candidate are retained by the current head");
 }
 
 #[test]

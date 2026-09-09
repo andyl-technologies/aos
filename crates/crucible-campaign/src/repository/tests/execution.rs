@@ -20,6 +20,7 @@ struct CompletingExecutor {
     status_requests: Vec<GetAttemptExecutionRequest>,
     execution: ExecutionId,
     observation: ObservationId,
+    finding_candidate: Option<FindingCandidateBundleId>,
 }
 
 impl ExecutorService for CompletingExecutor {
@@ -43,13 +44,19 @@ impl ExecutorStatusService for CompletingExecutor {
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
         self.status_requests.push(request.clone());
-        GetAttemptExecutionResponse::new(
-            request,
-            GetAttemptExecutionDisposition::Completed {
-                observation: self.observation,
-            },
-        )
-        .map_err(|_| "response encoding")
+        let disposition = GetAttemptExecutionDisposition::Completed {
+            observation: self.observation,
+        };
+        match self.finding_candidate {
+            Some(candidate) => GetAttemptExecutionResponse::new_with_finding_candidate(
+                request,
+                disposition,
+                candidate,
+            )
+            .map_err(|_| "response encoding"),
+            None => GetAttemptExecutionResponse::new(request, disposition)
+                .map_err(|_| "response encoding"),
+        }
     }
 }
 

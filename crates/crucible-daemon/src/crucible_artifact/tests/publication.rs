@@ -272,93 +272,73 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let (observation_evidence, _, observation_measurements) = observation_publication.into_parts();
     let observation_candidate_v2 =
         observation_with_measurements(&observation_candidate, observation_measurements);
-    let observation_v2 = observation_candidate_v2
-        .observation()
-        .id()
-        .expect("v2 observation ID");
-    let mut measurement_evidence = BTreeMap::from([(
-        observation_evidence.id().expect("observation evidence ID"),
-        observation_evidence,
-    )]);
-    let mut v2_transcript = CrucibleFindingReplayTranscript::new();
-    for pass in [
-        FindingReplayPass::Minimization,
-        FindingReplayPass::Verification,
-    ] {
-        minimize_signature_preserving_finding(
-            &finding,
-            &signature,
-            seed,
-            pass,
-            &mut v2_transcript,
-            |candidate| {
-                let candidate_scenario =
-                    encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
-                        .expect("v2 candidate scenario");
-                let candidate_configuration = encode_crucible_configuration_artifact(
-                    &candidate_scenario,
-                    candidate.artifact.schedule(),
-                )
-                .expect("v2 candidate configuration");
-                let observed = if candidate.artifact.schedule() == finding.artifact.schedule() {
-                    signature.clone()
-                } else {
-                    FindingSignature::new(
-                        FindingKind::Divergence,
-                        CampaignHash::derive("test", b"v2-reduced-candidate-divergence"),
-                        None,
-                        String::from("qemu.different-v2-replay-divergence"),
-                        Some(FindingTarget::Configuration(
-                            candidate_configuration.id().expect("v2 candidate target"),
-                        )),
-                        BTreeSet::from([property.content_id()]),
-                    )
-                    .expect("v2 rejected candidate signature")
-                };
-                let publication = empty_measurement_publication(
-                    candidate_scenario.scenario(),
-                    candidate_configuration.configuration(),
-                );
-                let (evidence, _, measurements) = publication.into_parts();
-                measurement_evidence
-                    .insert(evidence.id().expect("v2 replay evidence ID"), evidence);
-                Ok(CrucibleFindingReplayEvidence::new(
-                    Some(observed),
-                    candidate_configuration,
-                    measurements,
-                    properties.clone(),
-                    CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
-                        .expect("v2 replay coverage"),
-                    Vec::new(),
-                    Vec::new(),
-                )
-                .expect("v2 replay evidence"))
-            },
-        )
-        .expect("v2 finding replay pass");
-    }
-    let prepared_v2 = prepare_signature_preserving_minimized_finding_candidate(
+    let observation_result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+        observation_candidate_v2.clone(),
+        vec![observation_evidence],
+        None,
+    )
+    .expect("bind v2 observation result");
+    let v2_result = prepare_automatic_signature_preserving_finding(
+        observation_result,
         signature.clone(),
-        observation_v2,
         &finding,
         FindingExactPins::default(),
         seed,
-        v2_transcript,
+        |candidate| {
+            let candidate_scenario =
+                encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
+                    .expect("v2 candidate scenario");
+            let candidate_configuration = encode_crucible_configuration_artifact(
+                &candidate_scenario,
+                candidate.artifact.schedule(),
+            )
+            .expect("v2 candidate configuration");
+            let observed = if candidate.artifact.schedule() == finding.artifact.schedule() {
+                signature.clone()
+            } else {
+                FindingSignature::new(
+                    FindingKind::Divergence,
+                    CampaignHash::derive("test", b"v2-reduced-candidate-divergence"),
+                    None,
+                    String::from("qemu.different-v2-replay-divergence"),
+                    Some(FindingTarget::Configuration(
+                        candidate_configuration.id().expect("v2 candidate target"),
+                    )),
+                    BTreeSet::from([property.content_id()]),
+                )
+                .expect("v2 rejected candidate signature")
+            };
+            let publication = empty_measurement_publication(
+                candidate_scenario.scenario(),
+                candidate_configuration.configuration(),
+            );
+            let (evidence, _, measurements) = publication.into_parts();
+            let replay = CrucibleFindingReplayEvidence::new(
+                Some(observed),
+                candidate_configuration,
+                measurements,
+                properties.clone(),
+                CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
+                    .expect("v2 replay coverage"),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("v2 replay evidence");
+            Ok((replay, vec![evidence]))
+        },
     )
-    .expect("prepare v2 finding candidate");
-    let measurement_evidence = measurement_evidence.into_values().collect::<Vec<_>>();
+    .expect("automatically prepare v2 finding candidate");
+    let prepared_v2 = v2_result
+        .finding()
+        .expect("automatic prepared finding")
+        .clone();
+    let measurement_evidence = v2_result.measurement_replay_evidence().to_vec();
     assert!(measurement_evidence.len() >= 2);
     assert!(
         measurement_evidence
             .iter()
             .any(|evidence| evidence.configuration() != child.configuration())
     );
-    let v2_result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
-        observation_candidate_v2.clone(),
-        measurement_evidence.clone(),
-        Some(prepared_v2.clone()),
-    )
-    .expect("bind v2 prepared semantic result");
     v2_result
         .verify_measurement_publications(&scenario)
         .expect("verify every authenticated v2 measurement owner");

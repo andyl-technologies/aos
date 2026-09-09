@@ -1691,7 +1691,7 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
         }
     };
     assert_eq!(
-        incorporated.observation,
+        incorporated.observation_result().observation,
         candidate.observation().id().expect("observation id")
     );
     wait_until(Duration::from_secs(2), || {
@@ -1710,8 +1710,8 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
     assert_eq!(
         reconciliations.lock().expect("reconciliations").as_slice(),
         [
-            AttemptExecutionDisposition::Observation(incorporated.observation),
-            AttemptExecutionDisposition::Observation(incorporated.observation),
+            AttemptExecutionDisposition::Observation(incorporated.observation_result().observation,),
+            AttemptExecutionDisposition::Observation(incorporated.observation_result().observation,),
         ]
     );
     assert_eq!(submits.load(Ordering::Acquire), 1);
@@ -1732,7 +1732,7 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
 
     let restarted = CampaignRepository::new(blobs, refs);
     let head = restarted.head("executor-flight").expect("restart head");
-    assert_eq!(head.snapshot_id(), incorporated.new_snapshot);
+    assert_eq!(head.snapshot_id(), incorporated.final_snapshot());
     assert_eq!(request.stop(), &StopCondition::NextChoice);
 }
 

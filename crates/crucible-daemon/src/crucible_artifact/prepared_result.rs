@@ -61,7 +61,7 @@ use crate::{
 
 const PREPARED_RESULT_MAGIC_V1: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v1\0";
 const PREPARED_RESULT_MAGIC_V2: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v2\0";
-const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
+pub(super) const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
 
@@ -141,6 +141,68 @@ impl PreparedSemanticAttemptResult {
     #[must_use]
     pub const fn finding(&self) -> Option<&PreparedCrucibleFindingCandidate> {
         self.finding.as_ref()
+    }
+
+    /// Attaches one automatically prepared finding and its raw replay leaves.
+    ///
+    /// Existing observation measurement evidence is retained. Evidence reused
+    /// by a finding replay is deduplicated by exact content identity before the
+    /// complete observation/finding closure is revalidated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedSemanticResultCodecError`] when this result already
+    /// carries a finding, a replay leaf cannot be identified, or the combined
+    /// evidence does not exactly cover the observation and finding records.
+    pub fn attach_finding(
+        self,
+        finding: PreparedCrucibleFindingCandidate,
+        replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+    ) -> Result<Self, PreparedSemanticResultCodecError> {
+        if self.finding.is_some() {
+            return Err(inconsistent("duplicate finding attachment"));
+        }
+
+        if self
+            .measurement_replay_evidence
+            .len()
+            .checked_add(replay_evidence.len())
+            .is_none_or(|records| records > MAX_PREPARED_RESULT_RECORDS)
+        {
+            return Err(PreparedSemanticResultCodecError::LimitExceeded);
+        }
+
+        let mut evidence = BTreeMap::new();
+        let mut evidence_bytes = 0usize;
+        for leaf in self
+            .measurement_replay_evidence
+            .into_iter()
+            .chain(replay_evidence)
+        {
+            let id = leaf.id()?;
+            match evidence.entry(id) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    evidence_bytes = evidence_bytes
+                        .checked_add(leaf.canonical_bytes()?.len())
+                        .and_then(|bytes| bytes.checked_add(size_of::<u32>()))
+                        .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
+                    if evidence_bytes > MAX_PREPARED_SEMANTIC_RESULT_BYTES {
+                        return Err(PreparedSemanticResultCodecError::LimitExceeded);
+                    }
+                    entry.insert(leaf);
+                }
+                std::collections::btree_map::Entry::Occupied(entry) if entry.get() == &leaf => {}
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    return Err(inconsistent("conflicting measurement replay evidence"));
+                }
+            }
+        }
+
+        Self::new_with_measurement_replay_evidence(
+            self.observation,
+            evidence.into_values().collect(),
+            Some(finding),
+        )
     }
 
     /// Replays every retained measurement leaf against the authenticated scenario.

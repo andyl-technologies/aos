@@ -146,6 +146,67 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
             .expect("publish executor observation body"),
         observation_id.content_id()
     );
+    let fingerprint = CampaignHash::derive("test-finding", b"executor driver completion");
+    let original = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"executor driver original reproduction".to_vec(),
+        )
+        .expect("publish original reproduction");
+    let final_state = CampaignHash::derive("test-finding", b"executor driver final state");
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        1,
+        b"executor-driver-test-policy".to_vec(),
+        Vec::new(),
+        final_state,
+    )
+    .expect("minimization evidence");
+    let minimized = repository
+        .publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"executor driver original reproduction".to_vec(),
+            minimization.clone(),
+        )
+        .expect("publish minimized reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.replay-divergence".to_owned(),
+        Some(FindingTarget::Configuration(observation.child_content())),
+        BTreeSet::from([observation.properties().content_id()]),
+    )
+    .expect("finding signature");
+    let signature_minimization = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        vec![Some(signature.clone())],
+        vec![Some(signature.clone())],
+    )
+    .expect("signature minimization evidence");
+    let bundle = FindingCandidateBundle::new(
+        observation_id,
+        signature,
+        original,
+        minimized,
+        signature_minimization,
+        FindingExactPins::default(),
+    )
+    .expect("finding candidate bundle");
+    let finding_candidate = repository
+        .publish_finding_candidate_bundle(&bundle)
+        .expect("publish finding candidate bundle");
     let resume = command(
         "executor-driver-resume",
         admitted.new_snapshot,
@@ -162,6 +223,7 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
         status_requests: Vec::new(),
         execution: ExecutionId::from_bytes([0x91; 16]).expect("execution"),
         observation: observation_id,
+        finding_candidate: Some(finding_candidate),
     };
     let mut driver = CampaignExecutorDriver::new(
         repository.clone(),
@@ -191,8 +253,21 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
     let CampaignExecutorStepOutcome::Incorporated(incorporated) = incorporated else {
         panic!("expected incorporated completion");
     };
-    assert_eq!(incorporated.prior_snapshot, running.new_snapshot);
-    assert_eq!(incorporated.observation, observation_id);
+    let observation_result = incorporated.observation_result();
+    assert_eq!(observation_result.prior_snapshot, running.new_snapshot);
+    assert_eq!(observation_result.observation, observation_id);
+    let finding = incorporated
+        .finding_publication()
+        .expect("completion incorporates the prepared finding");
+    assert_eq!(finding.prior_snapshot, observation_result.new_snapshot);
+    assert_eq!(incorporated.final_snapshot(), finding.new_snapshot);
+    assert_eq!(
+        repository
+            .head("executor-driver-completion")
+            .expect("completion head")
+            .snapshot_id(),
+        incorporated.final_snapshot()
+    );
     assert_eq!(driver.reservation_count(), 0);
     let service = driver.into_executor().into_inner();
     assert_eq!(service.requests.len(), 1);
@@ -227,7 +302,7 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
             CampaignExecutorStepOutcome::ScanPending { .. }
             | CampaignExecutorStepOutcome::CaptureScanPending { .. } => {}
             CampaignExecutorStepOutcome::Idle { snapshot } => {
-                assert_eq!(snapshot, incorporated.new_snapshot);
+                assert_eq!(snapshot, incorporated.final_snapshot());
                 break;
             }
             outcome => panic!("unexpected restarted driver outcome: {outcome:?}"),
