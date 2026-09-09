@@ -1331,6 +1331,7 @@ mod request_budget;
 use planner_scan_index::planner_scan_index_anchor_key;
 mod retention;
 mod savepoint;
+mod statistics;
 mod status;
 mod supervisor;
 mod transactions;
@@ -1522,6 +1523,20 @@ fn map_key_content(namespace: &str, id: ContentId) -> CampaignHash {
     bytes.extend_from_slice(&(encoded.len() as u64).to_be_bytes());
     bytes.extend_from_slice(encoded.as_bytes());
     CampaignHash::derive("crucible.campaign-map-key.v1", &bytes)
+}
+
+fn statistical_draw_request_key(coordinate: u64) -> CampaignHash {
+    CampaignHash::derive(
+        "crucible.campaign.statistical-draw-request.v1",
+        &coordinate.to_be_bytes(),
+    )
+}
+
+fn statistical_draw_proposal_key(coordinate: u64) -> CampaignHash {
+    CampaignHash::derive(
+        "crucible.campaign.statistical-draw-proposal.v1",
+        &coordinate.to_be_bytes(),
+    )
 }
 
 fn mutation_result_hash_key(namespace: &str, id: CampaignHash) -> CampaignHash {

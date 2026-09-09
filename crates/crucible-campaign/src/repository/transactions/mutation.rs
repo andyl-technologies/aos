@@ -450,6 +450,11 @@ impl CampaignRepository {
                 if policy.mode() != prior_policy.mode() {
                     return Err(integrity("activated-policy-mode-mismatch"));
                 }
+                if prior_policy.mode() == crate::CampaignMode::Statistical
+                    && next != current.snapshot.active_policy()
+                {
+                    return Err(integrity("statistical-policy-identity-is-immutable"));
+                }
                 let lineage_content = required_child(&current.envelope, "lineage")?;
                 let lineage = self.read_lineage(lineage_content)?;
                 if policy.scenario() != lineage.scenario() {

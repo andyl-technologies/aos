@@ -27,6 +27,8 @@ const ATTEMPT_SCHEMA_VERSION: u32 = 2;
 const AFTER_ATTEMPT_SCHEMA_VERSION: u32 = 3;
 pub(crate) const SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION: u32 = 5;
 pub(crate) const BRANCH_REQUEST_SCHEMA_VERSION: u32 = 6;
+pub(crate) const STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION: u32 = 7;
+const PROPOSAL_SCHEMA_VERSION: u32 = 2;
 const BRANCH_PATH_SCHEMA_VERSION: u32 = 2;
 const ATTEMPT_ADMISSION_SCHEMA_VERSION: u32 = 2;
 const PLANNER_STEP_SCHEMA_VERSION: u32 = 4;
@@ -87,6 +89,16 @@ fn require_schema_version(actual: u32, expected: u32) -> Result<(), CampaignCode
             reason: "unsupported exploration record schema version",
         })
     }
+}
+
+fn statistical_mass_total(masses: &BTreeMap<ChoiceValue, u64>) -> Result<u64, CampaignCodecError> {
+    masses.values().try_fold(0_u64, |total, mass| {
+        total
+            .checked_add(*mass)
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "statistical mass sum exceeds u64",
+            })
+    })
 }
 
 fn decode_exact_record<T: Canonical>(

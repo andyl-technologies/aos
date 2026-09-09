@@ -16,10 +16,10 @@ use crucible_cas::content_store::ContentId;
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
     BranchRequest, CampaignCodecError, CampaignHash, CampaignPlanningView, CampaignPolicy,
-    CampaignSnapshotId, ContinuationProjection, ContinuationState, ObjectEnvelope,
-    PlannerAuthorityKey, PlannerEngine, PlannerInvocation, PlannerProposalDisposition,
-    PlannerState, PlannerStepProposal, PlannerSubmission, PlanningScanPosition, PlanningUsage,
-    PolicyArtifact, Proposal, RetainedPlannerRequestId,
+    CampaignSnapshotId, ConfigurationArtifactId, ConfigurationId, ContinuationProjection,
+    ContinuationState, ObjectEnvelope, PlannerAuthorityKey, PlannerEngine, PlannerInvocation,
+    PlannerProposalDisposition, PlannerState, PlannerStepProposal, PlannerSubmission,
+    PlanningScanPosition, PlanningUsage, PolicyArtifact, Proposal, RetainedPlannerRequestId,
 };
 
 mod beam;
@@ -27,7 +27,8 @@ pub use beam::*;
 mod closed;
 pub use closed::*;
 
-const PLANNER_REQUEST_SCHEMA_VERSION: u32 = 1;
+const LEGACY_PLANNER_REQUEST_SCHEMA_VERSION: u32 = 1;
+const PLANNER_REQUEST_SCHEMA_VERSION: u32 = 2;
 const PLANNER_RESPONSE_SCHEMA_VERSION: u32 = 1;
 /// Maximum canonical request or response size at the planner wire boundary.
 pub const MAX_PLANNER_COMPONENT_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -66,6 +67,68 @@ const _: () = assert!(MAX_RETAINED_PLANNER_REQUEST_BYTES < MAX_PLANNER_COMPONENT
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignPlanningBundle {
     objects: BTreeMap<ContentId, Vec<u8>>,
+}
+
+/// Owner-derived dynamic parent for the next policy-pinned statistical draw.
+///
+/// The policy fixes the opportunity, domain, distribution, and stop condition.
+/// This basis supplies only the parent configuration that cannot be known
+/// until an earlier declared draw has produced its canonical observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatisticalRequestBasis {
+    coordinate: u64,
+    parent: ConfigurationArtifactId,
+    configuration: ConfigurationId,
+}
+
+impl StatisticalRequestBasis {
+    /// Builds the authenticated dynamic basis for one draw coordinate.
+    #[must_use]
+    pub const fn new(
+        coordinate: u64,
+        parent: ConfigurationArtifactId,
+        configuration: ConfigurationId,
+    ) -> Self {
+        Self {
+            coordinate,
+            parent,
+            configuration,
+        }
+    }
+
+    /// Returns the next policy-declared draw coordinate.
+    #[must_use]
+    pub const fn coordinate(self) -> u64 {
+        self.coordinate
+    }
+
+    /// Returns the authenticated parent configuration artifact.
+    #[must_use]
+    pub const fn parent(self) -> ConfigurationArtifactId {
+        self.parent
+    }
+
+    /// Returns the semantic parent configuration identity.
+    #[must_use]
+    pub const fn configuration(self) -> ConfigurationId {
+        self.configuration
+    }
+}
+
+impl Canonical for StatisticalRequestBasis {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.coordinate.encode(encoder);
+        self.parent.encode(encoder);
+        self.configuration.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self::new(
+            u64::decode(decoder)?,
+            ConfigurationArtifactId::decode(decoder)?,
+            ConfigurationId::decode(decoder)?,
+        ))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -839,6 +902,7 @@ pub struct PlannerRequest {
     policy: CampaignPolicy,
     planner_state: PlannerState,
     input_view: CampaignPlanningView,
+    statistical_request_basis: Option<StatisticalRequestBasis>,
     input_bundle: CampaignPlanningBundle,
 }
 
@@ -862,6 +926,69 @@ impl PlannerRequest {
         input_view: CampaignPlanningView,
         input_bundle: CampaignPlanningBundle,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_for_schema(
+            PLANNER_REQUEST_SCHEMA_VERSION,
+            expected_snapshot,
+            invocation,
+            engine,
+            policy_artifact,
+            policy,
+            planner_state,
+            input_view,
+            None,
+            input_bundle,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_statistical_request_basis(
+        expected_snapshot: CampaignSnapshotId,
+        invocation: PlannerInvocation,
+        engine: PlannerEngine,
+        policy_artifact: PolicyArtifact,
+        policy: CampaignPolicy,
+        planner_state: PlannerState,
+        input_view: CampaignPlanningView,
+        statistical_request_basis: Option<StatisticalRequestBasis>,
+        input_bundle: CampaignPlanningBundle,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_for_schema(
+            PLANNER_REQUEST_SCHEMA_VERSION,
+            expected_snapshot,
+            invocation,
+            engine,
+            policy_artifact,
+            policy,
+            planner_state,
+            input_view,
+            statistical_request_basis,
+            input_bundle,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_for_schema(
+        schema_version: u32,
+        expected_snapshot: CampaignSnapshotId,
+        invocation: PlannerInvocation,
+        engine: PlannerEngine,
+        policy_artifact: PolicyArtifact,
+        policy: CampaignPolicy,
+        planner_state: PlannerState,
+        input_view: CampaignPlanningView,
+        statistical_request_basis: Option<StatisticalRequestBasis>,
+        input_bundle: CampaignPlanningBundle,
+    ) -> Result<Self, CampaignCodecError> {
+        if !matches!(
+            schema_version,
+            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION | PLANNER_REQUEST_SCHEMA_VERSION
+        ) || (schema_version == LEGACY_PLANNER_REQUEST_SCHEMA_VERSION
+            && statistical_request_basis.is_some())
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner request schema disagrees with statistical basis",
+            });
+        }
         if engine.id()? != invocation.engine()
             || policy_artifact.id()? != invocation.policy_artifact()
             || policy.id()? != invocation.policy()
@@ -875,7 +1002,7 @@ impl PlannerRequest {
             });
         }
         let request = Self {
-            schema_version: PLANNER_REQUEST_SCHEMA_VERSION,
+            schema_version,
             expected_snapshot,
             invocation,
             engine,
@@ -883,6 +1010,7 @@ impl PlannerRequest {
             policy,
             planner_state,
             input_view,
+            statistical_request_basis,
             input_bundle,
         };
         request.input_bundle.validate_for(&request)?;
@@ -944,6 +1072,12 @@ impl PlannerRequest {
     #[must_use]
     pub const fn input_view(&self) -> &CampaignPlanningView {
         &self.input_view
+    }
+
+    /// Returns the owner-derived parent basis for the next statistical draw.
+    #[must_use]
+    pub const fn statistical_request_basis(&self) -> Option<StatisticalRequestBasis> {
+        self.statistical_request_basis
     }
 
     /// Returns served request objects and their interpretation dependencies.
@@ -1053,6 +1187,9 @@ impl PlannerRequest {
                 .enumerate()
                 .map(|(index, id)| (format!("input-bundle.{index:04x}"), id)),
         );
+        if let Some(basis) = self.statistical_request_basis {
+            children.push(("statistical-parent".to_owned(), basis.parent().content_id()));
+        }
         Ok(children)
     }
 
@@ -1110,16 +1247,24 @@ impl Canonical for PlannerRequest {
         self.policy.encode(encoder);
         self.planner_state.encode(encoder);
         self.input_view.encode(encoder);
+        if self.schema_version >= PLANNER_REQUEST_SCHEMA_VERSION {
+            self.statistical_request_basis.encode(encoder);
+        }
         self.input_bundle.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        if u32::decode(decoder)? != PLANNER_REQUEST_SCHEMA_VERSION {
+        let schema_version = u32::decode(decoder)?;
+        if !matches!(
+            schema_version,
+            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION | PLANNER_REQUEST_SCHEMA_VERSION
+        ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported planner request schema version",
             });
         }
-        Self::new(
+        Self::new_for_schema(
+            schema_version,
             CampaignSnapshotId::decode(decoder)?,
             PlannerInvocation::decode(decoder)?,
             PlannerEngine::decode(decoder)?,
@@ -1127,6 +1272,11 @@ impl Canonical for PlannerRequest {
             CampaignPolicy::decode(decoder)?,
             PlannerState::decode(decoder)?,
             CampaignPlanningView::decode(decoder)?,
+            if schema_version >= PLANNER_REQUEST_SCHEMA_VERSION {
+                Option::decode(decoder)?
+            } else {
+                None
+            },
             CampaignPlanningBundle::decode(decoder)?,
         )
     }
@@ -1689,7 +1839,7 @@ mod tests {
         );
         assert_eq!(
             encode_hex(blake3::hash(&bytes).as_bytes()),
-            "448d0678beaeb238107a6c4584cda2b5604150556a4b0eac42a720faf372ec66"
+            "592e305f3a6ad2cd3f9b7fb4a94a413b1f7ad838b3d58e73f5200fdeab7315a4"
         );
         let retained = ObjectEnvelope::for_record(
             crate::CampaignRecordKind::RetainedPlannerRequest,
@@ -1730,11 +1880,11 @@ mod tests {
         );
         assert_eq!(
             encode_hex(blake3::hash(&response_bytes).as_bytes()),
-            "bb3ac28fa1b156ec9953ff20d249c80bf18928643d35219ffc535c62423e5da7"
+            "5e99e8c56d31d7da71983b65c8ca70eadaf45d14d59c074ce30b6d393df0ec31"
         );
 
         let mut wrong_version = bytes.clone();
-        wrong_version[..4].copy_from_slice(&2_u32.to_be_bytes());
+        wrong_version[..4].copy_from_slice(&3_u32.to_be_bytes());
         assert_eq!(
             PlannerRequest::from_canonical_bytes(&wrong_version),
             Err(CampaignCodecError::InvalidValue {
@@ -1746,6 +1896,62 @@ mod tests {
         assert_eq!(
             PlannerRequest::from_canonical_bytes(&trailing),
             Err(CampaignCodecError::TrailingBytes)
+        );
+    }
+
+    #[test]
+    fn legacy_planner_request_preserves_its_exact_bytes_and_identity() {
+        let current = request(0x21);
+        let legacy = PlannerRequest::new_for_schema(
+            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION,
+            current.expected_snapshot,
+            current.invocation.clone(),
+            current.engine.clone(),
+            current.policy_artifact.clone(),
+            current.policy.clone(),
+            current.planner_state.clone(),
+            current.input_view,
+            None,
+            current.input_bundle.clone(),
+        )
+        .expect("legacy planner request");
+        let bytes = legacy.canonical_bytes();
+        assert_eq!(
+            encode_hex(blake3::hash(&bytes).as_bytes()),
+            "448d0678beaeb238107a6c4584cda2b5604150556a4b0eac42a720faf372ec66"
+        );
+        assert_eq!(
+            PlannerRequest::from_canonical_bytes(&bytes).expect("decode legacy planner request"),
+            legacy
+        );
+        assert_eq!(
+            legacy.id().expect("legacy request ID").to_text(),
+            "crucible.campaign.retained-planner-request@policy.1.ac1389b8f4319f2ebe5f00536b348218fa1fd567ce870f76db0389507f4533ff"
+        );
+    }
+
+    #[test]
+    fn canonical_frontier_keeps_the_version_six_descriptor_replayable() {
+        let version_six = PlannerEngine::new(
+            "crucible-canonical-frontier",
+            6,
+            1,
+            BTreeSet::from([
+                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
+            ]),
+        )
+        .expect("version-six canonical frontier descriptor");
+        assert!(
+            CanonicalFrontierPlanner::supports_descriptor(&version_six)
+                .expect("check version-six support")
+        );
+        assert_eq!(
+            CanonicalFrontierPlanner::descriptor()
+                .expect("current canonical frontier descriptor")
+                .implementation_version(),
+            7
         );
     }
 

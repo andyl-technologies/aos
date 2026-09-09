@@ -184,6 +184,7 @@ impl CampaignRepository {
             self.read_configuration_artifact(lineage.genesis_content().content_id())?;
         validate_creation_artifact_basis(lineage, &scenario_artifact, &genesis_artifact)?;
         validate_creation_generator_closure(policy, generators)?;
+        self.validate_stored_statistical_design(policy)?;
         self.publish_genesis_after_preflight(name, campaign_ref, lineage, policy, generators)
     }
 
@@ -217,7 +218,38 @@ impl CampaignRepository {
             self.read_configuration_artifact(lineage.genesis_content().content_id())?;
         validate_creation_artifact_basis(lineage, &scenario_artifact, &genesis_artifact)?;
         self.validate_stored_creation_generator_closure(policy)?;
+        self.validate_stored_statistical_design(policy)?;
         self.publish_genesis_after_preflight(name, campaign_ref, lineage, policy, &BTreeMap::new())
+    }
+
+    fn validate_stored_statistical_design(
+        &self,
+        policy: &CampaignPolicy,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some(design) = policy.statistical_sampling_design() else {
+            return Ok(());
+        };
+        for draw in design.draws().values() {
+            let opportunity = self.read_opportunity(draw.opportunity().content_id())?;
+            let domain = self.read_choice_domain(draw.domain().content_id())?;
+            let distribution = design
+                .distributions()
+                .get(&draw.model())
+                .ok_or_else(|| integrity("statistical-design-model-is-missing"))?;
+            let support = distribution.target_masses().keys();
+            if opportunity.scenario() != policy.scenario()
+                || opportunity.id()? != draw.opportunity()
+                || opportunity.semantic_id() != draw.opportunity_semantics()
+                || opportunity.domain() != draw.domain()
+                || opportunity.model_prior() != Some(draw.model())
+                || domain.id()? != draw.domain()
+                || domain.cardinality() != distribution.target_masses().len() as u128
+                || support.clone().any(|value| !domain.contains(value))
+            {
+                return Err(integrity("statistical-design-opportunity-basis-mismatch"));
+            }
+        }
+        Ok(())
     }
 
     /// Derives one new named campaign history from an authenticated source snapshot.
@@ -226,9 +258,9 @@ impl CampaignRepository {
     /// derivation transition whose parent is the exact requested source
     /// snapshot. A compatible supplied policy becomes active atomically with
     /// ref creation. Strict and streaming policies may migrate between those
-    /// modes; statistical policies remain in their original mode. Omitting a
-    /// policy preserves the source policy. Exact retries are resolved from the
-    /// derived history even after later mutations.
+    /// modes; statistical policies preserve their exact active revision.
+    /// Omitting a policy preserves the source policy. Exact retries are resolved
+    /// from the derived history even after later mutations.
     ///
     /// # Errors
     ///
@@ -262,14 +294,17 @@ impl CampaignRepository {
         let prior_mode = prior_policy.mode();
         let active_policy = match policy {
             Some(next) => {
+                let next_id = next.id()?;
                 if next.scenario() != lineage.scenario()
                     || !derivation_modes_are_compatible(prior_mode, next.mode())
+                    || (prior_mode == CampaignMode::Statistical
+                        && next_id != source.snapshot.active_policy())
                 {
                     return Err(CampaignRepositoryError::InvalidRequest {
                         reason: "derived policy is incompatible with the source campaign",
                     });
                 }
-                next.id()?
+                next_id
             }
             None => source.snapshot.active_policy(),
         };
@@ -383,10 +418,10 @@ impl CampaignRepository {
         policy: &CampaignPolicy,
     ) -> Result<(), CampaignRepositoryError> {
         let mut pending: Vec<_> = policy
-            .content_children()
-            .into_iter()
-            .map(|(_, child)| CandidateGeneratorSpecId::from_content_id(child))
-            .collect::<Result<_, _>>()?;
+            .choice_policies()
+            .values()
+            .map(crate::ChoicePolicy::generator)
+            .collect();
         let mut visited = BTreeSet::new();
         let mut canonical_bytes = 0_usize;
         while let Some(id) = pending.pop() {

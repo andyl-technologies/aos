@@ -701,6 +701,14 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
     ),
     catalog_gate(
         PhasePlanPhase::Phase4,
+        "gate:campaign-statistics",
+        "checks.crucible.phase4.gates.campaignStatistics",
+        "finite static P/Q estimation and intervention exclusion",
+        false,
+        false,
+    ),
+    catalog_gate(
+        PhasePlanPhase::Phase4,
         "gate:e2e-determinism",
         "checks.crucible.phase4.gates.e2eDeterminism",
         "mock backend end-to-end determinism",

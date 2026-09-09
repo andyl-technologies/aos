@@ -96,6 +96,7 @@ fn green_before_advance_requires_every_prior_phase_gate() -> Result<(), Box<dyn 
         missing_for_phase5,
         BTreeSet::from([
             "checks.crucible.phase4.gates.replayOracle",
+            "checks.crucible.phase4.gates.campaignStatistics",
             "checks.crucible.phase4.gates.e2eDeterminism",
         ])
     );

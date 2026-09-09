@@ -52,6 +52,7 @@ enum TestShape {
     FleetEquivalence,
     CampaignContinuity,
     CampaignModel,
+    CampaignStatistics,
     BasicBlockCoverage,
     CheckpointMaterialization,
     StateSpaceSearch,
@@ -141,6 +142,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         owner_packages: &["crucible-campaign"],
         layers: &[Layer::L3],
         shape: TestShape::CampaignModel,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-statistics",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignStatistics,
         backend: TestBackend::InProcess,
     },
     GateTestingStandard {
@@ -341,7 +349,11 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     },
     CrateTestingOwnership {
         package: "crucible-campaign",
-        gates: &["gate:campaign-model", "gate:typed-choice"],
+        gates: &[
+            "gate:campaign-model",
+            "gate:campaign-statistics",
+            "gate:typed-choice",
+        ],
     },
     CrateTestingOwnership {
         package: "crucible-session",

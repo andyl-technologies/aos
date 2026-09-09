@@ -1451,8 +1451,9 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
                 .expect("decode bundle object")
                 .expect("bundle object");
             match object.record_kind() {
-                crate::CampaignRecordKind::Proposal => ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::Proposal => ObjectEnvelope::for_record_versioned(
                     crate::CampaignRecordKind::Proposal,
+                    forged.schema_version(),
                     crate::object::content_children(forged.content_children())
                         .expect("offer children"),
                     forged.canonical_bytes(),
@@ -1965,6 +1966,40 @@ fn canonical_planner_driver_basis(
     (engine, artifact, initial_state, budget)
 }
 
+fn legacy_request_budget_planner_driver_basis(
+    repository: &CampaignRepository,
+) -> (PlannerEngine, PolicyArtifact, PlannerState, PlanningBudget) {
+    let engine = PlannerEngine::new(
+        "crucible-canonical-frontier",
+        5,
+        1,
+        BTreeSet::from([
+            crate::CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
+            crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
+            crate::CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
+        ]),
+    )
+    .expect("legacy request-budget planner descriptor");
+    let dependency_bytes = b"legacy request-budget planner driver dependency".to_vec();
+    let dependency = ContentId::for_bytes(ObjectKind::Trace, 1, &dependency_bytes);
+    repository
+        .blobs
+        .put_if_absent(dependency, &BlobHandle::from_bytes(dependency_bytes))
+        .expect("legacy planner dependency");
+    let artifact = PolicyArtifact::new(
+        engine.id().expect("legacy engine id"),
+        1,
+        dependency,
+        BTreeSet::new(),
+        BTreeMap::new(),
+    )
+    .expect("legacy planner artifact");
+    let initial_state = CanonicalFrontierPlanner::initial_state_for_engine(&engine)
+        .expect("legacy initial planner state");
+    let budget = PlanningBudget::new(1, 1, 8, 8_192, 100).expect("legacy planner budget");
+    (engine, artifact, initial_state, budget)
+}
+
 fn canonical_planner_client(
     authority: &PlannerAuthorityKey,
     calls: Arc<std::sync::atomic::AtomicUsize>,
@@ -2366,7 +2401,7 @@ fn campaign_supervisor_plans_only_after_executor_scan_proves_no_ready_attempt() 
 }
 
 #[test]
-fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
+fn planner_driver_resumes_a_retained_v1_request_with_v2_construction_after_restart() {
     let (repository, lineage, policy, _, planner_authority, debugger_authority) =
         authorized_fixture();
     let repository = Arc::new(repository);
@@ -2416,36 +2451,85 @@ fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
             ),
         )
         .expect("resume planner campaign");
-    let (engine, artifact, initial_state, budget) = canonical_planner_driver_basis(&repository);
+    let (engine, artifact, initial_state, budget) =
+        legacy_request_budget_planner_driver_basis(&repository);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut driver = CampaignPlannerDriver::new(
-        Arc::clone(&repository),
-        canonical_planner_client(&planner_authority, Arc::clone(&calls)),
-        engine.clone(),
-        artifact.clone(),
-        initial_state.clone(),
+    let invocation = repository
+        .prepare_planner_invocation(
+            "planner-driver-restart",
+            running.new_snapshot,
+            &engine,
+            &artifact,
+            &initial_state,
+            None,
+            1,
+            budget,
+        )
+        .expect("prepare legacy first page");
+    let current_request = repository
+        .build_planner_request(
+            running.new_snapshot,
+            invocation.id().expect("legacy invocation ID"),
+        )
+        .expect("build current-schema first request");
+    assert_eq!(
+        u32::from_be_bytes(
+            current_request.canonical_bytes()[..4]
+                .try_into()
+                .expect("current request schema bytes"),
+        ),
+        2
+    );
+    let legacy_request = PlannerRequest::new_for_schema(
         1,
-        budget,
+        current_request.expected_snapshot(),
+        current_request.invocation().clone(),
+        current_request.engine().clone(),
+        current_request.policy_artifact().clone(),
+        current_request.policy().clone(),
+        current_request.planner_state().clone(),
+        *current_request.input_view(),
+        None,
+        current_request.input_bundle().clone(),
     )
-    .expect("planner driver");
+    .expect("reconstruct retained v1 planner request");
+    assert_ne!(
+        legacy_request.id().expect("legacy request ID"),
+        current_request.id().expect("current request ID")
+    );
 
-    let first_advance = driver.step("planner-driver-restart").expect("first page");
-    let (continued_snapshot, continued_step, cursor_position) = match first_advance {
-        CampaignPlannerStepOutcome::Advanced {
-            result,
-            disposition: PlannerDisposition::ContinueScan { cursor },
-        } => {
-            assert_eq!(result.prior_snapshot, running.new_snapshot);
-            (
-                result.new_snapshot,
-                result.step,
-                cursor.after().expect("first page cursor"),
-            )
-        }
-        other => panic!("first page must continue, got {other:?}"),
-    };
+    let mut planner = canonical_planner_client(&planner_authority, Arc::clone(&calls));
+    let response = planner
+        .plan(&legacy_request)
+        .expect("plan retained v1 first page");
+    let continued = repository
+        .accept_planner_response("planner-driver-restart", &legacy_request, &response)
+        .expect("accept retained v1 first page");
+    assert_eq!(continued.prior_snapshot, running.new_snapshot);
+    let continued_snapshot = continued.new_snapshot;
+    let continued_step = continued.step;
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-    drop(driver);
+
+    let persisted = repository
+        .load_planner_step_at(continued_snapshot, continued_step)
+        .expect("persisted v1 continue step");
+    let PlannerDisposition::ContinueScan { cursor } = persisted.disposition() else {
+        panic!("first page must continue")
+    };
+    let cursor_position = cursor.after().expect("first page cursor");
+    let retained_v1 = repository
+        .load_planner_request(persisted.request())
+        .expect("retained v1 planner request");
+    assert_eq!(retained_v1, legacy_request);
+    assert_eq!(
+        u32::from_be_bytes(
+            retained_v1.canonical_bytes()[..4]
+                .try_into()
+                .expect("retained request schema bytes"),
+        ),
+        1
+    );
+    drop(planner);
 
     let restarted = Arc::new(
         CampaignRepository::with_component_authorities(
@@ -2456,6 +2540,9 @@ fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
         )
         .expect("restart repository"),
     );
+    restarted
+        .validate_complete_head(continued_snapshot.content_id())
+        .expect("cold-validate retained v1 planner flight");
     let persisted = restarted
         .load_planner_step_at(continued_snapshot, continued_step)
         .expect("persisted continue step");
@@ -2466,7 +2553,7 @@ fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
         }
     );
     let mut restarted_driver = CampaignPlannerDriver::new(
-        restarted,
+        Arc::clone(&restarted),
         canonical_planner_client(&planner_authority, Arc::clone(&calls)),
         engine,
         artifact,
@@ -2478,16 +2565,31 @@ fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
     let second_advance = restarted_driver
         .step("planner-driver-restart")
         .expect("resume final page");
-    match second_advance {
+    let final_result = match second_advance {
         CampaignPlannerStepOutcome::Advanced {
             result,
             disposition: PlannerDisposition::Issue { selected, .. },
         } => {
             assert_eq!(result.prior_snapshot, continued_snapshot);
             assert_eq!(selected, cursor_position);
+            result
         }
         other => panic!("resumed final page must issue, got {other:?}"),
-    }
+    };
+    let final_step = restarted
+        .load_planner_step_at(final_result.new_snapshot, final_result.step)
+        .expect("load resumed planner step");
+    let retained_v2 = restarted
+        .load_planner_request(final_step.request())
+        .expect("retained v2 planner request");
+    assert_eq!(
+        u32::from_be_bytes(
+            retained_v2.canonical_bytes()[..4]
+                .try_into()
+                .expect("resumed request schema bytes"),
+        ),
+        2
+    );
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 

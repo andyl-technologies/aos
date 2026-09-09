@@ -170,6 +170,8 @@ pub enum CandidateSource {
     Finite(FiniteCandidateSource),
     /// Finite values carrying exact masses resolved from the opportunity model.
     ModeledFinite(ModeledFiniteCandidateSource),
+    /// One categorical statistical draw with exact target and proposal masses.
+    StatisticalFinite(StatisticalFiniteCandidateSource),
     /// A deterministic generator resolved from one non-finite opportunity model.
     ModeledGenerated(ModeledGeneratedCandidateSource),
     /// Versioned deterministic generator interpreted from campaign facts.
@@ -189,6 +191,18 @@ pub struct ModeledFiniteCandidateSource {
     model: ProbabilityModelId,
     values: BTreeSet<ChoiceValue>,
     prior_weights: BTreeMap<ChoiceValue, u64>,
+}
+
+/// Bounded finite support for one exact with-replacement statistical draw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatisticalFiniteCandidateSource {
+    coordinate: u64,
+    model: ProbabilityModelId,
+    values: BTreeSet<ChoiceValue>,
+    target_masses: BTreeMap<ChoiceValue, u64>,
+    proposal_masses: BTreeMap<ChoiceValue, u64>,
+    target_total: u64,
+    proposal_total: u64,
 }
 
 /// One portable non-finite model resolution and its deterministic generator.
@@ -223,6 +237,44 @@ impl ModeledFiniteCandidateSource {
     #[must_use]
     pub const fn prior_weights(&self) -> &BTreeMap<ChoiceValue, u64> {
         &self.prior_weights
+    }
+}
+
+impl StatisticalFiniteCandidateSource {
+    /// Returns the draw coordinate fixed by the active sampling design.
+    #[must_use]
+    pub const fn coordinate(&self) -> u64 {
+        self.coordinate
+    }
+
+    /// Returns the exact modeled target distribution.
+    #[must_use]
+    pub const fn model(&self) -> ProbabilityModelId {
+        self.model
+    }
+
+    /// Returns every supported value and its positive target mass.
+    #[must_use]
+    pub const fn target_masses(&self) -> &BTreeMap<ChoiceValue, u64> {
+        &self.target_masses
+    }
+
+    /// Returns every supported value and its positive proposal mass.
+    #[must_use]
+    pub const fn proposal_masses(&self) -> &BTreeMap<ChoiceValue, u64> {
+        &self.proposal_masses
+    }
+
+    /// Returns the exact sum of all target masses.
+    #[must_use]
+    pub const fn target_total(&self) -> u64 {
+        self.target_total
+    }
+
+    /// Returns the exact sum of all proposal masses.
+    #[must_use]
+    pub const fn proposal_total(&self) -> u64 {
+        self.proposal_total
     }
 }
 
@@ -319,6 +371,47 @@ impl CandidateSource {
         }))
     }
 
+    /// Builds one bounded finite target and proposal distribution.
+    ///
+    /// Every target-support value must have a positive proposal mass. A branch
+    /// request using this source admits exactly one categorical draw; multiple
+    /// requests therefore form a with-replacement sample stream without
+    /// reinterpreting finite enumeration as a probability design.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when either map is empty or oversized,
+    /// the maps have different keys, any mass is zero, or either sum exceeds
+    /// `u64`.
+    pub fn statistical_finite(
+        coordinate: u64,
+        model: ProbabilityModelId,
+        target_masses: BTreeMap<ChoiceValue, u64>,
+        proposal_masses: BTreeMap<ChoiceValue, u64>,
+    ) -> Result<Self, CampaignCodecError> {
+        if target_masses.is_empty()
+            || target_masses.len() > MAX_FINITE_VALUES
+            || target_masses.keys().ne(proposal_masses.keys())
+            || target_masses.values().any(|mass| *mass == 0)
+            || proposal_masses.values().any(|mass| *mass == 0)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "statistical finite source has invalid target or proposal support",
+            });
+        }
+        let target_total = statistical_mass_total(&target_masses)?;
+        let proposal_total = statistical_mass_total(&proposal_masses)?;
+        Ok(Self::StatisticalFinite(StatisticalFiniteCandidateSource {
+            coordinate,
+            model,
+            values: target_masses.keys().cloned().collect(),
+            target_masses,
+            proposal_masses,
+            target_total,
+            proposal_total,
+        }))
+    }
+
     /// Builds a generated candidate source.
     #[must_use]
     pub const fn generated(generator: CandidateGeneratorSpecId) -> Self {
@@ -340,6 +433,7 @@ impl CandidateSource {
         match self {
             Self::Finite(source) => Some(source.values()),
             Self::ModeledFinite(source) => Some(&source.values),
+            Self::StatisticalFinite(source) => Some(&source.values),
             Self::ModeledGenerated(_) | Self::Generated(_) => None,
         }
     }
@@ -348,7 +442,7 @@ impl CandidateSource {
     #[must_use]
     pub const fn generator(&self) -> Option<CandidateGeneratorSpecId> {
         match self {
-            Self::Finite(_) | Self::ModeledFinite(_) => None,
+            Self::Finite(_) | Self::ModeledFinite(_) | Self::StatisticalFinite(_) => None,
             Self::ModeledGenerated(source) => Some(source.generator),
             Self::Generated(generator) => Some(*generator),
         }
@@ -366,6 +460,7 @@ impl CandidateSource {
                 |weights| weights.get(value).copied(),
             ),
             Self::ModeledFinite(source) => source.prior_weights.get(value).copied(),
+            Self::StatisticalFinite(source) => source.target_masses.get(value).copied(),
             Self::ModeledGenerated(_) | Self::Generated(_) => Some(1),
         }
     }
@@ -375,6 +470,7 @@ impl CandidateSource {
     pub const fn model_prior(&self) -> Option<ProbabilityModelId> {
         match self {
             Self::ModeledFinite(source) => Some(source.model),
+            Self::StatisticalFinite(source) => Some(source.model),
             Self::ModeledGenerated(source) => Some(source.model),
             Self::Finite(_) | Self::Generated(_) => None,
         }
@@ -408,6 +504,13 @@ impl Canonical for CandidateSource {
                 source.model.encode(encoder);
                 source.generator.encode(encoder);
             }
+            Self::StatisticalFinite(source) => {
+                encoder.u8(5);
+                source.coordinate.encode(encoder);
+                source.model.encode(encoder);
+                source.target_masses.encode(encoder);
+                source.proposal_masses.encode(encoder);
+            }
         }
     }
 
@@ -428,6 +531,12 @@ impl Canonical for CandidateSource {
                 ProbabilityModelId::decode(decoder)?,
                 CandidateGeneratorSpecId::decode(decoder)?,
             )),
+            5 => Self::statistical_finite(
+                u64::decode(decoder)?,
+                ProbabilityModelId::decode(decoder)?,
+                decoder.map_bounded(MAX_FINITE_VALUES, "statistical-target-value-count")?,
+                decoder.map_bounded(MAX_FINITE_VALUES, "statistical-proposal-value-count")?,
+            ),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "candidate-source",
                 tag,
@@ -534,6 +643,7 @@ impl BranchRequest {
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
         let schema_version = match (&cause, &source) {
+            (_, CandidateSource::StatisticalFinite(_)) => STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION,
             _ if stop.uses_extended_wire_schema() => BRANCH_REQUEST_SCHEMA_VERSION,
             (BranchRequestCause::ScenarioDefault(_), _) => {
                 SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION
@@ -578,6 +688,9 @@ impl BranchRequest {
             (CandidateSource::ModeledGenerated(_), version) => {
                 !matches!(version, 4 | BRANCH_REQUEST_SCHEMA_VERSION)
             }
+            (CandidateSource::StatisticalFinite(_), version) => {
+                version != STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
+            }
             (CandidateSource::Finite(_) | CandidateSource::Generated(_), _) => false,
         };
         let incompatible_cause = match cause {
@@ -592,16 +705,33 @@ impl BranchRequest {
                 schema_version == SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION
             }
         };
-        if !matches!(schema_version, 1..=BRANCH_REQUEST_SCHEMA_VERSION)
-            || incompatible_source
+        let extended_stop_schema = schema_version == BRANCH_REQUEST_SCHEMA_VERSION
+            || schema_version == STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION;
+        if !matches!(
+            schema_version,
+            1..=STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
+        ) || incompatible_source
             || incompatible_cause
-            || stop.uses_extended_wire_schema() != (schema_version == BRANCH_REQUEST_SCHEMA_VERSION)
+            || (schema_version == STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
+                && !matches!(source, CandidateSource::StatisticalFinite(_)))
+            || (stop.uses_extended_wire_schema() && !extended_stop_schema)
+            || (!stop.uses_extended_wire_schema()
+                && schema_version == BRANCH_REQUEST_SCHEMA_VERSION)
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported branch-request schema or source",
             });
         }
         stop.validate()?;
+        if matches!(source, CandidateSource::StatisticalFinite(_))
+            && (!matches!(cause, BranchRequestCause::Planner(_))
+                || budget.maximum_proposals() != 1
+                || budget.maximum_attempts() != 1)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "statistical finite source requires one planner draw",
+            });
+        }
         let request = Self {
             schema_version,
             branch_point,
@@ -768,7 +898,9 @@ impl BranchRequest {
             CandidateSource::Generated(generator) => {
                 children.push(("generator", generator.content_id()));
             }
-            CandidateSource::Finite(_) | CandidateSource::ModeledFinite(_) => {}
+            CandidateSource::Finite(_)
+            | CandidateSource::ModeledFinite(_)
+            | CandidateSource::StatisticalFinite(_) => {}
         }
         match self.cause {
             BranchRequestCause::Planner(invocation) => {

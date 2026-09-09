@@ -75,10 +75,10 @@ fn validate_creation_generator_closure(
     }
 
     let mut pending: Vec<_> = policy
-        .content_children()
-        .into_iter()
-        .map(|(_, child)| CandidateGeneratorSpecId::from_content_id(child))
-        .collect::<Result<_, _>>()?;
+        .choice_policies()
+        .values()
+        .map(crate::ChoicePolicy::generator)
+        .collect();
     let mut reachable = BTreeSet::new();
     while let Some(id) = pending.pop() {
         if !reachable.insert(id) {

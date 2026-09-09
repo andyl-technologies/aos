@@ -226,13 +226,14 @@ impl CampaignRecordKind {
     #[must_use]
     pub const fn schema_version(self) -> u32 {
         match self {
-            Self::Policy => 2,
+            Self::Policy => 3,
             Self::Snapshot => 3,
             Self::Fact => 13,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
-            Self::BranchRequest => 6,
+            Self::BranchRequest => 7,
+            Self::Proposal => 2,
             Self::BranchPath => 2,
             Self::Attempt => 3,
             Self::AttemptAdmission => 2,
@@ -731,13 +732,19 @@ impl ObjectEnvelope {
             },
         )?;
         let version_supported = envelope.schema_version() == record_kind.schema_version()
-            || record_kind == CampaignRecordKind::Policy && envelope.schema_version() == 1
+            || record_kind == CampaignRecordKind::Policy
+                && matches!(envelope.schema_version(), 1..=2)
             || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
                 && matches!(envelope.schema_version(), 2..=12)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::BranchRequest
-                && matches!(envelope.schema_version(), 1..=5)
+                && matches!(
+                    envelope.schema_version(),
+                    1..=crate::exploration::STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
+                )
+            || record_kind == CampaignRecordKind::Proposal
+                && matches!(envelope.schema_version(), 1..=2)
             || record_kind == CampaignRecordKind::Attempt
                 && matches!(envelope.schema_version(), 1..=2)
             || record_kind == CampaignRecordKind::AttemptAdmission

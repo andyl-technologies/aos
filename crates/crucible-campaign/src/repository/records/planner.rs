@@ -157,6 +157,11 @@ impl CampaignRepository {
             }
         }
         let snapshot = self.read_snapshot(request.expected_snapshot().content_id())?;
+        if self.statistical_request_basis(&snapshot, request.policy())?
+            != request.statistical_request_basis()
+        {
+            return Err(integrity("planner-request-statistical-basis-mismatch"));
+        }
         let beam_projection = request
             .engine()
             .capabilities()

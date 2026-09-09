@@ -404,7 +404,7 @@ impl PlannerDisposition {
                 ..
             } => {
                 if issued_branch_requests.len() > MAX_STEP_BRANCH_REQUESTS
-                    || issued_proposals.is_empty()
+                    || (issued_branch_requests.is_empty() && issued_proposals.is_empty())
                     || issued_proposals.len() > MAX_STEP_PROPOSALS
                     || issued_branch_requests
                         .iter()
@@ -551,7 +551,7 @@ impl PlannerProposalDisposition {
                 proposals,
             } => {
                 if branch_requests.len() > MAX_STEP_BRANCH_REQUESTS
-                    || proposals.is_empty()
+                    || (branch_requests.is_empty() && proposals.is_empty())
                     || proposals.len() > MAX_STEP_PROPOSALS
                 {
                     return Err(CampaignCodecError::InvalidValue {

@@ -223,6 +223,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate_campaign_model"
             ),
             (
+                "gate:campaign-statistics",
+                "crucible-campaign",
+                "gate_campaign_statistics"
+            ),
+            (
                 "gate:scheduler-liveness",
                 "crucible",
                 "gate_scheduler_liveness"

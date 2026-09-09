@@ -74,6 +74,10 @@ fn canonical_gate_statuses_are_current() {
         Some(GateStatus::Implemented)
     ));
     assert!(matches!(
+        find_gate("gate:campaign-statistics").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
         find_gate("gate:replay-oracle").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
@@ -146,6 +150,7 @@ fn canonical_gate_statuses_are_current() {
         ("gate:layer1-injection", GatePhase::Phase2),
         ("gate:content-address", GatePhase::Phase1),
         ("gate:campaign-model", GatePhase::Phase1),
+        ("gate:campaign-statistics", GatePhase::Phase4),
         ("gate:replay-oracle", GatePhase::Phase1),
         ("gate:divergence-bisect", GatePhase::Phase1),
         ("gate:scheduler-liveness", GatePhase::Phase3),

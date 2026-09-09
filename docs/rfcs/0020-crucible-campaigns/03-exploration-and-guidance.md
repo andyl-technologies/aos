@@ -960,6 +960,32 @@ material sufficient for declared importance weighting. Adaptive resampling uses
 predeclared sequential Monte Carlo rules and reports effective sample size and
 weight concentration. Paths with `Q = 0` where `P > 0` invalidate the estimate.
 
+The first executable sampling contract is deliberately finite and static. A
+version-three statistical policy pins complete positive integer-mass `P` and
+`Q` distributions, coordinates exactly `0..N`, each coordinate's predeclared
+choice-opportunity identity, parent coordinate, probability model, and complete
+stop condition. It runs only with the static exhaustive planner. Opportunities
+whose identity depends on a prior runtime outcome, Beam, PUCT, adaptive
+resampling, and post-hoc opportunity substitution require a later versioned
+selector or sequential-design protocol and fail closed in this version.
+
+Once activated, the exact statistical policy identity is immutable for that
+campaign lineage. A derived statistical campaign inherits the same active
+policy revision; changing the design or any other policy field requires a new
+independent campaign rather than a derivation that could inherit partial draws.
+
+A report is available only after every declared coordinate has an admitted
+proposal and canonical observation. Its ordinary importance-sampling event
+estimate divides the sum of endpoint weights by the fixed number of declared
+endpoints; it never substitutes the realized weight sum or the number of
+currently completed draws. The separately named self-normalized estimate uses
+the realized weight sum and therefore carries finite-sample bias. Endpoints
+form an equal-weight mixture at one common path depth. Distinct draw coordinates
+that select the same semantic outcome retain their sampling multiplicity even
+when semantic attempt deduplication reuses one canonical observation, while
+shared ancestry keeps weight diagnostics descriptive rather than an IID
+confidence claim.
+
 An operator or debugger proposal used as an attempt's `ExecutionBasis` is an
 intervention, not a draw from the campaign's proposal distribution. Its
 observation remains useful for finding bugs, comparing outcomes, and—when

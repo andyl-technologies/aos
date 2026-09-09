@@ -580,6 +580,11 @@ impl CampaignRepository {
             if prior_policy.mode() != next_policy.mode() {
                 return Err(integrity("activated-policy-mode-mismatch"));
             }
+            if prior_policy.mode() == crate::CampaignMode::Statistical
+                && next != parent.snapshot.active_policy()
+            {
+                return Err(integrity("statistical-policy-identity-is-immutable"));
+            }
         }
         if child.snapshot.active_policy() != expected_policy {
             return Err(integrity("snapshot-transition-active-policy-mismatch"));
@@ -716,6 +721,8 @@ impl CampaignRepository {
         let next_policy = self.read_policy(derivation.active_policy().content_id())?;
         if next_policy.scenario() != lineage.scenario()
             || !derivation_modes_are_compatible(prior_policy.mode(), next_policy.mode())
+            || (prior_policy.mode() == crate::CampaignMode::Statistical
+                && derivation.active_policy() != parent.snapshot.active_policy())
         {
             return Err(integrity("derivation-policy-incompatible-with-source"));
         }
@@ -1261,7 +1268,7 @@ impl CampaignRepository {
         self.validate_planner_page(&expected_view, &invocation)?;
         self.validate_planner_cursor(parent, step.disposition())?;
         self.validate_planner_disposition_page(&invocation, step.disposition())?;
-        self.validate_planner_selected_source(&expected_view, step.disposition())?;
+        self.validate_planner_selected_source(&expected_view, step.disposition(), None)?;
         let expected_parent =
             self.validate_planner_invocation_start(prior_roots.coordination, &invocation)?;
         if step.parent() != expected_parent {

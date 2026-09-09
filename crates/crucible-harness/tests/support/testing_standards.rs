@@ -254,6 +254,26 @@ pub(super) fn source_shape_failures(
         }
     }
 
+    if standard.shape == TestShape::CampaignStatistics {
+        for required in [
+            "CampaignRepository::with_component_authorities",
+            "StatisticalDistribution::new",
+            "with_statistical_sampling_design",
+            "CanonicalFrontierPlanner",
+            "project_statistical_estimate",
+            "estimate_event",
+            "CampaignRepositoryError::Integrity",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove finite static P/Q support, exact estimation, refusal, and restart through the public campaign repository",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
     if standard.shape == TestShape::CampaignContinuity {
         for required in [
             "seed_next_run_for_provenance",

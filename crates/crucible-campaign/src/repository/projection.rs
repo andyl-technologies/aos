@@ -575,6 +575,9 @@ impl CampaignRepository {
         request: &BranchRequest,
         domain: &ChoiceDomain,
     ) -> Result<Option<u64>, CampaignRepositoryError> {
+        if matches!(request.source(), CandidateSource::StatisticalFinite(_)) {
+            return Ok(Some(1));
+        }
         if let Some(values) = request.source().finite_values() {
             return u64::try_from(values.len())
                 .map(Some)
@@ -694,6 +697,47 @@ impl CampaignRepository {
     ) -> Result<Option<ChoiceValue>, CampaignRepositoryError> {
         if ordinal == 0 {
             return Err(integrity("proposal-ordinal-is-not-canonical"));
+        }
+        if let CandidateSource::StatisticalFinite(source) = request.source() {
+            if ordinal != 1 {
+                return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
+            }
+            let BranchRequestCause::Planner(invocation_id) = request.cause() else {
+                return Err(integrity("statistical-request-cause-is-not-planner"));
+            };
+            let invocation = self.load_planner_invocation(invocation_id)?;
+            let policy = self.read_policy(invocation.policy().content_id())?;
+            let design = policy
+                .statistical_sampling_design()
+                .ok_or_else(|| integrity("statistical-policy-lacks-sampling-design"))?;
+            let draw_plan = design
+                .draw(source.coordinate())
+                .ok_or_else(|| integrity("statistical-request-coordinate-is-not-planned"))?;
+            let distribution = design
+                .distributions()
+                .get(&draw_plan.model())
+                .ok_or_else(|| integrity("statistical-request-model-is-not-planned"))?;
+            if source.model() != draw_plan.model()
+                || source.target_masses() != distribution.target_masses()
+                || source.proposal_masses() != distribution.proposal_masses()
+            {
+                return Err(integrity("statistical-request-distribution-mismatch"));
+            }
+            let draw = weighted_categorical_draw(
+                invocation.policy().content_id().digest(),
+                source.coordinate(),
+                u128::from(source.proposal_total()),
+            )?;
+            let mut cumulative = 0_u128;
+            for (value, mass) in source.proposal_masses() {
+                cumulative = cumulative
+                    .checked_add(u128::from(*mass))
+                    .ok_or_else(|| integrity("statistical-proposal-mass-sum-overflow"))?;
+                if draw < cumulative {
+                    return Ok(Some(value.clone()));
+                }
+            }
+            return Err(integrity("statistical-proposal-draw-is-out-of-range"));
         }
         if let Some(values) = request.source().finite_values() {
             return values
@@ -840,6 +884,15 @@ impl CampaignRepository {
     ) -> Result<Vec<ChoiceValue>, CampaignRepositoryError> {
         let limit = usize::try_from(limit)
             .map_err(|_| integrity("static-candidate-prefix-limit-overflow"))?;
+        if matches!(request.source(), CandidateSource::StatisticalFinite(_)) {
+            return if limit == 0 {
+                Ok(Vec::new())
+            } else {
+                self.static_candidate_at(request, domain, 1)?
+                    .map(|value| vec![value])
+                    .ok_or_else(|| integrity("statistical-proposal-draw-is-missing"))
+            };
+        }
         if let Some(values) = request.source().finite_values() {
             return Ok(values.iter().take(limit).cloned().collect());
         }
@@ -1906,7 +1959,7 @@ impl CampaignRepository {
                     )?
                     .ok_or_else(|| integrity("planner-candidate-enumerator-is-not-implemented"))?,
             };
-            Some(Proposal::new(
+            Some(Proposal::new_for_request(
                 position.branch_point(),
                 position.source(),
                 request.domain(),
@@ -1915,6 +1968,7 @@ impl CampaignRepository {
                 Some(invocation_id),
                 ordinal,
                 snapshot.snapshot.planning_view().id()?,
+                &request,
             )?)
         } else {
             None
