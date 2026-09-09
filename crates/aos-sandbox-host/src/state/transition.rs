@@ -15,11 +15,18 @@
 //! readiness proof: a Guardian becomes ready only from the current fixed
 //! `Type=notify` start job followed by an exact active/running observation.
 
+use std::os::fd::BorrowedFd;
+
+use aos_sandbox_broker::{
+    ProtectedBrokerPublicCredentialRole, ProtectedBrokerPublicCredentialSnapshot,
+};
 use aos_sandbox_core::ProtocolVersion;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 const BINDING_DOMAIN: &[u8] = b"aos.host.guardian-launch-binding.v1\0";
+const EXECUTION_AUTHENTICATION_DOMAIN: &[u8] = b"aos.host.execution-authentication.v1\0";
+const EXECUTION_AUTHENTICATION_VERSION: u16 = 1;
 const MAXIMUM_POLICY_BYTES: u64 = 64 * 1024;
 const MAXIMUM_PLAN_BYTES: usize = 256 * 1024;
 const MAXIMUM_LEASE_BYTES: usize = 64 * 1024;
@@ -46,6 +53,16 @@ impl HostAction {
             4 => Some(Self::Thaw),
             5 => Some(Self::Kill),
             _ => None,
+        }
+    }
+
+    const fn code(self) -> u8 {
+        match self {
+            Self::Launch => 1,
+            Self::Stop => 2,
+            Self::Freeze => 3,
+            Self::Thaw => 4,
+            Self::Kill => 5,
         }
     }
 }
@@ -122,6 +139,41 @@ impl DurableExecution {
         }
     }
 
+    /// Commits one execution record to its request and stable authority.
+    ///
+    /// The framed input excludes refreshed outer admission records, effect
+    /// status, and receipt. A Guardian execution still binds its exact
+    /// historical attempt lease evidence inside `self`; current outer lease
+    /// records remain independently authenticated and cross-checked during
+    /// state recovery.
+    pub(crate) fn authentication_digest(
+        &self,
+        context: ExecutionContext,
+        stable_authority_digest: [u8; 32],
+    ) -> Option<[u8; 32]> {
+        let execution = serde_json::to_vec(self).ok()?;
+        let mut hash = Sha256::new();
+        hash.update(EXECUTION_AUTHENTICATION_DOMAIN);
+        update_authentication_field(
+            &mut hash,
+            1,
+            &EXECUTION_AUTHENTICATION_VERSION.to_be_bytes(),
+        )?;
+        update_authentication_field(&mut hash, 2, &context.request_id)?;
+        update_authentication_field(&mut hash, 3, &context.request_digest)?;
+        update_authentication_field(&mut hash, 4, &context.carrier.major().to_be_bytes())?;
+        update_authentication_field(&mut hash, 5, &context.carrier.minor().to_be_bytes())?;
+        update_authentication_field(&mut hash, 6, &[context.action.code()])?;
+        update_authentication_field(&mut hash, 7, &context.sandbox_id)?;
+        update_authentication_field(&mut hash, 8, &context.incarnation_id)?;
+        update_authentication_field(&mut hash, 9, &context.assignment_epoch.to_be_bytes())?;
+        update_authentication_field(&mut hash, 10, &context.desired_generation.to_be_bytes())?;
+        update_authentication_field(&mut hash, 11, &context.assignment_digest)?;
+        update_authentication_field(&mut hash, 12, &stable_authority_digest)?;
+        update_authentication_field(&mut hash, 13, &execution)?;
+        Some(hash.finalize().into())
+    }
+
     pub(crate) fn guardian_binding(&self) -> Option<[u8; 32]> {
         match self {
             Self::GuardianLaunch(record) => Some(record.evidence.binding),
@@ -192,6 +244,14 @@ impl DurableExecution {
             phase: CompositeStopPhase::StopAuthorized,
         })
     }
+}
+
+fn update_authentication_field(hash: &mut Sha256, tag: u16, value: &[u8]) -> Option<()> {
+    let length = u64::try_from(value.len()).ok()?;
+    hash.update(tag.to_be_bytes());
+    hash.update(length.to_be_bytes());
+    hash.update(value);
+    Some(())
 }
 
 #[derive(Clone, Copy)]
@@ -307,7 +367,7 @@ impl GuardianLaunchEvidence {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ProtectedInputSnapshot {
+pub(crate) struct ProtectedInputSnapshot {
     role: u8,
     device: u64,
     inode: u64,
@@ -316,6 +376,27 @@ struct ProtectedInputSnapshot {
 }
 
 impl ProtectedInputSnapshot {
+    fn from_protected_credential(
+        role: ProtectedBrokerPublicCredentialRole,
+        snapshot: ProtectedBrokerPublicCredentialSnapshot,
+    ) -> Option<Self> {
+        let role = match role {
+            ProtectedBrokerPublicCredentialRole::BrokerPlanPolicy => 0,
+            ProtectedBrokerPublicCredentialRole::BrokerPlanPublicKey => 1,
+            ProtectedBrokerPublicCredentialRole::BrokerPlanRevocationScope => 2,
+            ProtectedBrokerPublicCredentialRole::OwnershipLeasePolicy => 3,
+            ProtectedBrokerPublicCredentialRole::OwnershipLeasePublicKey => 4,
+            ProtectedBrokerPublicCredentialRole::NodeId => 5,
+        };
+        Some(Self {
+            role,
+            device: snapshot.device(),
+            inode: snapshot.inode(),
+            bytes: u64::try_from(snapshot.bytes()).ok()?,
+            sha256: snapshot.sha256(),
+        })
+    }
+
     fn validate(&self, role: usize) -> bool {
         let maximum = match role {
             0 | 3 => MAXIMUM_POLICY_BYTES,
@@ -337,6 +418,26 @@ impl ProtectedInputSnapshot {
         hash.update(self.bytes.to_be_bytes());
         hash.update(self.sha256);
     }
+}
+
+/// Converts one all-at-once custody result into the durable Guardian order.
+pub(crate) fn protected_input_snapshots(
+    credentials: &[(
+        ProtectedBrokerPublicCredentialRole,
+        BorrowedFd<'_>,
+        ProtectedBrokerPublicCredentialSnapshot,
+    ); 6],
+) -> Option<[ProtectedInputSnapshot; 6]> {
+    let snapshots = credentials
+        .iter()
+        .enumerate()
+        .map(|(index, (role, _, snapshot))| {
+            (*role == ProtectedBrokerPublicCredentialRole::ALL[index])
+                .then(|| ProtectedInputSnapshot::from_protected_credential(*role, *snapshot))
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    snapshots.try_into().ok()
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1619,6 +1720,80 @@ mod tests {
         assert_eq!(
             signed_authority_version(ProtocolVersion::new(1, 6), HostAction::Launch),
             None
+        );
+    }
+
+    #[test]
+    fn execution_authentication_binds_context_stable_authority_and_attempt_evidence() {
+        let execution = DurableExecution::guardian_fixture(context(5, HostAction::Launch, false));
+        let baseline_context = context(5, HostAction::Launch, false);
+        let stable_authority = [40; 32];
+        let baseline = execution
+            .authentication_digest(baseline_context, stable_authority)
+            .unwrap_or_else(|| panic!("cannot authenticate valid execution"));
+
+        let mut contexts = Vec::new();
+        let mut changed = baseline_context;
+        changed.request_id[0] ^= 1;
+        contexts.push(changed);
+        changed = baseline_context;
+        changed.request_digest[0] ^= 1;
+        contexts.push(changed);
+        changed = baseline_context;
+        changed.carrier = ProtocolVersion::new(1, 4);
+        contexts.push(changed);
+        changed = baseline_context;
+        changed.action = HostAction::Stop;
+        contexts.push(changed);
+        changed = baseline_context;
+        changed.sandbox_id[0] ^= 1;
+        contexts.push(changed);
+        changed = baseline_context;
+        changed.incarnation_id[0] ^= 1;
+        contexts.push(changed);
+        changed = baseline_context;
+        changed.assignment_epoch += 1;
+        contexts.push(changed);
+        changed = baseline_context;
+        changed.desired_generation += 1;
+        contexts.push(changed);
+        changed = baseline_context;
+        changed.assignment_digest[0] ^= 1;
+        contexts.push(changed);
+
+        assert!(contexts.into_iter().all(|changed| {
+            execution.authentication_digest(changed, stable_authority) != Some(baseline)
+        }));
+        assert_ne!(
+            execution.authentication_digest(baseline_context, [41; 32]),
+            Some(baseline)
+        );
+
+        let mut changed_phase = execution.clone();
+        let DurableExecution::GuardianLaunch(record) = &mut changed_phase else {
+            panic!("Guardian fixture has the wrong kind");
+        };
+        record.phase = GuardianLaunchPhase::GuardianStartIssued;
+        assert_ne!(
+            changed_phase.authentication_digest(baseline_context, stable_authority),
+            Some(baseline)
+        );
+
+        let mut changed_attempt_lease = execution.clone();
+        let DurableExecution::GuardianLaunch(record) = &mut changed_attempt_lease else {
+            panic!("Guardian fixture has the wrong kind");
+        };
+        record.evidence.ownership_lease[0] ^= 1;
+        assert_ne!(
+            changed_attempt_lease.authentication_digest(baseline_context, stable_authority),
+            Some(baseline)
+        );
+
+        // A renewed outer admission that preserves the stable commitment does
+        // not rewrite the historical attempt evidence or its authentication.
+        assert_eq!(
+            execution.authentication_digest(baseline_context, stable_authority),
+            Some(baseline)
         );
     }
 

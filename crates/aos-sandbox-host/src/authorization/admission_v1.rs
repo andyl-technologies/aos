@@ -7,7 +7,8 @@ use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
     BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2, BrokerLocalRecordDomain,
     ProtectedBrokerAuthorityConfiguration, ProtectedBrokerPublicCredentialRole,
-    ProtectedBrokerPublicCredentials, RecordNamespace, VerifiedBrokerAdmission,
+    ProtectedBrokerPublicCredentialSnapshot, ProtectedBrokerPublicCredentials, RecordNamespace,
+    VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, DesiredGeneration,
@@ -86,8 +87,9 @@ impl HostAuthorityV1 {
     ///
     /// Authorities built directly with [`Self::new`] have no descriptor
     /// custody and return `Ok(None)`. A protected-directory authority returns
-    /// all six roles only while every descriptor still matches the exact
-    /// bytes and metadata used to construct the authority.
+    /// all six roles and their original non-secret snapshots only while every
+    /// descriptor still matches the exact bytes and metadata used to construct
+    /// the authority.
     ///
     /// # Errors
     ///
@@ -96,12 +98,18 @@ impl HostAuthorityV1 {
     pub(crate) fn revalidated_guardian_credentials(
         &self,
     ) -> Result<
-        Option<[(ProtectedBrokerPublicCredentialRole, BorrowedFd<'_>); 6]>,
+        Option<
+            [(
+                ProtectedBrokerPublicCredentialRole,
+                BorrowedFd<'_>,
+                ProtectedBrokerPublicCredentialSnapshot,
+            ); 6],
+        >,
         HostAuthorityConfigError,
     > {
         self.public_credentials
             .as_ref()
-            .map(ProtectedBrokerPublicCredentials::revalidated_descriptors)
+            .map(ProtectedBrokerPublicCredentials::revalidated_descriptor_evidence)
             .transpose()
     }
 

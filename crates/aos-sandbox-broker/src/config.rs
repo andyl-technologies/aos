@@ -81,6 +81,46 @@ pub enum ProtectedBrokerPublicCredentialRole {
     NodeId,
 }
 
+/// Identifies the exact non-secret bytes retained for one public credential.
+///
+/// This snapshot is released only after the complete six-descriptor set has
+/// passed a current metadata and repeated-read comparison against the bytes
+/// used to construct the broker authority. It contains no journal MAC key
+/// material.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtectedBrokerPublicCredentialSnapshot {
+    device: u64,
+    inode: u64,
+    bytes: usize,
+    sha256: [u8; 32],
+}
+
+impl ProtectedBrokerPublicCredentialSnapshot {
+    /// Returns the device containing the retained credential inode.
+    #[must_use]
+    pub const fn device(self) -> u64 {
+        self.device
+    }
+
+    /// Returns the retained credential inode number.
+    #[must_use]
+    pub const fn inode(self) -> u64 {
+        self.inode
+    }
+
+    /// Returns the exact retained credential length.
+    #[must_use]
+    pub const fn bytes(self) -> usize {
+        self.bytes
+    }
+
+    /// Returns SHA-256 over the exact retained credential bytes.
+    #[must_use]
+    pub const fn sha256(self) -> [u8; 32] {
+        self.sha256
+    }
+}
+
 impl ProtectedBrokerPublicCredentialRole {
     /// Lists the complete role set in the Guardian activation order.
     pub const ALL: [Self; 6] = [
@@ -146,6 +186,62 @@ impl ProtectedBrokerPublicCredentials {
             )
         }))
     }
+
+    /// Revalidates and describes the complete public credential set.
+    ///
+    /// Every returned snapshot describes the original bytes used to construct
+    /// the authority. The method produces no output unless all six retained
+    /// descriptors still match those bytes and their protected metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerAuthorityConfigError`] when any retained descriptor no
+    /// longer names the exact protected bytes used to construct the authority.
+    pub fn revalidated_descriptor_evidence(
+        &self,
+    ) -> Result<
+        [(
+            ProtectedBrokerPublicCredentialRole,
+            BorrowedFd<'_>,
+            ProtectedBrokerPublicCredentialSnapshot,
+        ); 6],
+        BrokerAuthorityConfigError,
+    > {
+        self.revalidated_descriptor_evidence_with(inspect_protected_descriptor)
+    }
+
+    fn revalidated_descriptor_evidence_with(
+        &self,
+        inspect: impl Copy
+        + Fn(
+            BorrowedFd<'_>,
+            &'static str,
+            usize,
+        ) -> Result<ProtectedCredentialMetadata, BrokerAuthorityConfigError>,
+    ) -> Result<
+        [(
+            ProtectedBrokerPublicCredentialRole,
+            BorrowedFd<'_>,
+            ProtectedBrokerPublicCredentialSnapshot,
+        ); 6],
+        BrokerAuthorityConfigError,
+    > {
+        for (role, credential) in ProtectedBrokerPublicCredentialRole::ALL
+            .iter()
+            .zip(&self.credentials)
+        {
+            credential.revalidate_with(role.as_str(), role.maximum_bytes(), inspect)?;
+        }
+
+        Ok(std::array::from_fn(|index| {
+            let credential = &self.credentials[index];
+            (
+                ProtectedBrokerPublicCredentialRole::ALL[index],
+                credential.descriptor.as_fd(),
+                credential.snapshot.public(),
+            )
+        }))
+    }
 }
 
 struct ProtectedBrokerPublicCredential {
@@ -206,6 +302,17 @@ struct ProtectedCredentialMetadata {
 struct ProtectedCredentialSnapshot {
     metadata: ProtectedCredentialMetadata,
     sha256: [u8; 32],
+}
+
+impl ProtectedCredentialSnapshot {
+    const fn public(self) -> ProtectedBrokerPublicCredentialSnapshot {
+        ProtectedBrokerPublicCredentialSnapshot {
+            device: self.metadata.device,
+            inode: self.metadata.inode,
+            bytes: self.metadata.bytes,
+            sha256: self.sha256,
+        }
+    }
 }
 
 impl ProtectedBrokerPublicCredentialRole {
@@ -908,6 +1015,52 @@ mod tests {
         assert!(
             credential
                 .revalidate_with(PLAN_POLICY_FILE, 8, inspect_unprotected_descriptor)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn snapshot_evidence_is_all_or_nothing_and_matches_authority_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let contents = [
+            b"plan-policy".as_slice(),
+            b"plan-key".as_slice(),
+            b"revocation".as_slice(),
+            b"lease-policy".as_slice(),
+            b"lease-key".as_slice(),
+            b"node-id".as_slice(),
+        ];
+        let credentials = ProtectedBrokerPublicCredentials {
+            credentials: std::array::from_fn(|index| {
+                let path = directory.path().join(format!("credential-{index}"));
+                fs::write(&path, contents[index]).unwrap();
+                let descriptor: OwnedFd = fs::File::open(path).unwrap().into();
+                ProtectedBrokerPublicCredential {
+                    snapshot: unprotected_snapshot(descriptor.as_fd(), contents[index]),
+                    descriptor,
+                }
+            }),
+        };
+
+        let evidence = credentials
+            .revalidated_descriptor_evidence_with(inspect_unprotected_descriptor)
+            .unwrap();
+        for (index, (role, descriptor, snapshot)) in evidence.iter().enumerate() {
+            let metadata = fstat(*descriptor).unwrap();
+            assert_eq!(*role, ProtectedBrokerPublicCredentialRole::ALL[index]);
+            assert_eq!(snapshot.device(), metadata.st_dev);
+            assert_eq!(snapshot.inode(), metadata.st_ino);
+            assert_eq!(snapshot.bytes(), contents[index].len());
+            assert_eq!(
+                snapshot.sha256(),
+                Sha256::digest(contents[index]).as_slice()
+            );
+        }
+
+        fs::write(directory.path().join("credential-3"), b"other-policy").unwrap();
+        assert!(
+            credentials
+                .revalidated_descriptor_evidence_with(inspect_unprotected_descriptor)
                 .is_err()
         );
     }

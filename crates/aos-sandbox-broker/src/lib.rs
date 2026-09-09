@@ -16,7 +16,8 @@ pub use admission::{
 pub use aos_sandbox::RecordNamespace;
 pub use config::{
     BrokerAuthorityConfigError, ProtectedBrokerAuthorityConfiguration,
-    ProtectedBrokerPublicCredentialRole, ProtectedBrokerPublicCredentials,
+    ProtectedBrokerPublicCredentialRole, ProtectedBrokerPublicCredentialSnapshot,
+    ProtectedBrokerPublicCredentials,
 };
 pub use record::{
     AuthorizationRecordError, BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2,
