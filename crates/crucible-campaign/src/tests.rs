@@ -569,16 +569,16 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[2], owner);
         assert_eq!(record[3], "execution-model-payload");
     }
-    for schema in [
-        "crucible.campaign.gc-plan",
-        "crucible.campaign.gc-root-manifest",
-        "crucible.campaign.gc-candidate-manifest",
-        "crucible.campaign.gc-journal-state",
+    for (schema, version) in [
+        ("crucible.campaign.gc-plan", "2"),
+        ("crucible.campaign.gc-root-manifest", "1"),
+        ("crucible.campaign.gc-candidate-manifest", "2"),
+        ("crucible.campaign.gc-journal-state", "1"),
     ] {
         let record = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing campaign GC administrative schema {schema}"));
-        assert_eq!(record[1], "1");
+        assert_eq!(record[1], version);
         assert_eq!(record[2], "crucible-daemon::campaign_gc");
         assert_eq!(record[3], "administrative-record");
         owned_campaign_schemas.insert(schema);
