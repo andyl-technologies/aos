@@ -13,8 +13,8 @@ use aos_ability_model::{
     PackageDocument, PackageImplementation, PlanNodeKey, ProviderAssignment,
     ProviderImplementation, RequirementDeclaration, RequirementFallback, RequirementStrength,
     ResourceId, ResourceLifetime, ResourcePermission, ResourceReference, ResourceRevision,
-    ResultProducerKey, RevisionId, ScopePath, ScopedOperationKey, ServiceAction, ValueExpression,
-    ValuePhase, ValueSchema, ValueVisibility, VersionedDocument, compare_edges,
+    ResultProducerKey, RevisionId, ScopePath, ScopedOperationKey, ServiceAction, StringConstraint,
+    ValueExpression, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument, compare_edges,
     compare_operation_keys, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
@@ -229,6 +229,56 @@ fn advisory_resource_fallback_cannot_synthesize_authority() {
             &fixture.binding_inputs.packages,
         )
         .expect_err("literal fallback must not create resource authority");
+    assert!(
+        errors
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::ResourceScopeEscape)
+    );
+}
+
+#[test]
+fn advisory_empty_resource_map_fallback_does_not_synthesize_authority() {
+    let mut fixture = plan_fixture();
+    install_resource_map_output(&mut fixture);
+    fixture.refresh_interface();
+    pin_primary_binding_to_pure_package(&mut fixture);
+    fixture.binding_inputs.packages[0].requirements = vec![advisory_requirement(
+        &fixture.binding_plan.bindings[0].interface,
+        AbilityValue::new(serde_json::json!({})).expect("empty map is a bounded value"),
+    )];
+
+    fixture
+        .context
+        .prepare_binding_candidates(
+            &fixture.binding_inputs.environment,
+            &fixture.binding_inputs.desired_state,
+            &fixture.binding_inputs.packages,
+        )
+        .expect("an empty resource-reference map carries no authority");
+}
+
+#[test]
+fn advisory_populated_resource_map_fallback_cannot_synthesize_authority() {
+    let mut fixture = plan_fixture();
+    install_resource_map_output(&mut fixture);
+    fixture.refresh_interface();
+    pin_primary_binding_to_pure_package(&mut fixture);
+    let reference = fixture.effect_plan.operations[0].target.clone();
+    fixture.binding_inputs.packages[0].requirements = vec![advisory_requirement(
+        &fixture.binding_plan.bindings[0].interface,
+        AbilityValue::new(serde_json::json!({"resource": reference}))
+            .expect("resource map is a bounded value"),
+    )];
+
+    let errors = fixture
+        .context
+        .prepare_binding_candidates(
+            &fixture.binding_inputs.environment,
+            &fixture.binding_inputs.desired_state,
+            &fixture.binding_inputs.packages,
+        )
+        .expect_err("a populated resource-reference map creates authority");
     assert!(
         errors
             .diagnostics()
@@ -1202,6 +1252,25 @@ fn install_optional_resource_output(fixture: &mut PlanFixture) {
             },
             phase: ValuePhase::Planning,
             visibility: ValueVisibility::Public,
+            lifetime: ResourceLifetime::Instance,
+        },
+    );
+}
+
+fn install_resource_map_output(fixture: &mut PlanFixture) {
+    fixture.interfaces[0].interface.outputs.insert(
+        key("ready"),
+        OutputDescriptor {
+            schema: ValueSchema::Map {
+                key: StringConstraint {
+                    max_length: 128,
+                    syntax: None,
+                },
+                value: Box::new(ValueSchema::ResourceReference),
+                max_entries: 8,
+            },
+            phase: ValuePhase::Planning,
+            visibility: ValueVisibility::Protected,
             lifetime: ResourceLifetime::Instance,
         },
     );

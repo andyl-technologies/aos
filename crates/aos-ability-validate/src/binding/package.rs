@@ -319,24 +319,6 @@ fn validate_requirement_fallback(
             let Some(descriptor) = interface.interface.outputs.get(output) else {
                 continue;
             };
-            if descriptor.visibility != aos_ability_model::ValueVisibility::Public {
-                push_diagnostic(
-                    diagnostics,
-                    diagnostic(
-                        DiagnosticCode::ResourceScopeEscape,
-                        DiagnosticClass::Unauthorized,
-                        DiagnosticPhase::Binding,
-                        path.child("fallback")
-                            .child("outputs")
-                            .child(output.as_str())
-                            .components()
-                            .to_vec(),
-                        "literal advisory fallback cannot synthesize a protected output"
-                            .to_string(),
-                    ),
-                );
-                continue;
-            }
             let expression = aos_ability_model::ValueExpression::Literal {
                 value: value.clone(),
             };
@@ -355,7 +337,30 @@ fn validate_requirement_fallback(
                 }
                 continue;
             }
-            if value_requires_authority(&descriptor.schema, value.as_json()) {
+            let requires_authority = value_requires_authority(&descriptor.schema, value.as_json());
+            let empty_authority_shape =
+                is_empty_authority_shape(&descriptor.schema, value.as_json());
+            if descriptor.visibility != aos_ability_model::ValueVisibility::Public
+                && !empty_authority_shape
+            {
+                push_diagnostic(
+                    diagnostics,
+                    diagnostic(
+                        DiagnosticCode::ResourceScopeEscape,
+                        DiagnosticClass::Unauthorized,
+                        DiagnosticPhase::Binding,
+                        path.child("fallback")
+                            .child("outputs")
+                            .child(output.as_str())
+                            .components()
+                            .to_vec(),
+                        "literal advisory fallback cannot synthesize a protected output"
+                            .to_string(),
+                    ),
+                );
+                continue;
+            }
+            if requires_authority {
                 push_diagnostic(
                     diagnostics,
                     diagnostic(
@@ -427,4 +432,115 @@ fn value_requires_authority(
         }
     }
     false
+}
+
+fn is_empty_authority_shape(
+    schema: &aos_ability_model::ValueSchema,
+    value: &serde_json::Value,
+) -> bool {
+    match (schema, value) {
+        (aos_ability_model::ValueSchema::Optional { value: nested }, serde_json::Value::Null) => {
+            schema_may_carry_authority(nested)
+        }
+        (aos_ability_model::ValueSchema::List { element, .. }, serde_json::Value::Array(items)) => {
+            items.is_empty() && schema_may_carry_authority(element)
+        }
+        (
+            aos_ability_model::ValueSchema::Map { value: nested, .. },
+            serde_json::Value::Object(fields),
+        ) => fields.is_empty() && schema_may_carry_authority(nested),
+        _ => false,
+    }
+}
+
+fn schema_may_carry_authority(schema: &aos_ability_model::ValueSchema) -> bool {
+    let mut stack = vec![schema];
+    while let Some(schema) = stack.pop() {
+        match schema {
+            aos_ability_model::ValueSchema::ArtifactReference
+            | aos_ability_model::ValueSchema::ResourceReference
+            | aos_ability_model::ValueSchema::ProviderAssignment
+            | aos_ability_model::ValueSchema::OperationResultReference => return true,
+            aos_ability_model::ValueSchema::List { element, .. }
+            | aos_ability_model::ValueSchema::Map { value: element, .. }
+            | aos_ability_model::ValueSchema::Optional { value: element } => stack.push(element),
+            aos_ability_model::ValueSchema::Record { fields, .. } => stack.extend(fields.values()),
+            aos_ability_model::ValueSchema::TaggedUnion { variants, .. } => {
+                stack.extend(variants.values())
+            }
+            aos_ability_model::ValueSchema::Boolean
+            | aos_ability_model::ValueSchema::Integer { .. }
+            | aos_ability_model::ValueSchema::String { .. }
+            | aos_ability_model::ValueSchema::StringEnum { .. } => {}
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use aos_ability_model::{LocalKey, ValueSchema};
+
+    use super::is_empty_authority_shape;
+
+    #[test]
+    fn mixed_record_is_not_an_empty_authority_shape() {
+        let schema = ValueSchema::Record {
+            fields: BTreeMap::from([
+                (
+                    key("optional_ref"),
+                    ValueSchema::Optional {
+                        value: Box::new(ValueSchema::ResourceReference),
+                    },
+                ),
+                (key("ready"), ValueSchema::Boolean),
+            ]),
+            optional_fields: Vec::new(),
+        };
+        let value = serde_json::json!({"optional_ref": null, "ready": true});
+
+        assert!(!is_empty_authority_shape(&schema, &value));
+    }
+
+    #[test]
+    fn populated_tagged_union_is_not_an_empty_authority_shape() {
+        let schema = ValueSchema::TaggedUnion {
+            tag: key("kind"),
+            variants: BTreeMap::from([
+                (
+                    key("absent"),
+                    ValueSchema::Record {
+                        fields: BTreeMap::from([(key("kind"), string_schema())]),
+                        optional_fields: Vec::new(),
+                    },
+                ),
+                (
+                    key("present"),
+                    ValueSchema::Record {
+                        fields: BTreeMap::from([
+                            (key("kind"), string_schema()),
+                            (key("resource"), ValueSchema::ResourceReference),
+                        ]),
+                        optional_fields: Vec::new(),
+                    },
+                ),
+            ]),
+        };
+        let value = serde_json::json!({"kind": "absent"});
+
+        assert!(!is_empty_authority_shape(&schema, &value));
+    }
+
+    fn string_schema() -> ValueSchema {
+        ValueSchema::String {
+            max_length: 32,
+            syntax: None,
+        }
+    }
+
+    fn key(value: &str) -> LocalKey {
+        LocalKey::new(value).expect("valid static test key")
+    }
 }
