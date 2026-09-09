@@ -80,6 +80,11 @@ in
     # systemd.tools explicitly.
     outputs = ["out" "tools"];
 
+    # The package performs ELF path cleanup below, then retains its declared
+    # runtime directories for libraries loaded on demand. A second DT_NEEDED-
+    # only shrink would remove libmount and prevent PID 1 from booting.
+    dontPatchELF = true;
+
     src = fetchurl {
       urls = [
         "https://github.com/systemd/systemd/archive/refs/tags/v${version}.tar.gz"
@@ -438,12 +443,16 @@ in
         # would fire at cat time and produce a trailing-colon path — a
         # classic ld.so CWD-search bug.)
         script = ''
-          # Meson does not preserve the cc-wrapper RPATH on every target. Seed
-          # every installed ELF with the target runtime library directories;
-          # the common fixup phase immediately shrinks each RPATH to the
-          # libraries named by that ELF's DT_NEEDED entries.
+          # Meson does not preserve the cc-wrapper RPATH on every target.
+          # First resolve direct dependencies and discard unused build paths,
+          # then retain the declared runtime paths for systemd's dlopen calls.
+          # Those libraries are deliberately absent from DT_NEEDED.
           find "$out" -type f | while read -r executable; do
             patchelf --print-needed "$executable" >/dev/null 2>&1 || continue
+            patchelf --add-rpath \
+              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+              "$executable"
+            patchelf --shrink-rpath "$executable"
             patchelf --add-rpath \
               "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
               "$executable"
