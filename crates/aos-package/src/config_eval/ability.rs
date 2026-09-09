@@ -7,8 +7,10 @@
 //! derivations, paths, and context-bearing strings before serialization.
 
 use std::io::{self, Read, Write};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,6 +24,8 @@ use base64::Engine as _;
 use serde::de::DeserializeOwned;
 
 use super::stock::{locked_store_input, nix_string, store_root_and_suffix};
+
+static EVALUATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Selects one of the two pure functions declared by a provider implementation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -178,14 +182,8 @@ impl RestrictedAbilityEvaluator {
             self.limits.expression_bytes
         );
 
-        std::fs::create_dir_all(&self.nix_cache_home).with_context(|| {
-            format!(
-                "creating ability evaluator cache {}",
-                self.nix_cache_home.display()
-            )
-        })?;
-        self.write_restricted_configuration()?;
-        let mut command = self.command(&allowed_uri);
+        let environment = self.create_evaluation_environment()?;
+        let mut command = self.command(&allowed_uri, &environment);
         let output = run_bounded(&mut command, expression.into_bytes(), self.limits)
             .context("running restricted Nix ability evaluation")?;
 
@@ -212,24 +210,66 @@ impl RestrictedAbilityEvaluator {
             .context("decoding the typed Nix ability result")
     }
 
-    fn write_restricted_configuration(&self) -> Result<()> {
-        let config_dir = self.nix_cache_home.join("nix-config");
-        std::fs::create_dir_all(&config_dir).with_context(|| {
-            format!(
-                "creating restricted Nix configuration directory {}",
-                config_dir.display()
-            )
-        })?;
+    fn create_evaluation_environment(&self) -> Result<EvaluationEnvironment> {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.nix_cache_home)
+            .with_context(|| {
+                format!(
+                    "creating ability evaluator state root {}",
+                    self.nix_cache_home.display()
+                )
+            })?;
+
+        let root = loop {
+            let sequence = EVALUATION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let candidate = self
+                .nix_cache_home
+                .join(format!("evaluation-{}-{sequence}", std::process::id()));
+            match std::fs::DirBuilder::new().mode(0o700).create(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("creating private evaluator state {}", candidate.display())
+                    });
+                }
+            }
+        };
+
+        let environment = EvaluationEnvironment::new(root);
+        for directory in [
+            &environment.home,
+            &environment.cache,
+            &environment.config,
+            &environment.data,
+            &environment.state,
+        ] {
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(directory)
+                .with_context(|| {
+                    format!(
+                        "creating private evaluator directory {}",
+                        directory.display()
+                    )
+                })?;
+        }
         std::fs::write(
-            config_dir.join("nix.conf"),
+            &environment.config_file,
             b"plugin-files =\nallow-unsafe-native-code-during-evaluation = false\n",
         )
-        .context("writing restricted Nix configuration")
+        .with_context(|| {
+            format!(
+                "writing restricted Nix configuration {}",
+                environment.config_file.display()
+            )
+        })?;
+        Ok(environment)
     }
 
-    fn command(&self, allowed_uri: &str) -> Command {
-        let config_dir = self.nix_cache_home.join("nix-config");
-        let config_file = config_dir.join("nix.conf");
+    fn command(&self, allowed_uri: &str, environment: &EvaluationEnvironment) -> Command {
         let mut command = Command::new(&self.prlimit);
         command
             .arg(format!("--as={}", self.limits.address_space_bytes))
@@ -250,16 +290,87 @@ impl RestrictedAbilityEvaluator {
             .args(["--option", "allowed-uris"])
             .arg(allowed_uri)
             .env_clear()
-            .env("XDG_CACHE_HOME", &self.nix_cache_home)
-            .env("XDG_CONFIG_HOME", &config_dir)
-            .env("NIX_CONF_DIR", &config_dir)
-            .env("NIX_USER_CONF_FILES", &config_file);
+            .env("HOME", &environment.home)
+            .env("XDG_CACHE_HOME", &environment.cache)
+            .env("XDG_CONFIG_HOME", &environment.config)
+            .env("XDG_DATA_HOME", &environment.data)
+            .env("XDG_STATE_HOME", &environment.state)
+            .env("NIX_CONF_DIR", &environment.config)
+            .env("NIX_USER_CONF_FILES", &environment.config_file);
         if self.use_daemon_store {
             command.args(["--store", "daemon"]);
         }
         command.arg("-");
         command
     }
+}
+
+/// Owns the private home and XDG roots for one evaluator subprocess.
+///
+/// Nix initializes mutable fallback-store state below these paths. Keeping
+/// them invocation-local prevents parallel pure evaluations from racing while
+/// creating profiles and roots. Dropping the environment releases all of that
+/// ephemeral state after the subprocess has been reaped.
+struct EvaluationEnvironment {
+    root: PathBuf,
+    home: PathBuf,
+    cache: PathBuf,
+    config: PathBuf,
+    config_file: PathBuf,
+    data: PathBuf,
+    state: PathBuf,
+}
+
+impl EvaluationEnvironment {
+    fn new(root: PathBuf) -> Self {
+        let home = root.join("home");
+        let cache = root.join("cache");
+        let config = root.join("config");
+        let config_file = config.join("nix.conf");
+        let data = root.join("data");
+        let state = root.join("state");
+
+        Self {
+            root,
+            home,
+            cache,
+            config,
+            config_file,
+            data,
+            state,
+        }
+    }
+}
+
+impl Drop for EvaluationEnvironment {
+    fn drop(&mut self) {
+        let _ = remove_private_tree(&self.root);
+    }
+}
+
+/// Removes one evaluator-owned tree without following symlinks.
+///
+/// Nix can create read-only state directories in its fallback chroot. The
+/// adapter restores owner access only on directories created below its unique
+/// private root. It never changes file modes, so a hard-linked store file
+/// cannot cause a permission change outside the evaluator tree.
+fn remove_private_tree(path: &Path) -> io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_dir() {
+        return std::fs::remove_file(path);
+    }
+
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(path, permissions)?;
+    for entry in std::fs::read_dir(path)? {
+        remove_private_tree(&entry?.path())?;
+    }
+    std::fs::remove_dir(path)
 }
 
 fn artifact_allowed_uri(root: &Path, nar_hash: &aos_contract::Sha256Digest) -> Result<String> {
@@ -634,7 +745,11 @@ mod tests {
             &digest(3),
         )
         .unwrap();
-        let command = evaluator.command(&allowed_uri);
+        let temporary = tempfile::tempdir().unwrap();
+        let environment_root = temporary.path().join("owned-evaluation");
+        std::fs::create_dir(&environment_root).unwrap();
+        let environment = EvaluationEnvironment::new(environment_root);
+        let command = evaluator.command(&allowed_uri, &environment);
         let arguments = command
             .get_args()
             .map(OsStr::to_string_lossy)
@@ -671,14 +786,23 @@ mod tests {
                 .find(|(name, _)| *name == "XDG_CACHE_HOME"),
             Some((
                 OsStr::new("XDG_CACHE_HOME"),
-                Some(OsStr::new("/var/cache/aos/ability-eval"))
+                Some(environment.cache.as_os_str())
             ))
         );
         assert_eq!(
             command.get_envs().find(|(name, _)| *name == "NIX_CONF_DIR"),
             Some((
                 OsStr::new("NIX_CONF_DIR"),
-                Some(OsStr::new("/var/cache/aos/ability-eval/nix-config"))
+                Some(environment.config.as_os_str())
+            ))
+        );
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(name, _)| *name == "XDG_DATA_HOME"),
+            Some((
+                OsStr::new("XDG_DATA_HOME"),
+                Some(environment.data.as_os_str())
             ))
         );
     }
@@ -709,6 +833,27 @@ mod tests {
             error
                 .to_string()
                 .contains("wall-time limit must be nonzero")
+        );
+    }
+
+    #[test]
+    fn private_tree_cleanup_handles_read_only_directories_without_following_symlinks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let owned = temporary.path().join("owned");
+        let read_only = owned.join("read-only");
+        let external = temporary.path().join("external");
+        std::fs::create_dir_all(&read_only).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(external.join("retained"), b"outside").unwrap();
+        std::os::unix::fs::symlink(&external, read_only.join("external-link")).unwrap();
+        std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        remove_private_tree(&owned).unwrap();
+
+        assert!(!owned.exists());
+        assert_eq!(
+            std::fs::read(external.join("retained")).unwrap(),
+            b"outside"
         );
     }
 
@@ -879,6 +1024,67 @@ mod tests {
                 observed: String::new(),
             }
         );
+    }
+
+    #[test]
+    fn real_nix_fixture_isolates_parallel_fallback_store_initialization() {
+        let Some((evaluator, implementation, executable)) = real_fixture().unwrap() else {
+            return;
+        };
+
+        thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for _ in 0..4 {
+                workers.push(scope.spawn(|| {
+                    evaluator.evaluate::<EnabledResult>(
+                        &implementation,
+                        AbilityEntryPoint::Compose,
+                        &fixture_arguments("ok", &executable),
+                    )
+                }));
+            }
+
+            for worker in workers {
+                assert_eq!(
+                    worker.join().unwrap().unwrap(),
+                    EnabledResult { enabled: true }
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn real_nix_fixture_removes_private_state_after_success_and_failure() {
+        let Some((base, implementation, executable)) = real_fixture().unwrap() else {
+            return;
+        };
+        let temporary = tempfile::tempdir().unwrap();
+        let cache = temporary.path().join("ability-evaluator");
+        let evaluator = RestrictedAbilityEvaluator::new(
+            base.nix_instantiate,
+            base.prlimit,
+            &cache,
+            AbilityEvaluationLimits::default(),
+        )
+        .unwrap();
+
+        evaluator
+            .evaluate::<EnabledResult>(
+                &implementation,
+                AbilityEntryPoint::Compose,
+                &fixture_arguments("ok", &executable),
+            )
+            .unwrap();
+        assert!(std::fs::read_dir(&cache).unwrap().next().is_none());
+
+        evaluator
+            .evaluate::<serde_json::Value>(
+                &implementation,
+                AbilityEntryPoint::Transition,
+                &fixture_arguments("host-file", &executable),
+            )
+            .unwrap_err();
+        assert!(std::fs::read_dir(&cache).unwrap().next().is_none());
     }
 
     #[test]
