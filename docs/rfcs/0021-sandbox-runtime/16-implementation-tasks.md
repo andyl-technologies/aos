@@ -5732,3 +5732,66 @@ VM test proves expiry or Guardian death stops a payload. The early-freeze
 margin, hard-deadline path, and kernel lease gate remain separate dependencies.
 `SBX-GUARD-01`, the dependent runtime tasks, and end-to-end qualification all
 remain open.
+
+### Guardian-bound Host dispatch and effect recovery (partial)
+
+Commit `3149a1f3a` adds the controller-side protocol and durable-dispatch half
+of Guardian-gated launch. Host protocol 1.5 adds a launch-only companion that
+carries exactly one canonical Guardian plan and detached signature. Templates,
+non-Launch actions, and other Host versions reject the companion, while a live
+Host 1.5 Launch requires it. The enclosing Host authorization quartet remains
+the only carrier for the exact ownership lease and lease signature. Host 1.4
+Launch stays structurally decodable for compatibility, but production
+publication selection refuses to dispatch a pre-1.5 Launch.
+
+After current publication and lease selection, the reconciler constructs a
+`GuardianPlanRequestV1` that binds the Host assignment, node, desired
+generation, ownership signer, current host boot, and exact lease generation and
+digest. The executor's narrow signing hook may return a signed Guardian 1.0
+plan; the controller then reselects current state and rejects every stale or
+substituted result. The accepted plan has one assignment-target `GuardianArm`
+grant covering the 160-byte binding with zero actual descriptors. Its expiry
+and the ownership lease jointly cap the Host BOOTTIME deadline, including the
+one-wall-tick reserve required by Guardian sampling order. The controller
+inserts the exact Guardian pair, rechecks the expanded body against the Host
+grant and packet ceiling, and preserves the same lease pair in the outer Host
+envelope.
+
+The authority-bearing effect record advances from V2 to V3 to retain the host
+boot paired with its preparation wall-time and BOOTTIME scalars. An ambiguous
+V3 Applying attempt must match a fresh executor boot before observation or
+Apply I/O. Recovery redecodes the nested Guardian plan, rederives its complete
+boot-and-lease binding, rebuilds the Host body and outer packet, and compares
+the whole attempt with durable bytes. Completed V3 history remains readable
+across reboot. A Planned V2 record has no dispatch and advances directly to a
+fresh boot-bearing V3 attempt. A dispatch-bearing completed or permanently
+blocked V2 record remains historical input but cannot be re-encoded; a
+dispatch-bearing V2 Applying record fails with `MigrationRequired` before I/O.
+Generic V1 effects and the existing V2 binding digest stay unchanged.
+
+Initial dispatch and authenticated `Absent` retry use the same ordering:
+select current, request the exact Guardian signature, reselect current, commit
+the composite attempt, then permit Host I/O. A refreshed attempt is durable
+before Apply, so crash recovery queries that exact replacement. `Pending` and
+transport ambiguity retain the existing packet and never authorize an
+unrecorded replacement.
+
+Pinned development-shell validation passes all 368 `aos-sandbox` library
+tests, all 190 core tests, all 116 protocol tests, and the complete Guardian
+package run with one library test and nine integration tests. Coverage includes
+real Ed25519 Host and Guardian plans, boot and Guardian-expiry substitution,
+lease renewal with stale-plan rejection, initial and Absent-retry ordering,
+durable body/packet/boot mutation, V2 migration and historical compatibility,
+and completed V3 recovery across reboot.
+
+This remains controller-only progress. The signing hook defaults to unavailable
+and has no production controller authority adapter. The Host broker does not
+yet convert the companion and enclosing authority into the Guardian's ten
+validated credentials, start the exact Guardian unit before the payload, or
+perform the final protected before-effect checks for both starts. Dynamic
+Guardian artifacts still need sealed read-only memfd validation while static
+trust credentials remain verified regular files. Exact-unit retry,
+compensation, non-adoption, Stop cleanup, renewal, early freeze, Network
+default-drop coupling, and a VM test proving expiry or Guardian death contains
+the payload also remain open. No `SBX-GUARD-01` or end-to-end Host task is
+closed by this slice.

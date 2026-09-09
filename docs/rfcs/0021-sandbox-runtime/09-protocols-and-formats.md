@@ -342,32 +342,33 @@ the lease-bound artifacts for the same authority and source draft at an
 unchanged assignment epoch and desired generation.
 
 The generic effect ledger retains its exact V1 encoding for ungated effects.
-An ownership-gated operation instead requires an Effect V2 record for every
-step. A V2 plan is constructed only from a template in the gate's exact
-publication draft; it records and recomputes the source-draft digest, broker
-audience and method, template digest, deadline-free request body digest, and
-portable semantic-identity commitment. Its binding digest also commits the
+An ownership-gated operation instead requires an authority-bound record for
+every step. Its V2 binding is constructed only from a template in the gate's
+exact publication draft; it records and recomputes the source-draft digest,
+broker audience and method, template digest, deadline-free request body digest,
+and portable semantic-identity commitment. The binding digest also commits the
 operation ID and ordered step, preventing valid values from being exchanged
-between journal keys. Callers cannot provide those fields independently. V2
-currently admits only descriptor-free Host `ApplyRuntime`; Mount, Storage,
-Network, Guardian, Guest, other methods, and every descriptor-bearing template
-are rejected before journal admission. Recovery reports legacy V1 records under
-ownership-gated operation provenance as migration-required rather than silently
-reinterpreting them. It rejects a missing or extra
-effect, a template absent from the gate draft, and any substituted body or
-semantic commitment.
+between journal keys. Callers cannot provide those fields independently. The
+binding currently admits only descriptor-free Host `ApplyRuntime`; Mount,
+Storage, Network, Guardian, Guest, other methods, and every descriptor-bearing
+template are rejected before journal admission. Recovery reports legacy V1
+records under ownership-gated operation provenance as migration-required rather
+than silently reinterpreting them. It rejects a missing or extra effect, a
+template absent from the gate draft, and any substituted body or semantic
+commitment.
 
 Before the first external broker call, the sole journal-owning reconciler
 selects the current publication. It accepts the activated publication or a
 valid successor only when the source draft and exact effect template remain
 unchanged. It then injects a bounded deadline and durably changes the effect
 from `Planned` to `Applying` together with the selected publication digest,
-lease generation and digest, only the wall-seconds/boottime scalar projection
-used for deadline attenuation, exact deadline-bearing body, and exact encoded
-authorization packet. Raw clock provenance and boot identity are deliberately
-not persisted: they are unauthenticated advisory input and are not part of the
-reconstruction theorem. The executor
-receives that owned recovered attempt and never opens the controller journal.
+lease generation and digest, the wall-seconds/boottime scalar projection used
+for deadline attenuation, the paired host boot ID, exact deadline-bearing body,
+and exact encoded authorization packet. Raw clock-source provenance remains
+unpersisted advisory input. The boot ID is an exact replay fence: an Applying
+attempt must match a fresh executor timing sample before any observation or
+Apply I/O. The executor receives that owned recovered attempt and never opens
+the controller journal.
 After a crash it queries the broker with the byte-exact original Apply request
 and signed quartet. Authenticated `Pending` and indeterminate transport results
 retain that exact attempt. Only authenticated `Absent` permits reselection: the
@@ -375,6 +376,16 @@ reconciler consults current authority, constructs a fresh attenuated attempt,
 and durably replaces the dispatch record before issuing its Apply. A crash at
 that boundary therefore recovers by querying the replacement rather than
 replaying an unrecorded request.
+
+Authority-bound records use Effect V3 for this boot-bearing dispatch. An Effect
+V2 Planned record has no dispatch or BOOTTIME claim; recovery may retain it and
+its first attempt is written directly as V3 with a fresh boot. A dispatch-bearing
+V2 record predates the boot field. If it is already completed or permanently
+blocked it remains readable as history but cannot be re-encoded as V3; if it is
+Applying it requires explicit migration before executor I/O. Completed V3
+history remains valid across a reboot because it is receipt history, while an
+ambiguous Applying V3 attempt must still name the current boot. Generic Effect
+V1 bytes and the V2 binding/digest domains are unchanged.
 
 Each durable dispatch also commits the Effect V2 binding digest. Recovery
 reconstructs the selected publication relative to the gate's permanent
@@ -639,6 +650,45 @@ descriptor types, live membership, and deadlines. These observations do not
 authorize a mount effect or continuously prove the payload's root/namespace
 selection: Mount admission and the worker's exact-resource checks remain
 mandatory before use.
+
+Host 1.5 makes a separately signed Guardian plan mandatory on every live
+`Launch`. The deadline-free Host dispatch template must not contain that plan.
+Only after selecting the current ownership lease and sampling the current host
+boot may the controller derive the fixed Guardian arm commitment and request a
+signature. The Guardian plan must use Guardian 1.0, name the exact Host
+assignment, node, and ownership signer, and contain only the assignment-target
+`GuardianArm` grant covering the 160-byte boot-and-lease binding with zero
+actual descriptors. The controller reselects current publication state after
+signing, so a lease renewal or publication change during that interval cannot
+silently enter the attempt.
+
+The live `ApplyRuntimeRequest` carries only the exact canonical Guardian plan
+and detached signature in its launch-only companion. The enclosing Host
+authorization quartet supplies the one exact ownership lease and signature;
+the companion cannot duplicate or replace them. Its Host deadline must remain
+positive and no later than both the conservative lease deadline and the
+Guardian plan expiry projected onto `CLOCK_BOOTTIME`, with one whole wall-clock
+tick reserved for the Guardian's sample ordering. The expanded Host body is
+matched again against the Host grant and the complete encoded packet remains
+bounded before it becomes durable.
+
+The companion is forbidden in templates, non-Launch actions, and every Host
+version other than 1.5. A live Host 1.5 Launch without it is invalid. Host 1.4
+Launch remains structurally decodable for protocol compatibility, but the
+production controller publication/selection path rejects every pre-1.5 Host
+Launch because it cannot prove Guardian delivery. Structural companion decoding
+does not establish trust: the eventual Host and Guardian execution paths must
+still perform their protected signature, lease, clock, descriptor, and
+before-effect checks.
+
+The controller exposes Guardian-plan preparation as a narrow executor hook
+whose input is already bound to the selected lease and boot. The default hook
+returns no plan, so Host 1.5 Launch remains disabled unless a concrete trusted
+signing adapter is installed. The hook starts no units and performs no external
+effect; the exact composite attempt must be committed first. An authenticated
+`Absent` result repeats current selection, Guardian signing, validation, and
+durable replacement before a new Apply. Transport ambiguity or `Pending` never
+authorizes construction of a different packet.
 
 Mount-broker protocol 1.2 adds `PrepareMountCatalog`. The authenticated node
 controller sends no descriptors and no outer Mount authorization. Its bounded
