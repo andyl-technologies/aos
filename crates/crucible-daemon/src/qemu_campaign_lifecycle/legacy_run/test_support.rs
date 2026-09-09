@@ -11,7 +11,7 @@ use std::io;
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, EventLog, ExecutionFingerprint,
     FingerprintSample, Icount, MarkerId, NodeId, ObservableEvent, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry, VirtualTime,
+    QuantumTerminalVerdict, Schedule, SchedulerError, SchedulerEventLogEntry, VirtualTime,
 };
 use crucible_campaign::StopCondition;
 use crucible_cas::content_store::BlobHandle;
@@ -32,6 +32,7 @@ const TEST_EFFECT_TRACE: &[u8] = b"guarded-default-run-test-support-effect-trace
 struct TestLifecycle {
     node: NodeId,
     event_log: EventLog,
+    replay_target: Schedule,
     quantum_nanoseconds: u64,
     frontier: VirtualTime,
     completed_quanta: u64,
@@ -60,10 +61,19 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
                 self.node.clone(),
                 MarkerId::from_name("guarded-campaign-save-fixture-quantum"),
             )])?;
-        self.configuration = Some(request.configuration.clone());
+        let mut configuration = request.configuration;
+        if configuration.schedule.len() < self.replay_target.len() {
+            configuration.schedule = self
+                .replay_target
+                .prefix(configuration.schedule.len() + 1)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: error.to_string(),
+                })?;
+        }
+        self.configuration = Some(configuration.clone());
 
         Ok(QuantumOutcome {
-            configuration: request.configuration,
+            configuration,
             frontier: self.frontier,
             advanced_node: None,
             resolved_events: Vec::new(),
@@ -117,9 +127,22 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from("checkpoint requested before a completed quantum"),
                 })?;
+        let parent = if configuration.schedule.is_empty() {
+            None
+        } else {
+            Some(Configuration {
+                def: configuration.def.clone(),
+                schedule: configuration
+                    .schedule
+                    .prefix(configuration.schedule.len() - 1)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: error.to_string(),
+                    })?,
+            })
+        };
         let checkpoint = Checkpoint::from_recorded_configuration(
             configuration,
-            None,
+            parent.as_ref(),
             self.frontier,
             BTreeMap::new(),
             CheckpointKind::Fat,
@@ -183,13 +206,14 @@ impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
         &mut self,
         _scenario: &crucible::ScenarioDef,
         _source: &crucible::ScenarioDefForm,
-        _start: &Configuration,
+        start: &Configuration,
         _signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
         _context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         Ok(TestLifecycle {
             node: self.node.clone(),
             event_log: EventLog::new(),
+            replay_target: start.schedule.clone(),
             quantum_nanoseconds: self.quantum_nanoseconds,
             frontier: VirtualTime::default(),
             completed_quanta: 0,

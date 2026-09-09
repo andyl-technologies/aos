@@ -22,6 +22,123 @@ use crucible_daemon::qemu_campaign_lifecycle::{
     run_guarded_default_campaign,
 };
 
+/// Returns whether the shared campaign owner can resume this v3 checkpoint exactly.
+pub(super) fn guarded_campaign_resume_eligible(
+    plan: &ResumeInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> bool {
+    plan.execution_mode == RunExecutionMode::ToCompletion
+        && plan.startup_commands == [SessionCommandKind::Start, SessionCommandKind::Continue]
+        && plan.initial_control_commands == [SessionCommandKind::Query]
+        && plan.accepted_interactive_commands.is_empty()
+        && matches!(
+            plan.terminal_condition,
+            RunTerminalCondition::Quiescence
+                | RunTerminalCondition::VirtualTime
+                | RunTerminalCondition::Stopped
+        )
+        && (plan.terminal_condition != RunTerminalCondition::VirtualTime
+            || plan.max_virtual_time_ticks.is_some())
+        && evidence.schedule.decisions().iter().all(|decision| {
+            matches!(
+                decision,
+                crucible::Decision::DeliveryOrder(_)
+                    | crucible::Decision::RngDraw(_)
+                    | crucible::Decision::Preemption(_)
+            )
+        })
+        && GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&evidence.schedule)
+            .is_ok()
+}
+
+/// Resumes one local-QEMU selection-free v3 checkpoint through campaign ownership.
+pub(super) fn run_local_qemu_campaign_resume_workflow(
+    backend: &ResolvedLocalBackend,
+    resume_plan: &ResumeInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> Result<ResumeWorkflowReport, CliError> {
+    if !guarded_campaign_resume_eligible(resume_plan, evidence) {
+        return Err(backend_error(
+            "the requested checkpoint, stop, or control mode does not have an exact campaign-backed QEMU resume adapter",
+        ));
+    }
+
+    let deployment_path = resolve_guarded_campaign_deployment_path(None)?;
+    let deployment = load_guarded_campaign_run_deployment(&deployment_path)?;
+    let resources = guarded_run_resources(deployment.resources, None)?;
+    let qemu_build_id = match backend {
+        ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
+        #[cfg(any(test, feature = "test-double"))]
+        ResolvedLocalBackend::Double => {
+            return Err(backend_error(
+                "campaign QEMU resume requires a resolved production backend",
+            ));
+        }
+    };
+    let lifecycle = production_qemu_lifecycle_config(backend)?;
+    let final_stop = guarded_resume_stop(resume_plan)?;
+    let replay_closure =
+        GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&evidence.schedule)
+            .map_err(|error| campaign_run_error("build selection-free resume closure", error))?;
+    let checkpoint_directory = tempfile::Builder::new()
+        .prefix("crucible-campaign-resume-")
+        .tempdir()
+        .map_err(|error| campaign_run_error("create transient exact checkpoint store", error))?;
+    let checkpoint_root = checkpoint_directory.path().to_path_buf();
+    let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+        "legacy-campaign-resume-checkpoints",
+        &checkpoint_root,
+    ));
+    let checkpoints = Arc::new(
+        ExactCheckpointStore::new(checkpoint_backend, resources.maximum_disk_bytes())
+            .map_err(|error| campaign_run_error("open exact checkpoint store", error))?,
+    );
+    let request = GuardedDefaultCampaignRunRequest::new(
+        evidence.scenario_form.clone(),
+        evidence.scenario.seed(),
+        env!("CARGO_PKG_VERSION"),
+        qemu_build_id,
+        lifecycle,
+        deployment.host,
+        resources,
+    )
+    .with_selection_free_resume_source(
+        evidence.schedule.clone(),
+        replay_closure,
+        evidence.checkpoint.clone(),
+        final_stop,
+        Arc::clone(&checkpoints),
+    );
+    let request = if resume_plan.watch_streams_live_status {
+        request.with_watch_frames()
+    } else {
+        request
+    };
+    let result = run_guarded_default_campaign(request)
+        .map_err(|error| campaign_run_error("resume through shared campaign owner", error))
+        .and_then(|campaign| campaign_resume_workflow_report(resume_plan, evidence, &campaign));
+    complete_transient_checkpoint_workflow(
+        checkpoints,
+        checkpoint_directory,
+        &checkpoint_root,
+        result,
+    )
+}
+
+fn guarded_resume_stop(plan: &ResumeInvocationPlan) -> Result<StopCondition, CliError> {
+    match plan.terminal_condition {
+        RunTerminalCondition::Quiescence => Ok(StopCondition::NextChoice),
+        RunTerminalCondition::VirtualTime => plan
+            .max_virtual_time_ticks
+            .map(StopCondition::VirtualTimeNanoseconds)
+            .ok_or_else(|| usage_error("resume --until virtual-time requires --max-virtual-time")),
+        RunTerminalCondition::Stopped => Ok(StopCondition::Terminal),
+        RunTerminalCondition::Property => Err(backend_error(
+            "campaign-backed QEMU resume does not support property breakpoints",
+        )),
+    }
+}
+
 pub(super) fn run_local_qemu_campaign_replay(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
@@ -150,13 +267,32 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
     )
     .with_discovery_stop(stop.clone())
     .with_reached_stop_savepoint_capture(Arc::clone(&checkpoints));
-    let campaign = run_guarded_default_campaign(request).map_err(|error| {
-        campaign_run_error("capture savepoint through shared campaign owner", error)
-    })?;
-    let report = campaign_save_workflow_report(save_plan, &campaign, &stop)?;
+    let report = run_guarded_default_campaign(request)
+        .map_err(|error| {
+            campaign_run_error("capture savepoint through shared campaign owner", error)
+        })
+        .and_then(|campaign| campaign_save_workflow_report(save_plan, &campaign, &stop));
+    let report = complete_transient_checkpoint_workflow(
+        checkpoints,
+        checkpoint_directory,
+        &checkpoint_root,
+        report,
+    )?;
 
+    let mut outcome =
+        finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)?;
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "save-live-checkpoint");
+    Ok(outcome)
+}
+
+fn complete_transient_checkpoint_workflow<T>(
+    checkpoints: Arc<ExactCheckpointStore>,
+    checkpoint_directory: tempfile::TempDir,
+    checkpoint_root: &Path,
+    result: Result<T, CliError>,
+) -> Result<T, CliError> {
     drop(checkpoints);
-    checkpoint_directory.close().map_err(|error| {
+    let cleanup = checkpoint_directory.close().map_err(|error| {
         campaign_run_error(
             &format!(
                 "remove transient exact checkpoint store {}",
@@ -164,12 +300,12 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
             ),
             error,
         )
-    })?;
-
-    let mut outcome =
-        finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)?;
-    append_qemu_control_plane_execution_proof(&mut outcome, backend, "save-live-checkpoint");
-    Ok(outcome)
+    });
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
 }
 
 fn campaign_save_workflow_report(
@@ -212,6 +348,150 @@ fn campaign_save_workflow_report(
             breakpoint_firing: None,
         },
     })
+}
+
+fn campaign_resume_workflow_report(
+    resume_plan: &ResumeInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+    campaign: &GuardedDefaultCampaignRun,
+) -> Result<ResumeWorkflowReport, CliError> {
+    let resume = campaign.resume().ok_or_else(|| {
+        campaign_run_error_message("campaign completed without authenticated resume evidence")
+    })?;
+    if resume.source_checkpoint() != evidence.checkpoint.id
+        || resume.source_configuration().as_hash().as_bytes() != evidence.configuration.id().bytes
+        || resume.source_frontier() != evidence.checkpoint.virtual_time
+        || !campaign
+            .observations()
+            .iter()
+            .any(|observation| observation.id() == resume.source_observation())
+    {
+        return Err(CliError::Identity(String::from(
+            "campaign resume source proof differs from the requested legacy checkpoint",
+        )));
+    }
+    match (
+        resume.source_savepoint(),
+        resume.ready(),
+        resume.selection(),
+        resume.continuation(),
+    ) {
+        (Some(_), Some(_), Some(_), Some(_)) | (None, None, None, None) => {}
+        _ => {
+            return Err(CliError::Identity(String::from(
+                "campaign resume continuation lost its exact capture or typed selection proof",
+            )));
+        }
+    }
+
+    let configuration = campaign.terminal_configuration();
+    validate_resume_terminal_source_ancestor(evidence, configuration)?;
+    let frontier = campaign.evidence().frontier();
+    let stop = campaign.terminal().observation().stop();
+    let (status, terminal_outcome) = campaign_resume_status(resume_plan, stop)?;
+    validate_campaign_resume_frontier(resume_plan, resume.source_frontier(), stop, frontier)?;
+    let checkpoint = recorded_checkpoint_for_configuration(configuration, frontier)
+        .map_err(|error| campaign_run_error("build resumed terminal checkpoint", error))?;
+    let terminal_oracle = validate_checkpoint_with_replay_oracle_anchored(
+        "resume",
+        &evidence.scenario,
+        [(&evidence.configuration, &evidence.checkpoint)],
+        configuration,
+        &checkpoint,
+        frontier,
+    )?;
+    let final_state = match resume_plan.terminal_condition {
+        RunTerminalCondition::Quiescence => String::from("quiescent"),
+        RunTerminalCondition::VirtualTime => String::from("virtual-time"),
+        RunTerminalCondition::Stopped => String::from("stopped"),
+        RunTerminalCondition::Property => {
+            return Err(campaign_run_error_message(
+                "property resume entered the selection-free campaign path",
+            ));
+        }
+    };
+    let mut run = campaign_run_report_with_state(
+        campaign,
+        terminal_outcome,
+        status,
+        final_state,
+        resume_plan.watch_streams_live_status,
+    )?;
+    run.terminal_savepoint = Some(terminal_oracle.fat_checkpoint);
+
+    Ok(ResumeWorkflowReport {
+        run,
+        source_checkpoint: evidence.checkpoint.id,
+        resumed_configuration: evidence.configuration.id(),
+        terminal_configuration: configuration.clone(),
+        scenario_label: resume_plan.savepoint.label(),
+        terminal_oracle,
+    })
+}
+
+fn campaign_resume_status(
+    plan: &ResumeInvocationPlan,
+    stop: &StopOutcome,
+) -> Result<(BackendCommandStatus, OutcomeKind), CliError> {
+    Ok(match stop {
+        StopOutcome::TerminalSuccess => (BackendCommandStatus::Passed, OutcomeKind::Passed),
+        StopOutcome::ModeledTimeout(_) => (BackendCommandStatus::Timeout, OutcomeKind::Timeout),
+        StopOutcome::GuestCrash(_) => (BackendCommandStatus::Crashed, OutcomeKind::Crashed),
+        StopOutcome::AssertionFailure(_) | StopOutcome::ScenarioFailure(_) => {
+            (BackendCommandStatus::Failed, OutcomeKind::Failed)
+        }
+        StopOutcome::Reached(StopCondition::NextChoice)
+            if plan.terminal_condition == RunTerminalCondition::Quiescence =>
+        {
+            (BackendCommandStatus::Passed, OutcomeKind::Passed)
+        }
+        StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline))
+            if plan.terminal_condition == RunTerminalCondition::VirtualTime
+                && plan.max_virtual_time_ticks == Some(*deadline) =>
+        {
+            (BackendCommandStatus::Passed, OutcomeKind::Passed)
+        }
+        StopOutcome::Reached(_) => {
+            return Err(campaign_run_error_message(
+                "campaign resume ended at an unexpected nonterminal boundary",
+            ));
+        }
+    })
+}
+
+fn validate_campaign_resume_frontier(
+    plan: &ResumeInvocationPlan,
+    source_frontier: crucible::VirtualTime,
+    stop: &StopOutcome,
+    frontier: crucible::VirtualTime,
+) -> Result<(), CliError> {
+    if frontier.ticks < source_frontier.ticks {
+        return Err(CliError::Identity(format!(
+            "campaign resume terminal frontier {} precedes authenticated source frontier {}",
+            frontier.ticks, source_frontier.ticks
+        )));
+    }
+
+    let StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline)) = stop else {
+        return Ok(());
+    };
+    if plan.terminal_condition != RunTerminalCondition::VirtualTime
+        || plan.max_virtual_time_ticks != Some(*deadline)
+    {
+        return Ok(());
+    }
+
+    // Resuming cannot rewind an already-reached source. A deadline behind the
+    // source applies to the continuation and therefore completes at the source.
+    let expected_frontier = source_frontier.ticks.max(*deadline);
+    if frontier.ticks != expected_frontier {
+        return Err(CliError::Identity(format!(
+            "campaign resume virtual-time boundary produced frontier {}, expected {} from source {} and deadline {}",
+            frontier.ticks, expected_frontier, source_frontier.ticks, deadline
+        )));
+    }
+
+    Ok(())
 }
 
 fn validate_campaign_savepoint(
@@ -498,6 +778,22 @@ pub(super) fn campaign_run_report(
     terminal_outcome: OutcomeKind,
     status: BackendCommandStatus,
 ) -> Result<RunWorkflowReport, CliError> {
+    campaign_run_report_with_state(
+        campaign,
+        terminal_outcome,
+        status,
+        terminal_final_state(run_plan, Some(terminal_outcome)),
+        run_plan.watch_streams_live_status,
+    )
+}
+
+fn campaign_run_report_with_state(
+    campaign: &GuardedDefaultCampaignRun,
+    terminal_outcome: OutcomeKind,
+    status: BackendCommandStatus,
+    final_state: String,
+    watch_streams_live_status: bool,
+) -> Result<RunWorkflowReport, CliError> {
     let evidence = campaign.evidence();
     let configuration = campaign.terminal_configuration();
     let streamed_events = evidence
@@ -520,7 +816,7 @@ pub(super) fn campaign_run_report(
             })
         })
         .collect();
-    let watch_statuses = if run_plan.watch_streams_live_status {
+    let watch_statuses = if watch_streams_live_status {
         campaign
             .watch_frames()
             .iter()
@@ -539,7 +835,7 @@ pub(super) fn campaign_run_report(
                 .map_err(|error| campaign_run_error("encode replay closure", error))?,
         ),
         created_state: String::from("created"),
-        final_state: terminal_final_state(run_plan, Some(terminal_outcome)),
+        final_state,
         outcome: Some(terminal_outcome),
         terminal_savepoint: None,
         terminal_configuration: Some(configuration.clone()),
@@ -618,11 +914,18 @@ fn campaign_run_error(context: &str, error: impl fmt::Display) -> CliError {
 mod tests {
     use super::*;
 
+    use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     use clap::Parser;
     use crucible_api::ProductionVmLifecycleConfig;
+    use crucible_campaign::{
+        BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+        ChoiceOpportunity, ChoiceSource, ChoiceValue, SelectableDeclaration, Selection,
+        SelectionOrigin,
+    };
+    use crucible_core::AppRandomDecision;
     use crucible_daemon::LinuxQemuAttemptHostConfig;
     use crucible_daemon::qemu_campaign_lifecycle::run_guarded_default_campaign_test_fixture;
     use tempfile::TempDir;
@@ -634,6 +937,471 @@ mod tests {
         };
         plan_run_invocation(args, Path::new("."))
             .expect("built-in default run should produce an invocation plan")
+    }
+
+    fn resume_evidence(schedule: Schedule, frontier: VirtualTime) -> ResumeHandleEvidence {
+        let scenario_form = default_run_plan().scenario.scenario_form().clone();
+        let scenario = scenario_form.scenario_def();
+        let configuration = crucible::Configuration {
+            def: scenario.clone(),
+            schedule: schedule.clone(),
+        };
+        let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)
+            .expect("resume checkpoint");
+        ResumeHandleEvidence {
+            scenario_form,
+            scenario,
+            schedule,
+            configuration,
+            checkpoint,
+        }
+    }
+
+    fn default_resume_plan(evidence: &ResumeHandleEvidence, store: &Path) -> ResumeInvocationPlan {
+        ResumeInvocationPlan {
+            savepoint: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
+            store_root: store.to_path_buf(),
+            terminal_condition: RunTerminalCondition::Stopped,
+            max_virtual_time: None,
+            max_virtual_time_ticks: None,
+            execution_mode: RunExecutionMode::ToCompletion,
+            watch_streams_live_status: false,
+            startup_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
+            initial_control_commands: vec![SessionCommandKind::Query],
+            accepted_interactive_commands: Vec::new(),
+        }
+    }
+
+    fn typed_selection_schedule(scenario: &crucible::ScenarioDef) -> Schedule {
+        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("Boolean domain"));
+        let declaration = SelectableDeclaration::new(
+            "product.test.legacy-resume-route",
+            ChoiceSource::Scheduler {
+                producer: String::from("legacy-resume-route-test"),
+            },
+            domain.clone(),
+            ChoiceValue::Boolean(false),
+            ChoiceClassContext::new(BTreeSet::new()).expect("class context"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("selectable declaration");
+        let opportunity = ChoiceOpportunity::new(
+            crucible_campaign::ScenarioDefId::from_hash(CampaignHash::from_bytes(
+                scenario.id().bytes,
+            )),
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: CampaignHash::derive("test", b"legacy-resume-scheduler"),
+                producer: CampaignHash::derive("test", b"legacy-resume-producer"),
+            },
+            "legacy-resume-route",
+            None,
+        )
+        .expect("choice opportunity");
+        let selection = Selection::new(
+            &opportunity,
+            &domain,
+            ChoiceValue::Boolean(false),
+            SelectionOrigin::Default,
+        )
+        .expect("default selection");
+        Schedule::from_decisions([crucible::Decision::Selection(
+            crucible::SelectionDecision::new(&selection),
+        )])
+    }
+
+    struct ResumeCampaignFixture {
+        campaign: GuardedDefaultCampaignRun,
+        checkpoints: Arc<ExactCheckpointStore>,
+        checkpoint_directory: TempDir,
+        checkpoint_root: PathBuf,
+    }
+
+    fn resume_campaign_fixture(
+        temporary: &TempDir,
+        evidence: &ResumeHandleEvidence,
+        final_stop: StopCondition,
+        watch_frames: bool,
+    ) -> ResumeCampaignFixture {
+        let resources = AttemptResourceLimits::new(1, 256 * 1024 * 1024, 1024 * 1024, 16)
+            .expect("campaign fixture resources");
+        let checkpoint_directory = tempfile::Builder::new()
+            .prefix("transient-resume-exact-")
+            .tempdir_in(temporary.path())
+            .expect("transient exact directory");
+        let checkpoint_root = checkpoint_directory.path().to_path_buf();
+        let exact_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+            "legacy-campaign-resume-projection-test",
+            checkpoint_root.clone(),
+        ));
+        let checkpoints = Arc::new(
+            ExactCheckpointStore::new(exact_backend, resources.maximum_disk_bytes())
+                .expect("exact checkpoint store"),
+        );
+        let host = LinuxQemuAttemptHostConfig::new(
+            "/sys/fs/cgroup/crucible-campaign-resume-projection-test",
+            "/tmp/crucible-campaign-resume-projection-test",
+            "campaign-resume-projection-test",
+            1,
+            1,
+            65_529,
+            65_529,
+            16,
+            1_024,
+            Duration::from_secs(1),
+        )
+        .expect("fixture host configuration");
+        let closure =
+            GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&evidence.schedule)
+                .expect("selection-free closure");
+        let request = GuardedDefaultCampaignRunRequest::new(
+            evidence.scenario_form.clone(),
+            evidence.scenario.seed(),
+            "campaign-resume-projection-test-engine",
+            "campaign-resume-projection-test-qemu",
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
+            host,
+            resources,
+        )
+        .with_selection_free_resume_source(
+            evidence.schedule.clone(),
+            closure,
+            evidence.checkpoint.clone(),
+            final_stop,
+            Arc::clone(&checkpoints),
+        );
+        let request = if watch_frames {
+            request.with_watch_frames()
+        } else {
+            request
+        };
+        let campaign = run_guarded_default_campaign_test_fixture(request)
+            .expect("campaign fixture should resume through exact capture");
+
+        ResumeCampaignFixture {
+            campaign,
+            checkpoints,
+            checkpoint_directory,
+            checkpoint_root,
+        }
+    }
+
+    #[test]
+    fn campaign_resume_route_accepts_only_standard_selection_free_workflows() {
+        let temporary = TempDir::new().expect("resume route workspace");
+        let supported = Schedule::from_decisions([
+            crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 5 },
+                order: Vec::new(),
+            }),
+            crucible::Decision::RngDraw(crucible::RngDecision {
+                stream: crucible::RngStreamId::from_name("legacy-resume-route"),
+                value: 7,
+            }),
+        ]);
+        let evidence = resume_evidence(supported, VirtualTime { ticks: 5 });
+        let default = default_resume_plan(&evidence, temporary.path());
+        assert!(guarded_campaign_resume_eligible(&default, &evidence));
+
+        let mut virtual_time = default.clone();
+        virtual_time.terminal_condition = RunTerminalCondition::VirtualTime;
+        virtual_time.max_virtual_time = Some(String::from("10ticks"));
+        virtual_time.max_virtual_time_ticks = Some(10);
+        assert!(guarded_campaign_resume_eligible(&virtual_time, &evidence));
+
+        let mut unsupported_evidence = evidence.clone();
+        unsupported_evidence.schedule =
+            Schedule::from_decisions([crucible::Decision::Override(crucible::OverrideDecision {
+                point: crucible::SchedulingPoint {
+                    key: String::from("legacy-resume/override"),
+                },
+                choice: crucible::ChoiceTag {
+                    name: String::from("alternate"),
+                },
+            })]);
+        assert!(!guarded_campaign_resume_eligible(
+            &default,
+            &unsupported_evidence
+        ));
+        unsupported_evidence.schedule =
+            Schedule::from_decisions([crucible::Decision::AppRandom(AppRandomDecision {
+                node: crucible::NodeId {
+                    name: String::from("legacy-resume-node"),
+                },
+                stream: crucible::RngStreamId::from_name("legacy-resume-app-random"),
+                request_id: 1,
+                width: 8,
+                value: 3,
+            })]);
+        assert!(!guarded_campaign_resume_eligible(
+            &default,
+            &unsupported_evidence
+        ));
+        unsupported_evidence.schedule = typed_selection_schedule(&evidence.scenario);
+        assert!(!guarded_campaign_resume_eligible(
+            &default,
+            &unsupported_evidence
+        ));
+
+        let mut property = default.clone();
+        property.terminal_condition = RunTerminalCondition::Property;
+        assert!(!guarded_campaign_resume_eligible(&property, &evidence));
+        let mut interactive = default.clone();
+        interactive.execution_mode = RunExecutionMode::Interactive;
+        interactive.startup_commands = vec![SessionCommandKind::Start];
+        interactive.accepted_interactive_commands = run_interactive_session_command_set();
+        assert!(!guarded_campaign_resume_eligible(&interactive, &evidence));
+        let mut changed_controls = default;
+        changed_controls.initial_control_commands.clear();
+        assert!(!guarded_campaign_resume_eligible(
+            &changed_controls,
+            &evidence
+        ));
+    }
+
+    #[test]
+    fn campaign_resume_projection_preserves_source_oracle_watch_and_cleanup() {
+        let temporary = TempDir::new().expect("resume projection workspace");
+        let source_frontier = VirtualTime { ticks: 5 };
+        let schedule = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 10 },
+                order: Vec::new(),
+            },
+        )]);
+        let evidence = resume_evidence(schedule.clone(), source_frontier);
+        let mut resume_plan = default_resume_plan(&evidence, temporary.path());
+        resume_plan.terminal_condition = RunTerminalCondition::VirtualTime;
+        resume_plan.max_virtual_time = Some(String::from("10ticks"));
+        resume_plan.max_virtual_time_ticks = Some(10);
+        resume_plan.watch_streams_live_status = true;
+        let ResumeCampaignFixture {
+            campaign,
+            checkpoints,
+            checkpoint_directory,
+            checkpoint_root,
+        } = resume_campaign_fixture(
+            &temporary,
+            &evidence,
+            StopCondition::VirtualTimeNanoseconds(10),
+            true,
+        );
+        let result = campaign_resume_workflow_report(&resume_plan, &evidence, &campaign);
+        let proof = campaign.resume().cloned().expect("campaign resume proof");
+        let terminal_observation = campaign.terminal().id();
+        drop(campaign);
+        let report = complete_transient_checkpoint_workflow(
+            checkpoints,
+            checkpoint_directory,
+            &checkpoint_root,
+            result,
+        )
+        .expect("project campaign resume into legacy contract");
+
+        assert_eq!(report.run.execution_owner, RunExecutionOwner::Campaign);
+        assert_eq!(report.source_checkpoint, evidence.checkpoint.id);
+        assert_eq!(report.resumed_configuration, evidence.configuration.id());
+        assert_eq!(report.run.final_frontier_ticks, 10);
+        assert_eq!(report.run.final_state, "virtual-time");
+        assert_eq!(
+            report.run.terminal_savepoint,
+            Some(report.terminal_oracle.fat_checkpoint)
+        );
+        assert_eq!(
+            report
+                .terminal_oracle
+                .schedule
+                .prefix(evidence.schedule.len()),
+            Ok(evidence.schedule.clone())
+        );
+        assert!(report.run.campaign_replay_closure.is_some());
+        assert!(!report.run.watch_statuses.is_empty());
+        assert!(
+            report
+                .run
+                .watch_statuses
+                .iter()
+                .all(|status| status.contains("owner=campaign"))
+        );
+        assert!(report.run.watch_statuses.iter().any(|status| {
+            status.contains(&format!("observation={}", proof.source_observation()))
+        }));
+        assert!(
+            report
+                .run
+                .watch_statuses
+                .iter()
+                .any(|status| { status.contains(&format!("observation={terminal_observation}")) })
+        );
+        assert_eq!(proof.source_frontier(), source_frontier);
+        assert!(proof.source_savepoint().is_some());
+        assert!(proof.ready().is_some());
+        assert!(proof.selection().is_some());
+        assert!(proof.continuation().is_some());
+
+        assert!(!checkpoint_root.exists());
+    }
+
+    #[test]
+    fn campaign_resume_projection_does_not_rewind_for_an_earlier_deadline() {
+        let temporary = TempDir::new().expect("resume no-rewind workspace");
+        let source_frontier = VirtualTime { ticks: 5 };
+        let evidence = resume_evidence(Schedule::empty(), source_frontier);
+        let mut resume_plan = default_resume_plan(&evidence, temporary.path());
+        resume_plan.terminal_condition = RunTerminalCondition::VirtualTime;
+        resume_plan.max_virtual_time = Some(String::from("3ticks"));
+        resume_plan.max_virtual_time_ticks = Some(3);
+        let ResumeCampaignFixture {
+            campaign,
+            checkpoints,
+            checkpoint_directory,
+            checkpoint_root,
+        } = resume_campaign_fixture(
+            &temporary,
+            &evidence,
+            StopCondition::VirtualTimeNanoseconds(3),
+            false,
+        );
+
+        assert_eq!(
+            campaign.terminal().observation().stop(),
+            &StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(3))
+        );
+        assert_eq!(campaign.evidence().frontier(), source_frontier);
+
+        let result = campaign_resume_workflow_report(&resume_plan, &evidence, &campaign);
+        drop(campaign);
+        let report = complete_transient_checkpoint_workflow(
+            checkpoints,
+            checkpoint_directory,
+            &checkpoint_root,
+            result,
+        )
+        .expect("project no-rewind campaign resume into legacy contract");
+
+        assert_eq!(report.run.status, BackendCommandStatus::Passed);
+        assert_eq!(report.run.outcome, Some(OutcomeKind::Passed));
+        assert_eq!(report.run.final_frontier_ticks, source_frontier.ticks);
+        assert_eq!(report.terminal_oracle.frontier, source_frontier);
+        assert!(!checkpoint_root.exists());
+    }
+
+    #[test]
+    fn campaign_resume_frontier_validation_binds_reached_deadlines_only() {
+        let temporary = TempDir::new().expect("resume frontier workspace");
+        let source_frontier = VirtualTime { ticks: 5 };
+        let evidence = resume_evidence(Schedule::empty(), source_frontier);
+        let mut plan = default_resume_plan(&evidence, temporary.path());
+        plan.terminal_condition = RunTerminalCondition::VirtualTime;
+        plan.max_virtual_time = Some(String::from("3ticks"));
+        plan.max_virtual_time_ticks = Some(3);
+        let earlier_stop = StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(3));
+
+        validate_campaign_resume_frontier(&plan, source_frontier, &earlier_stop, source_frontier)
+            .expect("an earlier deadline must preserve the source frontier");
+        assert!(
+            validate_campaign_resume_frontier(
+                &plan,
+                source_frontier,
+                &earlier_stop,
+                VirtualTime { ticks: 3 }
+            )
+            .is_err()
+        );
+        assert!(
+            validate_campaign_resume_frontier(
+                &plan,
+                source_frontier,
+                &earlier_stop,
+                VirtualTime { ticks: 6 }
+            )
+            .is_err()
+        );
+
+        plan.max_virtual_time = Some(String::from("10ticks"));
+        plan.max_virtual_time_ticks = Some(10);
+        let future_stop = StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(10));
+        validate_campaign_resume_frontier(
+            &plan,
+            source_frontier,
+            &future_stop,
+            VirtualTime { ticks: 10 },
+        )
+        .expect("a future deadline must advance to that exact frontier");
+    }
+
+    #[test]
+    fn campaign_resume_terminal_outcomes_bypass_the_requested_future_deadline() {
+        let temporary = TempDir::new().expect("resume terminal outcome workspace");
+        let source_frontier = VirtualTime { ticks: 5 };
+        let evidence = resume_evidence(Schedule::empty(), source_frontier);
+        let mut plan = default_resume_plan(&evidence, temporary.path());
+        plan.terminal_condition = RunTerminalCondition::VirtualTime;
+        plan.max_virtual_time = Some(String::from("10ticks"));
+        plan.max_virtual_time_ticks = Some(10);
+        let terminal_cases = [
+            (
+                StopOutcome::ModeledTimeout(String::from("deadline")),
+                BackendCommandStatus::Timeout,
+                OutcomeKind::Timeout,
+            ),
+            (
+                StopOutcome::GuestCrash(String::from("guest-crash")),
+                BackendCommandStatus::Crashed,
+                OutcomeKind::Crashed,
+            ),
+            (
+                StopOutcome::AssertionFailure(String::from("invariant")),
+                BackendCommandStatus::Failed,
+                OutcomeKind::Failed,
+            ),
+            (
+                StopOutcome::ScenarioFailure(vec![String::from("scenario failed")]),
+                BackendCommandStatus::Failed,
+                OutcomeKind::Failed,
+            ),
+        ];
+
+        for (stop, expected_status, expected_outcome) in terminal_cases {
+            assert_eq!(
+                campaign_resume_status(&plan, &stop).expect("terminal outcome status"),
+                (expected_status, expected_outcome)
+            );
+            validate_campaign_resume_frontier(&plan, source_frontier, &stop, source_frontier)
+                .expect("terminal outcomes may precede the requested future deadline");
+        }
+    }
+
+    #[test]
+    fn transient_checkpoint_cleanup_preserves_the_execution_error() {
+        let temporary = TempDir::new().expect("cleanup workspace");
+        let checkpoint_directory = tempfile::Builder::new()
+            .prefix("transient-resume-error-")
+            .tempdir_in(temporary.path())
+            .expect("transient exact directory");
+        let checkpoint_root = checkpoint_directory.path().to_path_buf();
+        let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+            "legacy-campaign-resume-cleanup-test",
+            &checkpoint_root,
+        ));
+        let checkpoints = Arc::new(
+            ExactCheckpointStore::new(backend, 1024 * 1024).expect("exact checkpoint store"),
+        );
+        let expected = "injected campaign resume failure";
+        let result: Result<(), CliError> = Err(backend_error(expected));
+
+        let error = complete_transient_checkpoint_workflow(
+            checkpoints,
+            checkpoint_directory,
+            &checkpoint_root,
+            result,
+        )
+        .expect_err("execution failure must survive successful cleanup");
+
+        assert!(error.to_string().contains(expected));
+        assert!(!checkpoint_root.exists());
     }
 
     #[test]
@@ -899,15 +1667,16 @@ mod tests {
         let checkpoint = outcome
             .terminal_savepoint
             .expect("projected save exposes its logical checkpoint");
-        let handle_evidence = resume_evidence_from_cli(&output, temporary.path());
+        let (handle_resume_plan, handle_evidence) =
+            resume_plan_and_evidence_from_cli(&output, temporary.path());
         let handle_fork_evidence = fork_evidence_from_cli(
             &output.display().to_string(),
             temporary.path(),
             &artifact_directory,
         );
         let checkpoint_reference = format_content_hash_ref(checkpoint);
-        let store_evidence =
-            resume_evidence_from_cli(Path::new(&checkpoint_reference), temporary.path());
+        let (store_resume_plan, store_evidence) =
+            resume_plan_and_evidence_from_cli(Path::new(&checkpoint_reference), temporary.path());
         let store_fork_evidence =
             fork_evidence_from_cli(&checkpoint_reference, temporary.path(), &artifact_directory);
 
@@ -915,9 +1684,20 @@ mod tests {
         assert_eq!(handle_evidence, store_evidence);
         assert_eq!(handle_evidence, store_fork_evidence);
         assert_eq!(handle_evidence.checkpoint.id, checkpoint);
+        assert!(guarded_campaign_resume_eligible(
+            &handle_resume_plan,
+            &handle_evidence
+        ));
+        assert!(guarded_campaign_resume_eligible(
+            &store_resume_plan,
+            &store_evidence
+        ));
     }
 
-    fn resume_evidence_from_cli(savepoint: &Path, store: &Path) -> ResumeHandleEvidence {
+    fn resume_plan_and_evidence_from_cli(
+        savepoint: &Path,
+        store: &Path,
+    ) -> (ResumeInvocationPlan, ResumeHandleEvidence) {
         let cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--store"),
@@ -929,7 +1709,9 @@ mod tests {
             panic!("expected resume command");
         };
         let plan = plan_resume_invocation(args, store).expect("resume plan");
-        resume_handle_evidence(&plan).expect("unchanged resume reader accepts campaign save")
+        let evidence =
+            resume_handle_evidence(&plan).expect("unchanged resume reader accepts campaign save");
+        (plan, evidence)
     }
 
     fn fork_evidence_from_cli(

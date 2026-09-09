@@ -12,26 +12,27 @@ use std::fmt;
 use std::sync::Arc;
 
 // crucible-lint: allow host-nondeterminism-state -- decoded configurations are authenticated repository artifacts returned after campaign acceptance.
-use crucible::Configuration;
-use crucible::{ScenarioDefForm, Schedule, Seed};
+use crucible::{Checkpoint, CheckpointKind, Configuration};
+use crucible::{ScenarioDefForm, Schedule, Seed, VirtualTime};
 // crucible-lint: allow host-nondeterminism-state -- the caller supplies a validated production lifecycle capability; host observations cannot alter modeled choices.
 use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
-    ApplyCampaignCommandRequest, AttemptResourceLimits, AttemptStart, AuthorizedPlannerService,
-    AuthorizedPlannerServiceError, BranchBudget, BranchRequest, BranchRequestCause, BudgetGrant,
-    CampaignAuthorizationError, CampaignClient, CampaignClientError, CampaignCodecError,
-    CampaignCommandId, CampaignControlAction, CampaignExecutorDriver,
-    CampaignExecutorDriverConfigError, CampaignExecutorStepOutcome, CampaignExecutorStore,
-    CampaignFactId, CampaignHash, CampaignLineage, CampaignMode, CampaignName,
-    CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError, CampaignSeed,
-    CampaignServiceOperation, CampaignSnapshotId, CampaignState, CampaignSupervisor,
+    ApplyCampaignCommandRequest, Attempt, AttemptResourceLimits, AttemptStart,
+    AuthorizedPlannerService, AuthorizedPlannerServiceError, BranchBudget, BranchRequest,
+    BranchRequestCause, BudgetGrant, CampaignAuthorizationError, CampaignClient,
+    CampaignClientError, CampaignCodecError, CampaignCommandId, CampaignControlAction,
+    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorStepOutcome,
+    CampaignExecutorStore, CampaignFact, CampaignFactId, CampaignHash, CampaignLineage,
+    CampaignMode, CampaignName, CampaignPlannerDriver, CampaignPlannerDriverConfigError,
+    CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError,
+    CampaignSeed, CampaignServiceOperation, CampaignSnapshotId, CampaignState, CampaignSupervisor,
     CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
     CandidateSource, CreateCampaignRequest, DaemonEpoch, DebuggerAuthorityKey, DiscoveryRequest,
     ExactCheckpointId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExplorerPolicy,
     FairnessPolicy, Observation, ObservationId, PlannerAuthorityKey, PlannerClient, PlanningBudget,
     RepositoryCampaignService, RetentionPolicy, SavepointCaptureOutcome, SavepointCaptureRequest,
-    StopCondition, StopOutcome, SubmitCampaignBranchRequest, SubmitCampaignDiscoveryRequest,
+    SavepointContinuationSelection, StopCondition, StopOutcome, SubmitCampaignBranchRequest,
+    SubmitCampaignDiscoveryRequest,
 };
 use crucible_cas::content_store::{
     ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, MutableRefBackend,
@@ -62,6 +63,13 @@ use executor::{
 
 mod replay_closure;
 pub use replay_closure::{GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError};
+
+mod resume;
+pub use resume::GuardedDefaultCampaignResumeProof;
+use resume::{
+    DefaultRunResumeProgress, DefaultRunResumeProof, GuardedDefaultCampaignResumeSource,
+    materialize_resume_proof, validate_resume_source,
+};
 
 #[cfg(test)]
 mod tests;
@@ -130,6 +138,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     discovery_stop: StopCondition,
     collect_watch_frames: bool,
     capture_reached_stop: Option<Arc<ExactCheckpointStore>>,
+    resume_source: Option<GuardedDefaultCampaignResumeSource>,
 }
 
 impl GuardedDefaultCampaignRunRequest {
@@ -157,6 +166,7 @@ impl GuardedDefaultCampaignRunRequest {
             discovery_stop: StopCondition::NextChoice,
             collect_watch_frames: false,
             capture_reached_stop: None,
+            resume_source: None,
         }
     }
 
@@ -207,6 +217,35 @@ impl GuardedDefaultCampaignRunRequest {
         checkpoints: Arc<ExactCheckpointStore>,
     ) -> Self {
         self.capture_reached_stop = Some(checkpoints);
+        self
+    }
+
+    /// Resumes an authenticated selection-free legacy checkpoint through one campaign.
+    ///
+    /// The source schedule is first replayed to the exact logical checkpoint
+    /// frontier. Only after the accepted configuration and scheduler frontier
+    /// equal `checkpoint` does the owner capture an exact physical savepoint and
+    /// admit an [`AttemptStart::AfterAttempt`] continuation to `final_stop`.
+    /// Historical schedules that require typed selection records are rejected;
+    /// their existing session-owned resume path must retain the producer's
+    /// complete choice closure.
+    #[must_use]
+    pub fn with_selection_free_resume_source(
+        mut self,
+        schedule: Schedule,
+        closure: GuardedCampaignReplayClosure,
+        checkpoint: Checkpoint,
+        final_stop: StopCondition,
+        checkpoints: Arc<ExactCheckpointStore>,
+    ) -> Self {
+        self.initial_schedule = schedule;
+        self.initial_replay_closure = Some(closure);
+        self.discovery_stop = StopCondition::VirtualTimeNanoseconds(checkpoint.virtual_time.ticks);
+        self.resume_source = Some(GuardedDefaultCampaignResumeSource {
+            checkpoint,
+            final_stop,
+            checkpoints,
+        });
         self
     }
 }
@@ -302,6 +341,7 @@ pub struct GuardedDefaultCampaignRun {
     evidence: QemuAttemptExecutionEvidenceSnapshot,
     replay_closure: GuardedCampaignReplayClosure,
     savepoint: Option<GuardedDefaultCampaignSavepoint>,
+    resume: Option<GuardedDefaultCampaignResumeProof>,
 }
 
 /// Authenticated physical savepoint captured for the terminal observation.
@@ -420,6 +460,12 @@ impl GuardedDefaultCampaignRun {
     pub const fn savepoint(&self) -> Option<&GuardedDefaultCampaignSavepoint> {
         self.savepoint.as_ref()
     }
+
+    /// Returns the authenticated legacy-resume admission, when requested.
+    #[must_use]
+    pub const fn resume(&self) -> Option<&GuardedDefaultCampaignResumeProof> {
+        self.resume.as_ref()
+    }
 }
 
 /// Failure while owning one guarded default campaign run.
@@ -476,6 +522,9 @@ where
     /// A published physical checkpoint closure failed authentication.
     #[error("guarded default campaign exact checkpoint failed: {0}")]
     ExactCheckpoint(#[source] ExactCheckpointStoreError),
+    /// A legacy logical resume checkpoint could not be reconstructed exactly.
+    #[error("guarded default campaign resume checkpoint failed: {0}")]
+    ResumeCheckpoint(#[source] crucible::EngineError),
     /// A fixed default-run invariant was violated.
     #[error("guarded default campaign invariant failed: {0}")]
     Invariant(#[source] GuardedDefaultCampaignInvariantError),
@@ -517,6 +566,30 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// The capture replay produced different scheduler evidence at the same boundary.
     #[error("the savepoint replay evidence differs from the accepted semantic attempt")]
     SavepointEvidenceMismatch,
+    /// Save and resume capture modes were requested together.
+    #[error("savepoint capture and legacy resume cannot share one default run")]
+    ConflictingCheckpointModes,
+    /// The legacy resume requested a stop outside its supported compatibility surface.
+    #[error("the legacy resume final stop is not supported by the default campaign owner")]
+    UnsupportedResumeStop,
+    /// The logical source checkpoint did not equal its reconstructed v3 record.
+    #[error("the legacy resume source checkpoint failed exact reconstruction")]
+    ResumeSourceCheckpointMismatch,
+    /// The source replay produced another configuration or campaign artifact.
+    #[error("the legacy resume source observation differs from its checkpoint configuration")]
+    ResumeSourceObservationMismatch,
+    /// The source replay stopped at a different scheduler frontier.
+    #[error("the legacy resume source replay differs from its checkpoint frontier")]
+    ResumeSourceBoundaryMismatch,
+    /// The source attempt ended at an unrelated nonterminal boundary.
+    #[error("the legacy resume source attempt ended before its checkpoint boundary")]
+    ResumeSourceStopNotReached,
+    /// The selected continuation did not retain the exact capture provenance.
+    #[error("the legacy resume continuation differs from its authenticated source capture")]
+    ResumeContinuationMismatch,
+    /// The completed run lost its authenticated legacy-resume proof.
+    #[error("the completed campaign did not retain its legacy-resume proof")]
+    MissingResumeProof,
 }
 
 /// Executes one guarded scenario-default path through shared campaign ownership.
@@ -530,6 +603,7 @@ pub fn run_guarded_default_campaign(
     request: GuardedDefaultCampaignRunRequest,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
     validate_initial_replay(&request)?;
+    validate_resume_source(&request)?;
     validate_fresh_qemu_scenario_resources(&request.scenario, request.resources)
         .map_err(GuardedDefaultCampaignRunError::Resource)?;
 
@@ -557,6 +631,7 @@ where
     R::Error: Error + Send + Sync + 'static,
 {
     validate_initial_replay(&request)?;
+    validate_resume_source(&request)?;
 
     run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
 }
@@ -648,8 +723,16 @@ where
         created.snapshot(),
         0,
         CampaignControlAction::GrantBudget(
-            BudgetGrant::new(DEFAULT_RUN_MAX_CHOICES, DEFAULT_RUN_MAX_CHOICES + 1)
-                .map_err(GuardedDefaultCampaignRunError::Codec)?,
+            BudgetGrant::new(
+                DEFAULT_RUN_MAX_CHOICES,
+                DEFAULT_RUN_MAX_CHOICES
+                    + if request.resume_source.is_some() {
+                        2
+                    } else {
+                        1
+                    },
+            )
+            .map_err(GuardedDefaultCampaignRunError::Codec)?,
         ),
     )?;
     let running = apply_campaign_control(
@@ -695,7 +778,13 @@ where
         daemon_epoch,
         request.resources,
     );
-    let executor_service = match &request.capture_reached_stop {
+    let capture_checkpoints = request.capture_reached_stop.as_ref().or_else(|| {
+        request
+            .resume_source
+            .as_ref()
+            .map(|source| &source.checkpoints)
+    });
+    let executor_service = match capture_checkpoints {
         Some(checkpoints) => executor_service
             .with_checkpoint_capture(Arc::clone(checkpoints))
             .map_err(GuardedDefaultCampaignRunError::ExecutorCapacity)?,
@@ -770,11 +859,13 @@ where
             campaign: &campaign,
             policy: policy.id().map_err(GuardedDefaultCampaignRunError::Codec)?,
             discovery_stop: &request.discovery_stop,
+            initial_configuration_content: genesis_content,
         },
         vec![created_state, running_state],
         watch_frames,
         request.collect_watch_frames,
         request.capture_reached_stop.is_some(),
+        request.resume_source.as_ref(),
         &mut supervisor,
     )?;
     materialize_result(
@@ -782,6 +873,7 @@ where
         campaign,
         execution,
         request.capture_reached_stop.as_deref(),
+        request.resume_source.as_ref(),
     )
 }
 
@@ -946,6 +1038,7 @@ struct DefaultRunExecution {
     state_updates: Vec<CampaignState>,
     watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
     savepoint: Option<DefaultRunSavepointCapture>,
+    resume: Option<DefaultRunResumeProof>,
 }
 
 struct DefaultRunAcceptedObservation {
@@ -958,9 +1051,12 @@ struct DefaultRunPendingSavepointCapture {
     request: CampaignFactId,
     description: SavepointCaptureRequest,
     reached: crucible_campaign::ConfigurationId,
+    reached_content: crucible_campaign::ConfigurationArtifactId,
     expected_evidence: QemuAttemptExecutionEvidenceSnapshot,
+    resume_source_observation: Option<ObservationId>,
 }
 
+#[derive(Clone)]
 struct DefaultRunSavepointCapture {
     request: CampaignFactId,
     description: SavepointCaptureRequest,
@@ -977,6 +1073,7 @@ struct DefaultRunContext<'a, S> {
     campaign: &'a CampaignName,
     policy: crucible_campaign::CampaignPolicyId,
     discovery_stop: &'a StopCondition,
+    initial_configuration_content: crucible_campaign::ConfigurationArtifactId,
 }
 
 fn drive_default_campaign<R, S>(
@@ -985,6 +1082,7 @@ fn drive_default_campaign<R, S>(
     mut watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
     collect_watch_frames: bool,
     capture_reached_stop: bool,
+    resume_source: Option<&GuardedDefaultCampaignResumeSource>,
     supervisor: &mut CampaignSupervisor<DefaultPlannerService, DefaultExecutorService<R>>,
 ) -> Result<DefaultRunExecution, GuardedDefaultCampaignRunError<R::Error>>
 where
@@ -996,6 +1094,7 @@ where
     let mut observations = Vec::new();
     let mut branch_request_count = 0usize;
     let mut pending_capture: Option<DefaultRunPendingSavepointCapture> = None;
+    let mut resume_progress = resume_source.map(|_| DefaultRunResumeProgress::AwaitingSource);
     let mut objective_evaluation_cursor = None;
     for supervisor_iteration in 0..DEFAULT_RUN_MAX_SUPERVISOR_STEPS {
         if crate::publish_next_objective_evaluation(
@@ -1039,6 +1138,8 @@ where
             }
             let checkpoint =
                 checkpoint.ok_or(GuardedDefaultCampaignInvariantError::SavepointCaptureMismatch)?;
+            let resume_source_observation = pending.resume_source_observation;
+            let reached_content = pending.reached_content;
             let savepoint = DefaultRunSavepointCapture {
                 request: pending.request,
                 description: pending.description,
@@ -1046,6 +1147,98 @@ where
                 reached: pending.reached,
                 evidence: evidence.clone(),
             };
+            if let Some(source_observation) = resume_source_observation {
+                if !matches!(resume_progress, Some(DefaultRunResumeProgress::Capturing)) {
+                    return Err(
+                        GuardedDefaultCampaignInvariantError::ResumeContinuationMismatch.into(),
+                    );
+                }
+                let source = resume_source
+                    .ok_or(GuardedDefaultCampaignInvariantError::MissingResumeProof)?;
+                let ready = context
+                    .repository
+                    .savepoint_capture_resolution_at(result.new_snapshot, savepoint.request)
+                    .map_err(GuardedDefaultCampaignRunError::Repository)?
+                    .ok_or(GuardedDefaultCampaignInvariantError::SavepointCaptureMismatch)?;
+                if ready.request != savepoint.request
+                    || ready.outcome != SavepointCaptureOutcome::Ready
+                {
+                    return Err(
+                        GuardedDefaultCampaignInvariantError::ResumeContinuationMismatch.into(),
+                    );
+                }
+                let ready_id = CampaignFact::SavepointCaptureResolved(ready)
+                    .id()
+                    .map_err(GuardedDefaultCampaignRunError::Codec)?;
+                let origin = context
+                    .repository
+                    .load_attempt(savepoint.description.attempt)
+                    .map_err(GuardedDefaultCampaignRunError::Repository)?;
+                let continuation = Attempt::new(
+                    AttemptStart::AfterAttempt {
+                        origin: savepoint.description.attempt,
+                        reached: reached_content,
+                    },
+                    origin.path(),
+                    source.final_stop.clone(),
+                )
+                .map_err(GuardedDefaultCampaignRunError::Codec)?;
+                let continuation_id = continuation
+                    .id()
+                    .map_err(GuardedDefaultCampaignRunError::Codec)?;
+                let source_content = source_observation.content_id().encode();
+                let selection = SavepointContinuationSelection {
+                    command: CampaignCommandId::from_hash(CampaignHash::derive(
+                        "crucible.daemon.legacy-resume-continuation.v1",
+                        source_content.as_bytes(),
+                    )),
+                    expected_snapshot: result.new_snapshot,
+                    request: savepoint.request,
+                    ready: ready_id,
+                    continuation: continuation_id,
+                };
+                let selected = context
+                    .repository
+                    .select_savepoint_continuation(
+                        context.campaign.as_str(),
+                        &selection,
+                        &continuation,
+                    )
+                    .map_err(GuardedDefaultCampaignRunError::Repository)?;
+                if selected.continuation != continuation_id
+                    || selected.prior_snapshot != result.new_snapshot
+                    || selected.source != selected.selection
+                {
+                    return Err(
+                        GuardedDefaultCampaignInvariantError::ResumeContinuationMismatch.into(),
+                    );
+                }
+                if collect_watch_frames {
+                    watch_frames.push(campaign_watch_frame(
+                        context.repository,
+                        context.campaign,
+                        selected.new_snapshot,
+                        &evidence,
+                        None,
+                    )?);
+                }
+                resume_progress = Some(DefaultRunResumeProgress::Continuing(Box::new(
+                    DefaultRunResumeProof {
+                        source_checkpoint: source.checkpoint.id,
+                        source_configuration: savepoint.reached,
+                        source_frontier: source.checkpoint.virtual_time,
+                        source_observation,
+                        source_evidence: evidence.clone(),
+                        source_capture: Some(savepoint),
+                        ready_snapshot: Some(result.new_snapshot),
+                        ready: Some(ready_id),
+                        selection: Some(selected.selection),
+                        continuation: Some(continuation_id),
+                    },
+                )));
+                continue;
+            }
+
             let final_snapshot = complete_default_campaign(
                 &context,
                 result.new_snapshot,
@@ -1068,6 +1261,7 @@ where
                 state_updates,
                 watch_frames,
                 savepoint: Some(savepoint),
+                resume: None,
             });
         }
 
@@ -1111,7 +1305,96 @@ where
             )?);
         }
 
-        if observation.stop() == &StopOutcome::Reached(StopCondition::NextChoice) {
+        if matches!(
+            resume_progress,
+            Some(DefaultRunResumeProgress::AwaitingSource)
+        ) {
+            let source =
+                resume_source.ok_or(GuardedDefaultCampaignInvariantError::MissingResumeProof)?;
+            let expected_configuration = crucible_campaign::ConfigurationId::from_hash(
+                CampaignHash::from_bytes(source.checkpoint.configuration.bytes),
+            );
+            if observation.child() != expected_configuration
+                || observation.child_content() != context.initial_configuration_content
+            {
+                return Err(
+                    GuardedDefaultCampaignInvariantError::ResumeSourceObservationMismatch.into(),
+                );
+            }
+            if execution_boundary.frontier() != source.checkpoint.virtual_time {
+                return Err(
+                    GuardedDefaultCampaignInvariantError::ResumeSourceBoundaryMismatch.into(),
+                );
+            }
+
+            if observation.stop() == &StopOutcome::Reached(context.discovery_stop.clone()) {
+                pending_capture = Some(request_default_savepoint_capture(
+                    &context,
+                    snapshot,
+                    observation_id,
+                    &observation,
+                    context.discovery_stop,
+                    "legacy resume source",
+                    execution_boundary,
+                    Some(observation_id),
+                )?);
+                resume_progress = Some(DefaultRunResumeProgress::Capturing);
+                continue;
+            }
+            if matches!(observation.stop(), StopOutcome::Reached(_)) {
+                return Err(
+                    GuardedDefaultCampaignInvariantError::ResumeSourceStopNotReached.into(),
+                );
+            }
+
+            let proof = DefaultRunResumeProof {
+                source_checkpoint: source.checkpoint.id,
+                source_configuration: expected_configuration,
+                source_frontier: source.checkpoint.virtual_time,
+                source_observation: observation_id,
+                source_evidence: execution_boundary.clone(),
+                source_capture: None,
+                ready_snapshot: None,
+                ready: None,
+                selection: None,
+                continuation: None,
+            };
+            let final_snapshot = complete_default_campaign(
+                &context,
+                snapshot,
+                supervisor_iteration,
+                &mut state_updates,
+            )?;
+            if collect_watch_frames {
+                watch_frames.push(campaign_watch_frame(
+                    context.repository,
+                    context.campaign,
+                    final_snapshot,
+                    &execution_boundary,
+                    None,
+                )?);
+            }
+            return Ok(DefaultRunExecution {
+                observations,
+                branch_request_count,
+                final_snapshot,
+                state_updates,
+                watch_frames,
+                savepoint: None,
+                resume: Some(proof),
+            });
+        }
+
+        let resume_final_stop_reached =
+            resume_source
+                .zip(resume_progress.as_ref())
+                .is_some_and(|(source, progress)| {
+                    matches!(progress, DefaultRunResumeProgress::Continuing(_))
+                        && observation.stop() == &StopOutcome::Reached(source.final_stop.clone())
+                });
+        if observation.stop() == &StopOutcome::Reached(StopCondition::NextChoice)
+            && !resume_final_stop_reached
+        {
             let opportunity_id = observation
                 .discovered_choices()
                 .iter()
@@ -1134,7 +1417,16 @@ where
                     .map_err(GuardedDefaultCampaignRunError::Codec)?,
                 BranchRequestCause::ScenarioDefault(context.policy),
                 BranchBudget::new(1, 1).map_err(GuardedDefaultCampaignRunError::Codec)?,
-                StopCondition::NextChoice,
+                resume_source
+                    .filter(|_| {
+                        matches!(
+                            resume_progress,
+                            Some(DefaultRunResumeProgress::Continuing(_))
+                        )
+                    })
+                    .map_or(StopCondition::NextChoice, |source| {
+                        source.final_stop.clone()
+                    }),
             )
             .map_err(GuardedDefaultCampaignRunError::Codec)?;
             let submission = SubmitCampaignBranchRequest::new(
@@ -1160,47 +1452,16 @@ where
                 return Err(GuardedDefaultCampaignInvariantError::DuplicateSavepointCapture.into());
             }
 
-            let attempt = context
-                .repository
-                .load_attempt(observation.attempt())
-                .map_err(GuardedDefaultCampaignRunError::Repository)?;
-            if attempt.stop() != context.discovery_stop {
-                return Err(GuardedDefaultCampaignInvariantError::SavepointCaptureMismatch.into());
-            }
-            let starting_configuration = match attempt.start() {
-                AttemptStart::Discover { configuration } => configuration,
-                AttemptStart::Branch { parent, .. } => parent,
-                AttemptStart::AfterAttempt { reached, .. } => reached,
-            };
-            let starting_artifact = context
-                .repository
-                .load_configuration_artifact(starting_configuration)
-                .map_err(GuardedDefaultCampaignRunError::Repository)?;
-            let observation_content = observation_id.content_id().encode();
-            let command = CampaignCommandId::from_hash(CampaignHash::derive(
-                "crucible.daemon.legacy-run-savepoint-capture.v1",
-                observation_content.as_bytes(),
-            ));
-            let description = SavepointCaptureRequest::new(
-                command,
+            pending_capture = Some(request_default_savepoint_capture(
+                &context,
                 snapshot,
-                observation.attempt(),
-                starting_configuration,
-                starting_artifact.configuration(),
-                context.discovery_stop.clone(),
+                observation_id,
+                &observation,
+                context.discovery_stop,
                 "legacy virtual-time save",
-            )
-            .map_err(GuardedDefaultCampaignRunError::Codec)?;
-            let requested = context
-                .repository
-                .request_savepoint_capture(context.campaign.as_str(), &description)
-                .map_err(GuardedDefaultCampaignRunError::Repository)?;
-            pending_capture = Some(DefaultRunPendingSavepointCapture {
-                request: requested.request,
-                description,
-                reached: observation.child(),
-                expected_evidence: execution_boundary,
-            });
+                execution_boundary,
+                None,
+            )?);
             continue;
         }
 
@@ -1219,6 +1480,15 @@ where
                 None,
             )?);
         }
+        let resume = match resume_progress.take() {
+            Some(DefaultRunResumeProgress::Continuing(proof)) => Some(*proof),
+            Some(
+                DefaultRunResumeProgress::AwaitingSource | DefaultRunResumeProgress::Capturing,
+            ) => {
+                return Err(GuardedDefaultCampaignInvariantError::MissingResumeProof.into());
+            }
+            None => None,
+        };
         return Ok(DefaultRunExecution {
             observations,
             branch_request_count,
@@ -1226,9 +1496,71 @@ where
             state_updates,
             watch_frames,
             savepoint: None,
+            resume,
         });
     }
     Err(GuardedDefaultCampaignInvariantError::SupervisorStepLimit.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_default_savepoint_capture<S, E>(
+    context: &DefaultRunContext<'_, S>,
+    snapshot: CampaignSnapshotId,
+    observation_id: ObservationId,
+    observation: &Observation,
+    stop: &StopCondition,
+    reason: &str,
+    expected_evidence: QemuAttemptExecutionEvidenceSnapshot,
+    resume_source_observation: Option<ObservationId>,
+) -> Result<DefaultRunPendingSavepointCapture, GuardedDefaultCampaignRunError<E>>
+where
+    S: crucible_campaign::CampaignService,
+    S::Error: crucible_campaign::CampaignServiceFailureSource,
+    E: Error + 'static,
+{
+    let attempt = context
+        .repository
+        .load_attempt(observation.attempt())
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    if attempt.stop() != stop {
+        return Err(GuardedDefaultCampaignInvariantError::SavepointCaptureMismatch.into());
+    }
+    let starting_configuration = match attempt.start() {
+        AttemptStart::Discover { configuration } => configuration,
+        AttemptStart::Branch { parent, .. } => parent,
+        AttemptStart::AfterAttempt { reached, .. } => reached,
+    };
+    let starting_artifact = context
+        .repository
+        .load_configuration_artifact(starting_configuration)
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let observation_content = observation_id.content_id().encode();
+    let command = CampaignCommandId::from_hash(CampaignHash::derive(
+        "crucible.daemon.legacy-run-savepoint-capture.v1",
+        observation_content.as_bytes(),
+    ));
+    let description = SavepointCaptureRequest::new(
+        command,
+        snapshot,
+        observation.attempt(),
+        starting_configuration,
+        starting_artifact.configuration(),
+        stop.clone(),
+        reason,
+    )
+    .map_err(GuardedDefaultCampaignRunError::Codec)?;
+    let requested = context
+        .repository
+        .request_savepoint_capture(context.campaign.as_str(), &description)
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    Ok(DefaultRunPendingSavepointCapture {
+        request: requested.request,
+        description,
+        reached: observation.child(),
+        reached_content: observation.child_content(),
+        expected_evidence,
+        resume_source_observation,
+    })
 }
 
 fn complete_default_campaign<S, E>(
@@ -1293,6 +1625,7 @@ fn materialize_result<E>(
     campaign: CampaignName,
     execution: DefaultRunExecution,
     checkpoints: Option<&ExactCheckpointStore>,
+    resume_source: Option<&GuardedDefaultCampaignResumeSource>,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<E>>
 where
     E: Error + 'static,
@@ -1402,12 +1735,22 @@ where
             (Some(savepoint), evidence)
         }
         None => {
-            if checkpoints.is_some() {
+            if checkpoints.is_some() && resume_source.is_none() {
                 return Err(GuardedDefaultCampaignInvariantError::MissingSavepointCapture.into());
             }
             (None, terminal_execution_evidence)
         }
     };
+    let resume = materialize_resume_proof(
+        repository,
+        execution.final_snapshot,
+        &lineage,
+        &observations,
+        &terminal,
+        &evidence,
+        execution.resume,
+        resume_source,
+    )?;
     let replay_closure =
         GuardedCampaignReplayClosure::collect(&store, &scenario, &terminal_configuration.schedule)
             .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
@@ -1423,6 +1766,7 @@ where
         evidence,
         replay_closure,
         savepoint,
+        resume,
     })
 }
 
