@@ -97,6 +97,10 @@
     worker_count = 1
     host_architecture = "x86_64"
     qemu_profile = "deterministic-tcg-v1"
+    ${lib.optionalString guestChoice ''
+      [guest_selectable_boundary_diagnostics]
+      maximum_events = 256
+    ''}
   '';
   choiceInitramfs = import ./phase4-packaged-campaign-choice-guest.nix {inherit pkgs;};
   testing = import ../../lib/testing {inherit pkgs lib;};
@@ -177,11 +181,33 @@
             cat /tmp/guest-choice-flight.log
             exit 1
           fi
+
+          boundary_log=/tmp/guest-choice-boundary.log
+          boundary_source_log=/tmp/guest-choice-boundary-source.log
+          boundary_replay_log=/tmp/guest-choice-boundary-replay.log
+          ${pkgs.grep}/bin/grep \
+            '^CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 ' /tmp/guest-choice-flight.log \
+            > "$boundary_log" || true
+          ${pkgs.grep}/bin/grep -F ' stage=source-discovery ' "$boundary_log" \
+            > "$boundary_source_log" || true
+          ${pkgs.grep}/bin/grep -F ' stage=replay ' "$boundary_log" \
+            > "$boundary_replay_log" || true
+          boundary_source_count=$(${pkgs.coreutils}/bin/wc -l < "$boundary_source_log")
+          boundary_replay_count=$(${pkgs.coreutils}/bin/wc -l < "$boundary_replay_log")
+          echo "guest_choice_boundary_source_lines=$boundary_source_count"
+          echo "guest_choice_boundary_replay_lines=$boundary_replay_count"
+          ${pkgs.coreutils}/bin/cat "$boundary_log"
+
+          if [ "$boundary_source_count" -eq 0 ] || [ "$boundary_replay_count" -eq 0 ]; then
+            echo 'guest-choice boundary diagnostics require both source-discovery and replay records'
+            exit 1
+          fi
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_discrete_and_integer=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_rendezvous_icount=100000000' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_negative_result=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_initial_qemu_fingerprint_mode=on-demand-v1' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_restarted_qemu_fingerprint_mode=on-demand-v1' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_boundary_diagnostics=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_resume_source_exact=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_post_resume_progress=true' /tmp/guest-choice-flight.log
           cat /tmp/guest-choice-flight.log

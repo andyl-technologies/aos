@@ -25,6 +25,10 @@ const MAX_GUEST_CHOICE_ATTEMPT_RECORDS: usize = 65_536;
 const MAX_DIAGNOSTIC_ATTEMPTS: usize = 16;
 const MAX_DIAGNOSTIC_ENTRIES: usize = 256;
 const MAX_DIAGNOSTIC_FILE_BYTES: u64 = 8 * 1024;
+const GUEST_SELECTABLE_BOUNDARY_PREFIX: &str = "CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 ";
+const MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS: usize = 256;
+const MAX_GUEST_SELECTABLE_BOUNDARY_LINES: usize = MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS + 1;
+const MAX_GUEST_SELECTABLE_BOUNDARY_LINE_BYTES: usize = 8 * 1024;
 
 type ProcessCommand = (u32, Vec<String>);
 
@@ -193,6 +197,8 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         &scenario,
     )?;
     let checkpoint_text = checkpoint.to_string();
+    let mut boundary_events =
+        capture_guest_selectable_boundary_events(&fixture, &service, "initial-service-stop")?;
     service.stop()?;
 
     let mut restarted = start_packaged_service(&fixture, &authority)?;
@@ -233,6 +239,13 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         "reached:boundary:selected-fast-q7"
     );
 
+    boundary_events.extend(capture_guest_selectable_boundary_events(
+        &fixture,
+        &restarted,
+        "restarted-service-stop",
+    )?);
+    require_guest_selectable_boundary_stage(&boundary_events, "source-discovery")?;
+    require_guest_selectable_boundary_stage(&boundary_events, "replay")?;
     restarted.stop()?;
 
     println!("\nguest_choice_discrete_and_integer=true");
@@ -248,6 +261,7 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         "guest_choice_progress_icount={}..{}",
         before_restart.progress_icount, after_resume.progress_icount
     );
+    println!("guest_choice_boundary_diagnostics=true");
     println!("guest_choice_restart_process=true");
     println!("\nguest_choice_resume_source_exact=true");
     println!("\nguest_choice_post_resume_progress=true");
@@ -801,6 +815,19 @@ fn campaign_execution_diagnostics(
     service: &mut CampaignServiceChild,
     known_attempts: &BTreeSet<AttemptExecutionKey>,
 ) -> String {
+    let boundary_log = fixture._temporary.path().join(format!(
+        "guest-selectable-boundary-{}.log",
+        service.child.id()
+    ));
+    let boundary_summary =
+        match capture_guest_selectable_boundary_events(fixture, service, "failure-diagnostics") {
+            Ok(lines) => format!(
+                "captured(count={}, raw_log={})",
+                lines.len(),
+                boundary_log.display()
+            ),
+            Err(error) => format!("capture-failed({error})"),
+        };
     let status = campaign_status(fixture);
     let ledger = attempt_states(fixture);
     let service_process = match service.child.try_wait() {
@@ -811,7 +838,7 @@ fn campaign_execution_diagnostics(
     let mut diagnostics = String::new();
     let _ = write!(
         diagnostics,
-        "status={status:?}; ledger={ledger:?}; service={service_process}; service_stderr={:?}",
+        "status={status:?}; ledger={ledger:?}; service={service_process}; guest_selectable_boundaries={boundary_summary}; service_stderr={:?}",
         service.stderr_tail(),
     );
     append_new_attempt_explanations(fixture, known_attempts, &status, &ledger, &mut diagnostics);
@@ -826,6 +853,54 @@ fn campaign_execution_diagnostics(
     }
     append_process_diagnostics(&mut diagnostics);
     diagnostics
+}
+
+fn capture_guest_selectable_boundary_events(
+    fixture: &FlightFixture,
+    service: &CampaignServiceChild,
+    capture_stage: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let lines = service.stderr_lines_with_prefix(
+        GUEST_SELECTABLE_BOUNDARY_PREFIX,
+        MAX_GUEST_SELECTABLE_BOUNDARY_LINES,
+        MAX_GUEST_SELECTABLE_BOUNDARY_LINE_BYTES,
+    )?;
+    let path = fixture._temporary.path().join(format!(
+        "guest-selectable-boundary-{}.log",
+        service.child.id()
+    ));
+    let mut raw = lines.join("\n");
+    if !raw.is_empty() {
+        raw.push('\n');
+    }
+    fs::write(&path, raw)?;
+
+    println!(
+        "guest_choice_boundary_capture_stage={capture_stage} service_pid={} event_count={} raw_log={}",
+        service.child.id(),
+        lines.len(),
+        path.display(),
+    );
+    for line in &lines {
+        println!("{line}");
+    }
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    Ok(lines)
+}
+
+fn require_guest_selectable_boundary_stage(
+    lines: &[String],
+    required_stage: &str,
+) -> Result<(), Box<dyn Error>> {
+    let field = format!(" stage={required_stage} ");
+    if lines.iter().any(|line| line.contains(&field)) {
+        return Ok(());
+    }
+
+    Err(
+        format!("guest-choice flight captured no `{required_stage}` selectable boundary record")
+            .into(),
+    )
 }
 
 fn append_new_attempt_explanations(
