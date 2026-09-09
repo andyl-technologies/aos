@@ -3,7 +3,7 @@
 #
 # Format:
 # repo-relative crate source<TAB>finding detail<TAB>count
-crucible-cli/src/main.rs	contains non-ASCII comment/doc text	21
+crucible-cli/src/main.rs	contains non-ASCII comment/doc text	20
 crucible-device/src/backpressure.rs	contains non-ASCII comment/doc text	6
 crucible-device/src/block.rs	contains non-ASCII comment/doc text	1
 crucible-device/src/block/codec.rs	contains non-ASCII comment/doc text	1
