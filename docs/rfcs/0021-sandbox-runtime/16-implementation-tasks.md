@@ -5756,12 +5756,56 @@ so it accepts either representation. The gates nevertheless require the exact
 producer-specific encoding instead of stripping or adding bytes during
 verification.
 
-This qualifies deterministic source planning and byte-exact offline image
-construction only. Production system and initrd builders do not yet consume the
-plan, and no boot path selects or loads the policy, labels writable state,
-enters enforcing service domains, or grants a narrowly authorized inspection
-component. It therefore does not qualify enforcing host MAC and closes no part
-of `SBX-P0-10`, which remains open.
+This checkpoint qualifies deterministic source planning and byte-exact offline
+image construction only. At this point, production system and initrd builders
+did not consume the plan, and no boot path selected or loaded the policy,
+labeled writable state, entered enforcing service domains, or granted a
+narrowly authorized inspection component. It therefore qualified no part of
+`SBX-P0-10`, which remained open.
+
+### Nullable production `/etc` label wiring (offline prerequisite)
+
+Commit `e89f3a3f3` wires the exact planner into the production `/etc` composefs
+builder behind the internal nullable `system.build.immutableSelinuxPolicy`
+input. Its default is null and retains the legacy unlabeled dump and EROFS
+derivations. A non-null policy first renders an unlabeled composefs dump as the
+single authoritative inode inventory, resolves every image path at its runtime
+`/etc` mount prefix, compiles and round-trips the resulting exact file-context
+database, applies the internal-path context map to a second dump of the same
+configuration, and verifies the completed EROFS image against that map before
+publishing it.
+
+The shared dump parser now rejects noncanonical paths and numbers, duplicate
+paths or xattrs, absent or non-directory parents, and malformed inode metadata.
+Planner admission additionally rejects unsupported inode kinds and ambiguous
+hard-link identity. Mount-prefix handling keeps map keys internal but uses
+runtime paths for policy lookup, Nix-store classification, alias target
+resolution, dynamic-loader authority, and pseudo-filesystem exceptions. Thus an
+internal `/nix/store` subtree in the `/etc` image is correctly treated as
+runtime `/etc/nix/store`, while a default-root dump still rejects a store
+regular inode that lacks an authoritative source for ELF classification.
+
+The immutable check derivation
+`/nix/store/3ypdzi1hpdj7pcaxc1m7d6vagqbjbv6y-selinux-erofs-labels-check-0.drv`
+passed at
+`/nix/store/kp17x8kwf5hd8ax93xl7jir7j7cm4flv-selinux-erofs-labels-check-0`.
+It extends the real server module twice: an explicit forced-null instance builds
+an actual legacy `/etc` EROFS whose observed dump contains no SELinux xattrs,
+and an explicit production-policy instance builds and exactly verifies a
+labeled `/etc` EROFS. The retained labeled dump records the image-internal
+`/selinux/runtime-prefix-fixture` symlink as `selinux_config_t`, proving that
+policy lookup used runtime `/etc/selinux/runtime-prefix-fixture` rather than an
+incorrect image-root path. The gate passed 35 planner, eight dump-verifier,
+seven EROFS-verifier, and five composefs-dump-builder tests. It retains both
+module-observed dumps, the generic EROFS fixture, exact compiled contexts, and
+the composefs codec evidence beneath `share/aos/selinux-erofs-labels/`.
+
+This is production-builder plumbing and offline image evidence, not enforcing
+boot qualification. No production profile sets the nullable input; the initrd,
+root filesystem, and writable state remain outside this integration; and no
+boot path loads the policy, proves enforcing mode before mutable startup, enters
+service domains, or grants the proposed narrow inspection authority.
+`SBX-P0-10` and end-to-end enforcing-host-MAC qualification remain open.
 
 ### Per-assignment Guardian authority and timer foundation (partial)
 
