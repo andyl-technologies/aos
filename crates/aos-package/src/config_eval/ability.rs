@@ -18,14 +18,18 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, ImplementationKind, LocalKey,
-    ProviderImplementation,
+    ProviderImplementation, ProviderImplementationReference,
 };
+use aos_ability_plan::{CompositionEvaluator, EvaluationError};
 use base64::Engine as _;
 use serde::de::DeserializeOwned;
 
 use super::stock::{locked_store_input, nix_string, store_root_and_suffix};
 
 static EVALUATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+mod reference_composition;
 
 /// Selects one of the two pure functions declared by a provider implementation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,9 +164,48 @@ impl RestrictedAbilityEvaluator {
             implementation.artifact.store_path.len() <= ABILITY_LIMITS_V1.max_string_bytes as usize,
             "ability artifact store path exceeds the version-1 string limit"
         );
+        let entry = selected_entry(implementation, selected)?;
+        let implementation = ProviderImplementationReference {
+            descriptor: implementation.descriptor_digest()?,
+            artifact: implementation.artifact.clone(),
+            handler: None,
+        };
+
+        self.evaluate_reference(&implementation, entry, arguments)
+    }
+
+    /// Evaluates one exact pure implementation reference and declared entry.
+    ///
+    /// This is the planner-facing boundary after package validation has
+    /// resolved the implementation descriptor and entry name independently.
+    /// The reference must identify a pure Nix implementation rather than a
+    /// terminal handler.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reference names a terminal handler, the
+    /// artifact or limits are invalid, Nix fails or exceeds a resource limit,
+    /// output is not closed context-free JSON, or the result does not decode as
+    /// `T` within the version-1 ability limits.
+    pub fn evaluate_reference<T>(
+        &self,
+        implementation: &ProviderImplementationReference,
+        entry: &LocalKey,
+        arguments: &AbilityValue,
+    ) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        ensure!(
+            implementation.handler.is_none(),
+            "terminal provider implementation references have no Nix ability entry point"
+        );
+        ensure!(
+            implementation.artifact.store_path.len() <= ABILITY_LIMITS_V1.max_string_bytes as usize,
+            "ability artifact store path exceeds the version-1 string limit"
+        );
         let root = store_root_and_suffix(Path::new(&implementation.artifact.store_path))?.0;
         let allowed_uri = artifact_allowed_uri(&root, &implementation.artifact.nar_hash)?;
-        let entry = selected_entry(implementation, selected)?;
         let expression = render_expression(&implementation.artifact, entry, arguments)?;
         ensure!(
             expression.len() <= self.limits.expression_bytes,
@@ -372,6 +415,33 @@ fn remove_private_tree(path: &Path) -> io::Result<()> {
         remove_private_tree(&entry?.path())?;
     }
     std::fs::remove_dir(path)
+}
+
+impl CompositionEvaluator for RestrictedAbilityEvaluator {
+    fn evaluate(
+        &mut self,
+        implementation: &ProviderImplementationReference,
+        entry: &LocalKey,
+        input: &AbilityValue,
+    ) -> std::result::Result<AbilityValue, EvaluationError> {
+        self.evaluate_reference(implementation, entry, input)
+            .map_err(|error| EvaluationError::new(bounded_error_message(&error)))
+    }
+}
+
+fn bounded_error_message(error: &anyhow::Error) -> String {
+    let mut message = format!("{error:#}");
+    let limit = ABILITY_LIMITS_V1.max_string_bytes as usize;
+    if message.len() <= limit {
+        return message;
+    }
+
+    let mut boundary = limit;
+    while !message.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    message.truncate(boundary);
+    message
 }
 
 fn artifact_allowed_uri(root: &Path, nar_hash: &aos_contract::Sha256Digest) -> Result<String> {
@@ -867,6 +937,20 @@ mod tests {
             std::fs::read(external.join("retained")).unwrap(),
             b"outside"
         );
+    }
+
+    #[test]
+    fn planner_error_messages_respect_the_versioned_string_bound() {
+        let oversized = format!(
+            "{}é",
+            "x".repeat(ABILITY_LIMITS_V1.max_string_bytes as usize)
+        );
+        let error = anyhow!(oversized);
+
+        let message = bounded_error_message(&error);
+
+        assert!(message.len() <= ABILITY_LIMITS_V1.max_string_bytes as usize);
+        assert!(message.is_char_boundary(message.len()));
     }
 
     #[test]

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 aos-ability-model = { workspace = true }
+aos-ability-plan = { workspace = true }
 aos-contract = { workspace = true }
 aos-core = { workspace = true }
 aos-doc-model = { workspace = true }
@@ -52,4 +53,5 @@ rayon = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
+aos-ability-validate = { workspace = true }
 crc32fast = { workspace = true }
