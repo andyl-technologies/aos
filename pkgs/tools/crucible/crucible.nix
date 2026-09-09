@@ -474,6 +474,8 @@
           ln -s ${openssh}/bin/ssh "$out/bin/ssh"
           ln -s ${controller}/bin/crucible-debugger-live-fixture \
             "$out/bin/crucible-debugger-live-fixture"
+          ln -s ${controller}/bin/crucible-e2e-determinism-scenario \
+            "$out/bin/crucible-e2e-determinism-scenario"
           cp ${liveDebuggerMatrixScript} "$out/share/aos/crucible/debugger-live-matrix.sh"
           cat > "$out/bin/crucible-debugger-live-matrix" <<EOF
           #!${bash}/bin/bash
