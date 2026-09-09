@@ -150,6 +150,8 @@ pub enum RecordNamespace {
     StorageCatalogPreparation = 34,
     /// Authenticated Storage workspace-pin repair admission intents.
     StorageWorkspacePinRepairIntent = 35,
+    /// Authenticated Host Guardian execution records keyed by request identity.
+    HostExecution = 36,
 }
 
 impl RecordNamespace {
@@ -190,6 +192,7 @@ impl RecordNamespace {
             33 => Ok(Self::StorageWorkspacePinAttempt),
             34 => Ok(Self::StorageCatalogPreparation),
             35 => Ok(Self::StorageWorkspacePinRepairIntent),
+            36 => Ok(Self::HostExecution),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -2043,13 +2046,14 @@ mod tests {
             RecordNamespace::StorageWorkspacePinAttempt,
             RecordNamespace::StorageCatalogPreparation,
             RecordNamespace::StorageWorkspacePinRepairIntent,
+            RecordNamespace::HostExecution,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 36, 255] {
+        for code in [0, 37, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

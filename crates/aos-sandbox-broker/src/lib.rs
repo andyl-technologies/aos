@@ -13,7 +13,11 @@ mod record;
 pub use admission::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, VerifiedBrokerAdmission,
 };
-pub use config::{BrokerAuthorityConfigError, ProtectedBrokerAuthorityConfiguration};
+pub use aos_sandbox::RecordNamespace;
+pub use config::{
+    BrokerAuthorityConfigError, ProtectedBrokerAuthorityConfiguration,
+    ProtectedBrokerPublicCredentialRole, ProtectedBrokerPublicCredentials,
+};
 pub use record::{
     AuthorizationRecordError, BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2,
     BrokerEffectStatusV2, BrokerLocalRecordDomain,
