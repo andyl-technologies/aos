@@ -56,10 +56,14 @@ pub(crate) struct SaveBoundaryEvidence {
     pub(crate) proof: SaveBoundaryProof,
 }
 
+/// Identifies the authoritative event or coordinate that proved a save boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SaveBoundaryProof {
+    /// Uses the authenticated frontier and quantum coordinate for a non-event boundary.
     Coordinate,
+    /// Uses a real breakpoint firing recorded by the interactive session owner.
     Breakpoint(crucible_session::BreakpointFiring),
+    /// Uses a retained campaign event because campaign marker stops do not create breakpoints.
     CampaignMarkerEvent {
         sequence: u64,
         content_hash: crucible::ContentHash,

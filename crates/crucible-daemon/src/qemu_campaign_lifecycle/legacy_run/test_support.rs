@@ -30,14 +30,17 @@ use crate::{
 };
 
 const TEST_EFFECT_TRACE: &[u8] = b"guarded-default-run-test-support-effect-trace";
+const TEST_SELECTION_APPLIED_MARKER: &str = "campaign-save-fixture-selection-applied";
 
 struct TestLifecycle {
     node: NodeId,
     marker: MarkerId,
     event_log: EventLog,
     replay_target: Schedule,
+    choice_required: bool,
     offer_choice: bool,
     selection_received: bool,
+    selection_marker_pending: bool,
     quantum_nanoseconds: u64,
     frontier: VirtualTime,
     completed_quanta: u64,
@@ -57,20 +60,29 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.completed_quanta = self.completed_quanta.saturating_add(1);
         self.frontier.ticks = self.frontier.ticks.saturating_add(self.quantum_nanoseconds);
-        let marker = if self.offer_choice && !self.selection_received {
+        let marker = if self.choice_required && !self.selection_received {
             MarkerId::from_name("campaign-save-fixture-before-choice")
         } else {
             self.marker.clone()
         };
-        let append = self
-            .event_log
-            .append_observable_events([ObservableEvent::guest_marker(
+        let mut observed = Vec::new();
+        if std::mem::take(&mut self.selection_marker_pending) {
+            observed.push(ObservableEvent::guest_marker(
                 Icount {
                     retired: self.frontier.ticks,
                 },
                 self.node.clone(),
-                marker,
-            )])?;
+                MarkerId::from_name(TEST_SELECTION_APPLIED_MARKER),
+            ));
+        }
+        observed.push(ObservableEvent::guest_marker(
+            Icount {
+                retired: self.frontier.ticks,
+            },
+            self.node.clone(),
+            marker,
+        ));
+        let append = self.event_log.append_observable_events(observed)?;
         let mut configuration = request.configuration;
         if configuration.schedule.len() < self.replay_target.len() {
             configuration.schedule = self
@@ -134,6 +146,7 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
             });
         }
         self.selection_received = true;
+        self.selection_marker_pending = true;
         self.configuration = Some(selected.clone());
         Ok(Vec::new())
     }
@@ -238,8 +251,10 @@ impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
             marker: self.marker.clone(),
             event_log: EventLog::new(),
             replay_target: start.schedule.clone(),
+            choice_required: self.offer_choice,
             offer_choice: self.offer_choice,
             selection_received: false,
+            selection_marker_pending: false,
             quantum_nanoseconds: self.quantum_nanoseconds,
             frontier: VirtualTime::default(),
             completed_quanta: 0,

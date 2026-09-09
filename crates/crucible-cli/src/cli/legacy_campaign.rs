@@ -1730,6 +1730,18 @@ mod tests {
             capture_campaign_save(&["--at", "marker", "--marker", marker], stop.clone(), true);
 
         assert_eq!(capture.campaign.terminal_configuration().schedule.len(), 1);
+        assert!(
+            capture
+                .campaign
+                .evidence()
+                .event_log_entries()
+                .iter()
+                .any(|entry| {
+                    entry.event_payload().kind() == "guest_marker"
+                        && entry.event_payload().string("marker")
+                            == Some("campaign-save-fixture-selection-applied")
+                })
+        );
         let error = campaign_save_workflow_report(&capture.save_plan, &capture.campaign, &stop)
             .expect_err("typed marker save must fail before promising portable replay");
 
