@@ -466,6 +466,7 @@ mod tests {
             BrokerVerb::StorageDestroy,
             BrokerVerb::StorageInventory,
             BrokerVerb::StoragePrepareCatalog,
+            BrokerVerb::StorageRepairWorkspacePin,
             BrokerVerb::NetworkPrepare,
             BrokerVerb::NetworkArmLease,
             BrokerVerb::NetworkRenewLease,
@@ -493,6 +494,7 @@ mod tests {
                 | BrokerVerb::NetworkPrepare
                 | BrokerVerb::NetworkInventory
                 | BrokerVerb::GuardianArm => BrokerGrantTarget::Assignment,
+                BrokerVerb::StorageRepairWorkspacePin => BrokerGrantTarget::Resource(resource),
                 BrokerVerb::MountReplace => BrokerGrantTarget::ResourcePair {
                     previous: resource,
                     successor,

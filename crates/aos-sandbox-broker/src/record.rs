@@ -554,6 +554,7 @@ impl BrokerEffectIntentV2 {
                 | BrokerVerb::StorageClone
                 | BrokerVerb::StorageSetQuota
                 | BrokerVerb::StorageDestroy
+                | BrokerVerb::StorageRepairWorkspacePin
                 | BrokerVerb::NetworkArmLease
                 | BrokerVerb::NetworkRenewLease
                 | BrokerVerb::NetworkDisarm
@@ -1166,6 +1167,7 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         (BrokerDomain::Storage, BrokerVerb::StorageSetQuota) => 6,
         (BrokerDomain::Storage, BrokerVerb::StorageDestroy) => 7,
         (BrokerDomain::Storage, BrokerVerb::StoragePrepareCatalog) => 8,
+        (BrokerDomain::Storage, BrokerVerb::StorageRepairWorkspacePin) => 9,
         _ => 0,
     }
 }
@@ -1193,6 +1195,7 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Storage, 6) => Ok(BrokerVerb::StorageSetQuota),
         (BrokerDomain::Storage, 7) => Ok(BrokerVerb::StorageDestroy),
         (BrokerDomain::Storage, 8) => Ok(BrokerVerb::StoragePrepareCatalog),
+        (BrokerDomain::Storage, 9) => Ok(BrokerVerb::StorageRepairWorkspacePin),
         (BrokerDomain::Network, 1) => Ok(BrokerVerb::NetworkPrepare),
         (BrokerDomain::Network, 2) => Ok(BrokerVerb::NetworkArmLease),
         (BrokerDomain::Network, 3) => Ok(BrokerVerb::NetworkRenewLease),
@@ -1595,6 +1598,11 @@ mod tests {
             (BrokerDomain::Storage, BrokerVerb::StorageSetQuota, 6),
             (BrokerDomain::Storage, BrokerVerb::StorageDestroy, 7),
             (BrokerDomain::Storage, BrokerVerb::StoragePrepareCatalog, 8),
+            (
+                BrokerDomain::Storage,
+                BrokerVerb::StorageRepairWorkspacePin,
+                9,
+            ),
             (BrokerDomain::Network, BrokerVerb::NetworkPrepare, 1),
             (BrokerDomain::Network, BrokerVerb::NetworkArmLease, 2),
             (BrokerDomain::Network, BrokerVerb::NetworkRenewLease, 3),

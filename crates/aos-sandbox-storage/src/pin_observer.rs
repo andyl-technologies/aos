@@ -22,8 +22,37 @@ use crate::workspace_pin::{
     WorkspacePinHostScopeV1, WorkspacePinObservationV1, WorkspaceRootPinProofV1,
     workspace_pin_path,
 };
+use crate::workspace_repair::WorkspacePinRepairProbeV1;
 
 const MAXIMUM_HOST_MOUNTS: usize = 65_536;
+
+struct WorkspacePinObservationTargetV1<'a> {
+    host_scope: WorkspacePinHostScopeV1,
+    workspace_handle: [u8; 32],
+    dataset_name: &'a str,
+    dataset_guid: u64,
+    expected_pin: Option<&'a WorkspaceRootPinProofV1>,
+    satisfied_pin: Option<&'a WorkspaceRootPinProofV1>,
+}
+
+impl<'a> TryFrom<&'a WorkspacePinAttemptV1> for WorkspacePinObservationTargetV1<'a> {
+    type Error = StorageStateError;
+
+    fn try_from(attempt: &'a WorkspacePinAttemptV1) -> Result<Self, Self::Error> {
+        Ok(Self {
+            host_scope: WorkspacePinHostScopeV1::new(
+                attempt.host_boot_id(),
+                attempt.host_mount_namespace_device(),
+                attempt.host_mount_namespace_inode(),
+            )?,
+            workspace_handle: attempt.workspace_handle(),
+            dataset_name: attempt.dataset_name(),
+            dataset_guid: attempt.dataset_guid(),
+            expected_pin: attempt.expected_pin(),
+            satisfied_pin: attempt.satisfied_pin(),
+        })
+    }
+}
 
 /// Reports failure to acquire or observe the fixed host root-pin scope.
 #[derive(Debug, thiserror::Error)]
@@ -107,12 +136,40 @@ pub(crate) fn observe_workspace_pin(
     mount_namespace: &NamespaceFd,
     retained_pin_root: &ResolvedPath,
 ) -> Result<WorkspacePinObservationV1, WorkspacePinObserverError> {
-    validate_host_scope(attempt, mount_namespace, retained_pin_root)?;
+    let target = WorkspacePinObservationTargetV1::try_from(attempt)?;
+    observe_workspace_pin_for_target(&target, dataset, mount_namespace, retained_pin_root)
+}
 
-    let slot = match open_workspace_slot(retained_pin_root, &attempt.workspace_handle())? {
+/// Observes a repair target in its freshly authenticated current host scope.
+pub(crate) fn observe_workspace_pin_repair(
+    probe: &WorkspacePinRepairProbeV1,
+    dataset: &WorkspaceDatasetObservationV1,
+    mount_namespace: &NamespaceFd,
+    retained_pin_root: &ResolvedPath,
+) -> Result<WorkspacePinObservationV1, WorkspacePinObserverError> {
+    let target = WorkspacePinObservationTargetV1 {
+        host_scope: probe.current_host_scope(),
+        workspace_handle: probe.workspace_handle(),
+        dataset_name: probe.dataset_name(),
+        dataset_guid: probe.dataset_guid(),
+        expected_pin: None,
+        satisfied_pin: None,
+    };
+    observe_workspace_pin_for_target(&target, dataset, mount_namespace, retained_pin_root)
+}
+
+fn observe_workspace_pin_for_target(
+    target: &WorkspacePinObservationTargetV1<'_>,
+    dataset: &WorkspaceDatasetObservationV1,
+    mount_namespace: &NamespaceFd,
+    retained_pin_root: &ResolvedPath,
+) -> Result<WorkspacePinObservationV1, WorkspacePinObserverError> {
+    validate_expected_host_scope(target.host_scope, mount_namespace, retained_pin_root)?;
+
+    let slot = match open_workspace_slot(retained_pin_root, &target.workspace_handle)? {
         Some(slot) => slot,
         None => {
-            return confirm_missing_slot_absent(attempt, mount_namespace, retained_pin_root);
+            return confirm_missing_slot_absent(target, mount_namespace, retained_pin_root);
         }
     };
     let slot_metadata = rustix::fs::fstat(slot.as_fd())?;
@@ -128,7 +185,7 @@ pub(crate) fn observe_workspace_pin(
     }
     if !mounted {
         return confirm_empty_slot_absent(
-            attempt,
+            target,
             mount_namespace,
             retained_pin_root,
             &slot,
@@ -138,7 +195,7 @@ pub(crate) fn observe_workspace_pin(
 
     // The namespace FD is the authority. `statmount.mnt_ns_id` occupies a
     // separate kernel ID domain from the nsfs inode and is never compared to it.
-    let expected_mount_point = workspace_pin_path(&attempt.workspace_handle());
+    let expected_mount_point = workspace_pin_path(&target.workspace_handle);
     let Some(observed_mount) =
         exact_mount_at_point(mount_namespace, &expected_mount_point, slot_mount_id)?
     else {
@@ -146,7 +203,7 @@ pub(crate) fn observe_workspace_pin(
     };
 
     let classification = classify_mounted_slot(
-        attempt,
+        target,
         dataset,
         mount_namespace.identity(),
         slot.identity(),
@@ -156,7 +213,7 @@ pub(crate) fn observe_workspace_pin(
     // Re-resolve the top mount and repeat the complete point inventory. This
     // rejects replacements and overmounts between the two observations. The
     // caller must still serialize namespace mutations through proof use.
-    let Some(current_slot) = open_workspace_slot(retained_pin_root, &attempt.workspace_handle())?
+    let Some(current_slot) = open_workspace_slot(retained_pin_root, &target.workspace_handle)?
     else {
         return Ok(WorkspacePinObservationV1::Mismatch);
     };
@@ -166,29 +223,29 @@ pub(crate) fn observe_workspace_pin(
     {
         return Ok(WorkspacePinObservationV1::Mismatch);
     }
-    validate_host_scope(attempt, mount_namespace, retained_pin_root)?;
+    validate_expected_host_scope(target.host_scope, mount_namespace, retained_pin_root)?;
 
     Ok(classification)
 }
 
 fn confirm_missing_slot_absent(
-    attempt: &WorkspacePinAttemptV1,
+    target: &WorkspacePinObservationTargetV1<'_>,
     mount_namespace: &NamespaceFd,
     retained_pin_root: &ResolvedPath,
 ) -> Result<WorkspacePinObservationV1, WorkspacePinObserverError> {
-    let expected_mount_point = workspace_pin_path(&attempt.workspace_handle());
-    validate_host_scope(attempt, mount_namespace, retained_pin_root)?;
-    if open_workspace_slot(retained_pin_root, &attempt.workspace_handle())?.is_some()
+    let expected_mount_point = workspace_pin_path(&target.workspace_handle);
+    validate_expected_host_scope(target.host_scope, mount_namespace, retained_pin_root)?;
+    if open_workspace_slot(retained_pin_root, &target.workspace_handle)?.is_some()
         || mount_count_at_point(mount_namespace, &expected_mount_point)? != 0
     {
         return Ok(WorkspacePinObservationV1::Mismatch);
     }
-    validate_host_scope(attempt, mount_namespace, retained_pin_root)?;
+    validate_expected_host_scope(target.host_scope, mount_namespace, retained_pin_root)?;
     Ok(WorkspacePinObservationV1::Absent)
 }
 
 fn confirm_empty_slot_absent(
-    attempt: &WorkspacePinAttemptV1,
+    target: &WorkspacePinObservationTargetV1<'_>,
     mount_namespace: &NamespaceFd,
     retained_pin_root: &ResolvedPath,
     initial_slot: &ResolvedPath,
@@ -198,9 +255,9 @@ fn confirm_empty_slot_absent(
         return Ok(WorkspacePinObservationV1::Mismatch);
     }
 
-    let expected_mount_point = workspace_pin_path(&attempt.workspace_handle());
-    validate_host_scope(attempt, mount_namespace, retained_pin_root)?;
-    let Some(current_slot) = open_workspace_slot(retained_pin_root, &attempt.workspace_handle())?
+    let expected_mount_point = workspace_pin_path(&target.workspace_handle);
+    validate_expected_host_scope(target.host_scope, mount_namespace, retained_pin_root)?;
+    let Some(current_slot) = open_workspace_slot(retained_pin_root, &target.workspace_handle)?
     else {
         return Ok(WorkspacePinObservationV1::Mismatch);
     };
@@ -212,7 +269,7 @@ fn confirm_empty_slot_absent(
     {
         return Ok(WorkspacePinObservationV1::Mismatch);
     }
-    validate_host_scope(attempt, mount_namespace, retained_pin_root)?;
+    validate_expected_host_scope(target.host_scope, mount_namespace, retained_pin_root)?;
     Ok(WorkspacePinObservationV1::Absent)
 }
 
@@ -253,11 +310,38 @@ pub(crate) fn validate_host_scope(
     mount_namespace: &NamespaceFd,
     retained_pin_root: &ResolvedPath,
 ) -> Result<(), WorkspacePinObserverError> {
+    let expected = WorkspacePinHostScopeV1::new(
+        attempt.host_boot_id(),
+        attempt.host_mount_namespace_device(),
+        attempt.host_mount_namespace_inode(),
+    )?;
+    validate_expected_host_scope(expected, mount_namespace, retained_pin_root)
+}
+
+pub(crate) fn current_host_scope(
+    mount_namespace: &NamespaceFd,
+    retained_pin_root: &ResolvedPath,
+) -> Result<WorkspacePinHostScopeV1, WorkspacePinObserverError> {
+    let namespace = mount_namespace.identity();
+    let scope = WorkspacePinHostScopeV1::new(
+        KernelBootId::current()?.into_bytes(),
+        namespace.device,
+        namespace.inode,
+    )?;
+    validate_expected_host_scope(scope, mount_namespace, retained_pin_root)?;
+    Ok(scope)
+}
+
+fn validate_expected_host_scope(
+    expected: WorkspacePinHostScopeV1,
+    mount_namespace: &NamespaceFd,
+    retained_pin_root: &ResolvedPath,
+) -> Result<(), WorkspacePinObserverError> {
     let namespace = mount_namespace.identity();
     if mount_namespace.kind() != NamespaceKind::Mount
-        || KernelBootId::current()?.into_bytes() != attempt.host_boot_id()
-        || namespace.device != attempt.host_mount_namespace_device()
-        || namespace.inode != attempt.host_mount_namespace_inode()
+        || KernelBootId::current()?.into_bytes() != expected.kernel_boot_id()
+        || namespace.device != expected.mount_namespace_device()
+        || namespace.inode != expected.mount_namespace_inode()
         || open_current_mount_namespace()?.identity() != namespace
     {
         return Err(WorkspacePinObserverError::HostScopeMismatch);
@@ -274,7 +358,7 @@ pub(crate) fn validate_host_scope(
 }
 
 fn classify_mounted_slot(
-    attempt: &WorkspacePinAttemptV1,
+    target: &WorkspacePinObservationTargetV1<'_>,
     dataset: &WorkspaceDatasetObservationV1,
     namespace: NamespaceIdentity,
     root_identity: FileIdentity,
@@ -283,13 +367,13 @@ fn classify_mounted_slot(
     let exact_dataset = matches!(
         dataset,
         WorkspaceDatasetObservationV1::Exact { name, guid }
-            if name == attempt.dataset_name() && *guid == attempt.dataset_guid()
+            if name == target.dataset_name && *guid == target.dataset_guid
     );
-    let expected_mount_point = workspace_pin_path(&attempt.workspace_handle());
+    let expected_mount_point = workspace_pin_path(&target.workspace_handle);
     let exact_structure = mount.root.as_os_str().as_bytes() == b"/"
         && mount.mount_point.as_os_str().as_bytes() == expected_mount_point.as_bytes()
         && mount.filesystem_type.as_os_str().as_bytes() == b"zfs"
-        && mount.superblock_source.as_os_str().as_bytes() == attempt.dataset_name().as_bytes()
+        && mount.superblock_source.as_os_str().as_bytes() == target.dataset_name.as_bytes()
         && mount.device_major == rustix::fs::major(root_identity.device)
         && mount.device_minor == rustix::fs::minor(root_identity.device);
     if !exact_dataset || !exact_structure || root_identity.device == 0 || root_identity.inode == 0 {
@@ -297,23 +381,23 @@ fn classify_mounted_slot(
     }
 
     let proof = WorkspaceRootPinProofV1::new(
-        attempt.host_boot_id(),
+        target.host_scope.kernel_boot_id(),
         namespace.device,
         namespace.inode,
         mount.mount_id.get(),
         "/".to_owned(),
         expected_mount_point,
         "zfs".to_owned(),
-        attempt.dataset_name().to_owned(),
-        attempt.dataset_guid(),
+        target.dataset_name.to_owned(),
+        target.dataset_guid,
         root_identity.device,
         root_identity.inode,
     )?;
-    if attempt
-        .expected_pin()
+    if target
+        .expected_pin
         .is_some_and(|expected| expected != &proof)
-        || attempt
-            .satisfied_pin()
+        || target
+            .satisfied_pin
             .is_some_and(|satisfied| satisfied != &proof)
     {
         return Ok(WorkspacePinObservationV1::Mismatch);
@@ -494,11 +578,15 @@ mod tests {
         }
     }
 
+    fn target(attempt: &WorkspacePinAttemptV1) -> WorkspacePinObservationTargetV1<'_> {
+        WorkspacePinObservationTargetV1::try_from(attempt).unwrap()
+    }
+
     #[test]
     fn exact_descriptor_and_mount_evidence_forms_full_proof() {
         let attempt = attempt(None);
         let observed = classify_mounted_slot(
-            &attempt,
+            &target(&attempt),
             &exact_dataset(),
             NamespaceIdentity {
                 device: 12,
@@ -523,7 +611,7 @@ mod tests {
     fn same_inode_with_replaced_mount_id_is_not_the_expected_pin() {
         let baseline = attempt(None);
         let WorkspacePinObservationV1::Present(proof) = classify_mounted_slot(
-            &baseline,
+            &target(&baseline),
             &exact_dataset(),
             NamespaceIdentity {
                 device: 12,
@@ -563,7 +651,7 @@ mod tests {
         .unwrap();
 
         let observed = classify_mounted_slot(
-            &remove_attempt,
+            &target(&remove_attempt),
             &exact_dataset(),
             NamespaceIdentity {
                 device: 12,
@@ -600,7 +688,7 @@ mod tests {
         for candidate in cases {
             assert_eq!(
                 classify_mounted_slot(
-                    &attempt,
+                    &target(&attempt),
                     &exact_dataset(),
                     NamespaceIdentity {
                         device: 12,
@@ -615,7 +703,7 @@ mod tests {
         }
         assert_eq!(
             classify_mounted_slot(
-                &attempt,
+                &target(&attempt),
                 &WorkspaceDatasetObservationV1::Mismatch,
                 NamespaceIdentity {
                     device: 12,
@@ -637,7 +725,7 @@ mod tests {
 
         assert!(matches!(
             classify_mounted_slot(
-                &attempt,
+                &target(&attempt),
                 &exact_dataset(),
                 NamespaceIdentity {
                     device: 12,

@@ -29,8 +29,8 @@ use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags};
 use crate::authorization::StorageProtectedConfigurationV1;
 use crate::observation::ZfsObservationState;
 use crate::pin_observer::{
-    WorkspacePinHostCustody, WorkspacePinObserverError, observe_workspace_pin, open_workspace_slot,
-    validate_host_scope,
+    WorkspacePinHostCustody, WorkspacePinObserverError, current_host_scope, observe_workspace_pin,
+    observe_workspace_pin_repair, open_workspace_slot, validate_host_scope,
 };
 use crate::pin_worker::{
     AuthenticatedWorkspacePinWorkerRequestV1, MAXIMUM_PIN_WORKER_RESULT_BYTES,
@@ -44,6 +44,12 @@ use crate::process::{
 use crate::workspace_pin::{
     WorkspaceDatasetObservationV1, WorkspacePinActionV1, WorkspacePinObservationV1,
     workspace_pin_path,
+};
+use crate::workspace_repair::WorkspacePinRepairProbeV1;
+use crate::workspace_repair_observer::{
+    WorkspacePinRepairObserverResultV1, decode_request as decode_repair_observer_request,
+    decode_result as decode_repair_observer_result, encode_result as encode_repair_observer_result,
+    is_repair_request,
 };
 use crate::{StorageAdmissionError, ZfsHelperContract, ZfsTransaction, ZfsWorkerError};
 
@@ -169,15 +175,62 @@ impl SystemdWorkspacePinExecutor {
             &worker_cgroup,
             exchange_deadline,
         );
+        self.finish_exchange(exchange, ready.subject(), &worker_cgroup, &population)
+    }
+
+    fn exchange_repair(
+        &mut self,
+        request: &[u8],
+        attempt_id: [u8; 16],
+        probe_digest: ObjectDigest,
+        custody: &WorkspacePinHostCustody,
+        exchange_deadline: u64,
+    ) -> Result<WorkspacePinRepairObserverResultV1, ZfsWorkerError> {
+        if self.fail_stopped {
+            return Err(ZfsWorkerError::Protocol(
+                "workspace pin executor is fail-stopped",
+            ));
+        }
+        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
+        verify_systemd_peer(socket.peer(), &self.systemd_manager_cgroup)?;
+        let ready_deadline = transfer_deadline()?;
+        let ready = receive_packet_before(&mut socket, MAXIMUM_READY_BYTES, ready_deadline)?;
+        let worker_path = decode_ready(ready.payload(), self.role)?;
+        let worker_cgroup = verify_worker_subject(
+            ready.subject(),
+            &self.worker_parent_cgroup,
+            Path::new(worker_path),
+            self.role,
+        )?;
+        let population = worker_cgroup.population_monitor()?;
+        let exchange = exchange_repair_after_ready(
+            &mut socket,
+            request,
+            attempt_id,
+            probe_digest,
+            custody,
+            ready.subject(),
+            &worker_cgroup,
+            exchange_deadline,
+        );
+        self.finish_exchange(exchange, ready.subject(), &worker_cgroup, &population)
+    }
+
+    fn finish_exchange<T>(
+        &mut self,
+        exchange: Result<T, ZfsWorkerError>,
+        subject: &KernelAuthorizedRecordSubject,
+        worker_cgroup: &RetainedCgroupAnchor,
+        population: &CgroupPopulationMonitor,
+    ) -> Result<T, ZfsWorkerError> {
         match exchange {
             Ok(result) => {
                 let natural_exit =
-                    wait_for_worker_quiescence(ready.subject(), &population, NATURAL_EXIT_TIMEOUT);
+                    wait_for_worker_quiescence(subject, population, NATURAL_EXIT_TIMEOUT);
                 let Err(natural_exit_error) = natural_exit else {
                     return Ok(result);
                 };
-                if let Err(cancellation_error) =
-                    quiesce_worker(ready.subject(), &worker_cgroup, &population)
+                if let Err(cancellation_error) = quiesce_worker(subject, worker_cgroup, population)
                 {
                     self.fail_stopped = true;
                     return Err(ZfsWorkerError::Quiescence(format!(
@@ -189,8 +242,7 @@ impl SystemdWorkspacePinExecutor {
                 )))
             }
             Err(error) => {
-                if let Err(cancellation_error) =
-                    quiesce_worker(ready.subject(), &worker_cgroup, &population)
+                if let Err(cancellation_error) = quiesce_worker(subject, worker_cgroup, population)
                 {
                     // Releasing broker serialization without whole-unit
                     // quiescence could overlap a still-running ZFS child with
@@ -280,6 +332,18 @@ impl SystemdWorkspacePinObserver {
         let deadline = quiescence_deadline(OBSERVATION_TRANSACTION_TIMEOUT)?;
         self.client.exchange(request, attempt, custody, deadline)
     }
+
+    pub(crate) fn observe_repair(
+        &mut self,
+        request: &[u8],
+        attempt_id: [u8; 16],
+        probe_digest: ObjectDigest,
+        custody: &WorkspacePinHostCustody,
+    ) -> Result<WorkspacePinRepairObserverResultV1, ZfsWorkerError> {
+        let deadline = quiescence_deadline(OBSERVATION_TRANSACTION_TIMEOUT)?;
+        self.client
+            .exchange_repair(request, attempt_id, probe_digest, custody, deadline)
+    }
 }
 
 fn exchange_after_ready(
@@ -306,6 +370,38 @@ fn exchange_after_ready(
     verify_exact_worker_subject(response.subject(), worker_cgroup)?;
     let result = decode_result(response.payload())?;
     if result.attempt_id() != attempt.attempt_id() {
+        return Err(ZfsWorkerError::Authority);
+    }
+    send_packet_before(socket, ACK, exchange_deadline)?;
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exchange_repair_after_ready(
+    socket: &mut DescriptorSubjectSocket,
+    request: &[u8],
+    attempt_id: [u8; 16],
+    probe_digest: ObjectDigest,
+    custody: &WorkspacePinHostCustody,
+    ready_subject: &KernelAuthorizedRecordSubject,
+    worker_cgroup: &RetainedCgroupAnchor,
+    exchange_deadline: u64,
+) -> Result<WorkspacePinRepairObserverResultV1, ZfsWorkerError> {
+    send_request_before(
+        socket,
+        request,
+        [
+            custody.mount_namespace().as_fd(),
+            custody.pin_root().as_fd(),
+        ],
+        exchange_deadline,
+    )?;
+    let response =
+        receive_packet_before(socket, MAXIMUM_PIN_WORKER_RESULT_BYTES, exchange_deadline)?;
+    verify_same_live_subject(ready_subject, response.subject())?;
+    verify_exact_worker_subject(response.subject(), worker_cgroup)?;
+    let result = decode_repair_observer_result(response.payload())?;
+    if result.observation().attempt_id() != attempt_id || result.probe_digest() != probe_digest {
         return Err(ZfsWorkerError::Authority);
     }
     send_packet_before(socket, ACK, exchange_deadline)?;
@@ -574,9 +670,19 @@ pub fn run_inherited_workspace_pin_observer(
     )?;
     let received = receive_request_before(&mut socket, transaction_deadline)?;
     verify_storaged_subject(&received.subject, &storaged_cgroup)?;
-    let request = decode_request(&received.bytes)?;
-    let authenticated =
-        protected.authenticate_workspace_pin_observation_request(&contract, request)?;
+    let repair_request = if is_repair_request(&received.bytes) {
+        Some(decode_repair_observer_request(&received.bytes)?)
+    } else {
+        None
+    };
+    let ordinary_request = if repair_request.is_none() {
+        Some(protected.authenticate_workspace_pin_observation_request(
+            &contract,
+            decode_request(&received.bytes)?,
+        )?)
+    } else {
+        None
+    };
     let [mount_namespace, pin_root]: [OwnedFd; 2] = received
         .descriptors
         .try_into()
@@ -585,36 +691,77 @@ pub fn run_inherited_workspace_pin_observer(
     let pin_root = ResolvedPath::from_inherited(pin_root)?;
 
     mount_namespace.enter(&single_threaded)?;
-    validate_host_scope(authenticated.attempt(), &mount_namespace, &pin_root)
+    executable_pin.validate_current(&contract)?;
+    let encoded_result = if let Some(request) = repair_request {
+        let current_scope =
+            current_host_scope(&mount_namespace, &pin_root).map_err(map_observer_error)?;
+        let authenticated = protected.authenticate_workspace_pin_repair_observation_request(
+            &contract,
+            request,
+            current_scope,
+        )?;
+        let transaction = ZfsTransaction::from_catalog(
+            authenticated.catalog().plan().operation(),
+            authenticated.catalog(),
+        )?;
+        let (dataset, observation_digest) = observe_repair_dataset_until(
+            &contract,
+            &transaction,
+            authenticated.probe(),
+            transaction_deadline,
+        )?;
+        let pin = observe_workspace_pin_repair(
+            authenticated.probe(),
+            &dataset,
+            &mount_namespace,
+            &pin_root,
+        )
         .map_err(map_observer_error)?;
-    executable_pin.validate_current(&contract)?;
-    let transaction = ZfsTransaction::from_catalog(
-        authenticated.request().catalog.plan().operation(),
-        &authenticated.request().catalog,
-    )?;
-    let (dataset, observation_digest) = observe_dataset_until(
-        &contract,
-        &transaction,
-        authenticated.attempt(),
-        true,
-        transaction_deadline,
-    )?;
-    let pin = observe_workspace_pin(
-        authenticated.attempt(),
-        &dataset,
-        &mount_namespace,
-        &pin_root,
-    )
-    .map_err(map_observer_error)?;
-    executable_pin.validate_current(&contract)?;
-    let result = WorkspacePinWorkerResultV1::new(
-        authenticated.attempt().attempt_id(),
-        dataset,
-        pin,
-        required_observation_digest(observation_digest)?,
-    );
+        executable_pin.validate_current(&contract)?;
+        let observation = WorkspacePinWorkerResultV1::new(
+            authenticated.attempt().attempt_id(),
+            dataset,
+            pin,
+            required_observation_digest(observation_digest)?,
+        );
+        encode_repair_observer_result(&WorkspacePinRepairObserverResultV1::new(
+            authenticated.probe().digest(),
+            observation,
+        ))?
+    } else {
+        let authenticated = ordinary_request.ok_or(ZfsWorkerError::Protocol(
+            "workspace pin observer request classification was lost",
+        ))?;
+        validate_host_scope(authenticated.attempt(), &mount_namespace, &pin_root)
+            .map_err(map_observer_error)?;
+        let transaction = ZfsTransaction::from_catalog(
+            authenticated.request().catalog.plan().operation(),
+            &authenticated.request().catalog,
+        )?;
+        let (dataset, observation_digest) = observe_dataset_until(
+            &contract,
+            &transaction,
+            authenticated.attempt(),
+            true,
+            transaction_deadline,
+        )?;
+        let pin = observe_workspace_pin(
+            authenticated.attempt(),
+            &dataset,
+            &mount_namespace,
+            &pin_root,
+        )
+        .map_err(map_observer_error)?;
+        executable_pin.validate_current(&contract)?;
+        encode_result(&WorkspacePinWorkerResultV1::new(
+            authenticated.attempt().attempt_id(),
+            dataset,
+            pin,
+            required_observation_digest(observation_digest)?,
+        ))?
+    };
 
-    send_packet_before(&mut socket, &encode_result(&result)?, transaction_deadline)?;
+    send_packet_before(&mut socket, &encoded_result, transaction_deadline)?;
     let acknowledgement = receive_packet_before(&mut socket, ACK.len(), transaction_deadline)?;
     verify_same_live_subject(&received.subject, acknowledgement.subject())?;
     verify_storaged_subject(acknowledgement.subject(), &storaged_cgroup)?;
@@ -899,6 +1046,48 @@ fn observe_dataset_until(
             }
         }
         _ => Ok((WorkspaceDatasetObservationV1::Mismatch, None)),
+    }
+}
+
+fn observe_repair_dataset_until(
+    contract: &ZfsHelperContract,
+    transaction: &ZfsTransaction,
+    probe: &WorkspacePinRepairProbeV1,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<(WorkspaceDatasetObservationV1, Option<ObjectDigest>), ZfsWorkerError> {
+    let observation = observe_transaction_for(
+        contract,
+        transaction,
+        true,
+        remaining_effect_time(deadline_boottime_nanoseconds)?,
+    )?;
+    match observation.state {
+        ZfsObservationState::Matched => {
+            let dataset = match observation.object_guid {
+                Some(guid) if guid == probe.dataset_guid() => {
+                    WorkspaceDatasetObservationV1::Exact {
+                        name: probe.dataset_name().to_owned(),
+                        guid,
+                    }
+                }
+                _ => WorkspaceDatasetObservationV1::Mismatch,
+            };
+            Ok((dataset, observation.digest))
+        }
+        ZfsObservationState::Mismatch => Ok((WorkspaceDatasetObservationV1::Mismatch, None)),
+        ZfsObservationState::Incomplete => {
+            let before = observe_transaction_for(
+                contract,
+                transaction,
+                false,
+                remaining_effect_time(deadline_boottime_nanoseconds)?,
+            )?;
+            if before.state == ZfsObservationState::Matched {
+                Ok((WorkspaceDatasetObservationV1::Absent, before.digest))
+            } else {
+                Ok((WorkspaceDatasetObservationV1::Mismatch, None))
+            }
+        }
     }
 }
 

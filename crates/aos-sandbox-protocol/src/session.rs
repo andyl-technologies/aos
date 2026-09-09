@@ -1045,6 +1045,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+            | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
     )
@@ -1112,6 +1113,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+        | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
         | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
@@ -1509,6 +1511,7 @@ fn validate_method(
         ) | (
             ProtocolId::StorageBroker,
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+                | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
                 | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
                 | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
                 | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
@@ -1526,6 +1529,9 @@ fn validate_method(
 }
 
 fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -> bool {
+    if method == BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN {
+        return version.minor() >= 4;
+    }
     if method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG {
         return version.minor() >= 3;
     }
@@ -3695,6 +3701,120 @@ mod tests {
         .unwrap();
         assert_eq!(
             apply_session.decode_request(&packet, 0),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+    }
+
+    #[test]
+    fn storage_pin_repair_requires_one_four_authority_and_no_descriptors() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN;
+        for minor in 0..=3 {
+            assert!(!method_available_in_version(
+                method,
+                ProtocolVersion::new(1, minor)
+            ));
+        }
+        assert!(method_available_in_version(
+            method,
+            ProtocolVersion::new(1, 4)
+        ));
+
+        let features = client_features();
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 4,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 4096,
+            required_features: features.iter().map(proto_feature).collect(),
+            required_methods: vec![method.into()],
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::StorageBroker,
+            &features,
+            &[method],
+        )
+        .unwrap();
+        let artifacts = authorization_artifacts();
+        let packet = encode_authorized_request_envelope(
+            ProtocolId::StorageBroker,
+            method,
+            b"canonical repair",
+            &[],
+            borrowed_artifacts(&artifacts),
+        )
+        .unwrap();
+        assert!(session.decode_request(&packet, 0).is_ok());
+
+        let missing_authority = BrokerRequestEnvelope {
+            method: method.into(),
+            body: b"canonical repair".to_vec(),
+            ..Default::default()
+        };
+        assert!(
+            session
+                .decode_request(&missing_authority.encode_to_vec(), 0)
+                .is_err()
+        );
+        assert_eq!(
+            encode_authorized_request_envelope(
+                ProtocolId::StorageBroker,
+                method,
+                b"canonical repair",
+                &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT],
+                borrowed_artifacts(&artifacts),
+            ),
+            Err(ProtocolValidationError::DescriptorTableMismatch)
+        );
+        let hostile_descriptor = BrokerRequestEnvelope {
+            method: method.into(),
+            body: b"canonical repair".to_vec(),
+            descriptors: vec![BrokerDescriptorEntry {
+                role: BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT.into(),
+                ..Default::default()
+            }],
+            authorization: Some(authorization_artifacts()).into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            session.decode_request(&hostile_descriptor.encode_to_vec(), 1),
+            Err(ProtocolValidationError::DescriptorTableMismatch)
+        );
+
+        for minor in 0..=3 {
+            let mut legacy = hello.clone();
+            legacy.protocol_minor = minor;
+            assert_eq!(
+                negotiate_client_hello(
+                    &legacy.encode_to_vec(),
+                    peer(),
+                    policy(),
+                    ProtocolId::StorageBroker,
+                    &features,
+                    &[method],
+                ),
+                Err(ProtocolValidationError::MethodMismatch)
+            );
+        }
+
+        let mut wrong_audience = hello;
+        wrong_audience.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
+        let wrong_policy = PeerPolicy {
+            audience: Audience::AUDIENCE_ROOT_MOUNT,
+            ..policy()
+        };
+        assert_eq!(
+            negotiate_client_hello(
+                &wrong_audience.encode_to_vec(),
+                peer(),
+                wrong_policy,
+                ProtocolId::StorageBroker,
+                &features,
+                &[method],
+            ),
             Err(ProtocolValidationError::MethodMismatch)
         );
     }

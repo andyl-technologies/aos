@@ -41,6 +41,8 @@ pub mod runtime;
 pub mod state;
 pub mod workspace_catalog;
 mod workspace_pin;
+mod workspace_repair;
+mod workspace_repair_observer;
 pub mod zfs;
 
 pub use authorization::{

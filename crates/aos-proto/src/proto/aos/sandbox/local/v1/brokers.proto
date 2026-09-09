@@ -79,6 +79,7 @@ enum BrokerMethod {
   BROKER_METHOD_STORAGE_INVENTORY_RESOURCES = 18;
   BROKER_METHOD_NETWORK_INVENTORY_RESOURCES = 19;
   BROKER_METHOD_STORAGE_PREPARE_CATALOG = 20;
+  BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN = 21;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -387,6 +388,17 @@ message PrepareStorageCatalogResponse {
   bytes non_authorizing_receipt = 5;
 }
 
+// Requests one freshly authorized, bounded Storage 1.4 attempt to repair an
+// absent workspace root pin after exact local observation. Dataset names,
+// GUIDs, mount points, attempt ordinals, and observations are derived from
+// protected broker state; this message grants no authority by itself.
+message RepairStorageWorkspacePinRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes operation_id = 3; // Exactly 16 bytes.
+  bytes storage_handle = 4; // Exactly 32 bytes.
+}
+
 message StorageResult {
   bytes storage_handle = 1;
   bytes immutable_version_handle = 2;
@@ -424,6 +436,7 @@ message InventoryStorageResourcesResponse {
 
 service StorageBroker {
   rpc PrepareCatalog(PrepareStorageCatalogRequest) returns (PrepareStorageCatalogResponse);
+  rpc RepairWorkspacePin(RepairStorageWorkspacePinRequest) returns (StorageResult);
   rpc ApplyStorage(ApplyStorageRequest) returns (StorageResult);
   rpc InventoryStorage(InventoryStorageRequest) returns (InventoryStorageResponse);
   rpc InventoryStorageResources(InventoryStorageRequest)

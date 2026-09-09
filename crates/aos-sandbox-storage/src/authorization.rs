@@ -15,17 +15,20 @@ use aos_sandbox_broker::{
     BrokerLocalRecordDomain, ProtectedBrokerAuthorityConfiguration, VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
-    AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, BrokerVerb,
-    DesiredGeneration, IncarnationId, NodeId, ObjectDigest, OwnershipLeaseTrustAnchor, ProtocolId,
-    ProtocolVersion, RawPairedClockSample, SandboxId,
+    AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerGrantTarget, BrokerPlanTrustAnchor,
+    BrokerResourceHandle, BrokerVerb, DesiredGeneration, IncarnationId, NodeId, ObjectDigest,
+    OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion, RawPairedClockSample, SandboxId,
 };
 use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
+use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use buffa::Message as _;
+use sha2::{Digest as _, Sha256};
 
 use crate::StorageStateKey;
 use crate::workspace_pin::{WorkspacePinActionV1, WorkspacePinAttemptV1};
+use crate::workspace_repair::StorageWorkspacePinRepairIntentV1;
 
 const PIN_RECEIPT_DOMAIN: [u8; 16] = *b"AOSSTGPINRECV001";
 const PREPARATION_RECORD_DOMAIN: [u8; 16] = *b"AOSSTGPREPV10001";
@@ -113,6 +116,23 @@ impl StorageProtectedConfigurationV1 {
             &self.state_key,
             configured_contract,
             request,
+        )
+    }
+
+    pub(crate) fn authenticate_workspace_pin_repair_observation_request(
+        &self,
+        configured_contract: &crate::ZfsHelperContract,
+        request: crate::workspace_repair_observer::WorkspacePinRepairObserverRequestV1,
+        current_host_scope: crate::workspace_pin::WorkspacePinHostScopeV1,
+    ) -> Result<
+        crate::workspace_repair_observer::AuthenticatedWorkspacePinRepairObserverRequestV1,
+        crate::ZfsWorkerError,
+    > {
+        crate::workspace_repair_observer::authenticate_request(
+            &self.state_key,
+            configured_contract,
+            request,
+            current_host_scope,
         )
     }
 
@@ -239,6 +259,38 @@ impl StorageAuthorityV1 {
         )
     }
 
+    pub(crate) fn admit_workspace_pin_repair(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        semantics: &CanonicalStorageRepairSemanticsV1,
+        request_body: &[u8],
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedBrokerAdmission, StorageAdmissionError> {
+        let assignment = assignment_from_repair(semantics)?;
+        self.0.admit(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Storage,
+                protocol: ProtocolId::StorageBroker,
+                protocol_version,
+                assignment,
+                request_id: *semantics.header().request_id(),
+                request_body,
+                descriptor_count: 0,
+                verb: semantics.broker_verb(),
+                target: semantics.grant_target(),
+                argument_commitment: semantics.argument_commitment(),
+                request_deadline_boottime_nanoseconds: semantics
+                    .header()
+                    .deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            prior_fence,
+        )
+    }
+
     pub(crate) fn seal(
         &self,
         sandbox_id: &[u8; 16],
@@ -277,6 +329,65 @@ impl StorageAuthorityV1 {
         bytes: &[u8],
     ) -> Result<BrokerEffectIntentV2, StorageAdmissionError> {
         self.0.open_effect(request_id, bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seal_effect_for_test(
+        &self,
+        request_id: &[u8; 16],
+        effect: &BrokerEffectIntentV2,
+    ) -> Result<Vec<u8>, StorageAdmissionError> {
+        self.0.seal_effect(request_id, effect)
+    }
+
+    /// Authenticates retained Pending repair authority against its operation fence.
+    ///
+    /// The exact original Effect bytes are opened at their original namespace
+    /// and request key; a later live Effect status does not replace this
+    /// immutable admission evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageAdmissionError::FenceRejected`] for authentication,
+    /// request-digest, semantic, target, assignment, or immutable fence mismatch.
+    pub(crate) fn authenticate_workspace_pin_repair_intent(
+        &self,
+        intent: &StorageWorkspacePinRepairIntentV1,
+        sealed_operation_fence: &[u8],
+        live_effect_record: &[u8],
+    ) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV2), StorageAdmissionError> {
+        let operation_fence =
+            self.open_operation_fence(&intent.repair_operation_id(), sealed_operation_fence)?;
+        let admitted_effect =
+            self.open_admission_intent(&intent.request_id(), intent.admitted_effect_record())?;
+        let live_effect = self.open_admission_intent(&intent.request_id(), live_effect_record)?;
+
+        let target = BrokerResourceHandle::from_bytes(intent.workspace_handle())
+            .map(BrokerGrantTarget::Resource)
+            .map_err(|_| StorageAdmissionError::FenceRejected)?;
+        let expected_live_effect = match live_effect.status() {
+            BrokerEffectStatusV2::Pending => admitted_effect.clone(),
+            BrokerEffectStatusV2::Complete => admitted_effect
+                .clone()
+                .complete(live_effect.receipt().to_vec())
+                .map_err(|_| StorageAdmissionError::FenceRejected)?,
+        };
+        if ObjectDigest::from_bytes(Sha256::digest(sealed_operation_fence).into())
+            != intent.operation_fence_digest()
+            || admitted_effect.status() != BrokerEffectStatusV2::Pending
+            || admitted_effect.request_id() != &intent.request_id()
+            || admitted_effect.transport_request_digest() != intent.request_digest()
+            || admitted_effect.request_digest() != intent.semantic_commitment()
+            || admitted_effect.verb() != BrokerVerb::StorageRepairWorkspacePin
+            || admitted_effect.target() != target
+            || admitted_effect.plan_digest() != operation_fence.plan_digest()
+            || admitted_effect.lease_digest() != operation_fence.local_lease_record().lease_digest()
+            || operation_fence.assignment().digest() != intent.repair_assignment_digest()
+            || live_effect != expected_live_effect
+        {
+            return Err(StorageAdmissionError::FenceRejected);
+        }
+        Ok((operation_fence, admitted_effect))
     }
 
     pub(crate) fn seal_catalog_preparation_record(
@@ -369,7 +480,9 @@ impl StorageAuthorityV1 {
             (attempt.action(), effect.verb()),
             (
                 WorkspacePinActionV1::Ensure,
-                BrokerVerb::StorageCreateWorkspace | BrokerVerb::StorageClone
+                BrokerVerb::StorageCreateWorkspace
+                    | BrokerVerb::StorageClone
+                    | BrokerVerb::StorageRepairWorkspacePin
             ) | (
                 WorkspacePinActionV1::RemoveAndDestroy,
                 BrokerVerb::StorageDestroy
@@ -488,6 +601,20 @@ pub(crate) fn decode_assignment(
 
 fn assignment_from_preparation(
     semantics: &CanonicalStoragePreparationSemanticsV1,
+) -> Result<BrokerAssignment, StorageAdmissionError> {
+    let fence = semantics.fence();
+    BrokerAssignment::new(
+        SandboxId::from_bytes(*fence.sandbox_id()),
+        IncarnationId::from_bytes(*fence.incarnation_id()),
+        AssignmentEpoch::new(fence.assignment_epoch()),
+        DesiredGeneration::new(fence.desired_generation()),
+        ObjectDigest::from_bytes(*fence.assignment_digest()),
+    )
+    .map_err(|_| StorageAdmissionError::RequestMismatch)
+}
+
+fn assignment_from_repair(
+    semantics: &CanonicalStorageRepairSemanticsV1,
 ) -> Result<BrokerAssignment, StorageAdmissionError> {
     let fence = semantics.fence();
     BrokerAssignment::new(

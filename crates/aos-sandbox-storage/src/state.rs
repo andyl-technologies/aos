@@ -26,6 +26,9 @@ use crate::workspace_pin::{
     WorkspacePinHostScopeV1, WorkspacePinObservationV1, WorkspacePinRecoveryDispositionV1,
     WorkspaceRootPinProofV1, attempt_record, derive_attempt_id, load_attempts,
 };
+#[cfg(test)]
+use crate::workspace_repair::repair_intent_record;
+use crate::workspace_repair::{StorageWorkspacePinRepairIntentV1, load_repair_intents};
 use crate::{CatalogBindingV1, CatalogPlanV1, PostconditionPolicyV1, ResolvedCatalogCommitmentV1};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -120,6 +123,23 @@ impl StorageStateKey {
         bytes: &[u8],
     ) -> Result<WorkspacePinAttemptV1, StorageStateError> {
         crate::workspace_pin::decode_attempt(bytes, self.key_id, &self.secret)
+    }
+
+    /// Authenticates one retained workspace-pin repair intent.
+    pub(crate) fn open_workspace_pin_repair_intent(
+        &self,
+        bytes: &[u8],
+    ) -> Result<StorageWorkspacePinRepairIntentV1, StorageStateError> {
+        crate::workspace_repair::decode_intent(bytes, self.key_id, &self.secret)
+    }
+
+    /// Authenticates one workspace publication intent at its exact location.
+    pub(crate) fn open_workspace_publication_intent(
+        &self,
+        operation_id: [u8; 16],
+        bytes: &[u8],
+    ) -> Result<StorageWorkspacePublicationIntentV1, StorageStateError> {
+        decode_publication_intent(self, &operation_id, bytes)
     }
 }
 
@@ -419,6 +439,7 @@ pub struct StorageTransactionStore {
     runtime_configuration: Option<ObjectDigest>,
     publication_intents: BTreeMap<[u8; 16], StorageWorkspacePublicationIntentV1>,
     pin_attempts: BTreeMap<[u8; 16], WorkspacePinAttemptV1>,
+    repair_intents: BTreeMap<[u8; 16], StorageWorkspacePinRepairIntentV1>,
     commit_failed: bool,
     #[cfg(test)]
     fail_after_next_journal_commit: bool,
@@ -550,6 +571,7 @@ impl StorageTransactionStore {
         let runtime_configuration = load_runtime_configuration(&journal, &key)?;
         let publication_intents = load_publication_intents(&journal, &key)?;
         let pin_attempts = load_attempts(&journal, key.key_id, &key.secret)?;
+        let repair_intents = load_repair_intents(&journal, key.key_id, &key.secret)?;
         let catalog_transitions =
             StorageCatalogTransitionProvider::load(&journal, key.key_id, &key.secret)?;
         let latest_generation = latest_generation(&records).max(
@@ -597,6 +619,13 @@ impl StorageTransactionStore {
         }
         catalog_transitions.validate_operation_set(records.keys().copied())?;
         validate_publication_intent_set(&records, &publication_intents)?;
+        validate_repair_intent_set(
+            &journal,
+            &records,
+            &publication_intents,
+            &pin_attempts,
+            &repair_intents,
+        )?;
         let store = Self {
             journal,
             key,
@@ -605,6 +634,7 @@ impl StorageTransactionStore {
             runtime_configuration,
             publication_intents,
             pin_attempts,
+            repair_intents,
             commit_failed: false,
             #[cfg(test)]
             fail_after_next_journal_commit: false,
@@ -960,6 +990,197 @@ impl StorageTransactionStore {
             .ok_or(StorageStateError::MissingAuthorityLink)
     }
 
+    pub(crate) fn workspace_pin_repair_intent(
+        &self,
+        repair_operation_id: [u8; 16],
+    ) -> Result<Option<StorageWorkspacePinRepairIntentV1>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.repair_intents.get(&repair_operation_id).cloned())
+    }
+
+    pub(crate) fn workspace_pin_repair_intents(
+        &self,
+    ) -> Result<Vec<StorageWorkspacePinRepairIntentV1>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.repair_intents.values().cloned().collect())
+    }
+
+    pub(crate) fn latest_workspace_pin_attempt(
+        &self,
+        creation_operation_id: [u8; 16],
+    ) -> Result<Option<WorkspacePinAttemptV1>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self
+            .pin_attempts
+            .values()
+            .filter(|attempt| attempt.creation_operation_id() == creation_operation_id)
+            .max_by_key(|attempt| attempt.attempt_ordinal())
+            .cloned())
+    }
+
+    pub(crate) fn workspace_pin_repair_intent_record(
+        &self,
+        intent: &StorageWorkspacePinRepairIntentV1,
+    ) -> Result<Vec<u8>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        if self.repair_intents.get(&intent.repair_operation_id()) != Some(intent) {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        self.journal
+            .get(
+                RecordNamespace::StorageWorkspacePinRepairIntent,
+                &intent.repair_operation_id(),
+            )
+            .map(ToOwned::to_owned)
+            .ok_or(StorageStateError::MissingAuthorityLink)
+    }
+
+    pub(crate) fn workspace_publication_intent_record(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<Vec<u8>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        if !self.publication_intents.contains_key(&operation_id) {
+            return Err(StorageStateError::MissingAuthorityLink);
+        }
+        self.journal
+            .get(
+                RecordNamespace::StorageWorkspacePublicationIntent,
+                &operation_id,
+            )
+            .map(ToOwned::to_owned)
+            .ok_or(StorageStateError::MissingAuthorityLink)
+    }
+
+    pub(crate) fn workspace_creation_catalog(
+        &self,
+        intent: &StorageWorkspacePinRepairIntentV1,
+    ) -> Result<ResolvedCatalogCommitmentV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        if self.repair_intents.get(&intent.repair_operation_id()) != Some(intent) {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let creation = self
+            .records
+            .get(&intent.creation_operation_id())
+            .filter(|record| {
+                record.phase == DurableStoragePhase::Committed
+                    && record.result.is_some_and(|result| {
+                        result.catalog() == intent.creation_result_catalog()
+                            && result.result_digest() == intent.creation_result_digest()
+                            && result.storage_handle() == Some(intent.workspace_handle())
+                    })
+            })
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let catalog = ResolvedCatalogCommitmentV1::from_canonical_bytes(&creation.catalog_bytes)
+            .map_err(|_| StorageStateError::CorruptRecord)?;
+        if catalog.binding() != creation.catalog {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        Ok(catalog)
+    }
+
+    pub(crate) fn workspace_creation_is_active(
+        &self,
+        creation_operation_id: [u8; 16],
+        workspace_handle: [u8; 32],
+    ) -> Result<bool, StorageStateError> {
+        self.ensure_authority_readable()?;
+        for projection in self.catalog_transitions.workspace_projection()? {
+            match projection {
+                PhysicalWorkspaceProjection::Active { operation_id, .. }
+                    if operation_id == creation_operation_id =>
+                {
+                    let result = self.projected_committed_result(operation_id)?;
+                    return Ok(result.storage_handle() == Some(workspace_handle));
+                }
+                PhysicalWorkspaceProjection::Retired { object_guid, .. } => {
+                    if self
+                        .managed_workspace_creation(object_guid)?
+                        .is_some_and(|creation| {
+                            creation.operation_id() == creation_operation_id
+                                && creation.storage_handle() == Some(workspace_handle)
+                        })
+                    {
+                        return Ok(false);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retain_workspace_pin_repair_for_test(
+        &mut self,
+        sandbox_id: [u8; 16],
+        intent: StorageWorkspacePinRepairIntentV1,
+        attempt: WorkspacePinAttemptV1,
+        sealed_current_fence: Vec<u8>,
+        sealed_live_effect: Vec<u8>,
+        sealed_operation_fence: Vec<u8>,
+    ) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
+        if intent.repair_attempt_id() != attempt.attempt_id()
+            || intent.repair_operation_id() != attempt.effect_operation_id()
+            || intent.request_id() == [0; 16]
+            || sealed_current_fence.is_empty()
+            || sealed_live_effect.is_empty()
+            || sealed_operation_fence.is_empty()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+
+        let transaction = JournalTransaction::new(
+            [0xd7; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    sandbox_id.to_vec(),
+                    sealed_current_fence,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    intent.request_id().to_vec(),
+                    sealed_live_effect,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    intent.repair_operation_id().to_vec(),
+                    sealed_operation_fence,
+                ),
+                repair_intent_record(&intent, self.key.key_id, &self.key.secret)?,
+                attempt_record(&attempt, self.key.key_id, &self.key.secret)?,
+            ],
+        )?;
+        self.commit_journal(&transaction)?;
+        self.repair_intents
+            .insert(intent.repair_operation_id(), intent);
+        self.pin_attempts.insert(attempt.attempt_id(), attempt);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_workspace_pin_repair_intent_for_test(
+        &mut self,
+        transaction_id: [u8; 16],
+        intent: StorageWorkspacePinRepairIntentV1,
+    ) -> Result<(), StorageStateError> {
+        let transaction = JournalTransaction::new(
+            transaction_id,
+            vec![repair_intent_record(
+                &intent,
+                self.key.key_id,
+                &self.key.secret,
+            )?],
+        )?;
+        self.commit_journal(&transaction)?;
+        self.repair_intents
+            .insert(intent.repair_operation_id(), intent);
+        Ok(())
+    }
+
     pub(crate) fn require_satisfied_workspace_pin_effect(
         &self,
         effect_operation_id: [u8; 16],
@@ -1306,6 +1527,15 @@ impl StorageTransactionStore {
             .pin_attempts
             .get(&attempt_id)
             .ok_or(StorageStateError::InvalidTransition)?;
+        let latest = self
+            .pin_attempts
+            .values()
+            .filter(|attempt| attempt.workspace_handle() == current.workspace_handle())
+            .max_by_key(|attempt| attempt.attempt_ordinal())
+            .ok_or(StorageStateError::InvalidTransition)?;
+        if latest.attempt_id() != current.attempt_id() {
+            return Err(StorageStateError::InvalidTransition);
+        }
         let disposition = current.classify(dataset, pin);
         let observed_pin = match (disposition, pin) {
             (
@@ -1685,6 +1915,23 @@ impl StorageTransactionStore {
     ) {
         let transaction = JournalTransaction::new(
             [230_u8.wrapping_add(namespace as u8); 16],
+            vec![JournalRecord::put(namespace, key.to_vec(), value)],
+        )
+        .unwrap();
+        self.journal.commit(&transaction).unwrap();
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    pub(crate) fn put_authority_record_with_transaction_for_test(
+        &mut self,
+        transaction_id: [u8; 16],
+        namespace: RecordNamespace,
+        key: &[u8],
+        value: Vec<u8>,
+    ) {
+        let transaction = JournalTransaction::new(
+            transaction_id,
             vec![JournalRecord::put(namespace, key.to_vec(), value)],
         )
         .unwrap();
@@ -2312,7 +2559,21 @@ impl StorageTransactionStore {
             {
                 Ok(())
             }
-            WorkspacePinActionV1::Ensure => Err(StorageStateError::AuthorityLinkMismatch),
+            WorkspacePinActionV1::Ensure => {
+                let repair = self
+                    .repair_intents
+                    .get(&attempt.effect_operation_id())
+                    .filter(|repair| repair.repair_attempt_id() == attempt.attempt_id())
+                    .ok_or(StorageStateError::MissingAuthorityLink)?;
+                if repair.creation_operation_id() != attempt.creation_operation_id()
+                    || repair.workspace_handle() != attempt.workspace_handle()
+                    || repair.repair_assignment_digest() != attempt.effect_assignment_digest()
+                    || repair.operation_fence_digest() != attempt.operation_fence_digest()
+                {
+                    return Err(StorageStateError::AuthorityLinkMismatch);
+                }
+                Ok(())
+            }
             WorkspacePinActionV1::RemoveAndDestroy => {
                 let destruction = self
                     .records
@@ -2461,11 +2722,118 @@ fn validate_publication_intent_set(
     Ok(())
 }
 
+fn validate_repair_intent_set(
+    journal: &Journal,
+    records: &BTreeMap<[u8; 16], DurableRecord>,
+    publication_intents: &BTreeMap<[u8; 16], StorageWorkspacePublicationIntentV1>,
+    pin_attempts: &BTreeMap<[u8; 16], WorkspacePinAttemptV1>,
+    repair_intents: &BTreeMap<[u8; 16], StorageWorkspacePinRepairIntentV1>,
+) -> Result<(), StorageStateError> {
+    for intent in repair_intents.values() {
+        if records.contains_key(&intent.repair_operation_id())
+            || journal
+                .get(RecordNamespace::Effect, &intent.request_id())
+                .is_none()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        let operation_fence = journal
+            .get(
+                RecordNamespace::AuthorityPublication,
+                &intent.repair_operation_id(),
+            )
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if digest_bytes(operation_fence) != intent.operation_fence_digest()
+            || digest_bytes(intent.admitted_effect_record())
+                != intent.admitted_effect_record_digest()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+
+        let creation = records
+            .get(&intent.creation_operation_id())
+            .filter(|record| record.phase == DurableStoragePhase::Committed)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let creation_result = creation
+            .result
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let publication_record = journal
+            .get(
+                RecordNamespace::StorageWorkspacePublicationIntent,
+                &intent.creation_operation_id(),
+            )
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if creation_result.catalog() != intent.creation_result_catalog()
+            || creation_result.result_digest() != intent.creation_result_digest()
+            || creation_result.storage_handle() != Some(intent.workspace_handle())
+            || publication_intents
+                .get(&intent.creation_operation_id())
+                .is_none()
+            || digest_bytes(publication_record) != intent.publication_intent_record_digest()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+
+        let latest_ensure = pin_attempts
+            .get(&intent.latest_ensure_attempt_id())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let latest_ensure_record = journal
+            .get(
+                RecordNamespace::StorageWorkspacePinAttempt,
+                &intent.latest_ensure_attempt_id(),
+            )
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let repair_attempt = pin_attempts
+            .get(&intent.repair_attempt_id())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if latest_ensure.action() != WorkspacePinActionV1::Ensure
+            || latest_ensure.phase() != intent.latest_ensure_phase()
+            || latest_ensure.creation_operation_id() != intent.creation_operation_id()
+            || latest_ensure.workspace_handle() != intent.workspace_handle()
+            || digest_bytes(latest_ensure_record) != intent.latest_ensure_attempt_record_digest()
+            || latest_ensure
+                .attempt_ordinal()
+                .checked_add(1)
+                .filter(|ordinal| *ordinal == intent.repair_attempt_ordinal())
+                .is_none()
+            || repair_attempt.action() != WorkspacePinActionV1::Ensure
+            || repair_attempt.effect_operation_id() != intent.repair_operation_id()
+            || repair_attempt.creation_operation_id() != intent.creation_operation_id()
+            || repair_attempt.operation_fence_digest() != intent.operation_fence_digest()
+            || repair_attempt.effect_assignment_digest() != intent.repair_assignment_digest()
+            || repair_attempt.creation_result_catalog() != intent.creation_result_catalog()
+            || repair_attempt.creation_result_digest() != intent.creation_result_digest()
+            || repair_attempt.workspace_handle() != intent.workspace_handle()
+            || repair_attempt.attempt_ordinal() != intent.repair_attempt_ordinal()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+    }
+
+    for attempt in pin_attempts.values().filter(|attempt| {
+        attempt.action() == WorkspacePinActionV1::Ensure
+            && attempt.effect_operation_id() != attempt.creation_operation_id()
+    }) {
+        let matching = repair_intents
+            .values()
+            .filter(|intent| intent.repair_attempt_id() == attempt.attempt_id())
+            .count();
+        if matching != 1 {
+            return Err(StorageStateError::MissingAuthorityLink);
+        }
+    }
+    Ok(())
+}
+
 fn requires_workspace_publication(plan: &CatalogPlanV1) -> bool {
     matches!(
         plan,
         CatalogPlanV1::CreateWorkspace { .. } | CatalogPlanV1::Clone { .. }
     )
+}
+
+fn digest_bytes(bytes: &[u8]) -> ObjectDigest {
+    ObjectDigest::from_bytes(Sha256::digest(bytes).into())
 }
 
 fn publication_intent_record(
@@ -2719,9 +3087,11 @@ const fn journal_limits() -> JournalLimits {
         maximum_materialized_bytes: MAXIMUM_JOURNAL_RECORD_BYTES
             * (MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
                 + MAXIMUM_OPERATIONS * MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE as usize
+                + MAXIMUM_OPERATIONS
                 + GLOBAL_MATERIALIZED_RECORDS),
         maximum_materialized_records: MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
             + MAXIMUM_OPERATIONS * MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE as usize
+            + MAXIMUM_OPERATIONS
             + GLOBAL_MATERIALIZED_RECORDS,
     }
 }
@@ -3155,6 +3525,7 @@ mod tests {
         WorkspaceDatasetObservationV1, WorkspacePinHostScopeV1, WorkspacePinObservationV1,
         WorkspacePinRecoveryDispositionV1, WorkspaceRootPinProofV1,
     };
+    use crate::workspace_repair::{StorageWorkspacePinRepairIntentV1, repair_intent_record};
     use crate::{
         ActiveHoldEvidence, CatalogPlanV1, HoldId, ManagedDatasetRoot, PlannedDataset,
         PlannedSnapshot, ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset,
@@ -3308,6 +3679,17 @@ mod tests {
                 std::slice::from_ref(catalog),
             )
             .unwrap();
+    }
+
+    fn clone_test_store(source: &TempDir) -> (TempDir, StorageTransactionStore) {
+        let destination = TempDir::new().unwrap();
+        fs::copy(
+            source.path().join("storage-state.journal"),
+            destination.path().join("storage-state.journal"),
+        )
+        .unwrap();
+        let store = StorageTransactionStore::open_for_test(destination.path(), key(1), 0).unwrap();
+        (destination, store)
     }
 
     fn workspace_pin_proof(
@@ -4300,6 +4682,529 @@ mod tests {
                 .unwrap(),
             WorkspacePinRecoveryDispositionV1::CompletePublication
         );
+    }
+
+    #[test]
+    fn repair_intent_reopens_and_superseded_attempt_cannot_complete_late() {
+        let directory = TempDir::new().unwrap();
+        let create = catalog(7, "tank/aos/project/work");
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &create);
+        let creation_operation_id = [141; 16];
+        let publication = publication_intent(creation_operation_id, &create, 142);
+        let workspace_assignment_digest = publication.assignment_digest();
+        let BeginStorageTransaction::Prepared { mutation_digest } = store
+            .begin_authorized_with_publication(
+                creation_operation_id,
+                digest(143),
+                &create,
+                [144; 16],
+                [145; 16],
+                vec![1; 8],
+                vec![2; 8],
+                vec![3; 8],
+                Some(publication.clone()),
+            )
+            .unwrap()
+        else {
+            panic!("managed workspace creation was not prepared")
+        };
+        store
+            .mark_mutation_ambiguous(creation_operation_id, mutation_digest)
+            .unwrap();
+        let creation = store
+            .commit_observed(
+                creation_operation_id,
+                mutation_digest,
+                &create,
+                &create.plan().postcondition(),
+                Some(101),
+                digest(146),
+            )
+            .unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([4; 16], 5, 6).unwrap();
+        let initial = store
+            .plan_workspace_pin_ensure(
+                creation,
+                workspace_assignment_digest,
+                host_scope,
+                [10; 16],
+                1_000,
+            )
+            .unwrap();
+        let authority = FreshWorkspacePinAuthority::new_for_test(
+            initial.attempt_id(),
+            initial.authority_digest().unwrap(),
+        );
+        store
+            .begin_workspace_pin_attempt(initial.clone(), authority)
+            .unwrap();
+
+        let repair_operation_id = [147; 16];
+        let repair_request_id = [148; 16];
+        let repair_assignment_digest = digest(149);
+        let sealed_effect = vec![5; 8];
+        let sealed_operation_fence = vec![6; 8];
+        let operation_fence_digest = digest_bytes(&sealed_operation_fence);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let repair_attempt_id = derive_attempt_id(
+            &store.key.secret,
+            repair_operation_id,
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+            2,
+        )
+        .unwrap();
+        let repair = WorkspacePinAttemptV1::new_ambiguous(
+            repair_attempt_id,
+            2,
+            WorkspacePinActionV1::Ensure,
+            repair_operation_id,
+            creation_operation_id,
+            operation_fence_digest,
+            repair_assignment_digest,
+            workspace_assignment_digest,
+            creation.catalog(),
+            creation.result_digest(),
+            workspace_handle,
+            host_scope.kernel_boot_id(),
+            host_scope.mount_namespace_device(),
+            host_scope.mount_namespace_inode(),
+            [11; 16],
+            2_000,
+            "tank/aos/project/work".to_owned(),
+            101,
+            publication.identity_range_start(),
+            publication.identity_range_size(),
+            None,
+        )
+        .unwrap()
+        .with_authority_receipt(vec![0xa5])
+        .unwrap();
+        let publication_record = store
+            .journal
+            .get(
+                RecordNamespace::StorageWorkspacePublicationIntent,
+                &creation_operation_id,
+            )
+            .unwrap();
+        let initial_record = store
+            .journal
+            .get(
+                RecordNamespace::StorageWorkspacePinAttempt,
+                &initial.attempt_id(),
+            )
+            .unwrap();
+        let intent = StorageWorkspacePinRepairIntentV1::new_for_test(
+            repair_operation_id,
+            repair_request_id,
+            digest(150),
+            digest(151),
+            repair_assignment_digest,
+            sealed_effect.clone(),
+            operation_fence_digest,
+            creation_operation_id,
+            creation.catalog(),
+            creation.result_digest(),
+            digest_bytes(publication_record),
+            workspace_handle,
+            initial.attempt_id(),
+            initial.phase(),
+            digest_bytes(initial_record),
+            repair.attempt_id(),
+            repair.attempt_ordinal(),
+        )
+        .unwrap();
+        let transaction = JournalTransaction::new(
+            [152; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    repair_request_id.to_vec(),
+                    sealed_effect,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    repair_operation_id.to_vec(),
+                    sealed_operation_fence,
+                ),
+                repair_intent_record(&intent, store.key.key_id, &store.key.secret).unwrap(),
+                attempt_record(&repair, store.key.key_id, &store.key.secret).unwrap(),
+            ],
+        )
+        .unwrap();
+        store.commit_journal(&transaction).unwrap();
+        drop(store);
+
+        let mut reopened =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        assert_eq!(reopened.workspace_pin_attempts().unwrap().len(), 2);
+        let before = reopened.journal_sequence_for_test();
+        let proof = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 101);
+        assert!(matches!(
+            reopened.complete_workspace_pin_attempt(
+                initial.attempt_id(),
+                &WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 101,
+                },
+                &WorkspacePinObservationV1::Present(proof.clone()),
+            ),
+            Err(StorageStateError::InvalidTransition)
+        ));
+        assert_eq!(reopened.journal_sequence_for_test(), before);
+        assert_eq!(
+            reopened
+                .complete_workspace_pin_attempt(
+                    repair.attempt_id(),
+                    &WorkspaceDatasetObservationV1::Exact {
+                        name: "tank/aos/project/work".to_owned(),
+                        guid: 101,
+                    },
+                    &WorkspacePinObservationV1::Present(proof.clone()),
+                )
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::CompletePublication
+        );
+        let repaired = reopened
+            .pin_attempts
+            .get(&repair.attempt_id())
+            .unwrap()
+            .clone();
+        let second_repair_operation_id = [153; 16];
+        let second_repair_request_id = [154; 16];
+        let second_repair_assignment_digest = digest(155);
+        let second_sealed_effect = vec![7; 8];
+        let second_sealed_operation_fence = vec![8; 8];
+        let second_operation_fence_digest = digest_bytes(&second_sealed_operation_fence);
+        let second_repair_attempt_id = derive_attempt_id(
+            &reopened.key.secret,
+            second_repair_operation_id,
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+            3,
+        )
+        .unwrap();
+        let second_repair = WorkspacePinAttemptV1::new_ambiguous(
+            second_repair_attempt_id,
+            3,
+            WorkspacePinActionV1::Ensure,
+            second_repair_operation_id,
+            creation_operation_id,
+            second_operation_fence_digest,
+            second_repair_assignment_digest,
+            workspace_assignment_digest,
+            creation.catalog(),
+            creation.result_digest(),
+            workspace_handle,
+            host_scope.kernel_boot_id(),
+            host_scope.mount_namespace_device(),
+            host_scope.mount_namespace_inode(),
+            [12; 16],
+            3_000,
+            "tank/aos/project/work".to_owned(),
+            101,
+            publication.identity_range_start(),
+            publication.identity_range_size(),
+            None,
+        )
+        .unwrap()
+        .with_authority_receipt(vec![0xa6])
+        .unwrap();
+        let publication_record = reopened
+            .journal
+            .get(
+                RecordNamespace::StorageWorkspacePublicationIntent,
+                &creation_operation_id,
+            )
+            .unwrap();
+        let repaired_record = reopened
+            .journal
+            .get(
+                RecordNamespace::StorageWorkspacePinAttempt,
+                &repaired.attempt_id(),
+            )
+            .unwrap();
+        let second_intent = StorageWorkspacePinRepairIntentV1::new_for_test(
+            second_repair_operation_id,
+            second_repair_request_id,
+            digest(156),
+            digest(157),
+            second_repair_assignment_digest,
+            second_sealed_effect.clone(),
+            second_operation_fence_digest,
+            creation_operation_id,
+            creation.catalog(),
+            creation.result_digest(),
+            digest_bytes(publication_record),
+            workspace_handle,
+            repaired.attempt_id(),
+            repaired.phase(),
+            digest_bytes(repaired_record),
+            second_repair.attempt_id(),
+            second_repair.attempt_ordinal(),
+        )
+        .unwrap();
+
+        let reordered_intent = StorageWorkspacePinRepairIntentV1::new_for_test(
+            second_repair_operation_id,
+            second_repair_request_id,
+            digest(156),
+            digest(157),
+            second_repair_assignment_digest,
+            second_sealed_effect.clone(),
+            second_operation_fence_digest,
+            creation_operation_id,
+            creation.catalog(),
+            creation.result_digest(),
+            digest_bytes(publication_record),
+            workspace_handle,
+            initial.attempt_id(),
+            initial.phase(),
+            digest_bytes(
+                reopened
+                    .journal
+                    .get(
+                        RecordNamespace::StorageWorkspacePinAttempt,
+                        &initial.attempt_id(),
+                    )
+                    .unwrap(),
+            ),
+            second_repair.attempt_id(),
+            second_repair.attempt_ordinal(),
+        )
+        .unwrap();
+        let (reordered_directory, mut reordered_store) = clone_test_store(&directory);
+        let reordered_transaction = JournalTransaction::new(
+            [164; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    second_repair_request_id.to_vec(),
+                    second_sealed_effect.clone(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    second_repair_operation_id.to_vec(),
+                    second_sealed_operation_fence.clone(),
+                ),
+                repair_intent_record(
+                    &reordered_intent,
+                    reordered_store.key.key_id,
+                    &reordered_store.key.secret,
+                )
+                .unwrap(),
+                attempt_record(
+                    &second_repair,
+                    reordered_store.key.key_id,
+                    &reordered_store.key.secret,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        reordered_store
+            .commit_journal(&reordered_transaction)
+            .unwrap();
+        drop(reordered_store);
+        assert!(matches!(
+            StorageTransactionStore::open_for_test(reordered_directory.path(), key(1), 0),
+            Err(StorageStateError::AuthorityLinkMismatch)
+        ));
+
+        let gap_operation_id = [165; 16];
+        let gap_request_id = [166; 16];
+        let gap_assignment_digest = digest(167);
+        let gap_effect = vec![12; 8];
+        let gap_fence = vec![13; 8];
+        let gap_fence_digest = digest_bytes(&gap_fence);
+        let gap_attempt_id = derive_attempt_id(
+            &reopened.key.secret,
+            gap_operation_id,
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+            4,
+        )
+        .unwrap();
+        let gap_attempt = WorkspacePinAttemptV1::new_ambiguous(
+            gap_attempt_id,
+            4,
+            WorkspacePinActionV1::Ensure,
+            gap_operation_id,
+            creation_operation_id,
+            gap_fence_digest,
+            gap_assignment_digest,
+            workspace_assignment_digest,
+            creation.catalog(),
+            creation.result_digest(),
+            workspace_handle,
+            host_scope.kernel_boot_id(),
+            host_scope.mount_namespace_device(),
+            host_scope.mount_namespace_inode(),
+            [14; 16],
+            4_000,
+            "tank/aos/project/work".to_owned(),
+            101,
+            publication.identity_range_start(),
+            publication.identity_range_size(),
+            None,
+        )
+        .unwrap()
+        .with_authority_receipt(vec![0xa7])
+        .unwrap();
+        let gap_intent = StorageWorkspacePinRepairIntentV1::new_for_test(
+            gap_operation_id,
+            gap_request_id,
+            digest(168),
+            digest(169),
+            gap_assignment_digest,
+            gap_effect.clone(),
+            gap_fence_digest,
+            creation_operation_id,
+            creation.catalog(),
+            creation.result_digest(),
+            digest_bytes(publication_record),
+            workspace_handle,
+            repaired.attempt_id(),
+            repaired.phase(),
+            digest_bytes(repaired_record),
+            gap_attempt.attempt_id(),
+            gap_attempt.attempt_ordinal(),
+        )
+        .unwrap();
+        let (gap_directory, mut gap_store) = clone_test_store(&directory);
+        let gap_transaction = JournalTransaction::new(
+            [170; 16],
+            vec![
+                JournalRecord::put(RecordNamespace::Effect, gap_request_id.to_vec(), gap_effect),
+                JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    gap_operation_id.to_vec(),
+                    gap_fence,
+                ),
+                repair_intent_record(&gap_intent, gap_store.key.key_id, &gap_store.key.secret)
+                    .unwrap(),
+                attempt_record(&gap_attempt, gap_store.key.key_id, &gap_store.key.secret).unwrap(),
+            ],
+        )
+        .unwrap();
+        gap_store.commit_journal(&gap_transaction).unwrap();
+        drop(gap_store);
+        assert!(matches!(
+            StorageTransactionStore::open_for_test(gap_directory.path(), key(1), 0),
+            Err(StorageStateError::AuthorityLinkMismatch | StorageStateError::CorruptRecord)
+        ));
+
+        let transaction = JournalTransaction::new(
+            [158; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    second_repair_request_id.to_vec(),
+                    second_sealed_effect,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    second_repair_operation_id.to_vec(),
+                    second_sealed_operation_fence,
+                ),
+                repair_intent_record(&second_intent, reopened.key.key_id, &reopened.key.secret)
+                    .unwrap(),
+                attempt_record(&second_repair, reopened.key.key_id, &reopened.key.secret).unwrap(),
+            ],
+        )
+        .unwrap();
+        reopened.commit_journal(&transaction).unwrap();
+        drop(reopened);
+
+        let mut reopened =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        assert_eq!(reopened.workspace_pin_attempts().unwrap().len(), 3);
+        assert_eq!(
+            reopened
+                .complete_workspace_pin_attempt(
+                    second_repair.attempt_id(),
+                    &WorkspaceDatasetObservationV1::Exact {
+                        name: "tank/aos/project/work".to_owned(),
+                        guid: 101,
+                    },
+                    &WorkspacePinObservationV1::Present(proof.clone()),
+                )
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::CompletePublication
+        );
+
+        let destroy = destroy_dataset_catalog(
+            9,
+            "tank/aos/project/work",
+            101,
+            creation.storage_handle().unwrap(),
+        );
+        let destroy_operation_id = [159; 16];
+        let BeginStorageTransaction::Prepared { mutation_digest } = reopened
+            .begin_authorized_with_publication(
+                destroy_operation_id,
+                digest(160),
+                &destroy,
+                [144; 16],
+                [161; 16],
+                vec![9; 8],
+                vec![10; 8],
+                vec![11; 8],
+                None,
+            )
+            .unwrap()
+        else {
+            panic!("managed workspace destruction was not prepared")
+        };
+        let remove = reopened
+            .plan_workspace_pin_remove_and_destroy(
+                destroy_operation_id,
+                digest(162),
+                host_scope,
+                [13; 16],
+                4_000,
+                proof,
+            )
+            .unwrap();
+        assert_eq!(remove.attempt_ordinal(), 4);
+        let authority = FreshWorkspacePinAuthority::new_for_test(
+            remove.attempt_id(),
+            remove.authority_digest().unwrap(),
+        );
+        assert!(matches!(
+            reopened
+                .begin_workspace_pin_remove_and_destroy(remove.clone(), mutation_digest, authority,)
+                .unwrap(),
+            BeginWorkspacePinAttemptV1::Dispatch(_)
+        ));
+        reopened
+            .commit_observed(
+                destroy_operation_id,
+                mutation_digest,
+                &destroy,
+                &destroy.plan().postcondition(),
+                None,
+                digest(163),
+            )
+            .unwrap();
+        assert_eq!(
+            reopened
+                .complete_workspace_pin_attempt(
+                    remove.attempt_id(),
+                    &WorkspaceDatasetObservationV1::Absent,
+                    &WorkspacePinObservationV1::Absent,
+                )
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::CompleteRetirement
+        );
+        drop(reopened);
+        let reopened = StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        assert!(matches!(
+            reopened.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceProjection::Retired { .. }]
+        ));
     }
 
     #[test]

@@ -183,10 +183,6 @@ impl StorageBrokerRuntime {
             PathBuf::from(WORKSPACE_PIN_OBSERVER_SOCKET),
             open_cgroup_root()?,
         )?;
-        // Keep both exclusive journals for the runtime lifetime. Acquiring the
-        // transaction journal first is the only permitted cross-journal order.
-        let workspaces =
-            StorageWorkspaceCatalogV1::open_root_owned(state_directory, identity_pool)?;
 
         let legacy_recovery = transactions.requires_legacy_recovery()?;
         if !legacy_recovery {
@@ -196,10 +192,22 @@ impl StorageBrokerRuntime {
                 &bootstrap.catalogs,
             )?;
         }
+        let coordinator = StorageAdmissionCoordinator::new(authority, transactions);
+        // Historical repair authority must authenticate before either ordinary
+        // effect histories or the workspace inventory becomes an input.
+        // Keep both exclusive journals for the runtime lifetime. Acquiring the
+        // transaction journal first is the only permitted cross-journal order.
+        let workspaces = authenticate_before_workspace_inventory(
+            || authenticate_startup_authority(&coordinator),
+            || {
+                StorageWorkspaceCatalogV1::open_root_owned(state_directory, identity_pool)
+                    .map_err(Into::into)
+            },
+        )?;
 
         let backend = SystemdZfsProcessBackend::new(executor);
         let mut runtime = Self {
-            coordinator: StorageAdmissionCoordinator::new(authority, transactions),
+            coordinator,
             workspaces,
             pin_custody,
             pin_contract: contract.clone(),
@@ -208,7 +216,6 @@ impl StorageBrokerRuntime {
             helper: StorageMutationHelper::new(contract, backend),
             readiness: StorageRuntimeReadiness::IntegrationIncomplete,
         };
-        authenticate_startup_authority(&runtime.coordinator)?;
         runtime.readiness = if legacy_recovery {
             StorageRuntimeReadiness::LegacyRecoveryOnly {
                 operations: runtime
@@ -476,6 +483,39 @@ impl StorageBrokerRuntime {
                 _ => pending += 1,
             }
         }
+        let current_host_scope = self
+            .pin_custody
+            .host_scope()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        for dispatch in self
+            .coordinator
+            .workspace_pin_repair_observation_dispatches(&self.pin_contract, current_host_scope)
+            .map_err(|_| StorageRuntimeError::Recovery)?
+        {
+            let request = dispatch
+                .request_bytes()
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+            let result = self
+                .pin_observer
+                .observe_repair(
+                    &request,
+                    dispatch.attempt().attempt_id(),
+                    dispatch.probe().digest(),
+                    &self.pin_custody,
+                )
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+            match self
+                .coordinator
+                .complete_workspace_pin_repair_observation(dispatch, result)
+                .map_err(|_| StorageRuntimeError::Recovery)?
+            {
+                crate::workspace_pin::WorkspacePinRecoveryDispositionV1::CompletePublication => {}
+                crate::workspace_pin::WorkspacePinRecoveryDispositionV1::AwaitFreshRepair => {
+                    pending += 1;
+                }
+                _ => return Err(StorageRuntimeError::Recovery),
+            }
+        }
         let identity_ranges = self
             .coordinator
             .workspace_identity_ranges()
@@ -509,11 +549,19 @@ pub(crate) fn authenticate_startup_authority(
     coordinator: &StorageAdmissionCoordinator,
 ) -> Result<(), StorageRuntimeError> {
     coordinator
-        .authenticate_catalog_preparations()
+        .authenticate_workspace_pin_attempts()
         .map_err(|_| StorageRuntimeError::Recovery)?;
     coordinator
-        .authenticate_workspace_pin_attempts()
+        .authenticate_catalog_preparations()
         .map_err(|_| StorageRuntimeError::Recovery)
+}
+
+fn authenticate_before_workspace_inventory<T>(
+    authenticate: impl FnOnce() -> Result<(), StorageRuntimeError>,
+    open_inventory: impl FnOnce() -> Result<T, StorageRuntimeError>,
+) -> Result<T, StorageRuntimeError> {
+    authenticate()?;
+    open_inventory()
 }
 
 pub(crate) fn runtime_configuration_binding(
@@ -699,6 +747,7 @@ fn decode_bootstrap(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::cell::RefCell;
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
@@ -823,5 +872,34 @@ mod tests {
 
         fs::set_permissions(&minimum_path, fs::Permissions::from_mode(0o640)).unwrap();
         assert!(ProtectedStorageBootstrap::open_with_owner(&directory, expected_uid).is_err());
+    }
+
+    #[test]
+    fn repair_authority_precedes_workspace_inventory_and_failure_stops_open() {
+        let order = RefCell::new(Vec::new());
+        let inventory = authenticate_before_workspace_inventory(
+            || {
+                order.borrow_mut().push("authority");
+                Ok(())
+            },
+            || {
+                order.borrow_mut().push("inventory");
+                Ok(7)
+            },
+        )
+        .unwrap();
+        assert_eq!(inventory, 7);
+        assert_eq!(*order.borrow(), ["authority", "inventory"]);
+
+        let inventory_opened = std::cell::Cell::new(false);
+        let rejected = authenticate_before_workspace_inventory::<()>(
+            || Err(StorageRuntimeError::Recovery),
+            || {
+                inventory_opened.set(true);
+                Ok(())
+            },
+        );
+        assert!(matches!(rejected, Err(StorageRuntimeError::Recovery)));
+        assert!(!inventory_opened.get());
     }
 }

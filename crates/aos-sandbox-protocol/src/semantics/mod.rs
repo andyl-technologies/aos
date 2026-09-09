@@ -12,6 +12,7 @@ pub mod network;
 pub mod payload_scope;
 pub mod storage;
 pub mod storage_prepare;
+pub mod storage_repair;
 
 pub use destination_slot::{
     CanonicalDestinationSlotSemanticsV1, DestinationSlotSemanticError,
@@ -35,3 +36,4 @@ pub use storage_prepare::{
     CanonicalStoragePreparationSemanticsV1, StoragePreparationOperationV1,
     StoragePreparationSemanticsError,
 };
+pub use storage_repair::{CanonicalStorageRepairSemanticsV1, StorageRepairSemanticsError};

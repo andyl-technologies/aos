@@ -147,6 +147,8 @@ pub enum BrokerVerb {
     StorageInventory,
     /// Resolves and retains one operation-specific physical storage catalog.
     StoragePrepareCatalog,
+    /// Repairs an absent root pin for an exact existing workspace.
+    StorageRepairWorkspacePin,
     /// Prepares assignment networking and mints its network handle.
     NetworkPrepare,
     /// Arms the ownership-lease gate for an existing network.
@@ -204,6 +206,7 @@ impl BrokerVerb {
             30 => Ok(Self::MountReapDestinationSlot),
             31 => Ok(Self::MountRematerializeDestinationSlot),
             32 => Ok(Self::StoragePrepareCatalog),
+            33 => Ok(Self::StorageRepairWorkspacePin),
             34 => Ok(Self::GuardianArm),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
@@ -245,6 +248,7 @@ impl BrokerVerb {
             Self::MountReapDestinationSlot => 30,
             Self::MountRematerializeDestinationSlot => 31,
             Self::StoragePrepareCatalog => 32,
+            Self::StorageRepairWorkspacePin => 33,
             Self::GuardianArm => 34,
         }
     }
@@ -278,7 +282,8 @@ impl BrokerVerb {
             | Self::StorageSetQuota
             | Self::StorageDestroy
             | Self::StorageInventory
-            | Self::StoragePrepareCatalog => BrokerAudience::Storage,
+            | Self::StoragePrepareCatalog
+            | Self::StorageRepairWorkspacePin => BrokerAudience::Storage,
             Self::NetworkPrepare
             | Self::NetworkArmLease
             | Self::NetworkRenewLease
@@ -319,6 +324,7 @@ impl BrokerVerb {
             | Self::StorageClone
             | Self::StorageSetQuota
             | Self::StorageDestroy
+            | Self::StorageRepairWorkspacePin
             | Self::NetworkArmLease
             | Self::NetworkRenewLease
             | Self::NetworkDisarm
@@ -1440,6 +1446,7 @@ mod tests {
             (30, BrokerVerb::MountReapDestinationSlot),
             (31, BrokerVerb::MountRematerializeDestinationSlot),
             (32, BrokerVerb::StoragePrepareCatalog),
+            (33, BrokerVerb::StorageRepairWorkspacePin),
             (34, BrokerVerb::GuardianArm),
         ];
         for (code, expected) in stable_codes {
@@ -1448,10 +1455,6 @@ mod tests {
             assert_eq!(verb, expected);
             assert_eq!(verb.get(), code);
         }
-        assert_eq!(
-            BrokerVerb::from_code(33),
-            Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
-        );
         assert_eq!(
             BrokerVerb::from_code(35),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
@@ -1597,6 +1600,7 @@ mod tests {
             BrokerVerb::StorageClone,
             BrokerVerb::StorageSetQuota,
             BrokerVerb::StorageDestroy,
+            BrokerVerb::StorageRepairWorkspacePin,
             BrokerVerb::NetworkArmLease,
             BrokerVerb::NetworkRenewLease,
             BrokerVerb::NetworkDisarm,
@@ -1618,7 +1622,7 @@ mod tests {
             BrokerGrantTargetShape::Assignment
         );
 
-        for code in (15..=22).chain(std::iter::once(32)) {
+        for code in (15..=22).chain(32..=33) {
             assert_eq!(
                 BrokerVerb::from_code(code)
                     .unwrap_or_else(|error| panic!("storage verb {code}: {error}"))
