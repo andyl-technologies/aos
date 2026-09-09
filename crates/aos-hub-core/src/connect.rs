@@ -1780,6 +1780,9 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         list_registries
     );
     r = rpc_route!(r, "/aos.hub.v1.RegistryService/GetRegistry", get_registry);
+    r = rpc_route!(r, "/aos.hub.v1.RegistryService/GetRegistryMetadata", get_registry_metadata);
+    r = rpc_route!(r, "/aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata", plan_update_registry_metadata);
+    r = rpc_route!(r, "/aos.hub.v1.RegistryService/UpdateRegistryMetadata", update_registry_metadata);
     r = rpc_route!(r, "/aos.hub.v1.RegistryService/ListReleases", list_releases);
     r = rpc_route!(
         r,
