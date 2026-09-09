@@ -1,6 +1,7 @@
 //! Fork/search runtime state and top-level engine operations.
 
 use super::*;
+use crate::HostAssertionReport;
 
 /// Result of a graph-level fork operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1455,6 +1456,148 @@ where
         oracle,
         predicate_scope,
     )
+}
+
+pub(super) fn validate_search_configuration_scenario(
+    scenario: &ScenarioDefForm,
+    configuration: &Configuration,
+) -> Result<(), EngineError> {
+    let scenario_id = scenario.scenario_def().id;
+    if configuration.def.id != scenario_id {
+        return Err(EngineError::ReproductionScenarioMismatch {
+            expected: scenario_id,
+            actual: configuration.def.id,
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn search_assertion_finding<O>(
+    scenario: &ScenarioDefForm,
+    configuration: &Configuration,
+    oracle: &mut O,
+    predicate_scope: SearchAssertionPredicateScope,
+) -> Result<Option<SearchAssertionFinding>, EngineError>
+where
+    O: HostAssertionOracle + ?Sized,
+{
+    let recorded = recorded_assertion_log_from_schedule_for_search(&configuration.schedule)
+        .map_err(|source| {
+            scenario_serialization_error(format!(
+                "search assertion retained log reconstruction failed: {source}"
+            ))
+        })?;
+    search_assertion_finding_from_recorded_log(
+        scenario,
+        configuration,
+        &recorded,
+        oracle,
+        predicate_scope,
+    )
+}
+
+fn search_assertion_finding_from_recorded_log<O>(
+    scenario: &ScenarioDefForm,
+    configuration: &Configuration,
+    recorded: &RecordedAssertionLog,
+    oracle: &mut O,
+    predicate_scope: SearchAssertionPredicateScope,
+) -> Result<Option<SearchAssertionFinding>, EngineError>
+where
+    O: HostAssertionOracle + ?Sized,
+{
+    let report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(scenario.world())
+        .check_run_with_oracle(scenario.properties(), recorded, oracle)
+        .map_err(|source| {
+            scenario_serialization_error(format!("search assertion check failed: {source}"))
+        })?;
+    search_assertion_finding_from_report(
+        scenario,
+        configuration,
+        &report,
+        predicate_scope,
+        None,
+        false,
+    )
+}
+
+pub(super) fn search_assertion_finding_from_retained_log(
+    scenario: &ScenarioDefForm,
+    configuration: &Configuration,
+    recorded: &RecordedAssertionLog,
+    resolutions: &SearchRetainedLogPredicateResolutions,
+    terminal_quiescence: Option<&SchedulerQuiescence>,
+) -> Result<Option<SearchAssertionFinding>, EngineError> {
+    let mut checker = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(scenario.world())
+        .with_resolved_code_points(
+            resolutions
+                .code_points
+                .iter()
+                .map(|(key, value)| ((key.0.clone(), key.1.clone()), *value)),
+        )
+        .with_resolved_mem_places(
+            resolutions
+                .mem_places
+                .iter()
+                .map(|(key, value)| ((key.0.clone(), key.1.clone()), value.clone())),
+        );
+    if let Some(quiescence) = terminal_quiescence.cloned() {
+        checker = checker.with_terminal_scheduler_quiescence(quiescence);
+    }
+    let report = checker
+        .check_run(scenario.properties(), recorded.entries())
+        .map_err(|source| {
+            scenario_serialization_error(format!(
+                "search retained assertion check failed: {source}"
+            ))
+        })?;
+    search_assertion_finding_from_report(
+        scenario,
+        configuration,
+        &report,
+        SearchAssertionPredicateScope::RetainedLog,
+        Some(resolutions),
+        terminal_quiescence.is_some_and(SchedulerQuiescence::is_quiescent),
+    )
+}
+
+fn search_assertion_finding_from_report(
+    scenario: &ScenarioDefForm,
+    configuration: &Configuration,
+    report: &HostAssertionReport,
+    predicate_scope: SearchAssertionPredicateScope,
+    resolutions: Option<&SearchRetainedLogPredicateResolutions>,
+    terminal_quiescent: bool,
+) -> Result<Option<SearchAssertionFinding>, EngineError> {
+    let Some(outcome) = report.outcomes().iter().find(|outcome| {
+        prefix_safe_search_assertion_failure(
+            scenario.properties(),
+            outcome,
+            predicate_scope,
+            resolutions,
+            terminal_quiescent,
+        )
+    }) else {
+        return Ok(None);
+    };
+    let mut violation = report
+        .violations()
+        .iter()
+        .find(|violation| violation.assertion == outcome.assertion)
+        .cloned()
+        .ok_or_else(|| {
+            unified_operation_evidence_mismatch(
+                "search-assertion-evaluation",
+                "failure-outcome-without-violation",
+            )
+        })?;
+    violation.reproduction_artifact = ContentHash::default();
+    Ok(Some(SearchAssertionFinding {
+        fingerprint: search_assertion_outcome_fingerprint(configuration.id(), outcome),
+        violation,
+    }))
 }
 
 pub(super) fn search_assertion_failure_fingerprint_from_recorded_log<O>(

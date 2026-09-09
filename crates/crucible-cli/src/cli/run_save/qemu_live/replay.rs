@@ -279,6 +279,7 @@ pub(crate) fn expected_live_qemu_execution_owner(
     has_campaign_closure: bool,
 ) -> RunExecutionOwner {
     if contract.producer == "campaign-run"
+        || contract.producer == "campaign-search"
         || (contract.producer == "run" && legacy_run_campaign_replay_eligible(contract, schedule))
         || (contract.producer == "fork"
             && has_campaign_closure
@@ -392,9 +393,12 @@ pub(crate) fn campaign_owner_replay_closure(
     embedded: Option<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure>,
 ) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure, CliError> {
     match (producer, embedded) {
-        ("campaign-run" | "fork", Some(closure)) => Ok(closure),
+        ("campaign-run" | "campaign-search" | "fork", Some(closure)) => Ok(closure),
         ("campaign-run", None) => Err(artifact_error(
             "campaign-run replay requires its authenticated choice closure",
+        )),
+        ("campaign-search", None) => Err(artifact_error(
+            "campaign-owned search replay requires its authenticated choice closure",
         )),
         ("fork", None) => Err(artifact_error(
             "campaign-owned fork replay requires its authenticated choice closure",
@@ -407,7 +411,7 @@ pub(crate) fn campaign_owner_replay_closure(
             "legacy run replay cannot carry a campaign replay closure",
         )),
         (_, _) => Err(artifact_error(
-            "only campaign-run, eligible fork, and eligible legacy run artifacts use campaign replay",
+            "only campaign-owned and eligible legacy run artifacts use campaign replay",
         )),
     }
 }
@@ -567,6 +571,12 @@ mod tests {
             expected_live_qemu_execution_owner(&legacy_run, &supported, false),
             RunExecutionOwner::Campaign,
         );
+        let mut search = legacy_run.clone();
+        search.producer = String::from("campaign-search");
+        assert_eq!(
+            expected_live_qemu_execution_owner(&search, &supported, true),
+            RunExecutionOwner::Campaign,
+        );
         let synthesized = match campaign_owner_replay_closure("run", &supported, None) {
             Ok(closure) => closure,
             Err(error) => panic!("supported legacy run should synthesize a closure: {error}"),
@@ -588,17 +598,19 @@ mod tests {
     }
 
     #[test]
-    fn campaign_run_replay_still_requires_its_embedded_closure() {
-        let error = match campaign_owner_replay_closure("campaign-run", &Schedule::empty(), None) {
-            Ok(_) => panic!("campaign-run replay without its closure must fail closed"),
-            Err(error) => error,
-        };
+    fn campaign_owned_replay_requires_its_embedded_closure() {
+        for producer in ["campaign-run", "campaign-search"] {
+            let error = match campaign_owner_replay_closure(producer, &Schedule::empty(), None) {
+                Ok(_) => panic!("campaign-owned replay without its closure must fail closed"),
+                Err(error) => error,
+            };
 
-        assert!(
-            error
-                .to_string()
-                .contains("requires its authenticated choice closure")
-        );
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires its authenticated choice closure")
+            );
+        }
     }
 
     #[test]

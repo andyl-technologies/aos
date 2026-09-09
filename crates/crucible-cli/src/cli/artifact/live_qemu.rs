@@ -318,7 +318,13 @@ impl LiveQemuReplayContract {
             producer.ok_or_else(|| artifact_error("live-QEMU replay contract has no producer"))?;
         if !matches!(
             producer.as_str(),
-            "run" | "campaign-run" | "verify" | "search" | "fuzz" | "fork"
+            "run"
+                | "campaign-run"
+                | "campaign-search"
+                | "verify"
+                | "search"
+                | "fuzz"
+                | "fork"
         ) {
             return Err(artifact_error(format!(
                 "live-QEMU replay contract has unsupported producer `{producer}`"
@@ -401,12 +407,16 @@ impl LiveQemuReplayContract {
             ));
         }
         let terminal_scope = self.fingerprint_scope == LiveQemuFingerprintScope::TerminalAllNodes;
-        if matches!(self.producer.as_str(), "search" | "fork") != terminal_scope {
+        if matches!(
+            self.producer.as_str(),
+            "search" | "campaign-search" | "fork"
+        ) != terminal_scope
+        {
             return Err(artifact_error(
                 "live-QEMU replay fingerprint scope is incompatible with its producer",
             ));
         }
-        if self.producer == "search"
+        if matches!(self.producer.as_str(), "search" | "campaign-search")
             && (self.run_ceiling_icount.is_none() || self.lifecycle_quantum_budget.is_none())
         {
             return Err(artifact_error(

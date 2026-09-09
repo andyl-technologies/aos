@@ -585,10 +585,7 @@ impl ObservationCandidate {
             });
         }
         if !selections.is_empty()
-            && matches!(
-                self.observation.stop(),
-                StopOutcome::Reached(StopCondition::NextChoice)
-            )
+            && matches!(self.observation.stop(), StopOutcome::Reached(stop) if stop.accepts_next_choice())
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "next-choice observation cannot carry produced selections",
@@ -941,6 +938,31 @@ impl CampaignExecutorStore {
             .read(evidence, None)?
             .read_all(max_bytes)
             .map_err(Into::into)
+    }
+
+    /// Loads and authenticates one bounded executor evidence leaf.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `expected` is not a trace identity, the object is
+    /// absent or corrupt, or its logical length exceeds `maximum_bytes`.
+    pub fn load_executor_trace_leaf(
+        &self,
+        expected: ContentId,
+        maximum_bytes: u64,
+    ) -> Result<Vec<u8>, CampaignRepositoryError> {
+        if expected.kind() != ObjectKind::Trace {
+            return Err(integrity("executor-trace-leaf-kind-mismatch"));
+        }
+        let bytes = self
+            .repository
+            .blobs
+            .read(expected, None)?
+            .read_all(maximum_bytes)?;
+        if !expected.authenticates(&bytes) {
+            return Err(integrity("executor-trace-leaf-content-mismatch"));
+        }
+        Ok(bytes)
     }
 
     /// Publishes one executor-verified replay choice domain.

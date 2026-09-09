@@ -438,6 +438,11 @@ pub use legacy_run::{
     GuardedCampaignBranchAcceptance, GuardedCampaignContinuationControl,
     GuardedCampaignContinuationControlError, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
+    GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
+    GuardedCampaignFindingOracleEvaluation, GuardedCampaignFindingOracleSource,
+    GuardedCampaignFindingOracleSourceLoadError,
+    GuardedCampaignSupplementalFinding,
+    GuardedCampaignTimeoutEvidence,
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
     GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignProductionRunnerError,
@@ -2030,7 +2035,7 @@ where
                     .map(QemuFreshRunnerResult::Checkpoint)
                     .map_err(map_checkpoint_handoff_failure);
             }
-            if input.attempt().stop() == &crucible_campaign::StopCondition::NextChoice {
+            if input.attempt().stop().accepts_next_choice() {
                 lifecycle.enable_signal_fault_campaign_promotion();
             }
             let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);

@@ -27,6 +27,8 @@ mod beam;
 pub use beam::*;
 mod closed;
 pub use closed::*;
+mod search;
+pub use search::*;
 
 const LEGACY_PLANNER_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PLANNER_REQUEST_SCHEMA_VERSION: u32 = 2;
@@ -52,6 +54,9 @@ pub const CANONICAL_FRONTIER_BUDGET_CAPABILITY: &str = "canonical-frontier-budge
 /// Planner-engine capability for exact request-local attempt-cap eligibility.
 pub const CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY: &str =
     "canonical-frontier-request-budget-v1";
+/// Planner-engine capability for owner-built graph-search depth and tie order.
+pub const CANONICAL_FRONTIER_SEARCH_ORDER_CAPABILITY: &str =
+    "canonical-frontier-search-order-v1";
 /// Maximum bundle-object count accepted by the initial coordinator store.
 pub const MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS: usize =
     MAX_PLANNING_BUNDLE_OBJECTS - RETAINED_PLANNER_REQUEST_FIXED_CHILDREN;
@@ -246,6 +251,239 @@ pub(crate) struct PlannerCandidateInput {
     pub(crate) guidance: Option<crate::PlannerCandidateGuidance>,
     pub(crate) budget: Option<crate::PlannerCandidateBudget>,
     pub(crate) beam: Option<crate::PlannerBeamCandidate>,
+    pub(crate) search: Option<PlannerSearchCandidate>,
+}
+
+/// Owner-built order key for one Ready graph-search candidate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlannerSearchCandidate {
+    input_view: crate::CampaignViewId,
+    policy: crate::CampaignPolicyId,
+    position: PlanningScanPosition,
+    domain: crate::ChoiceDomainId,
+    domain_semantics: crate::ChoiceDomainSemanticId,
+    value: crate::ChoiceValue,
+    ordinal: u64,
+    edge: crate::BranchEdgeId,
+    parent_path: crate::BranchPathId,
+    path: crate::BranchPathId,
+    depth: u64,
+}
+
+impl PlannerSearchCandidate {
+    /// Builds one path-bound deterministic graph-search order key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the ordinal or depth is zero or the
+    /// edge does not derive from the exact point, domain semantics, and value.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        input_view: crate::CampaignViewId,
+        policy: crate::CampaignPolicyId,
+        position: PlanningScanPosition,
+        domain: crate::ChoiceDomainId,
+        domain_semantics: crate::ChoiceDomainSemanticId,
+        value: crate::ChoiceValue,
+        ordinal: u64,
+        edge: crate::BranchEdgeId,
+        parent_path: crate::BranchPathId,
+        path: crate::BranchPathId,
+        depth: u64,
+    ) -> Result<Self, CampaignCodecError> {
+        if ordinal == 0
+            || depth == 0
+            || edge
+                != crate::Selection::campaign_edge_id(
+                    position.branch_point(),
+                    domain_semantics,
+                    &value,
+                )
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner search candidate has inconsistent edge, depth, or ordinal",
+            });
+        }
+        Ok(Self {
+            input_view,
+            policy,
+            position,
+            domain,
+            domain_semantics,
+            value,
+            ordinal,
+            edge,
+            parent_path,
+            path,
+            depth,
+        })
+    }
+
+    /// Returns the served frontier position.
+    #[must_use]
+    pub const fn position(&self) -> PlanningScanPosition {
+        self.position
+    }
+
+    /// Returns the exact planning view interpreted by the coordinator.
+    #[must_use]
+    pub const fn input_view(&self) -> crate::CampaignViewId {
+        self.input_view
+    }
+
+    /// Returns the active campaign policy interpreted by the coordinator.
+    #[must_use]
+    pub const fn policy(&self) -> crate::CampaignPolicyId {
+        self.policy
+    }
+
+    /// Returns the exact retained domain object for the offered value.
+    #[must_use]
+    pub const fn domain(&self) -> crate::ChoiceDomainId {
+        self.domain
+    }
+
+    /// Returns the presentation-independent semantics of the retained domain.
+    #[must_use]
+    pub const fn domain_semantics(&self) -> crate::ChoiceDomainSemanticId {
+        self.domain_semantics
+    }
+
+    /// Returns the proposed value authenticated by the order key.
+    #[must_use]
+    pub const fn value(&self) -> &crate::ChoiceValue {
+        &self.value
+    }
+
+    /// Returns the exact candidate proposal ordinal.
+    #[must_use]
+    pub const fn ordinal(&self) -> u64 {
+        self.ordinal
+    }
+
+    /// Returns the prospective semantic edge.
+    #[must_use]
+    pub const fn edge(&self) -> crate::BranchEdgeId {
+        self.edge
+    }
+
+    /// Returns the authenticated path of the offered proposal's parent.
+    #[must_use]
+    pub const fn parent_path(&self) -> crate::BranchPathId {
+        self.parent_path
+    }
+
+    /// Returns the authenticated prospective root-to-child path.
+    #[must_use]
+    pub const fn path(&self) -> crate::BranchPathId {
+        self.path
+    }
+
+    /// Returns the number of semantic edges in the prospective child path.
+    #[must_use]
+    pub const fn depth(&self) -> u64 {
+        self.depth
+    }
+
+    fn validate_for(
+        &self,
+        offer: &Proposal,
+        request: &PlannerRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.input_view != request.invocation().input_view()
+            || self.policy != request.invocation().policy()
+            || self.position
+                != PlanningScanPosition::new(offer.branch_point(), offer.request())
+            || self.domain != offer.domain()
+            || &self.value != offer.value()
+            || self.ordinal != offer.ordinal()
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner search candidate disagrees with its offered proposal",
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns strict canonical record bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes strict canonical record bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed or inconsistent bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        codec::decode(bytes)
+    }
+
+    /// Returns the exact content-derived projection identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if envelope construction fails.
+    pub fn id(&self) -> Result<crate::PlannerSearchCandidateId, CampaignCodecError> {
+        crate::PlannerSearchCandidateId::from_content_id(
+            ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::PlannerSearchCandidate,
+                crate::object::content_children(self.content_children())?,
+                self.canonical_bytes(),
+            )?
+            .content_id(),
+        )
+    }
+
+    pub(crate) fn content_children(&self) -> Vec<(&'static str, ContentId)> {
+        vec![
+            ("input-view", self.input_view.content_id()),
+            ("policy", self.policy.content_id()),
+            ("request", self.position.source().content_id()),
+            ("domain", self.domain.content_id()),
+            ("parent-path", self.parent_path.content_id()),
+            ("path", self.path.content_id()),
+        ]
+    }
+}
+
+impl Canonical for PlannerSearchCandidate {
+    fn encode(&self, encoder: &mut Encoder) {
+        1_u32.encode(encoder);
+        self.input_view.encode(encoder);
+        self.policy.encode(encoder);
+        self.position.encode(encoder);
+        self.domain.encode(encoder);
+        self.domain_semantics.encode(encoder);
+        self.value.encode(encoder);
+        self.ordinal.encode(encoder);
+        self.edge.encode(encoder);
+        self.parent_path.encode(encoder);
+        self.path.encode(encoder);
+        self.depth.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        if u32::decode(decoder)? != 1 {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported planner search candidate schema version",
+            });
+        }
+        Self::new(
+            crate::CampaignViewId::decode(decoder)?,
+            crate::CampaignPolicyId::decode(decoder)?,
+            PlanningScanPosition::decode(decoder)?,
+            crate::ChoiceDomainId::decode(decoder)?,
+            crate::ChoiceDomainSemanticId::decode(decoder)?,
+            crate::ChoiceValue::decode(decoder)?,
+            u64::decode(decoder)?,
+            crate::BranchEdgeId::decode(decoder)?,
+            crate::BranchPathId::decode(decoder)?,
+            crate::BranchPathId::decode(decoder)?,
+            u64::decode(decoder)?,
+        )
+    }
 }
 
 /// One validated PUCT candidate in deterministic best-first order.
@@ -432,6 +670,10 @@ impl CampaignPlanningBundle {
             .engine
             .capabilities()
             .contains(CANONICAL_BEAM_SURVIVORS_CAPABILITY);
+        let search_order = request
+            .engine
+            .capabilities()
+            .contains(CANONICAL_FRONTIER_SEARCH_ORDER_CAPABILITY);
         if beam && puct {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "beam and PUCT capabilities are mutually exclusive",
@@ -446,6 +688,7 @@ impl CampaignPlanningBundle {
         let mut guidance = BTreeMap::new();
         let mut budgets = BTreeMap::new();
         let mut beam_candidates = BTreeMap::new();
+        let mut search_candidates = BTreeMap::new();
         for id in self.object_ids() {
             let object = self.object(id)?.ok_or(CampaignCodecError::InvalidValue {
                 reason: "planner input bundle object disappeared during validation",
@@ -506,6 +749,17 @@ impl CampaignPlanningBundle {
                         });
                     }
                 }
+                crate::CampaignRecordKind::PlannerSearchCandidate => {
+                    let projection = PlannerSearchCandidate::from_canonical_bytes(object.body())?;
+                    if search_candidates
+                        .insert(projection.position(), projection)
+                        .is_some()
+                    {
+                        return Err(CampaignCodecError::InvalidValue {
+                            reason: "planner input bundle repeats a search-order candidate",
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -515,7 +769,11 @@ impl CampaignPlanningBundle {
             .filter_map(|(position, projection)| {
                 (projection.state() == ContinuationState::Ready).then_some(*position)
             })
-            .take(if puct || budget_aware { usize::MAX } else { 1 })
+            .take(if puct || budget_aware || search_order {
+                usize::MAX
+            } else {
+                1
+            })
             .collect::<BTreeSet<_>>();
         if offers.keys().copied().collect::<BTreeSet<_>>() != expected_offers {
             return Err(CampaignCodecError::InvalidValue {
@@ -545,6 +803,14 @@ impl CampaignPlanningBundle {
                 reason: "planner Beam membership disagrees with the served scan page",
             });
         }
+        if (search_order
+            && search_candidates.keys().copied().collect::<BTreeSet<_>>() != expected_offers)
+            || (!search_order && !search_candidates.is_empty())
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner search-order projections disagree with offered continuations",
+            });
+        }
 
         if beam {
             self.validate_beam_selections(request, beam_candidates.values())?;
@@ -562,6 +828,7 @@ impl CampaignPlanningBundle {
             let candidate_guidance = guidance.remove(position);
             let candidate_budget = budgets.remove(position);
             let beam_candidate = beam_candidates.remove(position);
+            let search_candidate = search_candidates.remove(position);
             if let Some(offer) = &offer {
                 let source = self.object(position.source().content_id())?.ok_or(
                     CampaignCodecError::InvalidValue {
@@ -643,6 +910,85 @@ impl CampaignPlanningBundle {
                     });
                 }
             }
+            if let Some(candidate) = &search_candidate {
+                let offer = offer.as_ref().ok_or(CampaignCodecError::InvalidValue {
+                    reason: "planner search-order candidate has no offered proposal",
+                })?;
+                candidate.validate_for(offer, request)?;
+                let domain_envelope = self.object(candidate.domain.content_id())?.ok_or(
+                    CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate omits its choice domain",
+                    },
+                )?;
+                if domain_envelope.record_kind() != crate::CampaignRecordKind::ChoiceDomain {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate domain has the wrong record kind",
+                    });
+                }
+                let domain = crate::ChoiceDomain::from_canonical_bytes(domain_envelope.body())?;
+                if domain.id()? != candidate.domain
+                    || domain.semantic_id() != candidate.domain_semantics
+                    || !domain.contains(&candidate.value)
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate value is outside its authenticated domain",
+                    });
+                }
+                let parent_path_envelope = self.object(candidate.parent_path().content_id())?.ok_or(
+                    CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate omits its parent branch path",
+                    },
+                )?;
+                if parent_path_envelope.record_kind() != crate::CampaignRecordKind::BranchPath {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate parent path has the wrong record kind",
+                    });
+                }
+                let parent_path =
+                    crate::BranchPath::from_canonical_bytes(parent_path_envelope.body())?;
+                let path_envelope = self.object(candidate.path().content_id())?.ok_or(
+                    CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate omits its branch path",
+                    },
+                )?;
+                if path_envelope.record_kind() != crate::CampaignRecordKind::BranchPath {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate path has the wrong record kind",
+                    });
+                }
+                let path = crate::BranchPath::from_canonical_bytes(path_envelope.body())?;
+                let depth = u64::try_from(path.edges().len()).map_err(|_| {
+                    CampaignCodecError::LimitExceeded {
+                        limit: "planner-search-candidate-depth",
+                    }
+                })?;
+                let Some(parent_segments) = parent_path.segments() else {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate parent path is legacy",
+                    });
+                };
+                let Some(path_segments) = path.segments() else {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate path is legacy",
+                    });
+                };
+                let Some((terminal, prefix)) = path_segments.split_last() else {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate path is empty",
+                    });
+                };
+                if path.id()? != candidate.path()
+                    || parent_path.id()? != candidate.parent_path()
+                    || depth != candidate.depth()
+                    || prefix != parent_segments
+                    || terminal.branch_point() != position.branch_point()
+                    || terminal.edge() != candidate.edge()
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner search-order candidate path disagrees with its order key",
+                    });
+                }
+            }
             inputs.insert(
                 *position,
                 PlannerCandidateInput {
@@ -651,6 +997,7 @@ impl CampaignPlanningBundle {
                     guidance: candidate_guidance,
                     budget: candidate_budget,
                     beam: beam_candidate,
+                    search: search_candidate,
                 },
             );
         }
@@ -659,6 +1006,7 @@ impl CampaignPlanningBundle {
             || !guidance.is_empty()
             || !budgets.is_empty()
             || !beam_candidates.is_empty()
+            || !search_candidates.is_empty()
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner input bundle contains an unserved candidate projection",
@@ -887,6 +1235,9 @@ impl CampaignPlanningBundle {
                 }
                 if let Some(beam) = &input.beam {
                     pending.push(beam.id()?.content_id());
+                }
+                if let Some(search) = &input.search {
+                    pending.push(search.id()?.content_id());
                 }
             }
         }

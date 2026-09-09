@@ -253,6 +253,7 @@ pub(crate) fn run_search_workflow_with_graph_and_failure_oracle(
             .map(|source| source.digest.clone())
             .unwrap_or_else(|| String::from("none")),
         counterexample,
+        replay_oracle_sampling: String::from("1/1"),
         replay_oracle_considered: sampled.replay_oracle_sampling.considered,
         replay_oracle_sampled: sampled.replay_oracle_sampling.sampled,
         replay_oracle_skipped: sampled.replay_oracle_sampling.skipped,
@@ -303,7 +304,6 @@ pub(crate) fn search_failure_reproduction_artifact_bytes(
     )
 }
 
-#[cfg(any(test, feature = "test-double"))]
 pub(crate) fn search_extra_artifact_payloads(
     plan: &SearchDriverPlan,
     canonical_log: &mut Vec<CanonicalLogEntry>,
@@ -426,7 +426,7 @@ pub(crate) fn apply_local_double_search_report(
     let (counterexample_stdout, counterexample_summary) =
         local_double_search_counterexample_fields(report.counterexample.as_ref());
     outcome.stdout.push(format!(
-        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle={}\tschedule_named_truths={}\tschedule_named_truths_digest={}\tretained_evidence={}\tretained_evidence_digest={}\treplay_oracle_sampling=1/1\treplay_oracle_considered={}\treplay_oracle_sampled={}\treplay_oracle_skipped={}\ton_violation={}\texpansions={}\texplored={}\tfailures={}{}\texhausted={}\tbudget_exhausted={}\tstatus={}",
+        "search-run\tscenario={}\troot={}\tstrategy={}\tmax_states={}\tmax_depth={}\tfailure_oracle={}\tschedule_named_truths={}\tschedule_named_truths_digest={}\tretained_evidence={}\tretained_evidence_digest={}\treplay_oracle_sampling={}\treplay_oracle_considered={}\treplay_oracle_sampled={}\treplay_oracle_skipped={}\ton_violation={}\texpansions={}\texplored={}\tfailures={}{}\texhausted={}\tbudget_exhausted={}\tstatus={}",
         plan.scenario.label(),
         format_content_hash_ref(report.root),
         plan.strategy_arg.label(),
@@ -439,6 +439,7 @@ pub(crate) fn apply_local_double_search_report(
         report.schedule_named_truths_digest,
         report.retained_evidence,
         report.retained_evidence_digest,
+        report.replay_oracle_sampling,
         report.replay_oracle_considered,
         report.replay_oracle_sampled,
         report.replay_oracle_skipped,
@@ -457,7 +458,7 @@ pub(crate) fn apply_local_double_search_report(
         node: String::from("search"),
         kind: String::from("search_strategy_run"),
         summary: format!(
-            "root={} strategy={} max_states={} max_depth={} failure_oracle={} schedule_named_truths={} schedule_named_truths_digest={} retained_evidence={} retained_evidence_digest={} replay_oracle_sampling=1/1 replay_oracle_considered={} replay_oracle_sampled={} replay_oracle_skipped={} on_violation={} expansions={} explored={} failures={}{} exhausted={} budget_exhausted={} status={}",
+            "root={} strategy={} max_states={} max_depth={} failure_oracle={} schedule_named_truths={} schedule_named_truths_digest={} retained_evidence={} retained_evidence_digest={} replay_oracle_sampling={} replay_oracle_considered={} replay_oracle_sampled={} replay_oracle_skipped={} on_violation={} expansions={} explored={} failures={}{} exhausted={} budget_exhausted={} status={}",
             format_content_hash_ref(report.root),
             plan.strategy_arg.label(),
             plan.max_states,
@@ -469,6 +470,7 @@ pub(crate) fn apply_local_double_search_report(
             report.schedule_named_truths_digest,
             report.retained_evidence,
             report.retained_evidence_digest,
+            report.replay_oracle_sampling,
             report.replay_oracle_considered,
             report.replay_oracle_sampled,
             report.replay_oracle_skipped,
