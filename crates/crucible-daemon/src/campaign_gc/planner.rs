@@ -936,7 +936,14 @@ where
         .acquire_write_back_retention_fence()
         .map_err(CampaignGcPlanningError::WriteBack)?;
     fence
-        .visit_roots(&mut |root| roots.insert(root.id()).map_err(|()| StoreError::Quota))
+        .visit_roots(&mut |root| {
+            // A journal entry owns one independently transferred object. It
+            // may be an internal Merkle node whose ancestor path, and thus
+            // root-relative depth, is intentionally absent here.
+            roots
+                .insert_direct(root.id())
+                .map_err(|()| StoreError::Quota)
+        })
         .map_err(CampaignGcPlanningError::WriteBack)?;
     Ok(())
 }
