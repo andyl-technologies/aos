@@ -445,6 +445,10 @@ pub struct EnvironmentDocument {
     pub policy_revision: RevisionId,
     /// Lists trusted provider inventory in canonical provider order.
     pub providers: Vec<ProviderInventory>,
+    /// Lists authenticated current resource revisions in canonical resource order.
+    pub resources: Vec<ResourceRevision>,
+    /// Lists authenticated current lifecycle controllers in canonical resource order.
+    pub controllers: Vec<ControllerAssignment>,
     /// Names environment-wide supplied guarantees in canonical order.
     pub guarantees: Vec<GuaranteeKey>,
     /// Bounds the inventory observation's validity.
@@ -539,6 +543,8 @@ pub struct EffectPlanDocument {
     pub limits: LimitProfile,
     /// Identifies the exact binding plan input.
     pub binding_plan: Sha256Digest,
+    /// Lists authenticated artifacts retained for every possible branch.
+    pub artifacts: Vec<ArtifactReference>,
     /// Lists admitted current resource revisions in canonical resource order.
     pub current_revisions: Vec<ResourceRevision>,
     /// Lists desired resource revisions in canonical resource order.
@@ -741,18 +747,6 @@ impl VersionedDocument for PackageDocument {
     }
 
     fn validate_structure(&self, limits: &LimitProfile) -> Result<(), DocumentError> {
-        for requirement in &self.requirements {
-            if let Some(fallback) = &requirement.fallback {
-                ensure_schema_depth(fallback, limits)?;
-            }
-        }
-        for provider in &self.implementation.providers {
-            for requirement in &provider.requirements {
-                if let Some(fallback) = &requirement.fallback {
-                    ensure_schema_depth(fallback, limits)?;
-                }
-            }
-        }
         for handler in self.implementation.handlers.values() {
             ensure_schema_depth(&handler.arguments, limits)?;
             ensure_schema_depth(&handler.result, limits)?;
@@ -819,6 +813,7 @@ fn validate_interface_depth(
     for method in interface.methods.values() {
         ensure_schema_depth(&method.parameters, limits)?;
         ensure_schema_depth(&method.outcome.completion_evidence, limits)?;
+        ensure_schema_depth(&method.outcome.observation_evidence, limits)?;
         for output in method.outputs.values() {
             ensure_schema_depth(&output.schema, limits)?;
         }
@@ -1039,7 +1034,7 @@ mod tests {
         assert_eq!(
             document.interface_key()?.descriptor,
             Sha256Digest::parse(
-                "sha256:ed3b07a958b2384c213605c20a3eb7dd5d8489906bc0c79fbe9d75395883e8c7",
+                "sha256:f720ca210027c021dd7581f8b924522563b757305c9cda58186697b3ed9b6f59",
             )
             .expect("valid test digest"),
         );

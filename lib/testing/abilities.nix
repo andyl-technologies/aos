@@ -135,6 +135,58 @@
       handler = "ordering-handler";
     }).guarantees;
 
+  requirementExport = strength: fallback:
+    lib.abilities.define {
+      interface = "aos.test.requirement";
+      abi = 1;
+      requestSchema = lib.abilities.schemas.boolean;
+      outputs = {};
+      methods = {};
+      lifecycle = {
+        stableResourceIdentity = true;
+        releasesEphemeralOnDisable = true;
+        retainsPersistentByDefault = true;
+        persistentDeleteMethod = null;
+      };
+      guarantees = [];
+      aggregation = {
+        scope = "provider-instance";
+        key = "authorized-slot";
+        rejectSlotCollisions = true;
+        mergeContract = null;
+        controllerGroup = "requirement";
+      };
+      requires.optional = {
+        interface = testInterface.name;
+        abi = testInterface.abi;
+        descriptor = testInterface.descriptor;
+        methods = [];
+        guarantees = [];
+        inherit strength fallback;
+      };
+      ownsResourceKinds = [];
+      handler = "requirement-handler";
+    };
+  advisoryRequirement =
+    (requirementExport "advisory" {
+      outputs = {
+        enabled = true;
+        endpoint = null;
+      };
+    }).requirements.optional;
+  requiredFallback = builtins.tryEval (builtins.deepSeq (
+      requirementExport "required" {outputs.enabled = true;}
+    )
+    true);
+  advisoryWithoutFallback = builtins.tryEval (builtins.deepSeq (
+      requirementExport "advisory" null
+    )
+    true);
+  nonCanonicalFallback = builtins.tryEval (builtins.deepSeq (
+      requirementExport "advisory" {outputs.enabled = 1.5;}
+    )
+    true);
+
   composition = import ../../tests/abilities/composition.nix {
     inherit (lib) abilities;
   };
@@ -155,8 +207,18 @@
   emptyEffects = lib.abilities.effects.normalize [] (
     lib.abilities.effects.when false (lib.abilities.effects.graph {})
   );
+  effectFixture = import ../../tests/abilities/effects.nix {
+    inherit (lib) abilities;
+  };
+  effectPlan = effectFixture.normalized;
+  oversizedFallback = builtins.tryEval (builtins.deepSeq (
+      requirementExport "advisory" {outputs.payload = effectFixture.oversizedValue;}
+    )
+    true);
   unsupportedEffects = builtins.tryEval (builtins.deepSeq (
-      lib.abilities.effects.graph {operation = {};}
+      lib.abilities.effects.normalize [] (
+        lib.abilities.effects.graph {operation = {};}
+      )
     )
     true);
   forgedEffects = {
@@ -277,6 +339,16 @@ in
     closure = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
   });
   assert guaranteeOrdering == ["aos.a:2" "aos.a:10" "aos.a.long:1" "aos.zz:1"];
+  assert advisoryRequirement.strength == "advisory";
+  assert advisoryRequirement.fallback.outputs
+  == {
+    enabled = true;
+    endpoint = null;
+  };
+  assert !requiredFallback.success;
+  assert !advisoryWithoutFallback.success;
+  assert !nonCanonicalFallback.success;
+  assert !oversizedFallback.success;
   assert !invalidNestedSchema.success;
   assert expansion == composition.reversed;
   assert expansion.round == 3;
@@ -344,6 +416,72 @@ in
   };
   assert !unsupportedEffects.success;
   assert fails (lib.abilities.effects.normalize [] forgedEffects);
+  assert effectPlan == effectFixture.reversed;
+  assert builtins.length effectPlan.artifacts == 1;
+  assert builtins.length effectPlan.operations == 11;
+  assert builtins.length effectPlan.decisions == 6;
+  assert builtins.length effectPlan.merges == 2;
+  assert builtins.length effectPlan.edges == 29;
+  assert builtins.length effectFixture.longChain.operations == 65;
+  assert builtins.length effectFixture.longChain.edges == 64;
+  assert builtins.map (operation: operation.key) effectPlan.operations
+  == [
+    {
+      scope = ["nginx"];
+      key = "candidate";
+    }
+    {
+      scope = ["nginx"];
+      key = "change";
+    }
+    {
+      scope = ["nginx"];
+      key = "final";
+    }
+    {
+      scope = ["nginx"];
+      key = "mode";
+    }
+    {
+      scope = ["nginx"];
+      key = "policy";
+    }
+    {
+      scope = ["nginx"];
+      key = "publish";
+    }
+    {
+      scope = ["nginx"];
+      key = "record";
+    }
+    {
+      scope = ["nginx" "choice" "false"];
+      key = "apply";
+    }
+    {
+      scope = ["nginx" "choice" "true"];
+      key = "apply";
+    }
+    {
+      scope = ["nginx" "modeChoice" "reload"];
+      key = "apply";
+    }
+    {
+      scope = ["nginx" "modeChoice" "restart"];
+      key = "apply";
+    }
+  ];
+  assert (builtins.head effectPlan.merges).outputs.ready.descriptor.schema == lib.abilities.schemas.boolean;
+  assert builtins.elem "branch-guard" (builtins.map (edge: edge.kind) effectPlan.edges);
+  assert builtins.elem "branch-merge" (builtins.map (edge: edge.kind) effectPlan.edges);
+  assert effectFixture.omitted == emptyEffects;
+  assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
+  assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
+  assert fails (lib.abilities.effects.normalize [] effectFixture.incompleteBoolean);
+  assert fails (lib.abilities.effects.normalize ["nginx"] effectFixture.escapingReference);
+  assert fails (lib.abilities.effects.normalize ["nginx"] effectFixture.externalMergeProducer);
+  assert fails (lib.abilities.effects.normalize ["chain"] effectFixture.analysisHeavyChain);
+  assert fails (lib.abilities.effects.normalize ["nginx"] effectFixture.oversizedDocument);
     pkgs.mkDerivation {
       pname = "aos-ability-authoring-checks";
       version = "0";

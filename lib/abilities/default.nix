@@ -8,7 +8,7 @@
   mkOption,
 }: let
   schemas = import ./schema.nix;
-  effects = import ./effects.nix;
+  effects = import ./effects;
 
   fail = message: throw "abilities: ${message}";
 
@@ -33,6 +33,11 @@
   isAsciiString = value:
     builtins.isString value
     && builtins.match "[[:cntrl:][:print:]]*" value != null;
+
+  maxSafeInteger = 9007199254740991;
+  maxStringLength = 1048576;
+  maxCollectionItems = 2000000;
+  maxDocumentBytes = 32 * 1024 * 1024;
 
   requireLocalKey = context: value:
     if isLocalKey value
@@ -132,6 +137,148 @@
     then fail "${context} contains a duplicate guarantee"
     else sorted;
 
+  boundedAdd = limit: left: right:
+    if left > limit || right > limit || left > limit - right
+    then limit + 1
+    else left + right;
+
+  canonicalValueStats = context: depth: value:
+    if depth > 64
+    then fail "${context} exceeds 64 structural levels"
+    else if value == null || builtins.isBool value
+    then {
+      inherit value;
+      items = 0;
+      bytes = builtins.stringLength (builtins.toJSON value);
+    }
+    else if builtins.isInt value && value >= -maxSafeInteger && value <= maxSafeInteger
+    then {
+      inherit value;
+      items = 0;
+      bytes = builtins.stringLength (builtins.toJSON value);
+    }
+    else if builtins.isString value && builtins.stringLength value <= maxStringLength
+    then {
+      inherit value;
+      items = 0;
+      bytes = builtins.stringLength (builtins.toJSON value);
+    }
+    else if builtins.isList value
+    then let
+      length = builtins.length value;
+      initial = {
+        items = length;
+        bytes =
+          if length == 0
+          then 2
+          else length + 1;
+      };
+      stats =
+        builtins.foldl' (
+          state: childValue:
+            if state.items > maxCollectionItems || state.bytes > maxDocumentBytes
+            then state
+            else let
+              child = canonicalValueStats context (depth + 1) childValue;
+            in {
+              items = boundedAdd maxCollectionItems state.items child.items;
+              bytes = boundedAdd maxDocumentBytes state.bytes child.bytes;
+            }
+        )
+        initial
+        value;
+    in
+      if stats.items <= maxCollectionItems
+      then {
+        inherit value;
+        inherit (stats) items bytes;
+      }
+      else fail "${context} exceeds the collection item limit"
+    else if builtins.isAttrs value
+    then let
+      names = builtins.attrNames value;
+      validNames =
+        builtins.all (
+          name: isAsciiString name && builtins.stringLength name <= maxStringLength
+        )
+        names;
+      length = builtins.length names;
+      initial = {
+        items = length;
+        bytes =
+          if length == 0
+          then 2
+          else length + 1;
+      };
+      stats =
+        builtins.foldl' (
+          state: name:
+            if state.items > maxCollectionItems || state.bytes > maxDocumentBytes
+            then state
+            else let
+              child = canonicalValueStats context (depth + 1) value.${name};
+              keyBytes = builtins.stringLength (builtins.toJSON name) + 1;
+            in {
+              items = boundedAdd maxCollectionItems state.items child.items;
+              bytes = boundedAdd maxDocumentBytes state.bytes (keyBytes + child.bytes);
+            }
+        )
+        initial
+        names;
+    in
+      if !validNames
+      then fail "${context} contains a non-canonical object member name"
+      else if stats.items > maxCollectionItems
+      then fail "${context} exceeds the collection item limit"
+      else {
+        inherit value;
+        inherit (stats) items bytes;
+      }
+    else fail "${context} is outside the canonical ability value domain";
+
+  normalizeRequirementFallback = alias: value: let
+    checked = requireAttrs "requirement '${alias}' fallback" ["outputs"] value;
+    outputs =
+      if builtins.isAttrs checked.outputs
+      then checked.outputs
+      else fail "requirement '${alias}' fallback outputs must be an attribute set";
+    outputNames = builtins.attrNames outputs;
+    checkedNames = builtins.map (requireLocalKey "requirement '${alias}' fallback output") outputNames;
+    values =
+      builtins.mapAttrs (
+        output: canonicalValueStats "requirement '${alias}' fallback output '${output}'" 6
+      )
+      outputs;
+    initialStats = {
+      items = builtins.length checkedNames;
+      bytes =
+        if checkedNames == []
+        then 14
+        else builtins.length checkedNames + 13;
+    };
+    stats =
+      builtins.foldl' (
+        state: output:
+          if state.items > maxCollectionItems || state.bytes > maxDocumentBytes
+          then state
+          else let
+            child = values.${output};
+            keyBytes = builtins.stringLength (builtins.toJSON output) + 1;
+          in {
+            items = boundedAdd maxCollectionItems state.items child.items;
+            bytes = boundedAdd maxDocumentBytes state.bytes (keyBytes + child.bytes);
+          }
+      )
+      initialStats
+      checkedNames;
+    normalized = {outputs = builtins.mapAttrs (_: child: child.value) values;};
+  in
+    if stats.items > maxCollectionItems
+    then fail "requirement '${alias}' fallback exceeds the collection item limit"
+    else if stats.bytes > maxDocumentBytes
+    then fail "requirement '${alias}' fallback exceeds the encoded byte limit"
+    else normalized;
+
   normalizeEnvironmentId = value: let
     checked = requireMarker "environment identity" "aos-environment-id" value;
   in
@@ -179,25 +326,26 @@
         "fallback"
       ]
       value;
-  in {
-    alias = requireLocalKey "requirement alias" alias;
-    accepted_interfaces = [
-      (interfaceKey {
-        name = checked.interface;
-        inherit (checked) abi descriptor;
-      })
-    ];
-    methods = uniqueSortedStrings "requirement '${alias}' methods" checked.methods;
-    guarantees = canonicalGuarantees "requirement '${alias}' guarantees" (checked.guarantees or []);
-    strength =
-      if builtins.elem checked.strength ["required" "advisory"]
-      then checked.strength
-      else fail "requirement '${alias}' strength is unsupported";
+    strength = requireChoice "requirement '${alias}' strength" ["required" "advisory"] checked.strength;
     fallback =
       if (checked.fallback or null) == null
       then null
-      else schemas.validateSchema "requirement '${alias}' fallback" checked.fallback;
-  };
+      else normalizeRequirementFallback alias checked.fallback;
+  in
+    if (strength == "advisory") != (fallback != null)
+    then fail "requirement '${alias}' must be advisory exactly when it declares fallback outputs"
+    else {
+      alias = requireLocalKey "requirement alias" alias;
+      accepted_interfaces = [
+        (interfaceKey {
+          name = checked.interface;
+          inherit (checked) abi descriptor;
+        })
+      ];
+      methods = uniqueSortedStrings "requirement '${alias}' methods" checked.methods;
+      guarantees = canonicalGuarantees "requirement '${alias}' guarantees" (checked.guarantees or []);
+      inherit strength fallback;
+    };
 
   normalizeAggregation = value: let
     checked = requireAttrs "aggregation" ["scope" "key" "rejectSlotCollisions" "mergeContract" "controllerGroup"] value;
@@ -223,9 +371,10 @@
   };
 
   normalizeOutcome = context: value: let
-    checked = requireAttrs context ["completionEvidence" "supportsRejectedBeforeEffect" "indeterminate"] value;
+    checked = requireAttrs context ["completionEvidence" "observationEvidence" "supportsRejectedBeforeEffect" "indeterminate"] value;
   in {
     completion_evidence = schemas.validateSchema "${context} completionEvidence" checked.completionEvidence;
+    observation_evidence = schemas.validateSchema "${context} observationEvidence" checked.observationEvidence;
     supports_rejected_before_effect = checked.supportsRejectedBeforeEffect;
     inherit (checked) indeterminate;
   };
