@@ -16,7 +16,16 @@ use super::{
     ObservationId, ProposalId,
 };
 
+mod evidence;
 mod smc;
+
+pub use evidence::{
+    verify_finite_statistical_evidence, verify_sequential_monte_carlo_evidence,
+    FiniteStatisticalEvidence, SequentialMonteCarloEvidence, SmcTransitionEvidence,
+    StatisticalChoiceEvidence, StatisticalDrawEvidence, StatisticalExecutionBasisEvidence,
+    StatisticalExecutionEvidence, StatisticalOpportunityEvidence, StatisticalRoot,
+    StatisticalRootLookup,
+};
 
 pub use smc::{
     SequentialMonteCarloEstimateReport, SmcEstimateLabel, SmcSupportValidation,
