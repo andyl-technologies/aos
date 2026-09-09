@@ -5473,6 +5473,63 @@ also remain absent. New-dataset ownership initialization and its separate
 capability decision remain open; Storage Apply stays unadvertised and no
 `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, or `SBX-P0-10` checkbox is closed.
 
+### Production Storage repair and inventory RPC (in progress)
+
+Commit `5378b848eba72ce6bcef49b344a1ce5544b06c8c` adds the
+systemd-activated `aos-storaged` repair and authoritative-inventory service.
+It accepts only the fixed controller cgroup and verifies the connection
+establisher's UID, GID, PID, pidfd liveness, process leader, and cgroup before
+reading request bytes. After each receive it verifies the independent record
+subject, then rechecks the original establisher around dispatch. The bounded
+sequenced-packet transport forbids descriptors, negotiates the existing
+Storage 1.2 through 1.4 profiles, and exposes only `InventoryResources` and
+`RepairWorkspacePin`. The module requires externally provisioned protected
+authority, bootstrap, and state paths; it does not manufacture trust roots or
+genesis state.
+
+The fleet fixture exercises installed socket activation, malformed and missing
+authority rejection, an authorized repair, authoritative inventory, service
+restart, exact retry with no additional worker or journal activity, and a
+wrong-cgroup decoy. Those guest assertions are not yet qualified. Source-level
+verification passed the four focused inventory-protocol tests, 154 Storage
+library tests with three installed-systemd tests ignored, and both
+`aos-storaged` binary tests. Formatting, Nix parsing, evaluation, and immutable
+source capture also passed. An independently materialized index tree
+`8765f55efa83b8a5179aae5940e7f725c570ea23` over committed parent
+`ea8fde31c97db00de1ad0027d3ecd1e3a13fad99` passed all-target compilation for
+the Storage crate against only committed dependency APIs.
+
+The first realization of the original immutable fleet derivation
+`/nix/store/646m7qcrx20w55jxi2fn6q1dnmawqz8j-aos-fleet-test-sandbox-storage-rpc-0.drv`
+stopped in the upstream Rust 1.75 bootstrap. That compiler failure did not
+reproduce in later focused or full builds. The subsequent exact attempt reached
+and successfully built Rust 1.93.1, then stopped before VM launch because the
+`aos-storaged` fixed-output vendor derivation expected
+`sha256-rVgEkpOUUjfC+/XykH3j5wuekFjnPGY+vIWMK7M+ImI=` but produced
+`sha256-+KiwQYF3bLrJwHf8X5PgT23l5+evxJdpbC935PnGNeI=`.
+
+The mismatch was a stale pin, not source or download nondeterminism. The old
+valid ZFS-worker vendor output carried whole-workspace `Cargo.lock` digest
+`ba11815ba14b29dea706a2ab931dcf3fbc8d666622ce06437337861f7d22aff9`.
+The captured source and failed output carry the current exact lock digest
+`02845de8e698e1b27df088a1112fd072632b13d80ed5d80cb525603f341c1349`.
+Both contain the same 642 registry archives, every archive matches its locked
+checksum, and their only staging-content difference is 41 lines of local
+workspace package metadata in the lockfile. The commit updates both
+`aos-storaged` and `aos-sandbox-zfs-worker` to the corrected hash. The corrected
+capture is
+`/nix/store/m30m5af3qzbjibyqysv2q5bhjwp7h4yw-aos-fleet-test-sandbox-storage-rpc-0.drv`
+with source
+`/nix/store/961076fgrwks9q0kiw3nblj855r7fifm-aos-workspace-src`.
+A vendor-only realization is still building its updated Rust 1.93.1
+prerequisite; the corrected fleet derivation has not been realized.
+
+This checkpoint does not expose Prepare or Apply, initialize new-dataset root
+ownership, provide the required narrow capability and enforcing-MAC boundary,
+or orchestrate controller and Host consumption. Storage Apply remains
+unadvertised, and `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, and `SBX-P0-10`
+remain open.
+
 ### Set-ID creation guard source feasibility (design only)
 
 A read-only source audit bounded one possible BPF-LSM SetidGuard, but does not
