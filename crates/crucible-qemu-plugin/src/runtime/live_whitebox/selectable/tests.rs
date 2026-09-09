@@ -273,19 +273,19 @@ fn resume_delivery_binds_reply_to_pending_coordinate_and_zero_fills_reservation(
     };
     let reply = SelectionReply::selected(9, [0x11; 32], [0x22; 32], vec![2])?;
     let payload = reply.encode()?;
-    let entry = WhiteboxMarkerEntry::new(700, 2, WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY, &payload)?;
+    let entry = WhiteboxMarkerEntry::new(701, 2, WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY, &payload)?;
     header.enqueue_whitebox_marker(&mut entries, entry)?;
 
     let plan = restored_plan()?;
     let mut state = live_state(&plan, reply_input)?;
     state.restore_continuation()?;
     let mut writer = RecordingWriter::default();
-    state.deliver_reply(700, 1, &mut writer)?;
+    state.deliver_reply(701, 1, &mut writer)?;
     assert!(writer.payload.is_empty());
     assert!(state.catalog().pending_request().is_some());
-    state.deliver_reply(700, 2, &mut writer)?;
+    state.deliver_reply(701, 2, &mut writer)?;
 
-    assert_eq!(writer.delivery_icount, Some(700));
+    assert_eq!(writer.delivery_icount, Some(701));
     assert_eq!(
         writer.range,
         Some(crate::GuestMemoryRange::new(
@@ -345,6 +345,13 @@ fn live_reply_uses_stopped_boundary_while_writing_at_later_pre_execution_boundar
         ),
     )?;
     state.rebind_pending_boundary(51)?;
+    assert_eq!(
+        state
+            .catalog()
+            .pending_request()
+            .map(|pending| pending.coordinate()),
+        Some(SelectableCallbackCoordinate::new(50, 1))
+    );
 
     let mut writer = RecordingWriter::default();
     state.deliver_reply(70, 1, &mut writer)?;

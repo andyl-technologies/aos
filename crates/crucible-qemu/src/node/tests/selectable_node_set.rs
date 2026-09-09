@@ -61,6 +61,7 @@ fn selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice() {
         .expect("drain first selectable");
     assert_eq!(first_pending.len(), 1);
     assert_eq!(first_pending[0].pending(), &requests[0]);
+    assert_eq!(first_pending[0].pending().icount(), 40);
 
     let first_reply =
         SelectionReply::selected(7, [1; 32], [2; 32], vec![1]).expect("first selected reply");
@@ -323,7 +324,10 @@ fn scripted_selectable_plan_and_requests(
                 192,
             )
             .expect("selection request");
-            SelectablePlanPendingRequest::new(request, *boundary, 0, 0x1000)
+            let trap = boundary
+                .checked_sub(1)
+                .expect("scripted selectable boundary follows its trap");
+            SelectablePlanPendingRequest::new(request, trap, 0, 0x1000)
         })
         .collect();
     (plan, requests)

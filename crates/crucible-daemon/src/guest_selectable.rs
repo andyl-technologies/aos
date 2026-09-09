@@ -31,6 +31,18 @@ pub enum GuestSelectableError {
         /// Node that produced the pending request.
         node: String,
     },
+    /// The request names a vCPU outside the scenario's fixed node topology.
+    #[error(
+        "guest selectable vCPU {vcpu} is outside node `{node}` topology with {vcpu_count} vCPUs"
+    )]
+    VcpuOutOfRange {
+        /// Node whose launch-pinned topology was checked.
+        node: String,
+        /// Untrusted marker vCPU index.
+        vcpu: u32,
+        /// Scenario-owned fixed vCPU count.
+        vcpu_count: u16,
+    },
     /// The narrowed domain or derived choice records violate the campaign model.
     #[error("guest selectable campaign contract failed: {0}")]
     Campaign(#[from] CampaignCodecError),
@@ -318,8 +330,9 @@ impl std::error::Error for GuestSelectableReplayMismatch {
 /// # Errors
 ///
 /// Returns [`GuestSelectableError`] when the name is absent, the declaration
-/// belongs to another source, narrowed-domain bytes are malformed or broaden
-/// the scenario declaration, or canonical record construction fails.
+/// belongs to another source, the marker vCPU is outside the scenario's fixed
+/// node topology, narrowed-domain bytes are malformed or broaden the scenario
+/// declaration, or canonical record construction fails.
 pub(crate) fn resolve_guest_selectable(
     scenario: ScenarioDefId,
     source: &ScenarioDefForm,
@@ -345,6 +358,22 @@ pub(crate) fn resolve_guest_selectable(
             });
         }
     };
+    let source_node = source
+        .world()
+        .vm_nodes()
+        .iter()
+        .find(|candidate| &candidate.id == node)
+        .ok_or_else(|| GuestSelectableError::SourceMismatch {
+            selectable: request.selectable_id().to_owned(),
+            node: node.name.clone(),
+        })?;
+    if pending.vcpu_index() >= u32::from(source_node.smp_vcpus) {
+        return Err(GuestSelectableError::VcpuOutOfRange {
+            node: node.name.clone(),
+            vcpu: pending.vcpu_index(),
+            vcpu_count: source_node.smp_vcpus,
+        });
+    }
     let domain = request.narrowed_domain().map_or_else(
         || Ok(declaration.domain().clone()),
         ChoiceDomain::from_canonical_bytes,

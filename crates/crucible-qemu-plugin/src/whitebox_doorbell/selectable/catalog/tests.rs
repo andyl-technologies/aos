@@ -298,6 +298,69 @@ fn request_is_frozen_catalog_bound_and_retained_until_exact_reply()
 }
 
 #[test]
+fn pending_stop_seal_retains_the_trap_and_rejects_a_changed_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = limits(1, 1, 1)?;
+    let mut catalog = catalog(
+        vec![expected(
+            "network.policy",
+            &[1],
+            SelectableExpectedPresence::Required,
+        )?],
+        limits,
+    )?;
+    catalog.register(&registration(1, "network.policy", &[1])?)?;
+    catalog.freeze()?;
+    let retained = catalog.begin_request(
+        &request(7, "network.policy")?,
+        coordinate(100),
+        reply_range(),
+    )?;
+
+    assert_eq!(catalog.rebind_pending_boundary(coordinate(101))?, retained);
+    assert_eq!(catalog.rebind_pending_boundary(coordinate(101))?, retained);
+    assert_eq!(retained.coordinate(), coordinate(100));
+    assert_eq!(
+        catalog.rebind_pending_boundary(coordinate(102)),
+        Err(SelectableCatalogError::PendingBoundaryAlreadySealed {
+            expected_icount: 101,
+            actual_icount: 102,
+        })
+    );
+    assert_eq!(catalog.pending_request(), Some(&retained));
+    Ok(())
+}
+
+#[test]
+fn pending_stop_seal_rejects_a_trap_coordinate_that_cannot_advance()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = limits(1, 1, 1)?;
+    let mut catalog = catalog(
+        vec![expected(
+            "network.policy",
+            &[1],
+            SelectableExpectedPresence::Required,
+        )?],
+        limits,
+    )?;
+    catalog.register(&registration(1, "network.policy", &[1])?)?;
+    catalog.freeze()?;
+    catalog.begin_request(
+        &request(7, "network.policy")?,
+        coordinate(u64::MAX),
+        reply_range(),
+    )?;
+
+    assert_eq!(
+        catalog.rebind_pending_boundary(coordinate(u64::MAX)),
+        Err(SelectableCatalogError::PendingBoundaryOverflow {
+            trap_icount: u64::MAX,
+        })
+    );
+    Ok(())
+}
+
+#[test]
 fn pending_token_is_bound_to_one_catalog_incarnation() -> Result<(), Box<dyn std::error::Error>> {
     let limits = limits(1, 1, 1)?;
     let declarations = vec![expected(

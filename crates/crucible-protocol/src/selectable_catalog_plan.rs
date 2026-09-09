@@ -8,8 +8,8 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic = "CRUCSCP2"
-//! 8       4     schema version = 2, big-endian
+//! 0       8     magic = "CRUCSCP3"
+//! 8       4     schema version = 3, big-endian
 //! 12      4     header length = 104
 //! 16      4     total byte length
 //! 20      4     flags: frozen, last-registration, last-request, pending
@@ -44,9 +44,9 @@ use crate::{
 };
 
 /// Frozen magic at the start of every selectable catalog plan.
-pub const SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP2";
+pub const SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP3";
 /// Canonical selectable catalog plan schema version.
-pub const SELECTABLE_CATALOG_PLAN_VERSION: u32 = 2;
+pub const SELECTABLE_CATALOG_PLAN_VERSION: u32 = 3;
 /// Fixed plan header bytes.
 pub const SELECTABLE_CATALOG_PLAN_HEADER_BYTES: usize = 104;
 /// Maximum canonical bytes in one node-local plan.
@@ -55,6 +55,11 @@ pub const SELECTABLE_CATALOG_PLAN_MAX_BYTES: usize = 32 * 1024 * 1024;
 pub const SELECTABLE_CATALOG_PLAN_MAX_DECLARATIONS: usize = 4_096;
 /// Maximum completed requests represented by one node-local plan.
 pub const SELECTABLE_CATALOG_PLAN_MAX_REQUESTS: u64 = 1_000_000;
+/// Instructions retired between a selectable trap and its exact VM-stop boundary.
+///
+/// Pending plans retain the trap coordinate for semantic opportunity identity.
+/// Reply transport derives the stopped boundary with this fixed handoff distance.
+pub const SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS: u64 = 1;
 
 const FLAG_FROZEN: u32 = 1 << 0;
 const FLAG_LAST_REGISTRATION: u32 = 1 << 1;
@@ -62,9 +67,18 @@ const FLAG_LAST_REQUEST: u32 = 1 << 2;
 const FLAG_PENDING: u32 = 1 << 3;
 const KNOWN_FLAGS: u32 = FLAG_FROZEN | FLAG_LAST_REGISTRATION | FLAG_LAST_REQUEST | FLAG_PENDING;
 const EXPECTED_ENTRY_HEADER_BYTES: usize = 8;
-const LEGACY_SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP1";
-const LEGACY_SELECTABLE_CATALOG_PLAN_VERSION: u32 = 1;
-const LEGACY_SELECTABLE_CATALOG_PLAN_HEADER_BYTES: usize = 96;
+const V2_SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP2";
+const V2_SELECTABLE_CATALOG_PLAN_VERSION: u32 = 2;
+const V1_SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP1";
+const V1_SELECTABLE_CATALOG_PLAN_VERSION: u32 = 1;
+const V1_SELECTABLE_CATALOG_PLAN_HEADER_BYTES: usize = 96;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CatalogPlanEncoding {
+    Current,
+    V2,
+    V1,
+}
 
 /// Whether one expected guest declaration is required at catalog freeze.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -390,13 +404,20 @@ impl SelectablePlanContinuation {
                 reason: "pending request belongs to an unfrozen catalog",
             });
         }
-        if let Some(pending) = &pending
-            && last_completed_request_sequence
+        if let Some(pending) = &pending {
+            pending
+                .icount()
+                .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+                .ok_or(SelectableCatalogPlanError::InvalidContinuation {
+                    reason: "pending trap coordinate cannot represent its stopped boundary",
+                })?;
+            if last_completed_request_sequence
                 .is_some_and(|sequence| pending.request.sequence() <= sequence)
-        {
-            return Err(SelectableCatalogPlanError::InvalidContinuation {
-                reason: "pending request sequence does not advance the completed watermark",
-            });
+            {
+                return Err(SelectableCatalogPlanError::InvalidContinuation {
+                    reason: "pending request sequence does not advance the completed watermark",
+                });
+            }
         }
         Ok(Self {
             phase,
@@ -930,27 +951,33 @@ impl SelectableCatalogPlan {
                 maximum: SELECTABLE_CATALOG_PLAN_MAX_BYTES,
             });
         }
-        if bytes.len() < LEGACY_SELECTABLE_CATALOG_PLAN_HEADER_BYTES {
+        if bytes.len() < V1_SELECTABLE_CATALOG_PLAN_HEADER_BYTES {
             return Err(SelectableCatalogPlanError::Truncated);
         }
         let version = read_u32(bytes, 8)?;
-        let legacy = if bytes[..8] == SELECTABLE_CATALOG_PLAN_MAGIC {
+        let encoding = if bytes[..8] == SELECTABLE_CATALOG_PLAN_MAGIC {
             if version != SELECTABLE_CATALOG_PLAN_VERSION {
                 return Err(SelectableCatalogPlanError::UnsupportedVersion { version });
             }
-            false
-        } else if bytes[..8] == LEGACY_SELECTABLE_CATALOG_PLAN_MAGIC {
-            if version != LEGACY_SELECTABLE_CATALOG_PLAN_VERSION {
+            CatalogPlanEncoding::Current
+        } else if bytes[..8] == V2_SELECTABLE_CATALOG_PLAN_MAGIC {
+            if version != V2_SELECTABLE_CATALOG_PLAN_VERSION {
                 return Err(SelectableCatalogPlanError::UnsupportedVersion { version });
             }
-            true
+            CatalogPlanEncoding::V2
+        } else if bytes[..8] == V1_SELECTABLE_CATALOG_PLAN_MAGIC {
+            if version != V1_SELECTABLE_CATALOG_PLAN_VERSION {
+                return Err(SelectableCatalogPlanError::UnsupportedVersion { version });
+            }
+            CatalogPlanEncoding::V1
         } else {
             return Err(SelectableCatalogPlanError::InvalidMagic);
         };
-        let expected_header_len = if legacy {
-            LEGACY_SELECTABLE_CATALOG_PLAN_HEADER_BYTES
-        } else {
-            SELECTABLE_CATALOG_PLAN_HEADER_BYTES
+        let expected_header_len = match encoding {
+            CatalogPlanEncoding::V1 => V1_SELECTABLE_CATALOG_PLAN_HEADER_BYTES,
+            CatalogPlanEncoding::Current | CatalogPlanEncoding::V2 => {
+                SELECTABLE_CATALOG_PLAN_HEADER_BYTES
+            }
         };
         let header_len = usize_from_u32(read_u32(bytes, 12)?)?;
         if header_len != expected_header_len {
@@ -998,7 +1025,10 @@ impl SelectableCatalogPlan {
         let pending_icount = read_u64(bytes, 80)?;
         let pending_vcpu = read_u32(bytes, 88)?;
         let pending_len = usize_from_u32(read_u32(bytes, 92)?)?;
-        let pending_guest_virtual_address = if legacy { 0 } else { read_u64(bytes, 96)? };
+        let pending_guest_virtual_address = match encoding {
+            CatalogPlanEncoding::V1 => 0,
+            CatalogPlanEncoding::Current | CatalogPlanEncoding::V2 => read_u64(bytes, 96)?,
+        };
         if flags & FLAG_PENDING == 0
             && (pending_icount != 0
                 || pending_vcpu != 0
@@ -1014,8 +1044,11 @@ impl SelectableCatalogPlan {
                 reason: "present pending request has zero byte length",
             });
         }
-        if legacy && flags & FLAG_PENDING != 0 {
+        if encoding == CatalogPlanEncoding::V1 && flags & FLAG_PENDING != 0 {
             return Err(SelectableCatalogPlanError::LegacyPendingReplyTargetMissing);
+        }
+        if encoding == CatalogPlanEncoding::V2 && flags & FLAG_PENDING != 0 {
+            return Err(SelectableCatalogPlanError::V2PendingCoordinateAmbiguous);
         }
 
         let mut cursor = expected_header_len;
@@ -1104,8 +1137,21 @@ impl SelectableCatalogPlan {
             });
         }
         let value = Self::new(limits, declarations, continuation)?;
-        if !legacy && value.encode()?.as_slice() != bytes {
-            return Err(SelectableCatalogPlanError::NonCanonicalEncoding);
+        match encoding {
+            CatalogPlanEncoding::Current => {
+                if value.encode()?.as_slice() != bytes {
+                    return Err(SelectableCatalogPlanError::NonCanonicalEncoding);
+                }
+            }
+            CatalogPlanEncoding::V2 => {
+                let mut canonical = value.encode()?;
+                canonical[..8].copy_from_slice(&V2_SELECTABLE_CATALOG_PLAN_MAGIC);
+                canonical[8..12].copy_from_slice(&V2_SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
+                if canonical.as_slice() != bytes {
+                    return Err(SelectableCatalogPlanError::NonCanonicalEncoding);
+                }
+            }
+            CatalogPlanEncoding::V1 => {}
         }
         Ok(value)
     }
@@ -1307,6 +1353,11 @@ pub enum SelectableCatalogPlanError {
     /// A version-1 continuation retained a request without its guest reply address.
     #[error("selectable catalog plan v1 pending request lacks a guest reply target")]
     LegacyPendingReplyTargetMissing,
+    /// A version-2 pending coordinate cannot be identified as trap or stop time.
+    #[error(
+        "selectable catalog plan v2 pending coordinate is ambiguous between trap and stop time"
+    )]
+    V2PendingCoordinateAmbiguous,
     /// The fixed header length differs.
     #[error("selectable catalog plan header length {header_len} is invalid")]
     InvalidHeaderLength {

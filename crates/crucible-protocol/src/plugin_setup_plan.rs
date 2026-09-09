@@ -14,7 +14,7 @@
 //! 20      4     app-random plan byte length, big-endian
 //! 24      4     selectable catalog plan byte length, big-endian
 //! 28      A     canonical AppRandomBranchPlanV1 body
-//! 28+A    S     canonical SelectableCatalogPlanV2 body
+//! 28+A    S     canonical SelectableCatalogPlanV3 body
 //! ```
 
 use thiserror::Error;

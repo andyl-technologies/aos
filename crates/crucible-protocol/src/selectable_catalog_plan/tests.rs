@@ -59,8 +59,8 @@ fn cold_and_restored_plans_round_trip_with_frozen_header() -> Result<(), Box<dyn
         SelectablePlanContinuation::cold(),
     )?;
     let cold_bytes = cold.encode()?;
-    assert_eq!(&cold_bytes[..8], b"CRUCSCP2");
-    assert_eq!(&cold_bytes[8..12], &[0, 0, 0, 2]);
+    assert_eq!(&cold_bytes[..8], b"CRUCSCP3");
+    assert_eq!(&cold_bytes[8..12], &[0, 0, 0, 3]);
     assert_eq!(&cold_bytes[12..16], &[0, 0, 0, 104]);
     assert_eq!(SelectableCatalogPlan::decode(&cold_bytes), Ok(cold));
 
@@ -80,13 +80,11 @@ fn selection_free_v1_plan_remains_readable_but_pending_v1_fails_closed()
         Vec::new(),
         SelectablePlanContinuation::cold(),
     )?;
-    let mut legacy = vec![0_u8; LEGACY_SELECTABLE_CATALOG_PLAN_HEADER_BYTES];
-    legacy[..8].copy_from_slice(&LEGACY_SELECTABLE_CATALOG_PLAN_MAGIC);
-    legacy[8..12].copy_from_slice(&LEGACY_SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
-    legacy[12..16]
-        .copy_from_slice(&(LEGACY_SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    legacy[16..20]
-        .copy_from_slice(&(LEGACY_SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    let mut legacy = vec![0_u8; V1_SELECTABLE_CATALOG_PLAN_HEADER_BYTES];
+    legacy[..8].copy_from_slice(&V1_SELECTABLE_CATALOG_PLAN_MAGIC);
+    legacy[8..12].copy_from_slice(&V1_SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
+    legacy[12..16].copy_from_slice(&(V1_SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    legacy[16..20].copy_from_slice(&(V1_SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
     legacy[24..28].copy_from_slice(&1_u32.to_be_bytes());
     legacy[40..48].copy_from_slice(&1_u64.to_be_bytes());
     legacy[48..56].copy_from_slice(&1_u64.to_be_bytes());
@@ -97,6 +95,66 @@ fn selection_free_v1_plan_remains_readable_but_pending_v1_fails_closed()
     assert_eq!(
         SelectableCatalogPlan::decode(&legacy),
         Err(SelectableCatalogPlanError::LegacyPendingReplyTargetMissing)
+    );
+    Ok(())
+}
+
+#[test]
+fn selection_free_v2_plan_remains_readable_but_pending_v2_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cold = SelectableCatalogPlan::new(
+        limits()?,
+        vec![declaration(
+            "network.policy",
+            SelectablePlanPresence::Required,
+        )?],
+        SelectablePlanContinuation::cold(),
+    )?;
+    let mut v2_cold = cold.encode()?;
+    v2_cold[..8].copy_from_slice(&V2_SELECTABLE_CATALOG_PLAN_MAGIC);
+    v2_cold[8..12].copy_from_slice(&V2_SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
+    assert_eq!(SelectableCatalogPlan::decode(&v2_cold), Ok(cold));
+    let mut malformed_v2_cold = v2_cold;
+    malformed_v2_cold[80..88].copy_from_slice(&1_u64.to_be_bytes());
+    assert!(matches!(
+        SelectableCatalogPlan::decode(&malformed_v2_cold),
+        Err(SelectableCatalogPlanError::InvalidContinuation { .. })
+    ));
+
+    let mut v2_pending = restored_plan()?.encode()?;
+    v2_pending[..8].copy_from_slice(&V2_SELECTABLE_CATALOG_PLAN_MAGIC);
+    v2_pending[8..12].copy_from_slice(&V2_SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
+    assert_eq!(
+        SelectableCatalogPlan::decode(&v2_pending),
+        Err(SelectableCatalogPlanError::V2PendingCoordinateAmbiguous)
+    );
+    Ok(())
+}
+
+#[test]
+fn pending_trap_must_represent_the_following_native_stop_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let request = SelectionRequest::new(9, "network.policy", "epoch/overflow", None, 128)?;
+    let error = SelectablePlanContinuation::new(
+        SelectablePlanPhase::Frozen,
+        BTreeSet::from([String::from("network.policy")]),
+        Some(1),
+        BTreeMap::new(),
+        None,
+        Some(SelectablePlanPendingRequest::new(
+            request,
+            u64::MAX,
+            0,
+            0x8000,
+        )),
+    )
+    .expect_err("a maximum trap coordinate cannot encode its following stop");
+
+    assert_eq!(
+        error,
+        SelectableCatalogPlanError::InvalidContinuation {
+            reason: "pending trap coordinate cannot represent its stopped boundary",
+        }
     );
     Ok(())
 }

@@ -16,7 +16,7 @@ use crucible_protocol::app_random_transport::{
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_protocol::selectable_catalog_plan::{
-    SelectableCatalogPlan, SelectablePlanPendingRequest,
+    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectableCatalogPlan, SelectablePlanPendingRequest,
 };
 use crucible_protocol::selectable_transport::{
     SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
@@ -539,9 +539,30 @@ impl QemuMappedQuantumShmemHotPath {
                             error.to_string(),
                         )
                     })?;
+                let expected_boundary_icount = entry
+                    .current_icount()
+                    .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+                    .ok_or_else(|| {
+                        QemuNodeChannelError::new(
+                            "drain selectable pending requests",
+                            format!(
+                                "selectable trap icount {} cannot represent its stopped boundary",
+                                entry.current_icount()
+                            ),
+                        )
+                    })?;
+                if boundary_icount != expected_boundary_icount {
+                    return Err(QemuNodeChannelError::new(
+                        "drain selectable pending requests",
+                        format!(
+                            "selectable trap icount {} requires stopped boundary {expected_boundary_icount}, observed {boundary_icount}",
+                            entry.current_icount()
+                        ),
+                    ));
+                }
                 let pending = SelectablePlanPendingRequest::new(
                     record.request().clone(),
-                    boundary_icount,
+                    entry.current_icount(),
                     entry.vcpu_index(),
                     record.guest_virtual_address(),
                 );
@@ -1152,17 +1173,29 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         let boundary_icount = self.with_hot_path("selectable reply boundary", |hot_path| {
             Ok(hot_path.node_snapshot().current_icount)
         })?;
-        if boundary_icount != pending.icount() {
+        let stopped_icount = pending
+            .icount()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "enqueue selectable reply",
+                    format!(
+                        "pending request trap icount {} cannot represent its stopped boundary",
+                        pending.icount()
+                    ),
+                )
+            })?;
+        if boundary_icount != stopped_icount {
             return Err(QemuNodeChannelError::new(
                 "enqueue selectable reply",
                 format!(
-                    "pending request icount {} differs from current boundary {boundary_icount}",
-                    pending.icount()
+                    "pending request trap icount {} requires stopped boundary {stopped_icount}, observed {boundary_icount}",
+                    pending.icount(),
                 ),
             ));
         }
         let entry = WhiteboxMarkerEntry::new(
-            pending.icount(),
+            stopped_icount,
             pending.vcpu_index(),
             WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
             &payload,

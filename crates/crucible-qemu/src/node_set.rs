@@ -16,7 +16,9 @@ use crucible::{
 use crucible::{ContentHash, EventLog};
 use crucible_protocol::SelectionReply;
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
-use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
+use crucible_protocol::selectable_catalog_plan::{
+    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectablePlanPendingRequest,
+};
 use crucible_shmem::{
     DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1, MAX_FRAME_DELIVERY_ATTEMPTS,
 };
@@ -803,7 +805,16 @@ impl QemuNodeSet {
             return Ok(PendingSelectableRetention::Absent);
         };
 
-        let boundary_icount = pending.icount();
+        let boundary_icount = pending
+            .icount()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` selectable trap {} cannot represent its physical pause boundary",
+                    node.name,
+                    pending.icount(),
+                ),
+            })?;
         self.pending_selectable_requests
             .insert(node.clone(), pending);
         Ok(PendingSelectableRetention::NewlyRetained { boundary_icount })
