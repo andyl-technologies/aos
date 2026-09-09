@@ -6140,6 +6140,15 @@ does not yet qualify the public API against a real sealed ext4 inode, an actual
 mount crossing, protected labels, or enforcing MAC. Those kernel and deployment
 tests remain pending, and no readiness claim changes.
 
+Commit `4117dcedc` extends the existing ext4 VM fixture to exercise that API
+against a real published fs-verity inode. It checks exact positive identity,
+size, measurement, and bytes; exact absence; byte-ceiling rejection; and
+fail-closed rejection of unsealed, wrong-mode, extra-link, symlink, and
+same-filesystem bind-mounted names. The fixture package passed a frozen
+incremental compile. The VM has not run, so none of these kernel checks is yet
+qualified; protected labels, enforcing MAC, and every readiness claim remain
+pending.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
