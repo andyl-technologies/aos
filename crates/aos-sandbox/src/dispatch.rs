@@ -387,6 +387,7 @@ impl BrokerDispatchAttemptV1 {
     /// companion-free Host 1.5 launch, both plans and the lease have one exact
     /// assignment/node/ownership authority, the Guardian plan has one exact
     /// boot-and-lease-bound arm grant, and all validity and size bounds hold.
+    #[cfg(test)]
     pub(crate) fn new_host_launch_with_guardian(
         template: &BrokerDispatchTemplateV1,
         lease: &SignedOwnershipLease,
@@ -909,6 +910,7 @@ fn validate_recovered_lease_context(
     }
 }
 
+#[cfg(test)]
 fn validate_guardian_context(
     host_plan: &BrokerAuthorizationPlan,
     lease: &SignedOwnershipLease,
@@ -990,6 +992,7 @@ fn validate_recovered_guardian_context(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_current_plan(
     plan: &BrokerAuthorizationPlan,
     clock: RawPairedClockSample,
@@ -1014,6 +1017,7 @@ fn validate_current_plan_at(
     }
 }
 
+#[cfg(test)]
 fn conservative_guardian_plan_deadline(
     plan: &BrokerAuthorizationPlan,
     clock: RawPairedClockSample,
