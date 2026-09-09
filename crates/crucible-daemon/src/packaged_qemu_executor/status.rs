@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // crucible-lint: allow host-nondeterminism-state -- immutable scheduler inputs are forwarded through lifecycle ownership while status remains operational-only.
-use crucible::{Configuration, ScenarioDef, SelectionDecision};
+use crucible::{Configuration, FingerprintSample, NodeId, ScenarioDef, SelectionDecision};
 use crucible::{ScenarioDefForm, SchedulerError, SchedulerEventLogEntry, VirtualTime};
 // crucible-lint: allow host-nondeterminism-state -- These engine types are forwarded only through scheduler-owned lifecycle traits; operational observations never influence engine state.
 use crucible::{QuantumOutcome, QuantumRequest, QuantumTerminalVerdict};
@@ -562,6 +562,14 @@ where
 
     fn pending_network_output_count(&self) -> usize {
         self.inner.pending_network_output_count()
+    }
+
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        self.inner.sample_fingerprint(node)
+    }
+
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        self.inner.resolved_effect_trace()
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {

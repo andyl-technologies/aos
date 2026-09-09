@@ -10,7 +10,8 @@ use std::thread;
 use std::time::Duration;
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, Plan, Properties, QuantumOutcome, QuantumRequest,
+    Checkpoint, CheckpointKind, Configuration, ContentHash, ExecutionFingerprint,
+    FingerprintSample, NodeId, Plan, Properties, QuantumOutcome, QuantumRequest,
     QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
     Seed, VirtualTime, World,
 };
@@ -706,6 +707,9 @@ fn packaged_materializer_tracks_a_late_pin_and_promoted_replacement() {
 struct ControlledLifecycleBoundary {
     state: Mutex<(u8, u8)>,
     changed: Condvar,
+    requested_fingerprint_nodes: Mutex<Vec<NodeId>>,
+    fail_fingerprint_sample: AtomicBool,
+    fail_effect_trace: AtomicBool,
 }
 
 impl ControlledLifecycleBoundary {
@@ -831,6 +835,43 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         0
     }
 
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        self.boundary
+            .requested_fingerprint_nodes
+            .lock()
+            .expect("controlled fingerprint requests")
+            .push(node);
+        if self
+            .boundary
+            .fail_fingerprint_sample
+            .load(Ordering::Acquire)
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("controlled fingerprint failure"),
+            });
+        }
+
+        Ok(FingerprintSample {
+            node: NodeId {
+                name: String::from("inner-returned-node"),
+            },
+            at: VirtualTime { ticks: 73 },
+            fingerprint: ExecutionFingerprint {
+                hash: ContentHash::from_bytes(b"controlled-inner-fingerprint"),
+            },
+        })
+    }
+
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        if self.boundary.fail_effect_trace.load(Ordering::Acquire) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("controlled effect-trace failure"),
+            });
+        }
+
+        Ok(Some(b"controlled-inner-effect-trace".to_vec()))
+    }
+
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.boundary.arrive_and_wait(3);
         if self.fail_shutdown {
@@ -841,6 +882,86 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
             Ok(Vec::new())
         }
     }
+}
+
+#[test]
+fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
+    let boundary = Arc::new(ControlledLifecycleBoundary::default());
+    boundary.release(1);
+    let source = ScenarioDefForm::from_components(
+        &World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty world"),
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(79),
+    )
+    .expect("delegation scenario");
+    let scenario = source.scenario_def();
+    let start = Configuration::genesis(scenario.clone());
+    let context = AttemptExecutionContext::new(
+        resources(),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+    );
+    let mut factory = PackagedStatusLifecycleFactory {
+        inner: ControlledLifecycleFactory {
+            boundary: Arc::clone(&boundary),
+            fail_shutdown: false,
+        },
+        lifecycles: PackagedWorldLifecycleTracker::new(),
+    };
+    let mut lifecycle = factory
+        .start_fresh_lifecycle(
+            &scenario,
+            &source,
+            &start,
+            &crucible::SignalFaultCampaignReplayPlan::empty(start.clone()),
+            &context,
+        )
+        .expect("start delegated lifecycle");
+
+    let requested_node = NodeId {
+        name: String::from("requested-node"),
+    };
+    let sample = lifecycle
+        .sample_fingerprint(requested_node.clone())
+        .expect("delegated fingerprint sample");
+    assert_eq!(
+        *boundary
+            .requested_fingerprint_nodes
+            .lock()
+            .expect("controlled fingerprint requests"),
+        vec![requested_node.clone()]
+    );
+    assert_eq!(sample.node.name, "inner-returned-node");
+    assert_eq!(sample.at, VirtualTime { ticks: 73 });
+    assert_eq!(
+        sample.fingerprint.hash,
+        ContentHash::from_bytes(b"controlled-inner-fingerprint")
+    );
+    assert_eq!(
+        lifecycle
+            .resolved_effect_trace()
+            .expect("delegated effect trace"),
+        Some(b"controlled-inner-effect-trace".to_vec())
+    );
+
+    boundary
+        .fail_fingerprint_sample
+        .store(true, Ordering::Release);
+    let fingerprint_error = lifecycle
+        .sample_fingerprint(requested_node)
+        .expect_err("inner fingerprint failure must propagate");
+    assert_eq!(
+        fingerprint_error.to_string(),
+        "controlled fingerprint failure"
+    );
+
+    boundary.fail_effect_trace.store(true, Ordering::Release);
+    let effect_error = lifecycle
+        .resolved_effect_trace()
+        .expect_err("inner effect-trace failure must propagate");
+    assert_eq!(effect_error.to_string(), "controlled effect-trace failure");
 }
 
 struct ControlledLifecycleWorker {

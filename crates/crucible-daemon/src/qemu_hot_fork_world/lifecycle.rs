@@ -12,9 +12,9 @@ use std::sync::{Arc, Mutex};
 
 // crucible-lint: allow host-nondeterminism-state -- The lifecycle owns canonical scheduler progress; host observations only govern process cleanup and never select modeled transitions.
 use crucible::{
-    Configuration, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
-    SchedulerError, SchedulerEventLogEntry, SchedulerOperationalFailureClass, SelectionDecision,
-    VirtualTime,
+    Configuration, FingerprintSample, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest,
+    QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
+    SchedulerOperationalFailureClass, SelectionDecision, VirtualTime,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmHotForkNodeServiceState,
@@ -319,6 +319,14 @@ where
 
     fn pending_network_output_count(&self) -> usize {
         self.lifecycle.pending_network_output_count()
+    }
+
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        QuantumLoop::sample_fingerprint(&mut self.lifecycle, node)
+    }
+
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        QuantumLoop::resolved_effect_trace(&self.lifecycle)
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
