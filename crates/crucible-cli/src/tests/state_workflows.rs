@@ -1379,12 +1379,14 @@ pub(super) fn cli_resume_terminal_oracle_rejects_non_descendant_snapshot()
     };
     let source_checkpoint =
         checkpoint_for_resume_configuration(&source_configuration, VirtualTime { ticks: 1 })?;
+    let replay_closure = crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&source_schedule)?;
     let evidence = ResumeHandleEvidence {
         scenario_form: form,
         scenario: scenario.clone(),
         schedule: source_schedule,
         configuration: source_configuration,
         checkpoint: source_checkpoint,
+        replay_closure,
     };
     let sibling_schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
         crucible::DeliveryOrderDecision {

@@ -448,6 +448,7 @@ pub(crate) struct SavepointHandle {
     pub(crate) scenario_label: String,
     pub(crate) scenario_payload: Vec<u8>,
     pub(crate) schedule_payload: Vec<u8>,
+    pub(crate) replay_closure_payload: Option<Vec<u8>>,
     pub(crate) frontier_ticks: u64,
     pub(crate) at: SaveAtArg,
     pub(crate) selector: Option<SaveAtSelector>,

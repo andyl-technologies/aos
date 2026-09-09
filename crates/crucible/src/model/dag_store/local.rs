@@ -19,8 +19,27 @@ pub struct LocalCheckpointClosureIndex {
     pub checkpoint: ContentHash,
     /// Store key for the self-contained `(seed, scenario, schedule)` artifact.
     pub reproduction_artifact: ContentHash,
+    /// Optional store key for an opaque replay artifact needed by its producer.
+    ///
+    /// The core DAG store deliberately does not interpret this object. The
+    /// reference keeps producer-specific replay evidence reachable while the
+    /// checkpoint closure index is retained.
+    pub opaque_replay_artifact: Option<ContentHash>,
     /// Shared virtual-time frontier of the saved configuration.
     pub frontier: VirtualTime,
+}
+
+impl LocalCheckpointClosureIndex {
+    /// Returns every content-addressed object retained by this index.
+    ///
+    /// [`LocalDagStore`] retains all objects until an explicit delete. A caller
+    /// implementing a sweep treats this set as the index's traversal roots.
+    #[must_use]
+    pub fn referenced_objects(&self) -> std::collections::BTreeSet<ContentHash> {
+        let mut objects = std::collections::BTreeSet::from([self.reproduction_artifact]);
+        objects.extend(self.opaque_replay_artifact);
+        objects
+    }
 }
 
 impl LocalDagStore {
@@ -57,7 +76,57 @@ impl LocalDagStore {
         reproduction_artifact: ContentHash,
         frontier: VirtualTime,
     ) -> Result<ContentHash, DagStoreError> {
-        let bytes = checkpoint_closure_index_bytes(checkpoint, reproduction_artifact, frontier);
+        self.write_checkpoint_closure_index_record(
+            checkpoint,
+            reproduction_artifact,
+            None,
+            frontier,
+        )
+    }
+
+    /// Writes a checkpoint lookup record that retains an opaque replay artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DagStoreError`] when either referenced object is absent or
+    /// corrupt, when the record cannot be stored, or when the local sidecar
+    /// pointer cannot be written.
+    pub fn write_checkpoint_closure_index_with_opaque_replay_artifact(
+        &self,
+        checkpoint: ContentHash,
+        reproduction_artifact: ContentHash,
+        opaque_replay_artifact: ContentHash,
+        frontier: VirtualTime,
+    ) -> Result<ContentHash, DagStoreError> {
+        self.write_checkpoint_closure_index_record(
+            checkpoint,
+            reproduction_artifact,
+            Some(opaque_replay_artifact),
+            frontier,
+        )
+    }
+
+    fn write_checkpoint_closure_index_record(
+        &self,
+        checkpoint: ContentHash,
+        reproduction_artifact: ContentHash,
+        opaque_replay_artifact: Option<ContentHash>,
+        frontier: VirtualTime,
+    ) -> Result<ContentHash, DagStoreError> {
+        for key in [reproduction_artifact]
+            .into_iter()
+            .chain(opaque_replay_artifact)
+        {
+            if !self.exists(&key)? {
+                return Err(DagStoreError::NotFound { key });
+            }
+        }
+        let bytes = checkpoint_closure_index_bytes(
+            checkpoint,
+            reproduction_artifact,
+            opaque_replay_artifact,
+            frontier,
+        );
         let index_key = self.put(&bytes)?;
         let path = self.checkpoint_closure_index_path(&checkpoint);
         if let Some(parent) = path.parent() {

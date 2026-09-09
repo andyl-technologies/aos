@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::io;
+use std::sync::{Arc, Mutex};
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, EventLog, ExecutionFingerprint,
@@ -40,11 +41,32 @@ struct TestLifecycle {
     choice_required: bool,
     offer_choice: bool,
     selection_received: bool,
-    selection_marker_pending: bool,
     quantum_nanoseconds: u64,
     frontier: VirtualTime,
     completed_quanta: u64,
     configuration: Option<Configuration>,
+    lifecycle_generation: u64,
+    trace: GuardedDefaultCampaignTestTrace,
+}
+
+/// Process-local observations from the deterministic campaign lifecycle fixture.
+#[derive(Clone, Debug, Default)]
+pub struct GuardedDefaultCampaignTestTrace {
+    selection_applications: Arc<Mutex<Vec<(u64, VirtualTime)>>>,
+}
+
+impl GuardedDefaultCampaignTestTrace {
+    /// Returns the lifecycle generation and frontier for every applied guest reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if a concurrent fixture panic poisoned the trace.
+    pub fn selection_applications(&self) -> Result<Vec<(u64, VirtualTime)>, io::Error> {
+        self.selection_applications
+            .lock()
+            .map(|applications| applications.clone())
+            .map_err(|_| io::Error::other("campaign test selection trace was poisoned"))
+    }
 }
 
 impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
@@ -65,32 +87,26 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
         } else {
             self.marker.clone()
         };
-        let mut observed = Vec::new();
-        if std::mem::take(&mut self.selection_marker_pending) {
-            observed.push(ObservableEvent::guest_marker(
-                Icount {
-                    retired: self.frontier.ticks,
-                },
-                self.node.clone(),
-                MarkerId::from_name(TEST_SELECTION_APPLIED_MARKER),
-            ));
-        }
-        observed.push(ObservableEvent::guest_marker(
+        let observed = vec![ObservableEvent::guest_marker(
             Icount {
                 retired: self.frontier.ticks,
             },
             self.node.clone(),
             marker,
-        ));
+        )];
         let append = self.event_log.append_observable_events(observed)?;
         let mut configuration = request.configuration;
-        if configuration.schedule.len() < self.replay_target.len() {
-            configuration.schedule = self
-                .replay_target
-                .prefix(configuration.schedule.len() + 1)
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: error.to_string(),
-                })?;
+        let replay_index = configuration.schedule.len();
+        let next_replay_decision = self.replay_target.decisions().get(replay_index);
+        if replay_index < self.replay_target.len()
+            && !matches!(next_replay_decision, Some(crucible::Decision::Selection(_)))
+        {
+            configuration.schedule =
+                self.replay_target
+                    .prefix(replay_index + 1)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: error.to_string(),
+                    })?;
         }
         self.configuration = Some(configuration.clone());
 
@@ -146,9 +162,23 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
             });
         }
         self.selection_received = true;
-        self.selection_marker_pending = true;
         self.configuration = Some(selected.clone());
-        Ok(Vec::new())
+        self.trace
+            .selection_applications
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("campaign test selection trace was poisoned"),
+            })?
+            .push((self.lifecycle_generation, self.frontier));
+        self.event_log
+            .append_observable_events([ObservableEvent::guest_marker(
+                Icount {
+                    retired: self.frontier.ticks,
+                },
+                self.node.clone(),
+                MarkerId::from_name(TEST_SELECTION_APPLIED_MARKER),
+            )])
+            .map(|append| append.entries)
     }
 
     fn capture_attempt_checkpoint(
@@ -232,6 +262,8 @@ struct TestLifecycleFactory {
     marker: MarkerId,
     offer_choice: bool,
     quantum_nanoseconds: u64,
+    next_lifecycle_generation: u64,
+    trace: GuardedDefaultCampaignTestTrace,
 }
 
 impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
@@ -246,6 +278,8 @@ impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
         _signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
         _context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        let lifecycle_generation = self.next_lifecycle_generation;
+        self.next_lifecycle_generation = self.next_lifecycle_generation.saturating_add(1);
         Ok(TestLifecycle {
             node: self.node.clone(),
             marker: self.marker.clone(),
@@ -254,11 +288,12 @@ impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
             choice_required: self.offer_choice,
             offer_choice: self.offer_choice,
             selection_received: false,
-            selection_marker_pending: false,
             quantum_nanoseconds: self.quantum_nanoseconds,
             frontier: VirtualTime::default(),
             completed_quanta: 0,
             configuration: None,
+            lifecycle_generation,
+            trace: self.trace.clone(),
         })
     }
 }
@@ -276,6 +311,23 @@ impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
 pub fn run_guarded_default_campaign_test_fixture(
     request: GuardedDefaultCampaignRunRequest,
 ) -> Result<GuardedDefaultCampaignRun, Box<dyn Error + Send + Sync>> {
+    run_guarded_default_campaign_test_fixture_with_trace(request).map(|(campaign, _)| campaign)
+}
+
+/// Runs the modeled campaign lifecycle and returns its explicit reply-application trace.
+///
+/// This is test-only evidence for distinguishing exact source replay from the
+/// later continuation. It does not replace packaged-QEMU acceptance.
+///
+/// # Errors
+///
+/// Returns the same errors as [`run_guarded_default_campaign_test_fixture`].
+pub fn run_guarded_default_campaign_test_fixture_with_trace(
+    request: GuardedDefaultCampaignRunRequest,
+) -> Result<
+    (GuardedDefaultCampaignRun, GuardedDefaultCampaignTestTrace),
+    Box<dyn Error + Send + Sync>,
+> {
     let offer_choice = !request.scenario.selectables().is_empty();
     let (quantum_nanoseconds, marker) = match &request.discovery_stop {
         StopCondition::VirtualTimeNanoseconds(deadline) if *deadline > 0 => (
@@ -302,16 +354,20 @@ pub fn run_guarded_default_campaign_test_fixture(
                 "the guarded campaign fixture requires at least one VM node",
             )
         })?;
+    let trace = GuardedDefaultCampaignTestTrace::default();
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TestLifecycleFactory {
             node,
             marker,
             offer_choice,
             quantum_nanoseconds,
+            next_lifecycle_generation: 0,
+            trace: trace.clone(),
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
 
     run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .map(|campaign| (campaign, trace))
         .map_err(|error| Box::new(error) as Box<dyn Error + Send + Sync>)
 }
 

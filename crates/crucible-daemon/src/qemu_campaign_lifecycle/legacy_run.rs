@@ -220,17 +220,16 @@ impl GuardedDefaultCampaignRunRequest {
         self
     }
 
-    /// Resumes an authenticated selection-free legacy checkpoint through one campaign.
+    /// Resumes an authenticated legacy checkpoint through one campaign.
     ///
     /// The source schedule is first replayed to the exact logical checkpoint
     /// frontier. Only after the accepted configuration and scheduler frontier
     /// equal `checkpoint` does the owner capture an exact physical savepoint and
     /// admit an [`AttemptStart::AfterAttempt`] continuation to `final_stop`.
-    /// Historical schedules that require typed selection records are rejected;
-    /// their existing session-owned resume path must retain the producer's
-    /// complete choice closure.
+    /// `closure` must authenticate every typed selection in `schedule` and is
+    /// published into the campaign repository before source replay begins.
     #[must_use]
-    pub fn with_selection_free_resume_source(
+    pub fn with_resume_source(
         mut self,
         // crucible-lint: allow host-nondeterminism-state -- the caller-supplied replay schedule is forwarded unchanged into exact source authentication.
         schedule: Schedule,

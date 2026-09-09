@@ -658,6 +658,137 @@ fn gate_content_address_local_dag_store_repairs_corrupt_object_path() {
 }
 
 #[test]
+fn gate_content_address_checkpoint_index_reads_v2_without_opaque_replay_artifact() {
+    let root = unique_temp_dir("checkpoint-index-v2");
+    let store = LocalDagStore::new(root.clone());
+    let checkpoint = ContentHash::from_bytes(b"checkpoint-v2");
+    let reproduction = store
+        .put(b"reproduction-v2")
+        .unwrap_or_else(|error| panic!("reproduction object should store: {error}"));
+
+    store
+        .write_checkpoint_closure_index(checkpoint, reproduction, VirtualTime { ticks: 7 })
+        .unwrap_or_else(|error| panic!("v2 checkpoint index should store: {error}"));
+    let index = store
+        .read_checkpoint_closure_index(checkpoint)
+        .unwrap_or_else(|error| panic!("v2 checkpoint index should remain readable: {error}"));
+
+    assert_eq!(index.checkpoint, checkpoint);
+    assert_eq!(index.opaque_replay_artifact, None);
+    assert_eq!(index.referenced_objects(), BTreeSet::from([reproduction]));
+
+    fs::remove_dir_all(&root)
+        .unwrap_or_else(|error| panic!("temporary DAG store root should remove: {error}"));
+}
+
+#[test]
+fn gate_content_address_checkpoint_index_retains_opaque_replay_artifact() {
+    let root = unique_temp_dir("checkpoint-index-v3");
+    let store = LocalDagStore::new(root.clone());
+    let checkpoint = ContentHash::from_bytes(b"checkpoint-v3");
+    let reproduction = store
+        .put(b"reproduction-v3")
+        .unwrap_or_else(|error| panic!("reproduction object should store: {error}"));
+    let replay_closure = store
+        .put(b"opaque-replay-closure")
+        .unwrap_or_else(|error| panic!("opaque replay object should store: {error}"));
+
+    store
+        .write_checkpoint_closure_index_with_opaque_replay_artifact(
+            checkpoint,
+            reproduction,
+            replay_closure,
+            VirtualTime { ticks: 11 },
+        )
+        .unwrap_or_else(|error| panic!("v3 checkpoint index should store: {error}"));
+    let index = store
+        .read_checkpoint_closure_index(checkpoint)
+        .unwrap_or_else(|error| panic!("v3 checkpoint index should be readable: {error}"));
+
+    assert_eq!(index.opaque_replay_artifact, Some(replay_closure));
+    assert_eq!(
+        index.referenced_objects(),
+        BTreeSet::from([reproduction, replay_closure])
+    );
+
+    fs::remove_dir_all(&root)
+        .unwrap_or_else(|error| panic!("temporary DAG store root should remove: {error}"));
+}
+
+#[test]
+fn gate_content_address_graph_gc_preserves_v3_checkpoint_index_objects() {
+    let root = unique_temp_dir("checkpoint-index-v3-gc");
+    let store = LocalDagStore::new(root.clone());
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.content-address.world",
+        "checkpoint-index-v3-gc",
+    ));
+    let scenario = world.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let live = step(&genesis, generated_decision(801, 0));
+    let abandoned = step(&genesis, generated_decision(802, 0));
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(
+            &scenario,
+            bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
+    graph
+        .record_thin_checkpoint(&live)
+        .unwrap_or_else(|error| panic!("live checkpoint should record: {error}"));
+    graph
+        .record_thin_checkpoint(&abandoned)
+        .unwrap_or_else(|error| panic!("abandoned checkpoint should record: {error}"));
+    graph
+        .persist_checkpoint_closure(&store, &live)
+        .unwrap_or_else(|error| panic!("live closure should persist: {error}"));
+    graph
+        .persist_checkpoint_closure(&store, &abandoned)
+        .unwrap_or_else(|error| panic!("abandoned closure should persist: {error}"));
+
+    let reproduction = store
+        .put(b"portable-reproduction-artifact")
+        .unwrap_or_else(|error| panic!("portable reproduction should store: {error}"));
+    let replay_closure = store
+        .put(b"portable-opaque-replay-closure")
+        .unwrap_or_else(|error| panic!("portable replay closure should store: {error}"));
+    store
+        .write_checkpoint_closure_index_with_opaque_replay_artifact(
+            live.id(),
+            reproduction,
+            replay_closure,
+            VirtualTime { ticks: 801 },
+        )
+        .unwrap_or_else(|error| panic!("v3 checkpoint index should store: {error}"));
+
+    let report = graph
+        .garbage_collect_store(
+            &store,
+            &TemporalGraphGcRoots::new().with_live_tip(live.id()),
+        )
+        .unwrap_or_else(|error| panic!("graph store GC should complete: {error}"));
+    let index = store
+        .read_checkpoint_closure_index(live.id())
+        .unwrap_or_else(|error| panic!("v3 checkpoint index should survive graph GC: {error}"));
+
+    assert!(report.collected_checkpoints.contains(&abandoned.id()));
+    assert_eq!(
+        index.referenced_objects(),
+        BTreeSet::from([reproduction, replay_closure])
+    );
+    for retained in index.referenced_objects() {
+        assert!(
+            store
+                .exists(&retained)
+                .unwrap_or_else(|error| panic!("retained object lookup should succeed: {error}"))
+        );
+    }
+
+    fs::remove_dir_all(&root)
+        .unwrap_or_else(|error| panic!("temporary DAG store root should remove: {error}"));
+}
+
+#[test]
 fn gate_content_address_reproduction_artifact_is_store_key_closure() {
     let store = MemoryDagStore::new();
     let scenario_key = store

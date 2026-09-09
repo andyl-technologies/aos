@@ -742,6 +742,17 @@ fn embedded_terminal_savepoint_evidence(
     let scenario_form = model.scenario_form().clone();
     let scenario = model.scenario_def();
     let schedule = model.schedule().clone();
+    let replay_closure_bytes = optional_single_component_payload(
+        artifact,
+        CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE,
+        "campaign replay closure",
+    )?;
+    let replay_closure = authenticated_replay_closure(
+        &scenario_form,
+        &schedule,
+        replay_closure_bytes,
+        "replay --to embedded savepoint",
+    )?;
     let configuration = crucible::Configuration {
         def: scenario.clone(),
         schedule: schedule.clone(),
@@ -761,6 +772,7 @@ fn embedded_terminal_savepoint_evidence(
         schedule,
         configuration,
         checkpoint,
+        replay_closure,
     }))
 }
 
