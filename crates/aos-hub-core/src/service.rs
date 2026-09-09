@@ -35,6 +35,8 @@ mod delivery_workflow;
 mod delivery_workflow_tests;
 mod instance_settings;
 mod publication_manifest;
+mod registry_metadata;
+mod registry_policy;
 mod release_publication;
 mod surface_topology;
 
@@ -22422,6 +22424,7 @@ impl RpcService {
         crate::crawl::CrawlPolicy::parse(&req.crawl_policy)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
         validate_registry_trust_keys(&req.trust_keys)?;
+        let effects = registry_policy::effects(&registry, &req);
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let input = RegistryUpdatePlanInput {
             request: req,
@@ -22438,7 +22441,7 @@ impl RpcService {
             &registry.scope_key,
             &input,
             &idempotency_key,
-            vec![format!("update registry '{}' configuration", registry.slug)],
+            effects,
             Vec::new(),
             Some(confirmation_hash),
         )
