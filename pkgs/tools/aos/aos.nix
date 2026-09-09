@@ -374,6 +374,16 @@ in
           --ignored \
           --exact
 
+        cargo test \
+          --frozen \
+          --offline \
+          -p aos-package \
+          --lib \
+          config_eval::systemd_ability::tests::supplied_catalog_dispatches_exact_unit_and_recovers_observation \
+          -- \
+          --ignored \
+          --exact
+
         cleanup_pinned_bus
         trap - EXIT HUP INT TERM
       fi

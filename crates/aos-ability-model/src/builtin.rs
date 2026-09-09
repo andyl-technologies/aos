@@ -194,6 +194,10 @@ fn systemd_observation_schema() -> Result<ValueSchema> {
                 },
             ),
             (
+                LocalKey::new("active_state")?,
+                optional_string(SYSTEMD_STATE_MAX_BYTES),
+            ),
+            (
                 LocalKey::new("job_path")?,
                 optional_string(SYSTEMD_JOB_PATH_MAX_BYTES),
             ),
@@ -262,7 +266,7 @@ mod tests {
         assert_eq!(
             key.descriptor,
             Sha256Digest::parse(
-                "sha256:d7dcc31e3da49efad1ff728d86b107d0d2b33f558238d60e7babf65700f32004"
+                "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598"
             )
             .unwrap()
         );

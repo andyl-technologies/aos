@@ -90,6 +90,69 @@ pub struct JobOutcome {
     pub result: JobResult,
 }
 
+/// Classifies a unit's exact systemd `ActiveState` while preserving new labels.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UnitActiveState {
+    /// The unit is fully active.
+    Active,
+    /// The unit is active while reloading its configuration.
+    Reloading,
+    /// The unit is fully inactive.
+    Inactive,
+    /// The unit entered a failed state.
+    Failed,
+    /// The unit is still activating.
+    Activating,
+    /// The unit is still deactivating.
+    Deactivating,
+    /// The unit is in systemd's maintenance state.
+    Maintenance,
+    /// The unit is refreshing its state.
+    Refreshing,
+    /// The manager returned an unrecognized future state.
+    Unknown(String),
+}
+
+impl UnitActiveState {
+    /// Classifies one raw systemd `ActiveState` label without discarding it.
+    #[must_use]
+    pub fn from_systemd(state: &str) -> Self {
+        match state {
+            "active" => Self::Active,
+            "reloading" => Self::Reloading,
+            "inactive" => Self::Inactive,
+            "failed" => Self::Failed,
+            "activating" => Self::Activating,
+            "deactivating" => Self::Deactivating,
+            "maintenance" => Self::Maintenance,
+            "refreshing" => Self::Refreshing,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+
+    /// Returns the exact systemd label represented by this state.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Active => "active",
+            Self::Reloading => "reloading",
+            Self::Inactive => "inactive",
+            Self::Failed => "failed",
+            Self::Activating => "activating",
+            Self::Deactivating => "deactivating",
+            Self::Maintenance => "maintenance",
+            Self::Refreshing => "refreshing",
+            Self::Unknown(state) => state,
+        }
+    }
+
+    /// Reports whether the unit is fully active.
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
 /// Identifies one system bus lifetime and the exact systemd service owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagerIncarnation {
@@ -1004,6 +1067,67 @@ impl PinnedSystemdManager {
         self.await_submission(submission, path).await
     }
 
+    /// Starts one canonical unit after rechecking its admission-qualified identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `name` is an alias, the unit object changed since
+    /// admission, the manager incarnation changed, or the job does not complete.
+    pub async fn start_unit_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        let submission = self.begin_submission()?;
+        let path = unit.start("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Stops one canonical unit after rechecking its admission-qualified identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`].
+    pub async fn stop_unit_exact(&self, name: &str, expected_identity: &str) -> Result<JobOutcome> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        let submission = self.begin_submission()?;
+        let path = unit.stop("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Restarts one canonical unit after rechecking its admission-qualified identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`].
+    pub async fn restart_unit_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        let submission = self.begin_submission()?;
+        let path = unit.restart("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Reloads one canonical unit after rechecking its admission-qualified identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`].
+    pub async fn reload_unit_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        let submission = self.begin_submission()?;
+        let path = unit.reload("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
     /// Reports whether a unit is active according to the pinned owner.
     ///
     /// An unloaded unit is inactive.
@@ -1027,6 +1151,101 @@ impl PinnedSystemdManager {
             Err(error) if is_no_such_unit(&error) => Ok(false),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Reports activity only after rechecking a canonical qualified unit identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`], plus failures
+    /// while reading the unit's active state.
+    pub async fn is_active_exact(&self, name: &str, expected_identity: &str) -> Result<bool> {
+        Ok(self
+            .active_state_exact(name, expected_identity)
+            .await?
+            .is_active())
+    }
+
+    /// Returns a unit's exact active state after rechecking its qualified identity.
+    ///
+    /// Unknown future systemd labels remain available through
+    /// [`UnitActiveState::Unknown`] instead of being collapsed into inactivity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`], plus failures
+    /// while reading the unit's active state.
+    pub async fn active_state_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<UnitActiveState> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        Ok(UnitActiveState::from_systemd(&unit.active_state().await?))
+    }
+
+    /// Resolves a configured unit name to systemd's canonical object identity.
+    ///
+    /// The resolved object's canonical `Id` must equal `name`, so aliases are
+    /// rejected before they can become durable resource bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager incarnation changed or the unit cannot
+    /// be resolved by the pinned owner.
+    pub async fn unit_identity(&self, name: &str) -> Result<String> {
+        let (identity, canonical_name) = self.resolve_unit_identity(name).await?;
+        if canonical_name != name {
+            return Err(Error::UnitAlias {
+                requested: name.to_string(),
+                canonical: canonical_name,
+            });
+        }
+        Ok(identity)
+    }
+
+    async fn exact_unit<'a>(
+        &'a self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<UnitProxy<'a>> {
+        self.ensure_current().await?;
+        let path = self.manager.get_unit(name).await?;
+        let actual = path.as_str().to_string();
+        let unit = UnitProxy::builder(&self.conn)
+            .destination(self.incarnation.owner.clone())?
+            .path(path)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let canonical_name = unit.id().await?;
+        if canonical_name != name {
+            return Err(Error::UnitAlias {
+                requested: name.to_string(),
+                canonical: canonical_name,
+            });
+        }
+        if actual != expected_identity {
+            return Err(Error::UnitIdentityChanged {
+                unit: name.to_string(),
+                expected: expected_identity.to_string(),
+                actual,
+            });
+        }
+        Ok(unit)
+    }
+
+    async fn resolve_unit_identity(&self, name: &str) -> Result<(String, String)> {
+        self.ensure_current().await?;
+        let path = self.manager.get_unit(name).await?;
+        let unit = UnitProxy::builder(&self.conn)
+            .destination(self.incarnation.owner.clone())?
+            .path(path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let canonical_name = unit.id().await?;
+        Ok((path.as_str().to_string(), canonical_name))
     }
 
     async fn ensure_current(&self) -> Result<()> {

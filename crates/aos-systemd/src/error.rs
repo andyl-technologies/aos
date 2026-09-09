@@ -38,6 +38,26 @@ pub enum Error {
     /// The caller's pinned bus/manager incarnation is no longer current.
     #[error("systemd manager incarnation changed before the pinned operation")]
     ManagerIncarnationChanged,
+
+    /// A configured unit name is an alias rather than its stable canonical ID.
+    #[error("systemd unit {requested} resolves to canonical unit {canonical}")]
+    UnitAlias {
+        /// Names the configured alias rejected by exact native admission.
+        requested: String,
+        /// Names the canonical unit reported by the resolved object.
+        canonical: String,
+    },
+
+    /// A canonical unit no longer resolves to its admission-qualified object.
+    #[error("systemd unit {unit} changed identity before the pinned operation")]
+    UnitIdentityChanged {
+        /// Names the exact canonical unit requested by the caller.
+        unit: String,
+        /// Carries the object identity established during admission.
+        expected: String,
+        /// Carries the object identity observed immediately before dispatch.
+        actual: String,
+    },
 }
 
 impl Error {
@@ -52,7 +72,9 @@ impl Error {
             | Self::Fdo(_)
             | Self::JobSenderDropped(_)
             | Self::JobCompletionOverflow
-            | Self::ManagerIncarnationChanged => false,
+            | Self::ManagerIncarnationChanged
+            | Self::UnitAlias { .. }
+            | Self::UnitIdentityChanged { .. } => false,
         }
     }
 }
