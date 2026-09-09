@@ -191,9 +191,12 @@ in {
         }
         {
           name = "kernel-version";
-          description = "Kernel version is 6.18.x";
+          description = "Kernel version matches the selected kernel";
           script = ''
-            assert "6.18" in vm.succeed("uname -r")
+            actual_kernel = vm.succeed("uname -r").strip()
+            expected_kernel = "${config.system.build.kernel.version}"
+            assert actual_kernel == expected_kernel, \
+                f"expected kernel {expected_kernel}, got {actual_kernel}"
           '';
         }
       ];
