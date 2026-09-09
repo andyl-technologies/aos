@@ -17,6 +17,7 @@
 
 pub mod bundle;
 pub mod compare;
+pub mod explanation;
 pub mod projection;
 pub mod query;
 pub mod render;
@@ -27,6 +28,11 @@ pub use bundle::{
     InspectionBundle, InspectionBundleError,
 };
 pub use compare::{ChangedNode, INSPECTION_DIFF_SCHEMA, InspectionDiff};
+pub use explanation::{
+    BINDING_EXPLANATION_MAX_BYTES, BINDING_EXPLANATION_SCHEMA, BindingExplanation,
+    BindingExplanationAudience, BindingExplanationError, BindingExplanationOutcome,
+    ExplainedObligation, ExplanationLimitation, ProtectedValue, RejectedCandidateHistory,
+};
 pub use projection::{
     INSPECTION_PROJECTION_SCHEMA, InspectionProjection, InspectionProjectionError, ProjectionKind,
 };
