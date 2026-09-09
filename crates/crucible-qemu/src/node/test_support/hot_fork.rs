@@ -41,6 +41,8 @@ fn spawn_scripted_process() -> std::io::Result<std::process::Child> {
 pub enum QemuTestHotForkOutcome {
     /// Returns a complete fork result.
     Forked,
+    /// Rejects the first fork before creating a child, then allows a retry.
+    RejectedOnce,
     /// Loses the command disposition after QEMU may have forked.
     Indeterminate,
 }
@@ -1197,6 +1199,15 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                     crate::QmpHotForkOutcome::Forked,
                     i64::from(child_process_id),
                 ))
+            }
+            QemuTestHotForkOutcome::RejectedOnce => {
+                self.outcome = QemuTestHotForkOutcome::Forked;
+                Err(crate::QemuHotForkCommandError::Rejected {
+                    source: QemuNodeChannelError::new(
+                        "fork scripted hot-fork template",
+                        "injected no-child rejection",
+                    ),
+                })
             }
             QemuTestHotForkOutcome::Indeterminate => {
                 Err(crate::QemuHotForkCommandError::Indeterminate {

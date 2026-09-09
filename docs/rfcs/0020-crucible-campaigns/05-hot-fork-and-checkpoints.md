@@ -2052,11 +2052,17 @@ reauthenticates every process incarnation before publication. The continuation,
 rather than a new caller-supplied launch configuration, retains the source
 lifecycle configuration, immutable root identities, and resolved block/9p
 bindings; only a fresh durable run-state root is supplied at adoption. Any
-backing change or unconsumed child-world state fails closed. Daemon invocation
-of this constructor, transfer of the aggregate attempt owner into the resulting
-lifecycle, the branch-private child root-overlay proof, and the real modeled
-QEMU flight remain mandatory before this path is enabled or T-CAM-7.4 is marked
-complete.
+backing change or unconsumed child-world state fails closed. The daemon now
+invokes this constructor and transfers the aggregate attempt owner into
+the resulting lifecycle. The production runner executes the captured scheduler
+continuation and retains that lifecycle through durable result publication and
+disposition-ordered cleanup. Its packaged executor captures prepared worlds
+into the shared managed pool and routes compatible fresh work through this
+path. Scripted regressions cover successful multi-node publication and reuse,
+permanently failed nodes without QEMU children, a proven first-child rejection
+with exact source recovery, and failure cases that retain or quarantine
+ownership. The real-QEMU atomic-world matrix and explicit non-VM I/O-node clone
+semantics remain mandatory before T-CAM-7.4 is marked complete.
 
 - **[HFORK-13]** A campaign branch is a world, not a bag of independently
   visible node forks. No consumer may observe a partially forked world.

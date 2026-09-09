@@ -3482,28 +3482,34 @@ for the child's lifetime, drops it before the target guard's storage cleanup,
 and releases the consumed plan with the contract once the child's outcome is
 reconciled. Scripted node tests cover the staging order and the rollback.
 
-The daemon also has a narrow scripted production-composition regression for
-T-CAM-7.4. It checks out one complete source world with two running nodes,
-forks and admits both children into one complete assembly, converts both into
-the real production lifecycle constructor, shuts that lifecycle down, and
-retains the source world and aggregate target guard until a canceled
-disposition has reconciled every child. Recovery rolls back and prepares the
-same source world again; a second execution incarnation repeats the complete
-two-node cycle. Separate failures prove that an indeterminate second fork
-retains the first child, both source processes, and the aggregate guard, and
-that a second-node construction failure occurs after one API adoption while
-the complete transaction remains retained. The source transaction is
-authenticated with its full prepared predicate for each fork and with its
-process incarnation and active generation during ordered child-resource
-release; PID reuse, generation changes, and completed rollback all fail the
-latter check.
+The daemon also has scripted production-composition regressions for T-CAM-7.4.
+They check out one complete source world with two running nodes and a
+permanently failed node that owns no QEMU process, fork and admit both live
+children into one complete assembly, convert them into the production
+lifecycle, execute the captured scheduler continuation, and carry its pending
+product through successful durable observation publication. Source and
+aggregate target ownership remain held until the published disposition has
+reconciled every child. Recovery rolls back and prepares the same source world
+again; a second execution incarnation repeats launch, shutdown,
+canceled-disposition reconciliation, and source recovery. The packaged executor
+feeds the same path from its shared managed source-world pool and falls back to
+exact or thin materialization after a capability decline.
 
-This is scripted composition evidence, not completion of T-CAM-7.4 or Phase 7.
-It drives shutdown and canceled-disposition reconciliation without modeled
-execution or successful durable observation publication. The real-QEMU atomic
-world matrix, managed pool and selection application, non-VM I/O-node
-semantics, PoweredOff exact/thin fallback, successful runner publication, and
-the equivalence, isolation, scaling, pressure, and dogfood gates remain open.
+The source transaction is authenticated with its full prepared predicate for
+each fork and with its process incarnation and active generation during ordered
+child-resource release; PID reuse, generation changes, and completed rollback
+all fail the latter check. A proven rejection before the first child exists now
+returns that exact unchanged source only after the empty assembly, rolled-back
+node reservation, source identity, and completed target cleanup are all
+verified. Cleanup failure keeps the source unavailable. Separate failures prove
+that an indeterminate second fork retains the first child, both source
+processes, and the aggregate guard, and that a second-node construction failure
+occurs after one API adoption while the complete transaction remains retained.
+
+This production-path and repository-publication evidence does not complete
+T-CAM-7.4 or Phase 7. The real-QEMU atomic-world matrix, non-VM I/O-node
+semantics, and the equivalence, isolation, scaling, pressure, and dogfood gates
+remain open.
 
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
