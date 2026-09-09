@@ -134,8 +134,19 @@ pub struct ResourceHandle<H> {
 pub struct ResourceAdmissionEvidence {
     resource: ResourceId,
     provider_incarnation: Option<IncarnationId>,
-    revision: Option<RevisionId>,
+    revision: ResourceRevisionObservation,
     observation: AbilityValue,
+}
+
+/// Distinguishes authoritative resource absence from an unknown revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceRevisionObservation {
+    /// An authoritative probe established that the logical resource is absent.
+    Absent,
+    /// An authoritative probe established the exact current semantic revision.
+    Present(RevisionId),
+    /// The catalog could not establish either absence or an exact revision.
+    Unknown,
 }
 
 impl ResourceAdmissionEvidence {
@@ -145,6 +156,21 @@ impl ResourceAdmissionEvidence {
         resource: ResourceId,
         provider_incarnation: Option<IncarnationId>,
         revision: Option<RevisionId>,
+        observation: AbilityValue,
+    ) -> Self {
+        let revision = revision.map_or(
+            ResourceRevisionObservation::Unknown,
+            ResourceRevisionObservation::Present,
+        );
+        Self::new_with_revision_observation(resource, provider_incarnation, revision, observation)
+    }
+
+    /// Constructs evidence with an explicit present, absent, or unknown state.
+    #[must_use]
+    pub fn new_with_revision_observation(
+        resource: ResourceId,
+        provider_incarnation: Option<IncarnationId>,
+        revision: ResourceRevisionObservation,
         observation: AbilityValue,
     ) -> Self {
         Self {
@@ -170,6 +196,15 @@ impl ResourceAdmissionEvidence {
     /// Returns the current resource revision, when established.
     #[must_use]
     pub const fn revision(&self) -> Option<RevisionId> {
+        match self.revision {
+            ResourceRevisionObservation::Present(revision) => Some(revision),
+            ResourceRevisionObservation::Absent | ResourceRevisionObservation::Unknown => None,
+        }
+    }
+
+    /// Returns whether an authoritative probe found absence, presence, or unknown state.
+    #[must_use]
+    pub const fn revision_observation(&self) -> ResourceRevisionObservation {
         self.revision
     }
 
