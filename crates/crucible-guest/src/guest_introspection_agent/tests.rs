@@ -5,12 +5,44 @@ use std::time::Duration;
 
 use super::*;
 
+const INHERITED_OUTPUT_DESCENDANT_OPT_IN: &str = "crucible-descendant-probe-fixture-opt-in";
+const INHERITED_OUTPUT_DESCENDANT_READY: &[u8] = b"crucible-descendant-probe-ready";
+
 struct FailingReader;
 
 impl Read for FailingReader {
     fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
         Err(std::io::Error::other("synthetic output failure"))
     }
+}
+
+fn wait_for_descendant_probe_ready(channel: &mut ActiveChannel) {
+    let mut output = Vec::new();
+    for _ in 0..1000 {
+        let mut pending = VecDeque::new();
+        let mut budget = GUEST_INTROSPECTION_PENDING_CAPACITY;
+        channel
+            .drain_one_output(&mut pending, &mut budget)
+            .unwrap_or_else(|error| panic!("descendant probe output drain failed: {error}"));
+        for record in pending {
+            if let GuestIntrospectionMessage::Output { bytes, .. } = record.message() {
+                output.extend_from_slice(bytes);
+            }
+        }
+        if output
+            .windows(INHERITED_OUTPUT_DESCENDANT_READY.len())
+            .any(|window| window == INHERITED_OUTPUT_DESCENDANT_READY)
+        {
+            return;
+        }
+
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    panic!(
+        "descendant probe did not report readiness: {}",
+        String::from_utf8_lossy(&output)
+    );
 }
 
 #[test]
@@ -283,9 +315,8 @@ fn pty_process_has_a_controlling_terminal_and_owned_resize_handle() {
     reason = "the parent must exit without waiting so channel teardown can reap the inherited process group"
 )]
 fn inherited_output_descendant_probe() {
-    let selected_as_child = std::env::args()
-        .any(|arg| arg == "guest_introspection_agent::tests::inherited_output_descendant_probe");
-    if !selected_as_child {
+    let fixture_opted_in = std::env::args().any(|arg| arg == INHERITED_OUTPUT_DESCENDANT_OPT_IN);
+    if !fixture_opted_in {
         return;
     }
     if std::env::var_os("CRUCIBLE_TEST_DESCENDANT").is_some() {
@@ -298,12 +329,23 @@ fn inherited_output_descendant_probe() {
         .arg("--exact")
         .arg("guest_introspection_agent::tests::inherited_output_descendant_probe")
         .arg("--nocapture")
+        // `--skip` is a libtest option that safely carries this private marker.
+        .arg("--skip")
+        .arg(INHERITED_OUTPUT_DESCENDANT_OPT_IN)
         .env("CRUCIBLE_TEST_DESCENDANT", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap_or_else(|error| panic!("descendant probe spawn failed: {error}"));
+    let readiness_write = {
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(INHERITED_OUTPUT_DESCENDANT_READY)
+            .and_then(|()| stdout.flush())
+    };
+    readiness_write
+        .unwrap_or_else(|error| panic!("descendant probe readiness write failed: {error}"));
 }
 
 #[test]
@@ -315,9 +357,13 @@ fn exec_completion_terminates_descendants_holding_output_open() {
         String::from("--exact"),
         String::from("guest_introspection_agent::tests::inherited_output_descendant_probe"),
         String::from("--nocapture"),
+        String::from("--skip"),
+        String::from(INHERITED_OUTPUT_DESCENDANT_OPT_IN),
     ];
     let mut channel = ActiveChannel::spawn(12, &argv, ChannelMode::Exec)
         .unwrap_or_else(|error| panic!("exec child spawn failed: {error}"));
+    wait_for_descendant_probe_ready(&mut channel);
+
     let mut pending = VecDeque::new();
     for _ in 0..1000 {
         channel
@@ -350,9 +396,13 @@ fn repeated_close_terminates_exec_process_group() {
         String::from("--exact"),
         String::from("guest_introspection_agent::tests::inherited_output_descendant_probe"),
         String::from("--nocapture"),
+        String::from("--skip"),
+        String::from(INHERITED_OUTPUT_DESCENDANT_OPT_IN),
     ];
     let mut channel = ActiveChannel::spawn(13, &argv, ChannelMode::Exec)
         .unwrap_or_else(|error| panic!("exec child spawn failed: {error}"));
+    wait_for_descendant_probe_ready(&mut channel);
+
     channel
         .close_input()
         .unwrap_or_else(|error| panic!("first close failed: {error}"));
