@@ -1,0 +1,140 @@
+diff --git a/dump/main.c b/dump/main.c
+index 8e9c184..5bea0ce 100644
+--- a/dump/main.c
++++ b/dump/main.c
+@@ -29,6 +29,7 @@ struct erofsdump_cfg {
+ 	bool show_file_content;
+ 	erofs_nid_t nid;
+ 	const char *inode_path;
++	const char *xattr_name;
+ };
+ static struct erofsdump_cfg dumpcfg;
+ 
+@@ -82,6 +83,7 @@ static struct option long_options[] = {
+ 	{"ls", no_argument, NULL, 5},
+ 	{"offset", required_argument, NULL, 6},
+ 	{"cat", no_argument, NULL, 7},
++	{"get-xattr", required_argument, NULL, 8},
+ 	{0, 0, 0, 0},
+ };
+ 
+@@ -130,5 +132,6 @@ static void usage(int argc, char **argv)
+ 		" --offset=#      skip # bytes at the beginning of IMAGE\n"
+-		" --path=X        show the target inode info of path X\n",
++		" --path=X        show the target inode info of path X\n"
++		" --get-xattr=X   show xattr X as a machine-readable hexadecimal record\n",
+ 		argv[0]);
+ }
+ 
+@@ -192,6 +195,9 @@ static int erofsdump_parse_options_cfg(int argc, char **argv)
+ 		case 7:
+ 			dumpcfg.show_file_content = true;
+ 			break;
++		case 8:
++			dumpcfg.xattr_name = optarg;
++			break;
+ 		default:
+ 			return -EINVAL;
+ 		}
+@@ -210,6 +216,11 @@ static int erofsdump_parse_options_cfg(int argc, char **argv)
+ 		erofs_err("unexpected argument: %s\n", argv[optind]);
+ 		return -EINVAL;
+ 	}
++	if (dumpcfg.xattr_name && !dumpcfg.show_inode) {
++		erofs_err("--get-xattr requires --path or --nid");
++		return -EINVAL;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -486,6 +497,76 @@ static void erofsdump_show_fileinfo(bool show_extent)
+ 		erofs_is_packed_inode(&inode) ? "(packed file)" : path, extent_count);
+ }
+ 
++#define EROFSDUMP_XATTR_VALUE_MAX	(1024U * 1024U)
++
++static void erofsdump_print_hex(const unsigned char *value, size_t size)
++{
++	size_t i;
++
++	for (i = 0; i < size; ++i)
++		printf("%02x", value[i]);
++}
++
++static int erofsdump_show_xattr(void)
++{
++	struct erofs_inode inode = { .sbi = &g_sbi, .nid = dumpcfg.nid };
++	unsigned char *value;
++	int err, size;
++
++	if (dumpcfg.inode_path) {
++		err = erofs_ilookup(dumpcfg.inode_path, &inode);
++		if (err) {
++			erofs_err("read inode failed @ %s", dumpcfg.inode_path);
++			return err;
++		}
++	} else {
++		err = erofs_read_inode_from_disk(&inode);
++		if (err) {
++			erofs_err("read inode failed @ nid %llu", inode.nid | 0ULL);
++			return err;
++		}
++	}
++
++	size = erofs_getxattr(&inode, dumpcfg.xattr_name, NULL, 0);
++	if (size == -ENODATA) {
++		printf("EROFS_XATTR_V1\tmode=%07o\tstatus=absent\tvalue=-\n",
++		       inode.i_mode);
++		return 0;
++	}
++	if (size < 0) {
++		erofs_err("failed to get xattr `%s` size @ nid %llu: %s",
++			  dumpcfg.xattr_name, inode.nid | 0ULL,
++			  erofs_strerror(size));
++		return size;
++	}
++	if ((unsigned int)size > EROFSDUMP_XATTR_VALUE_MAX) {
++		erofs_err("xattr `%s` @ nid %llu exceeds the %u-byte output limit",
++			  dumpcfg.xattr_name, inode.nid | 0ULL,
++			  EROFSDUMP_XATTR_VALUE_MAX);
++		return -E2BIG;
++	}
++
++	value = malloc(size ? (size_t)size : 1);
++	if (!value)
++		return -ENOMEM;
++	err = erofs_getxattr(&inode, dumpcfg.xattr_name, (char *)value, size);
++	if (err != size) {
++		if (err >= 0)
++			err = -EIO;
++		erofs_err("xattr `%s` @ nid %llu changed size while reading",
++			  dumpcfg.xattr_name, inode.nid | 0ULL);
++		free(value);
++		return err;
++	}
++
++	printf("EROFS_XATTR_V1\tmode=%07o\tstatus=present\tvalue=",
++	       inode.i_mode);
++	erofsdump_print_hex(value, size);
++	putchar('\n');
++	free(value);
++	return 0;
++}
++
+ static void erofsdump_filesize_distribution(const char *title,
+ 		unsigned int *file_counts, unsigned int len)
+ {
+@@ -770,6 +856,12 @@ int main(int argc, char **argv)
+ 	if (dumpcfg.show_inode)
+ 		erofsdump_show_fileinfo(dumpcfg.show_extent);
+ 
++	if (dumpcfg.xattr_name) {
++		err = erofsdump_show_xattr();
++		if (err)
++			goto exit_put_super;
++	}
++
+ exit_put_super:
+ 	erofs_put_super(&g_sbi);
+ exit_dev_close:

@@ -775,8 +775,15 @@ let
     "networking/_openldap-config/module.nix" = "linux-only-config-source";
     "security/_aos-selinux-production-policy/coverage.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/coverage_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/context_plan.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/context_plan_test.py" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/kernel-classmap.c" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_context_dump.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_context_dump_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/verify_context_lookups.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_erofs_contexts.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_erofs_contexts_test.py" = "linux-only-test-source";
     "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";

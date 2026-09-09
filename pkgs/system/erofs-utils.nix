@@ -19,6 +19,7 @@
   bash,
   gcc-libs,
   util-linux,
+  libselinux,
   lz4,
   xz,
   zlib,
@@ -66,8 +67,8 @@ in
       libtool
       m4
     ];
-    runtimeDeps = [bash gcc-libs util-linux lz4 xz zlib zstd];
-    propagatedDeps = [util-linux lz4 xz zlib zstd];
+    runtimeDeps = [bash gcc-libs util-linux libselinux lz4 xz zlib zstd];
+    propagatedDeps = [util-linux libselinux lz4 xz zlib zstd];
 
     phases = [
       {
@@ -75,6 +76,7 @@ in
         script = ''
           tar xf $src
           cd erofs-utils-${version}
+          patch -p1 < ${./erofs-utils-dump-xattr.patch}
         '';
       }
       {
@@ -124,6 +126,7 @@ in
             --enable-lzma \
             --with-zlib=yes \
             --with-libzstd=yes \
+            --with-selinux=yes \
             --enable-multithreading
         '';
       }
@@ -169,6 +172,15 @@ in
             ''
           }
           }
+
+          # `--file-contexts` is compiled out unless configure found the
+          # target libselinux. Treat its absence as a packaging failure: the
+          # immutable root builders must never silently emit unlabeled EROFS
+          # inodes because an optional feature probe changed.
+          run_check_target "$out/bin/${checkMkfsProgram}" --help 2>&1 \
+            | grep -F -- '--file-contexts=X'
+          run_check_target "$out/bin/dump.erofs" --help 2>&1 \
+            | grep -F -- '--get-xattr=X'
 
           mkdir -p "$TMPDIR/erofs-smoke/root"
           dd if=/dev/zero of="$TMPDIR/erofs-smoke/root/worker-payload" \
