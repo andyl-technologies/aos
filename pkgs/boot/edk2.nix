@@ -219,6 +219,11 @@ in
           ${unpackSubmodules}
           chmod -R u+w .
 
+          # VfrCompile's multi-output parser rules race under parallel make,
+          # and its object rules omit generated lexer header dependencies.
+          # Serialize this small tool while keeping other BaseTools parallel.
+          sed -i '1i .NOTPARALLEL:' BaseTools/Source/C/VfrCompile/GNUmakefile
+
           # GenFw ignores SOURCE_DATE_EPOCH while translating ELF modules and
           # writes wall-clock PE timestamps into every firmware volume. Make
           # the two converter paths consume the epoch exported by the build.
