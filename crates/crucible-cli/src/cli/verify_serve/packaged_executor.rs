@@ -57,6 +57,7 @@ struct PackagedExecutorDeployment {
     host_architecture: String,
     qemu_profile: String,
     hot_fork: Option<PackagedHotForkDeployment>,
+    guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticsDeployment>,
 }
 
 /// Optional retained-source policy; absence keeps hot-fork execution disabled.
@@ -74,6 +75,13 @@ struct PackagedHotForkDeployment {
     fork_rate_window_ms: u64,
     shutdown_step_timeout_ms: u64,
     host_io_timeout_ms: u64,
+}
+
+/// Optional bounded emission for guest-selectable source and replay coordinates.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GuestSelectableBoundaryDiagnosticsDeployment {
+    maximum_events: usize,
 }
 
 /// Guarded host capability loaded for one campaign-backed legacy command.
@@ -197,6 +205,8 @@ pub(super) fn prepare_cli_packaged_executor(
     let store_namespace = packaged_store_namespace(state);
     let daemon_epoch = fresh_daemon_epoch()?;
     let hot_fork = deployment_hot_fork_policy(&deployment, lifecycle)?;
+    let guest_selectable_diagnostics =
+        deployment_guest_selectable_boundary_diagnostics(&deployment)?;
     let mut config = crucible_daemon::PackagedQemuExecutorConfig::new(
         campaigns,
         endpoint,
@@ -216,6 +226,9 @@ pub(super) fn prepare_cli_packaged_executor(
     if let Some(hot_fork) = hot_fork {
         config = config.with_hot_fork_sources(hot_fork);
     }
+    if let Some(diagnostics) = guest_selectable_diagnostics {
+        config = config.with_guest_selectable_boundary_diagnostics(diagnostics);
+    }
     let executor = prepared
         .prepare_packaged_executor(config)
         .map_err(|error| {
@@ -226,6 +239,25 @@ pub(super) fn prepare_cli_packaged_executor(
         })?;
     crucible_daemon::AttachedPackagedQemuExecutor::start(executor)
         .map_err(|error| serve_error(format!("campaign executor startup error: {error}")))
+}
+
+fn deployment_guest_selectable_boundary_diagnostics(
+    deployment: &PackagedExecutorDeployment,
+) -> Result<Option<crucible_daemon::GuestSelectableBoundaryDiagnosticConfig>, CliError> {
+    deployment
+        .guest_selectable_boundary_diagnostics
+        .as_ref()
+        .map(|diagnostics| {
+            crucible_daemon::GuestSelectableBoundaryDiagnosticConfig::new(
+                diagnostics.maximum_events,
+            )
+            .map_err(|error| {
+                serve_error(format!(
+                    "campaign guest-selectable boundary diagnostic policy error: {error}"
+                ))
+            })
+        })
+        .transpose()
 }
 
 fn deployment_hot_fork_policy(
@@ -311,6 +343,7 @@ fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, 
             "campaign packaged-executor worker count is outside its slot ceiling",
         ));
     }
+    deployment_guest_selectable_boundary_diagnostics(&deployment)?;
     let finish_timeout = Duration::from_millis(deployment.finish_timeout_ms);
     if finish_timeout.is_zero() || finish_timeout > Duration::from_secs(60 * 60) {
         return Err(serve_error(
@@ -542,6 +575,13 @@ qemu_profile = "deterministic-tcg-v1"
         )
     }
 
+    fn authored_guest_selectable_diagnostics(maximum_events: usize) -> String {
+        format!(
+            "{}\n[guest_selectable_boundary_diagnostics]\nmaximum_events = {maximum_events}\n",
+            authored()
+        )
+    }
+
     fn hot_fork_artifacts(directory: &Path) -> crucible_api::ProductionVmLifecycleConfig {
         let qemu = directory.join("bin/qemu-system-x86_64");
         let plugin = directory.join("lib/libcrucible-qemu-plugin.so");
@@ -627,6 +667,35 @@ qemu_profile = "deterministic-tcg-v1"
         assert_eq!(policy.limits().maximum_templates(), 2);
         assert_eq!(policy.limits().maximum_forks_per_window(), 8);
         assert_eq!(policy.limits().fork_rate_window_nanos(), 1_000_000_000);
+    }
+
+    #[test]
+    fn guest_selectable_boundary_diagnostic_policy_is_optional_and_bounded() {
+        let directory = tempfile::tempdir().expect("deployment directory");
+        let path = directory.path().join("executor.toml");
+        fs::write(&path, authored_guest_selectable_diagnostics(256))
+            .expect("write diagnostic deployment");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
+
+        let deployment = load_validated_deployment(&path).expect("validated deployment");
+        let diagnostics = deployment_guest_selectable_boundary_diagnostics(&deployment)
+            .expect("valid diagnostic policy")
+            .expect("enabled diagnostic policy");
+
+        assert_eq!(diagnostics.maximum_events(), 256);
+
+        fs::write(&path, authored_guest_selectable_diagnostics(0))
+            .expect("write invalid diagnostic deployment");
+        assert!(load_validated_deployment(&path).is_err());
+
+        fs::write(
+            &path,
+            authored_guest_selectable_diagnostics(
+                crucible_daemon::MAX_GUEST_SELECTABLE_BOUNDARY_DIAGNOSTIC_EVENTS + 1,
+            ),
+        )
+        .expect("write excessive diagnostic deployment");
+        assert!(load_validated_deployment(&path).is_err());
     }
 
     #[test]

@@ -9,13 +9,69 @@
 
 use crucible::{NodeId, ScenarioDefForm};
 use crucible_campaign::{
-    AttemptId, CampaignCodecError, CampaignHash, ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain,
-    ChoiceOpportunity, ConfigurationId, ScenarioDefId, SelectableId, Selection,
-    SelectionReplayMismatch,
+    Attempt, AttemptId, CampaignCodecError, CampaignHash, ChoiceCoordinate, ChoiceDiscovery,
+    ChoiceDomain, ChoiceOpportunity, ConfigurationId, ResolvedSelection, ScenarioDefId,
+    SelectableId, Selection, SelectionReplayMismatch,
 };
-use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
+use crucible_protocol::selectable_catalog_plan::{
+    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectablePlanPendingRequest,
+};
 use crucible_protocol::{SelectableProtocolError, SelectionReply};
 use thiserror::Error;
+
+mod diagnostics;
+pub(crate) use diagnostics::GuestSelectableBoundaryDiagnosticRecorder;
+pub use diagnostics::{
+    GuestSelectableBoundaryDiagnosticConfig, GuestSelectableBoundaryDiagnosticConfigError,
+    GuestSelectableBoundaryDiagnosticEvent, GuestSelectableBoundaryDiagnosticStage,
+    MAX_GUEST_SELECTABLE_BOUNDARY_DIAGNOSTIC_EVENTS,
+};
+
+use crate::AttemptExecutionContext;
+
+// crucible-lint: allow rust-allow -- emission keeps attempt, physical request, resolved choice, and authenticated replay coordinates explicit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_guest_selectable_boundary_diagnostic(
+    context: &AttemptExecutionContext,
+    attempt: &Attempt,
+    stage: GuestSelectableBoundaryDiagnosticStage,
+    decision_index: usize,
+    node: &NodeId,
+    pending: &SelectablePlanPendingRequest,
+    discovery: &ChoiceDiscovery,
+    expected: Option<&ResolvedSelection>,
+) {
+    if !context.guest_selectable_boundary_diagnostics_enabled() {
+        return;
+    }
+    let Some(stopped_icount) = pending
+        .icount()
+        .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+    else {
+        return;
+    };
+    let Ok(opportunity) = discovery.opportunity().id() else {
+        return;
+    };
+    let expected_opportunity = expected.map(|selection| selection.selection().opportunity());
+    let expected_coordinate = expected.map(|selection| selection.opportunity().coordinate());
+    let event = GuestSelectableBoundaryDiagnosticEvent::new(
+        stage,
+        attempt.id().ok(),
+        context.diagnostic_execution_id(),
+        decision_index,
+        node.name.clone(),
+        pending.request().sequence(),
+        pending.icount(),
+        stopped_icount,
+        pending.vcpu_index(),
+        opportunity,
+        discovery.opportunity().coordinate(),
+        expected_opportunity,
+        expected_coordinate,
+    );
+    context.record_guest_selectable_boundary_diagnostic(&event);
+}
 
 /// Failure while resolving or replying to one guest selectable request.
 #[derive(Debug, Error)]

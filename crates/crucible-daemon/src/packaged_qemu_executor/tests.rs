@@ -320,6 +320,21 @@ fn packaged_executor_config_rejects_workers_beyond_slots() {
 }
 
 #[test]
+fn packaged_executor_boundary_diagnostics_are_explicit_and_bounded() {
+    let directory = tempfile::tempdir().expect("packaged executor directory");
+    let config = config(&directory, 1);
+    assert_eq!(config.guest_selectable_boundary_diagnostics(), None);
+
+    let diagnostics = GuestSelectableBoundaryDiagnosticConfig::new(17).expect("diagnostics");
+    let config = config.with_guest_selectable_boundary_diagnostics(diagnostics);
+
+    assert_eq!(
+        config.guest_selectable_boundary_diagnostics(),
+        Some(diagnostics)
+    );
+}
+
+#[test]
 fn packaged_hot_fork_config_preserves_launch_authentication_source() {
     let directory = tempfile::tempdir().expect("authentication source directory");
     let lifecycle = ProductionVmLifecycleConfig::new(

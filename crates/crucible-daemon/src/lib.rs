@@ -425,8 +425,11 @@ pub use executor_worker::{
     stage_prepared_checkpoint_result,
 };
 pub use guest_selectable::{
+    GuestSelectableBoundaryDiagnosticConfig, GuestSelectableBoundaryDiagnosticConfigError,
+    GuestSelectableBoundaryDiagnosticEvent, GuestSelectableBoundaryDiagnosticStage,
     GuestSelectableError, GuestSelectableReplayAttemptRole, GuestSelectableReplayMismatch,
     GuestSelectableReplayOpportunityContext, GuestSelectableReplayPhase,
+    MAX_GUEST_SELECTABLE_BOUNDARY_DIAGNOSTIC_EVENTS,
 };
 #[cfg(target_os = "linux")]
 pub use hot_checkpoint_fallback::{

@@ -2129,6 +2129,13 @@ fn signal_fault_frontier_is_not_published_after_execution_passes_it() {
 fn pending_guest_choice_at_start_stops_without_an_extra_quantum() {
     let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
+    let diagnostic_config = crate::GuestSelectableBoundaryDiagnosticConfig::new(2)
+        .expect("guest-selectable diagnostic policy");
+    let (diagnostics, diagnostic_lines) =
+        crate::guest_selectable::GuestSelectableBoundaryDiagnosticRecorder::capture(
+            diagnostic_config,
+        );
+    let context = context().with_guest_selectable_boundary_diagnostics(diagnostics);
     let mut owner = PendingSelectableLifecycle {
         frontier: configuration,
         outcomes: VecDeque::new(),
@@ -2148,7 +2155,7 @@ fn pending_guest_choice_at_start_stops_without_an_extra_quantum() {
                 .drive(
                     &mut lifecycle,
                     &input,
-                    &context(),
+                    &context,
                     QemuFreshStartMaterialization::genesis(),
                 )
                 .expect("choice already pending at continuation start"),
@@ -2162,6 +2169,12 @@ fn pending_guest_choice_at_start_stops_without_an_extra_quantum() {
         pending.stop,
         ModeledStop::Reached(StopCondition::NextChoice)
     ));
+    let diagnostic_lines = diagnostic_lines.lock().expect("boundary diagnostics");
+    assert_eq!(diagnostic_lines.len(), 1);
+    assert!(diagnostic_lines[0].contains("stage=source-discovery"));
+    assert!(diagnostic_lines[0].contains("attempt=crucible.campaign.attempt@"));
+    assert!(diagnostic_lines[0].contains("decision_index=0"));
+    assert!(diagnostic_lines[0].contains("trap_icount=41 stopped_icount=42 vcpu=0"));
 }
 
 #[test]

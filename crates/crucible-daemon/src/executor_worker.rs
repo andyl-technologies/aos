@@ -28,6 +28,9 @@ const SELECTED_ORIGIN_STRUCTURAL_BYTES: u64 = 4096;
 
 use crate::exact_checkpoint_store::AttemptCheckpointResultState;
 use crate::executor_supervisor::ExecutionCheckpointHandoff;
+use crate::guest_selectable::{
+    GuestSelectableBoundaryDiagnosticEvent, GuestSelectableBoundaryDiagnosticRecorder,
+};
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptCheckpointPublication,
     AttemptCheckpointResult, AttemptExecutionOrigin, CancellationOutcome,
@@ -460,6 +463,7 @@ pub struct AttemptExecutionContext {
     checkpoint_handoff: Option<ExecutionCheckpointHandoff>,
     execution_quanta: ExecutionQuantumBudget,
     origin: AttemptExecutionOrigin,
+    guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
 }
 
 /// Clone-shared physical-work budget for one execution incarnation.
@@ -517,6 +521,7 @@ impl AttemptExecutionContext {
             checkpoint_handoff: None,
             execution_quanta: ExecutionQuantumBudget::new(),
             origin: AttemptExecutionOrigin::Initial,
+            guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
         }
     }
 
@@ -557,6 +562,33 @@ impl AttemptExecutionContext {
     #[must_use]
     pub(crate) fn consumed_execution_quanta(&self) -> u64 {
         self.execution_quanta.consumed()
+    }
+
+    pub(crate) fn record_guest_selectable_boundary_diagnostic(
+        &self,
+        event: &GuestSelectableBoundaryDiagnosticEvent,
+    ) {
+        self.guest_selectable_diagnostics.record(event);
+    }
+
+    pub(crate) const fn guest_selectable_boundary_diagnostics_enabled(&self) -> bool {
+        self.guest_selectable_diagnostics.is_enabled()
+    }
+
+    pub(crate) const fn diagnostic_execution_id(&self) -> Option<ExecutionId> {
+        match self.runtime_basis {
+            Some(basis) => Some(basis.execution()),
+            None => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn with_guest_selectable_boundary_diagnostics(
+        mut self,
+        diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
+    ) -> Self {
+        self.guest_selectable_diagnostics = diagnostics;
+        self
     }
 
     /// Returns the resource limits available to a newly launched process owner.
@@ -976,13 +1008,27 @@ pub enum RepositoryAttemptWorkerError<E> {
 pub struct RepositoryAttemptWorker<M> {
     store: CampaignExecutorStore,
     model: M,
+    guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
 }
 
 impl<M> RepositoryAttemptWorker<M> {
     /// Creates a local worker over a repository and execution-model adapter.
     #[must_use]
     pub fn new(store: CampaignExecutorStore, model: M) -> Self {
-        Self { store, model }
+        Self {
+            store,
+            model,
+            guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn with_guest_selectable_boundary_diagnostics(
+        mut self,
+        diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
+    ) -> Self {
+        self.guest_selectable_diagnostics = diagnostics;
+        self
     }
 
     /// Returns the execution-model adapter for diagnostics and configuration.
@@ -1055,7 +1101,8 @@ where
             queued.execution(),
         ))
         .with_execution_origin(queued.origin())
-        .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned());
+        .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned())
+        .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone());
         let product = self
             .model
             .execute(&input, &context)
