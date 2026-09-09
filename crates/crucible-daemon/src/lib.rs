@@ -422,7 +422,10 @@ pub use executor_worker::{
     retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
     stage_prepared_checkpoint_result,
 };
-pub use guest_selectable::GuestSelectableError;
+pub use guest_selectable::{
+    GuestSelectableError, GuestSelectableReplayAttemptRole, GuestSelectableReplayMismatch,
+    GuestSelectableReplayOpportunityContext, GuestSelectableReplayPhase,
+};
 #[cfg(target_os = "linux")]
 pub use hot_checkpoint_fallback::{
     AuthenticatedHotCheckpointDemotionError, AuthenticatedHotCheckpointDemotionSink,

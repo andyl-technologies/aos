@@ -4,6 +4,8 @@
 #![allow(clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::error::Error;
+use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -21,12 +23,14 @@ use crucible_api::{
 };
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode, BooleanDomain, BranchPath,
-    CampaignFactId, CampaignHash, CampaignLineage, ChoiceClassContext, ChoiceDomain, ChoiceSource,
-    ChoiceValue, ConfigurationArtifact, ConfigurationId, ExecutionRetentionIntent,
-    ScenarioArtifact, ScenarioDefId, SelectableDeclaration, Selection, StopCondition,
+    BranchPathSegment, CampaignFactId, CampaignHash, CampaignLineage, CampaignRepository,
+    ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationArtifact,
+    ConfigurationId, ExecutionId, ExecutionRetentionIntent, ScenarioArtifact, ScenarioDefId,
+    SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatchKind, StopCondition,
 };
 use crucible_cas::content_store::{
-    BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, ObjectKind,
+    BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
+    MemoryRefBackend, ObjectKind,
 };
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
@@ -49,6 +53,27 @@ use crate::{
     QemuAttemptResourceGuard, QemuFreshModeledDriver, QemuSavepointReplayProof,
     QemuSelectedOriginResumeRunner,
 };
+
+#[derive(Debug)]
+struct OversizedFailure<E> {
+    source: E,
+}
+
+impl<E: fmt::Display> fmt::Display for OversizedFailure<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} trailing=", self.source)?;
+        for _ in 0..10_000 {
+            formatter.write_str("x")?;
+        }
+        Ok(())
+    }
+}
+
+impl<E: Error + 'static> Error for OversizedFailure<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
 
 #[test]
 fn genesis_start_error_retains_worker_class_and_underlying_cause() {
@@ -2145,7 +2170,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
     let selectables = ScenarioSelectables::new(
         &world,
         ScenarioSelectableLimits::new(4, 8, 16, 32).expect("selectable limits"),
-        vec![declaration],
+        vec![declaration.clone()],
     )
     .expect("scenario selectables");
     let source = ScenarioDefForm::from_components(
@@ -2196,6 +2221,59 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         &parent,
         Decision::Selection(SelectionDecision::new(&selection)),
     );
+    let repository = CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "guest-selectable-replay-diagnostic",
+            1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    );
+    repository
+        .publish_choice_domain(discovery.domain())
+        .expect("publish guest choice domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish guest selectable declaration");
+    repository
+        .publish_choice_opportunity(discovery.opportunity())
+        .expect("publish guest choice opportunity");
+    repository
+        .publish_selection(&selection)
+        .expect("publish guest selection");
+    let resolved_selection = repository
+        .resolve_selection(selection.id().expect("guest selection ID"))
+        .expect("resolve guest selection");
+    let replay_start = CrucibleResolvedAttemptStart::Branch {
+        parent: parent.clone(),
+        selection: Box::new(resolved_selection),
+        selected: target.clone(),
+    };
+    assert!(
+        replay_start.replay_selection(1).is_none(),
+        "expected context must not attach to an unrelated decision index"
+    );
+    let base_attempt = fresh_runner_input();
+    let AttemptStart::Discover {
+        configuration: parent_artifact,
+    } = base_attempt.attempt().start()
+    else {
+        panic!("guest branch fixture must start from discovery")
+    };
+    let SelectionOrigin::CampaignBranch { branch_point, edge } = selection.origin() else {
+        panic!("guest replay selection must be a campaign branch")
+    };
+    let replay_path = BranchPath::new(vec![BranchPathSegment::new(branch_point, edge)])
+        .expect("guest replay branch path");
+    let replay_attempt = Attempt::new(
+        AttemptStart::Branch {
+            edge,
+            parent: parent_artifact,
+            selection: selection.id().expect("guest replay selection ID"),
+        },
+        replay_path.id().expect("guest replay branch path ID"),
+        StopCondition::Terminal,
+    )
+    .expect("guest replay branch attempt");
     let replies = Arc::new(Mutex::new(Vec::new()));
     let mut lifecycle = FakeFreshLifecycle {
         order: Arc::new(Mutex::new(Vec::new())),
@@ -2210,10 +2288,15 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         terminal_after_replay: false,
         checkpoint_ready: true,
     };
-    let mut current = parent;
-
+    let mut current = parent.clone();
     apply_replayed_guest_selectables::<(), ()>(
         &mut lifecycle,
+        GuestSelectableReplayContext {
+            phase: GuestSelectableReplayPhase::FreshStart,
+            attempt_role: GuestSelectableReplayAttemptRole::ExecutingAttempt,
+            attempt: &replay_attempt,
+            start: &replay_start,
+        },
         scenario,
         &source,
         &target,
@@ -2227,6 +2310,120 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
     assert_eq!(
         replies[0].selected_value(),
         Some(ChoiceValue::Boolean(true).canonical_bytes().as_slice())
+    );
+
+    let drift_request = SelectionRequest::new(9, "product.recovery", "routing-epoch-7", None, 256)
+        .expect("drifted guest request");
+    let drift_pending = SelectablePlanPendingRequest::new(drift_request, 42, 0, 0x1000);
+    let drift_replies = Arc::new(Mutex::new(Vec::new()));
+    let mut drift_lifecycle = FakeFreshLifecycle {
+        order: Arc::new(Mutex::new(Vec::new())),
+        completed_quanta: 0,
+        promotion_observations: None,
+        cleanup_error: false,
+        pending: vec![
+            crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(
+                NodeId {
+                    name: String::from("router-a"),
+                },
+                drift_pending,
+            ),
+        ],
+        replies: Arc::clone(&drift_replies),
+        signal_fault_branches: VecDeque::new(),
+        terminal_after_replay: false,
+        checkpoint_ready: true,
+    };
+    let mut drift_current = parent.clone();
+
+    let failure = apply_replayed_guest_selectables::<std::io::Error, std::io::Error>(
+        &mut drift_lifecycle,
+        GuestSelectableReplayContext {
+            phase: GuestSelectableReplayPhase::FreshStart,
+            attempt_role: GuestSelectableReplayAttemptRole::ExecutingAttempt,
+            attempt: &replay_attempt,
+            start: &replay_start,
+        },
+        scenario,
+        &source,
+        &target,
+        &mut drift_current,
+    )
+    .expect_err("drifted runtime opportunity must fail replay");
+
+    let AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+        QemuFreshStartReplayError::GuestSelectable(GuestSelectableError::ReplayMismatch(mismatch)),
+    )) = &failure
+    else {
+        panic!("replay mismatch must retain its typed production error chain")
+    };
+    assert_eq!(
+        mismatch.mismatch().kind(),
+        SelectionReplayMismatchKind::OpportunityIdentity
+    );
+    assert_eq!(mismatch.phase(), GuestSelectableReplayPhase::FreshStart);
+    assert_eq!(
+        mismatch.attempt_role(),
+        GuestSelectableReplayAttemptRole::ExecutingAttempt
+    );
+    assert_eq!(
+        mismatch.attempt(),
+        replay_attempt.id().expect("replay attempt identity")
+    );
+    assert_eq!(
+        mismatch.replayed_configuration(),
+        ConfigurationId::from_hash(CampaignHash::from_bytes(parent.id().bytes))
+    );
+    assert_eq!(mismatch.decision_index(), 0);
+    assert_eq!(mismatch.node(), "router-a");
+    assert_eq!(mismatch.selectable(), "product.recovery");
+    assert_eq!(mismatch.request_instance(), "routing-epoch-7");
+    assert_eq!(mismatch.request_sequence(), 9);
+    assert_eq!(mismatch.request_icount(), 42);
+    assert_eq!(mismatch.request_vcpu_index(), 0);
+    let expected_opportunity = mismatch
+        .expected_opportunity()
+        .expect("branch start retains expected opportunity context");
+    assert_eq!(
+        expected_opportunity.declaration(),
+        discovery.opportunity().declaration()
+    );
+    assert_eq!(
+        expected_opportunity.coordinate(),
+        discovery.opportunity().coordinate()
+    );
+    assert_eq!(expected_opportunity.instance(), "routing-epoch-7");
+    assert_eq!(
+        mismatch.replayed_opportunity().instance(),
+        "routing-epoch-7"
+    );
+    assert_eq!(drift_current, parent);
+    assert!(drift_replies.lock().expect("drift replies").is_empty());
+
+    let execution = ExecutionId::from_bytes([0x39; 16]).expect("execution identity");
+    let diagnostic =
+        crate::packaged_qemu_executor::packaged_attempt_failure_diagnostic(execution, &failure);
+    assert!(diagnostic.contains("phase=fresh-start"));
+    assert!(diagnostic.contains("attempt-role=executing-attempt"));
+    assert!(diagnostic.contains("failed-predicate=selection-opportunity-identity"));
+    assert!(diagnostic.contains("decision-index=0"));
+    assert!(diagnostic.contains("request-sequence=9"));
+    assert!(diagnostic.contains("request-icount=42"));
+    assert!(diagnostic.contains("request-vcpu=0"));
+    assert!(diagnostic.contains("expected-declaration="));
+    assert!(diagnostic.contains("expected-choice-scheduler-coordinate="));
+
+    let oversized = crate::packaged_qemu_executor::packaged_attempt_failure_diagnostic(
+        execution,
+        &OversizedFailure { source: failure },
+    );
+    assert!(oversized.contains("phase=fresh-start"));
+    assert!(oversized.contains("attempt-role=executing-attempt"));
+    assert!(oversized.contains("failed-predicate=selection-opportunity-identity"));
+    assert!(oversized.ends_with("\n  ... diagnostic truncated"));
+    assert!(
+        oversized.len()
+            <= crate::packaged_qemu_executor::MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES
     );
 }
 

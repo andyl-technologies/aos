@@ -91,6 +91,7 @@ pub use choice::{
     ChoiceRelationalConstraint, ChoiceSource, ChoiceTuple, ChoiceValue, DiscreteAlternative,
     DiscreteDomain, IntegerDomain, IntegerRepresentation, IntegerValue, ModelSampleEvidence,
     ModelSampleVerifier, SelectableDeclaration, Selection, SelectionOrigin,
+    SelectionReplayMismatch, SelectionReplayMismatchKind,
 };
 pub use codec::CampaignCodecError;
 pub use execution::{

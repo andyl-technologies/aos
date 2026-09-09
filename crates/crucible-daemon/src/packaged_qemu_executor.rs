@@ -93,9 +93,12 @@ use hot_fork::{
     compose_packaged_qemu_executor_with_baked_genesis,
 };
 #[cfg(test)]
+pub(crate) use status::{
+    MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES, packaged_attempt_failure_diagnostic,
+};
+#[cfg(test)]
 use status::{
-    MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES, OperationalPhase, PackagedWorldLifecyclePhase,
-    operational_phase, packaged_attempt_failure_diagnostic, successive_actor_snapshots,
+    OperationalPhase, PackagedWorldLifecyclePhase, operational_phase, successive_actor_snapshots,
 };
 use status::{
     PackagedQemuOperationalStatusProvider, PackagedStatusAttemptWorker,

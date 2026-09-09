@@ -47,7 +47,7 @@ use crate::{
 };
 
 const MAX_PACKAGED_STATUS_ATTEMPT_RECORDS: usize = 65_536;
-pub(super) const MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES: usize = 8 * 1024;
+pub(crate) const MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES: usize = 8 * 1024;
 const MAX_PACKAGED_ATTEMPT_FAILURE_SOURCES: usize = 16;
 const PACKAGED_ATTEMPT_FAILURE_TRUNCATION_SUFFIX: &str = "\n  ... diagnostic truncated";
 
@@ -294,7 +294,7 @@ impl fmt::Write for BoundedAttemptFailureDiagnostic {
 
 /// Renders one bounded operational diagnostic without changing canonical evidence.
 // crucible-lint: allow erased-error -- diagnostic formatting follows Error::source while preserving the typed worker failure.
-pub(super) fn packaged_attempt_failure_diagnostic(
+pub(crate) fn packaged_attempt_failure_diagnostic(
     execution: ExecutionId,
     failure: &(impl Error + 'static),
 ) -> String {
