@@ -97,6 +97,11 @@ reversible.
 
 ## Operation contract
 
+The [execution contract](execution-contract.md) defines the initial method
+families, single-owner scheduling, lifecycle selection, durable state machine,
+publication rules, retries, cancellation, and recovery. These are required
+semantics for the abstract properties below.
+
 | Property | Required meaning |
 | --- | --- |
 | Identity | Stable operation kind/version, transaction identity, consumer and provider |
