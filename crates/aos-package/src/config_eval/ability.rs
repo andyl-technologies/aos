@@ -105,7 +105,6 @@ pub struct RestrictedAbilityEvaluator {
     nix_instantiate: PathBuf,
     prlimit: PathBuf,
     nix_cache_home: PathBuf,
-    use_daemon_store: bool,
     limits: AbilityEvaluationLimits,
 }
 
@@ -131,19 +130,8 @@ impl RestrictedAbilityEvaluator {
             nix_instantiate: nix_instantiate.into(),
             prlimit: prlimit.into(),
             nix_cache_home: nix_cache_home.into(),
-            use_daemon_store: false,
             limits: limits.validate()?,
         })
-    }
-
-    /// Selects the local Nix daemon's Unix-socket store transport.
-    ///
-    /// The adapter deliberately exposes no arbitrary `--store` value because
-    /// remote store transports would invalidate its no-network contract.
-    #[must_use]
-    pub fn with_daemon_store(mut self) -> Self {
-        self.use_daemon_store = true;
-        self
     }
 
     /// Evaluates one declared provider entry point and decodes its typed result.
@@ -238,7 +226,7 @@ impl RestrictedAbilityEvaluator {
             }
         };
 
-        let environment = EvaluationEnvironment::new(root);
+        let environment = EvaluationEnvironment::new(root)?;
         for directory in [
             &environment.home,
             &environment.cache,
@@ -271,12 +259,17 @@ impl RestrictedAbilityEvaluator {
 
     fn command(&self, allowed_uri: &str, environment: &EvaluationEnvironment) -> Command {
         let mut command = Command::new(&self.prlimit);
+        // Register derivation metadata in the disposable private store so the
+        // explicit IFD prohibition, rather than an incidental invalid-path
+        // error, remains the effect boundary.
         command
             .arg(format!("--as={}", self.limits.address_space_bytes))
             .arg(format!("--cpu={}", self.limits.cpu_seconds))
             .arg("--core=0")
             .arg("--")
             .arg(&self.nix_instantiate)
+            .args(["--store", environment.store_uri.as_str()])
+            .arg("--read-write-mode")
             .args(["--extra-experimental-features", "nix-command flakes"])
             .args(["--eval", "--strict", "--json", "--pure-eval"])
             .args(["--option", "restrict-eval", "true"])
@@ -298,9 +291,6 @@ impl RestrictedAbilityEvaluator {
             .env("XDG_STATE_HOME", &environment.state)
             .env("NIX_CONF_DIR", &environment.config)
             .env("NIX_USER_CONF_FILES", &environment.config_file);
-        if self.use_daemon_store {
-            command.args(["--store", "daemon"]);
-        }
         command.arg("-");
         command
     }
@@ -320,18 +310,27 @@ struct EvaluationEnvironment {
     config_file: PathBuf,
     data: PathBuf,
     state: PathBuf,
+    store_uri: String,
 }
 
 impl EvaluationEnvironment {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf) -> Result<Self> {
         let home = root.join("home");
         let cache = root.join("cache");
         let config = root.join("config");
         let config_file = config.join("nix.conf");
         let data = root.join("data");
         let state = root.join("state");
+        let store_root = root.join("store");
+        let store_root = store_root
+            .to_str()
+            .context("private ability evaluator store path is not UTF-8")?;
+        let store_uri = format!(
+            "local?root={}",
+            encode_nix_uri_component(store_root, b":@/")
+        );
 
-        Self {
+        Ok(Self {
             root,
             home,
             cache,
@@ -339,7 +338,8 @@ impl EvaluationEnvironment {
             config_file,
             data,
             state,
-        }
+            store_uri,
+        })
     }
 }
 
@@ -739,8 +739,7 @@ mod tests {
             "/var/cache/aos/ability-eval",
             AbilityEvaluationLimits::default(),
         )
-        .unwrap()
-        .with_daemon_store();
+        .unwrap();
         let allowed_uri = artifact_allowed_uri(
             Path::new("/nix/store/00000000000000000000000000000000-provider"),
             &digest(3),
@@ -749,7 +748,8 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let environment_root = temporary.path().join("owned-evaluation");
         std::fs::create_dir(&environment_root).unwrap();
-        let environment = EvaluationEnvironment::new(environment_root);
+        let expected_store = format!("local?root={}/store", environment_root.to_string_lossy());
+        let environment = EvaluationEnvironment::new(environment_root.clone()).unwrap();
         let command = evaluator.command(&allowed_uri, &environment);
         let arguments = command
             .get_args()
@@ -760,6 +760,7 @@ mod tests {
         assert!(arguments.iter().any(|value| value == "--as=1073741824"));
         assert!(arguments.iter().any(|value| value == "--cpu=15"));
         assert!(arguments.iter().any(|value| value == "--pure-eval"));
+        assert!(arguments.iter().any(|value| value == "--read-write-mode"));
         assert!(arguments.iter().any(|value| value == &allowed_uri));
         assert!(allowed_uri.contains("?narHash=sha256-"));
         assert!(!arguments.iter().any(|value| value == "path:/nix/store/"));
@@ -784,8 +785,9 @@ mod tests {
         assert!(
             arguments
                 .windows(2)
-                .any(|pair| pair == ["--store", "daemon"])
+                .any(|pair| pair == ["--store", &expected_store])
         );
+        assert!(!arguments.iter().any(|value| value == "daemon"));
         assert_eq!(
             command
                 .get_envs()
@@ -811,6 +813,10 @@ mod tests {
                 Some(environment.data.as_os_str())
             ))
         );
+
+        drop(command);
+        drop(environment);
+        assert!(!environment_root.exists());
     }
 
     #[test]
