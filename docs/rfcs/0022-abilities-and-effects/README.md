@@ -19,10 +19,8 @@
   [PR #232](https://github.com/andyl-technologies/aos/pull/232). Its authority,
   resource identity, and execution machinery are integration surfaces, not
   facilities this RFC independently replaces.
-- **Number allocation:** RFC-0022 was explicitly selected for this proposal.
-  Active PR trees were checked before drafting. RFC-0020 appears in both
-  PR #232 and [PR #194](https://github.com/andyl-technologies/aos/pull/194);
-  this RFC does not resolve that existing collision or allocate RFC-0021.
+- **Number allocation:** RFC-0022 is reserved for this design. Related
+  in-progress proposals are referenced by PR while their numbering settles.
 
 ## Summary
 
@@ -56,9 +54,9 @@ desired state. Provider authors explicitly compose lower abilities and their
 transition operations. Nix produces pure descriptions; a Rust planner and
 validator check bindings, dependencies, conflicts, and recovery rules. A Rust
 executor dispatches through trusted implementations, including systemd and
-Kubernetes. A durable transaction record supports
-crash recovery, rollout, compensation, and checked activation of older
-generations. Scripts may implement individual operations, but do not hide the
+Kubernetes. A durable transaction record supports crash recovery, rollout,
+compensation, and checked activation of older generations. Scripts may
+implement individual operations, but do not hide the
 transaction's ordering or failure semantics.
 
 ## Decisions proposed for acceptance
