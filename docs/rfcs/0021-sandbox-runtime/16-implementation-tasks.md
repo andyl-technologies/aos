@@ -6379,10 +6379,38 @@ the other six fields. Their coverage remains the raw-structure mapping test.
 No guest, enforcing-MAC, or production adapter consumed this API, and no
 readiness checkbox changes.
 
-Production authentication still lacks a consumer that freshly checks these
-pidfd credentials at the effect boundary; the current runtime adapter retains
-only the earlier `SO_PEERCRED` or `SCM_CREDENTIALS` snapshot. Enforcing
-qualification must also prove the exact
+Commit `9e734b02c` makes the staged namespace-inspector runtime consume the
+complete pidfd credential observation. Initial authentication and every
+reauthentication require credentials in the historical initial pidfd ioctl and
+fresh ioctl observations around the process, cgroup, executable, and MAC
+checks. All process facts and all eight credential IDs must agree across that
+sandwich; every ID must be root; and the historical `SO_PEERCRED` or
+`SCM_CREDENTIALS` PID, UID, and GID nomination must agree with the same process
+and the pidfd effective IDs. Retained evidence binds both sources, and protocol
+projection takes UID and GID from the checked pidfd tuple.
+
+The equality sandwich is not a globally atomic snapshot, proof against a value
+changing and changing back, or a freshness guarantee after the method returns.
+The same commit corrects only the stale atomicity wording in the Linux pidfd
+process-identity module; that module's behavior is unchanged.
+
+Qualification used exact parent `d5dea18d5` plus only the runtime source and
+comments-only identity source. Their SHA-256 digests were respectively
+`f7bf49aefcbafb128f3871cfdcef10ec2807af0a1c9033aa2cc56f19bda71f2e`
+and `632204fef7eab149963f07fc4f09ad204c27fcf6ce626ac8ae5d3e1f73a9aab3`.
+The pinned realized AOS development environment passed the exact two-file
+format check, all 128 non-ignored Linux library tests with two fixture helpers
+ignored, and all 180 Network library tests.
+
+The pure regressions cover each of the eight IDs as nonroot, credential drift
+at each of the three observation positions, transport UID/GID mismatch,
+process-fact mismatch at each position, and retained process or credential
+drift. Missing credentials have one direct `None` regression for the shared
+required-credential helper; all three production conversion sites use that
+helper, but they are not three independently injected mask-omission tests. No
+live runtime authentication, procfs or enforcing-MAC behavior, manager query,
+guest, or production effect consumed this adapter. Enforcing qualification
+must also prove the exact
 target-SID-wide procfs access needed for `stat`, `exe`, and `attr/current`,
 including the actual behavior of sensitive same-target
 `mem`, `fd`, `fdinfo`, `root`, `cwd`, `environ`, `maps`, and `map_files`
