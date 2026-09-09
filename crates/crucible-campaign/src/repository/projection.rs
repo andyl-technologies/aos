@@ -482,8 +482,20 @@ impl CampaignRepository {
         domain: &ChoiceDomain,
     ) -> Result<Option<CandidateSourceProfile>, CampaignRepositoryError> {
         if let Some(count) = self.static_candidate_count(request, domain)? {
-            let exhausts_domain = !matches!(request.source(), CandidateSource::ModeledGenerated(_))
-                || domain.cardinality() <= u128::from(request.budget().maximum_proposals());
+            let proposal_budget_covers_domain =
+                domain.cardinality() <= u128::from(request.budget().maximum_proposals());
+            let modeled_source = matches!(request.source(), CandidateSource::ModeledGenerated(_));
+            let budget_bounded_all_integer = if let (ChoiceDomain::Integer(_), Some(generator)) =
+                (domain, request.source().generator())
+            {
+                let spec = self.read_generator(generator.content_id())?;
+                spec.implementation_version() == crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION
+                    && matches!(spec.algorithm(), CandidateGeneratorAlgorithm::All)
+            } else {
+                false
+            };
+            let exhausts_domain =
+                (!modeled_source && !budget_bounded_all_integer) || proposal_budget_covers_domain;
             return Ok(Some(CandidateSourceProfile::Static {
                 count,
                 exhausts_domain,
@@ -629,9 +641,15 @@ impl CampaignRepository {
             (
                 CandidateGeneratorAlgorithm::All,
                 crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(_),
+                ChoiceDomain::Integer(integer),
+            ) => u64::try_from(
+                integer
+                    .cardinality()
+                    .min(u128::from(request.budget().maximum_proposals())),
             )
-            | (
+            .map(Some)
+            .map_err(|_| integrity("candidate-source-cardinality-overflow")),
+            (
                 CandidateGeneratorAlgorithm::WeightedCategorical { .. },
                 crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Boolean(_) | ChoiceDomain::Integer(_),
@@ -821,6 +839,13 @@ impl CampaignRepository {
                 .map(Some)
                 .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
             (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => integer_candidate_at_offset(integer, u128::from(ordinal - 1))
+                .map(ChoiceValue::Integer)
+                .map(Some),
+            (
                 CandidateGeneratorAlgorithm::WeightedCategorical { weights },
                 crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Discrete(discrete),
@@ -843,11 +868,6 @@ impl CampaignRepository {
                 .map(Some)
                 .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
             (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(_),
-            )
-            | (
                 CandidateGeneratorAlgorithm::WeightedCategorical { .. },
                 crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Boolean(_) | ChoiceDomain::Integer(_),
@@ -975,6 +995,16 @@ impl CampaignRepository {
                 .copied()
                 .map(ChoiceValue::Discrete)
                 .collect(),
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => ordinals()?
+                .map(|ordinal| {
+                    integer_candidate_at_offset(integer, u128::from(ordinal - 1))
+                        .map(ChoiceValue::Integer)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
             (
                 CandidateGeneratorAlgorithm::WeightedCategorical { weights },
                 crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
@@ -1510,6 +1540,24 @@ impl CampaignRepository {
                     .collect()
             }
             (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => {
+                let count = integer
+                    .cardinality()
+                    .min(u128::from(request.budget().maximum_proposals()));
+                let count = usize::try_from(count)
+                    .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?;
+                require_mixture_work_capacity(remaining_work, count)?;
+                (0..count)
+                    .map(|offset| {
+                        integer_candidate_at_offset(integer, offset as u128)
+                            .map(ChoiceValue::Integer)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            (
                 CandidateGeneratorAlgorithm::BoundaryInteger,
                 crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Integer(integer),
@@ -1585,11 +1633,6 @@ impl CampaignRepository {
                 );
             }
             (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(_),
-            )
-            | (
                 CandidateGeneratorAlgorithm::WeightedCategorical { .. },
                 crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Boolean(_) | ChoiceDomain::Integer(_),

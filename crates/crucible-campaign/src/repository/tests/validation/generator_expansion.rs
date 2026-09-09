@@ -375,6 +375,126 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
 }
 
 #[test]
+fn static_all_full_width_integer_prefix_authenticates_across_restart() {
+    let (repository, lineage, policy) = fixture();
+    let generator = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("all generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish all generator");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(u64::MAX),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("unit scale"),
+            Vec::new(),
+        )
+        .expect("full-width integer domain"),
+    );
+    let (_, request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        IntegerValue::Unsigned(0),
+        generator_id,
+        "all-full-width",
+        4,
+    );
+    let genesis = repository
+        .create_funded("all-full-width", &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let discovered = repository
+        .discover_choice_opportunity(
+            "all-full-width",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover full-width opportunity");
+    let issued = repository
+        .submit_known_branch_request("all-full-width", discovered.new_snapshot, &request)
+        .expect("accept full-width request");
+    assert_eq!(
+        issued.summary.validated_cardinality(),
+        BranchAcceptanceCount::Exact(4)
+    );
+    assert_eq!(issued.summary.maximum_proposals(), 4);
+    assert_eq!(domain.cardinality(), u128::from(u64::MAX) + 1);
+
+    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        cold.head("all-full-width")
+            .expect("authenticate cold request head")
+            .snapshot_id(),
+        issued.new_snapshot
+    );
+
+    let mut snapshot = issued.new_snapshot;
+    for ordinal in 1..=4 {
+        let head = cold.head("all-full-width").expect("proposal head");
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &head,
+            ChoiceValue::Integer(IntegerValue::Unsigned(ordinal - 1)),
+            ordinal,
+        );
+        let proposed = cold
+            .issue_proposal("all-full-width", snapshot, &proposal)
+            .expect("issue authenticated integer proposal");
+        let (selection, path, attempt) = branch_attempt(&cold, &request, &proposal);
+        snapshot = cold
+            .admit_proposal(
+                "all-full-width",
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit authenticated integer proposal")
+            .new_snapshot;
+    }
+
+    let restarted = CampaignRepository::new(cold.blobs.clone(), cold.refs.clone());
+    assert_eq!(
+        restarted
+            .head("all-full-width")
+            .expect("authenticate cold proposal history")
+            .snapshot_id(),
+        snapshot
+    );
+    let frontier = crate::CampaignClient::new(crate::RepositoryCampaignService::new(
+        &restarted,
+        PermitExhaustive,
+    ))
+    .query_campaign_frontier(
+        &crate::QueryCampaignFrontierRequest::new(
+            crate::CampaignPrincipal::new("operator").expect("principal"),
+            crate::CampaignName::new("all-full-width").expect("campaign"),
+            snapshot,
+            None,
+            8,
+        )
+        .expect("frontier request"),
+    )
+    .expect("authenticate truncated frontier");
+    assert_eq!(frontier.entries().len(), 1);
+    assert_eq!(
+        frontier.entries()[0].request(),
+        request.id().expect("request id")
+    );
+    assert_eq!(frontier.entries()[0].state(), ContinuationState::Closed);
+}
+
+#[test]
 fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
     let (repository, lineage, _, blobs) = fixture_with_quota(64 * 1024 * 1024);
     let all = CandidateGeneratorSpec::new(
