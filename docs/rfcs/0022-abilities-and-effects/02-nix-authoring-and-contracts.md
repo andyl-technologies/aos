@@ -17,66 +17,23 @@ resolver discovers and selects provider modules. Imports MUST NOT depend on
 the final `config` being computed; arbitrary missing-attribute recursion is not
 a provider-selection algorithm.
 
-## Authoring shape
+## Authoring responsibilities
 
-All API names in this section are illustrative. Their final namespace and
-metadata encoding require implementation review. These examples describe
-package-local declarations; they do not permit arbitrary packages to write a
-shared global authority tree.
+The library provides package-local declarations for exported interfaces,
+consumer requests, lower-interface requirements, explicit deployment bindings,
+and provider-owned composition and transitions. The complete authoring example
+is in [recursive composition](03-recursive-composition.md).
 
-A provider exports a typed interface and a pure mapping:
+Existing pure mappings into nginx or another owner's option tree remain a
+useful contribution mechanism. They are only one facet of an exported ability.
+The provider must also declare how it consumes other abilities to realize the
+merged desired state and its transitions. Those relationships cannot remain
+implicit inside an unrelated central renderer.
 
-```nix
-abilities.exports.virtualHosts = lib.abilities.define {
-  interface = "nginx.virtual-host";
-  abi = 1;
-  phase = "configuration";
-
-  requestType = nginxVirtualHostType;
-
-  lower = { binding, request }: {
-    nginx.virtualHosts.${binding.slot} = request;
-  };
-};
-```
-
-`nginxVirtualHostType` denotes the package's existing virtual-host option type.
-`lower` returns module definitions; it does not modify a live file or reload
-nginx. The binding's slot comes from trusted deployment authorization, not from
-a consumer's unchecked self-description.
-
-An application declares its consumption:
-
-```nix
-abilities.imports.web = {
-  interface = "nginx.virtual-host";
-  abi = 1;
-
-  request = {
-    serverNames = ["app.example.com"];
-    listen = [8080];
-    locations."/".proxyPass = "http://127.0.0.1:9000";
-  };
-};
-```
-
-The loopback address is appropriate only when deployment composition places
-the backend in the same network context. Separate instances require an
-explicit endpoint binding whose resolved address is rendered into the request.
-
-A source-defined deployment selects a provider and authorized contribution:
-
-```nix
-abilityBindings."my-app.web" = {
-  provider = "nginx.virtualHosts";
-  slot = "my-app";
-};
-```
-
-The simple names above stand for package-instance-qualified identities in the
-normalized contract. APM supplies equivalent exact bindings after resolution
-for registry-installed packages. It MUST NOT substitute the newest registry
-provider for an explicitly selected or generation-pinned provider.
+Package-local declarations do not permit arbitrary writes into a shared global
+authority tree. Authenticated deployment composition supplies exact instance
+identities and grants. A Nix attribute describing a binding is a claim for the
+validator to check, never a self-authenticating capability.
 
 ## Configuration as a consumed interface
 

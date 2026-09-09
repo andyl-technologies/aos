@@ -2,6 +2,13 @@
 
 ## From ability composition to a transition plan
 
+The activation portion of this framework makes runtime transitions first-class.
+Nix authors desired state and provider-owned transition descriptions; Rust
+validates and executes concrete plans against the host and its delegated
+environments. Building a static configuration graph is not, by itself, runtime
+activation. Build-time dependency consumption remains another use of the
+broader ability model.
+
 The complete ability graph describes providers, consumers, resources, and
 guarantees. It is not a script to traverse and execute unconditionally.
 Activation combines current state, desired state, authorized bindings, and
@@ -20,6 +27,17 @@ Package and environment ability graph
 An unchanged library edge may require retention but no execution. A changed
 configuration contribution may require rendering and a reload. A changed
 payload can require a restart even when the configuration is unchanged.
+
+Source-defined images may precompute bindings and transition templates. APM
+may compose them later from authenticated registry packages. Both paths still
+require current-state checks, scoped runtime handles, and execution evidence.
+Pure Nix evaluation never performs the described host effects.
+
+NixOS also has runtime switching, activation, and service restart/reload logic;
+it does not activate a machine merely by evaluating a static graph. The
+proposed difference is explicit, typed, recursively provider-authored transition
+contracts that expose authority, dependencies, and recovery. See the upstream
+[system-switch description](https://github.com/NixOS/nixpkgs/blob/master/nixos/doc/manual/development/what-happens-during-a-system-switch.chapter.md).
 
 The existing [graph compiler](../../../crates/aos-package/src/graph_compile/mod.rs)
 already uses systemd for provisioning order, parallelism, and failure isolation.
