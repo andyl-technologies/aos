@@ -4,7 +4,8 @@ use super::*;
 use crucible::{ObservableEventPayload, SimulationBackend};
 use crucible_protocol::SelectionReply;
 use crucible_protocol::selectable_catalog_plan::{
-    SelectableCatalogPlan, SelectablePlanPendingRequest, SelectablePlanPhase,
+    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectableCatalogPlan, SelectablePlanPendingRequest,
+    SelectablePlanPhase,
 };
 use std::io::Write as _;
 
@@ -16,7 +17,7 @@ const SELECTABLE_PLAN_FILE: &str = "crucible-selectable-plan.bin";
 /// Evidence that a product guest's pending choice survived a fresh QEMU process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveSelectableProductSnapshotReport {
-    /// Exact instruction coordinate of the first pending product choice.
+    /// Exact stopped instruction coordinate where the first choice was captured.
     pub capture_icount: u64,
     /// Identifier of the discrete choice captured before its reply.
     pub first_selectable: String,
@@ -122,14 +123,22 @@ pub fn run_qemu_live_selectable_product_snapshot_gate(
             "first pending selectable unexpectedly had a queued reply",
         ));
     }
-    let capture_icount = first_pending.icount();
+    let capture_icount = first_pending
+        .icount()
+        .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+        .ok_or_else(|| {
+            invariant(format!(
+                "pending selectable trap {} cannot represent its snapshot boundary",
+                first_pending.icount()
+            ))
+        })?;
     let observed_icount = source
         .current_icount()
         .map_err(|source| QemuLiveNodeStepGateError::node_op("read selectable capture", source))?
         .retired;
     if observed_icount != capture_icount {
         return Err(invariant(format!(
-            "pending selectable icount {capture_icount} differs from node boundary {observed_icount}"
+            "pending selectable stopped boundary {capture_icount} differs from node boundary {observed_icount}"
         )));
     }
 

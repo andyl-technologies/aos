@@ -11,7 +11,7 @@ use crucible_protocol::selectable_catalog_plan::{
 };
 use crucible_protocol::selectable_transport::{
     SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
-    WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
+    WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING, WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
 };
 use crucible_protocol::{
     SelectionReply, SelectionRequest, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerPayload,
@@ -74,13 +74,13 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
         ring.header.enqueue_whitebox_marker(
             ring.entries,
             WhiteboxMarkerEntry::new(
-                0,
+                10,
                 0,
                 WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
                 &record.encode()?,
             )?,
         )?;
-        producer.node_slot(0)?.publish_pause_quiesced(10, 10, 0)?;
+        producer.node_slot(0)?.publish_pause_quiesced(11, 11, 0)?;
     }
 
     let region = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
@@ -110,11 +110,20 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
 
     {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+        let reply_ring = producer.selectable_reply_ring_mut(0)?;
+        let reply_entry = reply_ring
+            .header
+            .dequeue_whitebox_marker(reply_ring.entries)?
+            .ok_or("selectable reply ring remained empty")?
+            .validate()?;
+        assert_eq!(reply_entry.current_icount(), 11);
+        assert_eq!(reply_entry.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY);
+
         let ring = producer.whitebox_marker_ring_mut(0)?;
         ring.header.enqueue_whitebox_marker(
             ring.entries,
             WhiteboxMarkerEntry::new(
-                0,
+                11,
                 0,
                 WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
                 &reply.encode()?,
@@ -143,6 +152,7 @@ fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::e
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+        producer.node_slot(0)?.publish_pause_quiesced(1, 1, 0)?;
         let ring = producer.whitebox_marker_ring_mut(0)?;
         let setup = WhiteboxMarkerPayload::Lifecycle(WhiteboxLifecycleMarkerEvent::SetupComplete);
         ring.header.enqueue_whitebox_marker(
@@ -225,5 +235,51 @@ fn mapped_pending_rejects_a_nonquiesced_boundary() -> Result<(), Box<dyn std::er
         Err(error) => error,
     };
     assert!(error.to_string().contains("exact quiesced boundary"));
+    Ok(())
+}
+
+#[test]
+fn mapped_pending_rejects_a_quiesced_boundary_beyond_the_native_handoff()
+-> Result<(), Box<dyn std::error::Error>> {
+    let request = SelectionRequest::new(19, "network.policy", "epoch/4", Some(vec![2]), 192)?;
+    let record = SelectablePendingTransportRecord::new(request, 0xfeed_4000)?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let layout = allocation.layout();
+    let mut shmem = tempfile::tempfile()?;
+    shmem.set_len(layout.region_size)?;
+    shmem.write_all(&allocation.setup_region_bytes()?)?;
+    {
+        let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+        producer.node_slot(0)?.publish_pause_quiesced(2, 2, 0)?;
+        let ring = producer.whitebox_marker_ring_mut(0)?;
+        ring.header.enqueue_whitebox_marker(
+            ring.entries,
+            WhiteboxMarkerEntry::new(
+                0,
+                3,
+                WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
+                &record.encode()?,
+            )?,
+        )?;
+    }
+
+    let region = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let config = QemuQuantumShmemConfig::new(
+        NodeId {
+            name: String::from("vm-a"),
+        },
+        0,
+    );
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(config, region, AllowMappedTestSends)?;
+
+    let error = match hot_path.drain_pending_selectable_requests() {
+        Ok(_) => panic!("a delayed stopped boundary authenticated a pending selectable"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("trap icount 0 requires stopped boundary 1, observed 2")
+    );
     Ok(())
 }

@@ -30,7 +30,7 @@ fn fixture() -> Result<(ScenarioDefForm, NodeId), Box<dyn Error>> {
             icount: Icount { retired: 1 },
         },
         white_box: WhiteBoxPolicy::Enabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: 4,
         icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
@@ -141,6 +141,20 @@ fn request_rejects_unknown_source_and_broadened_domain() -> Result<(), Box<dyn E
             &pending("product.recovery", None)?,
         ),
         Err(GuestSelectableError::SourceMismatch { .. })
+    ));
+    let invalid_vcpu = SelectablePlanPendingRequest::new(
+        SelectionRequest::new(9, "product.recovery", "routing-epoch-7", None, 256)?,
+        41,
+        4,
+        0x1000,
+    );
+    assert!(matches!(
+        resolve_guest_selectable(scenario_id, &scenario, &node, &invalid_vcpu),
+        Err(GuestSelectableError::VcpuOutOfRange {
+            vcpu: 4,
+            vcpu_count: 4,
+            ..
+        })
     ));
     let changed_version = ChoiceDomain::Boolean(BooleanDomain::new(2)?).canonical_bytes();
     assert!(matches!(

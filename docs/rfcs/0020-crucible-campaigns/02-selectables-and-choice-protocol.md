@@ -428,8 +428,10 @@ point when only exact restore or thin replay is available.
 The plugin represents that boundary explicitly. Choice authority may return an
 immediate reply or a `Pending` disposition. `Pending` retains the exact request
 and trap coordinate, leaves the complete reply reservation zero-filled, and
-requests native VMStop before another guest instruction is admitted. Catalog
-freeze occurs before `setup_complete` becomes host-observable. On an exact
+requests native VMStop at the following one-instruction handoff boundary before
+another guest instruction is admitted. The stop boundary is operational reply
+authority and never replaces the semantic trap coordinate. Catalog freeze
+occurs before `setup_complete` becomes host-observable. On an exact
 restore launch, throwaway boot-barrier registrations use a separate cold
 incarnation; the VMState logical-restore boundary swaps a preallocated catalog
 carrying the authenticated registered set, counters, sequence watermarks, and
@@ -458,18 +460,22 @@ The complete body remains within the marker ring's 4,608-byte payload, so a
 deferred request is limited to 4,576 nested bytes. A larger standalone request
 fails before catalog mutation or VMStop. The host drain reconstructs the exact
 process-neutral pending-plan coordinate but does not grant semantic choice
-authority.
+authority. Before deriving a guest opportunity, the daemon requires the marker
+vCPU index to be within the scenario's fixed `smp_vcpus` topology for that exact
+node.
 
 The host returns one authorized canonical `SelectionReplyV1` through the
 ABI-v18 VM-local, single-entry host-to-plugin ring. Its public envelope reuses
-`WhiteboxMarkerEntry` with internal kind `0xff07`; the entry header repeats the
-pending trap icount and vCPU. Before publication, the host requires the exact
-request sequence, current paused icount, and a reply no larger than the guest's
-retained reservation. Before authorizing resumed execution, the plugin requires
-the same pending catalog incarnation, sequence, vCPU, and icount, writes the
-canonical reply plus a zero tail to the retained guest virtual range, and only
-then charges completion and clears the pending request. The single entry makes
-duplicate or pipelined replies bounded backpressure and a loud protocol error.
+`WhiteboxMarkerEntry` with internal kind `0xff07`; the entry header carries the
+derived stopped-boundary icount and pending vCPU. Before publication, the host
+requires the exact request sequence, requires the current paused icount to equal
+`trap_icount + 1`, and checks that the reply fits the guest's retained
+reservation. Before authorizing resumed execution, the plugin requires the same
+pending catalog incarnation, sequence, vCPU, trap, and derived stop boundary,
+writes the canonical reply plus a zero tail to the retained guest virtual range,
+and only then charges completion and clears the pending request. The single
+entry makes duplicate or pipelined replies bounded backpressure and a loud
+protocol error.
 After delivery and accounting, the plugin publishes the same canonical reply
 under internal marker kind `0xff09`; the host clears its mirrored pending state
 only when that delta matches the exact queued reply. A queued but unconsumed
@@ -496,14 +502,14 @@ emission and reply-validation helpers over the architecture-specific doorbell
 transport.
 
 The launch-authenticated node-local catalog and checkpoint continuation use the
-independent `crucible.guest-selectable.catalog-plan` version-2 descriptor body.
+independent `crucible.guest-selectable.catalog-plan` version-3 descriptor body.
 Every integer is big-endian. Its 104-byte header is:
 
 ```text
 offset  size  field
 ------  ----  ----------------------------------------------------------
-  0      8   magic = "CRUCSCP2"
-  8      4   schema_version = 2
+  0      8   magic = "CRUCSCP3"
+  8      4   schema_version = 3
  12      4   header_len = 104
  16      4   total_len
  20      4   flags: bit 0 frozen, bit 1 last registration present,
@@ -532,13 +538,17 @@ completed counter is `len:u16 | bytes | count:u64`. The pending body is one
 complete canonical `SelectionRequestV1`, including its zero-filled reply
 reservation. The process-neutral guest virtual address is the exact reservation
 target restored by VMState; native pointers and QEMU-private objects never enter
-the descriptor. Version-1 selection-free plans remain readable, but a version-1
-plan carrying a pending request fails closed because it cannot identify that
-reply target. The encoded total and per-collection counts are exact, absent
-optional header fields are zero, every continuation identifier is declared,
-every completed/pending identifier is registered, required frozen declarations
-are present, request counts respect the encoded ceilings, and no trailing or
-alternate encoding is accepted. The complete plan is at most 32 MiB.
+the descriptor. Selection-free version-1 and version-2 plans remain readable.
+A version-1 plan carrying a pending request fails closed because it cannot
+identify the reply target. A version-2 plan carrying a pending request also
+fails closed because its icount field was populated with the rebound stop
+boundary despite being specified as the trap coordinate; the decoder never
+guesses the missing trap by subtracting one. The encoded total and
+per-collection counts are exact, absent optional header fields are zero, every
+continuation identifier is declared, every completed/pending identifier is
+registered, required frozen declarations are present, request counts respect
+the encoded ceilings, and no trailing or alternate encoding is accepted. The
+complete plan is at most 32 MiB.
 
 Control-protocol v3 retains the three-descriptor `Setup` shape but changes the
 third descriptor from the v2 raw app-random body to
@@ -556,7 +566,7 @@ offset  size  field
  20      4   app_random_plan_len
  24      4   selectable_catalog_plan_len
  28      A   canonical AppRandomBranchPlanV1 body
- 28+A    S   canonical SelectableCatalogPlanV2 body
+ 28+A    S   canonical SelectableCatalogPlanV3 body
 ```
 
 The two nested lengths exactly partition the descriptor body, each nested body
@@ -589,7 +599,7 @@ instance `routing/boot`. A fresh-process restore at the first pending request
 selects `fast` and `7`; the guest proves that those typed values reached product
 logic by emitting the application frame `crucible-selected-fast-q7` through its
 ordinary virtio-net device. The certifying gate persists the plan using the same
-version-2 canonical body embedded by production checkpoint manifest version 5;
+version-3 canonical body embedded by production checkpoint manifest version 5;
 the gate-local sidecar is evidence plumbing, not a second plan format.
 
 - **[SEL-16]** Guest choice handling MUST be side-effect-free except for the

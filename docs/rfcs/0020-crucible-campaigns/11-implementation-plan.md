@@ -177,12 +177,13 @@ stable runtime opportunity, stops discovery without replying, applies exact
 defaults for deterministic continuation, and consumes authenticated campaign
 selections at the matching thin-replay boundary. Durable checkpoint composition
 remains required to complete T-CAM-2.5.
-The process-neutral `CRUCSCP2` catalog-plan codec now freezes the future sealed
+The process-neutral `CRUCSCP3` catalog-plan codec now freezes the future sealed
 descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap
-coordinate plus its guest virtual reply target. Selection-free version-1 plans
-remain readable; pending version-1 continuations fail closed because they lack
-that target. The plugin catalog converts cold/restored plans bidirectionally and
+coordinate plus its guest virtual reply target. Selection-free version-1 and
+version-2 plans remain readable. Pending version-1 continuations fail closed
+because they lack that target; pending version-2 continuations fail closed
+because their stored boundary cannot be reinterpreted as a trap. The plugin catalog converts cold/restored plans bidirectionally and
 creates a fresh token incarnation on restore, so prior-process tokens cannot
 complete a restored pending request. The canonical `CRUCSUP2` composite now
 length-frames the independently versioned app-random and selectable plans for

@@ -15,9 +15,9 @@ use crucible_protocol::{
     SelectableProtocolError, SelectableRegister, SelectionReply, SelectionRequest,
     selectable_catalog_plan::{
         SELECTABLE_CATALOG_PLAN_MAX_DECLARATIONS, SELECTABLE_CATALOG_PLAN_MAX_REQUESTS,
-        SelectableCatalogPlan, SelectableCatalogPlanError, SelectablePlanContinuation,
-        SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPendingRequest,
-        SelectablePlanPhase, SelectablePlanPresence,
+        SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectableCatalogPlan, SelectableCatalogPlanError,
+        SelectablePlanContinuation, SelectablePlanDeclaration, SelectablePlanLimits,
+        SelectablePlanPendingRequest, SelectablePlanPhase, SelectablePlanPresence,
     },
 };
 use thiserror::Error;
@@ -769,22 +769,25 @@ impl SelectableCatalog {
         Ok(pending)
     }
 
-    /// Rebinds the retained trap to the exact boundary where QEMU stopped.
+    /// Seals the retained trap at the exact boundary where QEMU stopped.
     ///
     /// QEMU observes an instruction callback inside a translated block but
     /// admits the requested vCPU exit only at the following exact simulation
-    /// boundary. The pending request remains the same catalog-owned token; only
-    /// its resume coordinate advances to that authenticated boundary.
+    /// boundary. The pending request remains the same catalog-owned token and
+    /// keeps its semantic trap coordinate. The exact resume boundary is derived
+    /// from that coordinate and the protocol's fixed native handoff distance.
     ///
     /// # Errors
     ///
     /// Returns [`SelectableCatalogError::NoPendingRequest`] when no request is
     /// retained, [`SelectableCatalogError::PendingBoundaryVcpuMismatch`] when
     /// another vCPU is named, or
-    /// [`SelectableCatalogError::PendingBoundaryRegressed`] when the exact
-    /// boundary precedes the instrumented trap, or
+    /// [`SelectableCatalogError::PendingBoundaryDistance`] when the exact
+    /// boundary differs from the fixed native handoff distance, or
+    /// [`SelectableCatalogError::PendingBoundaryOverflow`] when the trap cannot
+    /// represent its following stop, or
     /// [`SelectableCatalogError::PendingBoundaryAlreadySealed`] when a restored
-    /// or previously rebound token names another coordinate.
+    /// or previously sealed token names another coordinate.
     pub fn rebind_pending_boundary(
         &mut self,
         coordinate: SelectableCallbackCoordinate,
@@ -799,22 +802,29 @@ impl SelectableCatalog {
                 actual: coordinate.vcpu_index(),
             });
         }
+        let expected_boundary_icount = pending
+            .coordinate
+            .icount()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+            .ok_or(SelectableCatalogError::PendingBoundaryOverflow {
+                trap_icount: pending.coordinate.icount(),
+            })?;
         if self.pending_boundary_sealed {
-            if coordinate != pending.coordinate {
+            if coordinate.icount() != expected_boundary_icount {
                 return Err(SelectableCatalogError::PendingBoundaryAlreadySealed {
-                    expected_icount: pending.coordinate.icount(),
+                    expected_icount: expected_boundary_icount,
                     actual_icount: coordinate.icount(),
                 });
             }
             return Ok(pending.clone());
         }
-        if coordinate.icount() < pending.coordinate.icount() {
-            return Err(SelectableCatalogError::PendingBoundaryRegressed {
+        if coordinate.icount() != expected_boundary_icount {
+            return Err(SelectableCatalogError::PendingBoundaryDistance {
                 trap_icount: pending.coordinate.icount(),
                 boundary_icount: coordinate.icount(),
+                expected_boundary_icount,
             });
         }
-        pending.coordinate = coordinate;
         self.pending_boundary_sealed = true;
         Ok(pending.clone())
     }
@@ -1123,15 +1133,25 @@ pub enum SelectableCatalogError {
         /// Exact stop vCPU.
         actual: u32,
     },
-    /// The exact stop boundary preceded the instrumented trap.
-    #[error("selectable stop icount {boundary_icount} precedes pending trap icount {trap_icount}")]
-    PendingBoundaryRegressed {
+    /// The exact stop boundary differs from the protocol handoff distance.
+    #[error(
+        "selectable trap at {trap_icount} stopped at {boundary_icount}, expected {expected_boundary_icount}"
+    )]
+    PendingBoundaryDistance {
         /// Instrumented trap coordinate.
         trap_icount: u64,
         /// Rejected exact stop coordinate.
         boundary_icount: u64,
+        /// Exact boundary derived from the trap coordinate.
+        expected_boundary_icount: u64,
     },
-    /// A restored or already-rebound request named another stop coordinate.
+    /// The trap coordinate cannot represent the following native stop boundary.
+    #[error("selectable trap icount {trap_icount} cannot represent its stopped boundary")]
+    PendingBoundaryOverflow {
+        /// Retained trap coordinate.
+        trap_icount: u64,
+    },
+    /// A restored or already-sealed request named another stop coordinate.
     #[error(
         "selectable stop icount {actual_icount} differs from sealed pending boundary {expected_icount}"
     )]
