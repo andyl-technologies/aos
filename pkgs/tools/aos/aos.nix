@@ -154,6 +154,7 @@
   applicationTestPackages = [
     "aos"
     "aos-ability-model"
+    "aos-ability-plan"
     "aos-ability-runtime"
     "aos-ability-validate"
     "aos-cache"
