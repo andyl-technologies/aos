@@ -614,6 +614,9 @@ impl OperationHistory {
                     attempt: *attempt,
                     evidence: evidence.clone(),
                 };
+                if self.admitted_resources.is_empty() {
+                    self.resources_released = true;
+                }
                 self.observe_elapsed(sequence, *elapsed_millis)?;
                 self.interrupted_call_budget_millis = 0;
             }

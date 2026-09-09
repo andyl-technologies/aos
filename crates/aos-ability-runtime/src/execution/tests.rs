@@ -28,7 +28,7 @@ use crate::adapter::{
 };
 use crate::execution::{
     AdmissionError, ExecutionError, ExecutionStep, ExecutionTransaction, OperationState,
-    RecoveryAction, ResourceReleaseError, TrustedAdmissionPolicy,
+    OperationStatus, RecoveryAction, ResourceReleaseError, TerminalResult, TrustedAdmissionPolicy,
 };
 use crate::journal::JournalLimits;
 
@@ -338,6 +338,67 @@ fn scheduler_waits_for_data_and_resolves_the_durable_output(
 }
 
 #[test]
+fn settled_failure_propagates_to_a_required_dependent_and_survives_reopen(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_dependent_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let producer = scoped("observe");
+
+    reject_and_settle(&mut transaction, &producer)?;
+    let ready = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].operation().key.as_str(), "consume");
+    assert_eq!(
+        ready[0].action(),
+        &RecoveryAction::SettleFailureBeforeEffect
+    );
+    transaction.settle_failure_before_effect(ready[0].operation(), ability(false))?;
+
+    let summary = transaction.summary();
+    assert_eq!(summary.terminal(), Some(TerminalResult::SettledFailure));
+    assert!(summary
+        .operations()
+        .iter()
+        .all(|operation| operation.status() == OperationStatus::SettledFailure));
+    drop(transaction);
+
+    let mut reopened = fixture.open(&mut store)?;
+    assert_eq!(
+        reopened.summary().terminal(),
+        Some(TerminalResult::SettledFailure)
+    );
+    assert!(reopened
+        .schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?
+        .is_empty());
+    Ok(())
+}
+
+#[test]
+fn ordering_only_waits_for_propagated_failure_to_settle_then_runs(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_failure_then_ordering_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+
+    reject_and_settle(&mut transaction, &scoped("first"))?;
+    let blocked = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0].operation().key.as_str(), "blocked");
+    assert_eq!(
+        blocked[0].action(),
+        &RecoveryAction::SettleFailureBeforeEffect
+    );
+    transaction.settle_failure_before_effect(blocked[0].operation(), ability(false))?;
+
+    let ordered = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    assert_eq!(ordered.len(), 1);
+    assert_eq!(ordered[0].operation().key.as_str(), "after");
+    assert_eq!(ordered[0].action(), &RecoveryAction::Admit);
+    Ok(())
+}
+
+#[test]
 fn scheduler_persists_selection_and_excludes_the_unselected_operation(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_branch_plan())?;
@@ -358,6 +419,90 @@ fn scheduler_persists_selection_and_excludes_the_unselected_operation(
     let replayed = reopened.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
     assert_eq!(replayed.len(), 1);
     assert_eq!(replayed[0].operation().key.as_str(), "true-step");
+    Ok(())
+}
+
+#[test]
+fn transaction_summary_preserves_mixed_terminal_outcomes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_branch_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let producer = scoped("observe");
+
+    complete(&mut transaction, &producer)?;
+    let branch = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    assert_eq!(branch.len(), 1);
+    assert_eq!(branch[0].operation().key.as_str(), "true-step");
+    reject_and_settle(&mut transaction, branch[0].operation())?;
+
+    let summary = transaction.summary();
+    assert_eq!(summary.terminal(), Some(TerminalResult::SettledFailure));
+    assert_eq!(
+        summary
+            .operations()
+            .iter()
+            .map(|operation| operation.status())
+            .collect::<Vec<_>>(),
+        [
+            OperationStatus::Skipped,
+            OperationStatus::Succeeded,
+            OperationStatus::SettledFailure,
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn failed_selector_settles_both_unselected_branch_arms(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_failed_decision_ordering_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+
+    reject_and_settle(&mut transaction, &scoped("observe"))?;
+    let blocked = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    assert_eq!(blocked.len(), 3);
+    assert!(blocked
+        .iter()
+        .any(|operation| operation.operation().key.as_str() == "after-decision"));
+    assert!(blocked
+        .iter()
+        .all(|operation| operation.action() == &RecoveryAction::SettleFailureBeforeEffect));
+    for operation in blocked {
+        transaction.settle_failure_before_effect(operation.operation(), ability(false))?;
+    }
+
+    assert_eq!(
+        transaction.summary().terminal(),
+        Some(TerminalResult::SettledFailure)
+    );
+    drop(transaction);
+
+    let mut reopened = fixture.open(&mut store)?;
+    assert!(reopened
+        .schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?
+        .is_empty());
+    Ok(())
+}
+
+#[test]
+fn deep_failure_propagation_is_iterative_and_work_bounded(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_deep_dependent_plan(4_096))?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+
+    reject_and_settle(&mut transaction, &scoped("step-00000"))?;
+    let maximum_work = NonZeroUsize::new(7).ok_or("positive batch")?;
+    let blocked = transaction.schedule_ready(maximum_work)?;
+
+    assert_eq!(blocked.len(), maximum_work.get());
+    assert_eq!(blocked[0].operation().key.as_str(), "step-00001");
+    assert_eq!(blocked[6].operation().key.as_str(), "step-00007");
+    assert!(blocked
+        .iter()
+        .all(|operation| operation.action() == &RecoveryAction::SettleFailureBeforeEffect));
     Ok(())
 }
 
@@ -682,6 +827,34 @@ fn complete(
     Ok(())
 }
 
+fn reject_and_settle(
+    transaction: &mut ExecutionTransaction<'_>,
+    operation: &ScopedOperationKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let mut adapter = TestAdapter::rejected_before_effect();
+    let clock = TestClock;
+    let admitted = transaction
+        .admit(operation, &adapter, &mut catalog, &mut policy, &clock)
+        .map_err(admission_error)?;
+    assert_eq!(
+        transaction.drive_admitted(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &clock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::RejectedBeforeEffect
+    );
+    transaction
+        .release_admitted::<TestAdapter, _, _>(admitted, &mut catalog, &clock)
+        .map_err(release_error)?;
+    transaction.settle_failure_before_effect(operation, ability(false))?;
+    Ok(())
+}
+
 fn checked_dependent_plan() -> aos_ability_validate::CheckedEffectPlan {
     let mut fixture = plan_fixture();
     let producer = fixture.effect_plan.operations[0].clone();
@@ -706,6 +879,76 @@ fn checked_dependent_plan() -> aos_ability_validate::CheckedEffectPlan {
     fixture
         .validate()
         .expect("dependent runtime fixture must pass production validation")
+}
+
+fn checked_failure_then_ordering_plan() -> aos_ability_validate::CheckedEffectPlan {
+    let mut fixture = plan_fixture();
+    let template = fixture.effect_plan.operations[0].clone();
+    fixture.effect_plan.operations = ["after", "blocked", "first"]
+        .map(|name| {
+            let mut operation = template.clone();
+            operation.key = scoped(name);
+            operation
+        })
+        .into();
+    fixture.effect_plan.edges = vec![
+        DependencyEdge {
+            from: PlanNodeKey::Operation {
+                key: scoped("first"),
+            },
+            to: PlanNodeKey::Operation {
+                key: scoped("blocked"),
+            },
+            kind: DependencyKind::RequiredSuccess,
+        },
+        DependencyEdge {
+            from: PlanNodeKey::Operation {
+                key: scoped("blocked"),
+            },
+            to: PlanNodeKey::Operation {
+                key: scoped("after"),
+            },
+            kind: DependencyKind::OrderingOnly,
+        },
+    ];
+    fixture.effect_plan.edges.sort_by(compare_edges);
+    fixture.refresh_commitments();
+    fixture
+        .validate()
+        .expect("failure-ordering runtime fixture must pass production validation")
+}
+
+fn checked_deep_dependent_plan(length: usize) -> aos_ability_validate::CheckedEffectPlan {
+    let mut fixture = plan_fixture();
+    let template = fixture.effect_plan.operations[0].clone();
+    let keys = (0..length)
+        .map(|index| scoped(&format!("step-{index:05}")))
+        .collect::<Vec<_>>();
+
+    fixture.effect_plan.operations = keys
+        .iter()
+        .map(|key| {
+            let mut operation = template.clone();
+            operation.key = key.clone();
+            operation
+        })
+        .collect();
+    fixture.effect_plan.edges = keys
+        .windows(2)
+        .map(|pair| DependencyEdge {
+            from: PlanNodeKey::Operation {
+                key: pair[0].clone(),
+            },
+            to: PlanNodeKey::Operation {
+                key: pair[1].clone(),
+            },
+            kind: DependencyKind::RequiredSuccess,
+        })
+        .collect();
+    fixture.refresh_commitments();
+    fixture
+        .validate()
+        .expect("deep runtime fixture must pass production validation")
 }
 
 fn checked_two_resource_plan() -> aos_ability_validate::CheckedEffectPlan {
@@ -882,6 +1125,32 @@ fn checked_branch_plan() -> aos_ability_validate::CheckedEffectPlan {
     branch_plan_fixture()
         .validate()
         .expect("conditional runtime fixture must pass production validation")
+}
+
+fn checked_failed_decision_ordering_plan() -> aos_ability_validate::CheckedEffectPlan {
+    let mut fixture = branch_plan_fixture();
+    let mut after_decision = fixture.effect_plan.operations[0].clone();
+    after_decision.key = scoped("after-decision");
+    after_decision.branch_context.clear();
+    fixture.effect_plan.operations.push(after_decision);
+    fixture
+        .effect_plan
+        .operations
+        .sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
+    fixture.effect_plan.edges.push(DependencyEdge {
+        from: PlanNodeKey::Decision {
+            key: scoped("choose"),
+        },
+        to: PlanNodeKey::Operation {
+            key: scoped("after-decision"),
+        },
+        kind: DependencyKind::OrderingOnly,
+    });
+    fixture.effect_plan.edges.sort_by(compare_edges);
+    fixture.refresh_commitments();
+    fixture
+        .validate()
+        .expect("failed-decision ordering fixture must pass production validation")
 }
 
 fn checked_merge_plan() -> aos_ability_validate::CheckedEffectPlan {
@@ -1162,6 +1431,7 @@ impl AdapterCompletion for TestRecord {
 struct TestAdapter {
     outputs: BTreeMap<LocalKey, AbilityValue>,
     fail_preparation: bool,
+    reject_before_effect: bool,
     execute_calls: usize,
 }
 
@@ -1170,6 +1440,7 @@ impl TestAdapter {
         Self {
             outputs: BTreeMap::from([(key("ready"), output)]),
             fail_preparation: false,
+            reject_before_effect: false,
             execute_calls: 0,
         }
     }
@@ -1182,6 +1453,7 @@ impl TestAdapter {
         Self {
             outputs: BTreeMap::new(),
             fail_preparation: false,
+            reject_before_effect: false,
             execute_calls: 0,
         }
     }
@@ -1190,6 +1462,16 @@ impl TestAdapter {
         Self {
             outputs: BTreeMap::new(),
             fail_preparation: true,
+            reject_before_effect: false,
+            execute_calls: 0,
+        }
+    }
+
+    fn rejected_before_effect() -> Self {
+        Self {
+            outputs: BTreeMap::new(),
+            fail_preparation: false,
+            reject_before_effect: true,
             execute_calls: 0,
         }
     }
@@ -1238,10 +1520,15 @@ impl TrustedAdapter for TestAdapter {
         _control: &dyn RuntimeControl,
     ) -> EffectDisposition<Self::Completion, Self::Observation> {
         self.execute_calls += 1;
-        EffectDisposition::Completed(TestRecord {
+        let record = TestRecord {
             evidence: ability(true),
             outputs: self.outputs.clone(),
-        })
+        };
+        if self.reject_before_effect {
+            EffectDisposition::RejectedBeforeEffect(record)
+        } else {
+            EffectDisposition::Completed(record)
+        }
     }
 
     fn reconcile(

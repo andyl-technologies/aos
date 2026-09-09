@@ -258,6 +258,15 @@ impl<'plan> ExecutionTransaction<'plan> {
         &self,
         operation: &ScopedOperationKey,
     ) -> Result<crate::execution::RecoveryAction, TransactionError> {
+        let blocked = durably_blocked_operations(self.plan, &self.replay);
+        self.next_action_with_blocked(operation, &blocked)
+    }
+
+    pub(crate) fn next_action_with_blocked(
+        &self,
+        operation: &ScopedOperationKey,
+        blocked: &BTreeSet<ScopedOperationKey>,
+    ) -> Result<crate::execution::RecoveryAction, TransactionError> {
         let checked = self
             .plan
             .operation(operation)
@@ -267,6 +276,10 @@ impl<'plan> ExecutionTransaction<'plan> {
             &checked.recovery.retry,
             checked.deadline.total_recovery_millis.get(),
         );
+        if action == crate::execution::RecoveryAction::Admit && blocked.contains(operation)
+        {
+            return Ok(crate::execution::RecoveryAction::SettleFailureBeforeEffect);
+        }
         if matches!(
             action,
             crate::execution::RecoveryAction::ReconcileBeforeRetry { .. }
@@ -303,6 +316,14 @@ impl<'plan> ExecutionTransaction<'plan> {
 
     pub(crate) fn operation_is_skipped(&self, operation: &ScopedOperationKey) -> bool {
         self.replay.skipped.contains(operation)
+    }
+
+    pub(crate) fn operation_histories(&self) -> impl Iterator<Item = &OperationHistory> {
+        self.replay.operations.values()
+    }
+
+    pub(crate) fn durably_blocked_operations(&self) -> BTreeSet<ScopedOperationKey> {
+        durably_blocked_operations(self.plan, &self.replay)
     }
 
     pub(crate) fn merge_is_complete(&self, merge: &ScopedOperationKey) -> bool {
@@ -1104,15 +1125,154 @@ fn node_succeeded(replay: &ReplayState, node: &PlanNodeKey) -> bool {
 
 fn node_is_settled(replay: &ReplayState, node: &PlanNodeKey) -> bool {
     match node {
-        PlanNodeKey::Operation { key } => replay.operations.get(key).is_some_and(|history| {
-            matches!(
-                history.state(),
-                OperationState::Completed { .. } | OperationState::SettledFailure { .. }
-            )
-        }),
+        PlanNodeKey::Operation { key } => {
+            replay.skipped.contains(key)
+                || replay.operations.get(key).is_some_and(|history| {
+                    matches!(
+                        history.state(),
+                        OperationState::Completed { .. } | OperationState::SettledFailure { .. }
+                    )
+                })
+        }
         PlanNodeKey::Decision { key } => replay.selections.contains_key(key),
         PlanNodeKey::Merge { key } => replay.merged.contains_key(key),
     }
+}
+
+fn durably_blocked_operations(
+    plan: &CheckedEffectPlan,
+    replay: &ReplayState,
+) -> BTreeSet<ScopedOperationKey> {
+    let mut cannot_succeed = BTreeSet::new();
+    let mut cannot_settle = BTreeSet::new();
+    let mut blocked_operations = BTreeSet::new();
+
+    for node in plan.dispatch_order() {
+        let incoming = replay
+            .incoming_edges
+            .get(node)
+            .into_iter()
+            .flatten()
+            .map(|index| &plan.edges()[*index]);
+        let blocked_by_predecessor = incoming.clone().any(|edge| {
+            (success_is_required(edge.kind) && cannot_succeed.contains(&edge.from))
+                || (edge.kind == DependencyKind::OrderingOnly
+                    && cannot_settle.contains(&edge.from))
+        });
+        let (success_is_impossible, settlement_is_impossible) = match node {
+            PlanNodeKey::Operation { key } => operation_blockage(
+                plan,
+                replay,
+                key,
+                blocked_by_predecessor,
+                &cannot_settle,
+            ),
+            PlanNodeKey::Decision { key } => {
+                let blocked = !replay.selections.contains_key(key) && blocked_by_predecessor;
+                (blocked, blocked)
+            }
+            PlanNodeKey::Merge { key } => {
+                let blocked = !replay.merged.contains_key(key)
+                    && (blocked_by_predecessor
+                        || merge_input_is_durably_blocked(
+                            plan,
+                            replay,
+                            key,
+                            &cannot_succeed,
+                            &cannot_settle,
+                        ));
+                (blocked, blocked)
+            }
+        };
+        if success_is_impossible {
+            cannot_succeed.insert(node.clone());
+            if let PlanNodeKey::Operation { key } = node {
+                blocked_operations.insert(key.clone());
+            }
+        }
+        if settlement_is_impossible {
+            cannot_settle.insert(node.clone());
+        }
+    }
+
+    blocked_operations
+}
+
+fn operation_blockage(
+    plan: &CheckedEffectPlan,
+    replay: &ReplayState,
+    key: &ScopedOperationKey,
+    blocked_by_predecessor: bool,
+    cannot_settle: &BTreeSet<PlanNodeKey>,
+) -> (bool, bool) {
+    if replay.skipped.contains(key) {
+        return (true, false);
+    }
+    let Some(history) = replay.operations.get(key) else {
+        return (true, true);
+    };
+    if !history.admitted_resources().is_empty()
+        && history.transferred_resources().len() == history.admitted_resources().len()
+    {
+        return (true, true);
+    }
+    match history.state() {
+        OperationState::Completed { .. } => return (false, false),
+        OperationState::SettledFailure { .. } => return (true, false),
+        OperationState::InterventionRequired { .. } => return (true, true),
+        OperationState::Pending => {}
+        _ => return (false, false),
+    }
+
+    let blocked_by_branch = plan.operation(key).is_none_or(|operation| {
+        operation.branch_context.iter().any(|membership| {
+            cannot_settle.contains(&PlanNodeKey::Decision {
+                key: membership.decision.clone(),
+            })
+        })
+    });
+    let blocked = blocked_by_predecessor || blocked_by_branch;
+    (blocked, false)
+}
+
+fn merge_input_is_durably_blocked(
+    plan: &CheckedEffectPlan,
+    replay: &ReplayState,
+    key: &ScopedOperationKey,
+    cannot_succeed: &BTreeSet<PlanNodeKey>,
+    cannot_settle: &BTreeSet<PlanNodeKey>,
+) -> bool {
+    let Some(merge) = plan.merge(key) else {
+        return true;
+    };
+    if cannot_settle.contains(&PlanNodeKey::Decision {
+        key: merge.decision.clone(),
+    }) {
+        return true;
+    }
+    let Some(alternative) = replay.selections.get(&merge.decision) else {
+        return false;
+    };
+
+    merge.outputs.values().any(|output| {
+        output.alternatives.get(alternative).is_none_or(|source| {
+            let producer = match &source.producer {
+                ResultProducerKey::Operation { key } => PlanNodeKey::Operation { key: key.clone() },
+                ResultProducerKey::Merge { key } => PlanNodeKey::Merge { key: key.clone() },
+            };
+            cannot_succeed.contains(&producer)
+        })
+    })
+}
+
+fn success_is_required(kind: DependencyKind) -> bool {
+    matches!(
+        kind,
+        DependencyKind::Data
+            | DependencyKind::RequiredSuccess
+            | DependencyKind::Readiness
+            | DependencyKind::BranchGuard
+    )
 }
 
 fn branch_context_selected(

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use aos_ability_model::ResourceId;
+use aos_ability_model::{AbilityValue, ResourceId, ScopedOperationKey};
 use thiserror::Error;
 
 use crate::adapter::{MonotonicClock, TrustedAdapter, TrustedResourceCatalog};
@@ -74,6 +74,37 @@ impl<'plan, Request, Handle> ResourceReleaseFailure<'plan, Request, Handle> {
 }
 
 impl<'plan> ExecutionTransaction<'plan> {
+    /// Records a terminal failure after replay proves no unresolved effect remains.
+    ///
+    /// This transition is available only when the checked retry contract and
+    /// durable state select [`RecoveryAction::SettleFailureBeforeEffect`]. It
+    /// cannot convert an indeterminate effect into a settled failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation is unknown, still has possible
+    /// recovery work or an unresolved effect, or the journal append fails.
+    pub fn settle_failure_before_effect(
+        &mut self,
+        operation: &ScopedOperationKey,
+        evidence: AbilityValue,
+    ) -> Result<(), TransactionError> {
+        if self.next_action(operation)? != RecoveryAction::SettleFailureBeforeEffect {
+            return Err(TransactionError::Scheduling {
+                reason: "operation is not ready for terminal failure settlement".to_string(),
+            });
+        }
+        let history = self.history(operation)?;
+        let event = ExecutionEventKind::OperationSettledFailure {
+            transaction: self.transaction().clone(),
+            operation: history.operation_id().clone(),
+            attempt: history.current_attempt(),
+            evidence,
+            elapsed_millis: history.elapsed_millis(),
+        };
+        self.append(event)
+    }
+
     /// Releases every handle after durable settlement and records the result.
     ///
     /// Actual catalog release completes before `ResourcesReleased` becomes
