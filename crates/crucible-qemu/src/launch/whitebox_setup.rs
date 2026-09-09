@@ -18,8 +18,8 @@ use crucible_protocol::{
 use thiserror::Error;
 
 use super::{
-    DEFAULT_VMSTATE_FILE_NAME, QemuLaunchCommand, ROOT_DRIVE_ID, VMSTATE_DRIVE_ID,
-    validate_overlay_file_name,
+    CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_VMSTATE_FILE_NAME,
+    QemuLaunchCommand, ROOT_DRIVE_ID, VMSTATE_DRIVE_ID, validate_overlay_file_name,
 };
 
 const UNASSIGNED_X86_IO_REGION: &str = "io";
@@ -283,7 +283,7 @@ fn probe_read_only_storage_argument(
     value: &str,
 ) -> Result<String, QemuWhiteboxSetupError> {
     let supported = match option {
-        "-blockdev" => is_vmstate_blockdev(value),
+        "-blockdev" => is_vmstate_blockdev(value) || is_crucible_shmem_blockdev(value),
         "-drive" => is_root_overlay_drive(value),
         _ => false,
     };
@@ -304,6 +304,28 @@ fn is_vmstate_blockdev(value: &str) -> bool {
         == format!(
             "driver=qcow2,node-name={VMSTATE_DRIVE_ID},file.driver=file,file.filename={DEFAULT_VMSTATE_FILE_NAME}"
         )
+}
+
+fn is_crucible_shmem_blockdev(value: &str) -> bool {
+    let fields = value.split(',').collect::<Vec<_>>();
+    let [driver, node_name, size] = fields.as_slice() else {
+        return false;
+    };
+    let Some(node_name) = node_name.strip_prefix("node-name=") else {
+        return false;
+    };
+    let Some(size) = size.strip_prefix("size=") else {
+        return false;
+    };
+    let Ok(size) = size.parse::<u64>() else {
+        return false;
+    };
+    let candidate =
+        CrucibleShmemBlockDevice::new(size).with_ids(node_name, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID);
+
+    *driver == "driver=crucible-shmem"
+        && candidate.validate().is_ok()
+        && candidate.qemu_blockdev_argument() == value
 }
 
 fn is_root_overlay_drive(value: &str) -> bool {
@@ -499,6 +521,18 @@ mod tests {
             format!("{vmstate},read-only=on")
         );
 
+        let shmem_device = CrucibleShmemBlockDevice::new(1024 * 1024)
+            .with_ids("scenario-block", "scenario-block-device");
+        let mut shmem_args = Vec::new();
+        shmem_device.append_qemu_args(&mut shmem_args);
+        let shmem_blockdev = &shmem_args[1];
+        assert_eq!(
+            probe_read_only_storage_argument("-blockdev", shmem_blockdev).unwrap_or_else(
+                |error| panic!("builder Crucible shmem blockdev should validate: {error}")
+            ),
+            format!("{shmem_blockdev},read-only=on")
+        );
+
         for backing_driver in ["qcow2", "raw"] {
             let root = format!(
                 "id={ROOT_DRIVE_ID},file=custom-root-overlay.qcow2,backing.driver={backing_driver},backing.file.driver=file,backing.file.filename=/nix/store/00000000000000000000000000000000-root/root.img,if=none,format=qcow2,cache=none,aio=threads,discard=unmap"
@@ -515,6 +549,18 @@ mod tests {
     fn setup_probe_rejects_storage_forms_the_builder_does_not_emit() {
         for (option, value) in [
             ("-blockdev", "driver=raw,node-name=vmstate"),
+            (
+                "-blockdev",
+                "driver=crucible-shmem,node-name=crucible-blk0,size=1048576,unknown=on",
+            ),
+            (
+                "-blockdev",
+                "driver=crucible-shmem,node-name=crucible-blk0,size=invalid",
+            ),
+            (
+                "-blockdev",
+                "driver=crucible-shmem,node-name=crucible-blk0,size=1",
+            ),
             ("-drive", "id=foreign,file=/tmp/disk.img,if=none"),
             (
                 "-drive",
