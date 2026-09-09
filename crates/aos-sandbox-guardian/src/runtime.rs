@@ -1,7 +1,7 @@
 //! Single-process guardian startup, readiness, and absolute deadline wait.
 
 use std::io::IoSlice;
-use std::os::fd::{FromRawFd as _, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 
@@ -13,7 +13,9 @@ use aos_sandbox_core::{
     descriptor_for_bytes,
 };
 use aos_sandbox_linux::boot::KernelBootId;
-use rustix::fs::{FileType, OFlags, fcntl_getfl, fstat};
+use aos_sandbox_linux::inherited_fd::duplicate_inherited_descriptor;
+use aos_sandbox_linux::pidfd::SingleThreadedProcess;
+use rustix::fs::{FileType, OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstat};
 use rustix::net::{
     AddressFamily, SendAncillaryBuffer, SendFlags, SocketAddrUnix, SocketFlags, SocketType,
     sendmsg_addr, socket_with,
@@ -54,6 +56,10 @@ const MAXIMUM_POLICY_BYTES: usize = 64 * 1024;
 const MAXIMUM_PLAN_BYTES: usize = 256 * 1024;
 const MAXIMUM_LEASE_BYTES: usize = 64 * 1024;
 const MAXIMUM_SIGNATURE_BYTES: usize = 64 * 1024;
+const REQUIRED_DYNAMIC_SEALS: SealFlags = SealFlags::SEAL
+    .union(SealFlags::SHRINK)
+    .union(SealFlags::GROW)
+    .union(SealFlags::WRITE);
 
 /// Sends the sole readiness acknowledgement after durable authority recheck.
 pub trait ReadyNotifier {
@@ -77,7 +83,9 @@ pub trait ReadyNotifier {
 /// Returns [`GuardianRuntimeError`] for activation, protected configuration,
 /// signed authority, durability, readiness, clock, or deadline-wait failure.
 pub fn run_from_environment() -> Result<(), GuardianRuntimeError> {
-    let activation = ActivatedGuardianInputs::take()?;
+    let single_threaded =
+        SingleThreadedProcess::verify().map_err(|_| GuardianRuntimeError::InvalidActivation)?;
+    let activation = ActivatedGuardianInputs::take(&single_threaded)?;
     let expected_incarnation = environment_incarnation("AOS_GUARDIAN_INCARNATION")?;
     let state_directory = single_environment_path("STATE_DIRECTORY")?;
     let mut store = GuardianStateStore::open(&state_directory)?;
@@ -175,7 +183,7 @@ struct ActivatedGuardianInputs {
 }
 
 impl ActivatedGuardianInputs {
-    fn take() -> Result<Self, GuardianRuntimeError> {
+    fn take(_single_threaded: &SingleThreadedProcess) -> Result<Self, GuardianRuntimeError> {
         let listen_pid = environment_u32("LISTEN_PID")?;
         let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
             .map_err(|_| GuardianRuntimeError::InvalidActivation)?;
@@ -185,6 +193,7 @@ impl ActivatedGuardianInputs {
         {
             return Err(GuardianRuntimeError::InvalidActivation);
         }
+        prove_closed_activation_set()?;
 
         let mut descriptors = Vec::with_capacity(ACTIVATION_NAMES.len());
         for offset in 0..ACTIVATION_NAMES.len() {
@@ -193,10 +202,10 @@ impl ActivatedGuardianInputs {
                     i32::try_from(offset).map_err(|_| GuardianRuntimeError::InvalidActivation)?,
                 )
                 .ok_or(GuardianRuntimeError::InvalidActivation)?;
-            // SAFETY: the complete systemd activation tuple above proves that
-            // each contiguous descriptor from 3 through 12 is transferred to
-            // this single-threaded process. Every offset is visited once.
-            descriptors.push(unsafe { OwnedFd::from_raw_fd(raw) });
+            descriptors.push(
+                duplicate_inherited_descriptor(raw)
+                    .map_err(|_| GuardianRuntimeError::InvalidActivation)?,
+            );
         }
         let maxima = [
             MAXIMUM_POLICY_BYTES,
@@ -211,8 +220,13 @@ impl ActivatedGuardianInputs {
             MAXIMUM_SIGNATURE_BYTES,
         ];
         let mut values = Vec::with_capacity(descriptors.len());
-        for (descriptor, maximum) in descriptors.into_iter().zip(maxima) {
-            values.push(read_protected_descriptor(descriptor, maximum)?);
+        for (index, (descriptor, maximum)) in descriptors.into_iter().zip(maxima).enumerate() {
+            let custody = if index < 6 {
+                DescriptorCustody::ProtectedStatic
+            } else {
+                DescriptorCustody::SealedDynamic
+            };
+            values.push(read_authority_descriptor(descriptor, maximum, custody)?);
         }
         let values: [Vec<u8>; 10] = values
             .try_into()
@@ -288,25 +302,122 @@ impl ActivatedGuardianInputs {
     }
 }
 
-fn read_protected_descriptor(
+#[derive(Clone, Copy)]
+enum DescriptorCustody {
+    ProtectedStatic,
+    SealedDynamic,
+}
+
+fn prove_closed_activation_set() -> Result<(), GuardianRuntimeError> {
+    let pid = rustix::process::getpid().as_raw_nonzero().get();
+    let descriptor_directory = format!("/proc/{pid}/fd");
+    let entries =
+        std::fs::read_dir("/proc/self/fd").map_err(|_| GuardianRuntimeError::InvalidActivation)?;
+    let mut activation_seen = [false; ACTIVATION_NAMES.len()];
+    let mut scanner_descriptors = 0_usize;
+    let mut entry_count = 0_usize;
+
+    for entry in entries {
+        let entry = entry.map_err(|_| GuardianRuntimeError::InvalidActivation)?;
+        entry_count = entry_count
+            .checked_add(1)
+            .ok_or(GuardianRuntimeError::InvalidActivation)?;
+        if entry_count > ACTIVATION_NAMES.len() + 4 {
+            return Err(GuardianRuntimeError::InvalidActivation);
+        }
+        let raw = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+            .ok_or(GuardianRuntimeError::InvalidActivation)?;
+        let target = std::fs::read_link(entry.path())
+            .map_err(|_| GuardianRuntimeError::InvalidActivation)?;
+        if target == Path::new(&descriptor_directory) {
+            scanner_descriptors += 1;
+            continue;
+        }
+        if (0..ACTIVATION_FD_BASE).contains(&raw) {
+            continue;
+        }
+        let offset = raw
+            .checked_sub(ACTIVATION_FD_BASE)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .filter(|offset| *offset < ACTIVATION_NAMES.len())
+            .ok_or(GuardianRuntimeError::InvalidActivation)?;
+        if std::mem::replace(&mut activation_seen[offset], true) {
+            return Err(GuardianRuntimeError::InvalidActivation);
+        }
+    }
+    if scanner_descriptors != 1 || activation_seen.contains(&false) {
+        return Err(GuardianRuntimeError::InvalidActivation);
+    }
+    Ok(())
+}
+
+fn read_authority_descriptor(
     descriptor: OwnedFd,
     maximum: usize,
+    custody: DescriptorCustody,
 ) -> Result<Vec<u8>, GuardianRuntimeError> {
     let metadata = fstat(&descriptor).map_err(GuardianRuntimeError::Descriptor)?;
     if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
         || metadata.st_uid != 0
-        || metadata.st_nlink != 1
-        || metadata.st_mode & 0o133 != 0
         || fcntl_getfl(&descriptor).map_err(GuardianRuntimeError::Descriptor)? & OFlags::ACCMODE
             != OFlags::RDONLY
     {
         return Err(GuardianRuntimeError::InvalidProtectedDescriptor);
+    }
+    match custody {
+        DescriptorCustody::ProtectedStatic
+            if metadata.st_nlink != 1 || !matches!(metadata.st_mode & 0o7777, 0o400 | 0o600) =>
+        {
+            return Err(GuardianRuntimeError::InvalidProtectedDescriptor);
+        }
+        DescriptorCustody::SealedDynamic => {
+            let seals = fcntl_get_seals(&descriptor)
+                .map_err(|_| GuardianRuntimeError::InvalidProtectedDescriptor)?;
+            if metadata.st_nlink != 0 || !seals.contains(REQUIRED_DYNAMIC_SEALS) {
+                return Err(GuardianRuntimeError::InvalidProtectedDescriptor);
+            }
+        }
+        DescriptorCustody::ProtectedStatic => {}
     }
     let length = usize::try_from(metadata.st_size)
         .ok()
         .filter(|length| *length > 0 && *length <= maximum)
         .ok_or(GuardianRuntimeError::InvalidProtectedDescriptor)?;
     let file = std::fs::File::from(descriptor);
+    let bytes = read_exact_descriptor(&file, length)?;
+    if matches!(custody, DescriptorCustody::ProtectedStatic)
+        && read_exact_descriptor(&file, length)? != bytes
+    {
+        return Err(GuardianRuntimeError::InvalidProtectedDescriptor);
+    }
+    let after = fstat(&file).map_err(GuardianRuntimeError::Descriptor)?;
+    if after.st_dev != metadata.st_dev
+        || after.st_ino != metadata.st_ino
+        || after.st_size != metadata.st_size
+        || after.st_mtime != metadata.st_mtime
+        || after.st_mtime_nsec != metadata.st_mtime_nsec
+        || after.st_ctime != metadata.st_ctime
+        || after.st_ctime_nsec != metadata.st_ctime_nsec
+    {
+        return Err(GuardianRuntimeError::InvalidProtectedDescriptor);
+    }
+    if matches!(custody, DescriptorCustody::SealedDynamic)
+        && !fcntl_get_seals(&file)
+            .map_err(|_| GuardianRuntimeError::InvalidProtectedDescriptor)?
+            .contains(REQUIRED_DYNAMIC_SEALS)
+    {
+        return Err(GuardianRuntimeError::InvalidProtectedDescriptor);
+    }
+    Ok(bytes)
+}
+
+fn read_exact_descriptor(
+    file: &std::fs::File,
+    length: usize,
+) -> Result<Vec<u8>, GuardianRuntimeError> {
     let mut bytes = vec![0; length];
     let mut offset = 0;
     while offset < bytes.len() {
@@ -483,4 +594,41 @@ fn single_environment_path(name: &'static str) -> Result<std::path::PathBuf, Gua
         return Err(GuardianRuntimeError::InvalidActivation);
     }
     Ok(path.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+
+    #[test]
+    fn public_environment_entry_rejects_a_multithreaded_caller() {
+        let (started_sender, started_receiver) = mpsc::sync_channel(0);
+        let (finish_sender, finish_receiver) = mpsc::sync_channel(0);
+        let thread = std::thread::spawn(move || {
+            started_sender
+                .send(())
+                .unwrap_or_else(|error| panic!("cannot signal test thread: {error}"));
+            finish_receiver
+                .recv()
+                .unwrap_or_else(|error| panic!("cannot finish test thread: {error}"));
+        });
+        started_receiver
+            .recv()
+            .unwrap_or_else(|error| panic!("cannot await test thread: {error}"));
+
+        let result = run_from_environment();
+
+        finish_sender
+            .send(())
+            .unwrap_or_else(|error| panic!("cannot release test thread: {error}"));
+        thread
+            .join()
+            .unwrap_or_else(|_| panic!("test thread panicked"));
+        assert!(matches!(
+            result,
+            Err(GuardianRuntimeError::InvalidActivation)
+        ));
+    }
 }

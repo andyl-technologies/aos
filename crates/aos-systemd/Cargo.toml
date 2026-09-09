@@ -14,8 +14,16 @@ libc.workspace = true
 serde = { workspace = true }
 zbus = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["fs", "process"] }
+sha2.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+aos-sandbox-linux.workspace = true
+
 [dev-dependencies]
 # p2p + bus-impl let the unit tests stand up an in-process FakeSystemd over a
 # UnixStream pair (no real D-Bus daemon). test-util keeps tokio timers fast.
+tempfile.workspace = true
 zbus = { version = "5", default-features = false, features = ["tokio", "p2p", "bus-impl"] }
 tokio = { workspace = true, features = ["test-util"] }

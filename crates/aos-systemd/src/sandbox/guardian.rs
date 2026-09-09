@@ -5,7 +5,7 @@
 //! general property map or arbitrary service-manager operation.
 
 use std::collections::BTreeMap;
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsFd as _, BorrowedFd};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +26,10 @@ const GUARDIAN_ALLOWED_ADDRESS_FAMILIES: &[&str] = &["AF_UNIX"];
 const GUARDIAN_ALLOWED_SYSCALLS: &[&str] = &["@system-service"];
 const GUARDIAN_DENIED_SOCKET_OPERATIONS: &[&str] =
     &["accept", "accept4", "bind", "connect", "listen"];
+const MAXIMUM_POLICY_BYTES: u64 = 64 * 1024;
+const MAXIMUM_PLAN_BYTES: u64 = 256 * 1024;
+const MAXIMUM_LEASE_BYTES: u64 = 64 * 1024;
+const MAXIMUM_SIGNATURE_BYTES: u64 = 64 * 1024;
 
 /// Names every exact authority descriptor consumed by a guardian.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -82,21 +86,64 @@ impl GuardianCredentialRole {
             Self::OwnershipLeaseSignature => "ownership-lease-signature.cbor",
         }
     }
+
+    const fn maximum_bytes(self) -> u64 {
+        match self {
+            Self::BrokerPlanPolicy | Self::OwnershipLeasePolicy => MAXIMUM_POLICY_BYTES,
+            Self::BrokerPlanPublicKey | Self::OwnershipLeasePublicKey => 32,
+            Self::BrokerPlanRevocationScope | Self::NodeId => 16,
+            Self::BrokerPlan => MAXIMUM_PLAN_BYTES,
+            Self::BrokerPlanSignature | Self::OwnershipLeaseSignature => MAXIMUM_SIGNATURE_BYTES,
+            Self::OwnershipLease => MAXIMUM_LEASE_BYTES,
+        }
+    }
+
+    const fn is_dynamic(self) -> bool {
+        matches!(
+            self,
+            Self::BrokerPlan
+                | Self::BrokerPlanSignature
+                | Self::OwnershipLease
+                | Self::OwnershipLeaseSignature
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GuardianDescriptorSnapshot {
+    device: u64,
+    inode: u64,
+    bytes: u64,
+    sha256: [u8; 32],
+}
+
+#[derive(Clone, Debug)]
+struct GuardianCredentialDescriptor {
+    descriptor: Arc<std::os::fd::OwnedFd>,
+    snapshot: GuardianDescriptorSnapshot,
 }
 
 /// Owns one exact complete set of descriptor-pinned guardian authority inputs.
 #[derive(Clone, Debug)]
 pub struct GuardianCredentialDescriptors {
-    descriptors: BTreeMap<GuardianCredentialRole, Arc<std::os::fd::OwnedFd>>,
+    descriptors: BTreeMap<GuardianCredentialRole, GuardianCredentialDescriptor>,
 }
 
 impl GuardianCredentialDescriptors {
     /// Duplicates and owns one descriptor for every fixed guardian role.
     ///
+    /// Static trust inputs must be creator-owned, singly linked, non-executable
+    /// protected files opened read-only. Dynamic authority artifacts must be
+    /// creator-owned anonymous memfds opened read-only with the complete
+    /// write/grow/shrink/seal set. Exact content snapshots are rechecked just
+    /// before D-Bus transfer; protected static custody does not claim immutable
+    /// content between those checks.
+    ///
     /// # Errors
     ///
-    /// Returns an error for a missing, duplicate, or extra role, or when a
-    /// descriptor cannot be duplicated into close-on-exec storage.
+    /// Returns an error for a missing, duplicate, or extra role, invalid type,
+    /// ownership, mode, access, size or seals, or a descriptor duplication or
+    /// exact-readback failure.
     pub fn from_descriptors(
         entries: Vec<(GuardianCredentialRole, BorrowedFd<'_>)>,
     ) -> Result<Self> {
@@ -107,10 +154,15 @@ impl GuardianCredentialDescriptors {
         }
         let mut descriptors = BTreeMap::new();
         for (role, descriptor) in entries {
+            let snapshot = validate_guardian_descriptor(role, descriptor)?;
             let owned = descriptor.try_clone_to_owned().map_err(|error| {
                 invalid(format!("cannot duplicate guardian descriptor: {error}"))
             })?;
-            if descriptors.insert(role, Arc::new(owned)).is_some() {
+            let retained = GuardianCredentialDescriptor {
+                descriptor: Arc::new(owned),
+                snapshot,
+            };
+            if descriptors.insert(role, retained).is_some() {
                 return Err(invalid("guardian authority descriptor role is duplicated"));
             }
         }
@@ -127,18 +179,152 @@ impl GuardianCredentialDescriptors {
         GuardianCredentialRole::ALL
             .iter()
             .map(|role| {
-                let descriptor = self
+                let retained = self
                     .descriptors
                     .get(role)
-                    .ok_or_else(|| invalid("guardian descriptor set became incomplete"))?
-                    .try_clone()
-                    .map_err(|error| {
-                        invalid(format!("cannot transfer guardian descriptor: {error}"))
-                    })?;
+                    .ok_or_else(|| invalid("guardian descriptor set became incomplete"))?;
+                if validate_guardian_descriptor(*role, retained.descriptor.as_fd())?
+                    != retained.snapshot
+                {
+                    return Err(invalid(
+                        "guardian descriptor identity or content changed before transfer",
+                    ));
+                }
+                let descriptor = retained.descriptor.try_clone().map_err(|error| {
+                    invalid(format!("cannot transfer guardian descriptor: {error}"))
+                })?;
                 Ok((Fd::from(descriptor), role.as_str().to_owned()))
             })
             .collect()
     }
+}
+
+#[cfg(target_os = "linux")]
+fn validate_guardian_descriptor(
+    role: GuardianCredentialRole,
+    descriptor: BorrowedFd<'_>,
+) -> Result<GuardianDescriptorSnapshot> {
+    use rustix::fs::{FileType, OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstat};
+    use sha2::{Digest as _, Sha256};
+    use std::fs::File;
+
+    const REQUIRED_SEALS: SealFlags = SealFlags::SEAL
+        .union(SealFlags::SHRINK)
+        .union(SealFlags::GROW)
+        .union(SealFlags::WRITE);
+
+    let metadata = fstat(descriptor)
+        .map_err(|error| invalid(format!("cannot inspect guardian descriptor: {error}")))?;
+    let bytes = u64::try_from(metadata.st_size)
+        .ok()
+        .filter(|bytes| *bytes > 0 && *bytes <= role.maximum_bytes())
+        .ok_or_else(|| invalid("guardian descriptor size is invalid"))?;
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        || metadata.st_uid != rustix::process::geteuid().as_raw()
+        || fcntl_getfl(descriptor)
+            .map_err(|error| invalid(format!("cannot read guardian descriptor flags: {error}")))?
+            & OFlags::ACCMODE
+            != OFlags::RDONLY
+    {
+        return Err(invalid(
+            "guardian descriptor type, owner, or access mode is invalid",
+        ));
+    }
+    if role.is_dynamic() {
+        let seals = fcntl_get_seals(descriptor)
+            .map_err(|_| invalid("guardian dynamic descriptor is not a sealable memfd"))?;
+        if metadata.st_nlink != 0 || !seals.contains(REQUIRED_SEALS) {
+            return Err(invalid(
+                "guardian dynamic descriptor is not anonymous and fully sealed",
+            ));
+        }
+    } else if metadata.st_nlink != 1 || !matches!(metadata.st_mode & 0o7777, 0o400 | 0o600) {
+        return Err(invalid(
+            "guardian static descriptor is not a protected singly-linked file",
+        ));
+    }
+
+    let length = usize::try_from(bytes)
+        .map_err(|_| invalid("guardian descriptor size does not fit memory"))?;
+    let file = File::from(
+        descriptor
+            .try_clone_to_owned()
+            .map_err(|error| invalid(format!("cannot duplicate guardian descriptor: {error}")))?,
+    );
+    let content = read_guardian_descriptor(&file, length)?;
+    if !role.is_dynamic() && read_guardian_descriptor(&file, length)? != content {
+        return Err(invalid(
+            "guardian static descriptor changed during exact readback",
+        ));
+    }
+    let after = fstat(descriptor)
+        .map_err(|error| invalid(format!("cannot recheck guardian descriptor: {error}")))?;
+    if after.st_dev != metadata.st_dev
+        || after.st_ino != metadata.st_ino
+        || after.st_size != metadata.st_size
+        || after.st_mtime != metadata.st_mtime
+        || after.st_mtime_nsec != metadata.st_mtime_nsec
+        || after.st_ctime != metadata.st_ctime
+        || after.st_ctime_nsec != metadata.st_ctime_nsec
+    {
+        return Err(invalid("guardian descriptor changed during exact readback"));
+    }
+
+    Ok(GuardianDescriptorSnapshot {
+        device: metadata.st_dev,
+        inode: metadata.st_ino,
+        bytes,
+        sha256: Sha256::digest(content).into(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn read_guardian_descriptor(file: &std::fs::File, length: usize) -> Result<Vec<u8>> {
+    use std::os::unix::fs::FileExt as _;
+
+    let mut content = vec![0; length];
+    let mut offset = 0;
+    while offset < content.len() {
+        let read = file
+            .read_at(&mut content[offset..], offset as u64)
+            .map_err(|error| invalid(format!("cannot read guardian descriptor: {error}")))?;
+        if read == 0 {
+            return Err(invalid(
+                "guardian descriptor ended before its declared size",
+            ));
+        }
+        offset += read;
+    }
+    Ok(content)
+}
+
+#[cfg(all(not(target_os = "linux"), not(test)))]
+fn validate_guardian_descriptor(
+    _role: GuardianCredentialRole,
+    _descriptor: BorrowedFd<'_>,
+) -> Result<GuardianDescriptorSnapshot> {
+    Err(invalid(
+        "guardian descriptor validation is available only on Linux",
+    ))
+}
+
+#[cfg(all(not(target_os = "linux"), test))]
+fn validate_guardian_descriptor(
+    role: GuardianCredentialRole,
+    _descriptor: BorrowedFd<'_>,
+) -> Result<GuardianDescriptorSnapshot> {
+    let role_index = GuardianCredentialRole::ALL
+        .iter()
+        .position(|candidate| *candidate == role)
+        .ok_or_else(|| invalid("guardian test descriptor role is invalid"))?;
+    let role_index = u8::try_from(role_index)
+        .map_err(|_| invalid("guardian test descriptor role is invalid"))?;
+    Ok(GuardianDescriptorSnapshot {
+        device: 0,
+        inode: u64::from(role_index) + 1,
+        bytes: 1,
+        sha256: [role_index; 32],
+    })
 }
 
 /// Defines the sole systemd transient service shape accepted for a guardian.
@@ -290,42 +476,100 @@ impl SystemdClient {
 #[cfg(test)]
 mod tests {
     use std::fs::File;
+    #[cfg(target_os = "linux")]
+    use std::fs::Permissions;
     use std::os::fd::AsFd as _;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[cfg(target_os = "linux")]
+    use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 
     use super::*;
 
-    fn spec() -> GuardianUnitSpec {
-        let executable = File::open("/proc/self/exe")
-            .unwrap_or_else(|error| panic!("test executable failed: {error}"));
+    fn spec() -> (tempfile::TempDir, GuardianUnitSpec) {
+        let executable = File::open(
+            std::env::current_exe()
+                .unwrap_or_else(|error| panic!("test executable path failed: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("test executable failed: {error}"));
         let executable = SandboxDescriptorPath::for_current_process(executable.as_fd())
             .unwrap_or_else(|error| panic!("test executable pin failed: {error}"));
-        let files = GuardianCredentialRole::ALL
-            .iter()
-            .map(|role| {
-                let file = File::open("/proc/self/exe")
-                    .unwrap_or_else(|error| panic!("test descriptor failed: {error}"));
-                (*role, file)
-            })
-            .collect::<Vec<_>>();
-        let descriptors = GuardianCredentialDescriptors::from_descriptors(
-            files
-                .iter()
-                .map(|(role, file)| (*role, file.as_fd()))
-                .collect(),
-        )
-        .unwrap_or_else(|error| panic!("test credential set failed: {error}"));
-        GuardianUnitSpec::new(
+        let directory =
+            tempfile::tempdir().unwrap_or_else(|error| panic!("test directory failed: {error}"));
+        let descriptors = credential_descriptors(&directory);
+        let spec = GuardianUnitSpec::new(
             SandboxUnitName::from_incarnation([0xab; 16]),
             executable,
             descriptors,
             Duration::from_secs(10),
         )
-        .unwrap_or_else(|error| panic!("test guardian spec failed: {error}"))
+        .unwrap_or_else(|error| panic!("test guardian spec failed: {error}"));
+        (directory, spec)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn credential_descriptors(directory: &tempfile::TempDir) -> GuardianCredentialDescriptors {
+        let mut static_files = Vec::new();
+        let mut dynamic_files = Vec::new();
+        for role in GuardianCredentialRole::ALL {
+            if role.is_dynamic() {
+                dynamic_files.push((
+                    role,
+                    SealedReadOnlyCredential::create(role.as_str(), b"x", 1)
+                        .unwrap_or_else(|error| panic!("sealed credential failed: {error}")),
+                ));
+            } else {
+                let bytes = vec![1; usize::try_from(role.maximum_bytes().min(32)).unwrap()];
+                let path = directory.path().join(role.as_str());
+                std::fs::write(&path, bytes)
+                    .unwrap_or_else(|error| panic!("static credential write failed: {error}"));
+                std::fs::set_permissions(&path, Permissions::from_mode(0o400))
+                    .unwrap_or_else(|error| panic!("static credential mode failed: {error}"));
+                let file = File::open(path)
+                    .unwrap_or_else(|error| panic!("static credential open failed: {error}"));
+                static_files.push((role, file));
+            }
+        }
+        let mut entries = static_files
+            .iter()
+            .map(|(role, file)| (*role, file.as_fd()))
+            .collect::<Vec<_>>();
+        entries.extend(
+            dynamic_files
+                .iter()
+                .map(|(role, file)| (*role, file.as_fd())),
+        );
+        GuardianCredentialDescriptors::from_descriptors(entries)
+            .unwrap_or_else(|error| panic!("test credential set failed: {error}"))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn credential_descriptors(directory: &tempfile::TempDir) -> GuardianCredentialDescriptors {
+        let files = GuardianCredentialRole::ALL
+            .iter()
+            .map(|role| {
+                let path = directory.path().join(role.as_str());
+                std::fs::write(&path, b"x")
+                    .unwrap_or_else(|error| panic!("test credential write failed: {error}"));
+                let file = File::open(path)
+                    .unwrap_or_else(|error| panic!("test credential open failed: {error}"));
+                (*role, file)
+            })
+            .collect::<Vec<_>>();
+        GuardianCredentialDescriptors::from_descriptors(
+            files
+                .iter()
+                .map(|(role, file)| (*role, file.as_fd()))
+                .collect(),
+        )
+        .unwrap_or_else(|error| panic!("test credential set failed: {error}"))
     }
 
     #[test]
     fn property_contract_is_capabilityless_and_closed() {
-        let properties = spec()
+        let (_directory, spec) = spec();
+        let properties = spec
             .properties()
             .unwrap_or_else(|error| panic!("property compilation failed: {error}"));
         let names = properties
@@ -435,7 +679,8 @@ mod tests {
 
     #[test]
     fn authority_descriptors_have_one_exact_canonical_order() {
-        let properties = spec()
+        let (_directory, spec) = spec();
+        let properties = spec
             .properties()
             .unwrap_or_else(|error| panic!("property compilation failed: {error}"));
         let (_, value) = properties
@@ -454,5 +699,50 @@ mod tests {
                 .map(|role| role.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn descriptor_roles_reject_the_opposite_custody_class() {
+        let directory =
+            tempfile::tempdir().unwrap_or_else(|error| panic!("test directory failed: {error}"));
+        let path = directory.path().join("static");
+        std::fs::write(&path, b"x")
+            .unwrap_or_else(|error| panic!("static credential write failed: {error}"));
+        std::fs::set_permissions(&path, Permissions::from_mode(0o400))
+            .unwrap_or_else(|error| panic!("static credential mode failed: {error}"));
+        let static_file = File::open(path)
+            .unwrap_or_else(|error| panic!("static credential open failed: {error}"));
+        assert!(
+            validate_guardian_descriptor(GuardianCredentialRole::BrokerPlan, static_file.as_fd())
+                .is_err()
+        );
+
+        let dynamic = SealedReadOnlyCredential::create("aos-dynamic-role-test", b"x", 1)
+            .unwrap_or_else(|error| panic!("sealed credential failed: {error}"));
+        assert!(
+            validate_guardian_descriptor(
+                GuardianCredentialRole::BrokerPlanPolicy,
+                dynamic.as_fd(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn protected_static_content_drift_is_rejected_before_transfer() {
+        let (directory, spec) = spec();
+        let path = directory
+            .path()
+            .join(GuardianCredentialRole::BrokerPlanPolicy.as_str());
+        std::fs::set_permissions(&path, Permissions::from_mode(0o600))
+            .unwrap_or_else(|error| panic!("static credential mode failed: {error}"));
+        std::fs::write(&path, vec![2; 32])
+            .unwrap_or_else(|error| panic!("static credential rewrite failed: {error}"));
+        std::fs::set_permissions(&path, Permissions::from_mode(0o400))
+            .unwrap_or_else(|error| panic!("static credential mode restore failed: {error}"));
+
+        assert!(spec.properties().is_err());
     }
 }

@@ -19,9 +19,11 @@
 //! accepting its reported digest. This boundary assumes a trusted kernel.
 
 mod backing;
+mod credential;
 mod publication;
 
 pub use backing::{BackingFileIdentity, FsVerityBacking};
+pub use credential::SealedReadOnlyCredential;
 pub use publication::{
     AfterRenameFailure, AmbiguousNamedSealedFile, BeforeRenameFailure, DurablyNamedSealedFile,
     FsVerityPublicationRoot, InvalidPublicationName, MaterializationCallbacks,
@@ -104,6 +106,12 @@ pub enum ImmutableFileError {
     /// The backing file description is not opened for read-only access.
     #[error("immutable backing descriptor is not read-only")]
     DescriptorNotReadOnly,
+    /// A transferred immutable file is not owned by the creating identity.
+    #[error("immutable file is not owned by the current effective user")]
+    UnexpectedOwner,
+    /// A transient immutable file has a persistent directory link.
+    #[error("transient immutable file is not anonymous")]
+    NotAnonymous,
     /// The expected backing size exceeds the explicit admission ceiling.
     #[error("immutable backing exceeds its configured byte ceiling")]
     BackingLimitExceeded,

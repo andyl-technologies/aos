@@ -3,13 +3,16 @@
 //! The crate wraps pidfds, namespace descriptors, race-resistant `openat2`
 //! resolution, the descriptor-based mount API, bounded fixed-process execution,
 //! and mount-topology queries.
-//! All kernel resources are represented by owned descriptor types. Raw syscall
-//! invocation and vendored Linux 6.18 UAPI live only in the private `uapi`
-//! module; safe callers cannot manufacture a typed descriptor from an integer.
+//! All retained kernel resources are represented by owned descriptor types.
+//! Raw syscall invocation and vendored Linux 6.18 UAPI live in the private
+//! `uapi` module, except for the narrowly scoped duplication boundary in
+//! [`inherited_fd`]. Safe callers may duplicate an open inherited number into
+//! new ownership, but cannot assume ownership of the original table entry.
 //!
 //! The modules divide responsibility as follows:
 //!
 //! - [`pidfd`] pins a process and obtains typed namespace descriptors;
+//! - [`inherited_fd`] safely duplicates unowned process-start descriptors;
 //! - [`path`] resolves descendants beneath a pre-opened directory;
 //! - [`cgroup`] checks exact and hinted descendant membership against retained cgroup-v2 anchors;
 //! - [`process`] executes fixed absolute programs with bounded output and time;
@@ -24,6 +27,7 @@
 pub mod boot;
 pub mod cgroup;
 pub mod immutable_file;
+pub mod inherited_fd;
 pub mod inventory;
 pub mod mount;
 pub mod netlink;
