@@ -137,7 +137,10 @@
   abilityEvaluatorIfdFixture = builtins.derivation {
     name = "aos-ability-forbidden-ifd";
     system = stdenv.buildPlatform.system;
-    builder = "${buildNix}/bin/nix-instantiate";
+    # The evaluator receives JSON strings without Nix dependency context. Keep
+    # the fixture's exact derivation identity reproducible from that same
+    # context-free builder path; buildNix remains an explicit test dependency.
+    builder = builtins.unsafeDiscardStringContext "${buildNix}/bin/nix-instantiate";
   };
   # Retain the .drv for the denial test without realizing its intentionally forbidden output.
   abilityEvaluatorIfdDrvPath =
