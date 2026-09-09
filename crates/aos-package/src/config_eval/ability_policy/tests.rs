@@ -129,8 +129,19 @@ impl AuthorityFixture {
             self.trust_anchor.clone(),
             self.owner,
         )
-        .publish(CurrentAuthorityPublication {
-            policy_fence: policy_fence(),
+        .publish(self.publication(sequence, observed_at, state, policy_fence()))
+        .expect("fixture authority publication")
+    }
+
+    fn publication(
+        &self,
+        sequence: u64,
+        observed_at: u64,
+        state: CurrentResourceState,
+        policy_fence: RevisionId,
+    ) -> CurrentAuthorityPublication<'_> {
+        CurrentAuthorityPublication {
+            policy_fence,
             resolution_policy: &self.policy,
             platform_policy: Some(&self.platform_policy),
             transition_authority: None,
@@ -145,8 +156,7 @@ impl AuthorityFixture {
                     state,
                 }],
             },
-        })
-        .expect("fixture authority publication")
+        }
     }
 
     fn admission_policy(
@@ -162,6 +172,7 @@ impl AuthorityFixture {
             TestClock(document.observed_at_restart_millis),
             CurrentAuthorityCommitment {
                 plan: document.plan,
+                authority_epoch: document.authority_epoch,
                 policy_fence: document.policy_fence,
                 policy_revision: document.policy_revision,
                 resolution_policy: document.resolution_policy,
@@ -280,17 +291,22 @@ fn same_policy_instance_rejects_a_newly_revoked_fence() {
         )
         .expect("initial current fence must authorize");
 
-    let mut revoked = document;
-    revoked.sequence = 2;
-    revoked.observed_at_restart_millis = 1_001;
-    revoked.policy_fence = RevisionId(Sha256Digest::of_bytes("revoked policy fence"));
-    publish_authority_file(
-        &fixture.path,
-        &fixture.trust_anchor,
+    let publisher = CurrentAbilityAuthorityPublisher::for_test(
+        fixture.path.clone(),
+        fixture.trust_anchor.clone(),
         fixture.owner,
-        &revoked,
-    )
-    .expect("publish revoked fence");
+    );
+    publisher.revoke().expect("revoke original fence");
+    publisher
+        .regrant(fixture.publication(
+            2,
+            1_001,
+            CurrentResourceState::Present {
+                revision: fixture.revision,
+            },
+            RevisionId(Sha256Digest::of_bytes("revoked policy fence")),
+        ))
+        .expect("publish replacement fence");
 
     let error = admission
         .authorize(
@@ -301,6 +317,192 @@ fn same_policy_instance_rejects_a_newly_revoked_fence() {
             InvocationPurpose::Effect,
         )
         .expect_err("the next authorization must observe the revoked fence");
+    assert!(error.to_string().contains("plan-policy commitment"));
+}
+
+#[test]
+fn same_policy_instance_fails_closed_after_publication_is_revoked() {
+    let fixture = AuthorityFixture::new();
+    let document = fixture.publish(
+        1,
+        1_000,
+        CurrentResourceState::Present {
+            revision: fixture.revision,
+        },
+    );
+    let operation = &fixture.plan.operations()[0];
+    let binding = fixture
+        .plan
+        .binding_plan()
+        .binding(&operation.binding)
+        .expect("fixture binding");
+    let method = MethodReference {
+        interface: operation.interface.clone(),
+        method: operation.method.clone(),
+    };
+    let mut admission = fixture.admission_policy(&document);
+    admission
+        .authorize(
+            &fixture.plan,
+            binding,
+            operation,
+            &method,
+            InvocationPurpose::Effect,
+        )
+        .expect("published current authority must authorize");
+
+    CurrentAbilityAuthorityPublisher::for_test(
+        fixture.path.clone(),
+        fixture.trust_anchor.clone(),
+        fixture.owner,
+    )
+    .revoke()
+    .expect("revoke current authority publication");
+
+    let error = admission
+        .authorize(
+            &fixture.plan,
+            binding,
+            operation,
+            &method,
+            InvocationPurpose::Effect,
+        )
+        .expect_err("the next authorization must observe revocation");
+    assert!(
+        error
+            .to_string()
+            .contains("opening protected authority file")
+    );
+}
+
+#[test]
+fn revoked_scope_rejects_a_delayed_ordinary_publisher() {
+    let fixture = AuthorityFixture::new();
+    fixture.publish(
+        1,
+        1_000,
+        CurrentResourceState::Present {
+            revision: fixture.revision,
+        },
+    );
+    let publisher = CurrentAbilityAuthorityPublisher::for_test(
+        fixture.path.clone(),
+        fixture.trust_anchor.clone(),
+        fixture.owner,
+    );
+    publisher.revoke().expect("revoke current publication");
+
+    let error = publisher
+        .publish(fixture.publication(
+            99,
+            1_099,
+            CurrentResourceState::Present {
+                revision: fixture.revision,
+            },
+            policy_fence(),
+        ))
+        .expect_err("a delayed publisher must not resurrect revoked authority");
+    assert!(error.to_string().contains("requires explicit regrant"));
+}
+
+#[test]
+fn explicit_regrant_rotates_the_policy_fence() {
+    let fixture = AuthorityFixture::new();
+    fixture.publish(
+        1,
+        1_000,
+        CurrentResourceState::Present {
+            revision: fixture.revision,
+        },
+    );
+    let publisher = CurrentAbilityAuthorityPublisher::for_test(
+        fixture.path.clone(),
+        fixture.trust_anchor.clone(),
+        fixture.owner,
+    );
+    publisher.revoke().expect("revoke current publication");
+    let regranted_fence = RevisionId(Sha256Digest::of_bytes("regranted policy fence"));
+
+    let regranted = publisher
+        .regrant(fixture.publication(
+            2,
+            1_001,
+            CurrentResourceState::Present {
+                revision: fixture.revision,
+            },
+            regranted_fence,
+        ))
+        .expect("explicitly regrant under a new policy fence");
+    let mut source = RootOwnedCurrentAuthoritySource::for_test(
+        fixture.path.clone(),
+        fixture.trust_anchor.clone(),
+        fixture.owner,
+    );
+
+    assert_eq!(source.load_current().expect("load regrant"), regranted);
+}
+
+#[test]
+fn reused_policy_fence_cannot_revive_an_old_admission_epoch() {
+    let fixture = AuthorityFixture::new();
+    let original = fixture.publish(
+        1,
+        1_000,
+        CurrentResourceState::Present {
+            revision: fixture.revision,
+        },
+    );
+    let operation = &fixture.plan.operations()[0];
+    let binding = fixture
+        .plan
+        .binding_plan()
+        .binding(&operation.binding)
+        .expect("fixture binding");
+    let method = MethodReference {
+        interface: operation.interface.clone(),
+        method: operation.method.clone(),
+    };
+    let mut old_admission = fixture.admission_policy(&original);
+    let publisher = CurrentAbilityAuthorityPublisher::for_test(
+        fixture.path.clone(),
+        fixture.trust_anchor.clone(),
+        fixture.owner,
+    );
+    let alternate_fence = RevisionId(Sha256Digest::of_bytes("alternate policy fence"));
+
+    publisher.revoke().expect("revoke original epoch");
+    publisher
+        .regrant(fixture.publication(
+            2,
+            1_001,
+            CurrentResourceState::Present {
+                revision: fixture.revision,
+            },
+            alternate_fence,
+        ))
+        .expect("grant alternate epoch");
+    publisher.revoke().expect("revoke alternate epoch");
+    let reused = publisher
+        .regrant(fixture.publication(
+            3,
+            1_002,
+            CurrentResourceState::Present {
+                revision: fixture.revision,
+            },
+            original.policy_fence,
+        ))
+        .expect("explicitly reuse the original policy identity in a new epoch");
+    assert!(reused.authority_epoch > original.authority_epoch);
+
+    let error = old_admission
+        .authorize(
+            &fixture.plan,
+            binding,
+            operation,
+            &method,
+            InvocationPurpose::Effect,
+        )
+        .expect_err("old admission must remain fenced despite reused policy identity");
     assert!(error.to_string().contains("plan-policy commitment"));
 }
 
@@ -317,6 +519,7 @@ fn expired_current_observations_fail_closed() {
         TestClock(1_101),
         CurrentAuthorityCommitment {
             plan: document.plan,
+            authority_epoch: document.authority_epoch,
             policy_fence: document.policy_fence,
             policy_revision: document.policy_revision,
             resolution_policy: document.resolution_policy,
@@ -554,7 +757,7 @@ fn publisher_rejects_a_lower_sequence_replay() {
         &fixture.path,
         &fixture.trust_anchor,
         fixture.owner,
-        &document,
+        &mut document,
     )
     .expect_err("a lower sequence must not replace current authority");
     assert!(error.to_string().contains("advance its sequence"));
@@ -571,7 +774,7 @@ fn publisher_rejects_a_regressed_observation_timestamp() {
         &fixture.path,
         &fixture.trust_anchor,
         fixture.owner,
-        &document,
+        &mut document,
     )
     .expect_err("a newer sequence must not regress its observation time");
     assert!(error.to_string().contains("observation timestamp"));
@@ -587,14 +790,14 @@ fn competing_publishers_leave_the_highest_sequence_selected() {
     higher.sequence = 3;
     higher.observed_at_restart_millis = 1_003;
     let barrier = Arc::new(Barrier::new(3));
-    let workers = [lower, higher].map(|document| {
+    let workers = [lower, higher].map(|mut document| {
         let path = fixture.path.clone();
         let anchor = fixture.trust_anchor.clone();
         let barrier = Arc::clone(&barrier);
         let owner = fixture.owner;
         std::thread::spawn(move || {
             barrier.wait();
-            publish_authority_file(&path, &anchor, owner, &document)
+            publish_authority_file(&path, &anchor, owner, &mut document)
         })
     });
     barrier.wait();

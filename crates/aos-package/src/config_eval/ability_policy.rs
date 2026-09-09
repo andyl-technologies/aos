@@ -10,7 +10,7 @@
 //! replacement affects later decisions without granting from retained history.
 //!
 //! ```text
-//! {"bindings":[...],"max_age_millis":30000,"observed_at_restart_millis":...,
+//! {"authority_epoch":7,"bindings":[...],"max_age_millis":30000,"observed_at_restart_millis":...,
 //!  "plan":"sha256:...","policy_fence":"sha256:...",
 //!  "platform_policy":"sha256:...","policy_revision":"sha256:...",
 //!  "provider_assignments":[...],
@@ -81,6 +81,8 @@ pub struct CurrentAbilityAuthorityDocument {
     pub required_features: Vec<RequiredFeature>,
     /// Changes whenever current operator authority is revoked or republished.
     pub policy_fence: RevisionId,
+    /// Binds this publication to the protected monotonic authority epoch.
+    pub authority_epoch: u64,
     /// Identifies the current grants represented by this publication.
     pub policy_revision: RevisionId,
     /// Commits to the authenticated resolution policy used to issue bindings.
@@ -186,9 +188,9 @@ impl CurrentAbilityAuthorityDocument {
                 "current authority requires an unsupported semantic feature",
             ));
         }
-        if self.sequence == 0 || self.max_age_millis == 0 {
+        if self.authority_epoch == 0 || self.sequence == 0 || self.max_age_millis == 0 {
             return Err(invalid(
-                "current authority sequence and maximum age must be positive",
+                "current authority epoch, sequence, and maximum age must be positive",
             ));
         }
         if self.bindings.len() > CURRENT_ABILITY_AUTHORITY_MAX_ENTRIES
@@ -290,6 +292,8 @@ pub struct CurrentAuthorityPublication<'a> {
 pub struct CurrentAuthorityCommitment {
     /// Identifies the exact retained effect plan.
     pub plan: PlanId,
+    /// Pins the protected authority epoch observed during plan admission.
+    pub authority_epoch: u64,
     /// Identifies the revocation-sensitive policy publication.
     pub policy_fence: RevisionId,
     /// Identifies grants authorized for the plan.
@@ -352,6 +356,7 @@ where
             .map_err(|error| source_error(error.to_string()))?;
         document.validate(&self.supported_features)?;
         if document.plan != self.commitment.plan
+            || document.authority_epoch != self.commitment.authority_epoch
             || document.policy_fence != self.commitment.policy_fence
             || document.policy_revision != self.commitment.policy_revision
             || document.resolution_policy != self.commitment.resolution_policy
@@ -657,6 +662,7 @@ fn build_publication(
         schema: CURRENT_ABILITY_AUTHORITY_SCHEMA.to_string(),
         required_features,
         policy_fence: publication.policy_fence,
+        authority_epoch: 0,
         policy_revision,
         resolution_policy: policy_digest,
         platform_policy: platform_policy_digest,
