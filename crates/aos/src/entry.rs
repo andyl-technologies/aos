@@ -152,6 +152,9 @@ fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
         "fetch",
         "render-one",
         "__graph-compile",
+        "__ability-stage-run",
+        "__ability-stage-validate",
+        "__ability-stage-receive",
     ];
 
     arguments.iter().find_map(|argument| {

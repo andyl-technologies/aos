@@ -206,6 +206,15 @@
           rootfs/usr/lib/aos/host/static-ability-contract.json
         chmod 0444 rootfs/usr/lib/aos/host/static-ability-contract.json
 
+        ${lib.optionalString system.config.aos.boot.initrd.abilityHandoff.enable ''
+          # The host receiver authenticates the producer's static-contract
+          # commitment against this image-owned copy after switch-root.
+          mkdir -p rootfs/usr/lib/aos/initrd
+          cp ${system.config.system.build.initrdStaticAbilityContract}/contract.json \
+            rootfs/usr/lib/aos/initrd/static-ability-contract.json
+          chmod 0444 rootfs/usr/lib/aos/initrd/static-ability-contract.json
+        ''}
+
         ${lib.optionalString sb.enable ''
           mkdir -p rootfs/usr/lib/aos/image-trust
           cp ${activeImageDbCerts}/active-db-certs.pem \

@@ -127,10 +127,12 @@
 
   # Assemble the in-image, eval-only base library for every
   # system. See `lib/build/base-lib.nix`.
-  mkBaseLib = import ./lib/build/base-lib.nix {
-    inherit lib pkgs;
-    system = hostPlatform.system;
-  };
+  mkBaseLibFor = effectivePkgs:
+    import ./lib/build/base-lib.nix {
+      inherit lib;
+      pkgs = effectivePkgs;
+      system = hostPlatform.system;
+    };
 
   # Build a system from a system definition module (or list of modules).
   #
@@ -149,6 +151,10 @@
       if builtins.isAttrs args && args ? specialArgs
       then args.specialArgs
       else {};
+    # A caller-provided package set must bind both stage-1 modules and the
+    # frozen on-host evaluator. Otherwise first-boot re-evaluation could
+    # silently restore executor paths from the outer package set.
+    effectivePkgs = specialArgs.pkgs or pkgs;
     systemName =
       if builtins.isAttrs args && args ? systemName
       then args.systemName
@@ -198,7 +204,7 @@
       .aos
       .system
       .moduleAbi;
-    baseLib = mkBaseLib {
+    baseLib = (mkBaseLibFor effectivePkgs) {
       baseModules = modules;
       inherit systemModules systemName moduleAbi;
     };

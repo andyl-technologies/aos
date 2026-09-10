@@ -88,6 +88,51 @@ Activation modes are:
 | `--kexec` | Rejected for A/B images because kexec cannot change the root slot |
 | `--drain` | Drain workloads before a requested `--reboot` |
 
+Every A/B selection authenticates the running generation record against its
+immutable toplevel metadata, then compares that identity with the candidate.
+Both images must declare the same nonempty `stateVersion` and a canonical
+image-owned native executor store path. AOS currently has no state migration
+runner for an image transition, so a different `stateVersion` is rejected.
+
+Changing the native executor is supported only with the combined
+`--drain --reboot` mode. Before draining or selecting the image, APM scans all
+retained configuration generations and rejects the transition if any native
+ability transaction lacks terminal evidence under the running executor.
+Advisory staging and `--reboot` without `--drain` cannot cross an executor
+boundary.
+
+An A/B installation made before toplevels recorded these two fields has one
+authenticated migration path. The first transition must use `--drain
+--reboot`. APM requires both new immutable fields to be absent, requires the
+legacy image record to name no native executor, and first authenticates that it
+is the image that actually booted from the baked toplevel pointer, root slot,
+and verity hash. It then re-authenticates the record against the immutable
+toplevel, base library, UKI identity, and `os-release`. APM takes the legacy
+state version only from the authenticated `AOS_STATE_VERSION` in that
+`os-release`, requires the candidate to preserve it, checks every retained
+configuration generation for unfinished native transactions, and then records
+that state version durably before staging. It does not invent an executor
+identity for the legacy image. A partial new identity or any disagreement among
+the legacy record, boot identity, immutable metadata, and `os-release` is
+rejected.
+
+For a qualified drained reboot, image `state.json` exposes the durable
+`active_rollout` record with schema `aos.image-rollout/v1`. It binds the exact
+candidate, prior image, and `stateVersion`; its status advances from `staged`
+to `candidate_booted` after early boot authenticates the selected image. Boot
+blessing then requires a strict successful configuration activation. If the
+manifest includes native ability activation, its committed activation proof
+must also name a nonempty native ability transaction.
+
+A healthy candidate moves that same record to `last_rollout` with status
+`succeeded` and clears `active_rollout`. A strict health failure marks the
+active record `health_failed` and requests the next counted reboot. That status
+survives every remaining candidate attempt. After boot counting falls back,
+the prior image must authenticate, re-evaluate, and become authoritative before
+AOS moves the record to `last_rollout` as `health_failed` and clears the active
+transition. Operators can therefore distinguish a qualified success from an
+automatic fallback without treating an intermediate reboot as a final result.
+
 The candidate UKI carries an sd-boot boot-counting suffix. Each unsuccessful
 attempt decrements its counter; exhaustion demotes the candidate and falls back
 to the other slot. A candidate is blessed only after it boots, re-evaluates the

@@ -16,7 +16,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 use aos_release::artifact::{

@@ -74,6 +74,7 @@ use crate::ability_package::{VerifiedAbilityPackage, VerifiedAbilityPackageSet};
 
 const MANAGED_CONFIGURATION_STATE_ROOT: &str = "/var/lib/aos/ability-runtime/managed-configuration";
 const NGINX_STATE_ROOT: &str = "/var/lib/aos/ability-runtime/nginx";
+const RETRY_CANCELLATION_POLL: Duration = Duration::from_millis(50);
 
 /// Selects the built-in adapter family authenticated for one native mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1283,11 +1284,7 @@ impl<'a> NativeDispatcher<'a> {
                 RecoveryAction::AwaitRetryBackoff {
                     eligible_at_millis, ..
                 } => {
-                    let remaining =
-                        eligible_at_millis.saturating_sub(clock.restart_stable_millis());
-                    if remaining > 0 {
-                        thread::sleep(Duration::from_millis(remaining));
-                    }
+                    wait_for_retry_eligibility(&clock, cancellation, *eligible_at_millis)?;
                 }
                 RecoveryAction::InterventionRequired
                 | RecoveryAction::CompensationInterventionRequired => {
@@ -1993,6 +1990,25 @@ impl<'a> NativeDispatcher<'a> {
     }
 }
 
+/// Waits for persisted retry eligibility while keeping cancellation bounded.
+fn wait_for_retry_eligibility(
+    clock: &impl MonotonicClock,
+    cancellation: &CancellationToken,
+    eligible_at_millis: u64,
+) -> Result<()> {
+    loop {
+        ensure!(
+            !cancellation.is_cancelled(),
+            "native activation was cancelled while awaiting retry eligibility"
+        );
+        let remaining = eligible_at_millis.saturating_sub(clock.restart_stable_millis());
+        if remaining == 0 {
+            return Ok(());
+        }
+        thread::sleep(RETRY_CANCELLATION_POLL.min(Duration::from_millis(remaining)));
+    }
+}
+
 fn validate_runtime_health_authority(
     state: RuntimeResourceState,
     retained: Option<RuntimeResourceState>,
@@ -2420,6 +2436,39 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FixedClock;
+
+    impl MonotonicClock for FixedClock {
+        fn now_millis(&self) -> u64 {
+            0
+        }
+
+        fn restart_stable_millis(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn retry_wait_observes_cancellation_within_the_poll_bound() {
+        let cancellation = CancellationToken::default();
+        let signal = cancellation.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5));
+            signal.cancel();
+        });
+        let started = std::time::Instant::now();
+
+        let error = wait_for_retry_eligibility(&FixedClock, &cancellation, u64::MAX)
+            .expect_err("a cancelled retry wait must stop");
+
+        canceller.join().expect("cancellation thread");
+        assert!(error.to_string().contains("cancelled"));
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "retry wait exceeded its bounded cancellation poll"
+        );
+    }
 
     #[test]
     fn partial_effect_health_is_scoped_to_retained_reconciliation() {

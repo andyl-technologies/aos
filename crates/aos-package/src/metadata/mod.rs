@@ -60,6 +60,7 @@ mod tests;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use clap::Subcommand;
 
 pub use detect::{
     DetectOptions, PlatformCapability, classify_dmi, needs_network, platform_capability, run_detect,
@@ -75,6 +76,132 @@ pub use stash::{MetadataResult, PlatformEnv, Stash};
 pub use state::{PersistProvisioningOptions, ProvisioningAudit};
 
 use aos_net::transfer::{TransferEngine, TransferEngineConfig};
+
+#[derive(Subcommand)]
+pub enum MetadataCommand {
+    /// Detect the platform and probe offline config-drives
+    Detect,
+    /// Fetch and stash exact user-data + instance facts
+    Fetch,
+    /// Authorize user-data as exact literal host.nix
+    Authorize {
+        /// Measured provisioning trust policy: platform or signed
+        #[arg(long)]
+        trust: String,
+        /// Public configuration-key directory; repeatable
+        #[arg(long = "trusted-config-keys-dir")]
+        trusted_config_keys_dir: Vec<PathBuf>,
+    },
+    /// Evaluate the closed aos.provisioning projection and render storage
+    EvalProvisioning {
+        /// ABI-pinned base module library embedded in the image
+        #[arg(long)]
+        base_lib: PathBuf,
+        /// Scratch directory admitted to restricted evaluation
+        #[arg(long, default_value = "/run/aos-provisioning-eval")]
+        eval_root: PathBuf,
+        /// Keep `/var` raw for measured-boot LUKS enrollment
+        #[arg(long)]
+        measured_boot: bool,
+        /// Existing committed arm for advisory post-provision drift evaluation
+        #[arg(long)]
+        committed_source: Option<String>,
+        /// Existing GPT marker UUID for stable generated partition UUIDs
+        #[arg(long)]
+        marker_uuid: Option<String>,
+    },
+    /// Verify that stage 2 sees the exact host input accepted in initrd
+    VerifyBinding,
+    /// Persist validated provisioning evidence and manual repart definitions
+    PersistProvisioning {
+        /// Durable state directory on `/var`
+        #[arg(long, default_value = "/var/lib/aos-provisioning")]
+        state_dir: PathBuf,
+        /// ABI of the base module library that evaluated the storage plan
+        #[arg(long)]
+        module_abi: u32,
+        /// Version of the image whose initrd evaluated the storage plan
+        #[arg(long)]
+        image_version: String,
+    },
+    /// Cache an authorized host input after full stage-2 evaluation succeeds
+    CacheRuntime {
+        /// Durable state directory on `/var`
+        #[arg(long, default_value = "/var/lib/aos-provisioning")]
+        state_dir: PathBuf,
+    },
+    /// Restore the last fully evaluated host input when metadata is unavailable
+    RestoreRuntime {
+        /// Durable state directory on `/var`
+        #[arg(long, default_value = "/var/lib/aos-provisioning")]
+        state_dir: PathBuf,
+    },
+}
+
+/// Dispatches one parsed metadata command to its production implementation.
+///
+/// # Errors
+///
+/// Returns an error when acquisition, authorization, restricted evaluation,
+/// binding verification, or durable state publication fails.
+pub async fn run_command(command: &MetadataCommand) -> Result<()> {
+    match command {
+        MetadataCommand::Detect => detect_main(),
+        MetadataCommand::Fetch => fetch_main().await,
+        MetadataCommand::Authorize {
+            trust,
+            trusted_config_keys_dir,
+        } => {
+            let options = AuthorizeOptions {
+                stash_dir: PathBuf::from(stash::DEFAULT_STASH_DIR),
+                trust: trust.parse()?,
+                trusted_config_key_dirs: trusted_config_keys_dir.clone(),
+            };
+            authorize_main(&options).await
+        }
+        MetadataCommand::EvalProvisioning {
+            base_lib,
+            eval_root,
+            measured_boot,
+            committed_source,
+            marker_uuid,
+        } => eval_provisioning_main(&EvalProvisioningOptions {
+            stash_dir: PathBuf::from(stash::DEFAULT_STASH_DIR),
+            base_lib: base_lib.clone(),
+            eval_root: eval_root.clone(),
+            measured_boot: *measured_boot,
+            committed_source: committed_source.as_deref().map(str::parse).transpose()?,
+            marker_uuid: marker_uuid.clone(),
+        }),
+        MetadataCommand::VerifyBinding => {
+            verify_binding_main(std::path::Path::new(stash::DEFAULT_STASH_DIR))
+        }
+        MetadataCommand::PersistProvisioning {
+            state_dir,
+            module_abi,
+            image_version,
+        } => {
+            state::persist_provisioning_state(&PersistProvisioningOptions {
+                stash_dir: PathBuf::from(stash::DEFAULT_STASH_DIR),
+                state_dir: state_dir.clone(),
+                module_abi: *module_abi,
+                image_version: image_version.clone(),
+            })?;
+            Ok(())
+        }
+        MetadataCommand::CacheRuntime { state_dir } => {
+            state::cache_runtime_input(std::path::Path::new(stash::DEFAULT_STASH_DIR), state_dir)?;
+            Ok(())
+        }
+        MetadataCommand::RestoreRuntime { state_dir } => {
+            state::restore_runtime_input(
+                std::path::Path::new(stash::DEFAULT_STASH_DIR),
+                state_dir,
+            )?;
+            Ok(())
+        }
+    }
+}
 
 /// Select the [`PlatformFetcher`] for a `PLATFORM_ID`, given the resolved
 /// offline `metadata_dir` (when one was mounted by `detect`).

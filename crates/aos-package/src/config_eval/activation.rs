@@ -1613,6 +1613,8 @@ mod tests {
                 toplevel: toplevel.to_string_lossy().into_owned(),
                 package_name: "aos-system".to_string(),
                 version: "1".to_string(),
+                state_version: None,
+                native_executor_ref: None,
                 registry: "system".to_string(),
                 kernel_path: None,
                 evaluator_ref: "/nix/store/dddddddddddddddddddddddddddddddd-base-lib".to_string(),

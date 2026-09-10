@@ -356,14 +356,37 @@ pub(super) fn authenticate_native_executor_path(
             "{subject} native executor is outside the Nix store: {error}"
         ))
     })?;
-    if root.as_os_str() != OsStr::new(&artifact.store_path)
-        || suffix.as_os_str() != OsStr::new(entry_point)
+    let expected = Path::new(&artifact.store_path).join(entry_point);
+    let (expected_root, expected_suffix) =
+        super::stock::store_root_and_suffix(&expected).map_err(|error| {
+            invalid(format!(
+                "signed {subject} native executor entry point is invalid: {error}"
+            ))
+        })?;
+    if expected_root.as_os_str() != OsStr::new(&artifact.store_path)
+        || expected_suffix.as_os_str() != OsStr::new(entry_point)
     {
+        return Err(invalid(format!(
+            "signed {subject} native executor entry point is not canonical"
+        )));
+    }
+
+    let exact_entry_point = root.as_os_str() == OsStr::new(&artifact.store_path)
+        && suffix.as_os_str() == OsStr::new(entry_point);
+    if !exact_entry_point && !paths_resolve_to_same_executable(&expected, executable)? {
         return Err(invalid(format!(
             "signed {subject} handler artifact does not identify the running package runtime"
         )));
     }
     Ok(())
+}
+
+/// Compares an installed entry-point link with the executable it selects.
+fn paths_resolve_to_same_executable(expected: &Path, executable: &Path) -> Result<bool, io::Error> {
+    let expected = std::fs::canonicalize(expected)?;
+    let executable = std::fs::canonicalize(executable)?;
+
+    Ok(expected == executable)
 }
 
 fn is_canonical_absolute(path: &str) -> bool {
@@ -538,5 +561,26 @@ mod tests {
         assert!(owner_has_native_authority(0, 1000));
         assert!(owner_has_native_authority(1000, 1000));
         assert!(!owner_has_native_authority(65534, 1000));
+    }
+
+    #[test]
+    fn installed_entry_point_may_link_to_the_shared_executable() {
+        let root = tempfile::tempdir().expect("temporary root is created");
+        let executable = root.path().join("shared-executable");
+        let entry_point = root.path().join("private-entry-point");
+        let different_executable = root.path().join("different-executable");
+        std::fs::write(&executable, b"shared executable").expect("executable is written");
+        std::fs::write(&different_executable, b"different executable")
+            .expect("different executable is written");
+        symlink(&executable, &entry_point).expect("private entry point is linked");
+
+        assert!(
+            paths_resolve_to_same_executable(&entry_point, &executable)
+                .expect("entry point is resolved")
+        );
+        assert!(
+            !paths_resolve_to_same_executable(&entry_point, &different_executable)
+                .expect("different executable is resolved")
+        );
     }
 }

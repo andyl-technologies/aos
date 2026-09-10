@@ -347,6 +347,7 @@ in {
       renderedUnits = builtins.attrNames renderedInitrdUnits;
       renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);
       handoff = config.system.build.bootSubstrateContract;
+      abilityActivationSelection = config.system.build.initrdAbilityActivationSelection;
       maskedUnits =
         cfg.maskedUnits
         ++ lib.optionals config.aos.security.verity.enable [

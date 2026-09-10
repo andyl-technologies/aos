@@ -84,6 +84,9 @@ pub const FEATURE_UKI_SLOTS_V1: &str = "uki-slots-v1";
 /// Registry feature flag for signed, slot-paired recovery UKI metadata.
 pub const FEATURE_RECOVERY_UKIS_V1: &str = "recovery-ukis-v1";
 
+/// Registry feature flag for native-executor-qualified image rollouts.
+pub const FEATURE_NATIVE_IMAGE_ROLLOUT_V1: &str = "native-image-rollout-v1";
+
 /// Registry feature flag for an authenticated RFC-0022 ability manifest.
 pub const FEATURE_ABILITIES_V1: &str = "abilities-v1";
 
@@ -115,6 +118,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_PACKAGE_DOCUMENTATION_V1,
     FEATURE_UKI_SLOTS_V1,
     FEATURE_RECOVERY_UKIS_V1,
+    FEATURE_NATIVE_IMAGE_ROLLOUT_V1,
 ];
 
 const LANDLOCK_WRITABLE_TEMP_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
@@ -3476,6 +3480,12 @@ pub struct ImageGeneration {
     pub package_name: String,
     /// Sysroot package version.
     pub version: String,
+    /// Authenticated `/var` format contract carried by this image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_version: Option<String>,
+    /// Exact native ability executor store path carried by this image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_executor_ref: Option<String>,
     /// Source registry the sysroot package was installed from.
     pub registry: String,
     /// Resolved kernel store path (kernel-change detection across A/B).
@@ -3512,6 +3522,36 @@ pub struct ImageGeneration {
     pub created_at: String,
 }
 
+/// Describes the durable phase or terminal result of a qualified A/B rollout.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageRolloutStatus {
+    /// The candidate is the counted next-boot selection.
+    Staged,
+    /// The candidate booted and is awaiting strict configuration health.
+    CandidateBooted,
+    /// The candidate passed strict activation and native ability health.
+    Succeeded,
+    /// The candidate failed boot or strict health and the prior image returned.
+    HealthFailed,
+}
+
+/// Records one state-compatible, drained A/B image rollout.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageRollout {
+    /// Versioned schema for durable boot-side interpretation.
+    pub schema: String,
+    /// Image generation selected as the rollout candidate.
+    pub candidate: u32,
+    /// Known-good image generation retained for fallback.
+    pub prior: u32,
+    /// Exact `/var` format contract shared by candidate and prior.
+    pub state_version: String,
+    /// Current rollout phase or terminal result.
+    pub status: ImageRolloutStatus,
+}
+
 impl ImageGeneration {
     /// Returns whether a config-gen satisfies this image's ABI portion of the
     /// reactivation gate.
@@ -3545,6 +3585,12 @@ pub struct ImageGenerationState {
     /// Recoverable evidence for an incomplete inactive recovery publication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_pending: Option<RecoveryPublication>,
+    /// Qualified rollout currently crossing the reboot boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_rollout: Option<ImageRollout>,
+    /// Most recently completed qualified rollout outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_rollout: Option<ImageRollout>,
     /// All recorded image-generations, in creation order.
     #[serde(default)]
     pub generations: Vec<ImageGeneration>,
@@ -6270,6 +6316,10 @@ provenance = "provenance/firewall.jsonl"
         };
         let json = serde_json::to_string(&g).unwrap();
         assert!(json.contains("module_abi_pinned"));
+        assert!(
+            !json.contains("native_executor_ref"),
+            "configuration generations cannot replace the image-owned native executor"
+        );
         let parsed: ConfigGeneration = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.module_abi_pinned, 2);
         assert_eq!(parsed.host_nix_ref, "/nix/store/hn-host.nix");
@@ -6285,6 +6335,14 @@ provenance = "provenance/firewall.jsonl"
             pending: Some(2),
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: Some(ImageRollout {
+                schema: "aos.image-rollout/v1".into(),
+                candidate: 2,
+                prior: 1,
+                state_version: "7".into(),
+                status: ImageRolloutStatus::Staged,
+            }),
+            last_rollout: None,
             generations: vec![
                 ImageGeneration {
                     number: 1,
@@ -6294,6 +6352,8 @@ provenance = "provenance/firewall.jsonl"
                     toplevel: "/nix/store/top1-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.1".into(),
+                    state_version: Some("7".into()),
+                    native_executor_ref: Some("/nix/store/executor-1".into()),
                     registry: "core".into(),
                     kernel_path: Some("/nix/store/k1-linux".into()),
                     evaluator_ref: "/nix/store/bl1-aos-base-lib".into(),
@@ -6313,6 +6373,8 @@ provenance = "provenance/firewall.jsonl"
                     toplevel: "/nix/store/top2-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.2".into(),
+                    state_version: Some("7".into()),
+                    native_executor_ref: Some("/nix/store/executor-2".into()),
                     registry: "core".into(),
                     kernel_path: Some("/nix/store/k2-linux".into()),
                     evaluator_ref: "/nix/store/bl2-aos-base-lib".into(),
@@ -6330,6 +6392,10 @@ provenance = "provenance/firewall.jsonl"
         let parsed: ImageGenerationState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.running, 1);
         assert_eq!(parsed.pending, Some(2));
+        assert_eq!(
+            parsed.active_rollout.as_ref().map(|rollout| rollout.status),
+            Some(ImageRolloutStatus::Staged)
+        );
         let running = parsed.running_generation().unwrap();
         assert_eq!(running.module_abi, 1);
         assert!(running.admits_pin(1));
@@ -6409,6 +6475,27 @@ provenance = "provenance/firewall.jsonl"
         artifact.references.clear();
         artifact.document_size = aos_doc_model::MAX_DOCUMENT_BYTES as u64 + 1;
         assert!(validate_documentation_artifact_meta(&artifact).is_err());
+    }
+
+    #[test]
+    fn native_image_rollout_gate_rejects_pre_change_package_readers() {
+        let mut meta = sample_package_meta();
+        meta.name = "aos".to_string();
+        meta.sysroot = true;
+        meta.requires_features = vec![FEATURE_NATIVE_IMAGE_ROLLOUT_V1.to_string()];
+
+        validate_supported_package_meta(&meta)
+            .expect("the current package reader understands native image rollouts");
+
+        let pre_change_features = SUPPORTED_PACKAGE_FEATURES
+            .iter()
+            .copied()
+            .filter(|feature| *feature != FEATURE_NATIVE_IMAGE_ROLLOUT_V1)
+            .collect::<Vec<_>>();
+        let error =
+            validate_supported_package_meta_with(&meta, PACKAGE_META_FORMAT, &pre_change_features)
+                .expect_err("a pre-change package reader must reject the rollout gate");
+        assert!(error.to_string().contains(FEATURE_NATIVE_IMAGE_ROLLOUT_V1));
     }
 
     #[test]

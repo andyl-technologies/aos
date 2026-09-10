@@ -17,7 +17,40 @@
   ];
 
   failurePreStart = ''read -r cmdline < /proc/cmdline; case " $cmdline " in *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*) if [ ! -e /var/lib/aos-test/allow-eval ]; then exit 1; fi ;; esac'';
-  bootCommitCondition = "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
+  bootCommitCondition = "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test ! -e /var/lib/aos-test/skip-image-commit || test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
+  bootCommitPreStart = "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/skip-image-commit || test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
+  rolloutSnapshotPackage = pkgs.writeShellScriptBin "aos-fleet-rollout-snapshot" ''
+    set -eu
+    state=/var/lib/profiles/image/state.json
+    [ -s "$state" ] || exit 0
+    schema=$(${pkgs.jq}/bin/jq -r '.active_rollout.schema // ""' "$state")
+    [ "$schema" = aos.image-rollout/v1 ] || exit 0
+
+    status=$(${pkgs.jq}/bin/jq -er '.active_rollout.status' "$state")
+    running=$(${pkgs.jq}/bin/jq -er '.running' "$state")
+    destination="/var/lib/aos-test/rollout-$status-running-$running.json"
+    ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
+    ${pkgs.coreutils}/bin/cp "$state" "$destination"
+    ${pkgs.coreutils}/bin/sync -f "$destination"
+  '';
+  rolloutSnapshotScript = "${rolloutSnapshotPackage}/bin/aos-fleet-rollout-snapshot";
+  candidatePackageRuntime =
+    pkgs.runCommand "aos-package-runtime-rollout-candidate" {
+      buildDeps = [pkgs.coreutils];
+    } ''
+      mkdir -p $out
+      cp -r --no-preserve=mode,ownership ${pkgs.aos.packageRuntime}/. $out/
+      printf '%s\n' candidate-executor > $out/rollout-test-identity
+    '';
+  candidatePkgs =
+    pkgs
+    // {
+      aos =
+        pkgs.aos
+        // {
+          packageRuntime = candidatePackageRuntime;
+        };
+    };
   candidateAgentUnit = pkgs.writeTextFile {
     name = "aos-fleet-test-agent-runtime-unit";
     destination = "/aos-test-agent.service";
@@ -64,60 +97,63 @@
     };
   };
 
-  # The candidate deliberately changes only image identity. Keeping the module
-  # ABI fixed makes the reboot test isolate image selection and first-boot
-  # rebinding rather than cross-ABI migration.
-  candidate = mkSystem [
-    ../../systems/server-verity.nix
-    initrdControlFallback
-    {
-      aos.system.version = "9999.0.0-image-rollback";
-      # The fleet machine module bakes deterministic interface naming into the
-      # initial UKI. Preserve that test-machine ABI in the independently built
-      # candidate and seed its fleet address so first-boot evaluation can run
-      # before the retained host configuration is rebound.
-      aos.boot.kernelParams = ["net.ifnames=0"];
-      aos.apm.drainScript = drainScript;
-      aos.packages.aos-test-agent.bundle = true;
-      environment.systemPackages = testPackages;
-      environment.etc."systemd/network/10-fleet-eth0.network".text = ''
-        [Match]
-        MACAddress=52:54:00:12:00:02
+  # The candidate changes image identity and realizes its package runtime as a
+  # distinct immutable executor. Keeping the module ABI fixed isolates the
+  # executor ownership handoff from cross-ABI state migration.
+  candidate = mkSystem {
+    specialArgs.pkgs = candidatePkgs;
+    modules = [
+      ../../systems/server-verity.nix
+      initrdControlFallback
+      {
+        aos.system.version = "9999.0.0-image-rollback";
+        # The fleet machine module bakes deterministic interface naming into the
+        # initial UKI. Preserve that test-machine ABI in the independently built
+        # candidate and seed its fleet address so first-boot evaluation can run
+        # before the retained host configuration is rebound.
+        aos.boot.kernelParams = ["net.ifnames=0"];
+        aos.apm.drainScript = drainScript;
+        aos.packages.aos-test-agent.bundle = true;
+        environment.systemPackages = testPackages;
+        environment.etc."systemd/network/10-fleet-eth0.network".text = ''
+          [Match]
+          MACAddress=52:54:00:12:00:02
 
-        [Network]
-        Address=192.168.50.11/24
-      '';
-      systemd.services.aos-test-agent = {
-        description = "AOS VM Test Guest Agent";
-        wantedBy = ["multi-user.target"];
-        restartIfChanged = false;
-        stopIfChanged = false;
-        unitConfig.RefuseManualStop = true;
-        serviceConfig = {
-          Type = "simple";
-          ExecStart = "${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent";
-          Restart = "on-failure";
-          RestartSec = 1;
-          Environment = "PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
-        };
-      };
-      systemd.services.aos-test-agent-bootstrap = {
-        description = "Install the AOS VM test control channel";
-        wantedBy = ["multi-user.target"];
-        before = ["aos-eval.service"];
-        stopOnRemoval = false;
-        unitConfig.RefuseManualStop = true;
-        serviceConfig.Type = "oneshot";
-        script = ''
-          ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
-          ${pkgs.coreutils}/bin/ln -sfn ${candidateAgentUnit}/aos-test-agent.service \
-            /run/systemd/system/aos-test-agent.service
-          ${pkgs.systemd}/bin/systemctl daemon-reload
-          ${pkgs.systemd}/bin/systemctl start aos-test-agent.service
+          [Network]
+          Address=192.168.50.11/24
         '';
-      };
-    }
-  ];
+        systemd.services.aos-test-agent = {
+          description = "AOS VM Test Guest Agent";
+          wantedBy = ["multi-user.target"];
+          restartIfChanged = false;
+          stopIfChanged = false;
+          unitConfig.RefuseManualStop = true;
+          serviceConfig = {
+            Type = "simple";
+            ExecStart = "${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent";
+            Restart = "on-failure";
+            RestartSec = 1;
+            Environment = "PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
+          };
+        };
+        systemd.services.aos-test-agent-bootstrap = {
+          description = "Install the AOS VM test control channel";
+          wantedBy = ["multi-user.target"];
+          before = ["aos-eval.service"];
+          stopOnRemoval = false;
+          unitConfig.RefuseManualStop = true;
+          serviceConfig.Type = "oneshot";
+          script = ''
+            ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
+            ${pkgs.coreutils}/bin/ln -sfn ${candidateAgentUnit}/aos-test-agent.service \
+              /run/systemd/system/aos-test-agent.service
+            ${pkgs.systemd}/bin/systemctl daemon-reload
+            ${pkgs.systemd}/bin/systemctl start aos-test-agent.service
+          '';
+        };
+      }
+    ];
+  };
   candidateTop = candidate.config.system.build.toplevel;
   candidateImage = candidate.config.system.build.image.raw;
   candidateImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
@@ -275,6 +311,29 @@ in {
           matches = [g for g in state["generations"] if g["number"] == number]
           assert len(matches) == 1, (number, state)
           return matches[0]
+
+
+      def assert_generation_runtime_identity(record):
+          toplevel = shlex.quote(record["toplevel"])
+          state_version = target.succeed(
+              f"cat {toplevel}/meta/state-version"
+          ).strip()
+          native_executor = target.succeed(
+              f"cat {toplevel}/meta/native-executor-ref"
+          ).strip()
+
+          assert state_version, record
+          assert record["state_version"] == state_version, record
+          assert re.fullmatch(
+              r"/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/]+",
+              native_executor,
+          ), native_executor
+          assert record["native_executor_ref"] == native_executor, record
+
+
+      def rollout_snapshot(status, running):
+          path = f"/var/lib/aos-test/rollout-{status}-running-{running}.json"
+          return json.loads(target.succeed(f"cat {path}"))
 
 
       def efivar_byte(name):
@@ -462,6 +521,8 @@ in {
       assert initial.get("pending") is None, initial
       old = generation(initial, 1)
       assert old["slot"] == "A", old
+      assert_generation_runtime_identity(old)
+      assert old["native_executor_ref"] != "${candidatePackageRuntime}", old
 
       # Keep fault injection outside host.nix: structural systemd units are
       # image-owned, while host.nix is deliberately restricted to operator-
@@ -471,6 +532,7 @@ in {
           set -eu
           mkdir -p \
             /var/etc/systemd/system/aos-eval.service.d \
+            /var/etc/systemd/system/aos-firstboot-reeval.service.d \
             /var/etc/systemd/system/aos-image-boot-commit.service.d \
             /var/etc/systemd/system/multi-user.target.wants
           cat > /var/etc/systemd/system/aos-test-agent.service <<'EOF'
@@ -491,10 +553,17 @@ in {
           [Service]
           ExecStartPre=${pkgs.bash}/bin/bash -c ${lib.escapeShellArg failurePreStart}
           EOF
+          cat > /var/etc/systemd/system/aos-firstboot-reeval.service.d/90-rollback-test.conf <<'EOF'
+          [Service]
+          ExecStartPre=${rolloutSnapshotScript}
+          EOF
           cat > /var/etc/systemd/system/aos-image-boot-commit.service.d/90-rollback-test.conf <<'EOF'
           [Service]
           ExecCondition=${bootCommitCondition}
+          ExecStartPre=${rolloutSnapshotScript}
+          ExecStartPre=${bootCommitPreStart}
           EOF
+          touch /var/lib/aos-test/skip-image-commit
           ${pkgs.coreutils}/bin/sync
       """))
 
@@ -621,14 +690,52 @@ in {
       )
 
       # -- Stage the actual inactive slot -------------------------------------
-      out = target.succeed(
+      # A separately realized candidate executor makes this a real runtime
+      # ownership handoff. Any retained config generation with unfinished
+      # native effects must reject the handoff before drain or image selection.
+      initial_config = json.loads(
+          target.succeed("cat /var/lib/profiles/system/state.json")
+      )
+      blocked_generation = initial_config["current"]
+      blocked_transaction = (
+          f"/var/lib/profiles/system/gen-{blocked_generation}/"
+          "ability-transactions/blocked-executor-replacement"
+      )
+      before_blocked_upgrade = image_state()
+      blocked_boot_id = target.succeed(
+          "cat /proc/sys/kernel/random/boot_id"
+      ).strip()
+      target.succeed(f"mkdir -p {blocked_transaction}")
+      blocked_command = (
+          "set -o pipefail; "
           "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-          f"{APM} upgrade --system --yes 2>&1",
+          f"{APM} upgrade --system --yes --drain --reboot 2>&1 "
+          "| ${pkgs.coreutils}/bin/tee /var/lib/aos-test/blocked-upgrade.out"
+      )
+      target.fail(
+          "${pkgs.bash}/bin/bash -c " + shlex.quote(blocked_command),
           timeout=1800,
+      )
+      blocked_out = target.succeed(
+          "cat /var/lib/aos-test/blocked-upgrade.out"
+      )
+      assert f"config generation {blocked_generation}" in blocked_out, blocked_out
+      assert "settle all ability transactions" in blocked_out, blocked_out
+      assert image_state() == before_blocked_upgrade
+      assert target.succeed(
+          "cat /proc/sys/kernel/random/boot_id"
+      ).strip() == blocked_boot_id
+      target.fail("test -e /var/lib/aos-test/drained-boot-id")
+      target.succeed(f"rm -rf {blocked_transaction}")
+
+      out = run_rebooting_apm(
+          "upgrade --system --yes --drain --reboot", "initial-upgrade-reboot"
       )
       print("=== stage candidate ===\n" + out)
       assert "Secure Boot catalog validation passed" in out, out
       assert "Staging inactive A/B image slot" in out, out
+      assert "Draining workloads" in out, out
+      assert "Drain complete" in out, out
       # An exact LoaderEntryDefault would keep selecting the counted UKI even
       # after sd-boot marks it bad. Staging must leave selection to the
       # image-owned aos-*.efi pattern so exhaustion can fall back to slot A.
@@ -638,13 +745,26 @@ in {
       assert_boot_read_only()
 
       staged = image_state()
-      assert staged["running"] == 1, staged
+      assert staged["running"] == 2, staged
       assert staged["default"] == 2, staged
       assert staged["pending"] == 2, staged
+      assert staged["active_rollout"]["status"] == "candidate_booted", staged
       candidate_record = generation(staged, 2)
       assert candidate_record["slot"] == "B", candidate_record
       assert candidate_record["registry"] == "sysreg", candidate_record
       assert candidate_record["expected_pcr11"] == candidate_b_pcr11, candidate_record
+      assert_generation_runtime_identity(candidate_record)
+      assert candidate_record["state_version"] == old["state_version"], (
+          old,
+          candidate_record,
+      )
+      assert candidate_record["native_executor_ref"] == "${candidatePackageRuntime}", (
+          candidate_record
+      )
+      assert candidate_record["native_executor_ref"] != old["native_executor_ref"], (
+          old,
+          candidate_record,
+      )
       assert candidate_record["expected_pcr11"] != old.get("expected_pcr11"), (
           old,
           candidate_record,
@@ -681,7 +801,12 @@ in {
           counted_variant(candidate_entry, 1, 2),
           counted_variant(candidate_entry, 0, 3),
       ]
-      for attempt, expected_entry in enumerate(expected_counted, start=1):
+      wait_for_failed_candidate_pipeline()
+      first_attempt = image_state()
+      assert first_attempt["running"] == 2, first_attempt
+      assert first_attempt["active_rollout"]["status"] == "candidate_booted", first_attempt
+      assert_only_counted_variant(candidate_entry, expected_counted[0])
+      for attempt, expected_entry in enumerate(expected_counted[1:], start=2):
           target.reboot(timeout=600)
           assert_switched_root()
           wait_for_failed_candidate_pipeline()
@@ -727,9 +852,18 @@ in {
       assert fallback["running"] == 1, fallback
       assert fallback["default"] == 1, fallback
       assert fallback.get("pending") is None, fallback
+      assert fallback.get("active_rollout") is None, fallback
+      assert fallback["last_rollout"] == {
+          "schema": "aos.image-rollout/v1",
+          "candidate": 2,
+          "prior": 1,
+          "state_version": old["state_version"],
+          "status": "health_failed",
+      }, fallback
       failed_candidate = generation(fallback, 2)
       assert failed_candidate["registry"] == "sysreg", failed_candidate
       assert failed_candidate["expected_pcr11"] == candidate_b_pcr11, failed_candidate
+      assert_generation_runtime_identity(failed_candidate)
       assert_only_counted_variant(candidate_entry, candidate_exhausted)
       assert_boot_read_only()
 
@@ -740,12 +874,15 @@ in {
       target.succeed(
           "mkdir -p /var/lib/aos-test && "
           "touch /var/lib/aos-test/allow-eval "
-          "/var/lib/aos-test/allow-image-commit"
+          "/var/lib/aos-test/allow-image-commit && "
+          "rm -f /var/lib/aos-test/rollout-*.json"
       )
       out = run_rebooting_apm(
-          "upgrade --system --yes --reboot", "upgrade-reboot"
+          "upgrade --system --yes --drain --reboot", "upgrade-reboot"
       )
       print("=== retry candidate with automatic reboot ===\n" + out)
+      assert "Draining workloads" in out, out
+      assert "Drain complete" in out, out
       target.wait_until_succeeds(
           "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
       )
@@ -769,14 +906,41 @@ in {
       assert retry_candidate["slot"] == "B", retry_candidate
       assert retry_candidate["registry"] == "sysreg", retry_candidate
       assert retry_candidate["expected_pcr11"] == candidate_b_pcr11, retry_candidate
+      assert_generation_runtime_identity(retry_candidate)
       candidate_entry = retry_candidate["uki_path"]
       assert_boot_read_only()
+
+      staged_rollout = rollout_snapshot("staged", retried_number)
+      assert staged_rollout["active_rollout"] == {
+          "schema": "aos.image-rollout/v1",
+          "candidate": retried_number,
+          "prior": 1,
+          "state_version": retry_candidate["state_version"],
+          "status": "staged",
+      }, staged_rollout
+      candidate_booted_rollout = rollout_snapshot(
+          "candidate_booted", retried_number
+      )
+      assert candidate_booted_rollout["active_rollout"]["candidate"] == retried_number, (
+          candidate_booted_rollout
+      )
+      assert candidate_booted_rollout["active_rollout"]["prior"] == 1, (
+          candidate_booted_rollout
+      )
 
       # -- Candidate boot and durable blessing --------------------------------
       committed = image_state()
       assert committed["running"] == retried_number, committed
       assert committed["default"] == retried_number, committed
       assert committed.get("pending") is None, committed
+      assert committed.get("active_rollout") is None, committed
+      assert committed["last_rollout"] == {
+          "schema": "aos.image-rollout/v1",
+          "candidate": retried_number,
+          "prior": 1,
+          "state_version": retry_candidate["state_version"],
+          "status": "succeeded",
+      }, committed
       committed_candidate = generation(committed, retried_number)
       assert committed_candidate["registry"] == "sysreg", committed_candidate
       assert committed_candidate["expected_pcr11"] == candidate_b_pcr11, committed_candidate
@@ -788,6 +952,24 @@ in {
           if g["number"] == config_state["current"]
       )
       assert current_config["image_gen_parent"] == retried_number, current_config
+      for unit in ("aos-eval.service", "aos-activate.service"):
+          start = target.succeed(
+              f"systemctl show -p ExecStart --value {unit}"
+          )
+          match = re.search(r"path=([^ ;}]+)", start)
+          assert match, (unit, start)
+          target.succeed(
+              "grep -F "
+              + shlex.quote("${candidatePackageRuntime}/")
+              + " "
+              + shlex.quote(match.group(1))
+          )
+          target.fail(
+              "grep -F "
+              + shlex.quote(old["native_executor_ref"] + "/")
+              + " "
+              + shlex.quote(match.group(1))
+          )
 
       stable_candidate = candidate_entry.split("+", 1)[0] + ".efi"
       target.succeed(f"test -f /boot/{stable_candidate}")
@@ -811,14 +993,14 @@ in {
       assert_boot_read_only()
 
       # -- Explicit durable rollback to the known-good A image -----------------
-      target.succeed(f"{APM} rollback --system --image --generation 1")
-      selected = image_state()
-      assert selected["running"] == retried_number, selected
-      assert selected["default"] == 1, selected
-      assert selected["pending"] == 1, selected
-      assert_boot_read_only()
-
-      target.reboot(timeout=600)
+      target.succeed("rm -f /var/lib/aos-test/rollout-*.json")
+      out = run_rebooting_apm(
+          "rollback --system --image --generation 1 --drain --reboot",
+          "explicit-rollback-reboot",
+      )
+      print("=== explicit executor-crossing rollback ===\n" + out)
+      assert "Draining workloads" in out, out
+      assert "Drain complete" in out, out
       target.wait_until_succeeds(
           "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
       )
@@ -826,6 +1008,12 @@ in {
       assert rolled_back["running"] == 1, rolled_back
       assert rolled_back["default"] == 1, rolled_back
       assert rolled_back.get("pending") is None, rolled_back
+      assert rolled_back.get("active_rollout") is None, rolled_back
+      assert rolled_back["last_rollout"]["status"] == "succeeded", rolled_back
+      assert rolled_back["last_rollout"]["candidate"] == 1, rolled_back
+      assert rolled_back["last_rollout"]["prior"] == retried_number, rolled_back
+      assert rollout_snapshot("staged", 1)["active_rollout"]["candidate"] == 1
+      assert rollout_snapshot("candidate_booted", 1)["active_rollout"]["prior"] == retried_number
       old_entry = generation(rolled_back, 1)["uki_path"]
       old_stable = old_entry.split("+", 1)[0] + ".efi"
       target.succeed(f"test -f /boot/{old_stable}")
@@ -879,6 +1067,7 @@ in {
       running_boot_id = target.succeed(
           "cat /proc/sys/kernel/random/boot_id"
       ).strip()
+      target.succeed("rm -f /var/lib/aos-test/rollout-*.json")
       out = run_rebooting_apm(
           "rollback --system --image --generation 1 --drain --reboot",
           "rollback-drain-reboot",
@@ -901,6 +1090,78 @@ in {
       assert recovered["running"] == 1, recovered
       assert recovered["default"] == 1, recovered
       assert recovered.get("pending") is None, recovered
+      assert recovered.get("active_rollout") is None, recovered
+      assert recovered["last_rollout"] == {
+          "schema": "aos.image-rollout/v1",
+          "candidate": 1,
+          "prior": retried_number,
+          "state_version": old["state_version"],
+          "status": "succeeded",
+      }, recovered
+      rollback_staged = rollout_snapshot("staged", 1)
+      assert rollback_staged["active_rollout"]["candidate"] == 1, rollback_staged
+      rollback_booted = rollout_snapshot("candidate_booted", 1)
+      assert rollback_booted["active_rollout"]["prior"] == retried_number, (
+          rollback_booted
+      )
+      assert_boot_read_only()
+
+      # Re-arm the same candidate as a qualified rollout, then deny only its
+      # strict boot commit. The failure handler must preserve health failure
+      # across every sd-boot retry and publish it only after slot A is running
+      # and authoritative again.
+      target.succeed(
+          "touch /var/lib/aos-test/allow-eval && "
+          "rm -f /var/lib/aos-test/allow-image-commit "
+          "/var/lib/aos-test/skip-image-commit "
+          "/var/lib/aos-test/rollout-*.json"
+      )
+      out = run_rebooting_apm(
+          "upgrade --system --yes --drain --reboot",
+          "qualified-health-failure",
+      )
+      print("=== qualified candidate health failure ===\n" + out)
+      assert "Draining workloads" in out, out
+      assert "Drain complete" in out, out
+      target.wait_until_succeeds(
+          "${pkgs.jq}/bin/jq -e "
+          "'.running == 1 and .default == 1 "
+          "and (.pending // null) == null "
+          "and (.active_rollout // null) == null "
+          "and .last_rollout.status == \"health_failed\"' "
+          f"{IMAGE_STATE} >/dev/null",
+          timeout=1800,
+      )
+      target.wait_until_succeeds(
+          "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
+      )
+
+      failed_rollout = image_state()
+      assert failed_rollout["running"] == 1, failed_rollout
+      assert failed_rollout["default"] == 1, failed_rollout
+      assert failed_rollout.get("pending") is None, failed_rollout
+      assert failed_rollout.get("active_rollout") is None, failed_rollout
+      assert failed_rollout["last_rollout"] == {
+          "schema": "aos.image-rollout/v1",
+          "candidate": retried_number,
+          "prior": 1,
+          "state_version": retry_candidate["state_version"],
+          "status": "health_failed",
+      }, failed_rollout
+      failed_staged = rollout_snapshot("staged", retried_number)
+      assert failed_staged["active_rollout"]["status"] == "staged", failed_staged
+      failed_booted = rollout_snapshot("candidate_booted", retried_number)
+      assert failed_booted["active_rollout"]["status"] == "candidate_booted", (
+          failed_booted
+      )
+      failed_retry = rollout_snapshot("health_failed", retried_number)
+      assert failed_retry["active_rollout"]["status"] == "health_failed", failed_retry
+      failed_fallback = rollout_snapshot("health_failed", 1)
+      assert failed_fallback["active_rollout"]["candidate"] == retried_number, (
+          failed_fallback
+      )
+      exhausted_again = counted_variant(candidate_entry, 0, 3)
+      assert_only_counted_variant(candidate_entry, exhausted_again)
       assert_boot_read_only()
 
       failed = target.succeed("systemctl --failed --no-legend").strip()

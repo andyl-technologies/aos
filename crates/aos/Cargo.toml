@@ -26,6 +26,10 @@ name = "aos-package-runtime"
 path = "src/package_runtime.rs"
 
 [[bin]]
+name = "aos-metadata-runtime"
+path = "src/metadata_runtime.rs"
+
+[[bin]]
 name = "aos-release-fleet-fixture"
 path = "tests/support/release_fleet_fixture.rs"
 required-features = ["release-fleet-fixture"]

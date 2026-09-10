@@ -56,22 +56,66 @@
     if config.aos.boot.recovery.enable
     then "true"
     else "false";
+  validateNixStoreRootShell = ''
+    validate_nix_store_root() {
+      value=$1
+      case "$value" in
+        /nix/store/*) name=''${value#/nix/store/} ;;
+        *) return 1 ;;
+      esac
+      case "$name" in
+        ""|*/*) return 1 ;;
+      esac
+      hash=''${name%%-*}
+      store_name=''${name#*-}
+      [ "$hash" != "$name" ] && [ -n "$store_name" ] || return 1
+      [ "''${#hash}" -eq 32 ] || return 1
+      case "$hash" in
+        *[!0123456789abcdfghijklmnpqrsvwxyz]*) return 1 ;;
+      esac
+      case "$store_name" in
+        *[!A-Za-z0-9+._?=-]*) return 1 ;;
+      esac
+    }
+  '';
+  nativeExecutorPathCheck = pkgs.runCommand "aos-native-executor-path-check" {} ''
+    ${validateNixStoreRootShell}
+    valid=/nix/store/44444444444444444444444444444444-aos-package-runtime
+    validate_nix_store_root "$valid"
+    for invalid in \
+      "$valid/bin/aos-package-runtime" \
+      /nix/store/short-runtime \
+      /nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-runtime \
+      /tmp/44444444444444444444444444444444-runtime
+    do
+      if validate_nix_store_root "$invalid"; then
+        echo "unexpectedly accepted native executor path: $invalid" >&2
+        exit 1
+      fi
+    done
+    touch $out
+  '';
 
   # This is a read-only description of the handoff the units below already
   # implement. The initrd builder validates these units and target links before
   # it publishes the artifact contract; this value does not schedule work.
   bootSubstrateContract = {
     completionTarget = "initrd-fs.target";
-    requiredUnits = [
-      "aos-config-seed.service"
-      "aos-credential-recovery.service"
-      "aos-machine-id.service"
-      "aos-seed-profiles.service"
-      "etc-overlay-setup.service"
-      "mount-var.service"
-      "nix-overlay-setup.service"
-      "run-etc-setup.service"
-    ];
+    requiredUnits =
+      lib.optionals config.aos.boot.initrd.abilityHandoff.enable [
+        "aos-ability-initrd-controller.service"
+        "aos-ability-initrd-handoff-barrier.service"
+      ]
+      ++ [
+        "aos-config-seed.service"
+        "aos-credential-recovery.service"
+        "aos-machine-id.service"
+        "aos-seed-profiles.service"
+        "etc-overlay-setup.service"
+        "mount-var.service"
+        "nix-overlay-setup.service"
+        "run-etc-setup.service"
+      ];
     preservedMounts = [
       {
         initrdPath = "/run";
@@ -457,6 +501,8 @@
           printf '%s' "$result"
         }
 
+        ${validateNixStoreRootShell}
+
         read_pcr11() {
           # cryptsetup may leave the swtpm resource manager busy briefly after
           # an unattended unlock. Never let an informational PCR read wedge
@@ -477,7 +523,9 @@
         }
 
         abi=$(read_meta module-abi)
+        state_version=$(read_meta state-version)
         baselib_digest=$(read_meta baselib-digest)
+        native_executor=$(read_meta native-executor-ref)
         base_lib=$(readlink "/sysroot$toplevel/base-lib")
         uki_path=$(read_meta uki-path)
         kern=$(readlink "/sysroot$toplevel/kernel" 2>/dev/null || true)
@@ -492,6 +540,10 @@
           /nix/store/*) ;;
           *) fail_image_identity "immutable base-lib has unsafe target $base_lib" ;;
         esac
+        validate_nix_store_root "$native_executor" \
+          || fail_image_identity "immutable native executor is not a canonical Nix store root"
+        [ -n "$state_version" ] \
+          || fail_image_identity "immutable image has an empty state version"
         case "$uki_path" in
           EFI/Linux/*.efi) ;;
           *) fail_image_identity "immutable image records unsafe UKI path $uki_path" ;;
@@ -508,12 +560,16 @@
           || fail_image_identity "immutable os-release has no unique base-lib digest"
         os_version=$(read_os_release VERSION_ID "/sysroot$os_release") \
           || fail_image_identity "immutable os-release has no unique version"
+        os_state_version=$(read_os_release AOS_STATE_VERSION "/sysroot$os_release") \
+          || fail_image_identity "immutable os-release has no unique state version"
         [ "$abi" = "$os_abi" ] \
           || fail_image_identity "toplevel metadata disagrees with measured module ABI"
         [ "$baselib_digest" = "$os_digest" ] \
           || fail_image_identity "toplevel metadata disagrees with measured base-lib digest"
         [ "$(read_meta version)" = "$os_version" ] \
           || fail_image_identity "toplevel metadata disagrees with measured version"
+        [ "$state_version" = "$os_state_version" ] \
+          || fail_image_identity "toplevel metadata disagrees with measured state version"
 
         root_hash=$(read_cmdline_value roothash) \
           || fail_image_identity "kernel command line has ambiguous roothash"
@@ -667,6 +723,8 @@
             --arg top "$toplevel" \
             --arg kern "$kern" \
             --arg base "$base_lib" \
+            --arg state_version "$state_version" \
+            --arg native_executor "$native_executor" \
             --arg digest "$baselib_digest" \
             --arg now "$now" \
             --arg uki "$uki_path" \
@@ -679,6 +737,8 @@
             '({ running: 1, default: 1, pending: 1,
                generations: [({ number: 1, slot: $slot, uki_path: $uki,
                  toplevel: $top, package_name: $pn, version: $ver,
+                 state_version: $state_version,
+                 native_executor_ref: $native_executor,
                  registry: "seed", kernel_path: $kern,
                  evaluator_ref: $base, module_abi: $abi,
                  baselib_digest: $digest, created_at: $now }
@@ -695,6 +755,7 @@
             ${pkgs.jq}/bin/jq \
               --arg pn "$(read_meta package-name)" --arg ver "$(read_meta version)" \
               --arg top "$toplevel" --arg kern "$kern" --arg base "$base_lib" \
+              --arg state_version "$state_version" --arg native_executor "$native_executor" \
               --arg digest "$baselib_digest" --arg now "$now" \
               --arg uki "$uki_path" --arg slot "$boot_slot" \
               --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
@@ -704,7 +765,9 @@
               '.generations += [({ number: $next,
                  slot: $slot,
                  uki_path: $uki, toplevel: $top, package_name: $pn,
-                 version: $ver, registry: "seed", kernel_path: $kern,
+                 version: $ver, state_version: $state_version,
+                 native_executor_ref: $native_executor,
+                 registry: "seed", kernel_path: $kern,
                  evaluator_ref: $base, module_abi: $abi,
                  baselib_digest: $digest, created_at: $now }
                  + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
@@ -722,12 +785,15 @@
               --arg top "$toplevel" --arg pn "$(read_meta package-name)" \
               --arg ver "$(read_meta version)" --arg kern "$kern" \
               --arg base "$base_lib" --arg digest "$baselib_digest" \
+              --arg state_version "$state_version" --arg native_executor "$native_executor" \
               --arg uki "$uki_path" --arg slot "$boot_slot" \
               --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
               --argjson abi "$abi" --argjson recovery "$recovery_json" \
               --argjson recovery_enabled ${recoveryEnabledJson} \
               '[.generations[] | select(
                  .toplevel == $top and .package_name == $pn and .version == $ver
+                 and .state_version == $state_version
+                 and .native_executor_ref == $native_executor
                  and .kernel_path == $kern and .evaluator_ref == $base
                  and .module_abi == $abi and .baselib_digest == $digest
                  and ((.uki_source_path // .uki_path) == $uki) and .slot == $slot
@@ -1036,6 +1102,7 @@ in {
 
   config = {
     system.build.bootSubstrateContract = bootSubstrateContract;
+    system.build.checks.native-executor-path = nativeExecutorPathCheck;
 
     # Initrd services. The cpio assembler in modules/base/initrd-builder.nix
     # picks these up via `system.build.systemdInitrdUnits`.

@@ -121,9 +121,15 @@
   # is discarded so the JSON is a plain string map. The output also carries
   # one symlink per source below, preserving the same paths as real Nix output
   # references so every frozen artifact is present when the base lib is copied.
-  frozenArtifactSourcesRaw =
-    lib.filterAttrs (_: v: v != null)
-    realEval.config.aos.config._artifactSources;
+  frozenArtifactSourcesRaw = lib.filterAttrs (_: v: v != null) (
+    realEval.config.aos.config._artifactSources
+    // {
+      # The static declaration inventory depends on the complete image
+      # package set, so it cannot register through `_artifactSources`
+      # without making that package set depend on its own artifact map.
+      host-static-ability-contract = realEval.config.system.build.staticAbilityContract;
+    }
+  );
   invalidArtifactNames =
     builtins.filter
     (name: builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*" name == null)

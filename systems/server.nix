@@ -18,6 +18,7 @@
   # root is authenticated by the roothash carried in the signed/measured UKI.
   # Specialized writable-root test variants may override this mkDefault.
   aos.security.verity.enable = lib.mkDefault true;
+  aos.boot.initrd.abilityHandoff.enable = lib.mkDefault true;
   aos.image.budgets = {
     maxRootMiB = 640;
     maxVerityMiB = 16;

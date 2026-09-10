@@ -51,6 +51,7 @@ pub mod materialize;
 mod native_ability_fs;
 mod native_activation;
 mod native_boundary_observer;
+mod native_cancellation;
 mod native_consumer_observation;
 pub(crate) mod native_dispatch;
 mod native_provider_capability;
@@ -58,6 +59,7 @@ pub mod native_resource_map;
 pub mod nginx_ability;
 pub mod runtime;
 pub mod runtime_modules;
+pub mod stage_handoff;
 pub mod stock;
 pub mod system_roots;
 pub mod systemd_ability;
@@ -2898,25 +2900,74 @@ where
 
 /// Recomputes a store path's NAR hash from its current bytes.
 fn retained_store_path_nar_hash(path: &Path) -> Result<String> {
-    let mut child = std::process::Command::new("nix-store")
-        .envs(aos_core::nix::aos_nix_env())
-        .arg("--dump")
+    let explicit_store = std::env::var_os("AOS_NIX_EVAL_STORE");
+    let rooted_nix_environment = std::env::var_os("AOS_ROOT").map(|_| aos_core::nix::aos_nix_env());
+    let eval_store =
+        retained_eval_store_uri(explicit_store.as_deref(), rooted_nix_environment.as_deref())?;
+    retained_store_path_nar_hash_in(path, eval_store.as_deref())
+}
+
+/// Selects an explicit evaluator store or reconstructs the exact rooted store.
+fn retained_eval_store_uri(
+    explicit_store: Option<&std::ffi::OsStr>,
+    rooted_nix_environment: Option<&[(&'static str, String)]>,
+) -> Result<Option<std::ffi::OsString>> {
+    if let Some(explicit_store) = explicit_store {
+        anyhow::ensure!(
+            !explicit_store.is_empty(),
+            "AOS_NIX_EVAL_STORE must not be empty"
+        );
+        return Ok(Some(explicit_store.to_os_string()));
+    }
+    let Some(rooted_nix_environment) = rooted_nix_environment else {
+        return Ok(None);
+    };
+    let setting = |name| {
+        rooted_nix_environment
+            .iter()
+            .find_map(|(candidate, value)| (*candidate == name).then_some(value.as_str()))
+            .with_context(|| format!("AOS_ROOT did not produce the required {name} binding"))
+    };
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("store", setting("NIX_STORE_DIR")?);
+    query.append_pair("state", setting("NIX_STATE_DIR")?);
+    query.append_pair("log", setting("NIX_LOG_DIR")?);
+    Ok(Some(format!("local?{}", query.finish()).into()))
+}
+
+/// Recomputes a store path's NAR hash through one exact evaluator store.
+fn retained_store_path_nar_hash_in(
+    path: &Path,
+    eval_store: Option<&std::ffi::OsStr>,
+) -> Result<String> {
+    let mut command = std::process::Command::new("nix");
+    command
+        .args(["--extra-experimental-features", "nix-command"])
+        .env_remove("NIX_REMOTE")
+        .env_remove("NIX_STORE_DIR")
+        .env_remove("NIX_STATE_DIR")
+        .env_remove("NIX_LOG_DIR");
+    if let Some(eval_store) = eval_store {
+        command.arg("--store").arg(eval_store);
+    }
+    let mut child = command
+        .args(["store", "dump-path"])
         .arg(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("running nix-store --dump {}", path.display()))?;
+        .with_context(|| format!("running nix store dump-path {}", path.display()))?;
     let stdout = child
         .stdout
         .take()
-        .context("nix-store --dump did not provide stdout")?;
+        .context("nix store dump-path did not provide stdout")?;
     let hash = crate::verify::sha256_stream(stdout);
     let output = child
         .wait_with_output()
-        .with_context(|| format!("waiting for nix-store --dump {}", path.display()))?;
+        .with_context(|| format!("waiting for nix store dump-path {}", path.display()))?;
     if !output.status.success() {
         anyhow::bail!(
-            "nix-store --dump failed for {}: {}",
+            "nix store dump-path failed for {}: {}",
             path.display(),
             String::from_utf8_lossy(&output.stderr).trim(),
         );

@@ -185,7 +185,10 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::Config { .. }
         | PackageCommand::Fetch { .. }
         | PackageCommand::RenderOne { .. }
-        | PackageCommand::GraphCompile { .. } => true,
+        | PackageCommand::GraphCompile { .. }
+        | PackageCommand::AbilityStageRun { .. }
+        | PackageCommand::AbilityStageValidate { .. }
+        | PackageCommand::AbilityStageReceive { .. } => true,
     }
 }
 
@@ -207,7 +210,8 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Held { .. }
         | PackageCommand::Orphans { .. }
         | PackageCommand::Verify { .. }
-        | PackageCommand::TestVerifyPackageAttestation { .. } => true,
+        | PackageCommand::TestVerifyPackageAttestation { .. }
+        | PackageCommand::AbilityStageValidate { .. } => true,
         PackageCommand::Docs { command } => documentation_is_read_only(command),
         PackageCommand::Options { .. } | PackageCommand::Schema { .. } => true,
         PackageCommand::Config { command } => runtime_config_is_read_only(command),
@@ -247,7 +251,9 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Switch { .. }
         | PackageCommand::Fetch { .. }
         | PackageCommand::RenderOne { .. }
-        | PackageCommand::GraphCompile { .. } => false,
+        | PackageCommand::GraphCompile { .. }
+        | PackageCommand::AbilityStageRun { .. }
+        | PackageCommand::AbilityStageReceive { .. } => false,
     }
 }
 

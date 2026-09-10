@@ -25,7 +25,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_core::output::{OutputMode, Printer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -737,15 +737,21 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!arguments.iter().any(|argument| argument == "-kernel"));
         assert!(!arguments.iter().any(|argument| argument == "-initrd"));
-        assert!(arguments
-            .iter()
-            .any(|argument| argument.contains("accel=kvm")));
-        assert!(arguments
-            .iter()
-            .any(|argument| argument.contains("opt/org.andyl/host-nix")));
-        assert!(arguments
-            .iter()
-            .any(|argument| argument.contains("opt/org.andyl/host-nix.sig")));
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument.contains("accel=kvm"))
+        );
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument.contains("opt/org.andyl/host-nix"))
+        );
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument.contains("opt/org.andyl/host-nix.sig"))
+        );
     }
 
     #[test]
@@ -767,13 +773,17 @@ mod tests {
             .map(OsStr::to_string_lossy)
             .collect::<Vec<_>>();
 
-        assert!(arguments
-            .iter()
-            .any(|argument| argument == "virt,accel=tcg"));
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == "virt,accel=tcg")
+        );
         assert!(arguments.iter().any(|argument| argument == "-bios"));
-        assert!(arguments
-            .iter()
-            .any(|argument| argument == "uefi-vars-sysbus,jsonfile=AAVMF_VARS.json"));
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == "uefi-vars-sysbus,jsonfile=AAVMF_VARS.json")
+        );
         assert!(!arguments.iter().any(|argument| argument.contains("pflash")));
     }
 
@@ -801,38 +811,46 @@ mod tests {
             0o600
         );
 
-        assert!(validate_existing_state(
-            &manifest_path,
-            &image,
-            "abc123",
-            16 * GIB,
-            VmArchitecture::X86_64,
-        )
-        .is_ok());
-        assert!(validate_existing_state(
-            &manifest_path,
-            &image,
-            "abc123",
-            16 * GIB,
-            VmArchitecture::Aarch64,
-        )
-        .is_err());
-        assert!(validate_existing_state(
-            &manifest_path,
-            &image,
-            "different",
-            16 * GIB,
-            VmArchitecture::X86_64,
-        )
-        .is_err());
-        assert!(validate_existing_state(
-            &manifest_path,
-            &image,
-            "abc123",
-            32 * GIB,
-            VmArchitecture::X86_64,
-        )
-        .is_err());
+        assert!(
+            validate_existing_state(
+                &manifest_path,
+                &image,
+                "abc123",
+                16 * GIB,
+                VmArchitecture::X86_64,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_existing_state(
+                &manifest_path,
+                &image,
+                "abc123",
+                16 * GIB,
+                VmArchitecture::Aarch64,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_existing_state(
+                &manifest_path,
+                &image,
+                "different",
+                16 * GIB,
+                VmArchitecture::X86_64,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_existing_state(
+                &manifest_path,
+                &image,
+                "abc123",
+                32 * GIB,
+                VmArchitecture::X86_64,
+            )
+            .is_err()
+        );
 
         let legacy_manifest_path = directory.path().join("legacy-vm-state.json");
         write_manifest(
@@ -846,22 +864,26 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(validate_existing_state(
-            &legacy_manifest_path,
-            &image,
-            "abc123",
-            16 * GIB,
-            VmArchitecture::X86_64,
-        )
-        .is_ok());
-        assert!(validate_existing_state(
-            &legacy_manifest_path,
-            &image,
-            "abc123",
-            16 * GIB,
-            VmArchitecture::Aarch64,
-        )
-        .is_err());
+        assert!(
+            validate_existing_state(
+                &legacy_manifest_path,
+                &image,
+                "abc123",
+                16 * GIB,
+                VmArchitecture::X86_64,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_existing_state(
+                &legacy_manifest_path,
+                &image,
+                "abc123",
+                16 * GIB,
+                VmArchitecture::Aarch64,
+            )
+            .is_err()
+        );
     }
 
     #[cfg(unix)]
