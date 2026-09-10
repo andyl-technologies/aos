@@ -11,7 +11,8 @@
 #
 # Test cadence:
 #   1. Wait for k3s-preflight + k3s on each machine.
-#   2. From the control plane, kubectl get nodes — assert the worker
+#   2. Observe an admitted cluster-scoped object's exact desired revision.
+#   3. From the control plane, kubectl get nodes — assert the worker
 #      registered and reached the `Ready` condition. Worker
 #      registration covers the round trip: token ok, TLS ok, agent
 #      pulled flannel config from the API server, kubelet started.
@@ -130,6 +131,40 @@ in {
         token.ref = "system-credential:k3s-token";
         node.ip = "192.168.50.10";
         networking.flannelInterface = "eth0";
+        integrations = {
+          resourceGrants = [
+            {
+              contribution = "revision-probe";
+              apiVersion = "v1";
+              kind = "Namespace";
+              name = "aos-revision-probe";
+              namespace = null;
+            }
+            {
+              contribution = "revision-probe-secondary";
+              apiVersion = "v1";
+              kind = "Namespace";
+              name = "aos-revision-probe-secondary";
+              namespace = null;
+            }
+          ];
+          resources.revision-probe = {
+            apiVersion = "v1";
+            kind = "Namespace";
+            name = "aos-revision-probe";
+            namespace = null;
+            priority = 50;
+            spec = {};
+          };
+          resources.revision-probe-secondary = {
+            apiVersion = "v1";
+            kind = "Namespace";
+            name = "aos-revision-probe-secondary";
+            namespace = null;
+            priority = 51;
+            spec = {};
+          };
+        };
       };
     }
     """)
@@ -231,6 +266,41 @@ in {
         "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get --raw=/healthz | grep -qx 'ok'",
         timeout=60,
     )
+
+    # The local receipt proves which closed bundle the launcher staged. The
+    # object annotation is generated from its canonical object bytes and is
+    # read back through the Kubernetes API, proving that exact desired object
+    # revision was admitted rather than inferring admission from the receipt.
+    addons = "/etc/aos/packages/k3s-control-plane/addons.json"
+    receipt = controlplane.succeed(
+        "cat /var/lib/rancher/k3s/server/aos-runtime-addons.revision"
+    ).strip()
+    desired_bundle_revision = controlplane.succeed(
+        "${pkgs.jq}/bin/jq -er '.revision' " + addons
+    ).strip()
+    assert receipt == desired_bundle_revision, (receipt, desired_bundle_revision)
+
+    for contribution, namespace in (
+        ("revision-probe", "aos-revision-probe"),
+        ("revision-probe-secondary", "aos-revision-probe-secondary"),
+    ):
+        desired_object_revision = controlplane.succeed(
+            "${pkgs.jq}/bin/jq -er "
+            + shlex.quote(
+                f'.resources[] | select(.name == "{contribution}") | .revision'
+            )
+            + " "
+            + addons
+        ).strip()
+        controlplane.wait_until_succeeds(
+            "test \"$(${pkgs.k3s}/bin/kubectl "
+            "--kubeconfig=/etc/rancher/k3s/k3s.yaml "
+            f"get namespace {shlex.quote(namespace)} -o json "
+            "| ${pkgs.jq}/bin/jq -er "
+            "'.metadata.annotations[\"aos.andyl.com/object-revision\"]')\" "
+            f"= {shlex.quote(desired_object_revision)}",
+            timeout=60,
+        )
 
     # ── Worker service active ───────────────────────────────────────
     try:

@@ -75,7 +75,8 @@ in
       ),
   }: let
     stateDirectoryText = builtins.concatStringsSep " " stateDirectories;
-    launcher = common.launcher pname command;
+    addonRenderer = common.addonRenderer pname role;
+    launcher = common.launcher pname command addonRenderer;
     enabledCheck = common.enabledCheck pname;
     configFields = [
       "K3S_ENABLED"
@@ -115,13 +116,16 @@ in
         }
       ];
 
-      passthru.evidenceSources =
-        evidenceSources
-        ++ [
-          ./_k3s-expose-package.nix
-          ./_k3s-common.nix
-          ./_k3s-config
-        ];
+      passthru = {
+        inherit addonRenderer;
+        evidenceSources =
+          evidenceSources
+          ++ [
+            ./_k3s-expose-package.nix
+            ./_k3s-common.nix
+            ./_k3s-config
+          ];
+      };
 
       expose = {
         units = {
@@ -168,7 +172,7 @@ in
               name = "addons";
               path = "/etc/aos/packages/${pname}/addons.json";
               format = "json";
-              required = ["resources" "schema"];
+              required = ["resources" "revision" "role" "schema"];
               units = ["k3s.service"];
               reload = "restart";
             }
@@ -224,6 +228,7 @@ in
           "k3s.enable"
           "k3s.integrations.cni"
           "k3s.integrations.csi"
+          "k3s.integrations.resourceGrants"
           "k3s.integrations.resources"
           "k3s.kubeconfigMode"
           "k3s.networking.clusterCidr"
