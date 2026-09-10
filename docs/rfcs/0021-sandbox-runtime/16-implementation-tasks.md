@@ -5546,6 +5546,44 @@ or orchestrate controller and Host consumption. Storage Apply remains
 unadvertised, and `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, and `SBX-P0-10`
 remain open.
 
+### Landlock read-without-execute qualification (in progress)
+
+Commit `e4d26fa2598397a1cfcd27d28283d5cd03080f5e` adds the fixed
+`--fs-read` grant required by the Storage workspace-pin observer. The grant
+includes Landlock `READ_FILE` and `READ_DIR` access but deliberately omits
+`EXECUTE`. It does not claim that readable bytes can never be interpreted by
+some independently executable program; the qualified property is the narrower
+kernel denial of direct execution outside a separately execute-granted tree.
+
+The first test candidate copied the AOS Coreutils multicall executable under
+the basename `not-executable`. The `--fs-ro` positive control reached the
+multicall dispatcher, which rejected the unsupported basename. This
+demonstrated execution but failed the positive control, invalidating the
+fixture as a permission-boundary test. The corrected fixture uses the same
+copied `true` executable and basename for both controls: it succeeds beneath
+an `--fs-ro` grant, then fails with `EACCES` beneath `--fs-read`.
+
+The sole approved realization of the corrected immutable derivation
+`/nix/store/x5kq6p44ybbdk6q4d9r54xy4gzcp9vaq-aos-vm-test-security-aos-landlock-fs-0.drv`
+passed at
+`/nix/store/wfkxpizk48k1npqgabnyl1sjgvvb96wa-aos-vm-test-security-aos-landlock-fs-0`.
+The guest reported Landlock ABI 7, passed the inherited confinement cases and
+the new readable-file positive, proved direct execution of the copied `true`
+under `--fs-ro`, and observed `EACCES` for that same executable under
+`--fs-read`. This is ABI-7-specific evidence for the exact command-line and
+permission composition, not a blanket arbitrary-code-execution guarantee.
+
+The earlier Storage RPC derivation
+`/nix/store/ggr7rs4qwsifz3450ljnksn2061mr4sx-aos-fleet-test-sandbox-storage-rpc-0.drv`
+used the older frozen Landlock package. Each of its five production daemon
+starts reached workspace-pin recovery and launched the observer, but the old
+binary rejected the required `--fs-read` option before running the observer.
+That failed run did not exercise a successful Storage repair or inventory RPC
+and remains diagnostic only. The standalone Landlock result qualifies the
+missing parser and direct-execution boundary; it does not qualify the Storage
+RPC composition, stable Host mount-namespace custody, enforcing MAC, or
+Storage Apply. All corresponding Storage and P0 checkboxes remain open.
+
 ### Verified Storage resolution and execution metadata (in progress)
 
 Commit `ac8196c5fa0aa107374131b9803bc14a9f5de565` adds the protected,
