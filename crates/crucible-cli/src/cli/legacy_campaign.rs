@@ -2498,7 +2498,9 @@ mod tests {
                         checkpoint,
                         envelope,
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| {
+                        crucible_api::ResumeReplayClosureValidationError::new(error.to_string())
+                    })
                 },
             );
             let client = InProcessLifecycleClient::new(control_plane);

@@ -23,7 +23,9 @@ async fn http2_resume_round_trips_authenticated_typed_closure() {
         {
             Ok(())
         } else {
-            Err(String::from("HTTP/2 replay closure did not authenticate"))
+            Err(ResumeReplayClosureValidationError::new(
+                "HTTP/2 replay closure did not authenticate",
+            ))
         }
     });
     let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
