@@ -449,6 +449,7 @@ let
     "aos-fuse-transport"
     "aos-landlock"
     "aos-netd"
+    "aos-namespace-inspector-manager-query"
     "aos-recovery"
     "aos-registry-server"
     "aos-sandbox-hostd"

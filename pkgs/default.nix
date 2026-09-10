@@ -1203,6 +1203,7 @@
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
+    "aos-namespace-inspector-manager-query"
     "aos-sandbox-network-lease-gate"
     "aos-sandbox-network-observer"
     "aos-sandbox-zfs-worker"
