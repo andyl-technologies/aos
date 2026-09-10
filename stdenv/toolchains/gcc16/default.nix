@@ -233,5 +233,9 @@ in
     compilerToolOverrides.gawk = compilerGawk;
     manifestToolOverrides.gawk = gawkOverrides;
     staticNoPie = true;
+    publicScriptFilter =
+      if hostPlatform.constraints.cpu != "x86_64"
+      then scope.perl
+      else null;
     inherit buildPlatform hostPlatform targetPlatform;
   }

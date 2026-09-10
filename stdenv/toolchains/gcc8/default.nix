@@ -160,5 +160,9 @@ in
       if hostPlatform.constraints.cpu == "aarch64"
       then {sourceScriptFilter = scope.perl;}
       else {};
+    publicScriptFilter =
+      if hostPlatform.constraints.cpu == "aarch64"
+      then scope.perl
+      else null;
     inherit buildPlatform hostPlatform targetPlatform;
   }
