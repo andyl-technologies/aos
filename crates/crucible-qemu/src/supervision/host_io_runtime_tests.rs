@@ -5,8 +5,9 @@ use super::*;
 #[test]
 fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::os::fd::AsFd;
+    use std::os::unix::net::UnixStream;
 
     let allocation =
         crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2, 0))?;
@@ -15,7 +16,7 @@ fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
     shmem.write_all(&bytes)?;
-    let wake = tempfile::tempfile()?;
+    let (mut wake_notifications, wake) = UnixStream::pair()?;
     let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
     let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
         shmem.as_fd(),
@@ -25,21 +26,17 @@ fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
         Duration::from_millis(1),
     )?
     .with_fingerprint_sampling_mode(crate::QemuFingerprintSamplingMode::OnDemand);
+    drop(wake);
 
     let host = std::thread::spawn(move || {
         runtime.publish_current_execution_fingerprint(Duration::from_secs(1))
     });
-    let request = (0..1_000)
-        .find_map(|_| {
-            let request = plugin
-                .fingerprint_sample(0)
-                .ok()?
-                .pending_capture_request_v1();
-            if request.is_none() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            request
-        })
+    let mut wake_notification = [0_u8; std::mem::size_of::<u64>()];
+    wake_notifications.read_exact(&mut wake_notification)?;
+    assert_eq!(u64::from_ne_bytes(wake_notification), 1);
+    let request = plugin
+        .fingerprint_sample(0)?
+        .pending_capture_request_v1()
         .ok_or("host did not publish an on-demand fingerprint request")?;
     plugin
         .fingerprint_sample(0)?
@@ -64,8 +61,9 @@ fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
 #[test]
 fn eager_fingerprint_host_retains_token_free_control_protocol()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::os::fd::AsFd;
+    use std::os::unix::net::UnixStream;
 
     let allocation =
         crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2, 0))?;
@@ -74,7 +72,7 @@ fn eager_fingerprint_host_retains_token_free_control_protocol()
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
     shmem.write_all(&bytes)?;
-    let wake = tempfile::tempfile()?;
+    let (mut wake_notifications, wake) = UnixStream::pair()?;
     let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
     let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
         shmem.as_fd(),
@@ -83,19 +81,15 @@ fn eager_fingerprint_host_retains_token_free_control_protocol()
         0,
         Duration::from_millis(1),
     )?;
+    drop(wake);
 
     let host = std::thread::spawn(move || {
         runtime.publish_current_execution_fingerprint(Duration::from_secs(1))
     });
-    let control_requested = (0..1_000).any(|_| {
-        let requested = plugin
-            .node_slot(0)
-            .is_ok_and(crucible_shmem::NodeSlot::control_boundary_is_requested);
-        if !requested {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        requested
-    });
+    let mut wake_notification = [0_u8; std::mem::size_of::<u64>()];
+    wake_notifications.read_exact(&mut wake_notification)?;
+    assert_eq!(u64::from_ne_bytes(wake_notification), 1);
+    let control_requested = plugin.node_slot(0)?.control_boundary_is_requested();
     assert!(
         control_requested,
         "host did not publish an eager control request"
