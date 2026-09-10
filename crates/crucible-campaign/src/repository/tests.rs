@@ -927,6 +927,8 @@ fn test_planner_request_digest(invocation: PlannerInvocationId) -> CampaignHash 
 mod budget;
 mod budget_enforcement;
 mod coordination;
+#[cfg(feature = "destructive-recovery-faults")]
+mod destructive_recovery;
 mod discovery;
 mod execution;
 mod planner_scan_index;
