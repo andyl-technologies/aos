@@ -10,7 +10,11 @@ use anyhow::Result;
 use aos_ability_model::{AbilityActivationMode, RequirementStrength, ValueSchema};
 use aos_doc_model::PackageAbilityReference;
 
-const SCOPE_NOTICE: &str = "Authenticated static package declaration. This section does not report activation, provider selection, assignments, health, or observed runtime state.";
+const SCOPE_NOTICE: &str = concat!(
+    "Authenticated static package declaration. This section does not report activation, ",
+    "provider selection, assignments, health, or observed runtime state. Operator ",
+    "configuration sections show public schemas only, never deployed instance values."
+);
 
 pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
     let mut output = String::from("\nDECLARED ABILITIES\n------------------\n");
@@ -47,8 +51,14 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
             "  implementation identity\t{}",
             export.implementation
         );
-        output.push_str("  declared configuration request schema\n");
+        output.push_str("  declared request or contribution schema\n");
         indented_schema(&mut output, &interface.request, "    ")?;
+        if let Some(configuration) = &interface.configuration {
+            output.push_str("  declared operator-owned provider instance configuration schema\n");
+            indented_schema(&mut output, configuration, "    ")?;
+        } else {
+            output.push_str("  no operator-owned provider instance configuration is declared\n");
+        }
 
         for (name, declared_output) in &interface.outputs {
             let _ = writeln!(
@@ -194,8 +204,17 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
         escape_html_into(&descriptor.to_string(), &mut output);
         output.push_str("</code></dd><dt>Implementation identity</dt><dd><code>");
         escape_html_into(&export.implementation.to_string(), &mut output);
-        output.push_str("</code></dd></dl><h5>Declared configuration request schema</h5>");
+        output.push_str("</code></dd></dl><h5>Declared request or contribution schema</h5>");
         schema_html(&mut output, &interface.request)?;
+        if let Some(configuration) = &interface.configuration {
+            output.push_str(
+                "<h5>Declared operator-owned provider instance configuration schema</h5>",
+            );
+            schema_html(&mut output, configuration)?;
+        } else {
+            output
+                .push_str("<p>No operator-owned provider instance configuration is declared.</p>");
+        }
 
         if !interface.outputs.is_empty() {
             output.push_str("<h5>Declared aggregate outputs</h5><ul>");

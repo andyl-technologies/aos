@@ -135,6 +135,50 @@
       handler = "ordering-handler";
     }).guarantees;
 
+  configurationExport = configurationSchema:
+    lib.abilities.define {
+      interface = "aos.test.configuration";
+      abi = 1;
+      requestSchema = lib.abilities.schemas.boolean;
+      inherit configurationSchema;
+      outputs = {};
+      methods = {};
+      lifecycle = {
+        stableResourceIdentity = true;
+        releasesEphemeralOnDisable = true;
+        retainsPersistentByDefault = true;
+        persistentDeleteMethod = null;
+      };
+      guarantees = [];
+      aggregation = {
+        scope = "provider-instance";
+        key = "authorized-slot";
+        rejectSlotCollisions = true;
+        mergeContract = null;
+        controllerGroup = "configuration";
+      };
+      requires = {};
+      ownsResourceKinds = [];
+      handler = "configuration-handler";
+    };
+  literalConfigurationSchema = lib.abilities.schemas.record {
+    fields.ports = lib.abilities.schemas.list {
+      element = lib.abilities.schemas.integer {
+        minimum = 1024;
+        maximum = 65535;
+      };
+      maxItems = 8;
+    };
+    optional = [];
+  };
+  invalidConfigurationSchema =
+    builtins.fromJSON
+    (builtins.readFile ../../tests/abilities/fixtures/invalid-configuration-schema.json);
+  invalidConfigurationExport = builtins.tryEval (builtins.deepSeq (
+      (configurationExport invalidConfigurationSchema).configuration_schema
+    )
+    true);
+
   requirementExport = strength: fallback:
     lib.abilities.define {
       interface = "aos.test.requirement";
@@ -290,6 +334,9 @@ in
     values = [""];
   };
   assert builtins.attrValues asciiControlMap == [true];
+  assert (configurationExport literalConfigurationSchema).configuration_schema
+  == literalConfigurationSchema;
+  assert !invalidConfigurationExport.success;
   assert fails (lib.abilities.schemas.checkValue (lib.abilities.schemas.map {
       keyMaxLength = 16;
       keySyntax = null;
@@ -562,6 +609,11 @@ in
     kind = "readiness";
   }
   effectFixture.bootstrap.edges;
+  assert (builtins.head effectFixture.kubernetes.operations).family
+  == {
+    kind = "kubernetes-object";
+    action = "apply";
+  };
   assert effectFixture.omitted == emptyEffects;
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
   assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);

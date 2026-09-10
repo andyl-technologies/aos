@@ -477,6 +477,9 @@ pub struct DesiredInstance {
     pub package: Sha256Digest,
     /// States explicit operator-owned enablement.
     pub enabled: bool,
+    /// Carries configuration owned by the operator for this exact instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<AbilityValue>,
 }
 
 /// Records one admitted contribution without erasing provenance.
@@ -938,6 +941,7 @@ mod tests {
                     .expect("valid test interface name"),
                 abi: NonZeroU32::new(1).expect("positive test ABI"),
                 request: ValueSchema::Boolean,
+                configuration: None,
                 outputs: BTreeMap::from([(
                     LocalKey::new("accepted").expect("valid test output name"),
                     crate::interface::OutputDescriptor {
@@ -968,7 +972,39 @@ mod tests {
 
         assert_eq!(decoded, original);
         assert_eq!(decoded.interface_key()?, original.interface_key()?);
+        assert!(
+            serde_json::to_value(&decoded)
+                .expect("interface must serialize")
+                .get("interface")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|interface| !interface.contains_key("configuration"))
+        );
         Ok(())
+    }
+
+    #[test]
+    fn legacy_desired_instance_without_configuration_round_trips_unchanged() {
+        let legacy = serde_json::json!({
+            "instance": {
+                "environment": {
+                    "authority": "test",
+                    "key": "web",
+                    "stage": "host",
+                },
+                "key": "nginx",
+            },
+            "package": format!("sha256:{}", "0".repeat(64)),
+            "enabled": true,
+        });
+
+        let decoded: DesiredInstance =
+            serde_json::from_value(legacy.clone()).expect("legacy instance must decode");
+
+        assert_eq!(decoded.configuration, None);
+        assert_eq!(
+            serde_json::to_value(decoded).expect("legacy instance must serialize"),
+            legacy
+        );
     }
 
     #[test]

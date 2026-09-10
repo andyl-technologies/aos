@@ -8,8 +8,8 @@ use thiserror::Error;
 
 use crate::adapter::{
     AdapterCompletion, AdapterRecord, CancellationDisposition, CancellationToken,
-    EffectDisposition, MonotonicClock, PreparedRequest, ReconcileDisposition, RuntimeControl,
-    TrustedAdapter,
+    EffectDisposition, InvocationPurpose, MonotonicClock, PreparedRequest, ReconcileDisposition,
+    RuntimeControl, TrustedAdapter,
 };
 use crate::execution::event::{
     CancellationResult, CompensationInterventionReason, DispatchAbortReason, ExecutionEventKind,
@@ -69,6 +69,92 @@ pub enum Boundary {
     CancellationOutcomeDurable,
 }
 
+/// Selects whether execution may advance beyond an observed durable boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionBoundaryControl {
+    /// Allows execution to advance normally.
+    Continue,
+    /// Stops execution at the observed boundary without recording a later outcome.
+    Halt,
+}
+
+/// Identifies one exact boundary in an admitted operation attempt.
+#[derive(Clone, Copy, Debug)]
+pub struct ExecutionBoundaryObservation<'a> {
+    transaction: &'a TransactionId,
+    operation: &'a OperationId,
+    attempt: NonZeroU32,
+    purpose: InvocationPurpose,
+    boundary: Boundary,
+}
+
+impl<'a> ExecutionBoundaryObservation<'a> {
+    pub(crate) const fn new(
+        transaction: &'a TransactionId,
+        operation: &'a OperationId,
+        attempt: NonZeroU32,
+        purpose: InvocationPurpose,
+        boundary: Boundary,
+    ) -> Self {
+        Self {
+            transaction,
+            operation,
+            attempt,
+            purpose,
+            boundary,
+        }
+    }
+
+    /// Returns the exact durable transaction identity.
+    #[must_use]
+    pub const fn transaction(&self) -> &'a TransactionId {
+        self.transaction
+    }
+
+    /// Returns the plan-qualified operation identity.
+    #[must_use]
+    pub const fn operation(&self) -> &'a OperationId {
+        self.operation
+    }
+
+    /// Returns the attempt number within the logical operation.
+    #[must_use]
+    pub const fn attempt(&self) -> NonZeroU32 {
+        self.attempt
+    }
+
+    /// Returns the independently admitted invocation purpose.
+    #[must_use]
+    pub const fn purpose(&self) -> InvocationPurpose {
+        self.purpose
+    }
+
+    /// Returns the exact journal or adapter boundary being observed.
+    #[must_use]
+    pub const fn boundary(&self) -> Boundary {
+        self.boundary
+    }
+}
+
+/// Observes exact admitted-operation boundaries without access to effect data.
+pub trait ExecutionBoundaryObserver {
+    /// Observes one boundary and decides whether execution may continue.
+    ///
+    /// The observer receives only stable execution identity and the live time
+    /// and cancellation budget. It cannot replace adapter evidence or choose an
+    /// execution result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when configured observation cannot complete. Execution
+    /// fails closed at the named boundary and does not append a later outcome.
+    fn observe(
+        &mut self,
+        observation: ExecutionBoundaryObservation<'_>,
+        control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl>;
+}
+
 /// Observes execution boundaries and may halt deterministic fault-injection runs.
 ///
 /// Returning `false` models process loss immediately after the named boundary.
@@ -77,7 +163,11 @@ pub enum Boundary {
 /// particular test platform into the runtime.
 pub(crate) trait BoundaryHook {
     /// Returns whether execution should continue beyond this boundary.
-    fn continue_after(&mut self, boundary: Boundary) -> bool;
+    fn observe(
+        &mut self,
+        boundary: Boundary,
+        control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl>;
 }
 
 /// Continues through every execution boundary.
@@ -85,8 +175,12 @@ pub(crate) trait BoundaryHook {
 pub(crate) struct NoopBoundaryHook;
 
 impl BoundaryHook for NoopBoundaryHook {
-    fn continue_after(&mut self, _boundary: Boundary) -> bool {
-        true
+    fn observe(
+        &mut self,
+        _boundary: Boundary,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        Ok(ExecutionBoundaryControl::Continue)
     }
 }
 
@@ -117,6 +211,9 @@ pub enum ExecutionError {
     /// A fault-injection or observation hook halted at a precise boundary.
     #[error("execution halted after {0:?}")]
     BoundaryHalt(Boundary),
+    /// An explicitly configured boundary observer failed closed.
+    #[error("execution boundary observation failed: {0}")]
+    BoundaryObservation(#[source] anyhow::Error),
     /// Cancellation was already requested before intent could be admitted.
     #[error("operation was cancelled before effect intent")]
     CancelledBeforeIntent,
@@ -215,7 +312,7 @@ where
             attempt_timeout_millis: context.attempt_timeout_millis,
             elapsed_millis: control.elapsed_millis(),
         })?;
-        self.observe(Boundary::EffectIntentDurable)?;
+        self.observe(Boundary::EffectIntentDurable, &control)?;
 
         if control.is_cancelled()
             || control.attempt_remaining_millis() == 0
@@ -233,12 +330,12 @@ where
                 reason,
                 elapsed_millis: control.elapsed_millis(),
             })?;
-            self.observe(Boundary::EffectOutcomeDurable)?;
+            self.observe(Boundary::EffectOutcomeDurable, &control)?;
             return Ok(ExecutionStep::RejectedBeforeEffect);
         }
 
         let disposition = self.adapter.execute(request.request(), &control);
-        self.observe(Boundary::EffectReturned)?;
+        self.observe(Boundary::EffectReturned, &control)?;
         let (event, step) = match disposition {
             EffectDisposition::Completed(evidence) => (
                 ExecutionEventKind::EffectCompleted {
@@ -273,7 +370,7 @@ where
             ),
         };
         journal.append_event(event)?;
-        self.observe(Boundary::EffectOutcomeDurable)?;
+        self.observe(Boundary::EffectOutcomeDurable, &control)?;
         Ok(step)
     }
 
@@ -308,13 +405,13 @@ where
             call_timeout_millis: context.attempt_timeout_millis,
             elapsed_millis: control.elapsed_millis(),
         })?;
-        self.observe(Boundary::ReconciliationIntentDurable)?;
+        self.observe(Boundary::ReconciliationIntentDurable, &control)?;
         if deadline_expired(&control) {
             return Err(ExecutionError::RecoveryDeadlineExpired);
         }
 
         let disposition = self.adapter.reconcile(request, &control);
-        self.observe(Boundary::ReconciliationReturned)?;
+        self.observe(Boundary::ReconciliationReturned, &control)?;
         let (result, evidence, outputs, step) = match disposition {
             ReconcileDisposition::Completed(evidence) => (
                 ReconciliationResult::Completed,
@@ -356,7 +453,7 @@ where
             outputs,
             elapsed_millis: control.elapsed_millis(),
         })?;
-        self.observe(Boundary::ReconciliationOutcomeDurable)?;
+        self.observe(Boundary::ReconciliationOutcomeDurable, &control)?;
         Ok(step)
     }
 
@@ -397,7 +494,7 @@ where
             attempt_timeout_millis: context.attempt_timeout_millis,
             elapsed_millis: control.elapsed_millis(),
         })?;
-        self.observe(Boundary::EffectIntentDurable)?;
+        self.observe(Boundary::EffectIntentDurable, &control)?;
         if control.is_cancelled() || deadline_expired(&control) {
             let reason = if control.is_cancelled() {
                 CompensationInterventionReason::CancelledAfterIntent
@@ -410,7 +507,7 @@ where
                 reason,
                 elapsed_millis: control.elapsed_millis(),
             })?;
-            self.observe(Boundary::EffectOutcomeDurable)?;
+            self.observe(Boundary::EffectOutcomeDurable, &control)?;
             return Ok(ExecutionStep::InterventionRequired);
         }
 
@@ -421,10 +518,10 @@ where
                 reason: CompensationInterventionReason::AdapterUnavailable,
                 elapsed_millis: control.elapsed_millis(),
             })?;
-            self.observe(Boundary::EffectOutcomeDurable)?;
+            self.observe(Boundary::EffectOutcomeDurable, &control)?;
             return Ok(ExecutionStep::InterventionRequired);
         };
-        self.observe(Boundary::EffectReturned)?;
+        self.observe(Boundary::EffectReturned, &control)?;
         let (event, step) = match disposition {
             EffectDisposition::Completed(evidence) => (
                 ExecutionEventKind::CompensationCompleted {
@@ -456,7 +553,7 @@ where
             ),
         };
         journal.append_event(event)?;
-        self.observe(Boundary::EffectOutcomeDurable)?;
+        self.observe(Boundary::EffectOutcomeDurable, &control)?;
         Ok(step)
     }
 
@@ -490,7 +587,7 @@ where
             call_timeout_millis: context.attempt_timeout_millis,
             elapsed_millis: control.elapsed_millis(),
         })?;
-        self.observe(Boundary::ReconciliationIntentDurable)?;
+        self.observe(Boundary::ReconciliationIntentDurable, &control)?;
         if deadline_expired(&control) {
             journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
                 transaction: context.transaction.clone(),
@@ -498,7 +595,7 @@ where
                 reason: CompensationInterventionReason::DeadlineAfterIntent,
                 elapsed_millis: control.elapsed_millis(),
             })?;
-            self.observe(Boundary::ReconciliationOutcomeDurable)?;
+            self.observe(Boundary::ReconciliationOutcomeDurable, &control)?;
             return Ok(ExecutionStep::InterventionRequired);
         }
 
@@ -509,10 +606,10 @@ where
                 reason: CompensationInterventionReason::AdapterUnavailable,
                 elapsed_millis: control.elapsed_millis(),
             })?;
-            self.observe(Boundary::ReconciliationOutcomeDurable)?;
+            self.observe(Boundary::ReconciliationOutcomeDurable, &control)?;
             return Ok(ExecutionStep::InterventionRequired);
         };
-        self.observe(Boundary::ReconciliationReturned)?;
+        self.observe(Boundary::ReconciliationReturned, &control)?;
         let (result, evidence, outputs, step) = match disposition {
             ReconcileDisposition::Completed(evidence) => (
                 ReconciliationResult::Completed,
@@ -548,7 +645,7 @@ where
             outputs,
             elapsed_millis: control.elapsed_millis(),
         })?;
-        self.observe(Boundary::ReconciliationOutcomeDurable)?;
+        self.observe(Boundary::ReconciliationOutcomeDurable, &control)?;
         Ok(step)
     }
 
@@ -583,13 +680,13 @@ where
             call_timeout_millis: context.attempt_timeout_millis,
             elapsed_millis: control.elapsed_millis(),
         })?;
-        self.observe(Boundary::CancellationIntentDurable)?;
+        self.observe(Boundary::CancellationIntentDurable, &control)?;
         if deadline_expired(&control) {
             return Err(ExecutionError::RecoveryDeadlineExpired);
         }
 
         let disposition = self.adapter.cancel(request, &control);
-        self.observe(Boundary::CancellationReturned)?;
+        self.observe(Boundary::CancellationReturned, &control)?;
         let (result, evidence, outputs, step) = match disposition {
             CancellationDisposition::RejectedBeforeEffect(evidence) => (
                 CancellationResult::RejectedBeforeEffect,
@@ -619,15 +716,22 @@ where
             outputs,
             elapsed_millis: control.elapsed_millis(),
         })?;
-        self.observe(Boundary::CancellationOutcomeDurable)?;
+        self.observe(Boundary::CancellationOutcomeDurable, &control)?;
         Ok(step)
     }
 
-    fn observe(&mut self, boundary: Boundary) -> Result<(), ExecutionError> {
-        if self.hook.continue_after(boundary) {
-            Ok(())
-        } else {
-            Err(ExecutionError::BoundaryHalt(boundary))
+    fn observe(
+        &mut self,
+        boundary: Boundary,
+        control: &dyn RuntimeControl,
+    ) -> Result<(), ExecutionError> {
+        match self
+            .hook
+            .observe(boundary, control)
+            .map_err(ExecutionError::BoundaryObservation)?
+        {
+            ExecutionBoundaryControl::Continue => Ok(()),
+            ExecutionBoundaryControl::Halt => Err(ExecutionError::BoundaryHalt(boundary)),
         }
     }
 }
@@ -968,7 +1072,11 @@ mod tests {
     }
 
     impl BoundaryHook for StopAt {
-        fn continue_after(&mut self, boundary: Boundary) -> bool {
+        fn observe(
+            &mut self,
+            boundary: Boundary,
+            _control: &dyn RuntimeControl,
+        ) -> anyhow::Result<ExecutionBoundaryControl> {
             if matches!(
                 boundary,
                 Boundary::EffectIntentDurable
@@ -979,18 +1087,26 @@ mod tests {
                     self.clock.set(now);
                 }
             }
-            boundary != self.boundary
+            Ok(if boundary == self.boundary {
+                ExecutionBoundaryControl::Halt
+            } else {
+                ExecutionBoundaryControl::Continue
+            })
         }
     }
 
     struct CancelAtEffectIntent(CancellationToken);
 
     impl BoundaryHook for CancelAtEffectIntent {
-        fn continue_after(&mut self, boundary: Boundary) -> bool {
+        fn observe(
+            &mut self,
+            boundary: Boundary,
+            _control: &dyn RuntimeControl,
+        ) -> anyhow::Result<ExecutionBoundaryControl> {
             if boundary == Boundary::EffectIntentDurable {
                 self.0.cancel();
             }
-            true
+            Ok(ExecutionBoundaryControl::Continue)
         }
     }
 
@@ -1000,11 +1116,15 @@ mod tests {
     }
 
     impl BoundaryHook for AdvanceAtEffectIntent {
-        fn continue_after(&mut self, boundary: Boundary) -> bool {
+        fn observe(
+            &mut self,
+            boundary: Boundary,
+            _control: &dyn RuntimeControl,
+        ) -> anyhow::Result<ExecutionBoundaryControl> {
             if boundary == Boundary::EffectIntentDurable {
                 self.clock.set(self.now);
             }
-            true
+            Ok(ExecutionBoundaryControl::Continue)
         }
     }
 

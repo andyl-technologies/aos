@@ -72,6 +72,8 @@ const DEFAULT_PAGE_SIZE: u32 = 500;
 const MAX_DOCUMENTATION_RESULTS: usize = 10_000;
 /// Hard ceiling on page size.
 const MAX_PAGE_SIZE: u32 = 1000;
+/// Maximum accepted reporter clock lead over Hub receipt time.
+const ABILITY_DEPLOYMENT_MAX_FUTURE_SKEW_SECS: i64 = 30;
 
 /// Default lifetime of an internal cache-upload authorization (1 hour).
 pub const INTERNAL_UPLOAD_AUTH_TTL_SECS: i64 = 3600;
@@ -612,6 +614,20 @@ struct AccessTokenRetirementPlanInput {
     token_id: String,
 }
 
+/// Immutable enrollment identities and CAS state sealed by a reporter plan.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct AbilityDeploymentReporterPlanInput {
+    registry_id: i64,
+    registry_slug: String,
+    scope_key: String,
+    deployment: String,
+    principal_kind: String,
+    principal_id: i64,
+    principal_ref: String,
+    enabled: bool,
+    baseline_resource_version: u64,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct DomainCreatePlanInput {
     request: pb::PlanDomainMutationRequest,
@@ -1103,6 +1119,37 @@ fn package_ability_reference_identity(
         manifest_sha256: locator.manifest_sha256.clone(),
         package_digest: locator.package_digest.clone(),
     }
+}
+
+fn stored_ability_deployment_response(
+    stored: crate::db::StoredAbilityDeploymentOverlay,
+) -> pb::PackageAbilityDeploymentResponse {
+    pb::PackageAbilityDeploymentResponse {
+        canonical_json: stored.canonical_json,
+        authority: format!(
+            "reporter-bearer:{}:{}",
+            stored.principal_kind, stored.principal_ref
+        ),
+        received_at: stored.received_at,
+        expires_at: stored.expires_at,
+        reporter_resource_version: stored.reporter_resource_version,
+    }
+}
+
+fn decode_stored_package_ability_deployment(
+    stored: &crate::db::StoredAbilityDeploymentOverlay,
+    locator: &crate::db::PackageAbilityReferenceLocator,
+    reference: &aos_doc_model::PackageAbilityReference,
+) -> anyhow::Result<aos_doc_model::PackageAbilityDeploymentOverlay> {
+    let overlay = aos_doc_model::PackageAbilityDeploymentOverlay::from_canonical_json(
+        &stored.canonical_json,
+    )?;
+    anyhow::ensure!(
+        overlay.deployment.as_str() == stored.deployment && overlay.sequence == stored.sequence,
+        "stored package ability deployment identity mismatch"
+    );
+    overlay.validate_against_reference(&locator.indexed_commit, &locator.platform, reference)?;
+    Ok(overlay)
 }
 
 fn package_option_view(
@@ -11617,6 +11664,497 @@ impl RpcService {
             canonical_json,
             etag,
         })
+    }
+
+    /// Plans creation, replacement, revocation, or re-enablement of a reporter slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, authorization, validation, stale-version, or
+    /// database errors.
+    pub async fn plan_configure_ability_deployment_reporter(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanConfigureAbilityDeploymentReporterRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        let scope_key = self
+            .db
+            .registry_authorization_scope(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&scope_key),
+        )
+        .await?;
+        aos_ability_model::LocalKey::new(req.deployment.clone())
+            .map_err(|error| RpcError::invalid(error.to_string()))?;
+        let current = self
+            .db
+            .ability_deployment_reporter(registry.id, &req.deployment)
+            .await
+            .map_err(RpcError::internal)?;
+        let current_version = current
+            .as_ref()
+            .map_or(0, |reporter| reporter.resource_version);
+        if current_version != req.expected_resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "ability deployment reporter resource version is stale".into(),
+            ));
+        }
+        let principal_id = if req.enabled {
+            let principal_id = self
+                .resolve_existing_principal_id(&req.principal_kind, &req.principal_ref)
+                .await?;
+            if !self
+                .db
+                .principal_is_live(&req.principal_kind, principal_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "deployment reporter principal is not active".into(),
+                ));
+            }
+            principal_id
+        } else {
+            let reporter = current.ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "cannot revoke a deployment reporter that does not exist".into(),
+                )
+            })?;
+            if reporter.principal_kind != req.principal_kind
+                || reporter.principal_ref != req.principal_ref
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "reporter revocation must name the enrolled principal".into(),
+                ));
+            }
+            reporter.principal_id
+        };
+
+        let input = AbilityDeploymentReporterPlanInput {
+            registry_id: registry.id,
+            registry_slug: registry.slug,
+            scope_key,
+            deployment: req.deployment,
+            principal_kind: req.principal_kind,
+            principal_id,
+            principal_ref: req.principal_ref,
+            enabled: req.enabled,
+            baseline_resource_version: req.expected_resource_version,
+        };
+        let confirmation_hash = control_confirmation_hash(&input)?;
+        self.create_control_plan(
+            &claims,
+            "configure_ability_deployment_reporter",
+            &input.scope_key,
+            &input,
+            &req.idempotency_key,
+            vec![format!(
+                "replace deployment reporter enrollment '{}' in registry '{}'",
+                input.deployment, input.registry_slug
+            )],
+            vec!["the prior live deployment overlay will be discarded".to_string()],
+            Some(confirmation_hash),
+        )
+        .await
+    }
+
+    /// Applies a reviewed reporter enrollment change exactly once.
+    ///
+    /// Any change increments the slot version and discards its prior overlay.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, authorization, plan, stale-version, principal,
+    /// or database errors.
+    pub async fn configure_ability_deployment_reporter(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::AbilityDeploymentReporter, RpcError> {
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                "configure_ability_deployment_reporter",
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            "configure_ability_deployment_reporter",
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, AbilityDeploymentReporterPlanInput) = self
+            .load_control_plan(
+                auth,
+                &req.plan_id,
+                "configure_ability_deployment_reporter",
+                Some(&req.confirmation_hash),
+            )
+            .await?;
+        let claims = self.require_claims(auth)?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&input.scope_key),
+        )
+        .await?;
+        let applied_version = input
+            .baseline_resource_version
+            .checked_add(1)
+            .ok_or_else(|| RpcError::FailedPrecondition("reporter version overflow".into()))?;
+        let already_applied = self
+            .db
+            .ability_deployment_reporter_matches_plan(
+                input.registry_id,
+                &input.deployment,
+                &input.principal_kind,
+                input.principal_id,
+                &input.principal_ref,
+                input.enabled,
+                applied_version,
+                &plan.plan_id,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        let response = if already_applied {
+            // Reconstruct the original result from sealed plan input. A second
+            // slot read could observe a later enrollment after the exact match.
+            pb::AbilityDeploymentReporter {
+                registry: input.registry_slug.clone(),
+                deployment: input.deployment.clone(),
+                principal_kind: input.principal_kind.clone(),
+                principal_ref: input.principal_ref.clone(),
+                enabled: input.enabled,
+                resource_version: applied_version,
+            }
+        } else {
+            if input.enabled
+                && !self
+                    .db
+                    .principal_is_live(&input.principal_kind, input.principal_id)
+                    .await
+                    .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "deployment reporter principal is not active".into(),
+                ));
+            }
+            let reporter = self
+                .db
+                .configure_ability_deployment_reporter(
+                    input.registry_id,
+                    &input.deployment,
+                    &input.principal_kind,
+                    input.principal_id,
+                    &input.principal_ref,
+                    input.enabled,
+                    input.baseline_resource_version,
+                    &plan.plan_id,
+                )
+                .await
+                .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+
+            pb::AbilityDeploymentReporter {
+                registry: input.registry_slug.clone(),
+                deployment: reporter.deployment,
+                principal_kind: reporter.principal_kind,
+                principal_ref: reporter.principal_ref,
+                enabled: reporter.active,
+                resource_version: reporter.resource_version,
+            }
+        };
+        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
+            .await?;
+        Ok(response)
+    }
+
+    /// Accepts one newer bounded assertion from an enrolled deployment reporter.
+    ///
+    /// Hub authenticates the bearer and exact package reference, records its own
+    /// receipt time, bounds expiry, and performs the enrollment/sequence update
+    /// atomically. The assertion carries no executable operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, enrollment, freshness, package-reference,
+    /// replay, validation, or database errors.
+    pub async fn report_package_ability_deployment(
+        &self,
+        auth: Option<&str>,
+        req: pb::ReportPackageAbilityDeploymentRequest,
+    ) -> Result<pb::PackageAbilityDeploymentResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let principal = claims_principal(&claims)
+            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
+        if !self
+            .db
+            .principal_is_live(principal.kind.as_str(), principal.id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::PermissionDenied(
+                "active principal required".into(),
+            ));
+        }
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        let reporter = self
+            .db
+            .ability_deployment_reporter(registry.id, &req.deployment)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::PermissionDenied("active deployment reporter enrollment required".into())
+            })?;
+        if !reporter.active
+            || reporter.principal_kind != principal.kind.as_str()
+            || reporter.principal_id != principal.id
+            || reporter.resource_version != req.reporter_resource_version
+        {
+            return Err(RpcError::PermissionDenied(
+                "active deployment reporter enrollment required".into(),
+            ));
+        }
+        let overlay = aos_doc_model::PackageAbilityDeploymentOverlay::from_canonical_json(
+            &req.canonical_json,
+        )
+        .map_err(|error| RpcError::invalid(error.to_string()))?;
+        if overlay.deployment.as_str() != req.deployment {
+            return Err(RpcError::invalid(
+                "deployment overlay does not match its reporter slot",
+            ));
+        }
+        let (locator, reference) = self
+            .load_exact_package_ability_reference(
+                registry.id,
+                &overlay.package.registry_commit,
+                overlay.package.package.as_str(),
+                &overlay.package.version,
+                &overlay.package.platform,
+            )
+            .await?;
+        overlay
+            .validate_against_reference(&locator.indexed_commit, &locator.platform, &reference)
+            .map_err(|error| RpcError::invalid(error.to_string()))?;
+
+        let now = clock::now_unix_secs();
+        let reported_at = i64::try_from(overlay.reported_at_unix_seconds)
+            .map_err(|_| RpcError::invalid("deployment report time is out of range"))?;
+        if reported_at > now.saturating_add(ABILITY_DEPLOYMENT_MAX_FUTURE_SKEW_SECS) {
+            return Err(RpcError::invalid(
+                "deployment report time exceeds the allowed future clock skew",
+            ));
+        }
+        let validity = i64::try_from(overlay.valid_for_seconds)
+            .map_err(|_| RpcError::invalid("deployment validity is out of range"))?;
+        let expires_at = now
+            .saturating_add(validity)
+            .min(reported_at.saturating_add(validity));
+        if expires_at <= now {
+            return Err(RpcError::FailedPrecondition(
+                "deployment report was already stale when received".into(),
+            ));
+        }
+
+        self.db
+            .accept_package_ability_deployment_overlay(
+                registry.id,
+                &req.deployment,
+                principal.kind.as_str(),
+                principal.id,
+                req.reporter_resource_version,
+                overlay.sequence,
+                &locator.indexed_commit,
+                &locator.package_name,
+                &locator.package_version,
+                &locator.platform,
+                &locator.manifest_sha256,
+                &locator.package_digest,
+                &req.canonical_json,
+                overlay.reported_at_unix_seconds,
+                now,
+                expires_at,
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+
+        Ok(pb::PackageAbilityDeploymentResponse {
+            canonical_json: req.canonical_json,
+            authority: format!(
+                "reporter-bearer:{}:{}",
+                reporter.principal_kind, reporter.principal_ref
+            ),
+            received_at: now,
+            expires_at,
+            reporter_resource_version: req.reporter_resource_version,
+        })
+    }
+
+    /// Returns one exact fresh private deployment overlay.
+    ///
+    /// The caller must hold `audit.read` at the registry scope. The read
+    /// rechecks enrollment, principal liveness, expiry, canonical bytes, and the
+    /// exact authenticated package reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, authorization, not-found, integrity, or database
+    /// errors.
+    pub async fn get_package_ability_deployment(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetPackageAbilityDeploymentRequest,
+    ) -> Result<pb::PackageAbilityDeploymentResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        let scope_key = self
+            .db
+            .registry_authorization_scope(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
+        self.require_permission(&claims, Permission::AuditRead, &Scope::parse(&scope_key))
+            .await?;
+        let (locator, reference) = self
+            .load_exact_package_ability_reference(
+                registry.id,
+                &req.registry_commit,
+                &req.package,
+                &req.version,
+                &req.platform,
+            )
+            .await?;
+        let stored = self
+            .db
+            .package_ability_deployment_overlay(
+                registry.id,
+                &req.deployment,
+                &locator.indexed_commit,
+                &locator.package_name,
+                &locator.package_version,
+                &locator.platform,
+                clock::now_unix_secs(),
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("fresh package ability deployment overlay"))?;
+        self.verify_stored_package_ability_deployment(&stored, &locator, &reference)
+            .await?;
+        Ok(stored_ability_deployment_response(stored))
+    }
+
+    async fn load_exact_package_ability_reference(
+        &self,
+        registry_id: i64,
+        registry_commit: &str,
+        package: &str,
+        version: &str,
+        platform: &str,
+    ) -> Result<
+        (
+            crate::db::PackageAbilityReferenceLocator,
+            aos_doc_model::PackageAbilityReference,
+        ),
+        RpcError,
+    > {
+        let locator = self
+            .db
+            .resolve_package_ability_reference_at_commit(
+                registry_id,
+                registry_commit,
+                package,
+                version,
+                platform,
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("exact package ability reference"))?;
+        let supported =
+            aos_doc_model::ability_reference_supported_features().map_err(RpcError::internal)?;
+        let reference = aos_doc_model::PackageAbilityReference::from_canonical_json(
+            &locator.canonical_json,
+            &supported,
+        )
+        .map_err(RpcError::internal)?;
+        Ok((locator, reference))
+    }
+
+    pub(crate) async fn verify_stored_package_ability_deployment(
+        &self,
+        stored: &crate::db::StoredAbilityDeploymentOverlay,
+        locator: &crate::db::PackageAbilityReferenceLocator,
+        reference: &aos_doc_model::PackageAbilityReference,
+    ) -> Result<(), RpcError> {
+        if !self
+            .db
+            .principal_is_live(&stored.principal_kind, stored.principal_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::not_found(
+                "fresh package ability deployment overlay",
+            ));
+        }
+        decode_stored_package_ability_deployment(stored, locator, reference)
+            .map(|_| ())
+            .map_err(RpcError::internal)
+    }
+
+    /// Loads fresh overlays for an already authorized browser reference.
+    ///
+    /// The browser must first require `audit.read`; this helper then rechecks
+    /// each reporter's liveness and exact reference identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database or retained-overlay integrity failures.
+    pub(crate) async fn load_package_ability_deployments_for_browser(
+        &self,
+        registry_id: i64,
+        locator: &crate::db::PackageAbilityReferenceLocator,
+        reference: &aos_doc_model::PackageAbilityReference,
+    ) -> anyhow::Result<
+        Vec<(
+            crate::db::StoredAbilityDeploymentOverlay,
+            aos_doc_model::PackageAbilityDeploymentOverlay,
+        )>,
+    > {
+        let stored = self
+            .db
+            .package_ability_deployment_overlays(
+                registry_id,
+                &locator.indexed_commit,
+                &locator.package_name,
+                &locator.package_version,
+                &locator.platform,
+                clock::now_unix_secs(),
+            )
+            .await?;
+        let mut overlays = Vec::with_capacity(stored.len());
+        for item in stored {
+            if !self
+                .db
+                .principal_is_live(&item.principal_kind, item.principal_id)
+                .await?
+            {
+                continue;
+            }
+            let overlay = decode_stored_package_ability_deployment(&item, locator, reference)?;
+            overlays.push((item, overlay));
+        }
+        Ok(overlays)
     }
 
     /// Loads and re-verifies one indexed package document after authorization.
@@ -36835,6 +37373,216 @@ mod cache_upload_tests {
                 .await,
             Err(RpcError::PermissionDenied(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn deployment_reports_require_the_exact_live_enrollment() {
+        let (service, db, _lease, reporter_auth) = injected_service(vec![], vec![]).await;
+        let org_id = db
+            .create_org("deployment-auth", "Deployment auth")
+            .await
+            .unwrap();
+        db.create_managed_registry(org_id, "", "packages", "private", &[], true)
+            .await
+            .unwrap();
+
+        let enrollment_plan = service
+            .plan_configure_ability_deployment_reporter(
+                Some(&reporter_auth),
+                pb::PlanConfigureAbilityDeploymentReporterRequest {
+                    registry: "deployment-auth/packages".into(),
+                    deployment: "production".into(),
+                    principal_kind: "user".into(),
+                    principal_ref: "writer@example.test".into(),
+                    enabled: true,
+                    expected_resource_version: 0,
+                    idempotency_key: "plan-enroll-production".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let enrollment_plan = enrollment_plan.plan.unwrap();
+        let enrollment = service
+            .configure_ability_deployment_reporter(
+                Some(&reporter_auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: enrollment_plan.plan_id,
+                    idempotency_key: "apply-enroll-production".into(),
+                    confirmation_hash: enrollment_plan.confirmation_hash,
+                },
+            )
+            .await
+            .unwrap();
+
+        let other_user = db
+            .create_user("other-reporter@example.test", None)
+            .await
+            .unwrap();
+        let other_token = JwtKeys::from_secret(b"injected-write-flow-test-key")
+            .mint(
+                &TokenAuth {
+                    token_id: "other-reporter".into(),
+                    owner: Principal::user(other_user),
+                    scope: Scope::root(),
+                    permissions: Vec::new(),
+                },
+                3600,
+            )
+            .unwrap();
+        let other_auth = format!("Bearer {other_token}");
+        let report = pb::ReportPackageAbilityDeploymentRequest {
+            registry: "deployment-auth/packages".into(),
+            deployment: "production".into(),
+            reporter_resource_version: enrollment.resource_version,
+            canonical_json: b"not canonical JSON".to_vec(),
+        };
+
+        assert!(matches!(
+            service
+                .report_package_ability_deployment(Some(&other_auth), report.clone())
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            service
+                .report_package_ability_deployment(Some(&reporter_auth), report.clone())
+                .await,
+            Err(RpcError::InvalidArgument(_))
+        ));
+
+        let revoke_plan = service
+            .plan_configure_ability_deployment_reporter(
+                Some(&reporter_auth),
+                pb::PlanConfigureAbilityDeploymentReporterRequest {
+                    registry: "deployment-auth/packages".into(),
+                    deployment: "production".into(),
+                    principal_kind: "user".into(),
+                    principal_ref: "writer@example.test".into(),
+                    enabled: false,
+                    expected_resource_version: enrollment.resource_version,
+                    idempotency_key: "plan-revoke-production".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let revoke_plan = revoke_plan.plan.unwrap();
+        service
+            .configure_ability_deployment_reporter(
+                Some(&reporter_auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: revoke_plan.plan_id,
+                    idempotency_key: "apply-revoke-production".into(),
+                    confirmation_hash: revoke_plan.confirmation_hash,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            service
+                .report_package_ability_deployment(Some(&reporter_auth), report)
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn reporter_apply_recovers_after_mutation_and_revokes_an_inactive_principal() {
+        let (service, db, _lease, admin_auth) = injected_service(vec![], vec![]).await;
+        let org_id = db
+            .create_org("reporter-recovery", "Reporter recovery")
+            .await
+            .unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "packages", "private", &[], true)
+            .await
+            .unwrap();
+        let reporter_id = db
+            .create_user("deployment-reporter@example.test", None)
+            .await
+            .unwrap();
+
+        let planned = service
+            .plan_configure_ability_deployment_reporter(
+                Some(&admin_auth),
+                pb::PlanConfigureAbilityDeploymentReporterRequest {
+                    registry: "reporter-recovery/packages".into(),
+                    deployment: "production".into(),
+                    principal_kind: "user".into(),
+                    principal_ref: "deployment-reporter@example.test".into(),
+                    enabled: true,
+                    expected_resource_version: 0,
+                    idempotency_key: "plan-reporter-recovery".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+
+        // Simulate a crash after the CAS mutation and before generic plan completion.
+        db.configure_ability_deployment_reporter(
+            registry_id,
+            "production",
+            "user",
+            reporter_id,
+            "deployment-reporter@example.test",
+            true,
+            0,
+            &planned.plan_id,
+        )
+        .await
+        .unwrap();
+        assert!(db.delete_user(reporter_id).await.unwrap());
+
+        let apply = pb::ApplyTopologyPlanRequest {
+            plan_id: planned.plan_id,
+            idempotency_key: "apply-reporter-recovery".into(),
+            confirmation_hash: planned.confirmation_hash,
+        };
+        let recovered = service
+            .configure_ability_deployment_reporter(Some(&admin_auth), apply.clone())
+            .await
+            .unwrap();
+        let replayed = service
+            .configure_ability_deployment_reporter(Some(&admin_auth), apply)
+            .await
+            .unwrap();
+        assert_eq!(recovered, replayed);
+        assert_eq!(recovered.resource_version, 1);
+        assert_eq!(recovered.principal_ref, "deployment-reporter@example.test");
+        assert!(recovered.enabled);
+
+        let revoke = service
+            .plan_configure_ability_deployment_reporter(
+                Some(&admin_auth),
+                pb::PlanConfigureAbilityDeploymentReporterRequest {
+                    registry: "reporter-recovery/packages".into(),
+                    deployment: "production".into(),
+                    principal_kind: "user".into(),
+                    principal_ref: "deployment-reporter@example.test".into(),
+                    enabled: false,
+                    expected_resource_version: recovered.resource_version,
+                    idempotency_key: "plan-revoke-inactive-reporter".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let revoked = service
+            .configure_ability_deployment_reporter(
+                Some(&admin_auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: revoke.plan_id,
+                    idempotency_key: "apply-revoke-inactive-reporter".into(),
+                    confirmation_hash: revoke.confirmation_hash,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!revoked.enabled);
+        assert_eq!(revoked.resource_version, 2);
     }
 
     #[tokio::test]

@@ -547,6 +547,30 @@ fn validate_interface_document(
         limits.max_collection_items,
         diagnostics,
     );
+    if let Some(configuration) = &document.interface.configuration {
+        validate_schema_definition(
+            configuration,
+            &root.child("configuration"),
+            1,
+            limits.max_structural_depth,
+            limits.max_string_bytes,
+            limits.max_collection_items,
+            diagnostics,
+        );
+        if !instance_configuration_schema_is_literal(configuration) {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::ResourceScopeEscape,
+                    DiagnosticClass::Unauthorized,
+                    DiagnosticPhase::Schema,
+                    root.child("configuration").components().to_vec(),
+                    "instance configuration cannot carry references or provider assignments"
+                        .to_string(),
+                ),
+            );
+        }
+    }
     for (name, output) in &document.interface.outputs {
         validate_schema_definition(
             &output.schema,
@@ -626,6 +650,128 @@ fn validate_interface_document(
                 ),
             );
         }
+    }
+}
+
+fn instance_configuration_schema_is_literal(schema: &aos_ability_model::ValueSchema) -> bool {
+    use aos_ability_model::ValueSchema;
+
+    let mut pending = vec![schema];
+    while let Some(schema) = pending.pop() {
+        match schema {
+            ValueSchema::Boolean
+            | ValueSchema::Integer { .. }
+            | ValueSchema::String { .. }
+            | ValueSchema::StringEnum { .. } => {}
+            ValueSchema::List { element, .. }
+            | ValueSchema::Map { value: element, .. }
+            | ValueSchema::Optional { value: element } => pending.push(element),
+            ValueSchema::Record { fields, .. } => pending.extend(fields.values()),
+            ValueSchema::TaggedUnion { variants, .. } => pending.extend(variants.values()),
+            ValueSchema::ArtifactReference
+            | ValueSchema::ResourceReference
+            | ValueSchema::ProviderAssignment
+            | ValueSchema::OperationResultReference => return false,
+        }
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod instance_configuration_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use aos_ability_model::{
+        DiagnosticCode, InterfaceDocument, LocalKey, StringConstraint, ValueSchema,
+    };
+
+    use super::{ValidationContext, instance_configuration_schema_is_literal};
+
+    #[test]
+    fn shared_invalid_fixture_is_rejected_by_interface_validation() {
+        let mut document: InterfaceDocument = serde_json::from_str(include_str!(
+            "../../../tests/abilities/fixtures/interface.json"
+        ))
+        .expect("canonical interface fixture must decode");
+        let configuration: ValueSchema = serde_json::from_str(include_str!(
+            "../../../tests/abilities/fixtures/invalid-configuration-schema.json"
+        ))
+        .expect("shared invalid configuration schema must decode");
+        let supported_features: BTreeSet<_> = document.required_features.iter().cloned().collect();
+        document.interface.configuration = Some(configuration);
+
+        let errors = ValidationContext::new(supported_features, [document])
+            .expect_err("reference-bearing instance configuration must fail validation");
+
+        assert!(errors.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::ResourceScopeEscape
+                && diagnostic.path == ["interfaces", "0", "interface", "configuration"]
+        }));
+    }
+
+    #[test]
+    fn nested_containers_cannot_hide_reference_bearing_configuration() {
+        let nested = ValueSchema::Record {
+            fields: BTreeMap::from([(
+                key("outer"),
+                ValueSchema::List {
+                    element: Box::new(ValueSchema::TaggedUnion {
+                        tag: key("kind"),
+                        variants: BTreeMap::from([(
+                            key("resource"),
+                            ValueSchema::Map {
+                                key: StringConstraint {
+                                    max_length: 32,
+                                    syntax: None,
+                                },
+                                value: Box::new(ValueSchema::ResourceReference),
+                                max_entries: 8,
+                            },
+                        )]),
+                    }),
+                    max_items: 8,
+                },
+            )]),
+            optional_fields: Vec::new(),
+        };
+
+        assert!(!instance_configuration_schema_is_literal(&nested));
+    }
+
+    #[test]
+    fn every_reference_bearing_kind_is_rejected() {
+        for schema in [
+            ValueSchema::ArtifactReference,
+            ValueSchema::ResourceReference,
+            ValueSchema::ProviderAssignment,
+            ValueSchema::OperationResultReference,
+        ] {
+            assert!(!instance_configuration_schema_is_literal(&schema));
+        }
+    }
+
+    #[test]
+    fn bounded_literal_configuration_schema_is_accepted() {
+        let literal = ValueSchema::Record {
+            fields: BTreeMap::from([(
+                key("ports"),
+                ValueSchema::List {
+                    element: Box::new(ValueSchema::Integer {
+                        minimum: 1024,
+                        maximum: 65535,
+                    }),
+                    max_items: 8,
+                },
+            )]),
+            optional_fields: Vec::new(),
+        };
+
+        assert!(instance_configuration_schema_is_literal(&literal));
+    }
+
+    fn key(value: &str) -> LocalKey {
+        LocalKey::new(value).expect("test key must be valid")
     }
 }
 

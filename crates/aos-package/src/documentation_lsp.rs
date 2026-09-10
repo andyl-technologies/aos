@@ -2,22 +2,22 @@
 //!
 //! The server uses standard JSON-RPC stdio framing and deliberately implements
 //! only documentation-owned semantics: full-text synchronization, option-path
-//! completion, hover, pull/push diagnostics, workspace symbols, and two
-//! read-only extension requests for the closed schema and option hints. It
+//! completion, hover, pull/push diagnostics, workspace symbols, and read-only
+//! extension requests for closed schemas, option hints, and ability references. It
 //! does not evaluate Nix and therefore never executes an editor buffer.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
 
 use anyhow::{Context, Result, bail};
-use aos_ability_model::LocalKey;
-use aos_doc_model::{
-    AbilityExportReference, DOCUMENT_JSON_SCHEMA, OptionDocument, PackageAbilityReference,
-    PackageDocumentation, PathSegment,
-};
+use aos_doc_model::{DOCUMENT_JSON_SCHEMA, OptionDocument, PackageDocumentation, PathSegment};
 use serde_json::{Value, json};
 
 use crate::documentation::LoadedDocumentation;
+
+mod ability;
+
+use ability::AbilityCatalog;
 
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -81,7 +81,13 @@ impl Server {
                         "experimental": {
                             "packageDocumentationSchema": "aos/packageDocumentation/schema",
                             "packageDocumentationOptions": "aos/packageDocumentation/options",
-                            "packageAbilityReferences": "aos/packageDocumentation/abilities"
+                            "packageAbilityReferences": "aos/packageDocumentation/abilities",
+                            "packageAbilityReferenceDocuments": "aos/packageDocumentation/abilityReferences",
+                            "resolvePackageAbility": "aos/packageDocumentation/resolveAbility",
+                            "packageAbilityDocumentProvider": {
+                                "scheme": "aos-ability",
+                                "method": "aos/packageDocumentation/abilityDocument"
+                            }
                         }
                     },
                     "serverInfo": { "name": "apm-docs", "version": env!("CARGO_PKG_VERSION") }
@@ -130,21 +136,24 @@ impl Server {
                     .get("label")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                let result = self
-                    .options()
-                    .find(|(_, option)| option.display_path == label)
-                    .map(|(document, option)| {
-                        let mut item = params.clone();
-                        item["documentation"] = json!({
-                            "kind": "markdown",
-                            "value": option_markdown(document, option)
-                        });
-                        item["data"] = json!({
-                            "package": document.package.name,
-                            "version": document.package.version,
-                            "semanticSchemaSha256": document.identity.semantic_schema_sha256
-                        });
-                        item
+                let result = AbilityCatalog::new(&self.documents)
+                    .resolve_completion(&params)
+                    .or_else(|| {
+                        self.options()
+                            .find(|(_, option)| option.display_path == label)
+                            .map(|(document, option)| {
+                                let mut item = params.clone();
+                                item["documentation"] = json!({
+                                    "kind": "markdown",
+                                    "value": option_markdown(document, option)
+                                });
+                                item["data"] = json!({
+                                    "package": document.package.name,
+                                    "version": document.package.version,
+                                    "semanticSchemaSha256": document.identity.semantic_schema_sha256
+                                });
+                                item
+                            })
                     })
                     .unwrap_or(params);
                 respond(output, id, result)?;
@@ -189,7 +198,30 @@ impl Server {
                 respond(output, id, self.option_hints(&params))?;
             }
             "aos/packageDocumentation/abilities" => {
-                respond(output, id, self.ability_hints(&params))?;
+                respond(
+                    output,
+                    id,
+                    AbilityCatalog::new(&self.documents).hints(&params),
+                )?;
+            }
+            "aos/packageDocumentation/abilityReferences" => {
+                respond(
+                    output,
+                    id,
+                    AbilityCatalog::new(&self.documents).references(&params),
+                )?;
+            }
+            "aos/packageDocumentation/resolveAbility" => {
+                let result = AbilityCatalog::new(&self.documents)
+                    .resolve(&params)
+                    .unwrap_or(Value::Null);
+                respond(output, id, result)?;
+            }
+            "aos/packageDocumentation/abilityDocument" => {
+                let result = AbilityCatalog::new(&self.documents)
+                    .virtual_document(&params)
+                    .unwrap_or(Value::Null);
+                respond(output, id, result)?;
             }
             _ if id.is_some() => respond_error(output, id, -32601, "method not found")?,
             _ => {}
@@ -216,23 +248,14 @@ impl Server {
         })
     }
 
-    fn abilities(
-        &self,
-    ) -> impl Iterator<Item = (&PackageAbilityReference, &AbilityExportReference)> {
-        self.documents.iter().flat_map(|document| {
-            document.ability_reference.iter().flat_map(|reference| {
-                reference
-                    .exports
-                    .iter()
-                    .map(move |export| (reference, export))
-            })
-        })
-    }
-
     fn completions(&self, text: &str, line: usize, character: usize) -> Value {
+        let catalog = AbilityCatalog::new(&self.documents);
+        if let Some(items) = catalog.contextual_completions(text, line, character) {
+            return json!({ "isIncomplete": false, "items": items });
+        }
+
         let prefix = word_at_position(text, line, character, true).unwrap_or_default();
         let mut seen = BTreeSet::new();
-        let mut seen_abilities = BTreeSet::new();
         let mut items = self
             .options()
             .filter(|(_, option)| option.display_path.starts_with(&prefix))
@@ -248,8 +271,8 @@ impl Server {
                         "value": option_markdown(document, option)
                     },
                     "filterText": option.display_path,
-                    "insertText": option.display_path
-                    ,"data": {
+                    "insertText": option.display_path,
+                    "data": {
                         "package": document.package.name,
                         "version": document.package.version,
                         "path": option.display_path
@@ -257,47 +280,7 @@ impl Server {
                 })
             })
             .collect::<Vec<_>>();
-        items.extend(
-            self.abilities()
-                .filter(|(_, export)| {
-                    export.name.as_str().starts_with(&prefix)
-                        || export.interface.interface.name.as_str().starts_with(&prefix)
-                })
-                .filter(|(reference, export)| {
-                    seen_abilities.insert((
-                        reference.package.to_string(),
-                        reference.version.clone(),
-                        export.name.to_string(),
-                        export.interface.interface.name.to_string(),
-                        export.interface.interface.abi,
-                        export
-                            .interface
-                            .interface_key()
-                            .map(|key| key.descriptor.to_string())
-                            .unwrap_or_default(),
-                    ))
-                })
-                .take(256_usize.saturating_sub(items.len()))
-                .map(|(reference, export)| {
-                    json!({
-                        "label": export.interface.interface.name.as_str(),
-                        "kind": 8,
-                        "detail": format!("ability ABI {} — {} {}", export.interface.interface.abi, reference.package.as_str(), reference.version),
-                        "documentation": {
-                            "kind": "markdown",
-                            "value": ability_markdown(reference, export)
-                        },
-                        "filterText": format!("{} {}", export.name.as_str(), export.interface.interface.name.as_str()),
-                        "insertText": export.interface.interface.name.as_str(),
-                        "data": {
-                            "package": reference.package.as_str(),
-                            "version": reference.version,
-                            "manifestSha256": reference.manifest_sha256,
-                            "packageDigest": reference.package_digest
-                        }
-                    })
-                }),
-        );
+        items.extend(catalog.completions(&prefix, 256_usize.saturating_sub(items.len())));
         json!({ "isIncomplete": false, "items": items })
     }
 
@@ -313,27 +296,7 @@ impl Server {
                     }
                 })
             })
-            .or_else(|| {
-                let matches = self
-                    .abilities()
-                    .filter(|(_, export)| {
-                        export.name.as_str() == word
-                            || export.interface.interface.name.as_str() == word
-                    })
-                    .take(257)
-                    .collect::<Vec<_>>();
-                let markdown = match matches.as_slice() {
-                    [] => return None,
-                    [(reference, export)] => ability_markdown(reference, export),
-                    _ => ability_ambiguity_markdown(&matches[..matches.len().min(256)]),
-                };
-                Some(json!({
-                    "contents": {
-                        "kind": "markdown",
-                        "value": markdown
-                    }
-                }))
-            })
+            .or_else(|| AbilityCatalog::new(&self.documents).hover(&word))
     }
 
     fn definition(&self, text: &str, line: usize, character: usize) -> Option<Value> {
@@ -350,6 +313,7 @@ impl Server {
                     }
                 })
             })
+            .or_else(|| AbilityCatalog::new(&self.documents).definition(&word))
     }
 
     fn document_links(&self, text: &str) -> Value {
@@ -369,6 +333,11 @@ impl Server {
                 }));
             }
         }
+        links.truncate(256);
+        links.extend(
+            AbilityCatalog::new(&self.documents)
+                .document_links(text, 256_usize.saturating_sub(links.len())),
+        );
         Value::Array(links)
     }
 
@@ -378,32 +347,35 @@ impl Server {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        Value::Array(
-            diagnostics
-                .into_iter()
-                .filter(|diagnostic| {
-                    diagnostic.get("code").and_then(Value::as_str) == Some("aos-unknown-option")
-                })
-                .filter_map(|diagnostic| {
-                    let candidate = diagnostic.pointer("/data/candidate")?.as_str()?;
-                    let replacement = nearest_option(
-                        self.options()
-                            .map(|(_, option)| option.display_path.as_str()),
-                        candidate,
-                    )?;
-                    Some(json!({
-                        "title": format!("Replace with '{replacement}'"),
-                        "kind": "quickfix",
-                        "diagnostics": [diagnostic],
-                        "command": {
-                            "title": "Replace option path",
-                            "command": "aos.replaceOptionPath",
-                            "arguments": [candidate, replacement]
-                        }
-                    }))
-                })
-                .collect(),
-        )
+        let mut actions = diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.get("code").and_then(Value::as_str) == Some("aos-unknown-option")
+            })
+            .filter_map(|diagnostic| {
+                let candidate = diagnostic.pointer("/data/candidate")?.as_str()?;
+                let replacement = nearest_option(
+                    self.options()
+                        .map(|(_, option)| option.display_path.as_str()),
+                    candidate,
+                )?;
+                Some(json!({
+                    "title": format!("Replace with '{replacement}'"),
+                    "kind": "quickfix",
+                    "diagnostics": [diagnostic],
+                    "command": {
+                        "title": "Replace option path",
+                        "command": "aos.replaceOptionPath",
+                        "arguments": [candidate, replacement]
+                    }
+                }))
+            })
+            .collect::<Vec<_>>();
+        actions.extend(
+            AbilityCatalog::new(&self.documents)
+                .code_actions(&diagnostics, text_document_uri(params).as_deref()),
+        );
+        Value::Array(actions)
     }
 
     fn diagnostics(&self, text: &str) -> Vec<Value> {
@@ -452,28 +424,33 @@ impl Server {
                 "data": { "candidate": candidate }
             }));
         }
+        diagnostics.extend(AbilityCatalog::new(&self.documents).diagnostics(text));
         diagnostics
     }
 
     fn workspace_symbols(&self, query: &str) -> Value {
         let normalized = query.to_ascii_lowercase();
-        Value::Array(
-            self.options()
-                .filter(|(_, option)| option.display_path.to_ascii_lowercase().contains(&normalized))
-                .take(256)
-                .map(|(document, option)| {
-                    json!({
-                        "name": option.display_path,
-                        "kind": 13,
-                        "location": {
-                            "uri": format!("aos-doc://{}/{}", document.package.name, document.package.version),
-                            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }
-                        },
-                        "containerName": document.package.name
-                    })
+        let mut symbols = self
+            .options()
+            .filter(|(_, option)| option.display_path.to_ascii_lowercase().contains(&normalized))
+            .take(256)
+            .map(|(document, option)| {
+                json!({
+                    "name": option.display_path,
+                    "kind": 13,
+                    "location": {
+                        "uri": format!("aos-doc://{}/{}", document.package.name, document.package.version),
+                        "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }
+                    },
+                    "containerName": document.package.name
                 })
-                .collect(),
-        )
+            })
+            .collect::<Vec<_>>();
+        symbols.extend(
+            AbilityCatalog::new(&self.documents)
+                .workspace_symbols(query, 256_usize.saturating_sub(symbols.len())),
+        );
+        Value::Array(symbols)
     }
 
     fn option_hints(&self, params: &Value) -> Value {
@@ -496,46 +473,6 @@ impl Server {
                         "readOnly": option.read_only,
                         "contributable": option.contributable,
                         "semanticSchemaSha256": document.identity.semantic_schema_sha256
-                    })
-                })
-                .collect(),
-        )
-    }
-
-    fn ability_hints(&self, params: &Value) -> Value {
-        let package = params.get("package").and_then(Value::as_str);
-        let prefix = params
-            .get("prefix")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        Value::Array(
-            self.abilities()
-                .filter(|(reference, _)| {
-                    package.is_none_or(|name| reference.package.as_str() == name)
-                })
-                .filter(|(_, export)| {
-                    export.name.as_str().starts_with(prefix)
-                        || export.interface.interface.name.as_str().starts_with(prefix)
-                })
-                .take(256)
-                .map(|(reference, export)| {
-                    json!({
-                        "package": reference.package.as_str(),
-                        "version": reference.version,
-                        "export": export.name.as_str(),
-                        "interface": export.interface.interface.name.as_str(),
-                        "abi": export.interface.interface.abi,
-                        "descriptor": export.interface.interface_key().ok().map(|key| key.descriptor),
-                        "methods": export.interface.interface.methods.keys().map(LocalKey::as_str).collect::<Vec<_>>(),
-                        "guarantees": export.interface.interface.guarantees,
-                        "manifestSha256": reference.manifest_sha256,
-                        "packageDigest": reference.package_digest,
-                        "limitations": [
-                            "static-authenticated-reference-only",
-                            "conditional-requirements-not-evaluated",
-                            "authorization-not-evaluated",
-                            "runtime-availability-not-observed"
-                        ]
                     })
                 })
                 .collect(),
@@ -565,55 +502,7 @@ fn option_markdown(document: &PackageDocumentation, option: &OptionDocument) -> 
     text
 }
 
-fn ability_markdown(
-    reference: &PackageAbilityReference,
-    export: &AbilityExportReference,
-) -> String {
-    let interface = &export.interface.interface;
-    let methods = interface
-        .methods
-        .keys()
-        .map(|method| markdown_code_span(method.as_str()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "{} · ability ABI {}\n\nExport {} from package {} {}. Methods: {}.\n\nAuthenticated package contract: {}. Static reference only; authorization and runtime availability require deployment/runtime evidence.",
-        markdown_code_span(interface.name.as_str()),
-        interface.abi,
-        markdown_code_span(export.name.as_str()),
-        markdown_code_span(reference.package.as_str()),
-        markdown_code_span(&reference.version),
-        if methods.is_empty() { "none" } else { &methods },
-        markdown_code_span(&reference.package_digest.to_string()),
-    )
-}
-
-fn ability_ambiguity_markdown(
-    matches: &[(&PackageAbilityReference, &AbilityExportReference)],
-) -> String {
-    let mut markdown = String::from(
-        "Multiple authenticated ability contracts match this name. Select a package, version, export, ABI, and descriptor:\n",
-    );
-    for (reference, export) in matches {
-        let interface = &export.interface.interface;
-        let descriptor = export
-            .interface
-            .interface_key()
-            .map(|key| key.descriptor.to_string())
-            .unwrap_or_else(|_| "invalid descriptor".to_string());
-        markdown.push_str(&format!(
-            "\n- package {} {}, export {}, ABI {}, descriptor {}",
-            markdown_code_span(reference.package.as_str()),
-            markdown_code_span(&reference.version),
-            markdown_code_span(export.name.as_str()),
-            interface.abi,
-            markdown_code_span(&descriptor),
-        ));
-    }
-    markdown
-}
-
-fn markdown_code_span(value: &str) -> String {
+pub(super) fn markdown_code_span(value: &str) -> String {
     let normalized = value.replace(['\r', '\n'], " ");
     let longest_run = normalized
         .split(|character| character != '`')
@@ -812,7 +701,8 @@ mod tests {
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
         AbilityExportReference, DocumentationIdentity, DocumentedPackage, InlineSpan, OptionOwner,
-        OptionType, PackageAbilityReference, ProseBlock, RuntimeSurface, SourceLocator, Visibility,
+        OptionType, PackageAbilityReference, ProseBlock, RuntimeSurface, Section, SourceLocator,
+        Visibility,
     };
 
     fn document() -> PackageDocumentation {
@@ -974,8 +864,9 @@ mod tests {
                 .as_str()
                 .is_some_and(|text| text.contains("Static reference only"))
         }));
-        let hints = server.ability_hints(&json!({ "package": "nginx", "prefix": "service" }));
-        assert_eq!(hints[0]["export"], "service-manager");
+        let hints = AbilityCatalog::new(&server.documents)
+            .hints(&json!({ "package": "nginx", "prefix": "service" }));
+        assert_eq!(hints[0]["selector"]["export"], "service-manager");
         assert_eq!(hints[0]["methods"].as_array().map(Vec::len), Some(5));
         assert!(hints[0]["limitations"].as_array().is_some_and(|limits| {
             limits
@@ -1001,7 +892,10 @@ mod tests {
         let completions = server.completions("aos.systemd", 0, 11);
         let items = completions["items"].as_array().unwrap();
         assert_eq!(items.len(), 2);
-        assert_ne!(items[0]["data"]["package"], items[1]["data"]["package"]);
+        assert_ne!(
+            items[0]["data"]["aosAbility"]["package"],
+            items[1]["data"]["aosAbility"]["package"]
+        );
 
         let hover = server.hover("aos.systemd-manager", 0, 4).unwrap();
         let markdown = hover["contents"]["value"].as_str().unwrap();
@@ -1013,8 +907,173 @@ mod tests {
             open_files: BTreeMap::new(),
             shutdown: false,
         }
-        .ability_hints(&json!({ "prefix": "service" }));
+        .documents;
+        let bounded = AbilityCatalog::new(&bounded).hints(&json!({ "prefix": "service" }));
         assert_eq!(bounded.as_array().map(Vec::len), Some(256));
+    }
+
+    #[test]
+    fn ability_editor_resolves_the_exact_authenticated_reference_and_virtual_document() {
+        let loaded = loaded_document();
+        let expected_reference = loaded.ability_reference.clone().unwrap();
+        let documents = vec![loaded];
+        let catalog = AbilityCatalog::new(&documents);
+
+        let item = catalog.completions("aos.systemd", 1).remove(0);
+        let selector = item.pointer("/data/aosAbility").unwrap().clone();
+        let resolved_item = catalog.resolve_completion(&item).unwrap();
+        assert_eq!(resolved_item["data"]["aosAbility"], selector);
+
+        let resolved = catalog.resolve(&json!({ "selector": selector })).unwrap();
+        assert_eq!(
+            resolved["reference"],
+            serde_json::to_value(&expected_reference).unwrap()
+        );
+        assert_eq!(catalog.references(&json!({}))[0], resolved["reference"]);
+
+        let definition = catalog.definition("aos.systemd-manager").unwrap();
+        let uri = definition["uri"].as_str().unwrap();
+        assert!(uri.starts_with("aos-ability://reference/sha256%3A"));
+        assert!(uri.contains(&expected_reference.manifest_sha256.to_string()[7..]));
+        assert!(uri.contains(&expected_reference.package_digest.to_string()[7..]));
+
+        let virtual_document = catalog.virtual_document(&json!({ "uri": uri })).unwrap();
+        assert_eq!(virtual_document["uri"], uri);
+        assert_eq!(virtual_document["reference"], resolved["reference"]);
+        assert_eq!(virtual_document["selector"], resolved["selector"]);
+        assert!(
+            virtual_document["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Authenticated manifest"))
+        );
+    }
+
+    #[test]
+    fn ability_diagnostics_are_static_exact_and_offer_standard_workspace_edits() {
+        let loaded = loaded_document();
+        let key = loaded.ability_reference.as_ref().unwrap().exports[0]
+            .interface
+            .interface_key()
+            .unwrap();
+        let server = Server {
+            documents: vec![loaded],
+            open_files: BTreeMap::new(),
+            shutdown: false,
+        };
+
+        let unknown = server.diagnostics(
+            r#"lib.abilities.request { interface = "aos.missing"; abi = 1; descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; request = config.value; }"#,
+        );
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(unknown[0]["code"], "aos-ability-missing-reference");
+        assert!(
+            unknown[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("loaded authenticated ability catalog"))
+        );
+
+        let partial = server.diagnostics(
+            r#"lib.abilities.request { interface = "aos.systemd-manager"; abi = 1; request = config.value; }"#,
+        );
+        assert!(partial.is_empty());
+
+        let dynamic = server.diagnostics(&format!(
+            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = config.unit; }}; }}",
+            key.name, key.abi, key.descriptor,
+        ));
+        assert!(dynamic.is_empty());
+
+        let shadowable_literal = server.diagnostics(&format!(
+            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = 1; extra = true; }}; }}",
+            key.name, key.abi, key.descriptor,
+        ));
+        assert!(shadowable_literal.is_empty());
+
+        let invalid_literal = server.diagnostics(&format!(
+            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = 1; extra = 2; }}; }}",
+            key.name, key.abi, key.descriptor,
+        ));
+        assert!(invalid_literal.len() >= 2);
+        assert!(invalid_literal.iter().all(|diagnostic| {
+            diagnostic["code"] == "aos-ability-value-type-mismatch"
+                && diagnostic
+                    .pointer("/data/contractDiagnostic/code")
+                    .is_some()
+        }));
+
+        let mismatched = server.diagnostics(&format!(
+            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"sha256:{}\"; request = config.value; }}",
+            key.name,
+            key.abi,
+            "0".repeat(64),
+        ));
+        assert_eq!(mismatched.len(), 1);
+        assert_eq!(mismatched[0]["code"], "aos-ability-interface-mismatch");
+        let actions = server.code_actions(&json!({
+            "textDocument": { "uri": "file:///workspace/configuration.nix" },
+            "context": { "diagnostics": mismatched }
+        }));
+        assert_eq!(actions.as_array().unwrap().len(), 1);
+        assert!(actions[0].get("command").is_none());
+        assert_eq!(
+            actions[0]["edit"]["changes"]["file:///workspace/configuration.nix"][0]["newText"],
+            format!("\"{}\"", key.descriptor)
+        );
+
+        let unsupported = server.diagnostics(
+            r#"lib.abilities.interfaceKey { name = "aos.systemd-manager"; abi = 1; descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; typo = true; }"#,
+        );
+        assert!(
+            unsupported
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "aos-ability-unsupported-field")
+        );
+    }
+
+    #[test]
+    fn contextual_ability_completion_stays_at_constructor_key_depth() {
+        let documents = vec![loaded_document()];
+        let catalog = AbilityCatalog::new(&documents);
+        let top_level = "lib.abilities.request { interface = \"aos.systemd-manager\"; abi = 1; descriptor = \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"; req }";
+        let cursor = top_level.find("req }").unwrap() + 3;
+        assert!(
+            catalog
+                .contextual_completions(top_level, 0, cursor)
+                .is_some_and(|items| items.iter().any(|item| item["label"] == "request"))
+        );
+
+        let nested = "lib.abilities.request { request = { nested = true; }; }";
+        let cursor = nested.find("nested").unwrap() + 3;
+        assert!(catalog.contextual_completions(nested, 0, cursor).is_none());
+    }
+
+    #[test]
+    fn prose_changes_preserve_semantic_and_authenticated_ability_identity() {
+        let before = loaded_document();
+        let mut after = before.clone();
+        after.document.sections.push(Section {
+            id: "operator-note".to_string(),
+            title: "Operator note".to_string(),
+            blocks: vec![ProseBlock::Paragraph {
+                spans: vec![InlineSpan::Text {
+                    text: "Clarifies usage without changing configuration meaning.".to_string(),
+                }],
+            }],
+        });
+
+        assert_ne!(
+            before.document.document_sha256().unwrap(),
+            after.document.document_sha256().unwrap()
+        );
+        assert_eq!(
+            before.document.identity.semantic_schema_sha256,
+            after.document.computed_semantic_schema_sha256().unwrap()
+        );
+        assert_eq!(before.ability_reference, after.ability_reference);
+        assert_eq!(
+            AbilityCatalog::new(&[before]).references(&json!({})),
+            AbilityCatalog::new(&[after]).references(&json!({}))
+        );
     }
 
     #[test]

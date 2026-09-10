@@ -136,6 +136,79 @@
   "requirements": [
     {
       "checks": [
+        "authenticated-package-policy-and-operator-authority",
+        "exact-interface-binding-effect-plan-and-artifact-identities",
+        "consumer-scoped-access-and-independent-service-observation",
+        "aggregate-publication-reload-and-unchanged-input-no-op",
+        "post-publication-reload-failure-retains-new-configuration-and-old-or-unknown-consumer-state",
+        "rollback-revalidates-and-retains-transaction-evidence"
+      ],
+      "id": "ability-native-activation",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {},
+      "method": "automated",
+      "phase": "staging",
+      "production_only": false,
+      "regressions": [
+        "checks.fleet.ability-native-activation"
+      ],
+      "scope": "release"
+    },
+    {
+      "checks": [
+        "authenticated-k3s-bootstrap-and-provider-authority",
+        "exact-service-and-kubernetes-object-resource-mapping",
+        "consumer-observed-kubernetes-readiness",
+        "forged-mapping-grant-and-namespace-rejected-without-mutation",
+        "object-update-removal-and-retained-owner-evidence"
+      ],
+      "id": "ability-native-kubernetes",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {},
+      "method": "automated",
+      "phase": "staging",
+      "production_only": false,
+      "regressions": [
+        "checks.fleet.ability-native-kubernetes"
+      ],
+      "scope": "release"
+    },
+    {
+      "checks": [
+        "exact-boot-initrd-artifact-and-static-stage-handoff-contract",
+        "process-loss-after-external-effect-reconciles-before-retry",
+        "power-loss-after-external-effect-reconciles-after-boot",
+        "fresh-receiving-authority-and-resource-incarnations",
+        "retained-plan-journal-and-independent-service-observation"
+      ],
+      "id": "ability-native-recovery",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {},
+      "method": "automated",
+      "phase": "staging",
+      "production_only": false,
+      "regressions": [
+        "checks.fleet.ability-native-power-loss"
+      ],
+      "scope": "release"
+    },
+    {
+      "checks": [
         "source-and-contributor-authorization",
         "hermetic-build",
         "repeat-build",

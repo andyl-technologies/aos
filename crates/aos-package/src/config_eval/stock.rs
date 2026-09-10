@@ -45,6 +45,7 @@ use sha2::{Digest, Sha256};
 use super::classify::{EvalClass, KillReason, classify};
 use super::system_roots::{ConfigModuleResolver, ResolvedConfigModule};
 use super::{ConfigOutputFetcher, EvalAttempt, NixEvaluator, SelectedProvider, WorkingSetMember};
+use crate::platform::native_platform;
 use crate::registry::RegistrySet;
 use crate::types::ProfileScope;
 
@@ -774,7 +775,12 @@ impl RegistryConfigModules {
     pub fn load_system() -> Result<Self> {
         let scope = crate::types::ProfileScope::System;
         let config = crate::config::ApmConfig::load(scope)?;
-        let registries = crate::install::load_registries(&config)?;
+        let enabled = config.enabled_registries();
+        let registries = RegistrySet::load_for_config_evaluation(
+            &config.cache_path(),
+            &enabled,
+            &native_platform(),
+        )?;
         let profile = crate::profile::Profile::open_readonly(scope);
         let mut image_catalog = None;
         let mut installed = Vec::new();
@@ -852,42 +858,43 @@ impl RegistryConfigModules {
             image_packages,
         })
     }
+}
 
-    fn exact_in_registry(
-        &self,
-        registry_name: Option<&str>,
-        package: &str,
-        version: Option<&str>,
-        runtime_output: Option<&str>,
-    ) -> Option<ResolvedConfigModule<'_>> {
-        self.registries
-            .registries()
-            .iter()
-            .filter(|registry| registry_name.is_none_or(|name| registry.config.name == name))
-            .find_map(|registry| {
-                let meta = registry.package_versions().find(|meta| {
-                    meta.name == package
-                        && version.is_none_or(|want| meta.version == want)
-                        && runtime_output.is_none_or(|want| meta.store_path == want)
-                        && meta.config_module.is_some()
-                })?;
-                let module = meta.config_module.as_ref()?;
-                let root = crate::registry::store_path_hash(&module.config_output.store_path);
-                Some(ResolvedConfigModule {
-                    registry: &registry.config.name,
-                    release_trust: registry.release_trust(),
-                    config_realization: registry
-                        .store_map()
-                        .realization_subset_hash(&[root.to_string()])
-                        .ok(),
-                    package: &meta.name,
-                    version: &meta.version,
-                    platform: &meta.platform,
-                    runtime_output: &meta.store_path,
-                    module,
-                })
-            })
-    }
+fn resolved_registry_config_module<'a>(
+    registry: &'a crate::registry::Registry,
+    package: &'a crate::types::PackageMeta,
+) -> Option<ResolvedConfigModule<'a>> {
+    let module = package.config_module.as_ref()?;
+    let root = crate::registry::store_path_hash(&module.config_output.store_path);
+    Some(ResolvedConfigModule {
+        registry: &registry.config.name,
+        release_trust: registry.release_trust(),
+        config_realization: registry
+            .store_map()
+            .realization_subset_hash(&[root.to_string()])
+            .ok(),
+        package: &package.name,
+        version: &package.version,
+        platform: &package.platform,
+        runtime_output: &package.store_path,
+        module,
+    })
+}
+
+fn resolved_image_config_module<'a>(
+    name: &'a str,
+    package: &'a super::runtime::LocalRuntimePackage,
+) -> Option<ResolvedConfigModule<'a>> {
+    Some(ResolvedConfigModule {
+        registry: "",
+        release_trust: None,
+        config_realization: None,
+        package: name,
+        version: &package.version,
+        platform: "image",
+        runtime_output: &package.store_path,
+        module: package.config_module.as_ref()?,
+    })
 }
 
 fn immutable_image_seed_catalog() -> Result<BTreeMap<String, crate::types::InstalledMeta>> {
@@ -981,34 +988,14 @@ fn validate_image_seed_metadata(
 
 impl ConfigModuleResolver for RegistryConfigModules {
     fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>> {
-        if let Some((registry, meta)) = self.registries.resolve(package) {
-            let module = meta.config_module.as_ref()?;
-            let root = crate::registry::store_path_hash(&module.config_output.store_path);
-            return Some(ResolvedConfigModule {
-                registry: &registry.config.name,
-                release_trust: registry.release_trust(),
-                config_realization: registry
-                    .store_map()
-                    .realization_subset_hash(&[root.to_string()])
-                    .ok(),
-                package: &meta.name,
-                version: &meta.version,
-                platform: &meta.platform,
-                runtime_output: &meta.store_path,
-                module,
-            });
+        if let Ok(Some((registry, resolved))) =
+            self.registries.resolve_for_config_evaluation(package)
+        {
+            return resolved_registry_config_module(registry, resolved);
         }
+
         let (local_name, local) = self.image_packages.get_key_value(package)?;
-        Some(ResolvedConfigModule {
-            registry: "",
-            release_trust: None,
-            config_realization: None,
-            package: local_name,
-            version: &local.version,
-            platform: "image",
-            runtime_output: &local.store_path,
-            module: local.config_module.as_ref()?,
-        })
+        resolved_image_config_module(local_name, local)
     }
 
     fn config_module_exact(
@@ -1017,25 +1004,31 @@ impl ConfigModuleResolver for RegistryConfigModules {
         version: Option<&str>,
         runtime_output: Option<&str>,
     ) -> Option<ResolvedConfigModule<'_>> {
-        if self.registries.resolve(package).is_some() {
-            self.exact_in_registry(None, package, version, runtime_output)
-        } else {
+        let exact =
+            self.registries
+                .resolve_exact_for_config_evaluation(package, version, runtime_output);
+        match exact {
+            Ok(Some((registry, resolved))) => {
+                return resolved_registry_config_module(registry, resolved);
+            }
+            Ok(None) | Err(_) => {}
+        }
+        if self
+            .registries
+            .resolve_for_config_evaluation(package)
+            .is_ok_and(|resolved| resolved.is_some())
+        {
+            return None;
+        }
+
+        {
             let (local_name, local) = self.image_packages.get_key_value(package)?;
             if version.is_some_and(|want| want != local.version)
                 || runtime_output.is_some_and(|want| want != local.store_path)
             {
                 return None;
             }
-            Some(ResolvedConfigModule {
-                registry: "",
-                release_trust: None,
-                config_realization: None,
-                package: local_name,
-                version: &local.version,
-                platform: "image",
-                runtime_output: &local.store_path,
-                module: local.config_module.as_ref()?,
-            })
+            resolved_image_config_module(local_name, local)
         }
     }
 
@@ -1058,8 +1051,8 @@ impl ConfigModuleResolver for RegistryConfigModules {
     fn known_shared_roots(&self) -> BTreeSet<String> {
         let mut roots = self
             .registries
-            .registries()
-            .iter()
+            .registries_before_config_evaluation_gap()
+            .into_iter()
             .flat_map(|registry| registry.package_versions())
             .filter_map(|meta| meta.config_module.as_ref())
             .flat_map(|module| module.owns_roots.iter().map(|owned| owned.root.clone()))
@@ -1077,7 +1070,7 @@ impl ConfigModuleResolver for RegistryConfigModules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ApmMeta, ModuleAbiCompat};
+    use crate::types::{ApmMeta, ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat};
 
     fn member(pkg: &str, config_output: Option<&str>) -> WorkingSetMember {
         WorkingSetMember {
@@ -1115,6 +1108,28 @@ mod tests {
         }
     }
 
+    fn image_config_module() -> ConfigModuleMeta {
+        ConfigModuleMeta {
+            config_output: ConfigOutputMeta {
+                store_path: "/nix/store/11111111111111111111111111111111-image-web-config"
+                    .to_string(),
+                nar_hash: "sha256:test".to_string(),
+                nar_size: 1,
+                references: Vec::new(),
+            },
+            evaluation_base_lib: None,
+            dependency_outputs: BTreeMap::new(),
+            module_abi_compat: ModuleAbiCompat { min: 1, max: 1 },
+            declares: Vec::new(),
+            declaration_schema: Vec::new(),
+            requires: Vec::new(),
+            owns_roots: Vec::new(),
+            contributes: Vec::new(),
+            provides_capabilities: Vec::new(),
+            artifacts: Default::default(),
+        }
+    }
+
     #[test]
     fn mutable_image_seed_metadata_must_match_the_immutable_catalog() {
         let immutable = image_seed_metadata();
@@ -1129,6 +1144,140 @@ mod tests {
                 .to_string()
                 .contains("disagrees with immutable image metadata"),
             "{error:#}"
+        );
+    }
+
+    #[test]
+    fn unavailable_registry_uses_image_module_with_exact_identity_pins() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing = crate::registry::tests::registry_config("andyl", 500);
+        let registries =
+            RegistrySet::load_for_config_evaluation(temp.path(), &[&missing], "x86_64-linux")
+                .unwrap();
+        let store_path = "/nix/store/00000000000000000000000000000000-image-web";
+        let image_packages = BTreeMap::from([(
+            "image-web".to_string(),
+            super::super::runtime::LocalRuntimePackage {
+                version: "1.2.3".to_string(),
+                store_path: store_path.to_string(),
+                expose: None,
+                expose_artifact: None,
+                config_module: Some(image_config_module()),
+                ability: None,
+                closure: std::cell::RefCell::new(None),
+            },
+        )]);
+        let resolver = RegistryConfigModules {
+            registries,
+            installed: Vec::new(),
+            image_packages,
+        };
+
+        let by_name = resolver.config_module("image-web").unwrap();
+        let exact = resolver
+            .config_module_exact("image-web", Some("1.2.3"), Some(store_path))
+            .unwrap();
+
+        assert_eq!(by_name.registry, "");
+        assert_eq!(by_name.platform, "image");
+        assert_eq!(exact.version, "1.2.3");
+        assert_eq!(exact.runtime_output, store_path);
+        assert!(
+            resolver
+                .config_module_exact("image-web", Some("9.9.9"), Some(store_path))
+                .is_none()
+        );
+        assert!(
+            resolver
+                .config_module_exact(
+                    "image-web",
+                    Some("1.2.3"),
+                    Some("/nix/store/22222222222222222222222222222222-other"),
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn loaded_registry_name_prevents_exact_image_fallback_across_a_gap() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let loaded = crate::registry::tests::registry_config("loaded", 600);
+        let missing = crate::registry::tests::registry_config("missing", 500);
+        let nar_digest = "0".repeat(52);
+        let catalog = format!(
+            r#"[package]
+name = "image-web"
+description = "registry package with the same name as an image package"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/22222222222222222222222222222222-image-web"
+nar_hash = "sha256:{nar_digest}"
+nar_size = 1
+closure_size = 1
+source_drv = "/nix/store/33333333333333333333333333333333-image-web.drv"
+source_nar_hash = "sha256:{nar_digest}"
+provenance = "provenance/image-web.jsonl"
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["config-module-v1", "attestation-v1"]
+
+[versions.platforms.x86_64-linux.config_module.config_output]
+store_path = "/nix/store/44444444444444444444444444444444-image-web-config"
+nar_hash = "sha256:{nar_digest}"
+nar_size = 1
+references = []
+
+[versions.platforms.x86_64-linux.config_module.module_abi_compat]
+min = 1
+max = 1
+"#
+        );
+        let _ = crate::registry::tests::make_registry(
+            &temp,
+            &loaded.name,
+            loaded.priority,
+            &[("image-web", &catalog)],
+        );
+        let registries = RegistrySet::load_for_config_evaluation(
+            temp.path(),
+            &[&loaded, &missing],
+            "x86_64-linux",
+        )
+        .unwrap();
+        let image_store_path = "/nix/store/00000000000000000000000000000000-image-web";
+        let image_packages = BTreeMap::from([(
+            "image-web".to_string(),
+            super::super::runtime::LocalRuntimePackage {
+                version: "1.2.3".to_string(),
+                store_path: image_store_path.to_string(),
+                expose: None,
+                expose_artifact: None,
+                config_module: Some(image_config_module()),
+                ability: None,
+                closure: std::cell::RefCell::new(None),
+            },
+        )]);
+        let resolver = RegistryConfigModules {
+            registries,
+            installed: Vec::new(),
+            image_packages,
+        };
+
+        let by_name = resolver.config_module("image-web").unwrap();
+
+        assert_eq!(by_name.registry, "loaded");
+        assert_eq!(by_name.version, "2.0.0");
+        assert!(
+            resolver
+                .config_module_exact("image-web", Some("1.2.3"), Some(image_store_path))
+                .is_none()
         );
     }
 

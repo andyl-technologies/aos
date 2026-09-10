@@ -8,7 +8,7 @@ let
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:6c813d376a0141954cdf320c4fa422330b42c4d88bec0d67dcfff4b78cdd234a";
+    "sha256:6ab0550d2de40d9d49b211aa5944d3f7d86d53142c1a2dba8d59bf3974cc581c";
   credentialDelivery =
     interface
     "aos.credential-delivery"
@@ -16,15 +16,23 @@ let
   systemdService =
     interface
     "aos.systemd-service"
-    "sha256:1be97040a30ac274816ff7d1ee53f384989165f2ed09c80956a1d90458b72f5f";
+    "sha256:b712c9e3697e87d62bb62549d8692b4d8f825bae9733ae523f76a40bd3882666";
   nginxValidation =
     interface
     "aos.nginx-validation"
-    "sha256:cfe3335b1ff3082ffd17e38f098e804461daaa32db19a2aba9faa2e2acaddd1d";
+    "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372";
   systemdEffects =
     interface
     "aos.systemd-service-effects"
-    "sha256:08e463bed96f053e557f557c95342666e81358396a44f89bf4c07a2aa780d6c5";
+    "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98";
+
+  # Recovery conservatively charges a full interrupted call. Four call-sized
+  # slices retain room for that attempt, reconciliation, a retry, and a final
+  # reconciliation; one slice also spans a reference VM boot.
+  operationDeadline = {
+    attempt_timeout_millis = 300000;
+    total_recovery_millis = 1200000;
+  };
 
   childRequest = context: scope: key: acceptedInterface: {
     id = {
@@ -117,6 +125,13 @@ let
     && builtins.stringLength content <= 256
     && builtins.match "[-A-Za-z0-9._:/ ]+" content != null;
 
+  validateConsumerProbe = probe:
+    if probe.address != "127.0.0.1"
+    then throw "nginx consumer probe must use the IPv4 loopback address"
+    else if probe.port < 1024 || probe.port > 65535
+    then throw "nginx consumer probe port is outside the unprivileged TCP range"
+    else probe;
+
   validateVirtualHost = contribution: let
     virtualHost = contribution.value;
   in
@@ -150,6 +165,7 @@ let
       }
       context.contributions;
     virtualHosts = validated.virtualHosts;
+    consumerProbe = validateConsumerProbe context.configuration;
     tlsHosts =
       builtins.filter
       (virtualHost: virtualHost.tls or false)
@@ -175,9 +191,21 @@ let
     configurationBinding = bindingFor context configurationRequest;
     credentialBinding = bindingFor context credentialRequest;
     serviceBinding = bindingFor context serviceRequest;
+    configurationRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON virtualHosts)}";
+    serviceValue = {
+      configuration_revision = configurationRevision;
+      consumer_endpoint = "${consumerProbe.address}:${builtins.toString consumerProbe.port}";
+      unit = "nginx-${context.provider.key}.service";
+      virtual_host_count = builtins.length virtualHosts;
+    };
+    serviceRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON serviceValue)}";
     contributions =
       lowerContribution context configurationRequest "configuration" {
         inherit virtualHosts;
+        consumer_content_revision = configurationRevision;
+        consumer_controller_revision = serviceRevision;
+        consumer_instance = builtins.toJSON context.provider;
+        consumer_probe = consumerProbe;
       }
       ++ (
         if usesTls
@@ -187,11 +215,7 @@ let
           }
         else []
       )
-      ++ lowerContribution context serviceRequest "services" {
-        configuration_revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON virtualHosts)}";
-        unit = "nginx-${context.provider.key}.service";
-        virtual_host_count = builtins.length virtualHosts;
-      };
+      ++ lowerContribution context serviceRequest "services" serviceValue;
   in {
     schema = "aos.ability.composition-fragment/v1";
     requests =
@@ -249,45 +273,70 @@ in {
   inherit compose;
 
   transition = context: let
-    desiredBinding = requestKey: expectedInterface: requiredMethods: let
-      selected =
-        builtins.filter
-        (entry:
-          entry.binding.request.consumer
-          == context.provider
-          && (
-            entry.binding.request.key
-            == requestKey
-            || (
-              entry.authority.role
-              == "teardown"
-              && entry.authority.source_request.consumer == context.provider
-              && entry.authority.source_request.key == requestKey
-            )
+    bindingsFor = requestKey: expectedInterface: requiredMethods:
+      builtins.filter
+      (entry:
+        entry.binding.request.consumer
+        == context.provider
+        && (
+          entry.binding.request.key
+          == requestKey
+          || (
+            entry.authority.role
+            == "teardown"
+            && entry.authority.source_request.consumer == context.provider
+            && entry.authority.source_request.key == requestKey
           )
-          && entry.binding.interface == expectedInterface
-          && builtins.all
-          (method: builtins.elem method entry.binding.caller_grant.methods)
-          requiredMethods)
-        context.authorized_bindings;
+        )
+        && entry.binding.interface == expectedInterface
+        && builtins.all
+        (method: builtins.elem method entry.binding.caller_grant.methods)
+        requiredMethods)
+      context.authorized_bindings;
+    desiredBinding = requestKey: expectedInterface: requiredMethods: let
+      selected = bindingsFor requestKey expectedInterface requiredMethods;
     in
       if builtins.length selected == 1
       then (builtins.head selected).binding
       else throw "nginx transition requires exactly one authorized ${requestKey} binding";
+    optionalBinding = requestKey: expectedInterface: requiredMethods: let
+      selected = bindingsFor requestKey expectedInterface requiredMethods;
+    in
+      if selected == []
+      then null
+      else if builtins.length selected == 1
+      then (builtins.head selected).binding
+      else throw "nginx transition permits at most one authorized ${requestKey} binding";
     validation = desiredBinding "validation-terminal" nginxValidation ["record" "release" "validate"];
     configuration = desiredBinding "configuration" managedConfiguration [];
+    credential = optionalBinding "credential" credentialDelivery [];
     service = desiredBinding "service" systemdService [];
     serviceTerminal = desiredBinding "service-terminal" systemdEffects ["observe" "reload" "start" "stop"];
     resourcesGrantedBy = binding:
       builtins.map (permission: permission.resource) binding.caller_grant.resources;
-    changedThrough = binding:
+    changesThrough = binding:
       builtins.filter
       (change:
-        builtins.elem change.resource (resourcesGrantedBy binding)
-        && (change.kind == "create" || change.kind == "update"))
+        builtins.elem change.resource (resourcesGrantedBy binding))
       context.changes;
-    configurationChanged = changedThrough configuration;
-    serviceChanged = changedThrough service;
+    optionalChangesThrough = binding:
+      if binding == null
+      then []
+      else changesThrough binding;
+    createdOrUpdated =
+      builtins.filter
+      (change:
+        builtins.elem change.kind [
+          "create"
+          "update"
+          "reconcile-stopped"
+          "reconcile-divergent"
+        ]);
+    configurationChanged = createdOrUpdated (changesThrough configuration);
+    credentialChanges = optionalChangesThrough credential;
+    credentialChanged = createdOrUpdated credentialChanges;
+    credentialRemoved = builtins.filter (change: change.kind == "remove") credentialChanges;
+    serviceChanged = createdOrUpdated (changesThrough service);
     owned =
       builtins.filter
       (change: change.resource.provider == context.provider)
@@ -295,7 +344,10 @@ in {
     retained = builtins.filter (change: change.kind != "remove") owned;
     removed = builtins.filter (change: change.kind == "remove") owned;
     serviceAction =
-      if builtins.any (change: change.kind == "create") serviceChanged
+      if
+        builtins.any
+        (change: builtins.elem change.kind ["create" "reconcile-stopped"])
+        serviceChanged
       then "start"
       else "reload";
     serviceResources = serviceTerminal.caller_grant.resources;
@@ -303,11 +355,18 @@ in {
       if builtins.length serviceResources == 1
       then (builtins.head serviceResources).resource
       else throw "nginx transition requires exactly one authorized service resource";
-    needsConvergence = configurationChanged != [] || serviceChanged != [];
+    needsValidation = configurationChanged != [] || credentialChanged != [];
+    needsConvergence = needsValidation || serviceChanged != [];
     needsAssociation =
       needsConvergence
       || builtins.any
-      (change: change.kind == "create" || change.kind == "update")
+      (change:
+        builtins.elem change.kind [
+          "create"
+          "update"
+          "reconcile-stopped"
+          "reconcile-divergent"
+        ])
       owned;
     associationChanges =
       if needsAssociation && builtins.length retained == 1
@@ -355,13 +414,17 @@ in {
         }
       ];
       controller = controllerFor change.resource;
-      deadline = {
-        attempt_timeout_millis = 30000;
-        total_recovery_millis = 30000;
-      };
+      deadline = operationDeadline;
       recovery = {
-        retry = {kind = "disabled";};
-        reconcile = null;
+        retry = {
+          kind = "bounded";
+          max_attempts = 2;
+          backoff_millis = 0;
+        };
+        reconcile = {
+          interface = validation.interface;
+          method = "validate";
+        };
         cancel = null;
         compensate = null;
       };
@@ -394,13 +457,17 @@ in {
         }
       ];
       controller = controllerFor change.resource;
-      deadline = {
-        attempt_timeout_millis = 30000;
-        total_recovery_millis = 30000;
-      };
+      deadline = operationDeadline;
       recovery = {
-        retry = {kind = "disabled";};
-        reconcile = null;
+        retry = {
+          kind = "bounded";
+          max_attempts = 2;
+          backoff_millis = 0;
+        };
+        reconcile = {
+          interface = validation.interface;
+          method = "record";
+        };
         cancel = null;
         compensate = null;
       };
@@ -436,13 +503,16 @@ in {
         }
       ];
       controller = controllerFor serviceResource;
-      deadline = {
-        attempt_timeout_millis = 30000;
-        total_recovery_millis = 30000;
-      };
+      deadline = operationDeadline;
       recovery = {
         retry = {kind = "disabled";};
-        reconcile = null;
+        reconcile =
+          if action == "stop"
+          then {
+            interface = serviceTerminal.interface;
+            method = "observe";
+          }
+          else null;
         cancel = null;
         compensate = null;
       };
@@ -475,13 +545,13 @@ in {
         }
       ];
       controller = controllerFor serviceResource;
-      deadline = {
-        attempt_timeout_millis = 30000;
-        total_recovery_millis = 30000;
-      };
+      deadline = operationDeadline;
       recovery = {
         retry = {kind = "disabled";};
-        reconcile = null;
+        reconcile = {
+          interface = serviceTerminal.interface;
+          method = "observe";
+        };
         cancel = null;
         compensate = null;
       };
@@ -514,13 +584,17 @@ in {
         }
       ];
       controller = controllerFor change.resource;
-      deadline = {
-        attempt_timeout_millis = 30000;
-        total_recovery_millis = 30000;
-      };
+      deadline = operationDeadline;
       recovery = {
-        retry = {kind = "disabled";};
-        reconcile = null;
+        retry = {
+          kind = "bounded";
+          max_attempts = 2;
+          backoff_millis = 0;
+        };
+        reconcile = {
+          interface = validation.interface;
+          method = "release";
+        };
         cancel = null;
         compensate = null;
       };
@@ -550,6 +624,20 @@ in {
         then []
         else associationChanges
       );
+    credentialImports =
+      builtins.concatMap
+      (change:
+        builtins.map
+        (association: {
+          binding = credential.id;
+          export = "delivered-${change.resource.key}";
+          direction = "after-export";
+          outputs = [];
+          consumer = node "validate-${association.resource.key}";
+          kind = "required-success";
+        })
+        associationChanges)
+      credentialChanged;
     teardownImports =
       builtins.map
       (change: {
@@ -561,6 +649,20 @@ in {
         kind = "required-success";
       })
       removed;
+    credentialReleaseImports =
+      builtins.map
+      (change: {
+        binding = credential.id;
+        export = "release-entry-${change.resource.key}";
+        direction = "before-export";
+        outputs = [];
+        consumer =
+          if removed != []
+          then node "stop-${serviceResource.key}"
+          else node "observe-${serviceResource.key}";
+        kind = "required-success";
+      })
+      credentialRemoved;
     convergenceImports =
       builtins.map
       (change: {
@@ -591,6 +693,17 @@ in {
         }
       ]
       else [];
+    credentialOnlyEdges =
+      if credentialChanged != [] && configurationChanged == []
+      then
+        builtins.map
+        (change: {
+          from = node "validate-${change.resource.key}";
+          to = node "${serviceAction}-${serviceResource.key}";
+          kind = "required-success";
+        })
+        associationChanges
+      else [];
     teardownEdges =
       builtins.map
       (change: {
@@ -599,16 +712,48 @@ in {
         kind = "required-success";
       })
       removed;
+    dependencyRank = kind:
+      builtins.getAttr kind {
+        data = 0;
+        required-success = 1;
+        ordering-only = 2;
+        readiness = 3;
+        branch-guard = 4;
+        branch-merge = 5;
+        retention = 6;
+        communication = 7;
+      };
+    directionRank = direction:
+      builtins.getAttr direction {
+        after-export = 0;
+        before-export = 1;
+      };
+    operationLess = left: right: left.key.key < right.key.key;
+    edgeLess = left: right:
+      if left.from.key.key != right.from.key.key
+      then left.from.key.key < right.from.key.key
+      else if left.to.key.key != right.to.key.key
+      then left.to.key.key < right.to.key.key
+      else dependencyRank left.kind < dependencyRank right.kind;
+    importLess = left: right:
+      if left.binding != right.binding
+      then left.binding < right.binding
+      else if left.export != right.export
+      then left.export < right.export
+      else if left.direction != right.direction
+      then directionRank left.direction < directionRank right.direction
+      else if left.consumer.key.key != right.consumer.key.key
+      then left.consumer.key.key < right.consumer.key.key
+      else dependencyRank left.kind < dependencyRank right.kind;
     fragment = {
       schema = "aos.ability.transition-fragment/v1";
       operations =
-        builtins.sort
-        (left: right: left.key.key < right.key.key)
+        builtins.sort operationLess
         (
           (builtins.map validate (
-            if configurationChanged == []
-            then []
-            else associationChanges
+            if needsValidation
+            then associationChanges
+            else []
           ))
           ++ (builtins.map record associationChanges)
           ++ (builtins.map release removed)
@@ -626,18 +771,24 @@ in {
       decisions = [];
       merges = [];
       edges =
-        builtins.sort
-        (left: right: left.from.key.key < right.from.key.key)
-        (convergenceEdges ++ teardownEdges);
+        builtins.sort edgeLess
+        (convergenceEdges ++ credentialOnlyEdges ++ teardownEdges);
       exports = [];
-      imports = configurationImports ++ convergenceImports ++ teardownImports;
+      imports =
+        builtins.sort importLess (
+          configurationImports
+          ++ credentialImports
+          ++ convergenceImports
+          ++ teardownImports
+          ++ credentialReleaseImports
+        );
       links = [];
       handoffs = [];
       provider_readiness = [];
       obligations = [];
     };
   in
-    if associationChanges == [] && removed == []
+    if associationChanges == [] && removed == [] && credentialRemoved == []
     then
       fragment
       // {

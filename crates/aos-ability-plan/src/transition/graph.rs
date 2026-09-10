@@ -188,14 +188,20 @@ pub(super) fn transition_groups(
                     provider: prior.provider,
                 });
             }
-            if retained.package != prior.package
-                || authority_selects_group(authority, current, &prior)
+
+            let selects_group = authority_selects_group(authority, current, &prior);
+            if retained.package != prior.package && !selects_group {
+                return Err(TransitionError::MissingTeardownAuthority {
+                    provider: prior.provider,
+                });
+            }
+
+            // A retained parent may retire a child binding while its own incoming
+            // selection remains unchanged, so fresh outgoing authority must expose
+            // teardown state without authorizing a package replacement.
+            if selects_group
+                || authority_selects_outgoing_binding(authority, current, &prior.provider)
             {
-                if !authority_selects_group(authority, current, &prior) {
-                    return Err(TransitionError::MissingTeardownAuthority {
-                        provider: prior.provider,
-                    });
-                }
                 retained.include_teardown = true;
             }
             continue;
@@ -240,6 +246,23 @@ fn authority_selects_group(
         entry.provider == prior.provider
             && entry.implementation == prior.reference
             && entry.package == prior.package
+    })
+}
+
+fn authority_selects_outgoing_binding(
+    authority: Option<&CheckedTransitionAuthority>,
+    current: &VerifiedPlanningSnapshot,
+    provider: &InstanceId,
+) -> bool {
+    let Some(authority) = authority else {
+        return false;
+    };
+
+    authority.document().teardown_bindings.iter().any(|entry| {
+        current
+            .checked_binding()
+            .binding(&entry.source_binding)
+            .is_some_and(|source| source.request.consumer == *provider)
     })
 }
 

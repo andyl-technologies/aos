@@ -114,6 +114,7 @@ pub fn verified_planning_transition_with_distinct_current() -> (
             TransitionInputs {
                 current: Some(&current),
                 authority: None,
+                reconciliation: None,
             },
             &mut EmptyTransitionEvaluator,
         )
@@ -241,6 +242,7 @@ pub fn verified_planning_authorized_removal_fixture() -> (
             TransitionInputs {
                 current: Some(&current),
                 authority: Some(&authority),
+                reconciliation: None,
             },
             &mut EmptyTransitionEvaluator,
         )
@@ -278,6 +280,7 @@ fn build_verified_planning_transition_fixture(
             TransitionInputs {
                 current: include_current.then_some(&verified),
                 authority: None,
+                reconciliation: None,
             },
             &mut EmptyTransitionEvaluator,
         )

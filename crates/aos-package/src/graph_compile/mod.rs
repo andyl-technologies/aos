@@ -466,6 +466,10 @@ struct ActivationProof {
     dropped_packages: Vec<String>,
     status: String,
     activation_exit: i32,
+    #[serde(default)]
+    native_ability_transaction: Option<String>,
+    #[serde(default)]
+    native_ability_prior_generation: Option<u32>,
 }
 
 impl ActivationProof {

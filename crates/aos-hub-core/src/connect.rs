@@ -289,6 +289,19 @@ fn browse_response(rendered: Rendered) -> Response {
             body,
         )
             .into_response(),
+        Rendered::PrivateHtml(body) => (
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    "default-src 'self'; frame-ancestors 'none'",
+                ),
+                (header::CACHE_CONTROL, "private, no-store"),
+                (header::VARY, "Cookie, Authorization"),
+            ],
+            body,
+        )
+            .into_response(),
         Rendered::Json(body) => {
             ([(header::CONTENT_TYPE, "application/json")], body).into_response()
         }
@@ -2713,6 +2726,27 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         "/aos.hub.v1.DocumentationService/GetPackageDocumentationSchema",
         get_package_documentation_schema
     );
+    // AbilityDeploymentService - authenticated, private live reference overlays.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/PlanConfigureReporter",
+        plan_configure_ability_deployment_reporter
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/ConfigureReporter",
+        configure_ability_deployment_reporter
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/ReportPackageOverlay",
+        report_package_ability_deployment
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/GetPackageOverlay",
+        get_package_ability_deployment
+    );
     // ChannelService
     r = rpc_route!(r, "/aos.hub.v1.ChannelService/ListChannels", list_channels);
     r = rpc_route!(r, "/aos.hub.v1.ChannelService/GetChannel", get_channel);
@@ -4413,6 +4447,29 @@ mod tests {
         assert_eq!(
             content_addressed.headers().get(header::ETAG),
             Some(&HeaderValue::from_static("\"digest\""))
+        );
+    }
+
+    #[test]
+    fn authorized_deployment_html_is_private_and_varies_by_credentials() {
+        let response = browse_response(Rendered::PrivateHtml(
+            "<p>private deployment overlay</p>".into(),
+        ));
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("private, no-store"))
+        );
+        assert_eq!(
+            response.headers().get(header::VARY),
+            Some(&HeaderValue::from_static("Cookie, Authorization"))
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_SECURITY_POLICY),
+            Some(&HeaderValue::from_static(
+                "default-src 'self'; frame-ancestors 'none'"
+            ))
         );
     }
 

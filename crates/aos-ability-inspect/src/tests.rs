@@ -2,13 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_ability_model::document::PackageSubject;
+use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::identity::compare_request_ids;
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, DeploymentObligation, ExportDeclaration,
     HandlerDescriptor, ImplementationKind, LocalKey, ObligationKind, PackageDocument,
-    PackageImplementation, ProviderImplementation, RequiredFeature, ValueExpression, ValueSchema,
-    VersionedDocument,
+    PackageImplementation, ProviderImplementation, RequiredFeature, TransactionId, ValueExpression,
+    ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_ability_validate::test_support::{
@@ -17,10 +17,11 @@ use aos_ability_validate::test_support::{
 use aos_contract::Sha256Digest;
 
 use crate::{
-    Direction, GraphQuery, INSPECTION_QUERY_MAX_DEPTH, INSPECTION_QUERY_MAX_NODES,
-    InspectionBundle, InspectionBundleError, InspectionDiff, InspectionEdge, InspectionNode,
-    InspectionRelation, InspectionView, NodeKey, ProjectionKind, RenderFormat, ViewAnchor, render,
-    render_projection, render_slice,
+    DiagnosticBundle, DiagnosticBundleAudience, Direction, ExecutionTimeline, GraphQuery,
+    INSPECTION_QUERY_MAX_DEPTH, INSPECTION_QUERY_MAX_NODES, InspectionBundle,
+    InspectionBundleError, InspectionDiff, InspectionEdge, InspectionNode, InspectionRelation,
+    InspectionView, NodeKey, PendingStateAvailability, ProjectionKind, RenderFormat,
+    TimelineProvenance, ViewAnchor, render, render_projection, render_slice,
 };
 
 #[test]
@@ -222,6 +223,69 @@ fn view_has_stable_nodes_and_no_dangling_edges() -> Result<(), Box<dyn std::erro
         view.nodes()
             .iter()
             .any(|node| matches!(node, InspectionNode::Artifact { .. }))
+    );
+    Ok(())
+}
+
+#[test]
+fn provider_node_preserves_checked_operator_instance_configuration()
+-> Result<(), Box<dyn std::error::Error>> {
+    const PRIVATE_CONFIGURATION: &str = "operator-private-configuration-sentinel";
+
+    let mut fixture = plan_fixture();
+    fixture.interfaces[0].interface.configuration = Some(ValueSchema::String {
+        max_length: 64,
+        syntax: None,
+    });
+    fixture.refresh_interface();
+    let feature = RequiredFeature::new("abilities-v1")?;
+    install_package_with_feature(&mut fixture, feature.clone())?;
+    fixture.context =
+        ValidationContext::new(BTreeSet::from([feature]), fixture.interfaces.clone())?;
+    let package = fixture.binding_inputs.packages[0].content_digest()?;
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    let configuration = AbilityValue::new(serde_json::json!(PRIVATE_CONFIGURATION))?;
+    fixture.binding_inputs.desired_state.instances = vec![DesiredInstance {
+        instance: provider.clone(),
+        package,
+        enabled: true,
+        configuration: Some(configuration.clone()),
+    }];
+    fixture.refresh_commitments();
+
+    let plan = fixture.validate()?;
+    let view = InspectionView::from_checked(&plan)?;
+    assert!(view.nodes().iter().any(|node| {
+        matches!(
+            node,
+            InspectionNode::Provider {
+                id,
+                configuration: Some(observed),
+                ..
+            } if id == &provider && observed == &configuration
+        )
+    }));
+    assert!(render(&view, RenderFormat::Json)?.contains(PRIVATE_CONFIGURATION));
+
+    let bundle = InspectionBundle::from_checked(&plan)?;
+    assert!(
+        std::str::from_utf8(&bundle.canonical_bytes()?)?.contains(PRIVATE_CONFIGURATION),
+        "the deployment bundle must demonstrate that the sentinel reached the disclosure boundary"
+    );
+    let checked = bundle.check(None)?;
+    let timeline = ExecutionTimeline::from_records(
+        TransactionId(LocalKey::new("redacted-configuration-check")?),
+        &plan,
+        PendingStateAvailability::Unavailable,
+        Vec::new(),
+        Vec::new(),
+        TimelineProvenance::UnverifiedRetainedRecords,
+        DiagnosticBundleAudience::Redacted,
+    )?;
+    let redacted = DiagnosticBundle::from_checked(&checked, timeline)?.canonical_bytes()?;
+    assert!(
+        !std::str::from_utf8(&redacted)?.contains(PRIVATE_CONFIGURATION),
+        "redacted diagnostics must not disclose operator-owned instance configuration"
     );
     Ok(())
 }

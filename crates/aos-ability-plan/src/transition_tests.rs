@@ -14,12 +14,13 @@ use crate::test_support::{
 use crate::{
     BindingCandidate, CandidateSelection, CompositionContext, CompositionEvaluator,
     CompositionFragment, EvaluationError, PlanningReplayInputs, PlanningSnapshot,
-    RecursiveComposer, ResolutionPolicyDocument, TRANSITION_FRAGMENT_SCHEMA,
+    RUNTIME_OBSERVATIONS_SCHEMA, RecursiveComposer, ResolutionPolicyDocument,
+    TRANSITION_FRAGMENT_SCHEMA, TRANSITION_SNAPSHOT_SCHEMA, TRANSITION_SNAPSHOT_SCHEMA_V2,
     TransitionBindingAuthority, TransitionContext, TransitionError, TransitionEvaluationResult,
     TransitionExport, TransitionExportKind, TransitionFragment, TransitionHandoff,
     TransitionImport, TransitionImportDirection, TransitionInputs, TransitionLimits,
-    TransitionLink, TransitionPlanner, TransitionReplayInputs, TransitionSnapshot,
-    TransitionSnapshotError, VerifiedPlanningSnapshot,
+    TransitionLink, TransitionPlanner, TransitionReconciliation, TransitionReplayInputs,
+    TransitionSnapshot, TransitionSnapshotError, VerifiedPlanningSnapshot,
 };
 
 struct EmptyTransitionEvaluator {
@@ -71,6 +72,13 @@ fn transition_snapshot_round_trips_and_replays_without_provider_execution() {
         .expect("fixture transition snapshot must encode");
     let snapshot = TransitionSnapshot::decode(&bytes)
         .expect("canonical fixture transition snapshot must decode");
+    let encoded: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("transition snapshot is JSON");
+    assert_eq!(encoded["schema"], TRANSITION_SNAPSHOT_SCHEMA);
+    assert!(
+        encoded.get("reconciliation").is_none(),
+        "historical v1 snapshots must preserve their exact field set"
+    );
     let replayed = snapshot
         .verify_structure(
             &TransitionPlanner::new(&context),
@@ -84,6 +92,187 @@ fn transition_snapshot_round_trips_and_replays_without_provider_execution() {
         .expect("retained transition transcript must reconstruct the graph");
 
     assert_eq!(replayed.effect_plan(), transition.effect_plan());
+    assert_eq!(replayed.snapshot_digest(), transition.snapshot_digest());
+}
+
+#[test]
+fn reconciliation_snapshot_round_trips_and_replays_exact_live_input() {
+    let (context, planning, _) = verified_planning_transition_fixture();
+    let desired_resource = planning
+        .outcome()
+        .desired_state
+        .resources
+        .first()
+        .expect("fixture must expose one desired resource")
+        .clone();
+    let source_plan = PlanId(aos_contract::Sha256Digest::of_bytes("source-noop-plan"));
+    let transaction = TransactionId(LocalKey::new("repair-attempt").unwrap());
+    let policy_fence = RevisionId(aos_contract::Sha256Digest::of_bytes("policy-fence"));
+    let authority_json = serde_json::json!({
+        "schema": "aos.ability.current-authority/v2",
+        "policy_fence": policy_fence,
+        "transaction": transaction,
+        "authority_epoch": 7,
+        "sequence": 11,
+        "observed_at_restart_millis": 23,
+        "max_age_millis": 5_000,
+        "plan": source_plan,
+        "resource_observations": [{
+            "resource": desired_resource.resource,
+            "state": {
+                "state": "stopped",
+                "revision": desired_resource.revision,
+            },
+        }],
+    });
+    let authority_bytes = aos_contract::canonical::to_vec(&authority_json).unwrap();
+    let authority_publication =
+        aos_contract::Sha256Digest::separated("aos.ability.current-authority/v2", authority_bytes);
+    let reconciliation = TransitionReconciliation {
+        schema: RUNTIME_OBSERVATIONS_SCHEMA.to_string(),
+        source_plan,
+        transaction,
+        policy_fence,
+        authority_epoch: 7,
+        sequence: 11,
+        observed_at_restart_millis: 23,
+        max_age_millis: 5_000,
+        authority_publication,
+        authority_document: AbilityValue::new(authority_json).unwrap(),
+        observations: vec![crate::RuntimeResourceObservation {
+            resource: desired_resource.resource,
+            state: crate::RuntimeResourceState::Present {
+                revision: desired_resource.revision,
+                health: crate::RuntimeResourceHealth::Stopped,
+            },
+        }],
+    };
+    let mut evaluator = EmptyTransitionEvaluator::new();
+    let transition = TransitionPlanner::new(&context)
+        .plan(
+            &planning,
+            TransitionInputs {
+                current: Some(&planning),
+                authority: None,
+                reconciliation: Some(&reconciliation),
+            },
+            &mut evaluator,
+        )
+        .expect("bounded live input must produce a linked repair snapshot");
+
+    let bytes = transition.snapshot().canonical_bytes().unwrap();
+    let encoded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(encoded["schema"], TRANSITION_SNAPSHOT_SCHEMA_V2);
+    assert_eq!(
+        transition.snapshot().reconciliation(),
+        Some(&reconciliation)
+    );
+
+    let snapshot = TransitionSnapshot::decode(&bytes).unwrap();
+    let replayed = snapshot
+        .verify_structure(
+            &TransitionPlanner::new(&context),
+            TransitionReplayInputs {
+                expected_digest: transition.snapshot_digest(),
+                desired: &planning,
+                current: Some(&planning),
+                authority: None,
+            },
+        )
+        .expect("repair snapshot must reconstruct from its retained live input");
+
+    assert_eq!(replayed.snapshot_digest(), transition.snapshot_digest());
+    assert_eq!(replayed.snapshot().reconciliation(), Some(&reconciliation));
+
+    let mut tampered = reconciliation;
+    tampered.sequence += 1;
+    let error = TransitionPlanner::new(&context)
+        .plan(
+            &planning,
+            TransitionInputs {
+                current: Some(&planning),
+                authority: None,
+                reconciliation: Some(&tampered),
+            },
+            &mut EmptyTransitionEvaluator::new(),
+        )
+        .expect_err("a changed reconciliation stamp must break its authority link");
+    assert!(error.to_string().contains("authority publication differs"));
+}
+
+#[test]
+fn absent_reconciliation_is_transaction_linked_and_replayable() {
+    let (context, planning, _) = verified_planning_transition_fixture();
+    let desired_resource = planning
+        .outcome()
+        .desired_state
+        .resources
+        .first()
+        .expect("fixture must expose one desired resource")
+        .clone();
+    let source_plan = PlanId(aos_contract::Sha256Digest::of_bytes("absent-source-plan"));
+    let transaction = TransactionId(LocalKey::new("absent-repair").unwrap());
+    let policy_fence = RevisionId(aos_contract::Sha256Digest::of_bytes("policy-fence"));
+    let authority_json = serde_json::json!({
+        "schema": "aos.ability.current-authority/v2",
+        "policy_fence": policy_fence,
+        "transaction": transaction,
+        "authority_epoch": 7,
+        "sequence": 11,
+        "observed_at_restart_millis": 23,
+        "max_age_millis": 5_000,
+        "plan": source_plan,
+        "resource_observations": [{
+            "resource": desired_resource.resource,
+            "state": {"state": "absent"},
+        }],
+    });
+    let authority_bytes = aos_contract::canonical::to_vec(&authority_json).unwrap();
+    let reconciliation = TransitionReconciliation {
+        schema: RUNTIME_OBSERVATIONS_SCHEMA.to_string(),
+        source_plan,
+        transaction,
+        policy_fence,
+        authority_epoch: 7,
+        sequence: 11,
+        observed_at_restart_millis: 23,
+        max_age_millis: 5_000,
+        authority_publication: aos_contract::Sha256Digest::separated(
+            "aos.ability.current-authority/v2",
+            authority_bytes,
+        ),
+        authority_document: AbilityValue::new(authority_json).unwrap(),
+        observations: vec![crate::RuntimeResourceObservation {
+            resource: desired_resource.resource,
+            state: crate::RuntimeResourceState::Absent,
+        }],
+    };
+    let transition = TransitionPlanner::new(&context)
+        .plan(
+            &planning,
+            TransitionInputs {
+                current: Some(&planning),
+                authority: None,
+                reconciliation: Some(&reconciliation),
+            },
+            &mut EmptyTransitionEvaluator::new(),
+        )
+        .expect("absent live state must produce a linked repair snapshot");
+    let bytes = transition.snapshot().canonical_bytes().unwrap();
+    let snapshot = TransitionSnapshot::decode(&bytes).unwrap();
+    let replayed = snapshot
+        .verify_structure(
+            &TransitionPlanner::new(&context),
+            TransitionReplayInputs {
+                expected_digest: transition.snapshot_digest(),
+                desired: &planning,
+                current: Some(&planning),
+                authority: None,
+            },
+        )
+        .expect("absent repair snapshot must replay from retained authority");
+
+    assert_eq!(snapshot.reconciliation(), Some(&reconciliation));
     assert_eq!(replayed.snapshot_digest(), transition.snapshot_digest());
 }
 
@@ -119,6 +308,7 @@ fn provider_receives_scoped_state_observations_and_snapshot_commitments() {
             TransitionInputs {
                 current: None,
                 authority: None,
+                reconciliation: None,
             },
             &mut evaluator,
         )
@@ -151,6 +341,7 @@ fn evaluator_failure_retains_the_exact_failed_exchange() {
             TransitionInputs {
                 current: None,
                 authority: None,
+                reconciliation: None,
             },
             &mut FailingTransitionEvaluator,
         )
@@ -209,6 +400,7 @@ fn removed_provider_uses_sealed_current_policy_authority_and_retains_old_package
             TransitionInputs {
                 current: Some(&current),
                 authority: Some(&authority),
+                reconciliation: None,
             },
             &mut evaluator,
         )
@@ -274,6 +466,7 @@ fn removed_provider_without_current_authority_fails_closed() {
             TransitionInputs {
                 current: Some(&current),
                 authority: None,
+                reconciliation: None,
             },
             &mut EmptyTransitionEvaluator::new(),
         )
@@ -296,6 +489,7 @@ fn transition_replay_rejects_missing_authority_commitment() {
             TransitionInputs {
                 current: Some(&current),
                 authority: Some(&authority),
+                reconciliation: None,
             },
             &mut EmptyTransitionEvaluator::new(),
         )
@@ -337,6 +531,7 @@ fn package_upgrade_stops_old_provider_and_starts_new_provider_through_exact_role
             TransitionInputs {
                 current: Some(&fixture.current),
                 authority: Some(&fixture.authority),
+                reconciliation: None,
             },
             &mut evaluator,
         )
@@ -396,6 +591,7 @@ fn payload_only_upgrade_evaluates_unchanged_implementation_once_and_retains_both
             TransitionInputs {
                 current: Some(&fixture.current),
                 authority: Some(&fixture.authority),
+                reconciliation: None,
             },
             &mut evaluator,
         )
@@ -407,6 +603,165 @@ fn payload_only_upgrade_evaluates_unchanged_implementation_once_and_retains_both
     assert!(artifacts.contains(&fixture.old_payload));
     assert!(artifacts.contains(&fixture.new_payload));
     assert_ne!(fixture.old_package, fixture.new_package);
+}
+
+#[test]
+fn retained_parent_receives_only_fresh_outgoing_teardown_authority() {
+    let fixture = lifecycle_upgrade_fixture(true);
+    let outgoing_source = fixture
+        .current
+        .checked_binding()
+        .bindings()
+        .iter()
+        .find(|binding| binding.request.consumer == fixture.service)
+        .expect("retained parent must have an outgoing source binding");
+    let outgoing_authority =
+        focused_lifecycle_authority(&fixture, &fixture.current, &outgoing_source.id);
+
+    let mut authorized = EmptyTransitionEvaluator::new();
+    TransitionPlanner::new(&fixture.context)
+        .plan(
+            &fixture.current,
+            TransitionInputs {
+                current: Some(&fixture.current),
+                authority: Some(&outgoing_authority),
+                reconciliation: None,
+            },
+            &mut authorized,
+        )
+        .expect("retained parent must receive fresh outgoing teardown authority");
+    let parent = authorized
+        .contexts
+        .iter()
+        .find(|context| context.provider == fixture.service)
+        .expect("retained parent transition context");
+    assert!(parent.authorized_bindings.iter().any(|binding| {
+        matches!(
+            binding.authority,
+            TransitionBindingAuthority::Teardown { .. }
+        )
+    }));
+
+    let mut missing = EmptyTransitionEvaluator::new();
+    TransitionPlanner::new(&fixture.context)
+        .plan(
+            &fixture.current,
+            TransitionInputs {
+                current: Some(&fixture.current),
+                authority: None,
+                reconciliation: None,
+            },
+            &mut missing,
+        )
+        .expect("an unchanged retained plan must remain valid without teardown authority");
+    let parent = missing
+        .contexts
+        .iter()
+        .find(|context| context.provider == fixture.service)
+        .expect("retained parent transition context");
+    assert!(parent.authorized_bindings.iter().all(|binding| {
+        !matches!(
+            binding.authority,
+            TransitionBindingAuthority::Teardown { .. }
+        )
+    }));
+
+    let foreign_source = fixture
+        .current
+        .checked_binding()
+        .bindings()
+        .iter()
+        .find(|binding| {
+            binding.provider == fixture.service && binding.request.consumer != fixture.service
+        })
+        .expect("retained parent must have a foreign-consumer source binding");
+    let foreign_authority =
+        focused_lifecycle_authority(&fixture, &fixture.current, &foreign_source.id);
+    let mut foreign = EmptyTransitionEvaluator::new();
+    TransitionPlanner::new(&fixture.context)
+        .plan(
+            &fixture.current,
+            TransitionInputs {
+                current: Some(&fixture.current),
+                authority: Some(&foreign_authority),
+                reconciliation: None,
+            },
+            &mut foreign,
+        )
+        .expect("foreign-consumer teardown authority may select the retained group");
+    let parent = foreign
+        .contexts
+        .iter()
+        .find(|context| context.provider == fixture.service)
+        .expect("retained parent transition context");
+    assert!(parent.authorized_bindings.iter().all(|binding| {
+        !matches!(
+            binding.authority,
+            TransitionBindingAuthority::Teardown { .. }
+        )
+    }));
+
+    let replacement_authority =
+        focused_lifecycle_authority(&fixture, &fixture.desired, &outgoing_source.id);
+    let error = TransitionPlanner::new(&fixture.context)
+        .plan(
+            &fixture.desired,
+            TransitionInputs {
+                current: Some(&fixture.current),
+                authority: Some(&replacement_authority),
+                reconciliation: None,
+            },
+            &mut EmptyTransitionEvaluator::new(),
+        )
+        .expect_err("outgoing-only authority must not authorize a package replacement");
+    assert!(matches!(
+        error,
+        TransitionError::MissingTeardownAuthority { provider }
+            if provider == fixture.service
+    ));
+}
+
+fn focused_lifecycle_authority(
+    fixture: &LifecycleUpgradeFixture,
+    desired: &VerifiedPlanningSnapshot,
+    source_binding: &BindingId,
+) -> aos_ability_validate::CheckedTransitionAuthority {
+    let authorization = fixture
+        .authority
+        .document()
+        .teardown_bindings
+        .iter()
+        .find(|entry| entry.source_binding == *source_binding)
+        .expect("fixture authority must remap the selected source binding")
+        .clone();
+    let desired_policy_revision = desired.checked_binding().document().policy_revision;
+    let prior_policy_revision = fixture.current.checked_binding().document().policy_revision;
+    let mut document = fixture.authority.document().clone();
+    document.desired_planning = desired.snapshot_digest();
+    document.current_planning = fixture.current.snapshot_digest();
+    document.desired_policy_revision = desired_policy_revision;
+    document.prior_policy_revision = prior_policy_revision;
+    document.authorization_policy_revision = desired_policy_revision;
+    document.teardown_bindings = vec![authorization];
+    document.teardown_providers.clear();
+    let digest = document
+        .content_digest()
+        .expect("focused teardown authority must digest");
+
+    fixture
+        .context
+        .validate_transition_authority(
+            document,
+            TransitionAuthorityInputs {
+                expected_digest: digest,
+                desired_planning: desired.snapshot_digest(),
+                current_planning: fixture.current.snapshot_digest(),
+                authorization_policy_revision: desired_policy_revision,
+                desired: desired.checked_binding(),
+                current: fixture.current.checked_binding(),
+            },
+        )
+        .expect("focused teardown authority must validate")
 }
 
 #[test]
@@ -426,6 +781,7 @@ fn disabled_operator_enabled_root_stops_through_fresh_lower_binding_and_retains_
             TransitionInputs {
                 current: Some(&fixture.current),
                 authority: Some(&fixture.authority),
+                reconciliation: None,
             },
             &mut evaluator,
         )
@@ -1431,6 +1787,7 @@ fn lifecycle_planning_snapshot(
             instance: service.clone(),
             package: pure_package_digest,
             enabled: true,
+            configuration: None,
         }],
         contributions: Vec::new(),
         child_requests,
@@ -1672,6 +2029,7 @@ fn checked_boundaries_construct_prepare_validate_publish_start_pipeline() {
             TransitionInputs {
                 current: None,
                 authority: None,
+                reconciliation: None,
             },
             &mut evaluator,
         )
@@ -2167,21 +2525,25 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
                 instance: configuration.clone(),
                 package: pure_package_digest,
                 enabled: true,
+                configuration: None,
             },
             DesiredInstance {
                 instance: root.clone(),
                 package: pure_package_digest,
                 enabled: true,
+                configuration: None,
             },
             DesiredInstance {
                 instance: service.clone(),
                 package: pure_package_digest,
                 enabled: true,
+                configuration: None,
             },
             DesiredInstance {
                 instance: terminal.clone(),
                 package: terminal_package_digest,
                 enabled: true,
+                configuration: None,
             },
         ],
         contributions: Vec::new(),

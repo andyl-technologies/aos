@@ -31,14 +31,16 @@ pub use snapshot::{
     PlanningSnapshotError, ResolutionSnapshot, VerifiedPlanningSnapshot,
 };
 pub use transition::{
-    AuthorizedTransitionBinding, ResourceChange, ResourceChangeKind, ScopedDesiredState,
-    ScopedObservations, TRANSITION_CONTEXT_SCHEMA, TRANSITION_FRAGMENT_SCHEMA,
-    TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA, TransitionBindingAuthority,
-    TransitionContext, TransitionError, TransitionEvaluation, TransitionEvaluationResult,
-    TransitionExport, TransitionExportKind, TransitionFragment, TransitionHandoff,
-    TransitionImport, TransitionImportDirection, TransitionInputs, TransitionLimits,
-    TransitionLink, TransitionPlanner, TransitionReplayInputs, TransitionSnapshot,
-    TransitionSnapshotError, VerifiedTransitionPlan,
+    AuthorizedTransitionBinding, RUNTIME_OBSERVATIONS_SCHEMA, ResourceChange, ResourceChangeKind,
+    RuntimeResourceHealth, RuntimeResourceObservation, RuntimeResourceState, ScopedDesiredState,
+    ScopedObservations, TRANSITION_CONTEXT_SCHEMA, TRANSITION_CONTEXT_SCHEMA_V2,
+    TRANSITION_FRAGMENT_SCHEMA, TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA,
+    TRANSITION_SNAPSHOT_SCHEMA_V2, TransitionBindingAuthority, TransitionContext, TransitionError,
+    TransitionEvaluation, TransitionEvaluationResult, TransitionExport, TransitionExportKind,
+    TransitionFragment, TransitionHandoff, TransitionImport, TransitionImportDirection,
+    TransitionInputs, TransitionLimits, TransitionLink, TransitionPlanner,
+    TransitionReconciliation, TransitionReplayInputs, TransitionSnapshot, TransitionSnapshotError,
+    VerifiedTransitionPlan,
 };
 
 #[cfg(test)]

@@ -581,7 +581,18 @@ impl<'plan> ExecutionTransaction<'plan> {
         resolve_result_json(&self.replay, reference, self.replay.next_sequence)
     }
 
-    pub(crate) fn provider_assignment_for(
+    /// Resolves the checked readiness output for an operation using a planned provider.
+    ///
+    /// The returned assignment is derived only from a durably completed
+    /// readiness producer and is revalidated against the exact planned
+    /// binding. Operations using an already available provider return `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `operation` is foreign, readiness has not
+    /// completed, its typed output is missing, or the assignment names another
+    /// provider, interface, or implementation.
+    pub fn provider_assignment_for(
         &self,
         operation: &ScopedOperationKey,
     ) -> Result<Option<aos_ability_model::ProviderAssignment>, TransactionError> {

@@ -8,11 +8,11 @@ use std::fs::File;
 use std::io::{Read as _, Seek as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::OpenOptionsExt as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use aos_release::digest::Sha256Digest;
-use rustix::fs::{Mode, OFlags, open};
+use rustix::fs::{Mode, OFlags, open, openat};
 use sha2::{Digest as _, Sha256};
 
 use crate::assembly::{AssemblyFileKind, AssemblyFileV1, AssemblyToolV1, UnsignedImageAssemblyV1};
@@ -160,7 +160,57 @@ pub fn digest_regular_file(path: &Path) -> Result<(u64, Sha256Digest)> {
         Mode::empty(),
     )
     .with_context(|| format!("opening regular file {}", path.display()))?;
-    let mut file = File::from(descriptor);
+    digest_opened_regular_file(File::from(descriptor))
+}
+
+/// Computes a SHA-256 identity while refusing links in every path component.
+///
+/// # Errors
+///
+/// Returns an error when `relative` is empty or nonrelative, any parent is not
+/// a real directory beneath `root`, the leaf is linked or special, or the file
+/// changes while it is hashed.
+pub fn digest_regular_file_beneath(root: &Path, relative: &Path) -> Result<(u64, Sha256Digest)> {
+    let root_descriptor = open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("opening confined directory {}", root.display()))?;
+    let mut directory = File::from(root_descriptor);
+    let mut components = relative.components().peekable();
+    if components.peek().is_none() {
+        bail!("confined digest path must be a nonempty relative path");
+    }
+
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            bail!("confined digest path must contain only normal components");
+        };
+        if components.peek().is_none() {
+            let descriptor = openat(
+                &directory,
+                name,
+                OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .with_context(|| format!("opening confined file {}", relative.display()))?;
+            return digest_opened_regular_file(File::from(descriptor));
+        }
+
+        let descriptor = openat(
+            &directory,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .with_context(|| format!("opening confined parent for {}", relative.display()))?;
+        directory = File::from(descriptor);
+    }
+    bail!("confined digest path has no file component")
+}
+
+fn digest_opened_regular_file(mut file: File) -> Result<(u64, Sha256Digest)> {
     let before = file.metadata()?;
     if !before.is_file() || before.nlink() != 1 {
         bail!("digest input must be a single-link regular file");
@@ -234,6 +284,7 @@ fn same_snapshot(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::symlink;
 
     use aos_release::artifact::BundlePath;
     use aos_release::platform::Platform;
@@ -253,6 +304,41 @@ mod tests {
         fs::write(temporary.path().join("kernel"), b"changed")?;
         assert!(
             VerifiedInput::open(temporary.path(), &assembly, AssemblyFileKind::Kernel).is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn confined_digest_rejects_a_symlinked_parent() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let tree = temporary.path().join("tree");
+        let outside = temporary.path().join("outside");
+        fs::create_dir(&tree)?;
+        fs::create_dir(&outside)?;
+        fs::write(outside.join("contract.json"), b"contract")?;
+        symlink(&outside, tree.join("usr"))?;
+
+        assert!(
+            digest_regular_file_beneath(&tree, Path::new("usr/contract.json")).is_err(),
+            "a parent link must not escape the extracted tree"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn confined_digest_rejects_a_fifo_without_blocking() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let tree = temporary.path().join("tree");
+        fs::create_dir(&tree)?;
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            tree.join("contract.json"),
+            Mode::RUSR | Mode::WUSR,
+        )?;
+
+        assert!(
+            digest_regular_file_beneath(&tree, Path::new("contract.json")).is_err(),
+            "a FIFO must be rejected as a special file"
         );
         Ok(())
     }

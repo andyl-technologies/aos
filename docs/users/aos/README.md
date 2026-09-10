@@ -88,6 +88,9 @@ consumption, and on-host activation as distinct installed capabilities.
 
 - [Package an application for AOS](package-authoring.md) follows a service from
   its derivation through image inclusion, registry publication, and upgrade.
+- [Inspect ability plans and retained execution](ability-inspection.md) covers
+  offline checked graphs, private operator views, retained diagnostics, and
+  realized artifact-consumption evidence.
 - Package and service configuration is generated from each package's Nix
   interface and signed runtime contract. Use `apm docs`, `apm options`, the
   offline `apm docs serve` browser, or the package documentation workspace in

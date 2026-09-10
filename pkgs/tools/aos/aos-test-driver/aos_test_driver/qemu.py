@@ -762,6 +762,60 @@ class QemuMachine(Machine):
         )
         self.agent.wait_ready(deadline)
 
+    def power_cycle(self, timeout: float = 600.0) -> None:
+        """Cut power to QEMU and boot again from the same writable disks.
+
+        The method kills the owned QEMU process with ``SIGKILL`` without
+        asking the guest to stop, closes stale transport state, and relaunches
+        against the already prepared per-run artifacts. It is intended for
+        crash-consistency tests that must cross a real unclean power boundary.
+
+        Raises:
+            RuntimeError: If the machine is not running, uses a vTPM, QEMU
+                cannot be killed, or the guest agent does not return before
+                the deadline.
+        """
+        if self.tpm:
+            raise RuntimeError(
+                f"[{self.name}] hard power cycling a vTPM machine is unsupported"
+            )
+        if self.qemu_proc is None or self.qemu_proc.poll() is not None:
+            raise RuntimeError(f"[{self.name}] power cycle requires running QEMU")
+
+        deadline = time.monotonic() + timeout
+        previous_qemu = self.qemu_proc
+        previous_pid = previous_qemu.pid
+        log.info("==> Cutting power to machine: %s (QEMU pid %s)", self.name, previous_pid)
+
+        self.agent.close()
+        previous_qemu.kill()
+        try:
+            remaining = max(0.0, deadline - time.monotonic())
+            previous_qemu.wait(timeout=min(remaining, 30.0))
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"[{self.name}] QEMU pid {previous_pid} survived SIGKILL"
+            ) from None
+
+        self._stop_serial_bridge()
+        if self._qemu_log_fd is not None:
+            self._qemu_log_fd.close()
+            self._qemu_log_fd = None
+
+        log.info(
+            "[%s] unclean QEMU exit recorded (pid %s, code %s)",
+            self.name,
+            previous_pid,
+            previous_qemu.returncode,
+        )
+        self._launch()
+        log.info(
+            "[%s] relaunched QEMU after power loss (pid %s); waiting for agent",
+            self.name,
+            self.qemu_proc.pid if self.qemu_proc else "?",
+        )
+        self.agent.wait_ready(deadline)
+
     def reboot_without_metadata(self, timeout: float = 600.0) -> None:
         """Reboot after detaching the optional metadata ISO.
 

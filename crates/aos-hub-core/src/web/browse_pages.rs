@@ -1162,6 +1162,8 @@ pub fn package_page(
     documentation_unavailable: bool,
     ability_reference: Option<&super::ability_reference_page::PackageAbilityReferencePanel>,
     ability_reference_unavailable: bool,
+    ability_deployments: Option<&[super::ability_reference_page::PackageAbilityDeploymentPanel]>,
+    ability_deployments_unavailable: bool,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1345,6 +1347,8 @@ pub fn package_page(
         slug,
         ability_reference,
         ability_reference_unavailable,
+        ability_deployments,
+        ability_deployments_unavailable,
     ));
 
     body.push_str(
@@ -3546,6 +3550,8 @@ mod tests {
             false,
             None,
             false,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3563,6 +3569,8 @@ mod tests {
             std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
+            None,
+            false,
             None,
             false,
             None,
@@ -3620,6 +3628,8 @@ mod tests {
             std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
+            None,
+            false,
             None,
             false,
             None,
@@ -3699,6 +3709,8 @@ mod tests {
             false,
             None,
             false,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3734,6 +3746,8 @@ mod tests {
             &[],
             &setup,
             &release_context("1.0.0"),
+            None,
+            false,
             None,
             false,
             None,
@@ -3777,6 +3791,8 @@ mod tests {
             &setup,
             &release_context("1.0.0"),
             Some(&reference),
+            false,
+            None,
             false,
             None,
             false,

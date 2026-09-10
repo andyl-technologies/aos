@@ -20,9 +20,9 @@ use std::io::{self, Write};
 
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
-    AbilityActivationMode, AccessMode, AggregateId, ArtifactReference, AuthorityRole, BindingId,
-    BindingSource, DependencyKind, InstanceId, InterfaceDescriptor, InterfaceKey, LocalKey,
-    OperationFamily, OperationPhase, PlanId, PlanNodeKey, RecoveryContract, RequestId,
+    AbilityActivationMode, AbilityValue, AccessMode, AggregateId, ArtifactReference, AuthorityRole,
+    BindingId, BindingSource, DependencyKind, InstanceId, InterfaceDescriptor, InterfaceKey,
+    LocalKey, OperationFamily, OperationPhase, PlanId, PlanNodeKey, RecoveryContract, RequestId,
     RequiredFeature, ResourceId, ResourceLifetime, RevisionId, ScopedOperationKey, ValueExpression,
     ValueSchema, VersionedDocument,
 };
@@ -145,7 +145,11 @@ pub enum ProviderAvailability {
     Unknown,
 }
 
-/// Carries typed, redacted details for one stable inspection node.
+/// Carries typed details for one stable deployment inspection node.
+///
+/// Request and effect values remain redacted. Provider nodes retain the
+/// operator-owned instance configuration needed to inspect the checked desired
+/// deployment, so callers must authorize disclosure of the resulting view.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InspectionNode {
@@ -211,6 +215,10 @@ pub enum InspectionNode {
         id: InstanceId,
         /// Classifies only the evidence retained by the checked plan.
         availability: ProviderAvailability,
+        /// Carries the operator-owned, checked literal configuration from the
+        /// desired instance.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configuration: Option<AbilityValue>,
     },
     /// Describes one shared provider-owned aggregate.
     Aggregate {
@@ -388,7 +396,10 @@ pub struct InspectionEdge {
     pub relation: InspectionRelation,
 }
 
-/// Owns a deterministic, redacted projection of one checked deployment plan.
+/// Owns a deterministic operator projection of one checked deployment plan.
+///
+/// This view includes operator-owned provider instance configuration. A
+/// frontend must enforce deployment access before disclosing it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InspectionView {
@@ -403,7 +414,10 @@ pub struct InspectionView {
 }
 
 impl InspectionView {
-    /// Projects an in-memory checked plan into the shared portable view.
+    /// Projects an in-memory checked plan into the shared operator view.
+    ///
+    /// The result includes operator-owned provider instance configuration.
+    /// Callers must authorize its disclosure as deployment data.
     ///
     /// # Errors
     ///
@@ -414,6 +428,9 @@ impl InspectionView {
     }
 
     /// Projects a checked portable bundle and preserves its exact anchor status.
+    ///
+    /// The result includes operator-owned provider instance configuration.
+    /// Callers must authorize its disclosure as deployment data.
     ///
     /// # Errors
     ///
@@ -1148,11 +1165,19 @@ fn insert_provider(
                 .then_some(ProviderAvailability::Planned)
         })
         .unwrap_or(ProviderAvailability::PureComposition);
+    let configuration = plan
+        .binding_plan()
+        .desired_state()
+        .instances
+        .iter()
+        .find(|desired| &desired.instance == provider)
+        .and_then(|desired| desired.configuration.clone());
     insert_node(
         nodes,
         InspectionNode::Provider {
             id: provider.clone(),
             availability,
+            configuration,
         },
     );
 }

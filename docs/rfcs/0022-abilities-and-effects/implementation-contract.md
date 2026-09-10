@@ -22,10 +22,10 @@ and a closed body. Define these initial format families, each at version 1:
 
 | Format | Required body concepts |
 | --- | --- |
-| `aos.ability.interface/v1` | Interface key, request/output schema, method schemas, lifecycle and guarantee semantics |
+| `aos.ability.interface/v1` | Interface key, request/output schema, optional provider-instance configuration schema, method schemas, lifecycle and guarantee semantics |
 | `aos.ability.package/v1` | Exact release/artifact references, exports, declarative requirements, module entry points, handler catalog, ownership |
 | `aos.ability.environment/v1` | Environment/stage identity, provider inventory, platform, policy revision, guarantees, freshness conditions |
-| `aos.ability.desired/v1` | Instances, admitted contributions, expanded child requests, desired resources, typed outputs, controller assignments |
+| `aos.ability.desired/v1` | Instances with operator-owned configuration where declared, admitted contributions, expanded child requests, desired resources, typed outputs, controller assignments |
 | `aos.ability.binding-plan/v1` | Input identities, exact provider choices, grants, resources, obligations, policy and environment commitments |
 | `aos.ability.effect-plan/v1` | Binding-plan identity, current/desired revisions, operation graph, resource accesses, deadlines, recovery and retention obligations |
 | `aos.ability.execution/v1` | Transaction identity, exact plan/artifacts, operation attempts, publication receipts, observations, terminal result |
@@ -221,6 +221,20 @@ Contributions are keyed by authorized slot and normalized in stable key order.
 Exclusive-slot collisions fail. Merging the same slot is permitted only when
 the interface defines field-level ownership and merge rules; import order is
 never the tie-breaker. Retain source/consumer provenance through the merge.
+
+An interface may declare one closed configuration schema for each enabled
+provider instance. The desired instance carries that operator-owned value, and
+the engine validates it against the exact selected interface before invoking
+the pure provider. Configuration schemas contain bounded evaluation literals
+only; nested resource, artifact, provider-assignment, and operation-result
+references fail interface validation because their authority remains in
+explicit bindings. A declared configuration is required while that provider is
+enabled; an interface without the declaration rejects one. Consumer
+contributions cannot supply, replace, or remove instance configuration.
+Disabled instances may retain the value for later re-enablement without
+evaluating the provider. Omitting both optional fields preserves the original
+version-1 encoding and identity; readers that do not implement the extension
+reject configured documents as unsupported closed-record fields.
 
 Legacy single-root packages initially map to a stable `default` instance.
 Unqualified legacy contributions route only to that instance. Additional

@@ -160,6 +160,24 @@ impl NativeQualifiedResource {
         )
     }
 
+    /// Qualifies one Kubernetes API object selected by its trusted catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `canonical_object` is empty, oversized, contains
+    /// control characters, or does not fit the native resource ledger contract.
+    pub(crate) fn kubernetes_object(
+        logical: ResourceId,
+        canonical_object: &str,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        Self::new(
+            logical,
+            "kubernetes-object",
+            "kubernetes-api",
+            canonical_object,
+        )
+    }
+
     fn new(
         logical: ResourceId,
         class: &str,
@@ -211,6 +229,18 @@ impl NativePhysicalResource {
             }
             ("nginx-validation-prefix", "nginx-runtime") => {
                 validate_catalog_object(&self.object, "nginx validation prefix")?;
+            }
+            ("kubernetes-object", "kubernetes-api") => {
+                if !self.object.starts_with("cluster=")
+                    || !self.object.contains(";apiVersion=")
+                    || !self.object.contains(";kind=")
+                    || !self.object.contains(";namespace=")
+                    || !self.object.contains(";name=")
+                {
+                    return Err(GenerationAbilityStoreError::Conflict(
+                        "native Kubernetes object identity is not canonical".to_string(),
+                    ));
+                }
             }
             _ => {
                 return Err(GenerationAbilityStoreError::Conflict(
@@ -1229,5 +1259,31 @@ mod no_op_tests {
         )
         .expect_err("an old consumer cannot stand in for a newly loaded revision");
         assert!(error.to_string().contains("directly observed resource"));
+    }
+
+    #[test]
+    fn retained_resource_without_consumer_proof_does_not_claim_a_consumer_revision() {
+        let root = tempfile::tempdir().expect("temporary profile");
+        let generation = root.path().join("gen-1");
+        std::fs::create_dir(&generation).expect("generation directory");
+        let plan = checked_systemd_manager_effect_plan();
+        let operation = &plan.operations()[0];
+        let observation = NativeNoOpResourceObservation {
+            qualified: NativeQualifiedResource::systemd(
+                operation.target.resource.clone(),
+                "/org/freedesktop/systemd1/unit/k3s_2eservice",
+            )
+            .expect("qualified K3s resource"),
+            revision: plan.document().desired_revisions[0].revision,
+            requires_consumer: false,
+        };
+
+        verify_retained_native_consumers(
+            &generation,
+            &TransactionId(LocalKey::new("activate").expect("transaction")),
+            plan.id(),
+            &[observation],
+        )
+        .expect("resource-only no-op evidence does not invent a consumer");
     }
 }

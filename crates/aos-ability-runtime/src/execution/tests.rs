@@ -29,7 +29,8 @@ use crate::adapter::{
     TrustedRootStore,
 };
 use crate::execution::{
-    AdmissionError, CheckedExecutionJournalSnapshot, ExecutionError, ExecutionEvent,
+    AdmissionError, CheckedExecutionJournalSnapshot, ExecutionBoundaryControl,
+    ExecutionBoundaryObservation, ExecutionBoundaryObserver, ExecutionError, ExecutionEvent,
     ExecutionEventKind, ExecutionStep, ExecutionTransaction, OperationState, OperationStatus,
     RecoveryAction, ResourceReleaseError, TerminalResult, TrustedAdmissionPolicy,
 };
@@ -987,6 +988,137 @@ fn reopened_indeterminate_effect_authorizes_only_reconciliation_and_preserves_bu
         }
     );
     Ok(())
+}
+
+#[test]
+fn boundary_halt_after_real_effect_reopens_into_fresh_reconciliation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_recovery_plan())?;
+    let mut store = TestStore;
+    let mut catalog = TestCatalog::default();
+    let mut policy = RecordingPolicy::default();
+    let publication = fixture.directory.path().join("published.json");
+    let mut adapter = PublishingAdapter::new(publication.clone());
+    let mut transaction = fixture.open(&mut store)?;
+    let admitted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &TestClock,
+        )
+        .map_err(admission_error)?;
+    let transaction_id = admitted.transaction().clone();
+    let operation_id = admitted.operation_id().clone();
+    let mut observer = HaltAfterEffectReturn::default();
+
+    let error = transaction
+        .drive_admitted_with_observer(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+            &mut observer,
+        )
+        .expect_err("the boundary observer must halt before outcome persistence");
+    assert!(matches!(
+        error,
+        ExecutionError::BoundaryHalt(crate::execution::Boundary::EffectReturned)
+    ));
+    assert!(publication.is_file());
+    assert_eq!(adapter.execute_calls, 1);
+    assert_eq!(
+        observer.effect_returned,
+        Some((transaction_id, operation_id))
+    );
+    drop(admitted);
+    drop(transaction);
+
+    let recovered_adapter =
+        reconcile_published_effect(&fixture, &mut store, &mut catalog, &mut policy, publication)?;
+    assert_eq!(adapter.execute_calls, 1);
+    assert_eq!(recovered_adapter.execute_calls, 0);
+    assert_eq!(recovered_adapter.reconcile_calls, 1);
+    Ok(())
+}
+
+#[test]
+fn boundary_source_error_survives_and_reopens_into_fresh_reconciliation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_recovery_plan())?;
+    let mut store = TestStore;
+    let mut catalog = TestCatalog::default();
+    let mut policy = RecordingPolicy::default();
+    let publication = fixture.directory.path().join("published.json");
+    let mut adapter = PublishingAdapter::new(publication.clone());
+    let mut transaction = fixture.open(&mut store)?;
+    let admitted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &TestClock,
+        )
+        .map_err(admission_error)?;
+    let mut observer = ErrorAfterEffectReturn;
+
+    let error = transaction
+        .drive_admitted_with_observer(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+            &mut observer,
+        )
+        .expect_err("the injected observer error must fail closed");
+    let ExecutionError::BoundaryObservation(source) = error else {
+        return Err("observer source error lost its execution classification".into());
+    };
+    assert!(source.downcast_ref::<InjectedBoundaryError>().is_some());
+    assert!(publication.is_file());
+    assert_eq!(adapter.execute_calls, 1);
+    drop(admitted);
+    drop(transaction);
+
+    let recovered_adapter =
+        reconcile_published_effect(&fixture, &mut store, &mut catalog, &mut policy, publication)?;
+    assert_eq!(adapter.execute_calls, 1);
+    assert_eq!(recovered_adapter.execute_calls, 0);
+    assert_eq!(recovered_adapter.reconcile_calls, 1);
+    Ok(())
+}
+
+fn reconcile_published_effect(
+    fixture: &RuntimeFixture,
+    store: &mut TestStore,
+    catalog: &mut TestCatalog,
+    policy: &mut RecordingPolicy,
+    publication: std::path::PathBuf,
+) -> Result<PublishingAdapter, Box<dyn std::error::Error>> {
+    let mut adapter = PublishingAdapter::new(publication);
+    let mut recovered = fixture.open(store)?;
+    let admitted = recovered
+        .admit(fixture.operation(), &adapter, catalog, policy, &TestClock)
+        .map_err(admission_error)?;
+    assert_eq!(admitted.invocation_purpose(), InvocationPurpose::Reconcile);
+    assert_eq!(
+        recovered.drive_admitted(
+            &admitted,
+            &mut adapter,
+            policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Completed
+    );
+    recovered
+        .release_admitted::<PublishingAdapter, _, _>(admitted, catalog, &TestClock)
+        .map_err(release_error)?;
+    Ok(adapter)
 }
 
 #[test]
@@ -2434,6 +2566,161 @@ impl AdapterRecord for TestRecord {
 impl AdapterCompletion for TestRecord {
     fn outputs(&self) -> &BTreeMap<LocalKey, AbilityValue> {
         &self.outputs
+    }
+}
+
+#[derive(Default)]
+struct HaltAfterEffectReturn {
+    effect_returned: Option<(TransactionId, OperationId)>,
+}
+
+impl ExecutionBoundaryObserver for HaltAfterEffectReturn {
+    fn observe(
+        &mut self,
+        observation: ExecutionBoundaryObservation<'_>,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        if observation.boundary() == crate::execution::Boundary::EffectReturned {
+            self.effect_returned = Some((
+                observation.transaction().clone(),
+                observation.operation().clone(),
+            ));
+            Ok(ExecutionBoundaryControl::Halt)
+        } else {
+            Ok(ExecutionBoundaryControl::Continue)
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("injected execution boundary observer failure")]
+struct InjectedBoundaryError;
+
+struct ErrorAfterEffectReturn;
+
+impl ExecutionBoundaryObserver for ErrorAfterEffectReturn {
+    fn observe(
+        &mut self,
+        observation: ExecutionBoundaryObservation<'_>,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        if observation.boundary() == crate::execution::Boundary::EffectReturned {
+            Err(anyhow::Error::new(InjectedBoundaryError))
+        } else {
+            Ok(ExecutionBoundaryControl::Continue)
+        }
+    }
+}
+
+struct PublishingAdapter {
+    publication: std::path::PathBuf,
+    execute_calls: usize,
+    reconcile_calls: usize,
+}
+
+impl PublishingAdapter {
+    fn new(publication: std::path::PathBuf) -> Self {
+        Self {
+            publication,
+            execute_calls: 0,
+            reconcile_calls: 0,
+        }
+    }
+}
+
+impl TrustedAdapter for PublishingAdapter {
+    type Request = AbilityValue;
+    type Completion = TestRecord;
+    type Observation = TestRecord;
+    type Handle = String;
+    type PrepareError = io::Error;
+
+    fn authenticates(
+        &self,
+        _implementation: &aos_ability_model::ProviderImplementationReference,
+        _method: &MethodReference,
+        _purpose: InvocationPurpose,
+    ) -> bool {
+        true
+    }
+
+    fn supports_compensation(&self) -> bool {
+        false
+    }
+
+    fn prepare_durable(
+        &self,
+        _operation: &Operation,
+        inputs: &AbilityValue,
+        _resources: &[ResourceHandle<Self::Handle>],
+    ) -> Result<AbilityValue, Self::PrepareError> {
+        Ok(inputs.clone())
+    }
+
+    fn recover_request(
+        &self,
+        durable: &AbilityValue,
+        _resources: &[ResourceHandle<Self::Handle>],
+    ) -> Result<Self::Request, Self::PrepareError> {
+        Ok(durable.clone())
+    }
+
+    fn execute(
+        &mut self,
+        request: &Self::Request,
+        _control: &dyn RuntimeControl,
+    ) -> EffectDisposition<Self::Completion, Self::Observation> {
+        self.execute_calls += 1;
+        let Ok(bytes) = aos_contract::canonical::to_vec(request.as_json()) else {
+            return EffectDisposition::Indeterminate(TestRecord {
+                evidence: ability(false),
+                outputs: BTreeMap::new(),
+            });
+        };
+        if std::fs::write(&self.publication, bytes).is_err() {
+            return EffectDisposition::Indeterminate(TestRecord {
+                evidence: ability(false),
+                outputs: BTreeMap::new(),
+            });
+        }
+        EffectDisposition::Completed(TestRecord {
+            evidence: ability(true),
+            outputs: BTreeMap::from([(key("ready"), ability(true))]),
+        })
+    }
+
+    fn reconcile(
+        &mut self,
+        request: &Self::Request,
+        _control: &dyn RuntimeControl,
+    ) -> ReconcileDisposition<Self::Completion, Self::Observation> {
+        self.reconcile_calls += 1;
+        let expected = aos_contract::canonical::to_vec(request.as_json());
+        let publication_matches = expected.ok().is_some_and(|expected| {
+            std::fs::read(&self.publication).is_ok_and(|published| published == expected)
+        });
+        if publication_matches {
+            ReconcileDisposition::Completed(TestRecord {
+                evidence: ability(true),
+                outputs: BTreeMap::from([(key("ready"), ability(true))]),
+            })
+        } else {
+            ReconcileDisposition::SafeToRetry(TestRecord {
+                evidence: ability(false),
+                outputs: BTreeMap::new(),
+            })
+        }
+    }
+
+    fn cancel(
+        &mut self,
+        _request: &Self::Request,
+        _control: &dyn RuntimeControl,
+    ) -> CancellationDisposition<Self::Completion, Self::Observation> {
+        CancellationDisposition::Indeterminate(TestRecord {
+            evidence: ability(false),
+            outputs: BTreeMap::new(),
+        })
     }
 }
 

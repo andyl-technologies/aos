@@ -22,6 +22,9 @@
 ##!   8. The output of `generateUnits` for the rendered initrd units —
 ##!      `boot.initrd.systemd.services` etc. resolved through the stage-1
 ##!      ToUnit renderers.
+##!   9. The canonical initrd-stage static ability contract. It carries
+##!      package declarations and unresolved early-boot obligations, but no
+##!      runtime grants.
 ##!
 ##! Arguments:
 ##!   pkgs          — AOS package set
@@ -55,6 +58,23 @@
   validateBootIdentity ? false,
   keepBinutils ? false,
 }: let
+  buildPkgs = pkgs.buildPackages;
+  oci = import ../../lib/build/oci {
+    inherit lib;
+    inherit (buildPkgs) mkDerivation coreutils findutils gzip jq tar;
+  };
+  bootPlatform =
+    if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
+    then {
+      os = "linux";
+      architecture = "amd64";
+    }
+    else if pkgs.stdenv.hostPlatform.system == "aarch64-linux"
+    then {
+      os = "linux";
+      architecture = "arm64";
+    }
+    else throw "initrd static ability contracts require a supported Linux image platform";
   inherit
     (pkgs)
     bash
@@ -98,6 +118,28 @@
     # Feature-specific closures injected by modules (e.g. the measured-boot
     # PCR-policy public key — RFC-0006 phase 3).
     ++ initrdExtraPackages;
+  uniqueInitrdPackages = lib.unique initrdPackages;
+  initrdAbilityPackages =
+    builtins.filter (
+      package:
+        builtins.isAttrs package
+        && package ? abilities
+        && (package.abilities.passthru.abilityPackage or false)
+    )
+    uniqueInitrdPackages;
+  initrdStaticAbilityContract = oci.mkStaticAbilityContract {
+    pname = "aos-initrd-static-abilities";
+    artifactClass = "bootable";
+    executionStage = "initrd";
+    platform = bootPlatform;
+    packages =
+      map (package: {
+        payload = package;
+        manifest = package.abilities;
+      })
+      initrdAbilityPackages;
+    runtimeRoots = uniqueInitrdPackages;
+  };
 
   dependencyRoots =
     [
@@ -494,6 +536,7 @@ in
           mkdir -p root/lib/systemd/system-generators
           mkdir -p root/lib/modules
           mkdir -p root/nix/store
+          mkdir -p root/lib/aos/initrd
           mkdir -p root/proc root/sys root/dev root/run root/tmp root/sysroot root/var
           mkdir -p -m 700 root/root
 
@@ -603,6 +646,10 @@ in
           PRETTY_NAME="ANDYL OS (initrd)"
           OSREL
           cp root/etc/os-release root/etc/initrd-release
+
+          cp ${initrdStaticAbilityContract}/contract.json \
+            root/lib/aos/initrd/static-ability-contract.json
+          chmod 0444 root/lib/aos/initrd/static-ability-contract.json
 
           # Make the interactive stage-1 recovery shells usable:
           cat > root/etc/profile <<PROFILE
@@ -973,11 +1020,15 @@ in
           [ "$contract_size" -gt 1 ]
           truncate -s $((contract_size - 1)) "$out/initrd-stage-contract.json.tmp"
           mv "$out/initrd-stage-contract.json.tmp" "$out/initrd-stage-contract.json"
+          cp ${initrdStaticAbilityContract}/contract.json \
+            "$out/initrd-static-ability-contract.json"
 
           echo "==> $archive_size bytes written to $out/initrd.img"
         '';
       }
     ];
+
+    passthru.staticAbilityContract = initrdStaticAbilityContract;
 
     meta = {
       description = "AOS initrd (zstd-compressed cpio, systemd PID 1)";

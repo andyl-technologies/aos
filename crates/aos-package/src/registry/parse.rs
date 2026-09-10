@@ -41,8 +41,11 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::types::{
-    PackageMeta, SysrootImageEntry, package_name_bucket, validate_supported_package_meta,
+    PackageMeta, SysrootImageEntry, package_name_bucket, validate_ability_aware_package_meta,
+    validate_supported_package_meta,
 };
+
+type PackageMetaValidator = fn(&PackageMeta) -> Result<()>;
 
 // ---------------------------------------------------------------------------
 // Package TOML schema (registry format)
@@ -112,7 +115,40 @@ pub(crate) fn parse_registry_matching(
     HashMap<String, PackageMeta>,
     Vec<PackageMeta>,
 )> {
-    parse_registry_selection(dir, Some(platform), version_req)
+    parse_registry_selection(
+        dir,
+        Some(platform),
+        version_req,
+        validate_supported_package_meta,
+    )
+}
+
+/// Parses a registry for a consumer that understands authenticated abilities.
+///
+/// This is intentionally separate from [`parse_registry_matching`]. Release
+/// preparation and structured configuration evaluation must validate ability
+/// metadata, while ordinary package mutation paths retain their narrower
+/// fail-closed reader profile.
+///
+/// # Errors
+///
+/// Returns an error if the catalog is malformed or uses a feature the
+/// ability-aware consumer cannot validate.
+pub(crate) fn parse_registry_matching_for_ability_aware_consumer(
+    dir: &Path,
+    platform: &str,
+    version_req: Option<&semver::VersionReq>,
+) -> Result<(
+    HashMap<String, PackageMeta>,
+    HashMap<String, PackageMeta>,
+    Vec<PackageMeta>,
+)> {
+    parse_registry_selection(
+        dir,
+        Some(platform),
+        version_req,
+        validate_ability_aware_package_meta,
+    )
 }
 
 /// Reads every validated package version and platform in an extracted registry.
@@ -122,7 +158,8 @@ pub(crate) fn parse_registry_matching(
 /// Returns an error for malformed package files, invalid image contracts, or
 /// unreadable registry directories.
 pub fn parse_registry_all_platforms(dir: &Path) -> Result<Vec<PackageMeta>> {
-    let (_, _, versions) = parse_registry_selection(dir, None, None)?;
+    let (_, _, versions) =
+        parse_registry_selection(dir, None, None, validate_supported_package_meta)?;
     Ok(versions)
 }
 
@@ -130,6 +167,7 @@ fn parse_registry_selection(
     dir: &Path,
     platform: Option<&str>,
     version_req: Option<&semver::VersionReq>,
+    validate_meta: PackageMetaValidator,
 ) -> Result<(
     HashMap<String, PackageMeta>,
     HashMap<String, PackageMeta>,
@@ -175,7 +213,7 @@ fn parse_registry_selection(
                 let mut metas = Vec::new();
                 for platform in platforms {
                     metas.extend(
-                        package_metas_for_platform(&toml, platform, version_req)
+                        package_metas_for_platform(&toml, platform, version_req, validate_meta)
                             .with_context(|| format!("validating {}", toml_path.display()))?,
                     );
                 }
@@ -267,13 +305,14 @@ fn validate_package_layout(path: &Path, package_name: &str) -> Result<()> {
 /// entry for `platform`.
 fn parse_package_toml_versions(content: &str, platform: &str) -> Result<Vec<PackageMeta>> {
     let toml = parse_package_toml_document(content)?;
-    package_metas_for_platform(&toml, platform, None)
+    package_metas_for_platform(&toml, platform, None, validate_supported_package_meta)
 }
 
 fn package_metas_for_platform(
     toml: &PackageToml,
     platform: &str,
     version_req: Option<&semver::VersionReq>,
+    validate_meta: PackageMetaValidator,
 ) -> Result<Vec<PackageMeta>> {
     let mut metas = Vec::new();
 
@@ -353,7 +392,7 @@ fn package_metas_for_platform(
                     meta.name
                 );
             }
-            validate_supported_package_meta(&meta)?;
+            validate_meta(&meta)?;
             metas.push(meta);
         }
     }

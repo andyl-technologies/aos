@@ -93,6 +93,12 @@ aos doc
 `aos build zlib` builds `pkgs.zlib`; it does not install a package on the
 running host. Use `apm install zlib` for that operation.
 
+`aos ability` inspects checked portable plans, bounded private deployment
+views, retained native execution records, and realized artifact-consumption
+evidence. It does not activate a plan or authenticate a deployment connection.
+See [Inspect ability plans and retained execution](ability-inspection.md) for
+the current commands, provenance limits, and disclosure rules.
+
 The flake output `packages.<system>.all` is the remote-build equivalent of
 `aos build --all`: build it when one submitted derivation must realize every
 individual `pkg-*` output for that system. For example, submit

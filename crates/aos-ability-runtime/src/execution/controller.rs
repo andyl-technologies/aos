@@ -5,9 +5,14 @@ use std::num::NonZeroU32;
 use aos_ability_model::MethodReference;
 use aos_contract::Sha256Digest;
 
-use crate::adapter::{CancellationToken, InvocationPurpose, MonotonicClock, TrustedAdapter};
+use crate::adapter::{
+    CancellationToken, InvocationPurpose, MonotonicClock, RuntimeControl, TrustedAdapter,
+};
 use crate::execution::admission::check_invocation;
-use crate::execution::machine::{AttemptContext, NoopBoundaryHook, OperationExecutor};
+use crate::execution::machine::{
+    AttemptContext, Boundary, BoundaryHook, ExecutionBoundaryControl, ExecutionBoundaryObservation,
+    ExecutionBoundaryObserver, NoopBoundaryHook, OperationExecutor,
+};
 use crate::execution::{
     AdmittedOperation, CompensationInterventionReason, ExecutionError, ExecutionStep,
     ExecutionTransaction, RecoveryAction, TrustedAdmissionPolicy,
@@ -38,6 +43,44 @@ impl<'plan> ExecutionTransaction<'plan> {
         Adapter: TrustedAdapter,
         Policy: TrustedAdmissionPolicy,
         Clock: MonotonicClock,
+    {
+        let mut observer = ContinueBoundaryObserver;
+        self.drive_admitted_with_observer(
+            admitted,
+            adapter,
+            policy,
+            clock,
+            cancellation,
+            &mut observer,
+        )
+    }
+
+    /// Advances one freshly authorized token while reporting exact boundaries.
+    ///
+    /// This performs the same fresh admission and policy checks as
+    /// [`Self::drive_admitted`]. The observer receives no request, evidence, or
+    /// output data and cannot select an execution result. An observer failure
+    /// after an adapter returns leaves its durable intent unresolved for normal
+    /// reconciliation after the transaction is reopened.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same conditions as [`Self::drive_admitted`],
+    /// or when the explicitly configured observer fails or halts execution.
+    pub fn drive_admitted_with_observer<Adapter, Policy, Clock, Observer>(
+        &mut self,
+        admitted: &AdmittedOperation<'plan, Adapter::Request, Adapter::Handle>,
+        adapter: &mut Adapter,
+        policy: &mut Policy,
+        clock: &Clock,
+        cancellation: &CancellationToken,
+        observer: &mut Observer,
+    ) -> Result<ExecutionStep, ExecutionError>
+    where
+        Adapter: TrustedAdapter,
+        Policy: TrustedAdmissionPolicy,
+        Clock: MonotonicClock,
+        Observer: ExecutionBoundaryObserver,
     {
         let (action, context) = match self.dispatch_context::<Adapter, Clock>(admitted, clock) {
             Ok(dispatch) => dispatch,
@@ -108,7 +151,13 @@ impl<'plan> ExecutionTransaction<'plan> {
             ..context
         };
 
-        let mut hook = NoopBoundaryHook;
+        let mut hook = AdmittedBoundaryHook {
+            observer,
+            transaction: admitted.transaction(),
+            operation: admitted.operation_id(),
+            attempt: admitted.attempt(),
+            purpose: admitted.invocation_purpose(),
+        };
         let mut executor = OperationExecutor::new(adapter, clock, cancellation, &mut hook);
         match action {
             RecoveryAction::Execute { .. } => {
@@ -274,6 +323,48 @@ impl<'plan> ExecutionTransaction<'plan> {
         };
         self.record_compensation_intervention(&admitted.operation().key, reason, elapsed_millis)
             .map_err(ExecutionError::Transaction)
+    }
+}
+
+struct ContinueBoundaryObserver;
+
+impl ExecutionBoundaryObserver for ContinueBoundaryObserver {
+    fn observe(
+        &mut self,
+        _observation: ExecutionBoundaryObservation<'_>,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        Ok(ExecutionBoundaryControl::Continue)
+    }
+}
+
+struct AdmittedBoundaryHook<'a, Observer> {
+    observer: &'a mut Observer,
+    transaction: &'a aos_ability_model::TransactionId,
+    operation: &'a aos_ability_model::OperationId,
+    attempt: NonZeroU32,
+    purpose: InvocationPurpose,
+}
+
+impl<Observer> BoundaryHook for AdmittedBoundaryHook<'_, Observer>
+where
+    Observer: ExecutionBoundaryObserver,
+{
+    fn observe(
+        &mut self,
+        boundary: Boundary,
+        control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        self.observer.observe(
+            ExecutionBoundaryObservation::new(
+                self.transaction,
+                self.operation,
+                self.attempt,
+                self.purpose,
+                boundary,
+            ),
+            control,
+        )
     }
 }
 

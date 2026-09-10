@@ -23,7 +23,10 @@ pub use event::{
 };
 pub use inputs::InputResolutionError;
 pub use lifecycle::{ResourceReleaseError, ResourceReleaseFailure};
-pub use machine::{Boundary, ExecutionError, ExecutionStep};
+pub use machine::{
+    Boundary, ExecutionBoundaryControl, ExecutionBoundaryObservation, ExecutionBoundaryObserver,
+    ExecutionError, ExecutionStep,
+};
 pub use scheduler::ReadyOperation;
 pub use state::{CompensationState, OperationHistory, OperationState, RecoveryAction, StateError};
 pub use summary::{OperationStatus, OperationSummary, TerminalResult, TransactionSummary};

@@ -342,6 +342,20 @@ service DocumentationService {
   rpc GetPackageDocumentationSchema(GetPackageDocumentationSchemaRequest) returns (GetPackageDocumentationSchemaResponse);
 }
 
+// Private, freshness-bounded deployment state layered over authenticated
+// package ability references. Reporter enrollment is an explicit registry
+// administration action; report submission never executes deployment work.
+service AbilityDeploymentService {
+  rpc PlanConfigureReporter(PlanConfigureAbilityDeploymentReporterRequest)
+      returns (TopologyPlanResponse);
+  rpc ConfigureReporter(ApplyTopologyPlanRequest)
+      returns (AbilityDeploymentReporter);
+  rpc ReportPackageOverlay(ReportPackageAbilityDeploymentRequest)
+      returns (PackageAbilityDeploymentResponse);
+  rpc GetPackageOverlay(GetPackageAbilityDeploymentRequest)
+      returns (PackageAbilityDeploymentResponse);
+}
+
 service ChannelService {
   rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
   rpc GetChannel(GetChannelRequest) returns (GetChannelResponse);
@@ -632,6 +646,49 @@ message GetPackageAbilityReferenceResponse {
   PackageAbilityReferenceIdentity identity = 1;
   bytes canonical_json = 2;
   string etag = 3;
+}
+
+message PlanConfigureAbilityDeploymentReporterRequest {
+  string registry = 1;
+  string deployment = 2;
+  string principal_kind = 3;
+  string principal_ref = 4;
+  bool enabled = 5;
+  uint64 expected_resource_version = 6;
+  string idempotency_key = 7;
+}
+
+message AbilityDeploymentReporter {
+  string registry = 1;
+  string deployment = 2;
+  string principal_kind = 3;
+  string principal_ref = 4;
+  bool enabled = 5;
+  uint64 resource_version = 6;
+}
+
+message ReportPackageAbilityDeploymentRequest {
+  string registry = 1;
+  string deployment = 2;
+  uint64 reporter_resource_version = 3;
+  bytes canonical_json = 4;
+}
+
+message GetPackageAbilityDeploymentRequest {
+  string registry = 1;
+  string deployment = 2;
+  string registry_commit = 3;
+  string package = 4;
+  string version = 5;
+  string platform = 6;
+}
+
+message PackageAbilityDeploymentResponse {
+  bytes canonical_json = 1;
+  string authority = 2;
+  int64 received_at = 3;
+  int64 expires_at = 4;
+  uint64 reporter_resource_version = 5;
 }
 
 message SearchPackageDocumentationRequest {

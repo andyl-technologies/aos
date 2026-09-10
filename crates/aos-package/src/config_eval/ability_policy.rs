@@ -32,6 +32,7 @@ use aos_ability_model::{
 use aos_ability_plan::ResolutionPolicyDocument;
 use aos_ability_runtime::adapter::{
     InvocationPurpose, MonotonicClock, ResourceAdmissionEvidence, ResourceRevisionObservation,
+    SystemMonotonicClock,
 };
 use aos_ability_runtime::execution::TrustedAdmissionPolicy;
 use aos_ability_validate::CheckedEffectPlan;
@@ -42,6 +43,7 @@ use serde::{Deserialize, Serialize};
 pub const CURRENT_ABILITY_AUTHORITY_ROOT: &str = "/run/apm/ability-authority";
 
 const CURRENT_ABILITY_AUTHORITY_SCHEMA: &str = "aos.ability.current-authority/v1";
+const CURRENT_ABILITY_AUTHORITY_SCHEMA_V2: &str = "aos.ability.current-authority/v2";
 const CURRENT_ABILITY_AUTHORITY_MAX_BYTES: usize = 8 * 1024 * 1024;
 const CURRENT_ABILITY_AUTHORITY_MAX_ENTRIES: usize = 65_536;
 
@@ -75,12 +77,15 @@ pub use storage::{
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CurrentAbilityAuthorityDocument {
-    /// Carries `aos.ability.current-authority/v1`.
+    /// Carries current-authority v1 or transaction-linked health v2.
     pub schema: String,
     /// Names required semantics in canonical order.
     pub required_features: Vec<RequiredFeature>,
     /// Changes whenever current operator authority is revoked or republished.
     pub policy_fence: RevisionId,
+    /// Identifies the transaction that owns a version-2 health publication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction: Option<TransactionId>,
     /// Binds this publication to the protected monotonic authority epoch.
     pub authority_epoch: u64,
     /// Identifies the current grants represented by this publication.
@@ -154,6 +159,16 @@ pub enum CurrentResourceState {
         /// Identifies the observed semantic content.
         revision: RevisionId,
     },
+    /// The exact loaded revision exists but is not running.
+    Stopped {
+        /// Identifies the loaded semantic revision.
+        revision: RevisionId,
+    },
+    /// The resource exists, but direct behavior evidence contradicts its revision.
+    Divergent {
+        /// Identifies the loaded semantic revision.
+        revision: RevisionId,
+    },
 }
 
 impl CurrentAbilityAuthorityDocument {
@@ -167,7 +182,21 @@ impl CurrentAbilityAuthorityDocument {
         &self,
         supported_features: &BTreeSet<RequiredFeature>,
     ) -> Result<(), CurrentAuthorityError> {
-        if self.schema != CURRENT_ABILITY_AUTHORITY_SCHEMA {
+        let carries_runtime_health = self.resource_observations.iter().any(|observation| {
+            matches!(
+                observation.state,
+                CurrentResourceState::Stopped { .. } | CurrentResourceState::Divergent { .. }
+            )
+        });
+        if !matches!(
+            (
+                self.schema.as_str(),
+                carries_runtime_health,
+                self.transaction.is_some()
+            ),
+            (CURRENT_ABILITY_AUTHORITY_SCHEMA, false, false)
+                | (CURRENT_ABILITY_AUTHORITY_SCHEMA_V2, _, true)
+        ) {
             return Err(invalid("current authority uses an unsupported schema"));
         }
         if self
@@ -246,13 +275,15 @@ impl CurrentAbilityAuthorityDocument {
         Ok(())
     }
 
-    fn content_digest(&self) -> Result<Sha256Digest, CurrentAuthorityError> {
+    /// Computes the schema-separated digest of this current-authority document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the document cannot be encoded canonically.
+    pub(crate) fn content_digest(&self) -> Result<Sha256Digest, CurrentAuthorityError> {
         let bytes = aos_contract::canonical::to_vec(self)
             .map_err(|error| invalid(format!("encoding current authority: {error}")))?;
-        Ok(Sha256Digest::separated(
-            CURRENT_ABILITY_AUTHORITY_SCHEMA,
-            bytes,
-        ))
+        Ok(Sha256Digest::separated(&self.schema, bytes))
     }
 }
 
@@ -275,6 +306,8 @@ pub struct CurrentAuthorityObservations {
 pub struct CurrentAuthorityPublication<'a> {
     /// Identifies the revocation-sensitive current policy generation.
     pub policy_fence: RevisionId,
+    /// Identifies the transaction for a version-2 health publication.
+    pub transaction: Option<&'a TransactionId>,
     /// Supplies the authenticated desired-state resolution policy.
     pub resolution_policy: &'a ResolutionPolicyDocument,
     /// Supplies independently authenticated native-platform bindings, when used.
@@ -288,10 +321,12 @@ pub struct CurrentAuthorityPublication<'a> {
 }
 
 /// Pins immutable plan-policy commitments used for every fresh admission.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CurrentAuthorityCommitment {
     /// Identifies the exact retained effect plan.
     pub plan: PlanId,
+    /// Pins the transaction carried by version-2 health authority.
+    pub transaction: Option<TransactionId>,
     /// Pins the protected authority epoch observed during plan admission.
     pub authority_epoch: u64,
     /// Identifies the revocation-sensitive policy publication.
@@ -316,6 +351,157 @@ pub struct NativeCurrentAdmissionPolicy<Source, Clock> {
     commitment: CurrentAuthorityCommitment,
     supported_features: BTreeSet<RequiredFeature>,
     last_publication: Option<ObservedPublication>,
+}
+
+/// Publishes fresh native observations and immediately consumes that authority.
+///
+/// One instance owns a transaction-scoped protected publication. Its first
+/// refresh fixes the policy commitment and authority epoch; later refreshes
+/// may advance observations while every admission remains pinned to those
+/// immutable commitments.
+pub(crate) struct PublishingNativeAdmissionPolicy {
+    publisher: CurrentAbilityAuthorityPublisher,
+    source: RootOwnedCurrentAuthoritySource,
+    clock: SystemMonotonicClock,
+    transaction: TransactionId,
+    policy_fence: RevisionId,
+    resolution_policy: ResolutionPolicyDocument,
+    platform_policy: Option<CurrentPlatformPolicyDocument>,
+    transition_authority: Option<TransitionAuthorizationDocument>,
+    supported_features: BTreeSet<RequiredFeature>,
+    transaction_linked: bool,
+    sequence: u64,
+    max_age_millis: u64,
+    admission:
+        Option<NativeCurrentAdmissionPolicy<RootOwnedCurrentAuthoritySource, SystemMonotonicClock>>,
+}
+
+impl PublishingNativeAdmissionPolicy {
+    /// Constructs a transaction-scoped publisher and admission policy.
+    #[must_use]
+    pub(crate) fn new(
+        scope: &CurrentAuthorityScope,
+        policy_fence: RevisionId,
+        resolution_policy: ResolutionPolicyDocument,
+        platform_policy: Option<CurrentPlatformPolicyDocument>,
+        transition_authority: Option<TransitionAuthorizationDocument>,
+        supported_features: BTreeSet<RequiredFeature>,
+        max_age_millis: u64,
+        transaction_linked: bool,
+    ) -> Self {
+        Self {
+            publisher: CurrentAbilityAuthorityPublisher::system(scope),
+            source: RootOwnedCurrentAuthoritySource::system(scope),
+            clock: SystemMonotonicClock::new(),
+            transaction: scope.transaction.clone(),
+            policy_fence,
+            resolution_policy,
+            platform_policy,
+            transition_authority,
+            supported_features,
+            transaction_linked,
+            sequence: 0,
+            max_age_millis,
+            admission: None,
+        }
+    }
+
+    /// Publishes one protected observation set and returns its exact authority document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when policy reissuance, durable publication, or the
+    /// transaction's immutable current-authority commitment fails.
+    pub(crate) fn publish_authority(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: Vec<CurrentResourceObservation>,
+    ) -> Result<CurrentAbilityAuthorityDocument, CurrentAuthorityError> {
+        if self.max_age_millis == 0 {
+            return Err(invalid(
+                "native current-authority maximum age must be positive",
+            ));
+        }
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid("native current-authority sequence overflowed"))?;
+        let carries_runtime_health = resources.iter().any(|observation| {
+            matches!(
+                observation.state,
+                CurrentResourceState::Stopped { .. } | CurrentResourceState::Divergent { .. }
+            )
+        });
+        let retains_transaction = self.transaction_linked
+            || !plan.operations().is_empty()
+            || carries_runtime_health
+            || self
+                .admission
+                .as_ref()
+                .is_some_and(|admission| admission.commitment.transaction.is_some());
+        let document = self.publisher.publish(CurrentAuthorityPublication {
+            policy_fence: self.policy_fence,
+            transaction: retains_transaction.then_some(&self.transaction),
+            resolution_policy: &self.resolution_policy,
+            platform_policy: self.platform_policy.as_ref(),
+            transition_authority: self.transition_authority.as_ref(),
+            plan,
+            observations: CurrentAuthorityObservations {
+                sequence: self.sequence,
+                observed_at_restart_millis: self.clock.restart_stable_millis(),
+                max_age_millis: self.max_age_millis,
+                provider_assignments: assignments.to_vec(),
+                resource_observations: resources,
+            },
+        })?;
+        if let Some(admission) = &self.admission {
+            if admission.commitment.plan != document.plan
+                || admission.commitment.transaction != document.transaction
+                || admission.commitment.authority_epoch != document.authority_epoch
+                || admission.commitment.policy_fence != document.policy_fence
+                || admission.commitment.policy_revision != document.policy_revision
+                || admission.commitment.resolution_policy != document.resolution_policy
+                || admission.commitment.platform_policy != document.platform_policy
+                || admission.commitment.transition_authority != document.transition_authority
+            {
+                return Err(invalid(
+                    "native current-authority commitment changed during execution",
+                ));
+            }
+            return Ok(document);
+        }
+
+        let commitment = CurrentAuthorityCommitment {
+            plan: document.plan,
+            transaction: document.transaction.clone(),
+            authority_epoch: document.authority_epoch,
+            policy_fence: document.policy_fence,
+            policy_revision: document.policy_revision,
+            resolution_policy: document.resolution_policy,
+            platform_policy: document.platform_policy,
+            transition_authority: document.transition_authority,
+            minimum_sequence: document.sequence,
+        };
+        self.admission = Some(NativeCurrentAdmissionPolicy::new(
+            self.source.clone(),
+            self.clock.clone(),
+            commitment,
+            self.supported_features.clone(),
+        ));
+        Ok(document)
+    }
+
+    fn admission_mut(
+        &mut self,
+    ) -> Result<
+        &mut NativeCurrentAdmissionPolicy<RootOwnedCurrentAuthoritySource, SystemMonotonicClock>,
+        CurrentAuthorityError,
+    > {
+        self.admission
+            .as_mut()
+            .ok_or_else(|| invalid("native current authority was not published before admission"))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -356,6 +542,7 @@ where
             .map_err(|error| source_error(error.to_string()))?;
         document.validate(&self.supported_features)?;
         if document.plan != self.commitment.plan
+            || document.transaction != self.commitment.transaction
             || document.authority_epoch != self.commitment.authority_epoch
             || document.policy_fence != self.commitment.policy_fence
             || document.policy_revision != self.commitment.policy_revision
@@ -519,6 +706,63 @@ where
     }
 }
 
+impl super::native_dispatch::NativeAuthorityRefresh for PublishingNativeAdmissionPolicy {
+    fn refresh_authority(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: Vec<CurrentResourceObservation>,
+    ) -> Result<(), Self::Error> {
+        self.publish_authority(plan, assignments, resources)
+            .map(|_| ())
+    }
+}
+
+impl super::native_dispatch::NativeNoOpAdmissionPolicy for PublishingNativeAdmissionPolicy {
+    fn authorize_no_op(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: &super::native_resource_map::NativeResourceMap,
+    ) -> Result<(), Self::Error> {
+        self.admission_mut()?
+            .authorize_native_no_op(plan, assignments, resources)
+    }
+}
+
+impl TrustedAdmissionPolicy for PublishingNativeAdmissionPolicy {
+    type Error = CurrentAuthorityError;
+
+    fn authorize(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        method: &MethodReference,
+        purpose: InvocationPurpose,
+    ) -> Result<(), Self::Error> {
+        self.admission_mut()?
+            .authorize(plan, binding, operation, method, purpose)
+    }
+
+    fn authorize_resources(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        expected_provider: Option<&ProviderAssignment>,
+        resources: &[ResourceAdmissionEvidence],
+    ) -> Result<(), Self::Error> {
+        self.admission_mut()?.authorize_resources(
+            plan,
+            binding,
+            operation,
+            expected_provider,
+            resources,
+        )
+    }
+}
+
 fn require_current_resource_evidence(
     current: &CurrentAbilityAuthorityDocument,
     access: &ResourceAccess,
@@ -544,16 +788,18 @@ fn require_current_resource_evidence(
         .ok()
         .map(|index| current.resource_observations[index].state)
         .ok_or_else(|| invalid("current authority lacks an authoritative resource observation"))?;
-    let evidence_state = match evidence.revision_observation() {
-        ResourceRevisionObservation::Absent => CurrentResourceState::Absent,
-        ResourceRevisionObservation::Present(revision) => {
+    let evidence_matches = match (evidence.revision_observation(), observed) {
+        (ResourceRevisionObservation::Absent, CurrentResourceState::Absent) => true,
+        (
+            ResourceRevisionObservation::Present(evidence_revision),
             CurrentResourceState::Present { revision }
-        }
-        ResourceRevisionObservation::Unknown => {
-            return Err(invalid("resource catalog returned an unknown observation"));
-        }
+            | CurrentResourceState::Stopped { revision }
+            | CurrentResourceState::Divergent { revision },
+        ) => evidence_revision == revision,
+        (ResourceRevisionObservation::Unknown, CurrentResourceState::Divergent { .. }) => true,
+        _ => false,
     };
-    if evidence_state != observed {
+    if !evidence_matches {
         return Err(invalid(
             "resource evidence differs from authoritative current state",
         ));
@@ -710,10 +956,31 @@ fn build_publication(
         return Err(invalid("observations contain duplicate resource revisions"));
     }
 
+    let carries_runtime_health = resource_observations.iter().any(|observation| {
+        matches!(
+            observation.state,
+            CurrentResourceState::Stopped { .. } | CurrentResourceState::Divergent { .. }
+        )
+    });
+    let schema = if publication.transaction.is_some() || carries_runtime_health {
+        CURRENT_ABILITY_AUTHORITY_SCHEMA_V2
+    } else {
+        CURRENT_ABILITY_AUTHORITY_SCHEMA
+    };
     Ok(CurrentAbilityAuthorityDocument {
-        schema: CURRENT_ABILITY_AUTHORITY_SCHEMA.to_string(),
+        schema: schema.to_string(),
         required_features,
         policy_fence: publication.policy_fence,
+        transaction: if schema == CURRENT_ABILITY_AUTHORITY_SCHEMA_V2 {
+            Some(
+                publication
+                    .transaction
+                    .cloned()
+                    .ok_or_else(|| invalid("version-2 current authority lacks a transaction"))?,
+            )
+        } else {
+            None
+        },
         authority_epoch: 0,
         policy_revision,
         resolution_policy: policy_digest,
@@ -790,6 +1057,30 @@ fn independently_issued_binding(
         lifetime: candidate.lifetime,
         mediation_allowed: candidate.mediation_allowed,
     })
+}
+
+/// Verifies that each checked binding has one exact independent policy issuer.
+///
+/// # Errors
+///
+/// Returns an error when a binding is absent, ambiguous, or differs from the
+/// exact resolution, transition, or native-platform policy grant.
+pub(crate) fn validate_independent_binding_authority(
+    plan: &CheckedEffectPlan,
+    resolution: &ResolutionPolicyDocument,
+    platform: Option<&CurrentPlatformPolicyDocument>,
+    transition: Option<&TransitionAuthorizationDocument>,
+) -> Result<(), CurrentAuthorityError> {
+    for checked in plan.binding_plan().bindings() {
+        let issued = independently_issued_binding(checked, resolution, platform, transition)?;
+        if &issued != checked {
+            return Err(invalid(format!(
+                "checked binding {:?} differs from independently issued policy authority",
+                checked.id
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn candidate_matches_binding(

@@ -373,6 +373,11 @@ let
       checked = requireAttrs "service lifecycle operation family" ["kind" "action"] value;
     in
       checked // {action = requireChoice "service lifecycle action" ["start" "reload" "restart" "stop"] checked.action;}
+    else if kind == "kubernetes-object"
+    then let
+      checked = requireAttrs "Kubernetes object operation family" ["kind" "action"] value;
+    in
+      checked // {action = requireChoice "Kubernetes object action" ["apply" "delete" "observe"] checked.action;}
     else fail "operation family '${kind}' is unsupported";
 
   normalizeAggregateId = context: value: let

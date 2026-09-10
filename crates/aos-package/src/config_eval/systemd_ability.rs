@@ -30,7 +30,7 @@ use aos_ability_model::{
     ValueSchema,
     builtin::{
         systemd_manager_handler, systemd_manager_handler_key, systemd_manager_interface_key,
-        systemd_manager_provider,
+        systemd_manager_provider, systemd_provider_bootstrap_interface_key,
     },
 };
 use aos_ability_runtime::adapter::{
@@ -53,6 +53,13 @@ use crate::config_eval::native_ability_fs::authenticate_native_executor_path;
 use crate::config_eval::native_ability_fs::{
     RootedDirectory, RootedFile, authenticate_native_executor,
 };
+use crate::config_eval::native_consumer_observation::{
+    NativeConsumerObservationError, observe_native_http_consumer_with_control,
+};
+use crate::config_eval::native_provider_capability::NativeProviderReadinessOutput;
+#[cfg(test)]
+use crate::config_eval::native_provider_capability::SystemdManagerReadinessOutput;
+use crate::config_eval::native_resource_map::NativeHttpConsumerObservation;
 
 const REQUEST_SCHEMA: &str = "aos.ability.systemd-request/v2";
 const LEGACY_REQUEST_SCHEMA: &str = "aos.ability.systemd-request/v1";
@@ -64,8 +71,9 @@ const CATALOG_QUALIFICATION_MILLIS: u64 = 30_000;
 const NATIVE_EXECUTOR_SUFFIX: &str = "bin/.aos-package-runtime-unwrapped";
 const REFERENCE_SYSTEMD_INTERFACE: &str = "aos.systemd-service-effects";
 const REFERENCE_SYSTEMD_DESCRIPTOR: &str =
-    "sha256:08e463bed96f053e557f557c95342666e81358396a44f89bf4c07a2aa780d6c5";
+    "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98";
 const REFERENCE_SYSTEMD_HANDLER: &str = "systemd-terminal";
+const SYSTEMD_PROVIDER_BOOTSTRAP_HANDLER: &str = "systemd-bootstrap-terminal";
 
 /// Binds one checked logical resource to the only unit it may control.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,6 +88,8 @@ pub struct SystemdResourceSpec {
     pub generation: Sha256Digest,
     /// Identifies the authenticated package manifest that owns the unit.
     pub owner_package: Sha256Digest,
+    /// Defines the exact consumer proof required after lifecycle convergence.
+    pub consumer_observation: Option<NativeHttpConsumerObservation>,
 }
 
 /// Canonical ownership receipt for one generated systemd unit revision.
@@ -153,6 +163,7 @@ pub struct SystemdResourceHandle {
     revision: RevisionId,
     authorized_action: SystemdAbilityAction,
     manager: Arc<PinnedSystemdManager>,
+    consumer_observation: Option<NativeHttpConsumerObservation>,
     reservation: NativeResourceReservation,
 }
 
@@ -175,6 +186,7 @@ struct QualifiedSystemdResource {
     revision: RevisionId,
     receipt: RootedFile,
     expected_receipt: SystemdUnitRevisionReceipt,
+    consumer_observation: Option<NativeHttpConsumerObservation>,
     qualified: NativeQualifiedResource,
 }
 
@@ -185,6 +197,15 @@ pub struct SystemdResourceCatalog {
     assignment: ProviderAssignment,
     inventory: NativeResourceInventory,
     resources: BTreeMap<ResourceId, QualifiedSystemdResource>,
+}
+
+/// Classifies the stable live state of an exact loaded systemd resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SystemdResourceRuntimeState {
+    /// The exact loaded unit is active.
+    Active,
+    /// The exact loaded unit is inactive or failed and requires a fresh start plan.
+    Stopped,
 }
 
 impl SystemdResourceCatalog {
@@ -270,6 +291,7 @@ impl SystemdResourceCatalog {
                     revision: spec.revision,
                     receipt,
                     expected_receipt,
+                    consumer_observation: spec.consumer_observation,
                     qualified,
                 },
             );
@@ -315,6 +337,50 @@ impl SystemdResourceCatalog {
             ));
         }
         Ok(resource.qualified.clone())
+    }
+
+    /// Classifies an exact loaded unit without issuing a lifecycle job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when assignment or revision requalification fails, or
+    /// when systemd reports a transient or unknown state that cannot safely
+    /// select a repair graph.
+    pub(crate) fn classify_runtime_state(
+        &self,
+        resource: &ResourceId,
+    ) -> Result<(NativeQualifiedResource, SystemdResourceRuntimeState), io::Error> {
+        let resource = self
+            .resources
+            .get(resource)
+            .ok_or_else(|| invalid_data("systemd runtime resource is not cataloged"))?;
+        let manager = self.requalify(resource, CATALOG_QUALIFICATION_MILLIS)?;
+        let active_state = run_async(
+            &self.runtime,
+            CATALOG_QUALIFICATION_MILLIS,
+            manager.active_state_exact_revision(
+                &resource.unit,
+                &resource.unit_identity,
+                &revision_text(resource.revision),
+            ),
+        )?;
+        let state = match active_state {
+            UnitActiveState::Active => SystemdResourceRuntimeState::Active,
+            UnitActiveState::Inactive | UnitActiveState::Failed => {
+                SystemdResourceRuntimeState::Stopped
+            }
+            UnitActiveState::Reloading
+            | UnitActiveState::Activating
+            | UnitActiveState::Deactivating
+            | UnitActiveState::Maintenance
+            | UnitActiveState::Refreshing
+            | UnitActiveState::Unknown(_) => {
+                return Err(invalid_data(
+                    "systemd resource is in a transient or unknown runtime state",
+                ));
+            }
+        };
+        Ok((resource.qualified.clone(), state))
     }
 
     fn requalify(
@@ -473,6 +539,7 @@ impl TrustedResourceCatalog for SystemdResourceCatalog {
                 revision: resource.revision,
                 authorized_action,
                 manager,
+                consumer_observation: resource.consumer_observation,
                 reservation,
             },
             evidence,
@@ -501,6 +568,7 @@ impl TrustedResourceCatalog for SystemdResourceCatalog {
 pub struct SystemdAbilityRequest {
     durable: SystemdDurableRequest,
     manager: Arc<PinnedSystemdManager>,
+    consumer_observation: Option<NativeHttpConsumerObservation>,
 }
 
 impl std::fmt::Debug for SystemdAbilityRequest {
@@ -782,6 +850,57 @@ fn authenticate_reference_systemd(
     Ok(())
 }
 
+fn authenticate_systemd_provider_bootstrap(
+    package: &VerifiedAbilityPackage,
+    assignment: &ProviderAssignment,
+) -> Result<(), io::Error> {
+    if package.activation_mode() != AbilityActivationMode::StructuredEffects {
+        return Err(invalid_data(
+            "systemd provider bootstrap requires a structured-effects package",
+        ));
+    }
+
+    let expected_interface = systemd_provider_bootstrap_interface_key().map_err(|error| {
+        invalid_data(format!(
+            "invalid systemd provider bootstrap interface: {error:#}"
+        ))
+    })?;
+    let handler_key = LocalKey::new(SYSTEMD_PROVIDER_BOOTSTRAP_HANDLER).map_err(|error| {
+        invalid_data(format!(
+            "invalid systemd provider bootstrap handler: {error}"
+        ))
+    })?;
+    if assignment.interface != expected_interface
+        || assignment.implementation.handler.as_ref() != Some(&handler_key)
+    {
+        return Err(invalid_data(
+            "assignment does not select the exact systemd provider bootstrap contract",
+        ));
+    }
+
+    let verified = package
+        .resolve_terminal_handler(assignment.implementation.descriptor, &handler_key)
+        .ok_or_else(|| {
+            invalid_data(
+                "authenticated package does not resolve the systemd provider bootstrap handler",
+            )
+        })?;
+    if verified.provider().interface != expected_interface
+        || verified.provider().artifact != assignment.implementation.artifact
+        || !verified.provider().requirements.is_empty()
+        || verified.provider().owns_resource_kinds != vec![expected_interface.name.clone()]
+        || verified.handler().artifact != assignment.implementation.artifact
+        || verified.handler().entry_point != NATIVE_EXECUTOR_SUFFIX
+        || verified.handler().arguments != ValueSchema::Boolean
+        || verified.handler().result != ValueSchema::Boolean
+    {
+        return Err(invalid_data(
+            "authenticated provider or handler differs from the systemd provider bootstrap contract",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn preflight_native_systemd(
     package: &VerifiedAbilityPackage,
     assignment: &ProviderAssignment,
@@ -791,6 +910,9 @@ pub(crate) fn preflight_native_systemd(
             authenticate_builtin_systemd(package, assignment)
         }
         REFERENCE_SYSTEMD_INTERFACE => authenticate_reference_systemd(package, assignment),
+        aos_ability_model::builtin::SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME => {
+            authenticate_systemd_provider_bootstrap(package, assignment)
+        }
         _ => Err(invalid_data(
             "systemd resource map selects an unsupported native terminal interface",
         )),
@@ -897,6 +1019,7 @@ impl TrustedAdapter for NativeSystemdAdapter {
         Ok(SystemdAbilityRequest {
             durable: request,
             manager: Arc::clone(&resource.native().manager),
+            consumer_observation: resource.native().consumer_observation.clone(),
         })
     }
 
@@ -1065,6 +1188,7 @@ impl AdapterCompletion for ReferenceSystemdRecord {
 pub struct NativeSystemdServiceAdapter {
     runtime: tokio::runtime::Handle,
     assignment: ProviderAssignment,
+    manager_readiness: Vec<NativeProviderReadinessOutput>,
     completed: ReferenceSystemdRecord,
     unsettled: ReferenceSystemdRecord,
 }
@@ -1088,10 +1212,37 @@ impl NativeSystemdServiceAdapter {
             NATIVE_EXECUTOR_SUFFIX,
             "reference systemd",
         )?;
-        Self::initialize(assignment)
+        Self::initialize(assignment, Vec::new())
     }
 
-    fn initialize(assignment: ProviderAssignment) -> Result<Self, io::Error> {
+    /// Constructs an adapter that emits checked planned-manager assignments.
+    ///
+    /// The output capabilities are pinned only after the producer's own
+    /// systemd unit has reached its active readiness condition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the package resolves the fixed provider
+    /// bootstrap interface and handler to the running AOS package runtime, or
+    /// no supported Tokio runtime is active.
+    pub(crate) fn new_with_manager_readiness(
+        package: &VerifiedAbilityPackage,
+        assignment: ProviderAssignment,
+        manager_readiness: Vec<NativeProviderReadinessOutput>,
+    ) -> Result<Self, io::Error> {
+        authenticate_systemd_provider_bootstrap(package, &assignment)?;
+        authenticate_native_executor(
+            &assignment.implementation.artifact,
+            NATIVE_EXECUTOR_SUFFIX,
+            "systemd provider bootstrap",
+        )?;
+        Self::initialize(assignment, manager_readiness)
+    }
+
+    fn initialize(
+        assignment: ProviderAssignment,
+        manager_readiness: Vec<NativeProviderReadinessOutput>,
+    ) -> Result<Self, io::Error> {
         require_host_assignment(&assignment)?;
         let runtime = tokio::runtime::Handle::try_current().map_err(|error| {
             invalid_data(format!(
@@ -1102,6 +1253,7 @@ impl NativeSystemdServiceAdapter {
         Ok(Self {
             runtime,
             assignment,
+            manager_readiness,
             completed: reference_record(true)?,
             unsettled: reference_record(false)?,
         })
@@ -1121,6 +1273,124 @@ impl NativeSystemdServiceAdapter {
                 &revision_text(request.durable.revision),
             ),
         )
+    }
+
+    fn manager_readiness_completion(
+        &self,
+        control: &dyn RuntimeControl,
+    ) -> Result<ReferenceSystemdRecord, io::Error> {
+        let mut outputs = BTreeMap::new();
+        for readiness in &self.manager_readiness {
+            let (output, value) = readiness
+                .observe(control)
+                .map_err(|error| invalid_data(format!("observing planned manager: {error:#}")))?;
+            if outputs.insert(output, value).is_some() {
+                return Err(invalid_data(
+                    "planned manager readiness produced a duplicate output port",
+                ));
+            }
+        }
+        Ok(ReferenceSystemdRecord {
+            durable: self.completed.durable.clone(),
+            outputs,
+        })
+    }
+
+    fn regular_observation(
+        &self,
+        request: &SystemdAbilityRequest,
+        control: &dyn RuntimeControl,
+    ) -> ReferenceObservationDisposition {
+        let Some(consumer_observation) = request.consumer_observation.as_ref() else {
+            return ReferenceObservationDisposition::Rejected;
+        };
+        classify_regular_observation(observe_native_http_consumer_with_control(
+            consumer_observation,
+            call_remaining_millis(control),
+            &|| control.is_cancelled(),
+        ))
+    }
+
+    fn observe_result(
+        &self,
+        active_state: UnitActiveState,
+        control: &dyn RuntimeControl,
+        regular_observation: impl FnOnce() -> ReferenceObservationDisposition,
+    ) -> ReferenceObservationResult {
+        if active_state != UnitActiveState::Active {
+            return ReferenceObservationResult::Rejected;
+        }
+        if !self.manager_readiness.is_empty() {
+            return self
+                .manager_readiness_completion(control)
+                .map_or(ReferenceObservationResult::Indeterminate, |record| {
+                    ReferenceObservationResult::Completed(record)
+                });
+        }
+        match regular_observation() {
+            ReferenceObservationDisposition::Completed => {
+                ReferenceObservationResult::Completed(self.completed.clone())
+            }
+            ReferenceObservationDisposition::Rejected => ReferenceObservationResult::Rejected,
+            ReferenceObservationDisposition::Indeterminate => {
+                ReferenceObservationResult::Indeterminate
+            }
+        }
+    }
+
+    fn execute_observation(
+        &self,
+        active_state: UnitActiveState,
+        control: &dyn RuntimeControl,
+        regular_observation: impl FnOnce() -> ReferenceObservationDisposition,
+    ) -> EffectDisposition<ReferenceSystemdRecord, ReferenceSystemdRecord> {
+        match self.observe_result(active_state, control, regular_observation) {
+            ReferenceObservationResult::Completed(record) => EffectDisposition::Completed(record),
+            ReferenceObservationResult::Rejected => {
+                EffectDisposition::RejectedBeforeEffect(self.unsettled.clone())
+            }
+            ReferenceObservationResult::Indeterminate => {
+                EffectDisposition::Indeterminate(self.unsettled.clone())
+            }
+        }
+    }
+
+    fn reconcile_observation(
+        &self,
+        active_state: UnitActiveState,
+        control: &dyn RuntimeControl,
+        regular_observation: impl FnOnce() -> ReferenceObservationDisposition,
+    ) -> ReconcileDisposition<ReferenceSystemdRecord, ReferenceSystemdRecord> {
+        match self.observe_result(active_state, control, regular_observation) {
+            ReferenceObservationResult::Completed(record) => {
+                ReconcileDisposition::Completed(record)
+            }
+            ReferenceObservationResult::Rejected => {
+                ReconcileDisposition::RejectedBeforeEffect(self.unsettled.clone())
+            }
+            ReferenceObservationResult::Indeterminate => {
+                ReconcileDisposition::StillIndeterminate(self.unsettled.clone())
+            }
+        }
+    }
+
+    fn cancel_observation(
+        &self,
+        active_state: UnitActiveState,
+        control: &dyn RuntimeControl,
+        regular_observation: impl FnOnce() -> ReferenceObservationDisposition,
+    ) -> CancellationDisposition<ReferenceSystemdRecord, ReferenceSystemdRecord> {
+        match self.observe_result(active_state, control, regular_observation) {
+            ReferenceObservationResult::Completed(record) => {
+                CancellationDisposition::Completed(record)
+            }
+            ReferenceObservationResult::Rejected => {
+                CancellationDisposition::RejectedBeforeEffect(self.unsettled.clone())
+            }
+            ReferenceObservationResult::Indeterminate => {
+                CancellationDisposition::Indeterminate(self.unsettled.clone())
+            }
+        }
     }
 
     fn prepare_reference_request(
@@ -1193,6 +1463,7 @@ impl NativeSystemdServiceAdapter {
         Ok(SystemdAbilityRequest {
             durable: request,
             manager: Arc::clone(&native.manager),
+            consumer_observation: native.consumer_observation.clone(),
         })
     }
 }
@@ -1216,11 +1487,21 @@ impl TrustedAdapter for NativeSystemdServiceAdapter {
             return false;
         }
         match purpose {
-            InvocationPurpose::Effect => {
-                matches!(
-                    method.method.as_str(),
-                    "observe" | "reload" | "start" | "stop"
-                )
+            InvocationPurpose::Effect
+                if self.assignment.interface.name.as_str()
+                    == aos_ability_model::builtin::SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME =>
+            {
+                matches!(method.method.as_str(), "observe-manager" | "start" | "stop")
+            }
+            InvocationPurpose::Effect => matches!(
+                method.method.as_str(),
+                "observe" | "reload" | "start" | "stop"
+            ),
+            InvocationPurpose::Reconcile | InvocationPurpose::Cancel
+                if self.assignment.interface.name.as_str()
+                    == aos_ability_model::builtin::SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME =>
+            {
+                method.method.as_str() == "observe-manager"
             }
             InvocationPurpose::Reconcile | InvocationPurpose::Cancel => {
                 method.method.as_str() == "observe"
@@ -1256,7 +1537,9 @@ impl TrustedAdapter for NativeSystemdServiceAdapter {
         }
         if request.durable.action == SystemdAbilityAction::Observe {
             return match self.observe(request, call_remaining_millis(control)) {
-                Ok(_) => EffectDisposition::Completed(self.completed.clone()),
+                Ok(active_state) => self.execute_observation(active_state, control, || {
+                    self.regular_observation(request, control)
+                }),
                 Err(_) => EffectDisposition::Indeterminate(self.unsettled.clone()),
             };
         }
@@ -1290,6 +1573,14 @@ impl TrustedAdapter for NativeSystemdServiceAdapter {
         request: &Self::Request,
         control: &dyn RuntimeControl,
     ) -> ReconcileDisposition<Self::Completion, Self::Observation> {
+        if request.durable.action == SystemdAbilityAction::Observe {
+            return match self.observe(request, call_remaining_millis(control)) {
+                Ok(active_state) => self.reconcile_observation(active_state, control, || {
+                    self.regular_observation(request, control)
+                }),
+                Err(_) => ReconcileDisposition::StillIndeterminate(self.unsettled.clone()),
+            };
+        }
         match self.observe(request, call_remaining_millis(control)) {
             Ok(active_state) if request.durable.action.recovery_postcondition(&active_state) => {
                 ReconcileDisposition::Completed(self.completed.clone())
@@ -1304,12 +1595,43 @@ impl TrustedAdapter for NativeSystemdServiceAdapter {
         request: &Self::Request,
         control: &dyn RuntimeControl,
     ) -> CancellationDisposition<Self::Completion, Self::Observation> {
+        if request.durable.action == SystemdAbilityAction::Observe {
+            return match self.observe(request, call_remaining_millis(control)) {
+                Ok(active_state) => self.cancel_observation(active_state, control, || {
+                    self.regular_observation(request, control)
+                }),
+                Err(_) => CancellationDisposition::Indeterminate(self.unsettled.clone()),
+            };
+        }
         match self.observe(request, call_remaining_millis(control)) {
             Ok(active_state) if request.durable.action.recovery_postcondition(&active_state) => {
                 CancellationDisposition::Completed(self.completed.clone())
             }
             Ok(_) | Err(_) => CancellationDisposition::Indeterminate(self.unsettled.clone()),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReferenceObservationDisposition {
+    Completed,
+    Rejected,
+    Indeterminate,
+}
+
+enum ReferenceObservationResult {
+    Completed(ReferenceSystemdRecord),
+    Rejected,
+    Indeterminate,
+}
+
+fn classify_regular_observation(
+    observation: Result<(), NativeConsumerObservationError>,
+) -> ReferenceObservationDisposition {
+    match observation {
+        Ok(()) => ReferenceObservationDisposition::Completed,
+        Err(error) if error.is_rejection() => ReferenceObservationDisposition::Rejected,
+        Err(_) => ReferenceObservationDisposition::Indeterminate,
     }
 }
 
@@ -1352,7 +1674,7 @@ impl SystemdAbilityAction {
             OperationFamily::ObserveReadiness => Self::Observe,
             _ => return Err(invalid_data("unsupported systemd operation family")),
         };
-        if operation.method.as_str() != action.label() {
+        if !action.matches_method(operation.method.as_str()) {
             return Err(invalid_data(
                 "systemd method disagrees with operation family",
             ));
@@ -1368,6 +1690,10 @@ impl SystemdAbilityAction {
             Self::Stop => "stop",
             Self::Observe => "observe",
         }
+    }
+
+    fn matches_method(self, method: &str) -> bool {
+        method == self.label() || (self == Self::Observe && method == "observe-manager")
     }
 
     const fn postcondition(self, active_state: &UnitActiveState) -> bool {
@@ -1524,6 +1850,26 @@ where
     })
 }
 
+/// Observes the exact systemd manager incarnation on a supplied bus capability.
+///
+/// # Errors
+///
+/// Returns an error when no multi-thread Tokio runtime is active, the bounded
+/// D-Bus pin fails, or systemd returns an invalid opaque incarnation token.
+pub(crate) fn current_systemd_incarnation(
+    connection: &Arc<SystemdManagerConnection>,
+) -> Result<IncarnationId, io::Error> {
+    let runtime = tokio::runtime::Handle::try_current().map_err(|error| {
+        invalid_data(format!(
+            "systemd assignment observation requires a Tokio runtime: {error}"
+        ))
+    })?;
+    require_multi_thread_runtime(&runtime)?;
+    let manager = run_async(&runtime, CATALOG_QUALIFICATION_MILLIS, connection.pin())?;
+    IncarnationId::new(manager.incarnation().token())
+        .map_err(|error| invalid_data(format!("invalid systemd manager incarnation: {error}")))
+}
+
 fn require_multi_thread_runtime(runtime: &tokio::runtime::Handle) -> Result<(), io::Error> {
     if runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
         Ok(())
@@ -1580,7 +1926,10 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::thread::JoinHandle;
 
     use aos_ability_validate::test_support::{
         checked_effect_plan, checked_systemd_manager_effect_plan,
@@ -1873,7 +2222,7 @@ mod tests {
 
         let verified = seal_test_package(package_document(provider.clone(), handler.clone()))?;
         authenticate_reference_systemd(&verified, &assignment)?;
-        assert!(NativeSystemdServiceAdapter::initialize(assignment.clone()).is_ok());
+        assert!(NativeSystemdServiceAdapter::initialize(assignment.clone(), Vec::new()).is_ok());
         assert!(authenticate_builtin_systemd(&verified, &assignment).is_err());
 
         let mut forged_entry = handler.clone();
@@ -2191,6 +2540,8 @@ mod tests {
             REBIND_SECOND_PATH
         );
         let assignment = test_assignment(manager.incarnation().token());
+        let service_assignment = assignment.clone();
+        let consumer_observation = test_consumer_observation(&assignment.provider);
         let first = test_resource(&assignment, "primary-unit");
         let second = test_resource(&assignment, "alias-unit");
 
@@ -2212,6 +2563,17 @@ mod tests {
             0,
             "an exact active no-op observation must not send a lifecycle job"
         );
+        *example_active_state.lock().unwrap() = "inactive".to_string();
+        assert_eq!(
+            catalog.classify_runtime_state(&first)?.1,
+            SystemdResourceRuntimeState::Stopped
+        );
+        assert_eq!(
+            example_starts.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "stopped-state classification must not send a lifecycle job"
+        );
+        *example_active_state.lock().unwrap() = "active".to_string();
 
         *example_documentation.lock().unwrap() = vec![revision_receipt_uri(
             "example.service",
@@ -2253,6 +2615,7 @@ mod tests {
                 manager_owner: manager.incarnation().owner().to_string(),
             },
             manager: Arc::clone(&manager),
+            consumer_observation: Some(consumer_observation.clone()),
         };
         let mut adapter = NativeSystemdAdapter::initialize(assignment)?;
         *example_documentation.lock().unwrap() = Vec::new();
@@ -2313,6 +2676,7 @@ mod tests {
                 manager_owner: manager.incarnation().owner().to_string(),
             },
             manager: Arc::clone(&manager),
+            consumer_observation: Some(consumer_observation.clone()),
         };
         for transient_state in ["activating", "deactivating", "reloading"] {
             *example_active_state.lock().unwrap() = transient_state.to_string();
@@ -2350,7 +2714,8 @@ mod tests {
                 manager_bus_id: manager.incarnation().bus_id().to_string(),
                 manager_owner: manager.incarnation().owner().to_string(),
             },
-            manager,
+            manager: Arc::clone(&manager),
+            consumer_observation: Some(consumer_observation),
         };
         let reconciled = adapter.reconcile(&request, &TestControl);
         let ReconcileDisposition::Completed(record) = reconciled else {
@@ -2361,6 +2726,121 @@ mod tests {
             record.outputs()[&LocalKey::new("active")?].as_json(),
             &serde_json::Value::Bool(true)
         );
+
+        let service_request = |consumer_observation| SystemdAbilityRequest {
+            durable: SystemdDurableRequest {
+                schema: REQUEST_SCHEMA.to_string(),
+                action: SystemdAbilityAction::Observe,
+                unit: "example.service".to_string(),
+                unit_identity: UNIT_PATH.to_string(),
+                revision: test_revision(),
+                manager_bus_id: manager.incarnation().bus_id().to_string(),
+                manager_owner: manager.incarnation().owner().to_string(),
+            },
+            manager: Arc::clone(&manager),
+            consumer_observation,
+        };
+        let mut service =
+            NativeSystemdServiceAdapter::initialize(service_assignment.clone(), Vec::new())?;
+        let (healthy_observation, healthy_server) = serve_test_consumer(
+            test_consumer_observation(&service_assignment.provider),
+            None,
+        )?;
+        assert!(matches!(
+            service.execute(&service_request(Some(healthy_observation)), &TestControl),
+            EffectDisposition::Completed(_)
+        ));
+        healthy_server
+            .join()
+            .expect("healthy consumer server exits");
+
+        let stale_revision = RevisionId(Sha256Digest::of_bytes("stale consumer content"));
+        let (stale_observation, stale_server) = serve_test_consumer(
+            test_consumer_observation(&service_assignment.provider),
+            Some(stale_revision),
+        )?;
+        assert!(matches!(
+            service.execute(&service_request(Some(stale_observation)), &TestControl),
+            EffectDisposition::RejectedBeforeEffect(_)
+        ));
+        stale_server.join().expect("stale consumer server exits");
+
+        let unavailable = unavailable_test_consumer(&service_assignment.provider)?;
+        assert!(matches!(
+            service.execute(&service_request(Some(unavailable)), &TestControl),
+            EffectDisposition::Indeterminate(_)
+        ));
+
+        *example_active_state.lock().unwrap() = "inactive".to_string();
+        let inactive = unavailable_test_consumer(&service_assignment.provider)?;
+        assert!(matches!(
+            service.execute(&service_request(Some(inactive)), &TestControl),
+            EffectDisposition::RejectedBeforeEffect(_)
+        ));
+
+        *example_active_state.lock().unwrap() = "active".to_string();
+        let (reconcile_observation, reconcile_server) = serve_test_consumer(
+            test_consumer_observation(&service_assignment.provider),
+            None,
+        )?;
+        assert!(matches!(
+            service.reconcile(&service_request(Some(reconcile_observation)), &TestControl),
+            ReconcileDisposition::Completed(_)
+        ));
+        reconcile_server
+            .join()
+            .expect("reconciliation consumer server exits");
+        let (cancel_observation, cancel_server) = serve_test_consumer(
+            test_consumer_observation(&service_assignment.provider),
+            None,
+        )?;
+        assert!(matches!(
+            service.cancel(&service_request(Some(cancel_observation)), &TestControl),
+            CancellationDisposition::Completed(_)
+        ));
+        cancel_server
+            .join()
+            .expect("cancellation consumer server exits");
+
+        let output = LocalKey::new("manager-assignment")?;
+        let value = AbilityValue::new(serde_json::to_value(service_assignment.clone())?)?;
+        let readiness =
+            SystemdManagerReadinessOutput::fixed_for_test(output.clone(), value.clone());
+        let mut planned_manager = NativeSystemdServiceAdapter::initialize(
+            service_assignment.clone(),
+            vec![NativeProviderReadinessOutput::Systemd(readiness)],
+        )?;
+        for record in [
+            match planned_manager.execute(
+                &service_request(Some(unavailable_test_consumer(
+                    &service_assignment.provider,
+                )?)),
+                &TestControl,
+            ) {
+                EffectDisposition::Completed(record) => record,
+                _ => panic!("planned-manager execution did not complete"),
+            },
+            match planned_manager.reconcile(
+                &service_request(Some(unavailable_test_consumer(
+                    &service_assignment.provider,
+                )?)),
+                &TestControl,
+            ) {
+                ReconcileDisposition::Completed(record) => record,
+                _ => panic!("planned-manager reconciliation did not complete"),
+            },
+            match planned_manager.cancel(
+                &service_request(Some(unavailable_test_consumer(
+                    &service_assignment.provider,
+                )?)),
+                &TestControl,
+            ) {
+                CancellationDisposition::Completed(record) => record,
+                _ => panic!("planned-manager cancellation did not complete"),
+            },
+        ] {
+            assert_eq!(record.outputs()[&output], value);
+        }
         Ok(())
     }
 
@@ -2382,6 +2862,102 @@ mod tests {
             assert!(!SystemdAbilityAction::Stop.postcondition(&unsettled));
             assert!(!SystemdAbilityAction::Stop.recovery_postcondition(&unsettled));
         }
+    }
+
+    #[test]
+    fn manager_readiness_uses_the_observe_action_without_aliasing_lifecycle_methods() {
+        assert!(SystemdAbilityAction::Observe.matches_method("observe-manager"));
+        assert!(!SystemdAbilityAction::Start.matches_method("observe-manager"));
+        assert!(!SystemdAbilityAction::Reload.matches_method("observe-manager"));
+    }
+
+    #[test]
+    fn regular_observation_distinguishes_health_failure_from_transport_ambiguity() {
+        assert_eq!(
+            classify_regular_observation(Ok(())),
+            ReferenceObservationDisposition::Completed
+        );
+        assert_eq!(
+            classify_regular_observation(Err(NativeConsumerObservationError::Rejected(
+                anyhow::anyhow!("wrong revision"),
+            ))),
+            ReferenceObservationDisposition::Rejected
+        );
+        assert_eq!(
+            classify_regular_observation(Err(NativeConsumerObservationError::Unavailable(
+                anyhow::anyhow!("connection reset"),
+            ))),
+            ReferenceObservationDisposition::Indeterminate
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reference_observation_branches_preserve_consumer_and_manager_evidence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let assignment = test_assignment("test-manager".to_string());
+        let regular = NativeSystemdServiceAdapter::initialize(assignment.clone(), Vec::new())?;
+
+        assert!(matches!(
+            regular.execute_observation(UnitActiveState::Active, &TestControl, || {
+                ReferenceObservationDisposition::Completed
+            }),
+            EffectDisposition::Completed(_)
+        ));
+        assert!(matches!(
+            regular.execute_observation(UnitActiveState::Active, &TestControl, || {
+                ReferenceObservationDisposition::Rejected
+            }),
+            EffectDisposition::RejectedBeforeEffect(_)
+        ));
+        assert!(matches!(
+            regular.execute_observation(UnitActiveState::Active, &TestControl, || {
+                ReferenceObservationDisposition::Indeterminate
+            }),
+            EffectDisposition::Indeterminate(_)
+        ));
+        assert!(matches!(
+            regular.execute_observation(UnitActiveState::Inactive, &TestControl, || {
+                panic!("an inactive unit must not contact its consumer")
+            }),
+            EffectDisposition::RejectedBeforeEffect(_)
+        ));
+
+        let output = LocalKey::new("manager-assignment")?;
+        let value = AbilityValue::new(serde_json::to_value(assignment.clone())?)?;
+        let readiness =
+            SystemdManagerReadinessOutput::fixed_for_test(output.clone(), value.clone());
+        let manager = NativeSystemdServiceAdapter::initialize(
+            assignment,
+            vec![NativeProviderReadinessOutput::Systemd(readiness)],
+        )?;
+        let execute = manager.execute_observation(UnitActiveState::Active, &TestControl, || {
+            panic!("manager readiness must not contact a service consumer")
+        });
+        let reconcile =
+            manager.reconcile_observation(UnitActiveState::Active, &TestControl, || {
+                panic!("manager readiness must not contact a service consumer")
+            });
+        let cancel = manager.cancel_observation(UnitActiveState::Active, &TestControl, || {
+            panic!("manager readiness must not contact a service consumer")
+        });
+        for record in [
+            match execute {
+                EffectDisposition::Completed(record) => record,
+                _ => panic!("manager execute observation did not complete"),
+            },
+            match reconcile {
+                ReconcileDisposition::Completed(record) => record,
+                _ => panic!("manager reconciliation did not complete"),
+            },
+            match cancel {
+                CancellationDisposition::Completed(record) => record,
+                _ => panic!("manager cancellation did not complete"),
+            },
+        ] {
+            assert_eq!(record.outputs()[&output], value);
+        }
+
+        Ok(())
     }
 
     fn test_assignment(incarnation: String) -> ProviderAssignment {
@@ -2409,13 +2985,82 @@ mod tests {
     }
 
     fn test_resource_spec(resource: ResourceId, unit: &str) -> SystemdResourceSpec {
+        let consumer_observation = test_consumer_observation(&resource.provider);
         SystemdResourceSpec {
             resource,
             unit: unit.to_string(),
             revision: test_revision(),
             generation: Sha256Digest::of_bytes("systemd test generation"),
             owner_package: Sha256Digest::of_bytes("systemd test owner package"),
+            consumer_observation: Some(consumer_observation),
         }
+    }
+
+    fn test_consumer_observation(
+        provider: &aos_ability_model::InstanceId,
+    ) -> NativeHttpConsumerObservation {
+        NativeHttpConsumerObservation {
+            schema: NativeHttpConsumerObservation::SCHEMA.to_string(),
+            endpoint: "127.0.0.1:18081".to_string(),
+            authority: "aos-consumer.invalid".to_string(),
+            path: "/__aos/consumer".to_string(),
+            expected_instance: provider.clone(),
+            expected_controller_revision: test_revision(),
+            content_resource: ResourceId {
+                provider: provider.clone(),
+                key: LocalKey::new("content").unwrap(),
+            },
+            expected_content_revision: RevisionId(Sha256Digest::of_bytes(
+                "systemd test consumer content",
+            )),
+        }
+    }
+
+    fn serve_test_consumer(
+        mut observation: NativeHttpConsumerObservation,
+        reported_content_revision: Option<RevisionId>,
+    ) -> Result<(NativeHttpConsumerObservation, JoinHandle<()>), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        observation.endpoint = listener.local_addr()?.to_string();
+        let instance = serde_json::to_string(&observation.expected_instance)?;
+        let controller = observation.expected_controller_revision.0.to_string();
+        let content = reported_content_revision
+            .unwrap_or(observation.expected_content_revision)
+            .0
+            .to_string();
+        let response = format!(
+            "HTTP/1.0 204 No Content\r\nX-AOS-Consumer-Instance: {instance}\r\nX-AOS-Consumer-Controller-Revision: {controller}\r\nX-AOS-Consumer-Content-Revision: {content}\r\n\r\n"
+        );
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("observer connects to test consumer");
+            let mut request = [0_u8; 2 * 1024];
+            let count = stream
+                .read(&mut request)
+                .expect("test consumer reads observation request");
+            assert!(
+                std::str::from_utf8(&request[..count])
+                    .expect("observation request is UTF-8")
+                    .starts_with("GET /__aos/consumer HTTP/1.0\r\n")
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test consumer writes observation response");
+        });
+        Ok((observation, server))
+    }
+
+    fn unavailable_test_consumer(
+        provider: &aos_ability_model::InstanceId,
+    ) -> Result<NativeHttpConsumerObservation, Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = listener.local_addr()?;
+        drop(listener);
+
+        let mut observation = test_consumer_observation(provider);
+        observation.endpoint = endpoint.to_string();
+        Ok(observation)
     }
 
     fn write_test_revision_receipt(root: &Path, spec: &SystemdResourceSpec) -> PathBuf {

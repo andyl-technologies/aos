@@ -251,10 +251,14 @@ where
             .iter()
             .map(|generation| generation.number)
             .collect::<Vec<_>>();
+        let native_recovery_generations =
+            crate::config_eval::activation::required_native_recovery_generations(profile, &state)?;
         let cutoff = generations.len().saturating_sub(keep as usize);
         let mut removed = Vec::new();
         for generation in &generations[..cutoff] {
-            if generation.number == state.current {
+            if generation.number == state.current
+                || native_recovery_generations.contains(&generation.number)
+            {
                 continue;
             }
             let generation_path = profile.join(format!("gen-{}", generation.number));
@@ -818,9 +822,54 @@ mod tests {
             let directory = profile.join(format!("gen-{}", generation.number));
             std::fs::create_dir_all(directory.join("cfg")).unwrap();
             std::fs::create_dir_all(directory.join("cfgsrc")).unwrap();
+            std::fs::write(directory.join("manifest.json"), br#"{"inputs":{}}"#).unwrap();
         }
         std::os::unix::fs::symlink(format!("gen-{}", state.current), profile.join("current"))
             .unwrap();
+    }
+
+    fn write_native_recovery_record(
+        profile: &Path,
+        state: &ConfigGenerationState,
+        status: &str,
+        prior_generation: Option<u32>,
+    ) {
+        write_native_recovery_record_at(profile, state, state.current, status, prior_generation);
+    }
+
+    fn write_native_recovery_record_at(
+        profile: &Path,
+        state: &ConfigGenerationState,
+        generation: u32,
+        status: &str,
+        prior_generation: Option<u32>,
+    ) {
+        let current = state
+            .generations
+            .iter()
+            .find(|candidate| candidate.number == generation)
+            .unwrap();
+        let record = serde_json::json!({
+            "schema": "aos.config-activation/v1",
+            "generation": current.number,
+            "generation_id": current.manifest_hash,
+            "transaction_manifest": "sha256:checked-transaction-manifest",
+            "dropped_packages": [],
+            "status": status,
+            "activation_exit": if status == "complete" { 0 } else { 6 },
+            "native_ability_transaction": "configure-nginx",
+            "native_ability_prior_generation": prior_generation,
+        });
+        std::fs::write(
+            profile.join(format!("gen-{}/manifest.json", current.number)),
+            br#"{"inputs":{"ability_activation":{}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            profile.join(format!("gen-{}/activation.json", current.number)),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1025,6 +1074,181 @@ mod tests {
         assert_eq!(result.removed, vec![2, 3]);
         assert_eq!(result.after, vec![1, 4, 5]);
         assert!(profile.join("gen-1/ability-transactions").is_dir());
+    }
+
+    #[test]
+    fn config_prune_retains_old_consumer_generation_for_native_recovery() {
+        for status in ["native-pending", "native-failed"] {
+            let tmp = TempDir::new().unwrap();
+            let profile = tmp.path().join("profiles/system");
+            let run_etc = tmp.path().join("run/etc");
+            let state = config_state(5);
+            write_config_profile(&profile, &state);
+            write_native_recovery_record(&profile, &state, status, Some(1));
+
+            let result = prune_config_generations_with(
+                &profile,
+                &run_etc,
+                state,
+                2,
+                |_| Ok(()),
+                remove_config_generation_dir,
+            )
+            .unwrap();
+
+            assert_eq!(result.removed, vec![2, 3], "status {status}");
+            assert_eq!(result.after, vec![1, 4, 5], "status {status}");
+            assert!(profile.join("gen-1").is_dir(), "status {status}");
+        }
+    }
+
+    #[test]
+    fn completed_native_activation_releases_prior_generation_for_pruning() {
+        let tmp = TempDir::new().unwrap();
+        let profile = tmp.path().join("profiles/system");
+        let run_etc = tmp.path().join("run/etc");
+        let state = config_state(5);
+        write_config_profile(&profile, &state);
+        write_native_recovery_record(&profile, &state, "complete", Some(1));
+
+        let result = prune_config_generations_with(
+            &profile,
+            &run_etc,
+            state,
+            2,
+            |_| Ok(()),
+            remove_config_generation_dir,
+        )
+        .unwrap();
+
+        assert_eq!(result.removed, vec![1, 2, 3]);
+        assert_eq!(result.after, vec![4, 5]);
+    }
+
+    #[test]
+    fn config_prune_retains_transitive_native_recovery_chain() {
+        let tmp = TempDir::new().unwrap();
+        let profile = tmp.path().join("profiles/system");
+        let run_etc = tmp.path().join("run/etc");
+        let state = config_state(5);
+        write_config_profile(&profile, &state);
+        write_native_recovery_record_at(&profile, &state, 4, "native-failed", Some(1));
+        write_native_recovery_record_at(&profile, &state, 5, "native-pending", Some(4));
+
+        let result = prune_config_generations_with(
+            &profile,
+            &run_etc,
+            state,
+            1,
+            |_| Ok(()),
+            remove_config_generation_dir,
+        )
+        .unwrap();
+
+        assert_eq!(result.removed, vec![2, 3]);
+        assert_eq!(result.after, vec![1, 4, 5]);
+        assert!(profile.join("gen-1").is_dir());
+        assert!(profile.join("gen-4").is_dir());
+    }
+
+    #[test]
+    fn config_prune_rejects_missing_native_recovery_generation() {
+        let tmp = TempDir::new().unwrap();
+        let profile = tmp.path().join("profiles/system");
+        let run_etc = tmp.path().join("run/etc");
+        let state = config_state(5);
+        write_config_profile(&profile, &state);
+        write_native_recovery_record(&profile, &state, "native-pending", Some(99));
+
+        let error = prune_config_generations_with(
+            &profile,
+            &run_etc,
+            state,
+            2,
+            |_| Ok(()),
+            remove_config_generation_dir,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("generation 99 is absent from state"));
+        assert!(!profile.join(CONFIG_PRUNE_JOURNAL).exists());
+        assert!(profile.join("gen-1").is_dir());
+    }
+
+    #[test]
+    fn config_prune_rejects_absent_prior_generation_directory() {
+        let tmp = TempDir::new().unwrap();
+        let profile = tmp.path().join("profiles/system");
+        let run_etc = tmp.path().join("run/etc");
+        let state = config_state(5);
+        write_config_profile(&profile, &state);
+        write_native_recovery_record(&profile, &state, "native-failed", Some(1));
+        std::fs::remove_dir_all(profile.join("gen-1")).unwrap();
+
+        let error = prune_config_generations_with(
+            &profile,
+            &run_etc,
+            state,
+            2,
+            |_| Ok(()),
+            remove_config_generation_dir,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("generation 1 has no protected directory"));
+        assert!(!profile.join(CONFIG_PRUNE_JOURNAL).exists());
+    }
+
+    #[test]
+    fn config_prune_rejects_structured_generation_without_activation_record() {
+        let tmp = TempDir::new().unwrap();
+        let profile = tmp.path().join("profiles/system");
+        let run_etc = tmp.path().join("run/etc");
+        let state = config_state(5);
+        write_config_profile(&profile, &state);
+        std::fs::write(
+            profile.join("gen-5/manifest.json"),
+            br#"{"inputs":{"ability_activation":{}}}"#,
+        )
+        .unwrap();
+
+        let error = prune_config_generations_with(
+            &profile,
+            &run_etc,
+            state,
+            2,
+            |_| Ok(()),
+            remove_config_generation_dir,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("has no activation record"));
+        assert!(!profile.join(CONFIG_PRUNE_JOURNAL).exists());
+        assert!(profile.join("gen-1").is_dir());
+    }
+
+    #[test]
+    fn config_prune_rejects_unknown_current_activation_status() {
+        let tmp = TempDir::new().unwrap();
+        let profile = tmp.path().join("profiles/system");
+        let run_etc = tmp.path().join("run/etc");
+        let state = config_state(5);
+        write_config_profile(&profile, &state);
+        write_native_recovery_record(&profile, &state, "future-status", Some(1));
+
+        let error = prune_config_generations_with(
+            &profile,
+            &run_etc,
+            state,
+            2,
+            |_| Ok(()),
+            remove_config_generation_dir,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("unknown status"));
+        assert!(!profile.join(CONFIG_PRUNE_JOURNAL).exists());
+        assert!(profile.join("gen-1").is_dir());
     }
 
     #[test]

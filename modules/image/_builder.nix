@@ -201,6 +201,11 @@
       # The baked toplevel ceases to be a GC root after host configuration is
       # activated, while this copy remains protected by the immutable root.
       postPopulate = ''
+        mkdir -p rootfs/usr/lib/aos/host
+        cp ${system.config.system.build.staticAbilityContract}/contract.json \
+          rootfs/usr/lib/aos/host/static-ability-contract.json
+        chmod 0444 rootfs/usr/lib/aos/host/static-ability-contract.json
+
         ${lib.optionalString sb.enable ''
           mkdir -p rootfs/usr/lib/aos/image-trust
           cp ${activeImageDbCerts}/active-db-certs.pem \
@@ -471,6 +476,10 @@
           cp ${system.config.system.build.initrd}/initrd.img "$out/inputs/initrd.img"
           cp ${system.config.system.build.initrd}/initrd-stage-contract.json \
             "$out/inputs/initrd-stage-contract.json"
+          cp ${system.config.system.build.initrdStaticAbilityContract}/contract.json \
+            "$out/inputs/initrd-static-ability-contract.json"
+          cp ${system.config.system.build.staticAbilityContract}/contract.json \
+            "$out/inputs/host-static-ability-contract.json"
           ${lib.optionalString recoveryEnabled ''
             cp ${recoveryInitrdA}/initrd.img "$out/inputs/recovery-initrd-a.img"
             cp ${recoveryInitrdB}/initrd.img "$out/inputs/recovery-initrd-b.img"
@@ -521,7 +530,7 @@
           }
 
           ${pkgs.jq}/bin/jq -cS -n \
-            --arg schema aos.image.assembly-recipe/v3 \
+            --arg schema aos.image.assembly-recipe/v4 \
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg lib.system} \
             --arg variant ${lib.escapeShellArg name} \

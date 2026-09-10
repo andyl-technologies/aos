@@ -17,12 +17,14 @@ use aos_ability_validate::{
     BindingAuthorityKind, CheckedEffectPlan, CheckedTransitionAuthority, ValidationContext,
     ValidationErrors,
 };
+use aos_contract::Sha256Digest;
 use serde::Serialize;
 use thiserror::Error;
 
 use crate::{CompositionEvaluator, VerifiedPlanningSnapshot};
 
 use context::{
+    LinkedCurrentAuthorityDocument, LinkedCurrentResourceObservation, LinkedCurrentResourceState,
     bounded_evaluation_message, controller_union, encode_ability_value, resource_changes,
     scoped_changes_and_controllers, scoped_desired_state, scoped_observations,
 };
@@ -32,16 +34,18 @@ use graph::{
 };
 
 pub use context::{
-    AuthorizedTransitionBinding, ResourceChange, ResourceChangeKind, ScopedDesiredState,
-    ScopedObservations, TRANSITION_CONTEXT_SCHEMA, TransitionBindingAuthority, TransitionContext,
+    AuthorizedTransitionBinding, RUNTIME_OBSERVATIONS_SCHEMA, ResourceChange, ResourceChangeKind,
+    RuntimeResourceHealth, RuntimeResourceObservation, RuntimeResourceState, ScopedDesiredState,
+    ScopedObservations, TRANSITION_CONTEXT_SCHEMA, TRANSITION_CONTEXT_SCHEMA_V2,
+    TransitionBindingAuthority, TransitionContext, TransitionReconciliation,
 };
 pub use graph::{
     TRANSITION_FRAGMENT_SCHEMA, TransitionExport, TransitionExportKind, TransitionFragment,
     TransitionHandoff, TransitionImport, TransitionImportDirection, TransitionLink,
 };
 pub use snapshot::{
-    TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA, TransitionEvaluation,
-    TransitionEvaluationResult, TransitionReplayInputs, TransitionSnapshot,
+    TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA, TRANSITION_SNAPSHOT_SCHEMA_V2,
+    TransitionEvaluation, TransitionEvaluationResult, TransitionReplayInputs, TransitionSnapshot,
     TransitionSnapshotError, VerifiedTransitionPlan,
 };
 
@@ -55,6 +59,8 @@ pub struct TransitionInputs<'a> {
     pub current: Option<&'a VerifiedPlanningSnapshot>,
     /// Supplies independently authenticated fresh authority for prior bindings.
     pub authority: Option<&'a CheckedTransitionAuthority>,
+    /// Supplies a fresh, protected live classification when repairing drift.
+    pub reconciliation: Option<&'a TransitionReconciliation>,
 }
 
 /// Bounds pure transition evaluation and the merged effect graph.
@@ -194,6 +200,7 @@ impl<'a> TransitionPlanner<'a> {
             desired,
             inputs.current,
             inputs.authority,
+            inputs.reconciliation,
             evaluations,
             &checked_effect,
         )
@@ -217,6 +224,7 @@ impl<'a> TransitionPlanner<'a> {
     ) -> Result<(CheckedEffectPlan, Vec<TransitionEvaluation>), TransitionError> {
         let outcome = desired.outcome();
         self.validate_authority_inputs(desired, inputs)?;
+        self.validate_reconciliation_inputs(desired, inputs)?;
         let binding_plan = inputs.authority.map_or_else(
             || desired.checked_binding(),
             CheckedTransitionAuthority::binding_plan,
@@ -236,6 +244,9 @@ impl<'a> TransitionPlanner<'a> {
                 .desired_state()
                 .resources
                 .as_slice(),
+            inputs
+                .reconciliation
+                .map(|reconciliation| reconciliation.observations.as_slice()),
         );
         let controllers = controller_union(outcome);
         let mut budget = TransitionBudget::default();
@@ -316,7 +327,12 @@ impl<'a> TransitionPlanner<'a> {
             let after = scoped_desired_state(desired, &group.provider);
             let observations = scoped_observations(desired, &group.provider);
             let context = TransitionContext {
-                schema: TRANSITION_CONTEXT_SCHEMA.to_string(),
+                schema: if inputs.reconciliation.is_some() {
+                    TRANSITION_CONTEXT_SCHEMA_V2
+                } else {
+                    TRANSITION_CONTEXT_SCHEMA
+                }
+                .to_string(),
                 desired_planning: desired.snapshot_digest(),
                 current_planning: inputs
                     .current
@@ -480,6 +496,145 @@ impl<'a> TransitionPlanner<'a> {
             (Some(_), None) => Ok(()),
         }
     }
+
+    fn validate_reconciliation_inputs(
+        &self,
+        desired: &VerifiedPlanningSnapshot,
+        inputs: &TransitionInputs<'_>,
+    ) -> Result<(), TransitionError> {
+        let Some(reconciliation) = inputs.reconciliation else {
+            return Ok(());
+        };
+        if reconciliation.schema != RUNTIME_OBSERVATIONS_SCHEMA
+            || reconciliation.authority_epoch == 0
+            || reconciliation.sequence == 0
+            || reconciliation.max_age_millis == 0
+            || reconciliation.observations.is_empty()
+            || reconciliation.observations.len() > ABILITY_LIMITS_V1.max_collection_items as usize
+        {
+            return Err(TransitionError::Encoding(
+                "runtime reconciliation input is malformed or exceeds its bound".to_string(),
+            ));
+        }
+        if reconciliation
+            .observations
+            .windows(2)
+            .any(|pair| pair[0].resource >= pair[1].resource)
+        {
+            return Err(TransitionError::Encoding(
+                "runtime reconciliation observations are not in strict resource order".to_string(),
+            ));
+        }
+        validate_reconciliation_authority(reconciliation)?;
+
+        let desired_resources = desired
+            .outcome()
+            .desired_state
+            .resources
+            .iter()
+            .map(|revision| (&revision.resource, revision.revision))
+            .collect::<BTreeMap<_, _>>();
+        let mut requires_repair = false;
+        for observation in &reconciliation.observations {
+            let desired_revision =
+                desired_resources
+                    .get(&observation.resource)
+                    .ok_or_else(|| {
+                        TransitionError::Encoding(
+                            "runtime reconciliation observation names a foreign resource"
+                                .to_string(),
+                        )
+                    })?;
+            requires_repair |= match observation.state {
+                RuntimeResourceState::Absent => true,
+                RuntimeResourceState::Present { revision, health } => {
+                    revision != *desired_revision || health != RuntimeResourceHealth::Healthy
+                }
+            };
+        }
+        if !requires_repair {
+            return Err(TransitionError::Encoding(
+                "runtime reconciliation input does not classify any drift".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_reconciliation_authority(
+    reconciliation: &TransitionReconciliation,
+) -> Result<(), TransitionError> {
+    const CURRENT_AUTHORITY_SCHEMA_V2: &str = "aos.ability.current-authority/v2";
+
+    let authority: LinkedCurrentAuthorityDocument = serde_json::from_value(
+        reconciliation.authority_document.as_json().clone(),
+    )
+    .map_err(|error| {
+        TransitionError::Encoding(format!(
+            "runtime reconciliation authority publication is malformed: {error}"
+        ))
+    })?;
+    let canonical = aos_contract::canonical::to_vec(reconciliation.authority_document.as_json())
+        .map_err(|error| {
+            TransitionError::Encoding(format!(
+                "runtime reconciliation authority publication is not canonical: {error}"
+            ))
+        })?;
+    let digest = Sha256Digest::separated(&authority.schema, canonical);
+    if authority.schema != CURRENT_AUTHORITY_SCHEMA_V2
+        || digest != reconciliation.authority_publication
+        || authority.plan != reconciliation.source_plan
+        || authority.transaction != reconciliation.transaction
+        || authority.policy_fence != reconciliation.policy_fence
+        || authority.authority_epoch != reconciliation.authority_epoch
+        || authority.sequence != reconciliation.sequence
+        || authority.observed_at_restart_millis != reconciliation.observed_at_restart_millis
+        || authority.max_age_millis != reconciliation.max_age_millis
+        || authority.resource_observations.len() != reconciliation.observations.len()
+        || authority
+            .resource_observations
+            .iter()
+            .zip(&reconciliation.observations)
+            .any(|(authority, runtime)| !linked_observation_matches(authority, runtime))
+    {
+        return Err(TransitionError::Encoding(
+            "runtime reconciliation authority publication differs from its retained link"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn linked_observation_matches(
+    authority: &LinkedCurrentResourceObservation,
+    runtime: &RuntimeResourceObservation,
+) -> bool {
+    authority.resource == runtime.resource
+        && match (authority.state, runtime.state) {
+            (LinkedCurrentResourceState::Absent, RuntimeResourceState::Absent) => true,
+            (
+                LinkedCurrentResourceState::Present { revision: left },
+                RuntimeResourceState::Present {
+                    revision: right,
+                    health: RuntimeResourceHealth::Healthy,
+                },
+            )
+            | (
+                LinkedCurrentResourceState::Stopped { revision: left },
+                RuntimeResourceState::Present {
+                    revision: right,
+                    health: RuntimeResourceHealth::Stopped,
+                },
+            )
+            | (
+                LinkedCurrentResourceState::Divergent { revision: left },
+                RuntimeResourceState::Present {
+                    revision: right,
+                    health: RuntimeResourceHealth::Divergent,
+                },
+            ) => left == right,
+            _ => false,
+        }
 }
 
 #[derive(Default)]

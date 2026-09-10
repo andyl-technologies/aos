@@ -1337,12 +1337,16 @@ mod tests {
 
     fn ability_reference() -> PackageAbilityReference {
         let supported = aos_doc_model::ability_reference_supported_features().unwrap();
-        let interface = decode_canonical::<InterfaceDocument>(
+        let mut interface = decode_canonical::<InterfaceDocument>(
             include_bytes!("../../../tests/abilities/fixtures/interface.json"),
             ABILITY_LIMITS_V1,
             &supported,
         )
         .unwrap();
+        interface.interface.configuration = Some(ValueSchema::String {
+            max_length: 64,
+            syntax: None,
+        });
 
         PackageAbilityReference {
             schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
@@ -1464,15 +1468,42 @@ mod tests {
         let plain = loaded.render_plain().unwrap();
         assert!(plain.contains("DECLARED ABILITIES"));
         assert!(plain.contains("declared export\tserver\taos.test.echo\tABI 1"));
+        assert!(plain.contains("declared request or contribution schema"));
+        assert!(plain.contains("declared operator-owned provider instance configuration schema"));
+        assert!(plain.contains("\"max_length\": 64"));
         assert!(plain.contains("declared aggregate output"));
         assert!(plain.contains("declared method"));
         assert!(plain.contains("does not report activation, provider selection"));
+        assert!(plain.contains("public schemas only, never deployed instance values"));
         assert!(plain.contains("\\u{1b}\\n</code><script>bad()</script>"));
+
+        let html = loaded.render_html().unwrap();
+        assert!(html.contains("Declared request or contribution schema"));
+        assert!(html.contains("Declared operator-owned provider instance configuration schema"));
+        assert!(html.contains("&quot;max_length&quot;: 64"));
+        assert!(html.contains("public schemas only, never deployed instance values"));
 
         let roff = loaded.render_roff().unwrap();
         assert!(roff.contains(".SH \"DECLARED ABILITIES\""));
+        assert!(roff.contains("declared operator-owned provider instance configuration schema"));
         assert!(roff.contains("\\eentry\\eu{1b}\\en</code><script>bad()</script>"));
         assert!(!roff.contains("\n.handler"));
+
+        let mut without_configuration = loaded.clone();
+        without_configuration
+            .ability_reference
+            .as_mut()
+            .unwrap()
+            .exports[0]
+            .interface
+            .interface
+            .configuration = None;
+        assert!(
+            without_configuration
+                .render_plain()
+                .unwrap()
+                .contains("no operator-owned provider instance configuration is declared")
+        );
 
         let canonical_document = rendered_bytes(&loaded, DocumentationOutput::Json).unwrap();
         assert_eq!(

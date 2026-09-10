@@ -41,6 +41,8 @@ const REFERENCE_ENVIRONMENT: [&str; 12] = [
     "AOS_TEST_ABILITY_REFERENCE_SYSTEMD_NAR_HASH",
     "AOS_TEST_ABILITY_REFERENCE_PACKAGES",
 ];
+const REFERENCE_ATTEMPT_TIMEOUT_MILLIS: u64 = 300_000;
+const REFERENCE_TOTAL_RECOVERY_MILLIS: u64 = 1_200_000;
 
 struct ReferenceFixture {
     context: ValidationContext,
@@ -278,6 +280,7 @@ impl Deployment<'_> {
                 instance: app_instance.clone(),
                 package: self.fixture.consumer_package,
                 enabled: true,
+                configuration: None,
             });
             requests.push(BindingRequest {
                 id: request.clone(),
@@ -307,6 +310,7 @@ impl Deployment<'_> {
                 instance: nginx.clone(),
                 package: self.fixture.nginx_package,
                 enabled: nginx_enabled,
+                configuration: Some(nginx_consumer_probe(nginx)),
             });
         }
         instances.sort_by(|left, right| left.instance.cmp(&right.instance));
@@ -438,10 +442,17 @@ impl Deployment<'_> {
             } else {
                 request.id.consumer.clone()
             };
+            let exact_service_key = (request.id.key.as_str() == "service-terminal")
+                .then(|| format!("{}-service", request.id.consumer.key));
             let resources = desired
                 .resources
                 .iter()
-                .filter(|revision| revision.resource.provider == provider)
+                .filter(|revision| {
+                    revision.resource.provider == provider
+                        && exact_service_key
+                            .as_ref()
+                            .is_none_or(|expected| revision.resource.key.as_str() == expected)
+                })
                 .map(|revision| ResourcePermission {
                     resource: revision.resource.clone(),
                     access: AccessMode::ExclusiveWrite,
@@ -688,6 +699,14 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
     let empty_planning = assert_snapshot_replay(empty.fixture, seed, &empty_composed);
     let empty_state = empty_composed.outcome.desired_state;
     assert_eq!(virtual_host_count(&empty_state, &nginx_main), 0);
+    assert_eq!(
+        configured_consumer_probe(&empty_state, &nginx_main),
+        nginx_consumer_probe(&nginx_main)
+    );
+    assert_eq!(
+        service_consumer_endpoint(&empty_state, &nginx_main),
+        "127.0.0.1:18081"
+    );
     assert!(
         empty_state
             .resources
@@ -708,9 +727,14 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         &authority,
     );
     let disabled_state = disabled_composed.outcome.desired_state;
+    assert_eq!(
+        configured_consumer_probe(&disabled_state, &nginx_main),
+        nginx_consumer_probe(&nginx_main)
+    );
     assert!(disabled_state.resources.is_empty());
     assert!(disabled_state.outputs.is_empty());
     assert!(disabled_state.controllers.is_empty());
+    empty.fixture.observe_applied_state(&disabled_state);
 
     let nginx_one = instance(&environment, "nginx-one");
     let nginx_two = instance(&environment, "nginx-two");
@@ -718,23 +742,392 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         fixture: empty.fixture,
         nginx_instances: vec![nginx_one.clone(), nginx_two.clone()],
         app_routes: vec![
-            app_route("app-a", "nginx-one", "one.example", false, "one-v1"),
+            app_route("app-a", "nginx-one", "one.example", true, "one-v1"),
             app_route("app-b", "nginx-two", "two.example", true, "two-v1"),
         ],
     };
     let seed = isolated.seed(true);
-    let isolated_outcome = isolated.compose(seed).outcome;
-    assert_shared_lower_isolation(&isolated_outcome, &nginx_one, &nginx_two);
+    let isolated_composed = isolated.compose(seed.clone());
+    let isolated_planning = assert_snapshot_replay(isolated.fixture, seed, &isolated_composed);
+    assert_shared_lower_isolation(
+        &isolated_composed.outcome,
+        &nginx_one,
+        &nginx_two,
+        true,
+        true,
+    );
+    let isolated_transition = TransitionPlanner::new(&isolated.fixture.context)
+        .plan(
+            &isolated_planning,
+            TransitionInputs {
+                current: None,
+                authority: None,
+                reconciliation: None,
+            },
+            &mut isolated.fixture.evaluator,
+        )
+        .unwrap();
+    let isolated_effect = isolated_transition.checked_effect().document();
+    let credential_delivery = isolated_effect
+        .operations
+        .iter()
+        .find(|operation| {
+            operation.family
+                == OperationFamily::Credential {
+                    action: CredentialAction::Deliver,
+                }
+                && operation.target.resource.key.as_str() == "nginx-two-credential-view"
+        })
+        .unwrap();
+    assert_eq!(
+        credential_delivery.target.resource.provider.key.as_str(),
+        "shared-credential"
+    );
+    assert_eq!(
+        credential_delivery.target.resource.key.as_str(),
+        "nginx-two-credential-view"
+    );
+    let credential_effects = isolated_planning
+        .checked_binding()
+        .bindings()
+        .iter()
+        .find(|binding| {
+            binding.provider == credential_delivery.target.resource.provider
+                && binding.request.consumer == credential_delivery.target.resource.provider
+                && binding.request.key.as_str() == "effects"
+        })
+        .unwrap();
+    assert_eq!(credential_delivery.binding, credential_effects.id);
+    assert_eq!(
+        credential_effects
+            .caller_grant
+            .resources
+            .iter()
+            .map(|permission| (
+                permission.resource.key.as_str(),
+                permission
+                    .operations
+                    .iter()
+                    .map(LocalKey::as_str)
+                    .collect::<Vec<_>>()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("nginx-one-credential-view", vec!["deliver", "release"]),
+            ("nginx-two-credential-view", vec!["deliver", "release"]),
+        ]
+    );
+    let nginx_two_validation = isolated_effect
+        .operations
+        .iter()
+        .find(|operation| {
+            operation.method.as_str() == "validate"
+                && operation.target.resource.provider == nginx_two
+        })
+        .unwrap();
+    assert_required_operation_edge(isolated_effect, credential_delivery, nginx_two_validation);
 
-    let isolated_state = isolated_outcome.desired_state;
+    let isolated_state = isolated_composed.outcome.desired_state;
     let first = rendered_configuration(&isolated_state, &nginx_one);
     let second = rendered_configuration(&isolated_state, &nginx_two);
     assert!(first.contains("one.example"));
     assert!(!first.contains("two.example"));
     assert!(second.contains("two.example"));
     assert!(!second.contains("one.example"));
-    assert!(nginx_output(&isolated_state, &nginx_one, "credential-view").is_none());
+    assert!(nginx_output(&isolated_state, &nginx_one, "credential-view").is_some());
     assert!(nginx_output(&isolated_state, &nginx_two, "credential-view").is_some());
+
+    isolated.fixture.observe_applied_state(&isolated_state);
+    let mut tls_removed = Deployment {
+        fixture: isolated.fixture,
+        nginx_instances: vec![nginx_one.clone(), nginx_two.clone()],
+        app_routes: vec![
+            app_route("app-a", "nginx-one", "one-updated.example", true, "one-v2"),
+            app_route("app-b", "nginx-two", "two.example", false, "two-v1"),
+        ],
+    };
+    let seed = tls_removed.seed(true);
+    let tls_removed_composed = tls_removed.compose(seed.clone());
+    let tls_removed_planning =
+        assert_snapshot_replay(tls_removed.fixture, seed, &tls_removed_composed);
+    let authority = teardown_authority(
+        tls_removed.fixture,
+        &tls_removed_planning,
+        &isolated_planning,
+    );
+    let tls_removed_transition = TransitionPlanner::new(&tls_removed.fixture.context)
+        .plan(
+            &tls_removed_planning,
+            TransitionInputs {
+                current: Some(&isolated_planning),
+                authority: Some(&authority),
+                reconciliation: None,
+            },
+            &mut tls_removed.fixture.evaluator,
+        )
+        .unwrap();
+    let tls_removed_effect = tls_removed_transition.checked_effect().document();
+    let credential_release = tls_removed_effect
+        .operations
+        .iter()
+        .find(|operation| {
+            operation.family == OperationFamily::ReleaseResource
+                && operation.target.resource.provider.key.as_str() == "shared-credential"
+                && operation.target.resource.key.as_str() == "nginx-two-credential-view"
+        })
+        .unwrap();
+    assert_eq!(
+        credential_release.target.resource.key.as_str(),
+        "nginx-two-credential-view"
+    );
+    let credential_delivery = tls_removed_effect
+        .operations
+        .iter()
+        .find(|operation| {
+            operation.family
+                == OperationFamily::Credential {
+                    action: CredentialAction::Deliver,
+                }
+                && operation.target.resource.key.as_str() == "nginx-one-credential-view"
+        })
+        .unwrap();
+    let credential_provider = lower_provider(&environment, "credential");
+    let desired_effects = tls_removed_planning
+        .checked_binding()
+        .bindings()
+        .iter()
+        .find(|binding| {
+            binding.provider == credential_provider
+                && binding.request.consumer == credential_provider
+                && binding.request.key.as_str() == "effects"
+        })
+        .unwrap();
+    let teardown_effects = authority
+        .document()
+        .teardown_bindings
+        .iter()
+        .find(|entry| entry.source_binding == desired_effects.id)
+        .unwrap();
+    assert_eq!(
+        desired_effects
+            .caller_grant
+            .resources
+            .iter()
+            .map(|permission| permission.resource.key.as_str())
+            .collect::<Vec<_>>(),
+        ["nginx-one-credential-view"]
+    );
+    assert_eq!(
+        teardown_effects
+            .binding
+            .caller_grant
+            .resources
+            .iter()
+            .map(|permission| permission.resource.key.as_str())
+            .collect::<Vec<_>>(),
+        ["nginx-two-credential-view"]
+    );
+    assert_eq!(credential_delivery.binding, desired_effects.id);
+    assert_eq!(credential_release.binding, teardown_effects.binding.id);
+    let nginx_two_observation = tls_removed_effect
+        .operations
+        .iter()
+        .find(|operation| {
+            operation.family == OperationFamily::ObserveReadiness
+                && operation.target.resource.key.as_str() == "nginx-two-service"
+        })
+        .unwrap();
+    assert_required_operation_edge(
+        tls_removed_effect,
+        nginx_two_observation,
+        credential_release,
+    );
+
+    tls_removed.fixture.observe_applied_state(&isolated_state);
+    let mut tls_disabled = Deployment {
+        fixture: tls_removed.fixture,
+        nginx_instances: vec![nginx_one.clone(), nginx_two.clone()],
+        app_routes: Vec::new(),
+    };
+    let seed = tls_disabled.seed(false);
+    let tls_disabled_composed = tls_disabled.compose(seed.clone());
+    let tls_disabled_planning =
+        assert_snapshot_replay(tls_disabled.fixture, seed, &tls_disabled_composed);
+    let authority = teardown_authority(
+        tls_disabled.fixture,
+        &tls_disabled_planning,
+        &isolated_planning,
+    );
+    let tls_disabled_transition = TransitionPlanner::new(&tls_disabled.fixture.context)
+        .plan(
+            &tls_disabled_planning,
+            TransitionInputs {
+                current: Some(&isolated_planning),
+                authority: Some(&authority),
+                reconciliation: None,
+            },
+            &mut tls_disabled.fixture.evaluator,
+        )
+        .unwrap();
+    let tls_disabled_effect = tls_disabled_transition.checked_effect().document();
+    let credential_release = tls_disabled_effect
+        .operations
+        .iter()
+        .find(|operation| {
+            operation.family == OperationFamily::ReleaseResource
+                && operation.target.resource.provider.key.as_str() == "shared-credential"
+                && operation.target.resource.key.as_str() == "nginx-two-credential-view"
+        })
+        .unwrap();
+    let nginx_two_stop = tls_disabled_effect
+        .operations
+        .iter()
+        .find(|operation| {
+            matches!(
+                &operation.family,
+                OperationFamily::ServiceLifecycle {
+                    action: ServiceAction::Stop
+                }
+            ) && operation.target.resource.key.as_str() == "nginx-two-service"
+        })
+        .unwrap();
+    assert_required_operation_edge(tls_disabled_effect, nginx_two_stop, credential_release);
+
+    tls_disabled.fixture.observe_applied_state(&disabled_state);
+    let mut transitioning = Deployment {
+        fixture: tls_disabled.fixture,
+        nginx_instances: vec![nginx_one.clone(), nginx_two.clone()],
+        app_routes: vec![
+            app_route("app-a", "nginx-one", "one.example", false, "one-v1"),
+            app_route("app-b", "nginx-two", "two.example", false, "two-v1"),
+        ],
+    };
+    let seed = transitioning.seed(true);
+    let transitioning_composed = transitioning.compose(seed.clone());
+    let transitioning_planning =
+        assert_snapshot_replay(transitioning.fixture, seed, &transitioning_composed);
+    assert_shared_lower_isolation(
+        &transitioning_composed.outcome,
+        &nginx_one,
+        &nginx_two,
+        false,
+        false,
+    );
+    let transitioning_transition = TransitionPlanner::new(&transitioning.fixture.context)
+        .plan(
+            &transitioning_planning,
+            TransitionInputs {
+                current: None,
+                authority: None,
+                reconciliation: None,
+            },
+            &mut transitioning.fixture.evaluator,
+        )
+        .unwrap();
+    assert_eq!(
+        transitioning_transition
+            .checked_effect()
+            .document()
+            .operations
+            .len(),
+        12
+    );
+
+    let transitioning_state = transitioning_composed.outcome.desired_state;
+    transitioning
+        .fixture
+        .observe_applied_state(&transitioning_state);
+    let mut reduced = Deployment {
+        fixture: transitioning.fixture,
+        nginx_instances: vec![nginx_one],
+        app_routes: vec![app_route(
+            "app-a",
+            "nginx-one",
+            "one.example",
+            false,
+            "one-v2",
+        )],
+    };
+    let seed = reduced.seed(true);
+    let reduced_composed = reduced.compose(seed.clone());
+    let reduced_planning = assert_snapshot_replay(reduced.fixture, seed, &reduced_composed);
+    let authority = teardown_authority(reduced.fixture, &reduced_planning, &transitioning_planning);
+    let configuration_provider = lower_provider(&environment, "configuration");
+    let desired_effects = reduced_planning
+        .checked_binding()
+        .bindings()
+        .iter()
+        .find(|binding| {
+            binding.provider == configuration_provider
+                && binding.request.consumer == configuration_provider
+                && binding.request.key.as_str() == "effects"
+        })
+        .unwrap();
+    let teardown_effects = authority
+        .document()
+        .teardown_bindings
+        .iter()
+        .find(|entry| entry.source_binding == desired_effects.id)
+        .unwrap();
+    assert_eq!(
+        desired_effects
+            .caller_grant
+            .resources
+            .iter()
+            .map(|permission| permission.resource.key.as_str())
+            .collect::<Vec<_>>(),
+        ["nginx-one-configuration"]
+    );
+    assert_eq!(
+        teardown_effects
+            .binding
+            .caller_grant
+            .resources
+            .iter()
+            .map(|permission| permission.resource.key.as_str())
+            .collect::<Vec<_>>(),
+        ["nginx-two-configuration"]
+    );
+
+    let reduced_transition = TransitionPlanner::new(&reduced.fixture.context)
+        .plan(
+            &reduced_planning,
+            TransitionInputs {
+                current: Some(&transitioning_planning),
+                authority: Some(&authority),
+                reconciliation: None,
+            },
+            &mut reduced.fixture.evaluator,
+        )
+        .unwrap();
+    let configuration_operations = reduced_transition
+        .checked_effect()
+        .document()
+        .operations
+        .iter()
+        .filter(|operation| {
+            operation.target.resource.provider.key.as_str() == "shared-configuration"
+        })
+        .map(|operation| {
+            (
+                operation.method.as_str(),
+                operation.target.resource.key.as_str(),
+                &operation.binding,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        configuration_operations,
+        [
+            ("prepare", "nginx-one-configuration", &desired_effects.id),
+            ("publish", "nginx-one-configuration", &desired_effects.id),
+            (
+                "release",
+                "nginx-two-configuration",
+                &teardown_effects.binding.id
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -839,6 +1232,7 @@ fn authenticated_registry_and_source_paths_produce_identical_plans() {
             TransitionInputs {
                 current: None,
                 authority: None,
+                reconciliation: None,
             },
             &mut deployment.fixture.evaluator,
         )
@@ -849,6 +1243,7 @@ fn authenticated_registry_and_source_paths_produce_identical_plans() {
             TransitionInputs {
                 current: None,
                 authority: None,
+                reconciliation: None,
             },
             &mut deployment.fixture.evaluator,
         )
@@ -965,6 +1360,41 @@ fn checked_reference_source_rejects_response_identity_outside_its_slot() {
         CompositionError::Evaluation { ref source, .. }
             if source.to_string().contains("does not match its authorized slot")
     ));
+}
+
+#[test]
+fn checked_reference_source_rejects_app_selected_consumer_probe() {
+    let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
+        return;
+    };
+    let environment = fixture.environment.environment.clone();
+    let nginx = instance(&environment, "nginx-main");
+    let mut deployment = Deployment {
+        fixture: &mut fixture,
+        nginx_instances: vec![nginx],
+        app_routes: vec![app_route(
+            "app-a",
+            "nginx-main",
+            "safe.example",
+            false,
+            "safe-response",
+        )],
+    };
+    let mut seed = deployment.seed(true);
+    let contribution = seed.contributions[0].value.as_json().as_object().unwrap();
+    let mut injected = contribution.clone();
+    injected.insert(
+        "consumer_probe".to_string(),
+        serde_json::json!({"address": "127.0.0.1", "port": 28081}),
+    );
+    seed.contributions[0].value = value(serde_json::Value::Object(injected));
+
+    let error = match deployment.try_compose(seed) {
+        Ok(_) => panic!("an app-selected consumer probe reached a planning snapshot"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CompositionError::Resolution(_)));
+    assert!(format!("{error:#?}").contains("consumer_probe"));
 }
 
 #[test]
@@ -1109,6 +1539,7 @@ fn assert_initial_effect_pipeline(
             TransitionInputs {
                 current: None,
                 authority: None,
+                reconciliation: None,
             },
             &mut fixture.evaluator,
         )
@@ -1129,6 +1560,10 @@ fn assert_initial_effect_pipeline(
     let start = operation("start");
     let observe = operation("observe");
     let record = operation("record");
+    for recoverable in [prepare, validate, publish, observe, record] {
+        assert_recovery_method(recoverable, recoverable.method.as_str());
+    }
+    assert!(start.recovery.reconcile.is_none());
     assert_eq!(
         prepare.target.resource.key.as_str(),
         "nginx-main-configuration"
@@ -1164,6 +1599,7 @@ fn assert_update_pipeline(
             TransitionInputs {
                 current: Some(current),
                 authority: None,
+                reconciliation: None,
             },
             &mut fixture.evaluator,
         )
@@ -1187,6 +1623,13 @@ fn assert_update_pipeline(
         "unexpected update methods: {methods:?}"
     );
     assert!(!methods.contains(&"start"));
+    for operation in &updated.checked_effect().document().operations {
+        if operation.method.as_str() == "reload" {
+            assert!(operation.recovery.reconcile.is_none());
+        } else {
+            assert_recovery_method(operation, operation.method.as_str());
+        }
+    }
 }
 
 fn assert_noop_pipeline(
@@ -1200,6 +1643,7 @@ fn assert_noop_pipeline(
             TransitionInputs {
                 current: Some(current),
                 authority: None,
+                reconciliation: None,
             },
             &mut fixture.evaluator,
         )
@@ -1218,6 +1662,7 @@ fn assert_stopped_service_repair(
             TransitionInputs {
                 current: Some(current),
                 authority: None,
+                reconciliation: None,
             },
             &mut fixture.evaluator,
         )
@@ -1251,6 +1696,7 @@ fn assert_disable_pipeline(
             TransitionInputs {
                 current: Some(current),
                 authority: Some(authority),
+                reconciliation: None,
             },
             &mut fixture.evaluator,
         )
@@ -1270,6 +1716,7 @@ fn assert_disable_pipeline(
         .collect::<Vec<_>>();
     assert_eq!(stop.len(), 1);
     assert_eq!(stop[0].target.resource.key.as_str(), "nginx-main-service");
+    assert_recovery_method(stop[0], "observe");
 
     let releases = operations
         .iter()
@@ -1278,6 +1725,7 @@ fn assert_disable_pipeline(
     assert_eq!(releases.len(), 2);
     let edges = &transition.checked_effect().document().edges;
     for release in releases {
+        assert_recovery_method(release, "release");
         assert!(edges.iter().any(|edge| {
             edge.from
                 == PlanNodeKey::Operation {
@@ -1292,6 +1740,48 @@ fn assert_disable_pipeline(
     }
 }
 
+fn assert_recovery_method(operation: &Operation, method: &str) {
+    assert_eq!(
+        operation.deadline.attempt_timeout_millis.get(),
+        REFERENCE_ATTEMPT_TIMEOUT_MILLIS
+    );
+    assert_eq!(
+        operation.deadline.total_recovery_millis.get(),
+        REFERENCE_TOTAL_RECOVERY_MILLIS
+    );
+    assert_eq!(
+        operation.deadline.total_recovery_millis.get(),
+        operation.deadline.attempt_timeout_millis.get() * 4,
+        "reference recovery must fund interruption, reconciliation, retry, and final reconciliation"
+    );
+
+    let recovery = operation
+        .recovery
+        .reconcile
+        .as_ref()
+        .expect("operation must carry its declared reconciliation method");
+    assert_eq!(recovery.interface, operation.interface);
+    assert_eq!(recovery.method.as_str(), method);
+}
+
+fn assert_required_operation_edge(
+    effect: &EffectPlanDocument,
+    predecessor: &Operation,
+    successor: &Operation,
+) {
+    assert!(effect.edges.iter().any(|edge| {
+        edge.from
+            == PlanNodeKey::Operation {
+                key: predecessor.key.clone(),
+            }
+            && edge.to
+                == PlanNodeKey::Operation {
+                    key: successor.key.clone(),
+                }
+            && edge.kind == DependencyKind::RequiredSuccess
+    }));
+}
+
 fn teardown_authority(
     fixture: &ReferenceFixture,
     desired: &VerifiedPlanningSnapshot,
@@ -1301,7 +1791,29 @@ fn teardown_authority(
         .checked_binding()
         .bindings()
         .iter()
-        .map(|source| {
+        .filter_map(|source| {
+            let retained = desired
+                .checked_binding()
+                .bindings()
+                .iter()
+                .find(|retained| {
+                    retained.id == source.id
+                        && retained.provider == source.provider
+                        && retained.provider_package == source.provider_package
+                        && retained.implementation == source.implementation
+                });
+            let caller_resources = withdrawn_resource_permissions(
+                &source.caller_grant.resources,
+                retained.map(|binding| binding.caller_grant.resources.as_slice()),
+            );
+            let provider_resources = withdrawn_resource_permissions(
+                &source.provider_grant.resources,
+                retained.map(|binding| binding.provider_grant.resources.as_slice()),
+            );
+            if retained.is_some() && caller_resources.is_empty() && provider_resources.is_empty() {
+                return None;
+            }
+
             let mut request = current
                 .checked_binding()
                 .document()
@@ -1317,13 +1829,15 @@ fn teardown_authority(
             binding.request = request.id.clone();
             binding.policy_revision = desired.checked_binding().document().policy_revision;
             binding.caller_grant.contributions.clear();
+            binding.caller_grant.resources = caller_resources;
             binding.provider_grant.contributions.clear();
+            binding.provider_grant.resources = provider_resources;
 
-            TeardownBindingAuthorization {
+            Some(TeardownBindingAuthorization {
                 source_binding: source.id.clone(),
                 request,
                 binding,
-            }
+            })
         })
         .collect::<Vec<_>>();
     teardown_bindings.sort_by(|left, right| {
@@ -1334,21 +1848,38 @@ fn teardown_authority(
         ))
     });
 
+    let enabled_package = |snapshot: &VerifiedPlanningSnapshot, instance: &InstanceId| {
+        snapshot
+            .outcome()
+            .desired_state
+            .instances
+            .iter()
+            .find(|candidate| candidate.enabled && candidate.instance == *instance)
+            .unwrap()
+            .package
+    };
     let mut teardown_providers = current
         .outcome()
         .resolution
         .policy
         .enabled_providers
         .iter()
-        .map(|enabled| {
-            let package = current
+        .filter(|source| {
+            let source_package = enabled_package(current, &source.instance);
+            !desired
                 .outcome()
-                .desired_state
-                .instances
+                .resolution
+                .policy
+                .enabled_providers
                 .iter()
-                .find(|instance| instance.enabled && instance.instance == enabled.instance)
-                .unwrap()
-                .package;
+                .any(|retained| {
+                    retained.instance == source.instance
+                        && enabled_package(desired, &retained.instance) == source_package
+                        && retained.implementation == source.implementation
+                })
+        })
+        .map(|enabled| {
+            let package = enabled_package(current, &enabled.instance);
             TeardownProviderAuthorization {
                 provider: enabled.instance.clone(),
                 implementation: enabled.implementation.clone(),
@@ -1390,12 +1921,62 @@ fn teardown_authority(
         .unwrap()
 }
 
+fn withdrawn_resource_permissions(
+    source: &[ResourcePermission],
+    retained: Option<&[ResourcePermission]>,
+) -> Vec<ResourcePermission> {
+    let Some(retained) = retained else {
+        return source.to_vec();
+    };
+
+    source
+        .iter()
+        .filter_map(|permission| {
+            let retained = retained
+                .iter()
+                .find(|candidate| candidate.resource == permission.resource);
+            let Some(retained) = retained else {
+                return Some(permission.clone());
+            };
+
+            if !retained.access.permits(permission.access) {
+                return Some(permission.clone());
+            }
+
+            let mut withdrawn = permission.clone();
+            withdrawn
+                .operations
+                .retain(|operation| !retained.operations.contains(operation));
+            (!withdrawn.operations.is_empty()).then_some(withdrawn)
+        })
+        .collect()
+}
+
 fn assert_shared_lower_isolation(
     outcome: &aos_ability_plan::CompositionOutcome,
     nginx_one: &InstanceId,
     nginx_two: &InstanceId,
+    nginx_one_has_credential: bool,
+    nginx_two_has_credential: bool,
 ) {
     let bindings = &outcome.resolution.checked.document().bindings;
+    let configuration_provider = lower_provider(&nginx_one.environment, "configuration");
+    let effects = lower_binding(bindings, &configuration_provider, "effects");
+    let expected_resources = outcome
+        .desired_state
+        .resources
+        .iter()
+        .filter(|revision| revision.resource.provider == configuration_provider)
+        .map(|revision| revision.resource.clone())
+        .collect::<Vec<_>>();
+    let granted_resources = effects
+        .caller_grant
+        .resources
+        .iter()
+        .map(|permission| permission.resource.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(granted_resources, expected_resources);
+
     for request_key in ["configuration", "service"] {
         let first = lower_binding(bindings, nginx_one, request_key);
         let second = lower_binding(bindings, nginx_two, request_key);
@@ -1423,16 +2004,34 @@ fn assert_shared_lower_isolation(
         );
     }
 
-    assert!(
-        bindings
-            .iter()
-            .all(|binding| binding.request.consumer != *nginx_one
-                || binding.request.key.as_str() != "credential")
-    );
-    assert_eq!(
-        lower_binding(bindings, nginx_two, "credential").provider,
-        lower_provider(&nginx_two.environment, "credential")
-    );
+    for nginx in [nginx_one, nginx_two] {
+        let service = lower_binding(bindings, nginx, "service");
+        let terminal = lower_binding(bindings, nginx, "service-terminal");
+
+        assert_eq!(service.caller_grant.resources.len(), 1);
+        assert_eq!(terminal.caller_grant.resources.len(), 1);
+        assert_eq!(
+            terminal.caller_grant.resources[0].resource,
+            service.caller_grant.resources[0].resource,
+        );
+    }
+
+    for (nginx, has_credential) in [
+        (nginx_one, nginx_one_has_credential),
+        (nginx_two, nginx_two_has_credential),
+    ] {
+        let credential = bindings.iter().find(|binding| {
+            binding.request.consumer == *nginx && binding.request.key.as_str() == "credential"
+        });
+        if has_credential {
+            assert_eq!(
+                credential.unwrap().provider,
+                lower_provider(&nginx.environment, "credential")
+            );
+        } else {
+            assert!(credential.is_none());
+        }
+    }
 }
 
 fn lower_binding<'a>(
@@ -1449,6 +2048,25 @@ fn lower_binding<'a>(
 }
 
 fn interface_documents() -> Vec<InterfaceDocument> {
+    let consumer_probe = ValueSchema::Record {
+        fields: BTreeMap::from([
+            (
+                key("address"),
+                ValueSchema::String {
+                    max_length: 15,
+                    syntax: None,
+                },
+            ),
+            (
+                key("port"),
+                ValueSchema::Integer {
+                    minimum: 1024,
+                    maximum: 65535,
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    };
     let nginx_request = ValueSchema::Record {
         fields: BTreeMap::from([
             (key("host"), string_schema()),
@@ -1510,13 +2128,19 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         interface_document(
             "aos.managed-configuration",
             ValueSchema::Record {
-                fields: BTreeMap::from([(
-                    key("virtualHosts"),
-                    ValueSchema::List {
-                        element: Box::new(nginx_request),
-                        max_items: 1024,
-                    },
-                )]),
+                fields: BTreeMap::from([
+                    (key("consumer_content_revision"), string_schema()),
+                    (key("consumer_controller_revision"), string_schema()),
+                    (key("consumer_instance"), string_schema()),
+                    (key("consumer_probe"), consumer_probe.clone()),
+                    (
+                        key("virtualHosts"),
+                        ValueSchema::List {
+                            element: Box::new(nginx_request),
+                            max_items: 1024,
+                        },
+                    ),
+                ]),
                 optional_fields: Vec::new(),
             },
             vec![
@@ -1555,10 +2179,16 @@ fn interface_documents() -> Vec<InterfaceDocument> {
             )],
         ),
         interface_document(
+            "aos.credential-delivery-effects",
+            ValueSchema::Boolean,
+            Vec::new(),
+        ),
+        interface_document(
             "aos.systemd-service",
             ValueSchema::Record {
                 fields: BTreeMap::from([
                     (key("configuration_revision"), string_schema()),
+                    (key("consumer_endpoint"), string_schema()),
                     (key("unit"), string_schema()),
                     (
                         key("virtual_host_count"),
@@ -1588,6 +2218,12 @@ fn interface_documents() -> Vec<InterfaceDocument> {
             Vec::new(),
         ),
     ];
+    documents
+        .iter_mut()
+        .find(|document| document.interface.name.as_str() == "aos.nginx")
+        .unwrap()
+        .interface
+        .configuration = Some(consumer_probe);
     documents.sort_by(|left, right| left.interface.name.cmp(&right.interface.name));
     documents
 }
@@ -1614,7 +2250,11 @@ fn interface_document(
                         completion_evidence: ValueSchema::Boolean,
                         observation_evidence: ValueSchema::Boolean,
                         supports_rejected_before_effect: true,
-                        indeterminate: IndeterminateSemantics::InterventionRequired,
+                        indeterminate: if reference_method_is_recoverable(method) {
+                            IndeterminateSemantics::Reconcile
+                        } else {
+                            IndeterminateSemantics::InterventionRequired
+                        },
                     },
                 },
             )
@@ -1628,6 +2268,7 @@ fn interface_document(
             name: interface_name,
             abi: NonZeroU32::new(1).unwrap(),
             request,
+            configuration: None,
             outputs: outputs
                 .into_iter()
                 .map(|(name, schema, visibility)| {
@@ -1654,8 +2295,24 @@ fn interface_document(
     }
 }
 
+fn reference_method_is_recoverable(method: &str) -> bool {
+    matches!(
+        method,
+        "deliver" | "observe" | "prepare" | "publish" | "record" | "release" | "stop" | "validate"
+    )
+}
+
 fn reference_method_families(name: &str) -> Vec<(&'static str, OperationFamily)> {
     match name {
+        "aos.credential-delivery-effects" => vec![
+            (
+                "deliver",
+                OperationFamily::Credential {
+                    action: CredentialAction::Deliver,
+                },
+            ),
+            ("release", OperationFamily::ReleaseResource),
+        ],
         "aos.nginx-validation" => vec![
             ("record", OperationFamily::RecordGenerationAssociation),
             ("release", OperationFamily::ReleaseResource),
@@ -1723,33 +2380,55 @@ fn ensure_interface_matches(
 }
 
 fn assert_fixture_interface_hashes(fixture: &ReferenceFixture) {
+    assert_interface_hashes(&fixture.interfaces);
+}
+
+#[test]
+fn reference_source_interface_descriptors_are_stable() {
+    let interfaces = interface_documents()
+        .into_iter()
+        .map(|document| {
+            (
+                document.interface.name.as_str().to_string(),
+                document.interface_key().unwrap(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_interface_hashes(&interfaces);
+}
+
+fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     assert_eq!(
-        fixture.interfaces["aos.nginx"].descriptor,
-        digest_from_hex("0eb9b90f9f0fd0f744b13281c98bd37c0782ae74e2b85cc89c3cfef1b4cc1312")
+        interfaces["aos.nginx"].descriptor,
+        digest_from_hex("ad32f30236fd6ca7169a6a728f82c33f1167e695ede478df50c8ad57c9f019d6")
     );
     assert_eq!(
-        fixture.interfaces["aos.managed-configuration"].descriptor,
-        digest_from_hex("6c813d376a0141954cdf320c4fa422330b42c4d88bec0d67dcfff4b78cdd234a")
+        interfaces["aos.managed-configuration"].descriptor,
+        digest_from_hex("6ab0550d2de40d9d49b211aa5944d3f7d86d53142c1a2dba8d59bf3974cc581c")
     );
     assert_eq!(
-        fixture.interfaces["aos.credential-delivery"].descriptor,
+        interfaces["aos.credential-delivery"].descriptor,
         digest_from_hex("d282faba1d3a1afd3ed7b2cde885331d8c2cf94f9b7968eb88987cffae852a3b")
     );
     assert_eq!(
-        fixture.interfaces["aos.systemd-service"].descriptor,
-        digest_from_hex("1be97040a30ac274816ff7d1ee53f384989165f2ed09c80956a1d90458b72f5f")
+        interfaces["aos.credential-delivery-effects"].descriptor,
+        digest_from_hex("a458175ca774c3fbe85172d79ec25255c560eed80846c42bf554767ea46ac222")
     );
     assert_eq!(
-        fixture.interfaces["aos.nginx-validation"].descriptor,
-        digest_from_hex("cfe3335b1ff3082ffd17e38f098e804461daaa32db19a2aba9faa2e2acaddd1d")
+        interfaces["aos.systemd-service"].descriptor,
+        digest_from_hex("b712c9e3697e87d62bb62549d8692b4d8f825bae9733ae523f76a40bd3882666")
     );
     assert_eq!(
-        fixture.interfaces["aos.managed-configuration-effects"].descriptor,
-        digest_from_hex("2b5e3051194f29f19bdf178c7e51f3bc4dbee7b67eafb04cba7953580dd990bf")
+        interfaces["aos.nginx-validation"].descriptor,
+        digest_from_hex("5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372")
     );
     assert_eq!(
-        fixture.interfaces["aos.systemd-service-effects"].descriptor,
-        digest_from_hex("08e463bed96f053e557f557c95342666e81358396a44f89bf4c07a2aa780d6c5")
+        interfaces["aos.managed-configuration-effects"].descriptor,
+        digest_from_hex("682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab")
+    );
+    assert_eq!(
+        interfaces["aos.systemd-service-effects"].descriptor,
+        digest_from_hex("e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98")
     );
 }
 
@@ -1830,6 +2509,28 @@ fn virtual_host_count(state: &DesiredStateDocument, nginx: &InstanceId) -> i64 {
     value.as_json().as_i64().unwrap()
 }
 
+fn configured_consumer_probe(state: &DesiredStateDocument, nginx: &InstanceId) -> AbilityValue {
+    state
+        .instances
+        .iter()
+        .find(|desired| desired.instance == *nginx)
+        .and_then(|desired| desired.configuration.clone())
+        .unwrap()
+}
+
+fn service_consumer_endpoint<'a>(state: &'a DesiredStateDocument, nginx: &InstanceId) -> &'a str {
+    state
+        .contributions
+        .iter()
+        .find(|contribution| {
+            contribution.request.consumer == *nginx
+                && contribution.request.key.as_str() == "service"
+        })
+        .and_then(|contribution| contribution.value.as_json().get("consumer_endpoint"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
+}
+
 fn nginx_resource(nginx: &InstanceId) -> ResourceId {
     ResourceId {
         provider: nginx.clone(),
@@ -1848,6 +2549,7 @@ fn lower_interface_name(suffix: &str) -> &'static str {
 
 fn terminal_interface_name(interface: &str) -> &'static str {
     match interface {
+        "aos.credential-delivery" => "aos.credential-delivery-effects",
         "aos.managed-configuration" => "aos.managed-configuration-effects",
         "aos.systemd-service" => "aos.systemd-service-effects",
         _ => "",
@@ -1911,6 +2613,18 @@ fn app_route(
         tls,
         response,
     }
+}
+
+fn nginx_consumer_probe(nginx: &InstanceId) -> AbilityValue {
+    let port = if nginx.key.as_str() == "nginx-two" {
+        18082
+    } else {
+        18081
+    };
+    value(serde_json::json!({
+        "address": "127.0.0.1",
+        "port": port,
+    }))
 }
 
 fn instance(environment: &EnvironmentId, name: &str) -> InstanceId {

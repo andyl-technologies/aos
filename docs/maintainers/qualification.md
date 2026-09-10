@@ -454,6 +454,38 @@ a passing gate. Environment-specific adapters and remote macOS transport must
 be provisioned before a campaign. All source regression groups are exposed at
 `checks.qualification.<requirement-id>` and `checks.qualification.all`.
 
+The RFC-0022 native ability gates are `ability-native-activation`,
+`ability-native-kubernetes`, and `ability-native-recovery`. They use release
+scope so each staging case binds the complete finalized non-control artifact
+set, including the exact package, provider, handler, and image records carried
+by the release. A change to the case subjects, qualification policy, executor,
+or environment invalidates its observation.
+
+Their `regressions` fields point to
+`checks.fleet.ability-native-activation`,
+`checks.fleet.ability-native-kubernetes`, and
+`checks.fleet.ability-native-power-loss`. Those derivations establish
+source-candidate regression coverage. They do not satisfy the staging cases:
+release admission still requires fresh executor observations for the exact
+frozen release subjects and acceptance checks. The x86 fleet topology also
+does not claim direct aarch64 execution.
+
+The x86 release executor maps all three policy IDs to the generic retained-report
+scenario. Before admission, a campaign producer must write a new canonical
+report at the case-digest path under
+`/run/aos-release/qualification-reports/x86_64-linux`. The adapter binds that
+report to the executor request, whose case digest covers the finalized subject
+records, policy, plan, checks, and staging receipt. The repository does not yet
+ship a native ability campaign that produces these reports; catalog wiring and
+the report adapter make the cases schedulable, but do not by themselves execute
+or qualify a release.
+
+The recovery gate checks the built initrd artifact and its static
+initrd-to-host handoff contract, then observes fresh host authority and resource
+incarnations after reboot. It does not claim a completed live journal-ownership
+handoff from an initrd ability executor; that remains a separate qualification
+surface when such an executor exists.
+
 The runner reads a canonical v2 executor request on stdin. It verifies every
 anonymous HTTPS download's size and SHA-256, retains it under a hashed name,
 and writes `request.json`, `scenario-registry.json`, and `objects.json` in a

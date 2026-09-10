@@ -9,7 +9,7 @@ use aos_ability_model::{
     ImplementationKind, InstanceId, LocalKey, ObligationKind, PackageDocument,
     PackageImplementation, ProviderImplementation, ProviderImplementationReference, RequestId,
     RequirementDeclaration, RequirementStrength, ResourceLifetime, ResourcePermission, ScopePath,
-    VersionedDocument,
+    ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -50,6 +50,7 @@ impl PlannerFixture {
             instance: self.provider.clone(),
             package: self.package,
             enabled,
+            configuration: None,
         }];
         self.policy.enabled_providers = if enabled {
             vec![EnabledProviderSelection {
@@ -416,6 +417,8 @@ fn enabled_zero_contributor_provider_is_evaluated_but_disabled_provider_is_not()
 
     let mut disabled = planner_fixture(0);
     disabled.enable_provider(false);
+    disabled.desired.instances[0].configuration = Some(value(serde_json::json!(true)));
+    disabled.refresh_policy();
     let mut disabled_evaluator = EmptyEvaluator::default();
     RecursiveComposer::new(&disabled.context)
         .compose(
@@ -427,6 +430,65 @@ fn enabled_zero_contributor_provider_is_evaluated_but_disabled_provider_is_not()
         )
         .expect("disabled aggregate has no implicit composition root");
     assert_eq!(disabled_evaluator.calls, 0);
+}
+
+#[test]
+fn declared_operator_configuration_is_checked_and_forwarded_to_the_provider() {
+    let mut fixture = planner_fixture_with_configuration(0, Some(ValueSchema::Boolean));
+    fixture.enable_provider(true);
+    fixture.desired.instances[0].configuration = Some(value(serde_json::json!(true)));
+    fixture.refresh_policy();
+    let mut evaluator = EmptyEvaluator::default();
+
+    RecursiveComposer::new(&fixture.context)
+        .compose(
+            std::slice::from_ref(&fixture.policy),
+            fixture.desired,
+            fixture.environment,
+            fixture.packages,
+            &mut evaluator,
+        )
+        .expect("declared operator configuration must reach pure evaluation");
+
+    assert_eq!(evaluator.calls, 1);
+    assert_eq!(
+        evaluator.contexts[0].configuration,
+        Some(value(serde_json::json!(true)))
+    );
+}
+
+#[test]
+fn missing_invalid_or_undeclared_operator_configuration_stops_before_evaluation() {
+    let cases = [
+        (Some(ValueSchema::Boolean), None),
+        (
+            Some(ValueSchema::Boolean),
+            Some(value(serde_json::json!(1))),
+        ),
+        (None, Some(value(serde_json::json!(true)))),
+    ];
+
+    for (schema, configuration) in cases {
+        let mut fixture = planner_fixture_with_configuration(0, schema);
+        fixture.enable_provider(true);
+        fixture.desired.instances[0].configuration = configuration;
+        fixture.refresh_policy();
+        let mut evaluator = EmptyEvaluator::default();
+
+        let result = RecursiveComposer::new(&fixture.context).compose(
+            std::slice::from_ref(&fixture.policy),
+            fixture.desired,
+            fixture.environment,
+            fixture.packages,
+            &mut evaluator,
+        );
+
+        assert!(matches!(
+            result,
+            Err(CompositionError::InvalidFragment { .. })
+        ));
+        assert_eq!(evaluator.calls, 0);
+    }
 }
 
 #[test]
@@ -780,7 +842,16 @@ fn add_provider_resource(
 }
 
 fn planner_fixture(request_count: usize) -> PlannerFixture {
-    let source = aos_ability_validate::test_support::plan_fixture();
+    planner_fixture_with_configuration(request_count, None)
+}
+
+fn planner_fixture_with_configuration(
+    request_count: usize,
+    configuration: Option<ValueSchema>,
+) -> PlannerFixture {
+    let mut source = aos_ability_validate::test_support::plan_fixture();
+    source.interfaces[0].interface.configuration = configuration;
+    source.refresh_interface();
     let context = source.context;
     let interface = source.binding_plan.bindings[0].interface.clone();
     let provider = source.binding_plan.bindings[0].provider.clone();
@@ -953,6 +1024,10 @@ fn empty_grant(principal: InstanceId) -> AuthorityGrant {
         contributions: Vec::new(),
         resources: Vec::new(),
     }
+}
+
+fn value(value: serde_json::Value) -> AbilityValue {
+    AbilityValue::new(value).expect("test value must use the canonical ability dialect")
 }
 
 fn two_obligations(request: &RequestId) -> Vec<DeploymentObligation> {

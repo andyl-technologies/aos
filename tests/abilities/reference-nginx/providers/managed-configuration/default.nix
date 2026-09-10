@@ -3,7 +3,15 @@ let
   effectsInterface = {
     name = "aos.managed-configuration-effects";
     abi = 1;
-    descriptor = "sha256:2b5e3051194f29f19bdf178c7e51f3bc4dbee7b67eafb04cba7953580dd990bf";
+    descriptor = "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab";
+  };
+
+  # Recovery conservatively charges a full interrupted call. Four call-sized
+  # slices retain room for that attempt, reconciliation, a retry, and a final
+  # reconciliation; one slice also spans a reference VM boot.
+  operationDeadline = {
+    attempt_timeout_millis = 300000;
+    total_recovery_millis = 1200000;
   };
 
   compose = context: let
@@ -19,7 +27,7 @@ let
         builtins.map
         (virtualHost: ''
           server {
-            listen 18080;
+            listen ${contribution.value.consumer_probe.address}:${builtins.toString contribution.value.consumer_probe.port};
             ${
             if virtualHost.tls or false
             then "listen 18443 ssl;"
@@ -33,6 +41,18 @@ let
         '')
         contribution.value.virtualHosts
       );
+    renderConsumerObservation = contribution: ''
+      server {
+        listen ${contribution.value.consumer_probe.address}:${builtins.toString contribution.value.consumer_probe.port};
+        server_name aos-consumer.invalid;
+        location = /__aos/consumer {
+          add_header X-AOS-Consumer-Instance ${quote contribution.value.consumer_instance} always;
+          add_header X-AOS-Consumer-Controller-Revision ${quote contribution.value.consumer_controller_revision} always;
+          add_header X-AOS-Consumer-Content-Revision ${quote contribution.value.consumer_content_revision} always;
+          return 204;
+        }
+      }
+    '';
     render = contribution: ''
       worker_processes 1;
       error_log stderr;
@@ -50,6 +70,7 @@ let
         uwsgi_temp_path uwsgi;
         scgi_temp_path scgi;
 
+      ${renderConsumerObservation contribution}
       ${renderServers contribution}
       }
     '';
@@ -138,33 +159,48 @@ in {
   transition = context: let
     changed =
       builtins.filter
-      (change: change.kind == "create" || change.kind == "update")
+      (change:
+        builtins.elem change.kind [
+          "create"
+          "update"
+          "reconcile-divergent"
+        ])
       context.changes;
     removed = builtins.filter (change: change.kind == "remove") context.changes;
-    selected =
-      builtins.filter
-      (entry:
-        entry.binding.request.consumer
-        == context.provider
-        && (
-          entry.binding.request.key
-          == "effects"
-          || (
-            entry.authority.role
-            == "teardown"
-            && entry.authority.source_request.consumer == context.provider
-            && entry.authority.source_request.key == "effects"
+    terminalFor = authorityRole: change: method: let
+      selected =
+        builtins.filter
+        (entry:
+          entry.authority.role
+          == authorityRole
+          && (
+            if authorityRole == "desired"
+            then
+              entry.binding.request.consumer
+              == context.provider
+              && entry.binding.request.key == "effects"
+            else
+              entry.authority.source_request.consumer
+              == context.provider
+              && entry.authority.source_request.key == "effects"
           )
-        )
-        && entry.binding.interface == effectsInterface
-        && builtins.all
-        (method: builtins.elem method entry.binding.caller_grant.methods)
-        ["prepare" "publish" "release"])
-      context.authorized_bindings;
-    terminal =
+          && entry.binding.interface == effectsInterface
+          && builtins.elem method entry.binding.caller_grant.methods
+          && builtins.length (
+            builtins.filter
+            (permission:
+              permission.resource
+              == change.resource
+              && permission.access == "exclusive-write"
+              && builtins.elem method permission.operations)
+            entry.binding.caller_grant.resources
+          )
+          == 1)
+        context.authorized_bindings;
+    in
       if builtins.length selected == 1
       then (builtins.head selected).binding
-      else throw "managed-configuration transition requires exactly one authorized effects binding";
+      else throw "managed-configuration transition requires exactly one authorized ${authorityRole} effects binding for ${method} on ${change.resource.key}";
     scopedKey = name: {
       scope = context.operation_scope;
       key = name;
@@ -179,7 +215,9 @@ in {
       if builtins.length controllers == 1
       then (builtins.head controllers).controller
       else throw "managed-configuration transition requires one resource controller";
-    operation = change: method: family: phase: {
+    operation = authorityRole: change: method: family: phase: let
+      terminal = terminalFor authorityRole change method;
+    in {
       key = scopedKey "${method}-${change.resource.key}";
       branch_context = [];
       binding = terminal.id;
@@ -205,28 +243,32 @@ in {
         }
       ];
       controller = controllerFor change.resource;
-      deadline = {
-        attempt_timeout_millis = 30000;
-        total_recovery_millis = 30000;
-      };
+      deadline = operationDeadline;
       recovery = {
-        retry = {kind = "disabled";};
-        reconcile = null;
+        retry = {
+          kind = "bounded";
+          max_attempts = 2;
+          backoff_millis = 0;
+        };
+        reconcile = {
+          interface = terminal.interface;
+          inherit method;
+        };
         cancel = null;
         compensate = null;
       };
     };
     prepares =
       builtins.map
-      (change: operation change "prepare" {kind = "prepare-managed-configuration";} "preparing")
+      (change: operation "desired" change "prepare" {kind = "prepare-managed-configuration";} "preparing")
       changed;
     publishes =
       builtins.map
-      (change: operation change "publish" {kind = "publish-configuration";} "publishing")
+      (change: operation "desired" change "publish" {kind = "publish-configuration";} "publishing")
       changed;
     releases =
       builtins.map
-      (change: operation change "release" {kind = "release-resource";} "converging")
+      (change: operation "teardown" change "release" {kind = "release-resource";} "converging")
       removed;
     edges =
       builtins.map
@@ -268,13 +310,35 @@ in {
         outputs = {};
       })
       removed;
+    dependencyRank = kind:
+      builtins.getAttr kind {
+        data = 0;
+        required-success = 1;
+        ordering-only = 2;
+        readiness = 3;
+        branch-guard = 4;
+        branch-merge = 5;
+        retention = 6;
+        communication = 7;
+      };
+    operationLess = left: right: left.key.key < right.key.key;
+    edgeLess = left: right:
+      if left.from.key.key != right.from.key.key
+      then left.from.key.key < right.from.key.key
+      else if left.to.key.key != right.to.key.key
+      then left.to.key.key < right.to.key.key
+      else dependencyRank left.kind < dependencyRank right.kind;
+    exportLess = left: right: left.key < right.key;
     fragment = {
       schema = "aos.ability.transition-fragment/v1";
-      operations = prepares ++ publishes ++ releases;
+      # Every authored node uses context.operation_scope and the operation
+      # variant, so the remaining fields in the schema comparators are these
+      # local keys and the dependency-kind rank.
+      operations = builtins.sort operationLess (prepares ++ publishes ++ releases);
       decisions = [];
       merges = [];
-      inherit edges;
-      exports = exports ++ releaseExports;
+      edges = builtins.sort edgeLess edges;
+      exports = builtins.sort exportLess (exports ++ releaseExports);
       imports = [];
       links = [];
       handoffs = [];
