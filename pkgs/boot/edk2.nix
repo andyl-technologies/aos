@@ -72,6 +72,10 @@
     if stdenv.isCross
     then buildPackages.acpica
     else acpica;
+  buildUtilLinux =
+    if stdenv.isCross
+    then buildPackages.util-linux
+    else util-linux;
   src = fetchurl {
     urls = [
       "https://github.com/tianocore/edk2/archive/b7a715f7c03c45c6b4575bf88596bfd79658b8ce.tar.gz"
@@ -261,7 +265,8 @@ in
               # toolchains. EXTRA_OPTFLAGS lands after the makefiles' own
               # -W flags, so these suppressions win.
               make -C BaseTools/Source/C -j$NIX_BUILD_CORES \
-                EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer"
+                EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer" \
+              EXTRA_LDFLAGS="-Wl,-rpath,${buildUtilLinux}/lib"
             )
           ''
           else ''
@@ -274,7 +279,8 @@ in
             # toolchains. EXTRA_OPTFLAGS lands after the makefiles' own
             # -W flags, so these suppressions win.
             make -C BaseTools/Source/C -j$NIX_BUILD_CORES \
-              EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer"
+              EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer" \
+              EXTRA_LDFLAGS="-Wl,-rpath,${buildUtilLinux}/lib"
           '';
       }
       {
