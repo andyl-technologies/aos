@@ -7,6 +7,8 @@
   libcBuildOverrides ? {},
   libcBuildPerl ? null,
   perlNssLibraries ? "-lnss_files -lnss_dns",
+  binutilsSource ? directory + "/binutils.nix",
+  gccBuildOverrides ? {},
 }: let
   withRuntimeShell = import ./with-runtime-shell.nix;
   finish = package:
@@ -78,13 +80,14 @@
             runtimePerl = exports.perl;
           }
         else finish privateTools.crossGlibc;
-      binutils = finish (call (directory + "/binutils.nix") {
+      binutils = finish (call binutilsSource {
         crossGlibc = exports.glibc;
       });
-      gcc = finish (call (directory + "/gcc.nix") {
-        crossGlibc = exports.glibc;
-        binutils = exports.binutils;
-      });
+      gcc = finish (call (directory + "/gcc.nix") ({
+          crossGlibc = exports.glibc;
+          binutils = exports.binutils;
+        }
+        // gccBuildOverrides));
     }
     // (
       if bootstrapPerl

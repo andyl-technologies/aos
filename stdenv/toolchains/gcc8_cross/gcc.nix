@@ -15,8 +15,14 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
+  installCxxRuntimeWithCompiler ? false,
   ...
 }: let
+  cxxRuntimeDirectory =
+    if installCxxRuntimeWithCompiler
+    then "$GCCLIB"
+    else "$out/lib";
+
   gccSrc = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gcc/gcc-8.5.0/gcc-8.5.0.tar.xz";
     sha256 = "1d4xjxwvxd4zi4hy7z2fqbd8mfddj32x4w5cqw163lz0q1yf1ak4";
@@ -172,7 +178,7 @@ in
               for runtime in libgcc.a libgcc_eh.a crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o; do
                 cp "${crossGccStage2}/lib/gcc/${hostPlatform.config}/8.5.0/$runtime" "$GCCLIB/"
               done
-              mkdir -p "$out/include/c++" "$out/lib"
+              mkdir -p "$out/include/c++" "${cxxRuntimeDirectory}"
               cp -R "${crossGccStage2}/include/c++/8.5.0" "$out/include/c++/"
               for library in libstdc++.a libsupc++.a; do
                 runtime_library="$("${crossGccStage2}/bin/${hostPlatform.config}-g++" -print-file-name="$library")"
@@ -180,7 +186,7 @@ in
                   "${crossGccStage2}/"*) ;;
                   *) echo "FATAL: $library is outside the cross compiler output"; exit 1 ;;
                 esac
-                cp "$runtime_library" "$out/lib/"
+                cp "$runtime_library" "${cxxRuntimeDirectory}/"
               done
 
               # Symlink binutils tools so native gcc can find as/ld

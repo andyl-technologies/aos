@@ -9,6 +9,8 @@
   crossGlibc,
   buildPlatform,
   hostPlatform,
+  cc ? "${crossGccStage2}/bin/${hostPlatform.config}-gcc",
+  cxx ? "${crossGccStage2}/bin/${hostPlatform.config}-g++",
   ...
 }: let
   src = builtins.fetchTarball {
@@ -48,8 +50,8 @@ in
 
         ${import ../lib/static-build-compiler.nix {tools = prev;}}
 
-        CC="${crossGccStage2}/bin/${hostPlatform.config}-gcc" \
-        CXX="${crossGccStage2}/bin/${hostPlatform.config}-g++" \
+        CC="${cc}" \
+        CXX="${cxx}" \
         AR="${crossBinutils}/bin/${hostPlatform.config}-ar" \
         RANLIB="${crossBinutils}/bin/${hostPlatform.config}-ranlib" \
         CFLAGS="-O2 -isystem ${crossGlibc}/include" \

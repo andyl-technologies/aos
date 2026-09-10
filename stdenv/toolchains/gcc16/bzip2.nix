@@ -35,10 +35,13 @@ in
         AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
           "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
 
+        # The construction compiler still names the preceding linker. This
+        # libc uses RELR relocations, so select the current binutils explicitly.
         make SHELL="${prev.bash}/bin/bash" \
-          CC="${gcc}/bin/gcc" \
+          CC="${gcc}/bin/gcc -B${binutils}/bin/ -B${glibc}/lib/" \
+          AR="${binutils}/bin/ar" \
           CFLAGS="-O2 -fPIC -isystem ${glibc.dev}/include -D_FILE_OFFSET_BITS=64" \
-          LDFLAGS="-L${glibc}/lib -Wl,-rpath,${glibc}/lib -Wl,--dynamic-linker,${glibc}/lib/ld-linux-x86-64.so.2" \
+          LDFLAGS="-L${glibc}/lib -Wl,-rpath,${glibc}/lib -Wl,--dynamic-linker,${glibc}/lib/${hostPlatform.dynamicLinker}" \
           PREFIX="$out" \
           -j"$NIX_BUILD_CORES" \
           bzip2 bzip2recover
