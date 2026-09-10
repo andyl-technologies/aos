@@ -213,9 +213,8 @@ pub use campaign_gc::{
     CampaignGcCandidateSetSummary, CampaignGcJournalCreateDisposition, CampaignGcJournalError,
     CampaignGcJournalPhase, CampaignGcJournalTransition, CampaignGcManifestError,
     CampaignGcPhysicalStore, CampaignGcPlan, CampaignGcPlanError, CampaignGcPlanId,
-    CampaignGcPlanVersion, CampaignGcPlanningError, CampaignGcPreparedPlan,
-    CampaignGcRootManifest, CampaignGcRootSetId, DirectoryCampaignGcJournal,
-    MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
+    CampaignGcPlanVersion, CampaignGcPlanningError, CampaignGcPreparedPlan, CampaignGcRootManifest,
+    CampaignGcRootSetId, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
     MAX_CAMPAIGN_GC_MANIFEST_ENTRIES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
     MAX_CAMPAIGN_GC_PLAN_BYTES, apply_single_host_campaign_gc,
     apply_single_host_campaign_gc_with_transfers, plan_single_host_campaign_gc,
@@ -608,8 +607,9 @@ pub use qemu_hot_fork_runner::{
 };
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_source_capture::{
-    AuthenticatedCanonicalQemuHotForkSource, AuthenticatedQemuHotForkSourceBasis,
-    AuthenticatedQemuHotForkSourceBasisError, ProductionQemuHotForkSourceCaptureError,
+    AuthenticatedCanonicalQemuHotForkSource, AuthenticatedExactQemuHotForkSource,
+    AuthenticatedQemuHotForkSourceBasis, AuthenticatedQemuHotForkSourceBasisError,
+    ProductionQemuHotForkExactSourceCaptureError, ProductionQemuHotForkSourceCaptureError,
     ProductionQemuHotForkSourceFactory,
 };
 #[cfg(target_os = "linux")]
@@ -623,12 +623,12 @@ pub use qemu_hot_fork_world::{
 pub use qemu_hot_fork_world_factory::QemuSingleHotForkSourceWorldProvider;
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_world_factory::{
-    QemuHotForkSourceWorldKey, QemuHotForkSourceWorldKeyError, QemuHotForkSourceWorldProvider,
-    QemuHotForkWorldExecutionAttempt, QemuHotForkWorldExecutionRunner,
-    QemuHotForkWorldExecutionRunnerError, QemuHotForkWorldLifecycleFactory,
-    QemuHotForkWorldLifecycleOwner, QemuHotForkWorldLifecycleStart,
-    QemuProductionHotForkWorldLifecycleFactory, QemuProductionHotForkWorldLifecycleFactoryError,
-    QemuUnavailableHotForkSourceWorldProvider,
+    QemuHotForkSourceWorldBoundary, QemuHotForkSourceWorldKey, QemuHotForkSourceWorldKeyError,
+    QemuHotForkSourceWorldProvider, QemuHotForkWorldExecutionAttempt,
+    QemuHotForkWorldExecutionRunner, QemuHotForkWorldExecutionRunnerError,
+    QemuHotForkWorldLifecycleFactory, QemuHotForkWorldLifecycleOwner,
+    QemuHotForkWorldLifecycleStart, QemuProductionHotForkWorldLifecycleFactory,
+    QemuProductionHotForkWorldLifecycleFactoryError, QemuUnavailableHotForkSourceWorldProvider,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_world_resource::{QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner};

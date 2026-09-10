@@ -91,6 +91,7 @@ in
         source target \
         fork-failure-source fork-failure-target \
         adoption-failure-source adoption-failure-target \
+        cleanup-retry-source cleanup-retry-target \
         publication-failure-source publication-failure-target; do
         mkdir "/sys/fs/cgroup/crucible/$lane"
         echo '+cpu +memory +pids' \
@@ -107,6 +108,7 @@ in
         source target \
         fork-failure-source fork-failure-target \
         adoption-failure-source adoption-failure-target \
+        cleanup-retry-source cleanup-retry-target \
         publication-failure-source publication-failure-target; do
         mkdir -m 700 "/tmp/attempts/run/$lane"
       done
@@ -138,20 +140,23 @@ in
           exit 1
         fi
         cat "$log"
-        ${pkgs.grep}/bin/grep -Fq 'test result: ok.' "$log"
+        ${pkgs.grep}/bin/grep -Fxq "test $name ... ok" "$log"
+        ${pkgs.grep}/bin/grep -Fq \
+          'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
       }
 
       run_case qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically
       run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_fork_fails
       run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_adoption_fails
-      run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_until_publication_cleanup_retries
+      run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_until_target_cleanup_retries
+      run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_across_repository_publication_retry
 
       printf '%s\n' \
         'PASS' \
         'factory=production-whole-world' \
         'source=two-running-one-permanently-failed' \
         'io=block,ninep' \
-        'failures=fork,adoption,publication' \
+        'failures=fork,adoption,target-cleanup,repository-publication' \
         'check=${attrPath}' \
         'tasks=${builtins.concatStringsSep "," taskIds}' \
         > /tmp/atomic-world-result

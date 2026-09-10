@@ -80,7 +80,7 @@ fn production_factory_forks_complete_live_world_atomically() {
     let source_input = execution_input_for_scenario(source.clone());
     let source_context = execution_context(&source_input, 0x70);
 
-    let source_host = open_host(&paths, "source", 1);
+    let source_host = open_host(&paths, "source", 1_000);
     let source_config = lifecycle_config(&paths, paths.run_state_root.join("source"), artifacts);
     let mut source_factory = QemuAttemptProductionVmLifecycleFactory::new(
         source_config,
@@ -185,10 +185,11 @@ fn production_factory_forks_complete_live_world_atomically() {
 
     let input = execution_input_for_scenario_configuration(source, configuration.clone());
     let context = execution_context(&input, 0x71);
-    let key = QemuHotForkSourceWorldKey::for_execution(&input, execution_basis(&input, 0x71))
-        .expect("derive exact source key");
+    let key =
+        QemuHotForkSourceWorldKey::for_execution(&input, &context, execution_basis(&input, 0x71))
+            .expect("derive exact source key");
     let provider = QemuSingleHotForkSourceWorldProvider::new(key, source_world);
-    let target_host = open_host(&paths, "target", 2);
+    let target_host = open_host(&paths, "target", 1_100);
     let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
         provider,
         ComposedQemuAttemptResourceGuardFactory::new(target_host),
@@ -277,13 +278,14 @@ fn prepare_native_source(
     paths: &NativeGatePaths,
     lane: &str,
     execution_byte: u8,
+    project_id_start: u32,
 ) -> PreparedNativeSource {
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
     let (source, artifacts) = scenario::build(&fixture, artifacts).expect("build source scenario");
     let input = execution_input_for_scenario(source.clone());
     let context = execution_context(&input, execution_byte);
-    let host = open_host(paths, &format!("{lane}-source"), 1);
+    let host = open_host(paths, &format!("{lane}-source"), project_id_start);
     let config = lifecycle_config(
         paths,
         paths.run_state_root.join(lane).join("source"),

@@ -18,7 +18,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crucible::ScenarioDefForm;
-use crucible_api::ProductionVmLifecycleConfig;
+use crucible_api::{ProductionVmHotForkSourceWorld, ProductionVmLifecycleConfig};
 use crucible_campaign::{
     AttemptId, AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash,
     CampaignLineageId, CampaignName, CampaignOperationalStatusProvider, CampaignRepository,
@@ -54,7 +54,7 @@ use crate::{
     AuthenticatedHotCheckpointDemotionError, AuthenticatedHotCheckpointDemotionSink,
     AuthenticatedQemuHotForkSourceBasis, AuthenticatedQemuHotForkSourceBasisError,
     CompletionValidationFailure, ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError,
-    CrucibleExecutionModel, DirectoryAssignmentLedger,
+    CrucibleAttemptExecution, CrucibleExecutionModel, DirectoryAssignmentLedger,
     DirectoryHotCheckpointFallbackRetentionStore, ExactCheckpointStore, ExactCheckpointStoreError,
     ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity, ExecutorLocalService,
     ExecutorLocalServiceError, ExecutorLocalServiceReport, ExecutorLocalServiceShutdown,
@@ -72,14 +72,17 @@ use crate::{
     ProductionQemuHotForkSourceCaptureError, ProductionQemuHotForkSourceFactory,
     QemuAttemptExecutionRouter, QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
     QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleError,
-    QemuAttemptProductionVmLifecycleFactory, QemuFreshExecutionRunner, QemuFreshModeledDriver,
-    QemuHotCheckpointFallbackAuthenticationError, QemuHotCheckpointFallbackAuthenticator,
-    QemuHotForkSourceWorldDemoter, QemuHotForkSourceWorldDemotionError,
-    QemuHotForkWorldExecutionRunner, QemuProductionExactResumeExecutionRunner,
-    QemuProductionHotForkWorldLifecycleFactory, RepositoryAttemptWorker,
-    SharedManagedQemuHotForkSourceWorldPool, SharedManagedQemuHotForkSourceWorldShutdownError,
-    SharedQemuAttemptHostResourceFactory, SharedQemuHotForkSourceWorldProviderConstructionError,
-    UnixPeerExecutorIdentity, capture_production_baked_genesis, decode_crucible_scenario_artifact,
+    QemuAttemptProductionVmLifecycleFactory, QemuAttemptResourceGuardFactory,
+    QemuFreshExecutionRunner, QemuFreshModeledDriver, QemuHotCheckpointFallbackAuthenticationError,
+    QemuHotCheckpointFallbackAuthenticator, QemuHotForkSourceWorldBoundary,
+    QemuHotForkSourceWorldDemoter, QemuHotForkSourceWorldDemotionError, QemuHotForkSourceWorldKey,
+    QemuHotForkSourceWorldProvider, QemuHotForkWorldExecutionRunner,
+    QemuProductionExactResumeExecutionRunner, QemuProductionHotForkWorldLifecycleFactory,
+    RepositoryAttemptWorker, SharedManagedQemuHotForkSourceWorldPool,
+    SharedManagedQemuHotForkSourceWorldShutdownError, SharedQemuAttemptHostResourceFactory,
+    SharedQemuHotForkSourceWorldProvider, SharedQemuHotForkSourceWorldProviderConstructionError,
+    SharedQemuHotForkSourceWorldProviderError, UnixPeerExecutorIdentity,
+    capture_production_baked_genesis, decode_crucible_scenario_artifact,
     reconcile_pending_finding_candidates,
 };
 

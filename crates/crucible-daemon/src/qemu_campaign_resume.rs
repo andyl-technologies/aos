@@ -152,7 +152,7 @@ where
             context,
         );
         match result {
-            Ok(boundary) => Ok(Some(boundary)),
+            Ok((boundary, _production_boundary)) => Ok(Some(boundary)),
             Err(error) if initial_selected_source_is_absent(&error, checkpoint, context) => {
                 Ok(None)
             }

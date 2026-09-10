@@ -280,6 +280,174 @@ fn same_configuration_at_an_advanced_frontier_is_rejected() {
 }
 
 #[test]
+fn exact_authenticated_source_admits_an_advanced_boundary_under_its_checkpoint_key() {
+    let source_node =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("scripted source");
+    let (_nodes, mut source) =
+        prepared_multi_node_hot_fork_source_world_for_test(vec![source_node])
+            .expect("prepared source world");
+    source.mark_reuse_boundary_advanced_for_test();
+    let checkpoint = exact_checkpoint(0x42);
+    let key = QemuHotForkSourceWorldKey::new_exact(
+        lineage_id(0x32),
+        source.continuation().configuration().def.id(),
+        source.continuation().configuration().id(),
+        compatibility_profile(),
+        checkpoint,
+    );
+    let canonical_key = QemuHotForkSourceWorldKey::new(
+        key.template_key().lineage(),
+        key.scenario(),
+        key.configuration(),
+        compatibility_profile(),
+    );
+    let usage = source
+        .measure_retained_resources()
+        .expect("measure advanced source");
+    let resources = HotCheckpointResourceProfile::new(
+        usage.template_bytes(),
+        usage.expected_private_dirty_bytes(),
+        usage.process_count(),
+        usage.virtual_cpu_count(),
+        usage.descriptor_count(),
+        usage.overlay_count(),
+    )
+    .expect("advanced source resource profile");
+    let limits =
+        HotCheckpointLimits::new(1, resources, 1, 1_000_000_000).expect("advanced source limits");
+    let retention = MemoryHotCheckpointFallbackRetentionStore::new();
+    let mut pool =
+        ManagedQemuHotForkSourceWorldPool::open(limits, ReapingDemotionSink, retention.clone())
+            .expect("managed exact source pool");
+
+    pool.admit_authenticated_exact_source(
+        AuthenticatedExactQemuHotForkSource::new_for_test(key.clone(), checkpoint, source),
+        HotCheckpointHotnessSignals::new(),
+    )
+    .expect("admit authenticated advanced source");
+
+    assert!(pool.source_available(&key));
+    assert!(!pool.source_available(&canonical_key));
+    let record = retention
+        .load_fallback(
+            *pool
+                .active
+                .get(&manager_source_key(&key))
+                .expect("active slot"),
+        )
+        .expect("load exact fallback")
+        .expect("retained exact fallback");
+    assert_eq!(record.fallback(), HotCheckpointFallback::Exact(checkpoint));
+
+    pool.demote_manager_source(
+        manager_source_key(&key),
+        HotCheckpointDemotionReason::OperatorRequest,
+    )
+    .expect("retire advanced source");
+}
+
+#[test]
+fn equal_configurations_with_distinct_exact_checkpoint_identities_are_independently_reusable() {
+    let first_node =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
+    let second_node =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
+    let (_first_nodes, mut first_source) =
+        prepared_multi_node_hot_fork_source_world_for_test(vec![first_node])
+            .expect("first prepared source world");
+    let (_second_nodes, mut second_source) =
+        prepared_multi_node_hot_fork_source_world_for_test(vec![second_node])
+            .expect("second prepared source world");
+    first_source.mark_reuse_boundary_advanced_for_test();
+    second_source.mark_reuse_boundary_advanced_for_test();
+    assert_eq!(
+        first_source.continuation().configuration(),
+        second_source.continuation().configuration()
+    );
+
+    let lineage = lineage_id(0x39);
+    let first_checkpoint = exact_checkpoint(0x52);
+    let second_checkpoint = exact_checkpoint(0x53);
+    let first_key = QemuHotForkSourceWorldKey::new_exact(
+        lineage,
+        first_source.continuation().configuration().def.id(),
+        first_source.continuation().configuration().id(),
+        compatibility_profile(),
+        first_checkpoint,
+    );
+    let second_key = QemuHotForkSourceWorldKey::new_exact(
+        lineage,
+        second_source.continuation().configuration().def.id(),
+        second_source.continuation().configuration().id(),
+        compatibility_profile(),
+        second_checkpoint,
+    );
+    assert_ne!(
+        manager_source_key(&first_key),
+        manager_source_key(&second_key)
+    );
+
+    let first_usage = first_source
+        .measure_retained_resources()
+        .expect("measure first source");
+    let second_usage = second_source
+        .measure_retained_resources()
+        .expect("measure second source");
+    let maximum_resources = HotCheckpointResourceProfile::new(
+        first_usage.template_bytes() + second_usage.template_bytes(),
+        first_usage.expected_private_dirty_bytes() + second_usage.expected_private_dirty_bytes(),
+        first_usage.process_count() + second_usage.process_count(),
+        first_usage.virtual_cpu_count() + second_usage.virtual_cpu_count(),
+        first_usage.descriptor_count() + second_usage.descriptor_count(),
+        first_usage.overlay_count() + second_usage.overlay_count(),
+    )
+    .expect("two-frontier resource ceiling");
+    let limits = HotCheckpointLimits::new(2, maximum_resources, 2, 1_000_000_000)
+        .expect("two-frontier limits");
+    let mut pool = ManagedQemuHotForkSourceWorldPool::open(
+        limits,
+        ReapingDemotionSink,
+        MemoryHotCheckpointFallbackRetentionStore::new(),
+    )
+    .expect("two-frontier pool");
+
+    pool.admit_authenticated_exact_source(
+        AuthenticatedExactQemuHotForkSource::new_for_test(
+            first_key.clone(),
+            first_checkpoint,
+            first_source,
+        ),
+        HotCheckpointHotnessSignals::new(),
+    )
+    .expect("admit first exact frontier");
+    pool.admit_authenticated_exact_source(
+        AuthenticatedExactQemuHotForkSource::new_for_test(
+            second_key.clone(),
+            second_checkpoint,
+            second_source,
+        ),
+        HotCheckpointHotnessSignals::new(),
+    )
+    .expect("admit second exact frontier");
+
+    let first = pool
+        .checkout(&first_key)
+        .expect("first frontier checkout")
+        .expect("first frontier source");
+    pool.restore(first);
+    let second = pool
+        .checkout(&second_key)
+        .expect("second frontier checkout")
+        .expect("second frontier source");
+    pool.restore(second);
+    assert!(pool.source_available(&first_key));
+    assert!(pool.source_available(&second_key));
+
+    pool.orderly_shutdown()
+        .expect("retire both exact frontiers");
+}
+
+#[test]
 fn wrong_world_restore_keeps_the_checked_out_source_authority_pending() {
     let first_node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
@@ -627,11 +795,13 @@ fn lineage_id(byte: u8) -> CampaignLineageId {
 }
 
 fn exact_fallback(byte: u8) -> HotCheckpointFallback {
-    HotCheckpointFallback::Exact(
-        ExactCheckpointId::parse(&format!(
-            "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
-            format!("{byte:02x}").repeat(32)
-        ))
-        .expect("exact checkpoint id"),
-    )
+    HotCheckpointFallback::Exact(exact_checkpoint(byte))
+}
+
+fn exact_checkpoint(byte: u8) -> ExactCheckpointId {
+    ExactCheckpointId::parse(&format!(
+        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
+        format!("{byte:02x}").repeat(32)
+    ))
+    .expect("exact checkpoint id")
 }

@@ -92,10 +92,11 @@ pub use fault_implementation::{
 mod hot_fork;
 #[cfg(target_os = "linux")]
 pub use hot_fork::{
-    ProductionVmHotForkIoNodeBoundary, ProductionVmHotForkIoNodeKind,
-    ProductionVmHotForkNodeBoundary, ProductionVmHotForkNodeServiceState,
-    ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure,
-    ProductionVmHotForkSourceWorldResourceUsage, ProductionVmHotForkWorldContinuation,
+    ProductionVmExactHotForkSourceBoundary, ProductionVmHotForkIoNodeBoundary,
+    ProductionVmHotForkIoNodeKind, ProductionVmHotForkNodeBoundary,
+    ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
+    ProductionVmHotForkSourceWorldPreparationFailure, ProductionVmHotForkSourceWorldResourceUsage,
+    ProductionVmHotForkWorldContinuation,
 };
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub use hot_fork::{
@@ -2014,6 +2015,30 @@ where
         Box::new(launcher),
         None,
     )
+}
+
+/// Authenticates the exact scheduler and device boundary used by hot-fork capture.
+///
+/// The native closure is loaded and validated independently of the lifecycle
+/// that will restore it. The returned opaque value can then verify that source
+/// preparation preserved the closure's scheduler, evidence, fault, node, and
+/// host-I/O continuation.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when the closure is unavailable,
+/// corrupt, belongs to another scenario, or cannot produce a complete source
+/// boundary.
+#[cfg(target_os = "linux")]
+pub fn authenticate_production_vm_exact_hot_fork_source_boundary(
+    run_state_root: &Path,
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    closure: ContentHash,
+) -> Result<ProductionVmExactHotForkSourceBoundary, LifecycleApiError> {
+    let checkpoint = load_exact_checkpoint_set(run_state_root, scenario, source, closure)?;
+    ProductionVmExactHotForkSourceBoundary::from_exact_checkpoint(&checkpoint)
+        .map_err(|error| loop_factory_error(format!("authenticate hot-fork boundary: {error}")))
 }
 
 /// Adopts one completely assembled hot-fork child World as a lifecycle.

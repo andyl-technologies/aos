@@ -614,6 +614,131 @@ impl ProductionVmHotForkIoNodeBoundary {
     }
 }
 
+/// Authenticated scheduler and device boundary of one exact-checkpoint source.
+///
+/// This opaque value is derived directly from a completely authenticated
+/// native exact closure. It lets source admission prove that preparing a live
+/// QEMU world preserved the restored scheduler, event-log, node, fault, and
+/// host-device cursors.
+pub struct ProductionVmExactHotForkSourceBoundary {
+    configuration: Configuration,
+    scheduler: SingleSchedulerCheckpoint,
+    event_log_objects: BTreeMap<ContentHash, Vec<u8>>,
+    signal_artifact_objects: BTreeMap<ContentHash, Vec<u8>>,
+    node_generations: BTreeMap<NodeId, u64>,
+    node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
+    host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
+    fault_checkpoint: ContentHash,
+}
+
+impl ProductionVmExactHotForkSourceBoundary {
+    pub(super) fn from_exact_checkpoint(
+        checkpoint: &ProductionVmExactCheckpointSet,
+    ) -> Result<Self, SchedulerError> {
+        let mut host_io = BTreeMap::new();
+        for (node, target) in &checkpoint.targets {
+            if host_io
+                .insert(node.clone(), target.snapshot.host_io().clone())
+                .is_some()
+            {
+                return Err(hot_fork_boundary_error(
+                    "exact hot-fork boundary repeats a live host-I/O owner",
+                ));
+            }
+        }
+        for (node, failed) in &checkpoint.failed_host_io {
+            if host_io
+                .insert(node.clone(), failed.host_io.clone())
+                .is_some()
+            {
+                return Err(hot_fork_boundary_error(
+                    "exact hot-fork boundary repeats a failed host-I/O owner",
+                ));
+            }
+        }
+        if host_io.keys().ne(checkpoint.node_service_states.keys()) {
+            return Err(hot_fork_boundary_error(
+                "exact hot-fork boundary has an incomplete host-I/O owner set",
+            ));
+        }
+        let fault_checkpoint = checkpoint
+            .fault_checkpoint
+            .as_ref()
+            .ok_or_else(|| hot_fork_boundary_error("exact hot-fork boundary lost fault state"))?
+            .id();
+
+        Ok(Self {
+            configuration: checkpoint.configuration.clone(),
+            scheduler: checkpoint.scheduler.clone(),
+            event_log_objects: checkpoint.event_log_objects.clone(),
+            signal_artifact_objects: checkpoint.signal_artifact_objects.clone(),
+            node_generations: checkpoint.node_generations.clone(),
+            node_service_states: checkpoint.node_service_states.clone(),
+            host_io,
+            fault_checkpoint,
+        })
+    }
+
+    /// Reports whether a prepared source preserves this authenticated boundary.
+    #[must_use]
+    pub fn matches(&self, continuation: &ProductionVmHotForkWorldContinuation) -> bool {
+        let expected_active_host_io = self
+            .node_service_states
+            .values()
+            .filter(|state| {
+                matches!(
+                    state,
+                    ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff
+                )
+            })
+            .count();
+        let expected_failed_host_io = self.node_service_states.len() - expected_active_host_io;
+
+        if self.configuration != continuation.configuration
+            || self.scheduler != continuation.scheduler
+            || self.event_log_objects != continuation.event_log_objects
+            || self.signal_artifact_objects != continuation.signal_artifact_objects
+            || self.node_generations != continuation.node_generations
+            || self.node_service_states != continuation.node_service_states
+            || self.fault_checkpoint != continuation.fault_checkpoint.id()
+            || self.host_io.len() != continuation.node_service_states.len()
+            || continuation.active_host_io.len() != expected_active_host_io
+            || continuation.failed_host_io.len() != expected_failed_host_io
+            || continuation.nodes.len() != self.node_generations.len()
+        {
+            return false;
+        }
+
+        let mut matched_nodes = BTreeSet::new();
+        for boundary in &continuation.nodes {
+            if !matched_nodes.insert(boundary.node.clone())
+                || !self.node_generations.contains_key(&boundary.node)
+            {
+                return false;
+            }
+        }
+        if matched_nodes.iter().ne(self.node_generations.keys()) {
+            return false;
+        }
+
+        self.host_io.iter().all(|(node, expected)| {
+            let Some(service_state) = self.node_service_states.get(node) else {
+                return false;
+            };
+            let actual = match service_state {
+                ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
+                    continuation.active_host_io.get(node)
+                }
+                ProductionNodeServiceState::PermanentlyFailed => continuation
+                    .failed_host_io
+                    .get(node)
+                    .map(|failed| &failed.host_io),
+            };
+            actual.is_some_and(|actual| expected.same_device_continuation(actual))
+        })
+    }
+}
+
 /// Complete process-neutral host continuation captured for one world hot fork.
 ///
 /// The token intentionally retains the same scheduler, network/fault,

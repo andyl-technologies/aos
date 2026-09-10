@@ -7,19 +7,19 @@
 //! factory can mint [`AuthenticatedCanonicalQemuHotForkSource`], so managed
 //! admission never accepts a caller-authored key or compatibility label.
 
-use crucible::{Configuration, ScenarioDefForm};
+use crucible::{Configuration, ScenarioDefForm, SchedulerOperationalFailureClass};
 use crucible_api::vm_lifecycle::{
     ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure,
 };
 use crucible_campaign::{
     CampaignExecutorStore, CampaignLineage, CampaignLineageId, CampaignRepositoryError,
-    ConfigurationArtifactId, ExecutorCompatibilityProfile, ScenarioArtifactId,
+    ConfigurationArtifactId, ExactCheckpointId, ExecutorCompatibilityProfile, ScenarioArtifactId,
 };
 use thiserror::Error;
 
 use crate::{
-    AttemptExecutionContext, AttemptWorkerFailure, CrucibleArtifactError,
-    QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleError,
+    AttemptExecutionContext, AttemptWorkerFailure, CrucibleArtifactError, CrucibleAttemptExecution,
+    ExactCheckpointStore, QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleError,
     QemuAttemptProductionVmLifecycleFactory, QemuAttemptResourceGuardFactory,
     QemuFreshAttemptLifecycleFactory, QemuHotForkSourceWorldKey,
     decode_crucible_configuration_artifact_with_selections, decode_crucible_scenario_artifact,
@@ -221,6 +221,136 @@ where
             source,
         })
     }
+
+    /// Restores and prepares one production source at an authenticated exact boundary.
+    ///
+    /// The fixed packaged basis authenticates the lineage, scenario, and QEMU
+    /// profile. The production resume factory then authenticates the complete
+    /// exact closure before it launches QEMU. `Ok(None)` means the checkpoint
+    /// restored another configuration than the source requested by this
+    /// attempt; no guest process is launched in that case.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionQemuHotForkExactSourceCaptureError`] when the attempt
+    /// differs from the fixed basis, exact closure authentication fails,
+    /// guarded restore fails, or source preparation returns another boundary.
+    pub fn capture_exact(
+        &mut self,
+        checkpoints: &ExactCheckpointStore,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<
+        Option<AuthenticatedExactQemuHotForkSource>,
+        ProductionQemuHotForkExactSourceCaptureError,
+    > {
+        let checkpoint = context
+            .resume_checkpoint()
+            .ok_or(ProductionQemuHotForkExactSourceCaptureError::MissingCheckpoint)?;
+        let lineage = input.lineage().id().map_err(|source| {
+            ProductionQemuHotForkExactSourceCaptureError::Lineage(Box::new(source))
+        })?;
+        let profile = ExecutorCompatibilityProfile::from_lineage(input.lineage());
+        if lineage != self.basis.lineage_id
+            || input.scenario() != &self.basis.scenario
+            || profile != self.basis.profile()
+        {
+            return Err(ProductionQemuHotForkExactSourceCaptureError::BasisMismatch);
+        }
+
+        let scenario = input.scenario().scenario_def();
+        let (initial, post_selection) = exact_source_resume_configurations(input);
+        let (boundary, production_boundary) = self
+            .lifecycles
+            .authenticate_resume_boundary(
+                checkpoints,
+                checkpoint,
+                &scenario,
+                input.scenario(),
+                initial,
+                post_selection,
+                context,
+            )
+            .map_err(|source| {
+                ProductionQemuHotForkExactSourceCaptureError::Authentication(Box::new(source))
+            })?;
+        let requested_configuration = exact_source_configuration(input);
+        if boundary.configuration().id() != requested_configuration.id() {
+            return Ok(None);
+        }
+
+        let lifecycle = self
+            .lifecycles
+            .begin_resume(
+                checkpoints,
+                checkpoint,
+                &scenario,
+                input.scenario(),
+                initial,
+                post_selection,
+                context,
+            )
+            .map_err(crate::qemu_campaign_lifecycle::classify_production_lifecycle_failure)
+            .map_err(|source| {
+                ProductionQemuHotForkExactSourceCaptureError::Start(Box::new(source))
+            })?;
+        let source = lifecycle
+            .prepare_hot_fork_source_world()
+            .map_err(|source| {
+                ProductionQemuHotForkExactSourceCaptureError::Preparation(Box::new(source))
+            })?;
+        let continuation = source.continuation();
+        let actual_configuration = continuation.configuration().id();
+        let prepared_boundary_matches = boundary.configuration() == continuation.configuration()
+            && boundary
+                .proof()
+                .matches_checkpoint(continuation.configuration(), continuation.scheduler())
+            && production_boundary.matches(continuation);
+        if actual_configuration != requested_configuration.id() || !prepared_boundary_matches {
+            let retirement = source.retire().err().map(Box::new);
+            return Err(
+                ProductionQemuHotForkExactSourceCaptureError::PreparedBoundaryMismatch {
+                    retirement,
+                },
+            );
+        }
+
+        let key = QemuHotForkSourceWorldKey::new_exact(
+            lineage,
+            scenario.id(),
+            actual_configuration,
+            profile,
+            checkpoint,
+        );
+        Ok(Some(AuthenticatedExactQemuHotForkSource {
+            key,
+            checkpoint,
+            source,
+        }))
+    }
+}
+
+fn exact_source_resume_configurations(
+    input: &CrucibleAttemptExecution,
+) -> (&Configuration, Option<&Configuration>) {
+    match input.start() {
+        crate::CrucibleResolvedAttemptStart::Discover { configuration } => (configuration, None),
+        // The retained source is the pre-choice parent. Branch effects belong
+        // to each child attempt and must not mutate the shared source while its
+        // exact checkpoint is authenticated or restored.
+        crate::CrucibleResolvedAttemptStart::Branch { parent, .. } => (parent, None),
+        crate::CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+            (input.start().configuration(), None)
+        }
+    }
+}
+
+fn exact_source_configuration(input: &CrucibleAttemptExecution) -> &Configuration {
+    match input.start() {
+        crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration,
+        crate::CrucibleResolvedAttemptStart::Branch { parent, .. } => parent,
+        crate::CrucibleResolvedAttemptStart::AfterAttempt { .. } => input.start().configuration(),
+    }
 }
 
 /// Canonical source accepted by managed admission after factory authentication.
@@ -228,6 +358,39 @@ where
 pub struct AuthenticatedCanonicalQemuHotForkSource {
     key: QemuHotForkSourceWorldKey,
     source: ProductionVmHotForkSourceWorld,
+}
+
+/// Exact-checkpoint source accepted only by the managed exact-boundary path.
+#[must_use = "admit the authenticated source or retain its complete authority"]
+pub struct AuthenticatedExactQemuHotForkSource {
+    key: QemuHotForkSourceWorldKey,
+    checkpoint: ExactCheckpointId,
+    source: ProductionVmHotForkSourceWorld,
+}
+
+impl AuthenticatedExactQemuHotForkSource {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        QemuHotForkSourceWorldKey,
+        ExactCheckpointId,
+        ProductionVmHotForkSourceWorld,
+    ) {
+        (self.key, self.checkpoint, self.source)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        key: QemuHotForkSourceWorldKey,
+        checkpoint: ExactCheckpointId,
+        source: ProductionVmHotForkSourceWorld,
+    ) -> Self {
+        Self {
+            key,
+            checkpoint,
+            source,
+        }
+    }
 }
 
 impl AuthenticatedCanonicalQemuHotForkSource {
@@ -283,6 +446,56 @@ pub enum ProductionQemuHotForkSourceCaptureError {
     /// Atomic source-world preparation failed while retaining its lifecycle.
     #[error("prepare canonical production hot-fork source")]
     Preparation(#[source] Box<ProductionVmHotForkSourceWorldPreparationFailure>),
+}
+
+/// Failure while restoring an authenticated exact source world.
+#[derive(Debug, Error)]
+pub enum ProductionQemuHotForkExactSourceCaptureError {
+    /// Exact capture requires an authenticated checkpoint execution origin.
+    #[error("exact hot-fork source capture has no resume checkpoint")]
+    MissingCheckpoint,
+    /// The admitted lineage could not produce its canonical identity.
+    #[error("derive exact hot-fork source lineage")]
+    Lineage(#[source] Box<crucible_campaign::CampaignCodecError>),
+    /// Attempt lineage, scenario, or profile differs from the fixed packaged basis.
+    #[error("exact hot-fork source attempt differs from the fixed packaged basis")]
+    BasisMismatch,
+    /// Immutable exact-closure authentication failed before QEMU launch.
+    #[error("authenticate exact production hot-fork source boundary")]
+    Authentication(#[source] Box<QemuAttemptProductionVmLifecycleError>),
+    /// Guarded exact production lifecycle startup failed.
+    #[error("start exact production hot-fork source")]
+    Start(#[source] Box<AttemptWorkerFailure<QemuAttemptProductionVmLifecycleError>>),
+    /// Atomic source-world preparation failed while retaining its lifecycle.
+    #[error("prepare exact production hot-fork source")]
+    Preparation(#[source] Box<ProductionVmHotForkSourceWorldPreparationFailure>),
+    /// Prepared source differs from the authenticated scheduler or device boundary.
+    #[error("prepared exact hot-fork source boundary differs from the authenticated request")]
+    PreparedBoundaryMismatch {
+        /// Cleanup failure retaining the source lifecycle, when retirement failed.
+        retirement: Option<Box<crucible_api::LifecycleApiError>>,
+    },
+}
+
+impl ProductionQemuHotForkExactSourceCaptureError {
+    pub(crate) fn failure_class(&self, canceled: bool) -> SchedulerOperationalFailureClass {
+        match self {
+            Self::Authentication(source) => {
+                crate::qemu_campaign_lifecycle::production_lifecycle_failure_class(source)
+            }
+            Self::Start(source) => match source.as_ref() {
+                AttemptWorkerFailure::Retryable(_) => SchedulerOperationalFailureClass::Retryable,
+                AttemptWorkerFailure::Canceled(_) => SchedulerOperationalFailureClass::Canceled,
+                AttemptWorkerFailure::Terminal(_) => SchedulerOperationalFailureClass::Terminal,
+            },
+            Self::Preparation(_) if canceled => SchedulerOperationalFailureClass::Canceled,
+            Self::Preparation(_) => SchedulerOperationalFailureClass::Retryable,
+            Self::MissingCheckpoint
+            | Self::Lineage(_)
+            | Self::BasisMismatch
+            | Self::PreparedBoundaryMismatch { .. } => SchedulerOperationalFailureClass::Terminal,
+        }
+    }
 }
 
 #[cfg(test)]

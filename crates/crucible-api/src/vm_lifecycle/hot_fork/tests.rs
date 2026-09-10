@@ -65,6 +65,60 @@ fn permanently_failed_continuation() -> (ScenarioDefForm, ProductionVmHotForkWor
     (source, continuation)
 }
 
+fn exact_boundary_from_continuation(
+    continuation: &ProductionVmHotForkWorldContinuation,
+) -> ProductionVmExactHotForkSourceBoundary {
+    let host_io = continuation
+        .active_host_io
+        .iter()
+        .map(|(node, checkpoint)| (node.clone(), checkpoint.clone()))
+        .chain(
+            continuation
+                .failed_host_io
+                .iter()
+                .map(|(node, failed)| (node.clone(), failed.host_io.clone())),
+        )
+        .collect();
+
+    ProductionVmExactHotForkSourceBoundary {
+        configuration: continuation.configuration.clone(),
+        scheduler: continuation.scheduler.clone(),
+        event_log_objects: continuation.event_log_objects.clone(),
+        signal_artifact_objects: continuation.signal_artifact_objects.clone(),
+        node_generations: continuation.node_generations.clone(),
+        node_service_states: continuation.node_service_states.clone(),
+        host_io,
+        fault_checkpoint: continuation.fault_checkpoint.id(),
+    }
+}
+
+#[test]
+fn exact_boundary_rejects_extra_active_and_failed_host_io_owners() {
+    let (_source, continuation) = permanently_failed_continuation();
+    let boundary = exact_boundary_from_continuation(&continuation);
+    assert!(boundary.matches(&continuation));
+
+    let foreign_node = NodeId {
+        name: String::from("foreign-host-io-owner"),
+    };
+    let mut extra_active = continuation
+        .try_clone_for_branch()
+        .unwrap_or_else(|error| panic!("clone active-host-I/O fixture: {error}"));
+    extra_active.active_host_io.insert(
+        foreign_node.clone(),
+        QemuHostIoCheckpoint::without_devices(ContentHash::from_bytes(b"foreign-active")),
+    );
+    assert!(!boundary.matches(&extra_active));
+
+    let mut extra_failed = continuation
+        .try_clone_for_branch()
+        .unwrap_or_else(|error| panic!("clone failed-host-I/O fixture: {error}"));
+    extra_failed
+        .failed_host_io
+        .insert(foreign_node.clone(), failed_node_state(&foreign_node));
+    assert!(!boundary.matches(&extra_failed));
+}
+
 #[test]
 fn failed_node_sampling_uses_the_original_terminal_boundary() {
     let (_source, mut lifecycle) = permanently_failed_loop();

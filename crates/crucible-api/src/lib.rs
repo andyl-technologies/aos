@@ -135,8 +135,10 @@ pub use vm_lifecycle::{
 };
 #[cfg(target_os = "linux")]
 pub use vm_lifecycle::{
-    ProductionVmHotForkNodeAdoption, ProductionVmHotForkNodeServiceState,
-    ProductionVmHotForkSourceWorld, ProductionVmHotForkWorldContinuation,
+    ProductionVmExactHotForkSourceBoundary, ProductionVmHotForkNodeAdoption,
+    ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
+    ProductionVmHotForkWorldContinuation,
+    authenticate_production_vm_exact_hot_fork_source_boundary,
     build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
 };
 // Re-exported so control-plane clients (e.g. the CLI) record the *shared*
