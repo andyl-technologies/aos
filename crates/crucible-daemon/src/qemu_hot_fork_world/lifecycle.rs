@@ -27,12 +27,14 @@ use crucible_qemu::QemuNodeSelectablePendingRequest;
 
 use super::QemuHotForkCompleteWorldAssembly;
 use crate::qemu_hot_fork_reconciliation::LinuxQemuHotForkWorldReconciliationSet;
+use crate::qemu_hot_fork_world_resource::QemuHotForkWorldAuxiliaryResourceBinding;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
     AttemptExecutionRuntimeBasis, CapturedAttemptCheckpoint, LinuxQemuHotForkReconciliationBackend,
     QemuAttemptGenerationResourceOwner, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuFreshAttemptLifecycleOwner,
-    QemuFreshStartMaterialization, QemuHotForkAttemptReconciliation, QemuHotForkWorldNodeTarget,
+    QemuFreshStartMaterialization, QemuHotForkAttemptReconciliation,
+    QemuHotForkWorldAuxiliaryResourceBroker, QemuHotForkWorldNodeTarget,
     QemuHotForkWorldResourceOwner,
 };
 
@@ -60,6 +62,8 @@ where
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
     reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
     resources: QemuHotForkWorldResourceOwner<G>,
+    auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
+    auxiliary_binding: Option<QemuHotForkWorldAuxiliaryResourceBinding<G>>,
     shutdown_complete: bool,
     aggregate_released: bool,
     source_recovery_failed: bool,
@@ -148,12 +152,14 @@ where
                 "release hot-fork world aggregate resources after publication: {error}"
             ))
         })?;
+        self.auxiliary_binding = None;
         self.aggregate_released = true;
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
 
     /// Transfers child and aggregate ownership to fail-closed quarantine.
     pub fn quarantine(&mut self) {
+        self.auxiliary_binding = None;
         self.reconciliations.quarantine();
         self.resources.quarantine();
     }
@@ -187,10 +193,13 @@ where
             lifecycle,
             reconciliations,
             resources,
+            auxiliary_resources,
+            auxiliary_binding,
             shutdown_complete,
             aggregate_released,
             source_recovery_failed,
         } = self;
+        drop(auxiliary_binding);
         let source_world = match Arc::try_unwrap(source_world) {
             Ok(source_world) => source_world,
             Err(source_world) => {
@@ -200,6 +209,8 @@ where
                     source_world,
                     reconciliations,
                     resources,
+                    auxiliary_resources,
+                    auxiliary_binding: None,
                     shutdown_complete,
                     aggregate_released,
                     source_recovery_failed,
@@ -216,6 +227,8 @@ where
                     source_world,
                     reconciliations,
                     resources,
+                    auxiliary_resources,
+                    auxiliary_binding: None,
                     shutdown_complete,
                     aggregate_released,
                     source_recovery_failed: true,
@@ -343,6 +356,14 @@ where
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: error.to_string(),
             })?;
+        if let Some(broker) = &self.auxiliary_resources {
+            let binding = broker.bind(&self.resources).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("bind hot-fork auxiliary resources after shutdown: {error}"),
+                }
+            })?;
+            self.auxiliary_binding = Some(binding);
+        }
         self.shutdown_complete = true;
         Ok(events)
     }
@@ -366,6 +387,7 @@ where
         runtime_basis: AttemptExecutionRuntimeBasis,
         run_state_root: PathBuf,
         mut resources: QemuHotForkWorldResourceOwner<G>,
+        auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
     ) -> Result<QemuProductionHotForkWorldLifecycle<G>, LifecycleApiError> {
         let boundaries = self
             .continuation
@@ -520,6 +542,8 @@ where
             source_world,
             reconciliations: completed,
             resources,
+            auxiliary_resources,
+            auxiliary_binding: None,
             shutdown_complete: false,
             aggregate_released: false,
             source_recovery_failed: false,

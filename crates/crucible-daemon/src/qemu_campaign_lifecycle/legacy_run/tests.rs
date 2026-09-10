@@ -91,6 +91,15 @@ fn supplemental_finding_source_round_trips_and_reopens_by_exact_identity() {
     assert_eq!(reopened.identity().as_bytes(), content.digest());
 }
 
+#[test]
+fn determinism_finding_verification_is_explicitly_opt_in() {
+    let (request, _) = request();
+    assert!(!request.verifies_determinism_findings());
+
+    let request = request.with_determinism_finding_verification();
+    assert!(request.verifies_determinism_findings());
+}
+
 struct TerminalLifecycle {
     node: NodeId,
     event_log: EventLog,

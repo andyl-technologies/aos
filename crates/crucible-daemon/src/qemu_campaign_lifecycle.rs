@@ -441,17 +441,20 @@ pub use legacy_run::{
     GuardedCampaignBranchAcceptance, GuardedCampaignContinuationControl,
     GuardedCampaignContinuationControlError, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
+    GuardedCampaignFindingExport, GuardedCampaignFindingObjectProof,
+    GuardedCampaignFindingOccurrenceObjectProof, GuardedCampaignFindingOccurrenceProof,
     GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
     GuardedCampaignFindingOracleEvaluation, GuardedCampaignFindingOracleSource,
-    GuardedCampaignFindingOracleSourceLoadError, GuardedCampaignReplayClosure,
+    GuardedCampaignFindingOracleSourceLoadError, GuardedCampaignFindingProof,
+    GuardedCampaignFindingQueryProof, GuardedCampaignReplayClosure,
     GuardedCampaignReplayClosureError, GuardedCampaignSupplementalFinding,
     GuardedCampaignTimeoutEvidence, GuardedDefaultCampaignInvariantError,
-    GuardedDefaultCampaignObservation, GuardedDefaultCampaignObservationSource,
-    GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignResumeProof,
-    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
-    GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignSupervisorError,
-    GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
-    validate_remote_resume_replay_closure,
+    GuardedDefaultCampaignObservation,
+    GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignProductionRunnerError,
+    GuardedDefaultCampaignResumeProof, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError,
+    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
+    GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
+    run_guarded_default_campaign, validate_remote_resume_replay_closure,
 };
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
@@ -769,9 +772,12 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
 
 // crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
 #[cfg_attr(not(test), allow(dead_code))]
-impl<F> QemuFreshExecutionRunner<F, crate::QemuFreshModeledDriver>
+// crucible-lint: allow rust-allow -- a crate-private capability deliberately gates this public runner's private replay method.
+#[allow(private_bounds)]
+impl<F, D> QemuFreshExecutionRunner<F, D>
 where
     F: QemuFreshAttemptLifecycleFactory,
+    D: crate::qemu_campaign_driver::QemuFindingReplayDriver,
 {
     /// Reconstructs and evaluates one exact candidate without publishing an observation.
     // crucible-lint: allow rust-allow -- the existing runner error preserves phase and cleanup diagnostics.
@@ -780,6 +786,7 @@ where
         &mut self,
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
+        expected_replay: Option<&crate::qemu_campaign_driver::QemuFindingCandidateBoundaryEvidence>,
         context: &AttemptExecutionContext,
     ) -> Result<
         QemuFindingCandidateReplayOutcome,
@@ -896,13 +903,15 @@ where
                 ));
             }
         };
-        let evidence = crate::qemu_campaign_driver::build_finding_candidate_boundary_evidence(
-            pending,
-            candidate,
-            final_events,
-        )
-        .map_err(AttemptWorkerFailure::Terminal)
-        .map_err(map_fresh_driver_failure)?;
+        let evidence = self
+            .driver
+            .build_finding_candidate_boundary_evidence(pending, candidate, final_events)
+            .map_err(AttemptWorkerFailure::Terminal)
+            .map_err(map_fresh_driver_failure)?;
+        let evidence = match expected_replay {
+            Some(expected) => evidence.compare_against_expected_replay(expected),
+            None => evidence,
+        };
         Ok(QemuFindingCandidateReplayOutcome::Observed(Box::new(
             evidence,
         )))
