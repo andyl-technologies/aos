@@ -30,6 +30,34 @@ import ../lib/mk-glibc.nix {
     if hostPlatform.constraints.cpu == "x86_64"
     then null
     else prev.perl;
+  # The Linux 5.14 export places its header directories at the package root.
+  withHeaders =
+    if hostPlatform.constraints.cpu == "x86_64"
+    then "${linuxHeaders}/include"
+    else toString linuxHeaders;
+  linuxHeadersSource =
+    if hostPlatform.constraints.cpu == "x86_64"
+    then "${linuxHeaders}/include"
+    else toString linuxHeaders;
+  preConfigure =
+    if hostPlatform.constraints.cpu == "x86_64"
+    then ""
+    else ''
+      test -f "${linuxHeaders}/asm/unistd.h"
+      test -f "${linuxHeaders}/linux/types.h"
+    '';
+  postUnpack =
+    if hostPlatform.constraints.cpu == "riscv64"
+    then ''
+      # The construction compiler also exposes its older libc headers.
+      # Linux 5.14 moved these definitions into asm/unistd.h; do not select
+      # an obsolete asm/syscalls.h through the compatibility include probe.
+      sed -i '/^#if __has_include (<asm\/syscalls.h>)/,/^#endif$/c\#include <asm/unistd.h>' \
+        sysdeps/unix/sysv/linux/riscv/flush-icache.c
+      test "$(grep -Fc '#include <asm/unistd.h>' sysdeps/unix/sysv/linux/riscv/flush-icache.c)" -eq 1
+      ! grep -F '# include <asm/syscalls.h>' sysdeps/unix/sysv/linux/riscv/flush-icache.c
+    ''
+    else "";
   useCxx = true;
   extraPathDeps = [
     prev.bison
