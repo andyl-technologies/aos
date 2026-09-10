@@ -16,7 +16,7 @@ use crucible::{
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, ConfigurationArtifact,
     FindingExactPins, FindingKind, FindingSignature, FindingTarget, ObservationCandidate,
-    ObservationStopSatisfaction, PropertyVerdict, PropertyVerdictSet, StopOutcome,
+    ObservationStopSatisfaction, PropertyVerdict, PropertyVerdictSet, ScenarioDefId, StopOutcome,
 };
 use thiserror::Error;
 
@@ -100,7 +100,7 @@ pub enum AutomaticFindingDeterminismProbe {
     /// A mismatch was localized from two complete executions.
     Diverged {
         /// Actual first causal mismatch reconstructed from the paired executions.
-        divergence: crucible::FailureClusterReportDivergence,
+        divergence: Box<crucible::FailureClusterReportDivergence>,
         /// Coverage produced by the second private replay for diagnostics only.
         reproduced_coverage: crucible_campaign::CoverageProjection,
     },
@@ -196,7 +196,7 @@ where
             return Ok(AutomaticFindingDeterminismProbe::Incomplete);
         };
         Ok(AutomaticFindingDeterminismProbe::Diverged {
-            divergence: divergence.clone(),
+            divergence: Box::new(divergence.clone()),
             reproduced_coverage,
         })
     }
@@ -230,7 +230,8 @@ where
                             candidate,
                             finding,
                             target_signature,
-                        );
+                        )
+                        .map_err(|failure| *failure);
                     }
                     if !context.has_remaining_execution_quanta() {
                         return Err(AttemptWorkerFailure::Terminal(
@@ -255,7 +256,8 @@ where
         match outcome {
             crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(
                 evidence,
-            ) => finish_qemu_finding_replay(*evidence, candidate, finding, target_signature),
+            ) => finish_qemu_finding_replay(*evidence, candidate, finding, target_signature)
+                .map_err(|failure| *failure),
             crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
                 reason,
             ) => Ok(AutomaticFindingReplayOutcome::DeterministicallyIncompatible {
@@ -293,8 +295,10 @@ fn finish_qemu_finding_replay<F>(
     target_signature: &FindingSignature,
 ) -> Result<
     AutomaticFindingReplayOutcome,
-    AttemptWorkerFailure<
-        crate::QemuFreshExecutionRunnerError<F, crate::QemuFreshModeledDriverError>,
+    Box<
+        AttemptWorkerFailure<
+            crate::QemuFreshExecutionRunnerError<F, crate::QemuFreshModeledDriverError>,
+        >,
     >,
 > {
     let (replay, measurement_replay_evidence, _final_events, triage) = evidence.into_parts();
@@ -305,8 +309,10 @@ fn finish_qemu_finding_replay<F>(
         triage,
     )
     .map_err(|error| {
-        AttemptWorkerFailure::Terminal(crate::QemuFreshExecutionRunnerError::Driver(
-            crate::QemuFreshModeledDriverError::Triage(Box::new(error)),
+        Box::new(AttemptWorkerFailure::Terminal(
+            crate::QemuFreshExecutionRunnerError::Driver(
+                crate::QemuFreshModeledDriverError::Triage(Box::new(error)),
+            ),
         ))
     })?;
     match triage {
@@ -326,6 +332,14 @@ fn divergence_fingerprint(
     input: &CrucibleAttemptExecution,
     divergence: &crucible::FailureClusterReportDivergence,
 ) -> CampaignHash {
+    divergence_fingerprint_for_scenario(input.lineage().scenario(), divergence)
+}
+
+/// Derives the normalized campaign fingerprint for one native divergence source.
+pub(crate) fn divergence_fingerprint_for_scenario(
+    scenario: ScenarioDefId,
+    divergence: &crucible::FailureClusterReportDivergence,
+) -> CampaignHash {
     let node = divergence
         .node
         .as_ref()
@@ -339,7 +353,7 @@ fn divergence_fingerprint(
         node.as_bytes(),
     );
     let mut material = Vec::with_capacity(96);
-    material.extend_from_slice(&input.lineage().scenario().as_hash().as_bytes());
+    material.extend_from_slice(&scenario.as_hash().as_bytes());
     material.extend_from_slice(&kind.as_bytes());
     material.extend_from_slice(&node.as_bytes());
     CampaignHash::derive(
@@ -1461,7 +1475,7 @@ mod tests {
                 "reproduced fixture state",
             );
             Ok(AutomaticFindingDeterminismProbe::Diverged {
-                divergence,
+                divergence: Box::new(divergence),
                 reproduced_coverage: divergence_probe_coverage(),
             })
         }

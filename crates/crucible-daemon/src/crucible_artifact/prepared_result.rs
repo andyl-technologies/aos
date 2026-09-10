@@ -62,16 +62,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible::{
-    AssertionPhase, ContentHash, ExecutionFingerprint, FailureKind, FailureTriageReplayEvidence,
-    FindingReproductionArtifact, FingerprintSample, NodeId, ObservableEventPayload,
-    ScenarioDefForm, SchedulerEventLogEntry, SchedulerEventLogPayload, VirtualTime,
+    AssertionPhase, ContentHash, ExecutionFingerprint, FailureClusterReportFailure, FailureKind,
+    FailureTriageReplayEvidence, FindingReproductionArtifact, FingerprintSample, NodeId,
+    ObservableEventPayload, ScenarioDefForm, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    VirtualTime,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity,
-    ConfigurationArtifact, CoverageProjection, FindingCandidateBundle, FindingKind, FindingTarget,
-    FindingTriageReplayEvidence, MeasurementSet, Observation, ObservationCandidate,
-    ObservationCondition, ObservationStopSatisfaction, PropertyVerdict, PropertyVerdictSet,
-    ReproductionArtifact, ScenarioArtifact, SelectableDeclaration, Selection, StopOutcome,
+    ConfigurationArtifact, CoverageProjection, FindingCandidateBundle, FindingKind,
+    FindingSignature, FindingTarget, FindingTriageReplayEvidence, MeasurementSet, Observation,
+    ObservationCandidate, ObservationCondition, ObservationStopSatisfaction, PropertyVerdict,
+    PropertyVerdictSet, ReproductionArtifact, ScenarioArtifact, SelectableDeclaration, Selection,
+    StopOutcome,
 };
 use thiserror::Error;
 
@@ -1771,8 +1773,94 @@ fn validate_finding_triage_replays(
                 "finding triage replay native signature policy key",
             ));
         }
+        validate_native_divergence_fingerprint(signature, finding, native_replay.failure())?;
     }
     Ok(())
+}
+
+fn validate_native_divergence_fingerprint(
+    signature: &FindingSignature,
+    finding: &FindingReproductionArtifact,
+    failure: &FailureClusterReportFailure,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    let FailureClusterReportFailure::Divergence(divergence) = failure else {
+        return Ok(());
+    };
+    let scenario = super::campaign_scenario_id(finding.artifact.scenario_form().id());
+    let fingerprint =
+        crate::automatic_finding_runner::divergence_fingerprint_for_scenario(scenario, divergence);
+    if fingerprint != signature.fingerprint() {
+        return Err(inconsistent(
+            "finding triage replay native divergence fingerprint",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- the integrity fixture uses panic shortcuts for exact failure localization.
+#[allow(clippy::expect_used)]
+mod triage_replay_tests {
+    use super::*;
+
+    fn divergence(node: &str) -> crucible::FailureClusterReportDivergence {
+        let node = NodeId {
+            name: node.to_owned(),
+        };
+        crucible::FailureClusterReportDivergence {
+            raw_index: 0,
+            node: Some(node.clone()),
+            icount_node: Some(node),
+            icount: crucible::Icount { retired: 1 },
+            source: crucible::EventSource::Engine,
+            kind: String::from("fork"),
+            expected_state_summary: String::from("expected"),
+            reproduced_state_summary: String::from("reproduced"),
+        }
+    }
+
+    #[test]
+    fn native_divergence_payload_swap_must_match_recorded_fingerprint() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let configuration = crucible::Configuration::genesis(scenario.scenario_def());
+        let expected_divergence = divergence("node-a");
+        let scenario_id = super::super::campaign_scenario_id(scenario.id());
+        let fingerprint = crate::automatic_finding_runner::divergence_fingerprint_for_scenario(
+            scenario_id,
+            &expected_divergence,
+        );
+        let observed = FindingSignature::new(
+            FindingKind::Divergence,
+            fingerprint,
+            None,
+            String::from("qemu.causal-log-divergence"),
+            None,
+            BTreeSet::new(),
+        )
+        .expect("observed divergence signature");
+        let finding = FindingReproductionArtifact::capture(
+            crucible::FindingDiscoveryPath::StateSpaceSearch,
+            ContentHash {
+                bytes: fingerprint.as_bytes(),
+            },
+            &scenario,
+            &configuration,
+        )
+        .expect("finding reproduction");
+        let expected = FailureClusterReportFailure::divergence(expected_divergence);
+        let swapped = FailureClusterReportFailure::divergence(divergence("node-b"));
+
+        validate_native_divergence_fingerprint(&observed, &finding, &expected)
+            .expect("production-derived divergence fingerprint");
+        assert!(matches!(
+            validate_native_divergence_fingerprint(&observed, &finding, &swapped),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "finding triage replay native divergence fingerprint"
+            })
+        ));
+    }
 }
 
 fn validate_recorded_replays(
