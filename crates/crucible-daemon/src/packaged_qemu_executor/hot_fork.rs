@@ -73,6 +73,224 @@ where
     }
 }
 
+struct PackagedDemandedQemuHotForkSourceProvider<D, R, G>
+where
+    D: crate::HotCheckpointTemplateDemotionSink<crate::ManagedQemuHotForkSourceWorld>,
+    R: crate::HotCheckpointFallbackRetentionStore,
+{
+    pool: SharedManagedQemuHotForkSourceWorldPool<D, R>,
+    provider: SharedQemuHotForkSourceWorldProvider<D, R>,
+    checkpoints: Arc<ExactCheckpointStore>,
+    factories: BTreeMap<CampaignLineageId, ProductionQemuHotForkSourceFactory<G>>,
+    signals: HotCheckpointHotnessSignals,
+}
+
+impl<D, R, G> crate::qemu_hot_fork_world_factory::source_world_provider_sealed::Sealed
+    for PackagedDemandedQemuHotForkSourceProvider<D, R, G>
+where
+    D: crate::HotCheckpointTemplateDemotionSink<crate::ManagedQemuHotForkSourceWorld>,
+    R: crate::HotCheckpointFallbackRetentionStore,
+{
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PackagedDemandedQemuHotForkSourceProviderError {
+    #[error(transparent)]
+    Pool(#[from] SharedQemuHotForkSourceWorldProviderError),
+    #[error("restore demanded exact hot-fork source: {diagnostic}")]
+    Capture {
+        class: crucible::SchedulerOperationalFailureClass,
+        diagnostic: String,
+    },
+    #[error("shared source-world pool lock is poisoned during exact admission")]
+    AdmissionPoisoned,
+    #[error("admit demanded exact hot-fork source")]
+    Admission(
+        #[source]
+        Box<ManagedQemuHotForkAuthenticatedAdmissionError<PackagedQemuHotForkDemotionError>>,
+    ),
+    #[error("retain demanded exact hot-fork fallback")]
+    Retention(
+        #[source]
+        Box<
+            crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkColdRetentionError<
+                PackagedQemuHotForkDemotionError,
+            >,
+        >,
+    ),
+    #[error("retire declined demanded exact hot-fork source")]
+    Retirement(#[source] crucible_api::LifecycleApiError),
+}
+
+impl<D, R, G> QemuHotForkSourceWorldProvider for PackagedDemandedQemuHotForkSourceProvider<D, R, G>
+where
+    D: crate::HotCheckpointTemplateDemotionSink<
+            crate::ManagedQemuHotForkSourceWorld,
+            Error = PackagedQemuHotForkDemotionError,
+        > + Send,
+    R: crate::HotCheckpointFallbackRetentionStore + Send,
+    G: QemuAttemptResourceGuardFactory,
+    G::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
+{
+    type Error = PackagedDemandedQemuHotForkSourceProviderError;
+
+    fn checkout(
+        &mut self,
+        key: &QemuHotForkSourceWorldKey,
+    ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
+        self.provider.checkout(key).map_err(Into::into)
+    }
+
+    fn checkout_for_attempt(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        key: &QemuHotForkSourceWorldKey,
+    ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
+        if let Some(source) = self.provider.checkout(key)? {
+            return Ok(Some(source));
+        }
+        let QemuHotForkSourceWorldBoundary::ExactCheckpoint(checkpoint) = key.boundary() else {
+            return Ok(None);
+        };
+        let lineage = key.template_key().lineage();
+        let Some(factory) = self.factories.get_mut(&lineage) else {
+            return Ok(None);
+        };
+        let Some(source) = factory
+            .capture_exact(&self.checkpoints, input, context)
+            .map_err(|source| {
+                let class = source.failure_class(context.cancellation().is_canceled());
+                let diagnostic = source.to_string();
+                let _retained_for_process_lifetime = Box::leak(Box::new(source));
+                Self::Error::Capture { class, diagnostic }
+            })?
+        else {
+            return Ok(None);
+        };
+
+        match self
+            .pool
+            .admit_authenticated_exact_source(source, self.signals)
+        {
+            Ok(_commit) => self.provider.checkout(key).map_err(Into::into),
+            Err(
+                crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkExactAdmissionFailure::Poisoned,
+            ) => Err(Self::Error::AdmissionPoisoned),
+            Err(
+                crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkExactAdmissionFailure::Admission(
+                    failure,
+                ),
+            ) => self.reconcile_exact_admission_failure(key, checkpoint, failure),
+        }
+    }
+
+    fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
+        self.provider.restore(source);
+    }
+
+    fn abandon(&mut self) {
+        self.provider.abandon();
+    }
+
+    fn failure_class(error: &Self::Error) -> crucible::SchedulerOperationalFailureClass {
+        match error {
+            Self::Error::Capture { class, .. } => *class,
+            Self::Error::Pool(_) | Self::Error::AdmissionPoisoned | Self::Error::Retention(_) => {
+                crucible::SchedulerOperationalFailureClass::Retryable
+            }
+            Self::Error::Admission(_) | Self::Error::Retirement(_) => {
+                crucible::SchedulerOperationalFailureClass::Terminal
+            }
+        }
+    }
+}
+
+impl<D, R, G> PackagedDemandedQemuHotForkSourceProvider<D, R, G>
+where
+    D: crate::HotCheckpointTemplateDemotionSink<
+            crate::ManagedQemuHotForkSourceWorld,
+            Error = PackagedQemuHotForkDemotionError,
+        > + Send,
+    R: crate::HotCheckpointFallbackRetentionStore + Send,
+{
+    fn reconcile_exact_admission_failure(
+        &mut self,
+        key: &QemuHotForkSourceWorldKey,
+        checkpoint: crucible_campaign::ExactCheckpointId,
+        failure: ManagedQemuHotForkAuthenticatedAdmissionFailure<PackagedQemuHotForkDemotionError>,
+    ) -> Result<
+        Option<ProductionVmHotForkSourceWorld>,
+        PackagedDemandedQemuHotForkSourceProviderError,
+    > {
+        let failure = match failure {
+            ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding(failure) => {
+                let (source, error) = failure.into_parts();
+                if let Err(retirement) = source.retire() {
+                    return Err(PackagedDemandedQemuHotForkSourceProviderError::Retirement(
+                        retirement,
+                    ));
+                }
+                return Err(PackagedDemandedQemuHotForkSourceProviderError::Admission(
+                    Box::new(ManagedQemuHotForkAuthenticatedAdmissionError::Binding(
+                        error,
+                    )),
+                ));
+            }
+            ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission(failure) => failure,
+        };
+        let (candidate, cleanup_slot, error) = failure.into_parts();
+        if cleanup_slot.is_none()
+            && matches!(
+                &error,
+                ManagedQemuHotForkSourceWorldAdmissionError::DuplicateSource
+            )
+        {
+            retire_managed_demanded_source(candidate)?;
+            return self.provider.checkout(key).map_err(Into::into);
+        }
+        if cleanup_slot.is_none()
+            && matches!(
+                &error,
+                ManagedQemuHotForkSourceWorldAdmissionError::Rejected(_)
+            )
+        {
+            if let Err(source) = self
+                .pool
+                .retain_cold_fallback(key.template_key(), HotCheckpointFallback::Exact(checkpoint))
+            {
+                let _retained_for_process_lifetime = Box::leak(Box::new(candidate));
+                return Err(PackagedDemandedQemuHotForkSourceProviderError::Retention(
+                    Box::new(source),
+                ));
+            }
+            retire_managed_demanded_source(candidate)?;
+            return Ok(None);
+        }
+
+        let _retained_for_process_lifetime = Box::leak(Box::new(candidate));
+        let error = ManagedQemuHotForkAuthenticatedAdmissionError::Admission {
+            cleanup_slot,
+            source: error,
+        };
+        Err(PackagedDemandedQemuHotForkSourceProviderError::Admission(
+            Box::new(error),
+        ))
+    }
+}
+
+fn retire_managed_demanded_source(
+    candidate: crate::ManagedQemuHotForkSourceWorld,
+) -> Result<(), PackagedDemandedQemuHotForkSourceProviderError> {
+    let source = candidate.into_source().map_err(|candidate| {
+        let _retained_for_process_lifetime = Box::leak(candidate);
+        PackagedDemandedQemuHotForkSourceProviderError::AdmissionPoisoned
+    })?;
+    source
+        .retire()
+        .map_err(PackagedDemandedQemuHotForkSourceProviderError::Retirement)
+}
+
 pub(super) struct PackagedQemuInitialRunnerBuild<R> {
     pub(super) runners: Vec<(R, QemuAttemptExecutionEvidence)>,
     pub(super) hot_fork_owner: Option<Box<dyn PackagedQemuHotForkSourceOwner>>,
@@ -303,7 +521,7 @@ where
                 QemuHotForkSourceWorldDemoter,
             );
             let mut source_factories = Vec::with_capacity(source_bases.len());
-            for basis in source_bases {
+            for basis in &source_bases {
                 let lineage = basis.lineage_id();
                 let fallback = HotCheckpointFallback::Thin(basis.source_artifact());
                 let source_lifecycle = lifecycle_config.clone().with_run_state_root(
@@ -317,7 +535,7 @@ where
                     ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
                 );
                 let factory = ProductionQemuHotForkSourceFactory::new(
-                    basis,
+                    basis.clone(),
                     lifecycles,
                     hot_fork.launch_identity().qemu_build_id(),
                 )?;
@@ -388,6 +606,34 @@ where
                             owner.as_ref(),
                         ));
                     }
+                };
+                let mut demanded_factories = BTreeMap::new();
+                for basis in &source_bases {
+                    let lineage = basis.lineage_id();
+                    let source_lifecycle = lifecycle_config.clone().with_run_state_root(
+                        lifecycle_config
+                            .run_state_root()
+                            .join("campaign-hot-fork-demanded")
+                            .join(format!("worker-{slot:03}"))
+                            .join(lineage.to_string()),
+                    );
+                    let lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
+                        source_lifecycle,
+                        ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
+                    );
+                    let factory = ProductionQemuHotForkSourceFactory::new(
+                        basis.clone(),
+                        lifecycles,
+                        hot_fork.launch_identity().qemu_build_id(),
+                    )?;
+                    demanded_factories.insert(lineage, factory);
+                }
+                let provider = PackagedDemandedQemuHotForkSourceProvider {
+                    pool: pool.clone(),
+                    provider,
+                    checkpoints: Arc::clone(checkpoints),
+                    factories: demanded_factories,
+                    signals: hot_fork.initial_signals(),
                 };
                 let hot_factory = QemuProductionHotForkWorldLifecycleFactory::new(
                     provider,

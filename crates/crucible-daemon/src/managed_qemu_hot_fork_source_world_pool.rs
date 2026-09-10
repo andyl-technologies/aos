@@ -1,13 +1,13 @@
 //! Durable managed ownership for complete retained QEMU source worlds.
 //!
 //! This pool applies the shared [`HotCheckpointManager`] policy to atomic
-//! multi-node source worlds. It currently admits only the canonical genesis
-//! frontier, permits one source per lineage/configuration coordinate,
-//! exact-matches the scenario and executor compatibility profile, persists an
+//! multi-node source worlds. Canonical factories admit scenario genesis, while
+//! production-restored tokens admit later exact-checkpoint frontiers. The pool
+//! exact-matches scenario and executor compatibility, distinguishes retained
+//! frontiers even when their modeled configurations are equal, persists an
 //! exact/thin fallback before admission, charges conservatively measured QEMU
 //! process resources, and retains cold fallback records for campaign GC after
-//! orderly source reap. Later replay frontiers require an explicit semantic
-//! boundary identity before they may enter this owner.
+//! orderly source reap.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex};
 use crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld;
 use thiserror::Error;
 
-use crate::qemu_hot_fork_source_capture::AuthenticatedCanonicalQemuHotForkSource;
+use crate::qemu_hot_fork_source_capture::{
+    AuthenticatedCanonicalQemuHotForkSource, AuthenticatedExactQemuHotForkSource,
+};
 use crate::qemu_hot_fork_world_factory::QemuHotForkSourceWorldCheckoutIdentity;
 use crate::supervision::ForkRateClock;
 use crate::{
@@ -59,7 +61,22 @@ impl ManagedQemuHotForkSourceWorld {
     /// unchanged when its captured scenario or configuration differs.
     pub(crate) fn bind(
         key: QemuHotForkSourceWorldKey,
+        source: ProductionVmHotForkSourceWorld,
+    ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
+        Self::bind_at_boundary(key, source, true)
+    }
+
+    fn bind_authenticated_exact(
+        key: QemuHotForkSourceWorldKey,
+        source: ProductionVmHotForkSourceWorld,
+    ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
+        Self::bind_at_boundary(key, source, false)
+    }
+
+    fn bind_at_boundary(
+        key: QemuHotForkSourceWorldKey,
         mut source: ProductionVmHotForkSourceWorld,
+        require_canonical_genesis: bool,
     ) -> Result<Self, ManagedQemuHotForkSourceWorldBindingFailure> {
         let actual_scenario = source.continuation().configuration().def.id();
         let actual_configuration = source.continuation().configuration().id();
@@ -74,7 +91,7 @@ impl ManagedQemuHotForkSourceWorld {
                 source, error,
             ));
         }
-        if !is_canonical_genesis_reuse_boundary(&source) {
+        if require_canonical_genesis && !is_canonical_genesis_reuse_boundary(&source) {
             return Err(ManagedQemuHotForkSourceWorldBindingFailure::new(
                 source,
                 ManagedQemuHotForkSourceWorldBindingError::NonCanonicalBoundary,
@@ -239,6 +256,9 @@ pub enum ManagedQemuHotForkSourceWorldBindingError {
     /// Measured source resources do not describe a live retained world.
     #[error("construct measured source-world resource profile")]
     InvalidResourceProfile(#[source] crate::HotCheckpointResourceProfileError),
+    /// The sealed token's exact checkpoint differs from its reuse-key boundary.
+    #[error("exact source checkpoint differs from its authenticated reuse boundary")]
+    ExactBoundaryCredentialMismatch,
 }
 
 /// Failed authenticated-source admission retaining the complete source authority.
@@ -254,10 +274,10 @@ pub enum ManagedQemuHotForkAuthenticatedAdmissionFailure<E> {
 #[derive(Debug, Error)]
 pub enum ManagedQemuHotForkAuthenticatedAdmissionError<E> {
     /// Source binding, frontier validation, or resource measurement failed.
-    #[error("bind canonical genesis source world")]
+    #[error("bind authenticated source world")]
     Binding(#[source] ManagedQemuHotForkSourceWorldBindingError),
     /// Durable fallback or managed hot-retention admission failed.
-    #[error("admit canonical genesis source world")]
+    #[error("admit authenticated source world")]
     Admission {
         /// Durable fallback slot whose cleanup remains unresolved.
         cleanup_slot: Option<HotCheckpointFallbackSlot>,
@@ -301,8 +321,8 @@ impl<E: std::fmt::Debug> std::fmt::Debug for ManagedQemuHotForkAuthenticatedAdmi
 impl<E> std::fmt::Display for ManagedQemuHotForkAuthenticatedAdmissionFailure<E> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Binding(_) => formatter.write_str("bind canonical genesis source world"),
-            Self::Admission(_) => formatter.write_str("admit canonical genesis source world"),
+            Self::Binding(_) => formatter.write_str("bind authenticated source world"),
+            Self::Admission(_) => formatter.write_str("admit authenticated source world"),
         }
     }
 }
@@ -338,7 +358,7 @@ impl HotCheckpointSourceDemoter<ManagedQemuHotForkSourceWorld> for QemuHotForkSo
     ) -> Result<(), HotCheckpointTemplateDemotionFailure<ManagedQemuHotForkSourceWorld, Self::Error>>
     {
         let expected = plan.slot().template_key();
-        let actual = world.key.template_key();
+        let actual = manager_source_key(&world.key);
         if expected != actual {
             return Err(HotCheckpointTemplateDemotionFailure::new(
                 world,
@@ -453,7 +473,7 @@ where
     #[must_use]
     pub fn source_available(&self, key: &QemuHotForkSourceWorldKey) -> bool {
         self.worlds
-            .get(&key.template_key())
+            .get(&manager_source_key(key))
             .is_some_and(|world| world.key() == key && world.available())
     }
 
@@ -496,6 +516,42 @@ where
             .map_err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission)
     }
 
+    /// Admits a production-restored exact source after measuring it.
+    ///
+    /// The exact checkpoint and reuse key are sealed into the source token by
+    /// [`crate::ProductionQemuHotForkSourceFactory`]. Admission derives the
+    /// durable exact fallback from that token and never accepts a caller-authored
+    /// later-frontier label.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManagedQemuHotForkAuthenticatedAdmissionFailure`] retaining
+    /// the complete source authority when key binding, measurement, exact
+    /// fallback persistence, or managed admission fails.
+    pub fn admit_authenticated_exact_source(
+        &mut self,
+        authenticated: AuthenticatedExactQemuHotForkSource,
+        signals: HotCheckpointHotnessSignals,
+    ) -> Result<
+        HotCheckpointAdmissionCommit,
+        ManagedQemuHotForkAuthenticatedAdmissionFailure<D::Error>,
+    > {
+        let (key, checkpoint, source) = authenticated.into_parts();
+        if key.boundary() != crate::QemuHotForkSourceWorldBoundary::ExactCheckpoint(checkpoint) {
+            return Err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding(
+                ManagedQemuHotForkSourceWorldBindingFailure::new(
+                    source,
+                    ManagedQemuHotForkSourceWorldBindingError::ExactBoundaryCredentialMismatch,
+                ),
+            ));
+        }
+        let world = ManagedQemuHotForkSourceWorld::bind_authenticated_exact(key, source)
+            .map_err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding)?;
+
+        self.admit_source(world, signals, HotCheckpointFallback::Exact(checkpoint))
+            .map_err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission)
+    }
+
     /// Updates one source's operational hotness and pin signals.
     ///
     /// # Errors
@@ -514,7 +570,7 @@ where
     ///
     /// Colder victims are reauthenticated and reaped before the new source is
     /// installed. Exactly one source is permitted for each lineage/source
-    /// configuration coordinate, regardless of executor profile.
+    /// authenticated source-boundary coordinate, regardless of executor profile.
     ///
     /// # Errors
     ///
@@ -528,9 +584,11 @@ where
         fallback: HotCheckpointFallback,
     ) -> Result<HotCheckpointAdmissionCommit, ManagedQemuHotForkSourceWorldAdmissionFailure<D::Error>>
     {
-        let key = world.key.template_key();
-        let candidate = HotCheckpointCandidate::new(key, world.resources, signals, fallback);
-        if self.worlds.contains_key(&key) {
+        let semantic_key = world.key.template_key();
+        let manager_key = manager_source_key(&world.key);
+        let candidate =
+            HotCheckpointCandidate::new(manager_key, world.resources, signals, fallback);
+        if self.worlds.contains_key(&manager_key) {
             return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
                 world,
                 None,
@@ -547,7 +605,10 @@ where
                 ));
             }
         };
-        if let Err(source) = self.demotions.validate_fallback(key, candidate.fallback()) {
+        if let Err(source) = self
+            .demotions
+            .validate_fallback(semantic_key, candidate.fallback())
+        {
             return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
                 world,
                 None,
@@ -556,9 +617,19 @@ where
         }
         for victim in plan.demotions() {
             let victim_key = victim.slot().template_key();
+            let Some(victim_world) = self.worlds.get(&victim_key) else {
+                return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
+                    world,
+                    None,
+                    ManagedQemuHotForkSourceWorldAdmissionError::VictimUnavailable {
+                        reconciliation: Ok(Vec::new()),
+                    },
+                ));
+            };
+            let victim_semantic_key = victim_world.key.template_key();
             if let Err(source) = self
                 .demotions
-                .validate_fallback(victim_key, victim.fallback())
+                .validate_fallback(victim_semantic_key, victim.fallback())
             {
                 return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
                     world,
@@ -576,7 +647,7 @@ where
                 ));
             };
             if let Err(source) =
-                self.require_fallback_record(catalog_slot, victim_key, victim.fallback())
+                self.require_fallback_record(catalog_slot, victim_semantic_key, victim.fallback())
             {
                 return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
                     world,
@@ -602,7 +673,7 @@ where
             }
         }
 
-        let record = HotCheckpointFallbackRecord::new(key, candidate.fallback());
+        let record = HotCheckpointFallbackRecord::new(semantic_key, candidate.fallback());
         let catalog_slot = match self.reserve_fallback(record) {
             Ok(slot) => slot,
             Err(source) => {
@@ -644,10 +715,13 @@ where
             completed.push(victim);
         }
 
-        match self.manager.commit_admission(plan, source_slot(key)) {
+        match self
+            .manager
+            .commit_admission(plan, source_slot(manager_key))
+        {
             Ok(commit) => {
-                self.worlds.insert(key, world);
-                self.active.insert(key, catalog_slot);
+                self.worlds.insert(manager_key, world);
+                self.active.insert(manager_key, catalog_slot);
                 Ok(commit)
             }
             Err(source) => {
@@ -677,31 +751,45 @@ where
         key: QemuHotForkTemplateKey,
         reason: HotCheckpointDemotionReason,
     ) -> Result<HotCheckpointDemotion, ManagedQemuHotForkSourceWorldDemotionError<D::Error>> {
-        let slot = source_slot(key);
+        self.demote_manager_source(key, reason)
+    }
+
+    fn demote_manager_source(
+        &mut self,
+        manager_key: QemuHotForkTemplateKey,
+        reason: HotCheckpointDemotionReason,
+    ) -> Result<HotCheckpointDemotion, ManagedQemuHotForkSourceWorldDemotionError<D::Error>> {
+        let slot = source_slot(manager_key);
         let status = self
             .manager
             .status(slot)
             .ok_or(ManagedQemuHotForkSourceWorldDemotionError::Missing)?;
         let catalog_slot = self
             .active
-            .get(&key)
+            .get(&manager_key)
             .copied()
             .ok_or(ManagedQemuHotForkSourceWorldDemotionError::Missing)?;
-        self.require_fallback_record(catalog_slot, key, status.fallback())
+        let semantic_key = self
+            .worlds
+            .get(&manager_key)
+            .ok_or(ManagedQemuHotForkSourceWorldDemotionError::Missing)?
+            .key
+            .template_key();
+        self.require_fallback_record(catalog_slot, semantic_key, status.fallback())
             .map_err(ManagedQemuHotForkSourceWorldDemotionError::Catalog)?;
         let plan = self
             .manager
             .plan_orderly_demotion(slot, reason)
             .map_err(ManagedQemuHotForkSourceWorldDemotionError::Manager)?;
         self.demotions
-            .validate_fallback(key, status.fallback())
+            .validate_fallback(semantic_key, status.fallback())
             .map_err(ManagedQemuHotForkSourceWorldDemotionError::Fallback)?;
         let world = self
             .worlds
-            .remove(&key)
+            .remove(&manager_key)
             .ok_or(ManagedQemuHotForkSourceWorldDemotionError::Missing)?;
         if !world.available() {
-            self.worlds.insert(key, world);
+            self.worlds.insert(manager_key, world);
             return Err(ManagedQemuHotForkSourceWorldDemotionError::Unavailable);
         }
         if let Err(failure) = self
@@ -709,14 +797,14 @@ where
             .demote(world, HotCheckpointPlannedDemotion::new(status, reason))
         {
             let (world, source) = failure.into_parts();
-            self.worlds.insert(key, world);
+            self.worlds.insert(manager_key, world);
             return Err(ManagedQemuHotForkSourceWorldDemotionError::Demotion(source));
         }
         let demotion = self
             .manager
             .commit_orderly_demotion(plan)
             .map_err(ManagedQemuHotForkSourceWorldDemotionError::Manager)?;
-        self.active.remove(&key);
+        self.active.remove(&manager_key);
         Ok(demotion)
     }
 
@@ -782,7 +870,7 @@ where
         let mut failures = Vec::new();
 
         for key in keys {
-            match self.demote_source(key, HotCheckpointDemotionReason::DaemonShutdown) {
+            match self.demote_manager_source(key, HotCheckpointDemotionReason::DaemonShutdown) {
                 Ok(demotion) => demotions.push(demotion),
                 Err(source) => failures.push((key, source)),
             }
@@ -952,7 +1040,7 @@ where
         if self.checked_out.contains_key(&provider) {
             return Err(ManagedQemuHotForkSourceWorldCheckoutError::PriorCheckoutPending);
         }
-        let template = key.template_key();
+        let template = manager_source_key(key);
         let Some(world) = self.worlds.get_mut(&template) else {
             return Ok(None);
         };
@@ -1071,6 +1159,36 @@ where
         })
     }
 
+    pub(crate) fn admit_authenticated_exact_source(
+        &self,
+        source: AuthenticatedExactQemuHotForkSource,
+        signals: HotCheckpointHotnessSignals,
+    ) -> Result<HotCheckpointAdmissionCommit, SharedManagedQemuHotForkExactAdmissionFailure<D::Error>>
+    {
+        let mut pool = match self.pool.lock() {
+            Ok(pool) => pool,
+            Err(_error) => {
+                let _retained_for_process_lifetime = Box::leak(Box::new(source));
+                return Err(SharedManagedQemuHotForkExactAdmissionFailure::Poisoned);
+            }
+        };
+        pool.admit_authenticated_exact_source(source, signals)
+            .map_err(SharedManagedQemuHotForkExactAdmissionFailure::Admission)
+    }
+
+    pub(crate) fn retain_cold_fallback(
+        &self,
+        key: QemuHotForkTemplateKey,
+        fallback: HotCheckpointFallback,
+    ) -> Result<HotCheckpointFallbackSlot, SharedManagedQemuHotForkColdRetentionError<D::Error>>
+    {
+        self.pool
+            .lock()
+            .map_err(|_error| SharedManagedQemuHotForkColdRetentionError::Poisoned)?
+            .retain_cold_fallback(key, fallback)
+            .map_err(SharedManagedQemuHotForkColdRetentionError::Retention)
+    }
+
     /// Demotes and reaps every retained source through the shared owner.
     ///
     /// # Errors
@@ -1092,6 +1210,19 @@ where
             .orderly_shutdown()
             .map_err(Into::into)
     }
+}
+
+pub(crate) enum SharedManagedQemuHotForkExactAdmissionFailure<E> {
+    Poisoned,
+    Admission(ManagedQemuHotForkAuthenticatedAdmissionFailure<E>),
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum SharedManagedQemuHotForkColdRetentionError<E> {
+    #[error("shared source-world pool lock is poisoned")]
+    Poisoned,
+    #[error("retain demanded exact source fallback")]
+    Retention(#[source] Box<ManagedQemuHotForkSourceWorldAdmissionError<E>>),
 }
 
 /// One worker's independent session over the shared managed source pool.
@@ -1172,6 +1303,26 @@ mod tests;
 
 fn source_slot(key: QemuHotForkTemplateKey) -> QemuHotForkTemplatePoolSlot {
     QemuHotForkTemplatePoolSlot::new(key, 0)
+}
+
+fn manager_source_key(key: &QemuHotForkSourceWorldKey) -> QemuHotForkTemplateKey {
+    match key.boundary() {
+        crate::QemuHotForkSourceWorldBoundary::CanonicalGenesis => key.template_key(),
+        crate::QemuHotForkSourceWorldBoundary::ExactCheckpoint(checkpoint) => {
+            let material = format!(
+                "configuration={}\ncheckpoint={}",
+                key.configuration().to_hex(),
+                checkpoint.to_text(),
+            );
+            QemuHotForkTemplateKey::new(
+                key.template_key().lineage(),
+                crucible::ContentHash::from_canonical_material(
+                    "crucible.qemu-hot-fork.operational-source.v1",
+                    &material,
+                ),
+            )
+        }
+    }
 }
 
 fn inventory_records<R>(

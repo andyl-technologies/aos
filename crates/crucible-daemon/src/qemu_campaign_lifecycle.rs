@@ -17,8 +17,9 @@ use crucible::{
     SchedulerOperationalFailureClass, SchedulerQuiescence, Seed, SelectionDecision, VirtualTime,
 };
 use crucible_api::{
-    LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
-    ProductionVmLifecycleLoop, ProductionVmNodeReplayLaunchProfile,
+    LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmExactHotForkSourceBoundary,
+    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmNodeReplayLaunchProfile,
+    authenticate_production_vm_exact_hot_fork_source_boundary,
     build_production_vm_lifecycle_loop_from_exact_closure_with_launcher,
     build_production_vm_lifecycle_loop_with_launcher,
 };
@@ -1592,7 +1593,10 @@ where
         post_selection: Option<&Configuration>,
         context: &AttemptExecutionContext,
     ) -> Result<
-        crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+        (
+            crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+            ProductionVmExactHotForkSourceBoundary,
+        ),
         QemuAttemptProductionVmLifecycleError,
     > {
         if context.resume_checkpoint() != Some(checkpoint) {
@@ -1624,12 +1628,20 @@ where
             scheduler.retained_event_log_entries(),
         )
         .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary)?;
-        Ok(
+        let production_boundary = authenticate_production_vm_exact_hot_fork_source_boundary(
+            self.config.run_state_root(),
+            scenario,
+            source,
+            installed.closure().identity(),
+        )
+        .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
+        Ok((
             crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(
                 installed.configuration().clone(),
                 proof,
             ),
-        )
+            production_boundary,
+        ))
     }
 
     fn begin_fresh_with_config(
@@ -2802,17 +2814,27 @@ fn map_checkpoint_handoff_failure<F, D>(
 pub(crate) fn classify_production_lifecycle_failure(
     error: QemuAttemptProductionVmLifecycleError,
 ) -> AttemptWorkerFailure<QemuAttemptProductionVmLifecycleError> {
-    match &error {
+    match production_lifecycle_failure_class(&error) {
+        SchedulerOperationalFailureClass::Retryable => AttemptWorkerFailure::Retryable(error),
+        SchedulerOperationalFailureClass::Canceled => AttemptWorkerFailure::Canceled(error),
+        SchedulerOperationalFailureClass::Terminal => AttemptWorkerFailure::Terminal(error),
+    }
+}
+
+pub(crate) fn production_lifecycle_failure_class(
+    error: &QemuAttemptProductionVmLifecycleError,
+) -> SchedulerOperationalFailureClass {
+    match error {
         QemuAttemptProductionVmLifecycleError::ResourceInstallation(
             QemuVmRealizationError::StoreUnavailable { .. }
             | QemuVmRealizationError::ExecutorUnavailable { .. },
-        ) => AttemptWorkerFailure::Retryable(error),
+        ) => SchedulerOperationalFailureClass::Retryable,
         QemuAttemptProductionVmLifecycleError::ResourceInstallation(
             QemuVmRealizationError::Canceled { .. },
         )
         | QemuAttemptProductionVmLifecycleError::CheckpointRestore(
             ProductionAttemptCheckpointRestoreError::Canceled,
-        ) => AttemptWorkerFailure::Canceled(error),
+        ) => SchedulerOperationalFailureClass::Canceled,
         QemuAttemptProductionVmLifecycleError::CheckpointRestore(
             ProductionAttemptCheckpointRestoreError::Checkpoint(ExactCheckpointStoreError::Store(
                 StoreError::NotFound { .. }
@@ -2820,7 +2842,7 @@ pub(crate) fn classify_production_lifecycle_failure(
                 | StoreError::Io { .. }
                 | StoreError::StreamIo { .. },
             )),
-        ) => AttemptWorkerFailure::Retryable(error),
+        ) => SchedulerOperationalFailureClass::Retryable,
         QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(_)
         | QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch
         | QemuAttemptProductionVmLifecycleError::InvalidNodeCount(_)
@@ -2834,7 +2856,7 @@ pub(crate) fn classify_production_lifecycle_failure(
         | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)
         | QemuAttemptProductionVmLifecycleError::Lifecycle(_)
         | QemuAttemptProductionVmLifecycleError::CheckpointRestore(_) => {
-            AttemptWorkerFailure::Terminal(error)
+            SchedulerOperationalFailureClass::Terminal
         }
     }
 }

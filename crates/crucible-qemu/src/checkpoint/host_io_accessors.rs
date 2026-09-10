@@ -69,4 +69,39 @@ impl QemuHostIoCheckpoint {
         self.to_canonical_bytes()
             .map(|bytes| ContentHash::from_bytes(&bytes))
     }
+
+    /// Compares the complete device continuation while ignoring its owner binding.
+    ///
+    /// Exact restore binds a snapshot to its QEMU VMState identity. A later
+    /// read-only hot-fork projection binds the unchanged device cursors to the
+    /// scheduler continuation captured for the whole World, so those binding
+    /// hashes intentionally differ. Every block, 9p, accelerator, and ring
+    /// field must otherwise remain identical.
+    #[must_use]
+    pub fn same_device_continuation(&self, other: &Self) -> bool {
+        if !self.has_consistent_execution_binding() || !other.has_consistent_execution_binding() {
+            return false;
+        }
+
+        let mut rebound = other.clone();
+        rebound.execution_binding = self.execution_binding;
+        if let Some(block) = &mut rebound.block {
+            block.execution_binding = self.execution_binding;
+        }
+        if let Some(ninep) = &mut rebound.ninep {
+            ninep.execution_binding = self.execution_binding;
+        }
+
+        self == &rebound
+    }
+
+    fn has_consistent_execution_binding(&self) -> bool {
+        self.block
+            .as_ref()
+            .is_none_or(|block| block.execution_binding == self.execution_binding)
+            && self
+                .ninep
+                .as_ref()
+                .is_none_or(|ninep| ninep.execution_binding == self.execution_binding)
+    }
 }

@@ -17,7 +17,9 @@ use crucible_api::vm_lifecycle::ProductionVmHotForkNodeBoundary;
 use crucible_api::{
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld, ProductionVmNodeGeneration,
 };
-use crucible_campaign::{CampaignCodecError, CampaignLineageId, ExecutorCompatibilityProfile};
+use crucible_campaign::{
+    CampaignCodecError, CampaignLineageId, ExactCheckpointId, ExecutorCompatibilityProfile,
+};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuCrashDetector,
     QemuHotForkChildProcessOwner, QemuHotForkLaunchError, QemuShutdownPolicy,
@@ -48,6 +50,16 @@ pub struct QemuHotForkSourceWorldKey {
     template: crate::QemuHotForkTemplateKey,
     scenario: ContentHash,
     profile: ExecutorCompatibilityProfile,
+    boundary: QemuHotForkSourceWorldBoundary,
+}
+
+/// Authenticated semantic boundary represented by one retained source world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QemuHotForkSourceWorldBoundary {
+    /// The source is at the lineage's canonical scenario-genesis boundary.
+    CanonicalGenesis,
+    /// The source is at one completely authenticated exact-checkpoint boundary.
+    ExactCheckpoint(ExactCheckpointId),
 }
 
 /// Failure while deriving the exact retained-source lookup key for an attempt.
@@ -74,6 +86,24 @@ impl QemuHotForkSourceWorldKey {
             template: crate::QemuHotForkTemplateKey::new(lineage, configuration),
             scenario,
             profile,
+            boundary: QemuHotForkSourceWorldBoundary::CanonicalGenesis,
+        }
+    }
+
+    /// Binds one retained source world to an authenticated exact checkpoint.
+    #[must_use]
+    pub(crate) const fn new_exact(
+        lineage: CampaignLineageId,
+        scenario: ContentHash,
+        configuration: ContentHash,
+        profile: ExecutorCompatibilityProfile,
+        checkpoint: ExactCheckpointId,
+    ) -> Self {
+        Self {
+            template: crate::QemuHotForkTemplateKey::new(lineage, configuration),
+            scenario,
+            profile,
+            boundary: QemuHotForkSourceWorldBoundary::ExactCheckpoint(checkpoint),
         }
     }
 
@@ -101,8 +131,15 @@ impl QemuHotForkSourceWorldKey {
         &self.profile
     }
 
+    /// Returns the authenticated scheduler boundary represented by this source.
+    #[must_use]
+    pub const fn boundary(&self) -> QemuHotForkSourceWorldBoundary {
+        self.boundary
+    }
+
     fn for_execution(
         input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
         runtime_basis: crate::AttemptExecutionRuntimeBasis,
     ) -> Result<Self, QemuHotForkSourceWorldKeyError> {
         let lineage = input
@@ -119,12 +156,14 @@ impl QemuHotForkSourceWorldKey {
                 input.start().configuration().id()
             }
         };
-        Ok(Self::new(
-            lineage,
-            input.scenario().scenario_def().id(),
-            configuration,
-            ExecutorCompatibilityProfile::from_lineage(input.lineage()),
-        ))
+        let scenario = input.scenario().scenario_def().id();
+        let profile = ExecutorCompatibilityProfile::from_lineage(input.lineage());
+        Ok(match context.resume_checkpoint() {
+            Some(checkpoint) => {
+                Self::new_exact(lineage, scenario, configuration, profile, checkpoint)
+            }
+            None => Self::new(lineage, scenario, configuration, profile),
+        })
     }
 }
 
@@ -177,6 +216,37 @@ pub trait QemuHotForkSourceWorldProvider: source_world_provider_sealed::Sealed {
         &mut self,
         key: &QemuHotForkSourceWorldKey,
     ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error>;
+
+    /// Removes or materializes the exact source requested by one attempt.
+    ///
+    /// Ordinary providers delegate to [`Self::checkout`]. A packaged provider
+    /// may use the authenticated input and execution origin to restore a
+    /// demanded exact-checkpoint source before checkout.
+    ///
+    /// # Errors
+    ///
+    /// Returns the provider's availability or authenticated materialization
+    /// failure without exposing a partial source world.
+    fn checkout_for_attempt(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        key: &QemuHotForkSourceWorldKey,
+    ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
+        let _ = (input, context);
+        self.checkout(key)
+    }
+
+    /// Classifies a checkout failure for the attempt supervisor.
+    ///
+    /// Providers backed only by an operational live-source pool use the
+    /// retryable default. Providers that authenticate or materialize an exact
+    /// source override this hook so cancellation and semantic rejection retain
+    /// their original class.
+    #[must_use]
+    fn failure_class(_error: &Self::Error) -> SchedulerOperationalFailureClass {
+        SchedulerOperationalFailureClass::Retryable
+    }
 
     /// Returns a completely reconciled source world to reusable storage.
     fn restore(&mut self, source: ProductionVmHotForkSourceWorld);
@@ -601,12 +671,26 @@ where
             |error| AttemptWorkerFailure::Terminal(Self::Error::ScenarioResources(error)),
         )?;
         let scenario = input.scenario().scenario_def();
-        let source_key = QemuHotForkSourceWorldKey::for_execution(input, runtime_basis)
+        let source_key = QemuHotForkSourceWorldKey::for_execution(input, context, runtime_basis)
             .map_err(|error| AttemptWorkerFailure::Terminal(Self::Error::SourceKey(error)))?;
         let Some(mut source_world) = self
             .sources
-            .checkout(&source_key)
-            .map_err(|error| AttemptWorkerFailure::Retryable(Self::Error::SourceProvider(error)))?
+            .checkout_for_attempt(input, context, &source_key)
+            .map_err(|error| {
+                let class = S::failure_class(&error);
+                let error = Self::Error::SourceProvider(error);
+                match class {
+                    SchedulerOperationalFailureClass::Retryable => {
+                        AttemptWorkerFailure::Retryable(error)
+                    }
+                    SchedulerOperationalFailureClass::Canceled => {
+                        AttemptWorkerFailure::Canceled(error)
+                    }
+                    SchedulerOperationalFailureClass::Terminal => {
+                        AttemptWorkerFailure::Terminal(error)
+                    }
+                }
+            })?
         else {
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         };
