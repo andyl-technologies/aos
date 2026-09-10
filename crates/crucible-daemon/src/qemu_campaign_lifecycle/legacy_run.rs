@@ -51,8 +51,9 @@ use crate::{
     ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleExecutionModel, CrucibleExecutionModelError, CrucibleExecutionRunner,
     CrucibleMeasurementError, CrucibleMeasurementReplayEvidence, ExactCheckpointStore,
-    ExactCheckpointStoreError, ExecutorCapacityError, LinuxQemuAttemptHostConfig,
-    LinuxQemuAttemptHostResourceFactory, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    ExactCheckpointStoreError, ExecutionCancellation, ExecutorCapacityError,
+    LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostResourceFactory,
+    MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, QemuAttemptHostResourceFactory,
     QemuFreshModeledDriverError, RepositoryAttemptAdmission,
     decode_crucible_configuration_artifact_with_selections,
 };
@@ -169,6 +170,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     lifecycle: ProductionVmLifecycleConfig,
     host: LinuxQemuAttemptHostConfig,
     resources: AttemptResourceLimits,
+    cancellation: ExecutionCancellation,
     initial_schedule: Schedule,
     initial_replay_closure: Option<GuardedCampaignReplayClosure>,
     discovery_stop: StopCondition,
@@ -199,6 +201,7 @@ impl GuardedDefaultCampaignRunRequest {
             lifecycle,
             host,
             resources,
+            cancellation: ExecutionCancellation::default(),
             initial_schedule: Schedule::empty(),
             initial_replay_closure: None,
             discovery_stop: StopCondition::NextChoice,
@@ -208,6 +211,13 @@ impl GuardedDefaultCampaignRunRequest {
             exploration: None,
             supplemental_finding_oracle: None,
         }
+    }
+
+    /// Uses one caller-owned cancellation signal for every campaign attempt.
+    #[must_use]
+    pub fn with_execution_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
+        self.cancellation = cancellation;
+        self
     }
 
     /// Starts discovery from an authenticated recorded schedule and choice closure.
@@ -314,6 +324,7 @@ impl GuardedDefaultCampaignRunRequest {
             continuation_control: None,
             source_observation_proof: None,
             source_observation_evidence: None,
+            capture_only: false,
         });
         self
     }
@@ -344,6 +355,7 @@ impl GuardedDefaultCampaignRunRequest {
             continuation_control: Some(continuation_control),
             source_observation_proof: None,
             source_observation_evidence: None,
+            capture_only: false,
         });
         self
     }
@@ -376,6 +388,7 @@ impl GuardedDefaultCampaignRunRequest {
             continuation_control: None,
             source_observation_proof: Some(source_observation.proof),
             source_observation_evidence: Some(source_observation.evidence),
+            capture_only: false,
         });
         self
     }
@@ -407,6 +420,38 @@ impl GuardedDefaultCampaignRunRequest {
             continuation_control: Some(continuation_control),
             source_observation_proof: Some(source_observation.proof),
             source_observation_evidence: Some(source_observation.evidence),
+            capture_only: false,
+        });
+        self
+    }
+
+    /// Authenticates and captures a portable observation source without continuing it.
+    ///
+    /// The campaign stops after exact source replay and physical checkpoint
+    /// publication. This mode is used by remote session construction so the
+    /// returned ordinary session owns every later control and quantum.
+    #[must_use]
+    pub fn with_observation_resume_source_capture_only(
+        mut self,
+        // crucible-lint: allow host-nondeterminism-state -- the caller-supplied replay schedule is forwarded unchanged into exact source authentication.
+        schedule: Schedule,
+        closure: GuardedCampaignReplayClosure,
+        checkpoint: Checkpoint,
+        source_observation: GuardedDefaultCampaignObservationSource,
+        checkpoints: Arc<ExactCheckpointStore>,
+    ) -> Self {
+        self.initial_schedule = schedule;
+        self.initial_replay_closure = Some(closure);
+        self.discovery_stop =
+            StopCondition::Observation(source_observation.proof.condition().clone());
+        self.resume_source = Some(GuardedDefaultCampaignResumeSource {
+            checkpoint,
+            final_stop: self.discovery_stop.clone(),
+            checkpoints,
+            continuation_control: None,
+            source_observation_proof: Some(source_observation.proof),
+            source_observation_evidence: Some(source_observation.evidence),
+            capture_only: true,
         });
         self
     }
@@ -1211,23 +1256,33 @@ pub enum GuardedDefaultCampaignInvariantError {
 pub fn run_guarded_default_campaign(
     request: GuardedDefaultCampaignRunRequest,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
+    let host = LinuxQemuAttemptHostResourceFactory::open(request.host.clone())
+        .map_err(GuardedDefaultCampaignRunError::Host)?;
+    run_guarded_default_campaign_with_host(request, host)
+}
+
+pub(super) fn run_guarded_default_campaign_with_host<H>(
+    request: GuardedDefaultCampaignRunRequest,
+    host: H,
+) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError>
+where
+    H: QemuAttemptHostResourceFactory,
+    H::Owner: Send + 'static,
+{
     validate_initial_replay(&request)?;
     validate_resume_source(&request)?;
     continuation_lifecycle_config(&request)?;
     validate_fresh_qemu_scenario_resources(&request.scenario, request.resources)
         .map_err(GuardedDefaultCampaignRunError::Resource)?;
 
-    let host = LinuxQemuAttemptHostResourceFactory::open(request.host.clone())
-        .map_err(GuardedDefaultCampaignRunError::Host)?;
-    let production = QemuAttemptProductionVmLifecycleFactory::new(
+    let guarded_factory = QemuAttemptProductionVmLifecycleFactory::new(
         request.lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(host),
     );
     let (lifecycle_factory, execution_evidence) =
-        QemuObservedFreshAttemptLifecycleFactory::with_evidence(production);
-    let driver = QemuFreshSupplementalModeledDriver::new(
-        request.supplemental_finding_oracle.clone(),
-    );
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(guarded_factory);
+    let driver =
+        QemuFreshSupplementalModeledDriver::new(request.supplemental_finding_oracle.clone());
     let runner = QemuFreshExecutionRunner::new(lifecycle_factory, driver);
 
     run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
@@ -1430,7 +1485,8 @@ where
         RepositoryAttemptAdmission::new(Arc::clone(&repository), executor_profile),
         daemon_epoch,
         request.resources,
-    );
+    )
+    .with_execution_cancellation(request.cancellation.clone());
     let capture_checkpoints = request.capture_reached_stop.as_ref().or_else(|| {
         request
             .resume_source
@@ -1904,6 +1960,46 @@ where
                 let ready_id = CampaignFact::SavepointCaptureResolved(ready)
                     .id()
                     .map_err(GuardedDefaultCampaignRunError::Codec)?;
+                if source.capture_only {
+                    let proof = DefaultRunResumeProof {
+                        source_checkpoint: source.checkpoint.id,
+                        source_configuration: savepoint.reached,
+                        source_frontier: source.checkpoint.virtual_time,
+                        source_observation,
+                        source_evidence: evidence.clone(),
+                        source_capture: Some(savepoint),
+                        ready_snapshot: None,
+                        ready: None,
+                        selection: None,
+                        continuation: None,
+                    };
+                    let final_snapshot = complete_default_campaign(
+                        &context,
+                        result.new_snapshot,
+                        supervisor_iteration,
+                        &mut state_updates,
+                    )?;
+                    if collect_watch_frames {
+                        watch_frames.push(campaign_watch_frame(
+                            context.repository,
+                            context.campaign,
+                            final_snapshot,
+                            &evidence,
+                            None,
+                        )?);
+                    }
+                    return Ok(DefaultRunExecution {
+                        observations,
+                        branch_request_count,
+                        branch_acceptances,
+                        exploration_completion: None,
+                        final_snapshot,
+                        state_updates,
+                        watch_frames,
+                        savepoint: None,
+                        resume: Some(proof),
+                    });
+                }
                 let origin = context
                     .repository
                     .load_attempt(savepoint.description.attempt)

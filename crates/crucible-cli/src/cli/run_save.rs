@@ -612,6 +612,32 @@ where
         .map_err(|error| artifact_error(error.to_string()))?;
         request = request.with_replay_closure(replay_closure);
     }
+    match (
+        evidence.source_observation_proof.as_deref(),
+        evidence.source_observation_evidence.as_deref(),
+    ) {
+        (Some(proof), Some(source_evidence)) => {
+            let raw_evidence = source_evidence.canonical_bytes().map_err(|error| {
+                artifact_error(format!("encode remote observation evidence: {error}"))
+            })?;
+            let source = crucible_api::ResumeObservationSource::new(
+                &evidence.scenario_form,
+                &evidence.schedule,
+                &evidence.checkpoint,
+                crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory::SOURCE_SCHEMA_VERSION,
+                proof.canonical_bytes(),
+                raw_evidence,
+            )
+            .map_err(|error| artifact_error(error.to_string()))?;
+            request = request.with_observation_source(source);
+        }
+        (None, None) => {}
+        _ => {
+            return Err(artifact_error(
+                "portable observation resume requires both proof and raw evidence",
+            ));
+        }
+    }
     let resumed = client
         .resume_session(request)
         .await

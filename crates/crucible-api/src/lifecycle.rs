@@ -9,6 +9,8 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use crucible::{
     Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind,
@@ -54,6 +56,15 @@ pub const LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS: u64 = 128;
 
 /// Maximum canonical campaign replay-closure bytes accepted by one resume request.
 pub const RESUME_REPLAY_CLOSURE_MAX_BYTES: usize = 128 * 1024 * 1024;
+
+/// Maximum combined canonical observation proof and raw evidence bytes accepted by resume.
+pub const RESUME_OBSERVATION_SOURCE_MAX_BYTES: usize = 128 * 1024 * 1024;
+
+/// Default wall-clock deadline for campaign-owned observation source preparation.
+pub const RESUME_OBSERVATION_PREPARATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// Default number of expensive portable observation preparations admitted concurrently.
+pub const RESUME_OBSERVATION_PREPARATION_CAPACITY: usize = 1;
 
 #[path = "lifecycle/debug_dispatch.rs"]
 mod debug_dispatch;
@@ -477,6 +488,8 @@ pub struct ResumeSessionRequest {
     pub seed: Seed,
     /// Authenticated campaign choice records required by a typed selection schedule.
     pub replay_closure: Option<ResumeReplayClosure>,
+    /// Pending portable observation claim that the daemon must reproduce before resume.
+    pub observation_source: Option<ResumeObservationSource>,
 }
 
 impl ResumeSessionRequest {
@@ -494,6 +507,7 @@ impl ResumeSessionRequest {
             checkpoint,
             seed,
             replay_closure: None,
+            observation_source: None,
         }
     }
 
@@ -503,6 +517,135 @@ impl ResumeSessionRequest {
         self.replay_closure = Some(replay_closure);
         self
     }
+
+    /// Returns this request with a content-bound portable observation source claim.
+    #[must_use]
+    pub fn with_observation_source(mut self, observation_source: ResumeObservationSource) -> Self {
+        self.observation_source = Some(observation_source);
+        self
+    }
+}
+
+/// Versioned portable observation claim supplied to `ResumeSession`.
+///
+/// This envelope provides transport integrity only. A configured campaign
+/// owner must replay the source from genesis and compare newly produced proof
+/// and evidence before the lifecycle control plane can allocate a session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeObservationSource {
+    schema_version: u32,
+    identity: ContentHash,
+    proof: Vec<u8>,
+    evidence: Vec<u8>,
+}
+
+impl ResumeObservationSource {
+    /// Binds canonical proof and evidence bytes to one exact resume source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::ResumeObservationSource`] when their
+    /// combined length exceeds [`RESUME_OBSERVATION_SOURCE_MAX_BYTES`].
+    pub fn new(
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+        checkpoint: &Checkpoint,
+        schema_version: u32,
+        proof: Vec<u8>,
+        evidence: Vec<u8>,
+    ) -> Result<Self, LifecycleApiError> {
+        let total = proof.len().checked_add(evidence.len()).ok_or_else(|| {
+            LifecycleApiError::ResumeObservationSource {
+                message: String::from("portable observation source size overflowed"),
+            }
+        })?;
+        if total > RESUME_OBSERVATION_SOURCE_MAX_BYTES {
+            return Err(LifecycleApiError::ResumeObservationSource {
+                message: format!(
+                    "portable observation source has {total} bytes, maximum is {RESUME_OBSERVATION_SOURCE_MAX_BYTES}"
+                ),
+            });
+        }
+        let identity = resume_observation_source_identity(
+            scenario,
+            schedule,
+            checkpoint,
+            schema_version,
+            &proof,
+            &evidence,
+        );
+        Ok(Self {
+            schema_version,
+            identity,
+            proof,
+            evidence,
+        })
+    }
+
+    /// Returns the transport-envelope schema version.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Returns the identity binding both payloads to the exact resume source.
+    #[must_use]
+    pub const fn identity(&self) -> ContentHash {
+        self.identity
+    }
+
+    /// Returns the canonical campaign observation-stop proof.
+    #[must_use]
+    pub fn proof(&self) -> &[u8] {
+        &self.proof
+    }
+
+    /// Returns the canonical raw measurement replay evidence.
+    #[must_use]
+    pub fn evidence(&self) -> &[u8] {
+        &self.evidence
+    }
+
+    /// Returns the combined bounded payload length.
+    #[must_use]
+    pub fn payload_len(&self) -> usize {
+        self.proof.len().saturating_add(self.evidence.len())
+    }
+}
+
+fn resume_observation_source_identity(
+    scenario: &ScenarioDefForm,
+    schedule: &Schedule,
+    checkpoint: &Checkpoint,
+    schema_version: u32,
+    proof: &[u8],
+    evidence: &[u8],
+) -> ContentHash {
+    const DOMAIN: &[u8] = b"crucible.resume-observation-source.v1\0";
+
+    let configuration = Configuration {
+        def: scenario.scenario_def(),
+        schedule: schedule.clone(),
+    };
+    let checkpoint_material = ContentHash::from_bytes(&checkpoint.to_compact_binary());
+    let proof_len = u64::try_from(proof.len()).unwrap_or(u64::MAX);
+    let evidence_len = u64::try_from(evidence.len()).unwrap_or(u64::MAX);
+    let mut material = Vec::with_capacity(
+        DOMAIN
+            .len()
+            .saturating_add(32 * 3)
+            .saturating_add(4 + 8 + proof.len() + 8 + evidence.len()),
+    );
+    material.extend_from_slice(DOMAIN);
+    material.extend_from_slice(&scenario.id().bytes);
+    material.extend_from_slice(&configuration.id().bytes);
+    material.extend_from_slice(&checkpoint_material.bytes);
+    material.extend_from_slice(&schema_version.to_be_bytes());
+    material.extend_from_slice(&proof_len.to_be_bytes());
+    material.extend_from_slice(proof);
+    material.extend_from_slice(&evidence_len.to_be_bytes());
+    material.extend_from_slice(evidence);
+    ContentHash::from_bytes(&material)
 }
 
 /// Versioned, content-bound campaign choice evidence supplied to `ResumeSession`.
@@ -949,6 +1092,12 @@ pub enum LifecycleApiError {
         /// Deterministic replay-closure validation error.
         message: String,
     },
+    /// A portable observation source was missing, unsupported, or failed authentication.
+    #[error("resume campaign observation source is invalid: {message}")]
+    ResumeObservationSource {
+        /// Deterministic observation-source validation error.
+        message: String,
+    },
     /// A command could not be sent to a session actor.
     #[error("session command channel closed for session {session_id:?}")]
     CommandChannelClosed {
@@ -1086,6 +1235,17 @@ pub type ResumeReplayClosureValidator = Box<
         + Sync,
 >;
 
+#[path = "lifecycle/observation_resume.rs"]
+mod observation_resume;
+pub(crate) use observation_resume::{
+    PendingObservationResume, PreparedObservationResume, ResumeObservationCancellationGuard,
+    ResumeObservationPreparationPermit,
+};
+pub use observation_resume::{
+    ResumeObservationCancellation, ResumeObservationCancellationRegistration,
+    ResumeObservationLoopFactory, ResumeObservationPreparationContext,
+};
+
 /// Callback type used to derive node white-box policies for a scenario.
 pub type WhiteBoxPolicyProvider =
     Box<dyn Fn(&ScenarioDef) -> BTreeMap<NodeId, WhiteBoxPolicy> + Send + Sync>;
@@ -1100,6 +1260,10 @@ pub struct LifecycleControlPlane<L, F> {
     loop_factory: F,
     resume_loop_factory: Option<LifecycleResumeLoopFactory<L>>,
     resume_replay_closure_validator: Option<ResumeReplayClosureValidator>,
+    resume_observation_loop_factory: Option<ResumeObservationLoopFactory<L>>,
+    resume_observation_preparation_timeout: Duration,
+    resume_observation_preparation_capacity: usize,
+    active_resume_observation_preparations: Arc<AtomicU64>,
     white_box_policy_provider: WhiteBoxPolicyProvider,
     mailbox_capacity: usize,
     startup_max_actor_yields: u64,
@@ -1148,6 +1312,41 @@ where
         + 'static,
     ) -> Self {
         self.resume_replay_closure_validator = Some(Box::new(validator));
+        self
+    }
+
+    /// Installs campaign-owned authentication and restore for portable observation resumes.
+    ///
+    /// Requests carrying an observation source fail closed when this factory is
+    /// absent. The factory completes before the actor or session reference is
+    /// created and must return a loop restored at the claimed source boundary.
+    #[must_use]
+    pub fn with_resume_observation_loop_factory(
+        mut self,
+        factory: impl Fn(
+            &ResumeSessionRequest,
+            &Configuration,
+            &ResumeObservationPreparationContext,
+        ) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.resume_observation_loop_factory = Some(Arc::new(factory));
+        self
+    }
+
+    /// Sets the wall-clock deadline for portable observation preparation.
+    #[must_use]
+    pub const fn with_resume_observation_preparation_timeout(mut self, timeout: Duration) -> Self {
+        self.resume_observation_preparation_timeout = timeout;
+        self
+    }
+
+    /// Sets the maximum number of expensive observation preparations in flight.
+    #[must_use]
+    pub const fn with_resume_observation_preparation_capacity(mut self, capacity: usize) -> Self {
+        self.resume_observation_preparation_capacity = capacity;
         self
     }
 
@@ -1323,11 +1522,106 @@ where
     /// cannot be built, or [`LifecycleApiError::ResumeCheckpoint`] when the
     /// supplied scenario, schedule, and checkpoint do not describe one loadable
     /// recorded configuration, or [`LifecycleApiError::ResumeReplayClosure`]
-    /// when typed campaign replay evidence is missing or invalid.
+    /// when typed campaign replay evidence is missing or invalid. Portable
+    /// observation sources must enter through [`ControlClient::resume_session`]
+    /// so authentication can run off the async runtime and outside the
+    /// lifecycle registry lock; direct calls reject them before invoking a
+    /// backend factory.
     pub async fn resume_session(
         &mut self,
         request: ResumeSessionRequest,
     ) -> Result<ResumeSessionResponse, LifecycleApiError> {
+        self.validate_resume_capacity_and_seed(&request)?;
+        if self.resume_via_thin_replay && request.observation_source.is_none() {
+            validate_resume_replay_closure_presence(
+                &request.schedule,
+                request.replay_closure.as_ref(),
+                false,
+            )?;
+            return self.resume_session_via_thin_replay(request).await;
+        }
+
+        if request.observation_source.is_some() {
+            return Err(LifecycleApiError::ResumeObservationSource {
+                message: String::from(
+                    "portable observation resume requires an async ControlClient transport",
+                ),
+            });
+        }
+
+        let configuration = self.validate_direct_resume_request(&request)?;
+        let scenario = configuration.def.clone();
+        let resumed_loop = match &self.resume_loop_factory {
+            Some(factory) => factory(
+                &scenario,
+                &request.scenario,
+                request.seed,
+                &request.checkpoint,
+            )?,
+            None => (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?,
+        };
+        self.finish_direct_resume(request, configuration, resumed_loop)
+            .await
+    }
+
+    pub(crate) fn prepare_observation_resume(
+        &self,
+        request: ResumeSessionRequest,
+    ) -> Result<PendingObservationResume<L>, LifecycleApiError> {
+        self.validate_resume_capacity_and_seed(&request)?;
+        if request.observation_source.is_none() {
+            return Err(LifecycleApiError::ResumeObservationSource {
+                message: String::from("portable observation source envelope is missing"),
+            });
+        }
+        let permit = self.acquire_resume_observation_preparation()?;
+        let configuration = self.validate_direct_resume_request(&request)?;
+        let factory = self
+            .resume_observation_loop_factory
+            .clone()
+            .ok_or_else(|| LifecycleApiError::ResumeObservationSource {
+                message: String::from(
+                    "daemon has no campaign-owned portable observation resume factory",
+                ),
+            })?;
+        Ok(PendingObservationResume {
+            request,
+            configuration,
+            factory,
+            context: ResumeObservationPreparationContext::new(
+                self.resume_observation_preparation_timeout,
+            ),
+            permit,
+        })
+    }
+
+    pub(crate) async fn commit_observation_resume(
+        &mut self,
+        prepared: PreparedObservationResume<L>,
+    ) -> Result<ResumeSessionResponse, LifecycleApiError> {
+        if prepared.context.cancellation.is_canceled() {
+            return Err(LifecycleApiError::ResumeObservationSource {
+                message: String::from("portable observation source preparation was canceled"),
+            });
+        }
+        if prepared.context.is_expired() {
+            return Err(LifecycleApiError::ResumeObservationSource {
+                message: String::from("portable observation preparation deadline elapsed"),
+            });
+        }
+        self.validate_resume_capacity_and_seed(&prepared.request)?;
+        self.finish_direct_resume(
+            prepared.request,
+            prepared.configuration,
+            prepared.loop_instance,
+        )
+        .await
+    }
+
+    fn validate_resume_capacity_and_seed(
+        &self,
+        request: &ResumeSessionRequest,
+    ) -> Result<(), LifecycleApiError> {
         if let Some(limit) = self.max_sessions
             && self.sessions.len() >= limit
         {
@@ -1339,18 +1633,43 @@ where
                 request_seed: request.seed,
             });
         }
-        if self.resume_via_thin_replay {
-            validate_resume_replay_closure_presence(
-                &request.schedule,
-                request.replay_closure.as_ref(),
-                false,
-            )?;
-            return self.resume_session_via_thin_replay(request).await;
-        }
+        Ok(())
+    }
 
+    fn acquire_resume_observation_preparation(
+        &self,
+    ) -> Result<ResumeObservationPreparationPermit, LifecycleApiError> {
+        let active_u64 = self
+            .active_resume_observation_preparations
+            .load(Ordering::Acquire);
+        let active = usize::try_from(active_u64).unwrap_or(usize::MAX);
+        if active >= self.resume_observation_preparation_capacity {
+            return Err(LifecycleApiError::ResumeObservationSource {
+                message: format!(
+                    "portable observation preparation capacity {} is exhausted",
+                    self.resume_observation_preparation_capacity,
+                ),
+            });
+        }
+        if let Some(limit) = self.max_sessions
+            && self.sessions.len().saturating_add(active) >= limit
+        {
+            return Err(LifecycleApiError::SessionLimitReached { limit });
+        }
+        self.active_resume_observation_preparations
+            .fetch_add(1, Ordering::AcqRel);
+        Ok(ResumeObservationPreparationPermit {
+            active: Arc::clone(&self.active_resume_observation_preparations),
+        })
+    }
+
+    fn validate_direct_resume_request(
+        &self,
+        request: &ResumeSessionRequest,
+    ) -> Result<Configuration, LifecycleApiError> {
         let scenario = request.scenario.scenario_def();
         let configuration = Configuration {
-            def: scenario.clone(),
+            def: scenario,
             schedule: request.schedule.clone(),
         };
         validate_resume_checkpoint_closure(
@@ -1361,9 +1680,12 @@ where
         validate_resume_replay_closure_presence(
             &request.schedule,
             request.replay_closure.as_ref(),
-            self.resume_replay_closure_validator.is_some(),
+            self.resume_replay_closure_validator.is_some()
+                || (request.observation_source.is_some()
+                    && self.resume_observation_loop_factory.is_some()),
         )?;
-        validate_resume_replay_closure_binding(&request)?;
+        validate_resume_replay_closure_binding(request)?;
+        validate_resume_observation_source_binding(request)?;
         if let (Some(closure), Some(validator)) = (
             request.replay_closure.as_ref(),
             self.resume_replay_closure_validator.as_deref(),
@@ -1378,6 +1700,16 @@ where
                 message: error.message,
             })?;
         }
+        Ok(configuration)
+    }
+
+    async fn finish_direct_resume(
+        &mut self,
+        request: ResumeSessionRequest,
+        configuration: Configuration,
+        resumed_loop: L,
+    ) -> Result<ResumeSessionResponse, LifecycleApiError> {
+        let scenario = configuration.def.clone();
 
         let mut graph = graph_with_baked_genesis(&scenario)?;
         if !configuration.is_genesis() {
@@ -1386,15 +1718,6 @@ where
                 .map_err(resume_checkpoint_error)?;
         }
 
-        let resumed_loop = match &self.resume_loop_factory {
-            Some(factory) => factory(
-                &scenario,
-                &request.scenario,
-                request.seed,
-                &request.checkpoint,
-            )?,
-            None => (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?,
-        };
         let white_box_policies =
             self.white_box_policies_for_source(Some(&request.scenario), &scenario);
         let engine = Engine::from_recorded_checkpoint(graph, resumed_loop, request.checkpoint.id)
@@ -1985,6 +2308,30 @@ fn validate_resume_replay_closure_binding(
     Ok(())
 }
 
+fn validate_resume_observation_source_binding(
+    request: &ResumeSessionRequest,
+) -> Result<(), LifecycleApiError> {
+    let Some(source) = request.observation_source.as_ref() else {
+        return Ok(());
+    };
+    let expected = resume_observation_source_identity(
+        &request.scenario,
+        &request.schedule,
+        &request.checkpoint,
+        source.schema_version(),
+        source.proof(),
+        source.evidence(),
+    );
+    if source.identity() != expected {
+        return Err(LifecycleApiError::ResumeObservationSource {
+            message: String::from(
+                "portable observation source identity does not bind the exact resume source",
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn validate_resume_replay_closure_presence(
     schedule: &Schedule,
     closure: Option<&ResumeReplayClosure>,
@@ -2033,8 +2380,16 @@ impl<L, F> InProcessLifecycleClient<L, F> {
     /// Builds an in-process lifecycle client from a lifecycle control plane.
     #[must_use]
     pub fn new(control_plane: LifecycleControlPlane<L, F>) -> Self {
+        Self::from_shared_control_plane(Arc::new(tokio::sync::Mutex::new(control_plane)))
+    }
+
+    /// Builds an in-process client over an already shared lifecycle control plane.
+    #[must_use]
+    pub fn from_shared_control_plane(
+        control_plane: Arc<tokio::sync::Mutex<LifecycleControlPlane<L, F>>>,
+    ) -> Self {
         Self {
-            control_plane: Arc::new(tokio::sync::Mutex::new(control_plane)),
+            control_plane,
             wire_model: ControlWireModel::current(),
         }
     }
@@ -2103,12 +2458,78 @@ where
         request: ResumeSessionRequest,
     ) -> ControlClientFuture<'_, ResumeSessionResponse> {
         Box::pin(async move {
-            self.control_plane
+            if request.observation_source.is_none() {
+                return self
+                    .control_plane
+                    .lock()
+                    .await
+                    .resume_session(request)
+                    .await
+                    .map_err(ControlClientError::from);
+            }
+            let pending = self
+                .control_plane
                 .lock()
                 .await
-                .resume_session(request)
+                .prepare_observation_resume(request)
+                .map_err(ControlClientError::from)?;
+            let deadline = pending.context().deadline();
+            let cancellation = pending.context().cancellation().clone();
+            let mut cancellation_guard = ResumeObservationCancellationGuard::new(cancellation);
+            let preparation = tokio::task::spawn_blocking(move || pending.authenticate());
+            let prepared = match tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                preparation,
+            )
+            .await
+            {
+                Ok(Ok(Ok(prepared))) => prepared,
+                Ok(Ok(Err(error))) => return Err(ControlClientError::from(error)),
+                Ok(Err(error)) => {
+                    return Err(ControlClientError::from(
+                        LifecycleApiError::ResumeObservationSource {
+                            message: format!(
+                                "portable observation preparation task failed: {error}"
+                            ),
+                        },
+                    ));
+                }
+                Err(_) => {
+                    cancellation_guard.cancel();
+                    return Err(ControlClientError::from(
+                        LifecycleApiError::ResumeObservationSource {
+                            message: String::from(
+                                "portable observation preparation deadline elapsed",
+                            ),
+                        },
+                    ));
+                }
+            };
+            let commit_deadline = prepared.context().deadline();
+            let mut control_plane = match tokio::time::timeout_at(
+                tokio::time::Instant::from_std(commit_deadline),
+                self.control_plane.lock(),
+            )
+            .await
+            {
+                Ok(control_plane) => control_plane,
+                Err(_) => {
+                    cancellation_guard.cancel();
+                    return Err(ControlClientError::from(
+                        LifecycleApiError::ResumeObservationSource {
+                            message: String::from(
+                                "portable observation preparation deadline elapsed before publication",
+                            ),
+                        },
+                    ));
+                }
+            };
+            let response = control_plane
+                .commit_observation_resume(prepared)
                 .await
-                .map_err(ControlClientError::from)
+                .map_err(ControlClientError::from)?;
+            cancellation_guard.disarm();
+            Ok(response)
         })
     }
 

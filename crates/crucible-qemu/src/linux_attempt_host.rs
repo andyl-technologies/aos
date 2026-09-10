@@ -312,6 +312,25 @@ impl LinuxQemuAttemptHostOwner {
             .ok_or_else(|| missing_authority("read QEMU attempt run directory"))
     }
 
+    /// Seals the quota-bound root for supervisor metadata and QEMU generations.
+    ///
+    /// The returned path names a private supervisor metadata directory under
+    /// the pinned quota root. The retained owner performs descriptor-relative
+    /// cleanup. The child may traverse the root to its generation directory,
+    /// but cannot inspect this metadata directory or mutate root entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an executor error when storage authority is unavailable or the
+    /// ownership and mode transition cannot be installed and verified.
+    pub fn seal_supervisor_workspace(&mut self) -> Result<PathBuf, QemuVmRealizationError> {
+        self.storage
+            .as_mut()
+            .ok_or_else(|| missing_authority("seal QEMU attempt workspace"))?
+            .seal_supervisor_workspace()
+            .map_err(|error| map_storage_error("seal QEMU attempt workspace", &error))
+    }
+
     /// Returns the sealed child launch contract while the owner is active.
     ///
     /// # Errors

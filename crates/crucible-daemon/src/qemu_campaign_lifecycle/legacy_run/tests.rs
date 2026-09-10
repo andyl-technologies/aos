@@ -23,7 +23,7 @@ use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig}
 use crucible_campaign::{
     AttemptResourceLimits, BooleanDomain, CampaignState, ChoiceClassContext, ChoiceDomain,
     ChoiceSource, ChoiceValue, ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue,
-    PropertyVerdict, SelectableDeclaration, StopOutcome,
+    ObservationCondition, PropertyVerdict, SelectableDeclaration, StopOutcome,
 };
 use crucible_cas::content_store::{
     BlobHandle, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MutableRefBackend,
@@ -1103,6 +1103,80 @@ fn virtual_time_savepoint_capture_replays_and_authenticates_the_same_boundary() 
             .as_hash()
             .as_bytes()
     );
+}
+
+#[test]
+fn observation_capture_only_stops_before_any_continuation_attempt_or_quantum() {
+    let condition = ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
+        execution_quanta: 1,
+    };
+    let (source_request, node) = request();
+    let source_request =
+        source_request.with_discovery_stop(StopCondition::Observation(condition.clone()));
+    let (source_factory, source_evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
+            node: node.clone(),
+            fail_start: false,
+            mode: TerminalLifecycleMode::VirtualTime {
+                quantum_nanoseconds: 5,
+            },
+        });
+    let source_runner = QemuFreshExecutionRunner::new(source_factory, QemuFreshModeledDriver);
+    let source =
+        run_guarded_default_campaign_with_runner(source_request, source_runner, source_evidence)
+            .expect("observation source campaign");
+    let StopOutcome::ObservationReached(proof) = source.terminal().observation().stop() else {
+        panic!("source terminal must carry its observation proof");
+    };
+    let evidence = source
+        .terminal()
+        .observation_evidence()
+        .expect("source observation evidence")
+        .clone();
+    let source_schedule = source.terminal_configuration().schedule.clone();
+
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (capture_request, capture_node) = request();
+    let checkpoint = legacy_resume_checkpoint(
+        &capture_request,
+        &source_schedule,
+        source.evidence().frontier(),
+    );
+    let capture_request = capture_request.with_observation_resume_source_capture_only(
+        source_schedule,
+        source.replay_closure().clone(),
+        checkpoint,
+        GuardedDefaultCampaignObservationSource::new(proof.as_ref().clone(), evidence),
+        Arc::clone(&checkpoints),
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (capture_factory, capture_evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(ResumeLifecycleFactory {
+            node: capture_node,
+            starts: Arc::clone(&starts),
+            mode: TerminalLifecycleMode::Resume {
+                source_frontier: source.evidence().frontier().ticks,
+                terminal_frontier: source.evidence().frontier().ticks.saturating_add(100),
+            },
+            offer_continuation_choice: true,
+        });
+    let capture_runner = QemuFreshExecutionRunner::new(capture_factory, QemuFreshModeledDriver);
+
+    let captured =
+        run_guarded_default_campaign_with_runner(capture_request, capture_runner, capture_evidence)
+            .expect("capture-only source authentication");
+    let resume = captured.resume().expect("capture-only resume proof");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
+    assert_eq!(captured.observations().len(), 1);
+    assert_eq!(captured.terminal().id(), resume.source_observation());
+    assert!(resume.source_savepoint().is_some());
+    assert!(resume.ready().is_none());
+    assert!(resume.selection().is_none());
+    assert!(resume.continuation().is_none());
+    assert_eq!(captured.evidence().frontier(), source.evidence().frontier());
+    assert_eq!(captured.evidence().quanta(), source.evidence().quanta());
 }
 
 #[test]

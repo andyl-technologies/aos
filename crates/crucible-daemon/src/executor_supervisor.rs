@@ -558,7 +558,8 @@ impl ExecutionCancellation {
         Arc::ptr_eq(&self.state, &other.state)
     }
 
-    pub(crate) fn cancel(&self) {
+    /// Requests sticky cancellation for this execution incarnation.
+    pub fn cancel(&self) {
         // The predicate publication and notification share the wait mutex.
         // Without this ordering a waiter can observe `false`, lose a notify
         // immediately before entering the kernel wait, and remain blocked even

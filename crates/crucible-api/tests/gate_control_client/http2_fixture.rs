@@ -176,6 +176,23 @@ pub(super) fn lifecycle_control_plane() -> TestLifecyclePlane {
             ))
         }
     })
+    .with_resume_observation_loop_factory(|request, _configuration, _context| {
+        let source = request.observation_source.as_ref().ok_or_else(|| {
+            LifecycleApiError::ResumeObservationSource {
+                message: String::from("test observation source disappeared"),
+            }
+        })?;
+        if source.schema_version() == 1
+            && source.proof() == b"rpc-observation-proof"
+            && source.evidence() == b"rpc-observation-evidence"
+        {
+            Ok(ServerQuantumLoop { quanta: 1 })
+        } else {
+            Err(LifecycleApiError::ResumeObservationSource {
+                message: String::from("test observation source did not authenticate"),
+            })
+        }
+    })
 }
 
 pub(super) async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
@@ -476,9 +493,18 @@ pub(super) async fn handle_resume_session(
         Err(error) => return http2_response(axum::http::StatusCode::BAD_REQUEST, error),
     };
 
-    let response = match control_plane.lock().await.resume_session(resume).await {
+    let client = InProcessLifecycleClient::from_shared_control_plane(control_plane);
+    let response = match client.resume_session(resume).await {
         Ok(response) => response,
-        Err(error) => return lifecycle_error_response(error),
+        Err(ControlClientError::Lifecycle { source }) => {
+            return lifecycle_error_response(source);
+        }
+        Err(error) => {
+            return http2_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                error.to_string(),
+            );
+        }
     };
     http2_response(
         axum::http::StatusCode::OK,
@@ -807,6 +833,12 @@ pub(super) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
             axum::http::StatusCode::BAD_REQUEST,
             crucible_api::RpcStatusCode::InvalidArgument,
             "resume-replay-closure",
+            &error.to_string(),
+        ),
+        LifecycleApiError::ResumeObservationSource { .. } => typed_rpc_status_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            crucible_api::RpcStatusCode::InvalidArgument,
+            "resume-observation-source",
             &error.to_string(),
         ),
         LifecycleApiError::DebugAccess { .. } | LifecycleApiError::DebugEndpointUnavailable => {
@@ -1170,16 +1202,26 @@ pub(super) fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionR
     let seed = parse_seed_line(lines.next(), "seed=")?;
     let schedule = parse_schedule_line(lines.next(), "schedule=")?;
     let checkpoint = parse_checkpoint_line(lines.next(), "checkpoint=")?;
-    let replay_closure = parse_optional_resume_replay_closure(
+    let (replay_closure, first_observation_line) = parse_optional_resume_replay_closure(
         &scenario,
         &schedule,
         &checkpoint,
         lines.next(),
         &mut lines,
     )?;
+    let observation_source = parse_optional_resume_observation_source(
+        &scenario,
+        &schedule,
+        &checkpoint,
+        first_observation_line,
+        &mut lines,
+    )?;
     let mut request = ResumeSessionRequest::new(scenario, schedule, checkpoint, seed);
     if let Some(replay_closure) = replay_closure {
         request = request.with_replay_closure(replay_closure);
+    }
+    if let Some(observation_source) = observation_source {
+        request = request.with_observation_source(observation_source);
     }
     Ok(request)
 }
@@ -1190,10 +1232,13 @@ fn parse_optional_resume_replay_closure<'a>(
     checkpoint: &Checkpoint,
     first: Option<&'a str>,
     lines: &mut impl Iterator<Item = &'a str>,
-) -> Result<Option<ResumeReplayClosure>, String> {
+) -> Result<(Option<ResumeReplayClosure>, Option<&'a str>), String> {
     let Some(first) = first else {
-        return Ok(None);
+        return Ok((None, None));
     };
+    if first.starts_with("campaign-observation-source-version=") {
+        return Ok((None, Some(first)));
+    }
     let version = parse_u64_line(Some(first), "campaign-replay-closure-version=")?;
     let version = u32::try_from(version)
         .map_err(|_| String::from("campaign replay closure version exceeds u32"))?;
@@ -1219,8 +1264,6 @@ fn parse_optional_resume_replay_closure<'a>(
         ));
     }
     let payload = parse_hex_bytes(payload_hex)?;
-    reject_extra_line(lines.next())?;
-
     let actual_size = u64::try_from(payload.len())
         .map_err(|_| String::from("campaign replay closure size cannot be represented"))?;
     if actual_size != expected_size {
@@ -1237,7 +1280,84 @@ fn parse_optional_resume_replay_closure<'a>(
             expected_identity.to_hex(),
         ));
     }
-    Ok(Some(closure))
+    Ok((Some(closure), lines.next()))
+}
+
+fn parse_optional_resume_observation_source<'a>(
+    scenario: &ScenarioDefForm,
+    schedule: &Schedule,
+    checkpoint: &Checkpoint,
+    first: Option<&'a str>,
+    lines: &mut impl Iterator<Item = &'a str>,
+) -> Result<Option<ResumeObservationSource>, String> {
+    let Some(first) = first else {
+        return Ok(None);
+    };
+    let version = parse_u64_line(Some(first), "campaign-observation-source-version=")?;
+    let version = u32::try_from(version)
+        .map_err(|_| String::from("campaign observation source version exceeds u32"))?;
+    let expected_identity =
+        parse_content_hash_line(lines.next(), "campaign-observation-source-identity=")?;
+    let proof_size = parse_u64_line(lines.next(), "campaign-observation-source-proof-size=")?;
+    let proof_hex = parse_wire_line(lines.next(), "campaign-observation-source-proof=")?;
+    let evidence_size = parse_u64_line(lines.next(), "campaign-observation-source-evidence-size=")?;
+    let evidence_hex = parse_wire_line(lines.next(), "campaign-observation-source-evidence=")?;
+    reject_extra_line(lines.next())?;
+
+    let maximum = u64::try_from(RESUME_OBSERVATION_SOURCE_MAX_BYTES)
+        .map_err(|_| String::from("campaign observation source bound cannot be represented"))?;
+    let total = proof_size
+        .checked_add(evidence_size)
+        .ok_or_else(|| String::from("campaign observation source size overflowed"))?;
+    if total > maximum {
+        return Err(format!(
+            "campaign observation source has {total} bytes, maximum is {RESUME_OBSERVATION_SOURCE_MAX_BYTES}"
+        ));
+    }
+    let proof =
+        parse_sized_hex_payload(proof_hex, proof_size, "campaign observation source proof")?;
+    let evidence = parse_sized_hex_payload(
+        evidence_hex,
+        evidence_size,
+        "campaign observation source evidence",
+    )?;
+    let source =
+        ResumeObservationSource::new(scenario, schedule, checkpoint, version, proof, evidence)
+            .map_err(|error| error.to_string())?;
+    if source.identity() != expected_identity {
+        return Err(format!(
+            "campaign observation source identity {} did not match bound identity {}",
+            source.identity().to_hex(),
+            expected_identity.to_hex(),
+        ));
+    }
+    Ok(Some(source))
+}
+
+fn parse_sized_hex_payload(
+    encoded: &str,
+    expected_size: u64,
+    name: &str,
+) -> Result<Vec<u8>, String> {
+    let expected_hex_size = usize::try_from(expected_size)
+        .ok()
+        .and_then(|size| size.checked_mul(2))
+        .ok_or_else(|| format!("{name} hex size overflowed"))?;
+    if encoded.len() != expected_hex_size {
+        return Err(format!(
+            "{name} has {} hex bytes, expected {expected_hex_size}",
+            encoded.len()
+        ));
+    }
+    let payload = parse_hex_bytes(encoded)?;
+    let actual_size =
+        u64::try_from(payload.len()).map_err(|_| format!("{name} size cannot be represented"))?;
+    if actual_size != expected_size {
+        return Err(format!(
+            "{name} size {actual_size} did not match bound size {expected_size}"
+        ));
+    }
+    Ok(payload)
 }
 
 pub(super) fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, String> {

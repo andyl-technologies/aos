@@ -59,6 +59,9 @@ use crate::{
 mod app_random_branch_replay;
 use app_random_branch_replay::app_random_branch_replay;
 
+mod remote_observation_resume;
+pub use remote_observation_resume::RemoteObservationResumeFactory;
+
 /// Failure to bind an admitted attempt to a fresh production VM lifecycle.
 #[derive(Debug, Error)]
 pub enum QemuAttemptProductionVmLifecycleError {
@@ -444,11 +447,11 @@ pub use legacy_run::{
     GuardedCampaignReplayClosureError, GuardedCampaignSupplementalFinding,
     GuardedCampaignTimeoutEvidence, GuardedDefaultCampaignInvariantError,
     GuardedDefaultCampaignObservation, GuardedDefaultCampaignObservationSource,
-    GuardedDefaultCampaignProductionRunnerError,
-    GuardedDefaultCampaignResumeProof, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError,
-    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
-    GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
-    run_guarded_default_campaign, validate_remote_resume_replay_closure,
+    GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignResumeProof,
+    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
+    GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignSupervisorError,
+    GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
+    validate_remote_resume_replay_closure,
 };
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
