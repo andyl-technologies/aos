@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  credentialRuntime ? ./providers/credential,
   managedConfigurationRuntime ? ./providers/managed-configuration,
   nginxRuntime ? ./providers/nginx,
   systemdRuntime ? ./providers/systemd,
@@ -21,31 +22,35 @@
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:6c813d376a0141954cdf320c4fa422330b42c4d88bec0d67dcfff4b78cdd234a";
+    "sha256:6ab0550d2de40d9d49b211aa5944d3f7d86d53142c1a2dba8d59bf3974cc581c";
   credentialDelivery =
     interface
     "aos.credential-delivery"
     "sha256:d282faba1d3a1afd3ed7b2cde885331d8c2cf94f9b7968eb88987cffae852a3b";
+  credentialDeliveryEffects =
+    interface
+    "aos.credential-delivery-effects"
+    "sha256:a458175ca774c3fbe85172d79ec25255c560eed80846c42bf554767ea46ac222";
   systemdService =
     interface
     "aos.systemd-service"
-    "sha256:1be97040a30ac274816ff7d1ee53f384989165f2ed09c80956a1d90458b72f5f";
+    "sha256:b712c9e3697e87d62bb62549d8692b4d8f825bae9733ae523f76a40bd3882666";
   nginxValidation =
     interface
     "aos.nginx-validation"
-    "sha256:cfe3335b1ff3082ffd17e38f098e804461daaa32db19a2aba9faa2e2acaddd1d";
+    "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372";
   managedConfigurationEffects =
     interface
     "aos.managed-configuration-effects"
-    "sha256:2b5e3051194f29f19bdf178c7e51f3bc4dbee7b67eafb04cba7953580dd990bf";
+    "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab";
   systemdServiceEffects =
     interface
     "aos.systemd-service-effects"
-    "sha256:08e463bed96f053e557f557c95342666e81358396a44f89bf4c07a2aa780d6c5";
+    "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98";
   nginxInterface =
     interface
     "aos.nginx"
-    "sha256:0eb9b90f9f0fd0f744b13281c98bd37c0782ae74e2b85cc89c3cfef1b4cc1312";
+    "sha256:ad32f30236fd6ca7169a6a728f82c33f1167e695ede478df50c8ad57c9f019d6";
 
   lifecycle = {
     stableResourceIdentity = true;
@@ -92,6 +97,20 @@
     syntax = "local-key-v1";
   };
 
+  consumerProbe = schemas.record {
+    fields = {
+      address = schemas.string {
+        maxLength = 15;
+        syntax = null;
+      };
+      port = schemas.integer {
+        minimum = 1024;
+        maximum = 65535;
+      };
+    };
+    optional = [];
+  };
+
   resourceMap = schemas.map {
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
@@ -119,6 +138,8 @@
     optional = [];
   };
 
+  recoverableMethods = ["deliver" "observe" "prepare" "publish" "record" "release" "stop" "validate"];
+
   method = targetResource: operationFamily: name: {
     inherit operationFamily targetResource;
     parameters = schemas.boolean;
@@ -129,7 +150,10 @@
       completionEvidence = schemas.boolean;
       observationEvidence = schemas.boolean;
       supportsRejectedBeforeEffect = true;
-      indeterminate = "intervention-required";
+      indeterminate =
+        if builtins.elem name recoverableMethods
+        then "reconcile"
+        else "intervention-required";
     };
   };
 
@@ -197,6 +221,7 @@ in {
             interface = "aos.nginx";
             abi = 1;
             requestSchema = virtualHost;
+            configurationSchema = consumerProbe;
             outputs = {
               configuration = output schemas.resourceReference;
               credential-view = output (schemas.optional schemas.resourceReference);
@@ -258,9 +283,15 @@ in {
             interface = managedConfiguration.name;
             abi = managedConfiguration.abi;
             requestSchema = schemas.record {
-              fields.virtualHosts = schemas.list {
-                element = virtualHost;
-                maxItems = 1024;
+              fields = {
+                virtualHosts = schemas.list {
+                  element = virtualHost;
+                  maxItems = 1024;
+                };
+                consumer_content_revision = string;
+                consumer_controller_revision = string;
+                consumer_instance = string;
+                consumer_probe = consumerProbe;
               };
               optional = [];
             };
@@ -304,30 +335,53 @@ in {
 
   credential = mkPackage "ability-reference-credential" credentialArtifact (common
     // {
-      exports.credential-delivery = {
-        artifact = credentialArtifact;
-        export = lib.abilities.define {
-          interface = credentialDelivery.name;
-          abi = credentialDelivery.abi;
-          requestSchema = schemas.record {
-            fields.hosts = schemas.list {
-              element = string;
-              maxItems = 1024;
+      exports = {
+        credential-delivery = {
+          artifact = credentialArtifact;
+          export = lib.abilities.define {
+            interface = credentialDelivery.name;
+            abi = credentialDelivery.abi;
+            requestSchema = schemas.record {
+              fields.hosts = schemas.list {
+                element = string;
+                maxItems = 1024;
+              };
+              optional = [];
             };
-            optional = [];
+            outputs.credential-views = output resourceMap;
+            methods = {};
+            inherit lifecycle;
+            guarantees = [];
+            aggregation = aggregation "credentials";
+            requires.effects = methodRequirement credentialDeliveryEffects ["deliver" "release"];
+            composeEntry = "compose";
+            transitionEntry = "transition";
+            ownsResourceKinds = [credentialDelivery.name];
+            compose = credentialProvider.compose;
+            transition = credentialProvider.transition;
           };
-          outputs.credential-views = output resourceMap;
-          methods = {};
-          inherit lifecycle;
-          guarantees = [];
-          aggregation = aggregation "credentials";
-          requires = {};
-          composeEntry = "compose";
-          transitionEntry = "transition";
-          ownsResourceKinds = [credentialDelivery.name];
-          compose = credentialProvider.compose;
-          transition = credentialProvider.transition;
         };
+        credential-delivery-effects = {
+          artifact = credentialRuntime;
+          export = terminalExport {
+            name = credentialDeliveryEffects.name;
+            group = "credential-delivery-effects";
+            handler = "credential-delivery-terminal";
+            methods = {
+              deliver = method credentialDeliveryEffects.name {
+                kind = "credential";
+                action = "deliver";
+              } "deliver";
+              release = method credentialDeliveryEffects.name {kind = "release-resource";} "release";
+            };
+          };
+        };
+      };
+      handlers.credential-delivery-terminal = {
+        artifact = credentialRuntime;
+        entryPoint = "bin/.aos-package-runtime-unwrapped";
+        arguments = schemas.boolean;
+        result = schemas.boolean;
       };
     });
 
@@ -342,6 +396,7 @@ in {
             requestSchema = schemas.record {
               fields = {
                 configuration_revision = string;
+                consumer_endpoint = string;
                 unit = string;
                 virtual_host_count = schemas.integer {
                   minimum = 0;

@@ -24,6 +24,10 @@
     interfaceKey
     "aos.systemd-service"
     "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  kubernetesInterface =
+    interfaceKey
+    "aos.kubernetes-object-effects"
+    "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
   binding = bindingKey: requirement: providerKey: interface:
     abilities.bindingReference {
@@ -49,6 +53,12 @@
     "unused-configuration"
     "managed"
     configurationInterface;
+  kubernetesBinding =
+    binding
+    "k3s.kubernetes"
+    "kubernetes"
+    "k3s"
+    kubernetesInterface;
 
   resource = provider: interface: key: operations:
     abilities.resourceReference {
@@ -70,6 +80,12 @@
     "systemd"
     serviceInterface
     "nginx-service"
+    [operation];
+  kubernetesObject = operation:
+    resource
+    "k3s"
+    kubernetesInterface
+    "cilium-helmchart"
     [operation];
 
   sourceArtifact = abilities.artifactReference {
@@ -293,6 +309,21 @@
     }
     bootstrapGraph;
 
+  kubernetesGraph = effects.graph {
+    apply = invoke {
+      target = kubernetesObject "apply";
+      through = kubernetesBinding;
+      method = "apply";
+      family = {
+        kind = "kubernetes-object";
+        action = "apply";
+      };
+      inputs = {};
+      mode = "exclusive-write";
+      group = "kubernetes";
+    };
+  };
+
   duplicateProviderReadiness =
     effects.withProviderReadiness {
       binding = configurationBinding;
@@ -456,6 +487,7 @@ in {
   omitted = effects.normalize [] (effects.when false transition);
   longChain = effects.normalize ["chain"] (effects.graph chainNodes);
   bootstrap = effects.normalize ["bootstrap"] providerBootstrap;
+  kubernetes = effects.normalize ["kubernetes"] kubernetesGraph;
   inherit
     missingReference
     cycle

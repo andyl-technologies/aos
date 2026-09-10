@@ -184,6 +184,15 @@ in {
     '';
   };
 
+  options.system.build.initrdStaticAbilityContract = lib.mkOption {
+    type = lib.types.package;
+    readOnly = true;
+    description = ''
+      Static initrd-stage ability declarations embedded in the normal initrd.
+      Host-stage facilities cannot discharge obligations in this contract.
+    '';
+  };
+
   config = {
     # Re-run stage-1 config oneshots against the real /etc in stage-2.
     #
@@ -347,5 +356,8 @@ in {
       validateBootIdentity = config.aos.security.verity.enable;
       keepBinutils = config.aos.boot.recovery.enable;
     };
+
+    system.build.initrdStaticAbilityContract =
+      config.system.build.initrd.passthru.staticAbilityContract;
   };
 }

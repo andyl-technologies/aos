@@ -21,12 +21,19 @@
     };
 
     # Exercise exact duplicate normalization and one root used in two roles.
-    aos.boot.initrd.extraPackages = [pkgs.coreutils pkgs.coreutils];
+    aos.boot.initrd.extraPackages = [
+      pkgs.coreutils
+      pkgs.coreutils
+      pkgs.ability-package-smoke
+    ];
+    environment.systemPackages = [pkgs.ability-package-smoke];
   };
   system = mkSystem {
     modules = [../../systems/server.nix fixtureAuthorities];
   };
   initrd = system.config.system.build.initrd;
+  initrdAbilities = system.config.system.build.initrdStaticAbilityContract;
+  hostAbilities = system.config.system.build.staticAbilityContract;
   assembly = system.config.system.build.unsignedImageAssembly;
 in
   assert assembly != null;
@@ -34,7 +41,7 @@ in
       pname = "aos-initrd-stage-contract-check";
       version = "1";
       src = null;
-      buildDeps = [assembly pkgs.aos.testSupport pkgs.coreutils pkgs.cpio pkgs.gawk pkgs.grep pkgs.jq pkgs.zstd];
+      buildDeps = [assembly hostAbilities initrdAbilities pkgs.aos.testSupport pkgs.coreutils pkgs.cpio pkgs.erofs-utils pkgs.gawk pkgs.grep pkgs.jq pkgs.zstd];
       phases = [
         {
           name = "check";
@@ -43,6 +50,8 @@ in
 
             contract=${initrd}/initrd-stage-contract.json
             archive=${initrd}/initrd.img
+            initrd_abilities=${initrdAbilities}/contract.json
+            host_abilities=${hostAbilities}/contract.json
 
             validate_contract() {
               candidate=$1
@@ -157,6 +166,34 @@ in
             truncate -s $((canonical_size - 1)) canonical.json
             cmp canonical.json "$contract"
             validate_contract "$contract" "$archive"
+
+            ${pkgs.jq}/bin/jq -e '
+              .schema == "aos.boot.static-abilities/v1"
+              and .runtime_grants == []
+              and (.platforms | length == 1)
+              and .platforms[0].execution_stage == "initrd"
+              and (.platforms[0].packages | length == 1)
+              and .platforms[0].packages[0].name == "ability-package-smoke"
+              and (.platforms[0].abilities | length == 1)
+              and .platforms[0].abilities[0].availability == "unresolved-at-launch"
+              and any(.platforms[0].unresolved_launch_obligations[];
+                .kind == "implementation-artifact"
+                and .disposition == "external-launch-obligation")
+            ' "$initrd_abilities" >/dev/null
+            ${pkgs.jq}/bin/jq -e '
+              .schema == "aos.boot.static-abilities/v1"
+              and .runtime_grants == []
+              and (.platforms | length == 1)
+              and .platforms[0].execution_stage == "host"
+              and (.platforms[0].packages | length == 1)
+              and .platforms[0].packages[0].name == "ability-package-smoke"
+            ' "$host_abilities" >/dev/null
+            test "$(sha256sum "$initrd_abilities" | cut -d ' ' -f1)" != \
+              "$(sha256sum "$host_abilities" | cut -d ' ' -f1)"
+            cmp "$initrd_abilities" ${initrd}/initrd-static-ability-contract.json
+            cmp "$initrd_abilities" ${assembly}/inputs/initrd-static-ability-contract.json
+            cmp "$host_abilities" ${assembly}/inputs/host-static-ability-contract.json
+
             ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
               initrd-contract "$contract" "$archive"
             ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
@@ -177,6 +214,16 @@ in
               ${pkgs.zstd}/bin/zstd -dc "$archive" \
                 | ${pkgs.cpio}/bin/cpio -idm --quiet
             )
+            cmp "$initrd_abilities" \
+              unit-graph/usr/lib/aos/initrd/static-ability-contract.json
+            ${pkgs.erofs-utils}/bin/fsck.erofs \
+              --extract=root-tree --xattrs --preserve \
+              ${assembly}/inputs/root.img >/dev/null
+            cmp "$host_abilities" \
+              root-tree/usr/lib/aos/host/static-ability-contract.json
+            ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
+              image-assembly-attachments \
+              ${assembly} initrd-stage-contract-check unit-graph root-tree
             validate_unit_graph unit-graph "$contract"
 
             first_unit=$(${pkgs.jq}/bin/jq -er '.handoff.required_units[0]' "$contract")

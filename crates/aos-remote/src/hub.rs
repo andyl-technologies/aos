@@ -616,6 +616,14 @@ enum HubTopologyMethod {
     GetDocumentationArtifact,
     /// Selects the closed package-documentation JSON Schema.
     GetPackageDocumentationSchema,
+    /// Selects a reviewed deployment reporter enrollment plan.
+    PlanConfigureAbilityDeploymentReporter,
+    /// Selects deployment reporter enrollment or revocation.
+    ConfigureAbilityDeploymentReporter,
+    /// Selects a freshness-bounded private package deployment report.
+    ReportPackageAbilityDeployment,
+    /// Selects one exact private package deployment overlay.
+    GetPackageAbilityDeployment,
     /// Selects the normalized `ListChannels` Connect operation.
     ListChannels,
     /// Selects the normalized `GetChannel` Connect operation.
@@ -1190,6 +1198,16 @@ impl HubTopologyMethod {
             GetPackageDocumentationSchema => {
                 "aos.hub.v1.DocumentationService/GetPackageDocumentationSchema"
             }
+            PlanConfigureAbilityDeploymentReporter => {
+                "aos.hub.v1.AbilityDeploymentService/PlanConfigureReporter"
+            }
+            ConfigureAbilityDeploymentReporter => {
+                "aos.hub.v1.AbilityDeploymentService/ConfigureReporter"
+            }
+            ReportPackageAbilityDeployment => {
+                "aos.hub.v1.AbilityDeploymentService/ReportPackageOverlay"
+            }
+            GetPackageAbilityDeployment => "aos.hub.v1.AbilityDeploymentService/GetPackageOverlay",
             ListChannels => "aos.hub.v1.ChannelService/ListChannels",
             GetChannel => "aos.hub.v1.ChannelService/GetChannel",
             ListImages => "aos.hub.v1.ImageService/ListImages",
@@ -1684,6 +1702,10 @@ pub mod hub_rpc {
         ComparePackageDocumentation: ComparePackageDocumentationRequest => ComparePackageDocumentationResponse;
         GetDocumentationArtifact: GetDocumentationArtifactRequest => GetPackageDocumentationResponse;
         GetPackageDocumentationSchema: GetPackageDocumentationSchemaRequest => GetPackageDocumentationSchemaResponse;
+        PlanConfigureAbilityDeploymentReporter: PlanConfigureAbilityDeploymentReporterRequest => TopologyPlanResponse;
+        ConfigureAbilityDeploymentReporter: ApplyTopologyPlanRequest => AbilityDeploymentReporter;
+        ReportPackageAbilityDeployment: ReportPackageAbilityDeploymentRequest => PackageAbilityDeploymentResponse;
+        GetPackageAbilityDeployment: GetPackageAbilityDeploymentRequest => PackageAbilityDeploymentResponse;
         ListChannels: ListChannelsRequest => ListChannelsResponse;
         GetChannel: GetChannelRequest => GetChannelResponse;
         ListImages: ListImagesRequest => ListImagesResponse;

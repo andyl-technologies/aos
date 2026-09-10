@@ -75,7 +75,8 @@ use crate::web::session;
 ///
 /// The transport layer ([`crate::connect`]) maps these to responses:
 /// [`Rendered::Html`] to a `200` `text/html` with the strict `default-src
-/// 'self'` CSP, [`Rendered::Json`] to a `200` `application/json`,
+/// 'self'` CSP, [`Rendered::PrivateHtml`] to the same document response with
+/// private no-store cache controls, [`Rendered::Json`] to a `200` `application/json`,
 /// [`Rendered::Redirect`] to a `308 Permanent Redirect`,
 /// [`Rendered::TooManyRequests`] to a `429` with a `Retry-After`, and
 /// [`Rendered::NotFound`] to a bare `404` (which the visibility matrix returns
@@ -84,6 +85,8 @@ use crate::web::session;
 pub enum Rendered {
     /// A complete HTML document.
     Html(String),
+    /// Session- or bearer-visible HTML, never stored in a shared HTTP cache.
+    PrivateHtml(String),
     /// A serialized JSON document.
     Json(String),
     /// Session-visible browser data, never stored in a shared HTTP cache.
@@ -201,9 +204,14 @@ pub(super) async fn browse_rate_limited(svc: &RpcService, headers: &HeaderMap) -
     }
 }
 
-/// Whether the request's session user may `Read` at `scope` under their current
-/// memberships.
-async fn session_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
+/// Whether the request's session user holds `permission` at `scope` under
+/// current memberships.
+async fn session_allows(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    scope: &Scope,
+    permission: Permission,
+) -> bool {
     let Some(secret) = session::session_secret_from_headers(headers) else {
         return false;
     };
@@ -216,7 +224,11 @@ async fn session_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scop
     let Ok(Some(context)) = svc.db.authorization_context(scope.as_str()).await else {
         return false;
     };
-    iam::allow(&grants, Permission::Read, &context)
+    iam::allow(&grants, permission, &context)
+}
+
+async fn session_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
+    session_allows(svc, headers, scope, Permission::Read).await
 }
 
 /// Whether the request's session user holds any membership covering `org_id`.
@@ -227,8 +239,13 @@ async fn session_is_org_member(svc: &RpcService, headers: &HeaderMap, org_id: i6
     session_allows_read(svc, headers, &Scope::parse(&org.stable_id)).await
 }
 
-/// Whether a bearer JWT in `headers` grants `Read` at `scope`.
-async fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
+/// Whether a bearer JWT in `headers` grants `permission` at `scope`.
+async fn bearer_allows(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    scope: &Scope,
+    permission: Permission,
+) -> bool {
     let Some(value) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -240,11 +257,28 @@ async fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope
     };
     match svc.jwt_keys.verify(token) {
         Ok(claims) => svc
-            .require_permission(&claims, Permission::Read, scope)
+            .require_permission(&claims, permission, scope)
             .await
             .is_ok(),
         Err(_) => false,
     }
+}
+
+async fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
+    bearer_allows(svc, headers, scope, Permission::Read).await
+}
+
+async fn can_read_ability_deployments(
+    svc: &RpcService,
+    registry: &RegistryRecord,
+    headers: &HeaderMap,
+) -> bool {
+    let Ok(scope_key) = svc.db.registry_authorization_scope(registry.id).await else {
+        return false;
+    };
+    let scope = Scope::parse(&scope_key);
+    session_allows(svc, headers, &scope, Permission::AuditRead).await
+        || bearer_allows(svc, headers, &scope, Permission::AuditRead).await
 }
 
 /// Whether the caller in `headers` may see `registry` at all (the session-aware
@@ -1366,7 +1400,44 @@ pub async fn package(
         .map(pages::PackageDocumentationReference::from);
     let ability_reference_unavailable = ability_reference_result.is_err();
     let ability_reference = ability_reference_result.ok().flatten();
-    Rendered::Html(pages::package_page(
+    let deployment_access = can_read_ability_deployments(svc, &registry, headers).await;
+    let (ability_deployments, ability_deployments_unavailable) = if deployment_access {
+        match &ability_reference {
+            Some(panel) => match svc
+                .load_package_ability_deployments_for_browser(
+                    registry.id,
+                    &panel.locator,
+                    &panel.reference,
+                )
+                .await
+            {
+                Ok(overlays) => (
+                    Some(
+                        overlays
+                            .into_iter()
+                            .map(|(stored, overlay)| {
+                                super::ability_reference_page::PackageAbilityDeploymentPanel {
+                                    overlay,
+                                    authority: format!(
+                                        "reporter-bearer:{}:{}",
+                                        stored.principal_kind, stored.principal_ref
+                                    ),
+                                    received_at: stored.received_at,
+                                    expires_at: stored.expires_at,
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    false,
+                ),
+                Err(_) => (Some(Vec::new()), true),
+            },
+            None => (Some(Vec::new()), ability_reference_unavailable),
+        }
+    } else {
+        (None, false)
+    };
+    let body = pages::package_page(
         &registry,
         status.as_ref(),
         &detail,
@@ -1377,9 +1448,16 @@ pub async fn package(
         documentation_unavailable,
         ability_reference.as_ref(),
         ability_reference_unavailable,
+        ability_deployments.as_deref(),
+        ability_deployments_unavailable,
         started,
         &session,
-    ))
+    );
+    if deployment_access {
+        Rendered::PrivateHtml(body)
+    } else {
+        Rendered::Html(body)
+    }
 }
 
 /// Loads an ability reference only when its index commit is the selected release.
@@ -1433,9 +1511,10 @@ async fn package_ability_reference(
     Ok(Some(
         super::ability_reference_page::PackageAbilityReferencePanel {
             release: release.to_string(),
-            indexed_commit: locator.indexed_commit,
-            platform: locator.platform,
+            indexed_commit: locator.indexed_commit.clone(),
+            platform: locator.platform.clone(),
             reference,
+            locator,
         },
     ))
 }

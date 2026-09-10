@@ -26,6 +26,7 @@ use aos_ability_model::{
     InterfaceName, LocalKey, MethodReference, Operation, OperationFamily, ProviderAssignment,
     ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId, ValueSchema,
 };
+use aos_ability_plan::{RuntimeResourceHealth, RuntimeResourceState};
 use aos_ability_runtime::adapter::{
     AdapterCompletion, AdapterRecord, CancellationDisposition, CatalogReservation,
     EffectDisposition, InvocationPurpose, ReconcileDisposition, ReservationContext,
@@ -45,7 +46,7 @@ use crate::config_eval::native_ability_fs::{RootedDirectory, RootedFile};
 
 const INTERFACE_NAME: &str = "aos.nginx-validation";
 const INTERFACE_DESCRIPTOR: &str =
-    "sha256:cfe3335b1ff3082ffd17e38f098e804461daaa32db19a2aba9faa2e2acaddd1d";
+    "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372";
 const HANDLER_KEY: &str = "nginx-terminal";
 const ENTRY_POINT: &str = "bin/nginx";
 const REQUEST_SCHEMA: &str = "aos.ability.nginx-request/v1";
@@ -232,6 +233,34 @@ impl NginxResourceCatalog {
             .ok_or_else(|| invalid_data("nginx no-op resource is not cataloged"))?;
         Ok((resource.qualified.clone(), observe_association(resource)?))
     }
+
+    /// Classifies an association only when its ownership is unambiguous.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the resource is absent from the catalog, its
+    /// association cannot be inspected, or its ownership evidence is foreign.
+    pub(crate) fn classify_runtime_revision(
+        &self,
+        resource: &ResourceId,
+    ) -> Result<(NativeQualifiedResource, RuntimeResourceState), io::Error> {
+        let resource = self
+            .resources
+            .get(resource)
+            .ok_or_else(|| invalid_data("nginx runtime resource is not cataloged"))?;
+        let observation = observe_association(resource)?;
+        let state = match observation {
+            ResourceRevisionObservation::Absent => RuntimeResourceState::Absent,
+            ResourceRevisionObservation::Present(revision) => RuntimeResourceState::Present {
+                revision,
+                health: RuntimeResourceHealth::Healthy,
+            },
+            ResourceRevisionObservation::Unknown => {
+                return Err(invalid_data("nginx association evidence is foreign"));
+            }
+        };
+        Ok((resource.qualified.clone(), state))
+    }
 }
 
 impl TrustedResourceCatalog for NginxResourceCatalog {
@@ -263,7 +292,22 @@ impl TrustedResourceCatalog for NginxResourceCatalog {
             .inventory
             .reserve(&resource.qualified, context, operation, access)
             .map_err(store_error)?;
-        let revision = observe_association(&resource)?;
+        let state = match observe_association(&resource)? {
+            ResourceRevisionObservation::Absent => RuntimeResourceState::Absent,
+            ResourceRevisionObservation::Present(revision) => RuntimeResourceState::Present {
+                revision,
+                health: RuntimeResourceHealth::Healthy,
+            },
+            ResourceRevisionObservation::Unknown => {
+                return Err(invalid_data("nginx association evidence is foreign"));
+            }
+        };
+        let revision = match state {
+            RuntimeResourceState::Absent => ResourceRevisionObservation::Absent,
+            RuntimeResourceState::Present { revision, .. } => {
+                ResourceRevisionObservation::Present(revision)
+            }
+        };
         let evidence = ResourceAdmissionEvidence::new_with_revision_observation(
             access.resource.clone(),
             Some(self.assignment.incarnation.clone()),
@@ -1085,6 +1129,60 @@ mod tests {
     }
 
     #[test]
+    fn adapter_reconciles_validate_record_and_release_crash_boundaries() {
+        let validate = nginx_fixture("runtime");
+        let mut validate_adapter = test_adapter(&validate.resource);
+        let validate_request = test_request(NginxAction::Validate, &validate.resource);
+        assert!(matches!(
+            validate_adapter.reconcile(&validate_request, &ZeroBudgetControl),
+            ReconcileDisposition::SafeToRetry(_)
+        ));
+        stage_candidate(&validate.resource).expect("candidate is staged before validation");
+        write_validation(&validate.resource).expect("validation effect is persisted");
+        assert!(matches!(
+            validate_adapter.reconcile(&validate_request, &ZeroBudgetControl),
+            ReconcileDisposition::Completed(_)
+        ));
+
+        let record = nginx_fixture("runtime");
+        let mut record_adapter = test_adapter(&record.resource);
+        let record_request = test_request(NginxAction::Record, &record.resource);
+        assert!(matches!(
+            record_adapter.reconcile(&record_request, &ZeroBudgetControl),
+            ReconcileDisposition::SafeToRetry(_)
+        ));
+        stage_candidate(&record.resource).expect("record candidate is staged");
+        write_validation(&record.resource).expect("record validation is persisted");
+        record_association(&record.resource).expect("association effect is persisted");
+        assert!(matches!(
+            record_adapter.cancel(&record_request, &ZeroBudgetControl),
+            CancellationDisposition::Completed(_)
+        ));
+
+        let release = nginx_fixture_with_transition("runtime", Some(revision("current")), None);
+        write_test_association(
+            &release.resource,
+            revision("current"),
+            release.resource.candidate_digest,
+        );
+        let mut release_adapter = test_adapter(&release.resource);
+        let release_request = test_request(NginxAction::Release, &release.resource);
+        assert!(matches!(
+            release_adapter.reconcile(&release_request, &ZeroBudgetControl),
+            ReconcileDisposition::SafeToRetry(_)
+        ));
+        release
+            .resource
+            .association_path
+            .remove()
+            .expect("simulated release unlink succeeds before directory sync");
+        assert!(matches!(
+            release_adapter.reconcile(&release_request, &ZeroBudgetControl),
+            ReconcileDisposition::Completed(_)
+        ));
+    }
+
+    #[test]
     fn exhausted_budget_prevents_candidate_staging_and_process_spawn() {
         let fixture = nginx_fixture("runtime");
         let control = ZeroBudgetControl;
@@ -1106,6 +1204,14 @@ mod tests {
     }
 
     fn nginx_fixture(runtime: &str) -> NginxFixture {
+        nginx_fixture_with_transition(runtime, None, Some(revision("desired")))
+    }
+
+    fn nginx_fixture_with_transition(
+        runtime: &str,
+        current_generation: Option<RevisionId>,
+        desired_generation: Option<RevisionId>,
+    ) -> NginxFixture {
         let root = tempfile::tempdir().expect("temporary root is created");
         let owner = fs::metadata(root.path())
             .expect("root metadata is read")
@@ -1149,9 +1255,9 @@ mod tests {
                     resource: resource_id,
                     validation_prefix: validation_prefix.display().to_path_buf(),
                     candidate,
-                    current_generation: None,
-                    current_candidate_digest: None,
-                    desired_generation: Some(revision("desired")),
+                    current_generation,
+                    current_candidate_digest: current_generation.map(|_| candidate_digest),
+                    desired_generation,
                 },
                 candidate_path: candidate_root
                     .child(candidate_digest.to_string())
@@ -1166,6 +1272,53 @@ mod tests {
                 qualified,
             },
         }
+    }
+
+    fn test_adapter(resource: &QualifiedNginxResource) -> NativeNginxAdapter {
+        NativeNginxAdapter {
+            assignment: ProviderAssignment {
+                provider: resource.spec.resource.provider.clone(),
+                interface: InterfaceKey {
+                    name: InterfaceName::new(INTERFACE_NAME).expect("interface name is valid"),
+                    abi: NonZeroU32::new(1).expect("interface ABI is nonzero"),
+                    descriptor: Sha256Digest::parse(INTERFACE_DESCRIPTOR)
+                        .expect("interface descriptor is valid"),
+                },
+                implementation: resource.implementation.clone(),
+                incarnation: aos_ability_model::IncarnationId::new("test-nginx-runtime")
+                    .expect("test incarnation is valid"),
+            },
+            executable: PathBuf::from("/missing-test-nginx"),
+            success: record(true).expect("success record encodes"),
+            failure: record(false).expect("failure record encodes"),
+        }
+    }
+
+    fn test_request(action: NginxAction, resource: &QualifiedNginxResource) -> NginxRequest {
+        NginxRequest {
+            durable: durable_request(action, resource).expect("durable request encodes"),
+            resource: resource.clone(),
+        }
+    }
+
+    fn write_test_association(
+        resource: &QualifiedNginxResource,
+        generation: RevisionId,
+        candidate_digest: Sha256Digest,
+    ) {
+        let association = AssociationRecord {
+            schema: ASSOCIATION_SCHEMA.to_string(),
+            resource: resource.spec.resource.clone(),
+            generation,
+            candidate_digest,
+        };
+        resource
+            .association_path
+            .atomic_write(
+                &serde_json::to_vec(&association).expect("association encodes"),
+                false,
+            )
+            .expect("association is persisted");
     }
 
     fn implementation(runtime: &str) -> ProviderImplementationReference {

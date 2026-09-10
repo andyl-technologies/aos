@@ -11,7 +11,7 @@
 //!
 //! ```json
 //! {"environment":{"schema":"aos.ability.environment/v1","...":"..."},"schema":"aos.ability.activation-desired/v1","seed":{"schema":"aos.ability.desired-state/v1","...":"..."}}
-//! {"native_resource_map":{"desired_state":"sha256:...","entries":[...],"schema":"aos.ability.native-resource-map/v1"},"policies":[{"schema":"aos.ability.resolution-policy/v1","...":"..."}],"schema":"aos.ability.authenticated-policy-set/v2","transition_authority":null}
+//! {"native_resource_map":{"desired_state":"sha256:...","entries":[...],"schema":"aos.ability.native-resource-map/v2"},"platform_policy":{"bindings":[...],"policy_revision":"sha256:...","required_features":[],"schema":"aos.ability.platform-policy/v1"},"policies":[{"schema":"aos.ability.resolution-policy/v1","...":"..."}],"schema":"aos.ability.authenticated-policy-set/v3","transition_authority":null}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,12 +21,12 @@ use std::path::{Component, Path};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AggregateOutput, DesiredStateDocument, EnvironmentDocument,
+    ABILITY_LIMITS_V1, AggregateOutput, DesiredStateDocument, EnvironmentDocument, RequiredFeature,
     ResourceReference, TransitionAuthorizationDocument, ValueExpression, VersionedDocument,
 };
 use aos_ability_plan::{
     PlanningReplayInputs, PlanningSnapshot, ResolutionPolicyDocument, TransitionInputs,
-    TransitionPlanner, VerifiedPlanningSnapshot,
+    TransitionPlanner, TransitionReconciliation, VerifiedPlanningSnapshot,
 };
 use aos_ability_runtime::bundle::ReloadablePlanBundle;
 use aos_ability_validate::{
@@ -39,6 +39,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::ability::RestrictedAbilityEvaluator;
+use super::ability_policy::{CurrentAbilityAuthorityDocument, CurrentPlatformPolicyDocument};
 use super::ability_policy_authority::OperatorPolicyAuthorityStore;
 use super::materialize::{
     AbilityActivationInput, AbilityPackageCoordinate as PinnedAbilityPackageCoordinate,
@@ -46,6 +47,7 @@ use super::materialize::{
 };
 use super::native_resource_map::{
     NativeOutputLocator, NativeResourceMap, NativeResourceMapping, NativeResourceQualification,
+    kubernetes_resource_owner,
 };
 use super::runtime::{RuntimePackageOrigin, RuntimeResolution};
 use crate::ability_package::{
@@ -109,6 +111,9 @@ pub struct AuthenticatedPolicySetDocument {
     /// Supplies independently authorized logical-to-physical execution mappings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_resource_map: Option<NativeResourceMap>,
+    /// Supplies operator-authorized bindings issued by the native platform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_policy: Option<CurrentPlatformPolicyDocument>,
 }
 
 impl AuthenticatedPolicySetDocument {
@@ -116,8 +121,10 @@ impl AuthenticatedPolicySetDocument {
     pub const SCHEMA_V1: &'static str = "aos.ability.authenticated-policy-set/v1";
     /// Current policy-set schema carrying native execution authority.
     pub const SCHEMA_V2: &'static str = "aos.ability.authenticated-policy-set/v2";
+    /// Native execution policy set with explicit platform binding authority.
+    pub const SCHEMA_V3: &'static str = "aos.ability.authenticated-policy-set/v3";
     /// Current authenticated policy-set schema.
-    pub const SCHEMA: &'static str = Self::SCHEMA_V2;
+    pub const SCHEMA: &'static str = Self::SCHEMA_V3;
 
     /// Constructs a canonical execution-eligible policy-set document.
     ///
@@ -133,10 +140,11 @@ impl AuthenticatedPolicySetDocument {
     ) -> Result<Self> {
         policies.sort_by_key(|policy| policy.desired_state);
         let document = Self {
-            schema: Self::SCHEMA.to_string(),
+            schema: Self::SCHEMA_V2.to_string(),
             policies,
             transition_authority,
             native_resource_map: Some(native_resource_map),
+            platform_policy: None,
         };
         document.validate(desired)?;
         Ok(document)
@@ -153,14 +161,22 @@ impl AuthenticatedPolicySetDocument {
     /// embedded documents, or native map are invalid.
     pub fn validate(&self, desired: &ActivationDesiredInputDocument) -> Result<()> {
         ensure!(
-            matches!(self.schema.as_str(), Self::SCHEMA_V1 | Self::SCHEMA_V2),
+            matches!(
+                self.schema.as_str(),
+                Self::SCHEMA_V1 | Self::SCHEMA_V2 | Self::SCHEMA_V3
+            ),
             "unsupported authenticated ability policy-set schema {:?}",
             self.schema
         );
         ensure!(
-            (self.schema == Self::SCHEMA_V1 && self.native_resource_map.is_none())
-                || (self.schema == Self::SCHEMA_V2 && self.native_resource_map.is_some()),
-            "authenticated policy-set schema does not match native resource-map presence"
+            (self.schema == Self::SCHEMA_V1
+                && self.native_resource_map.is_none()
+                && self.platform_policy.is_none())
+                || (self.schema == Self::SCHEMA_V2
+                    && self.native_resource_map.is_some()
+                    && self.platform_policy.is_none())
+                || (self.schema == Self::SCHEMA_V3 && self.native_resource_map.is_some()),
+            "authenticated policy-set schema does not match native authority fields"
         );
         ensure!(
             self.policies
@@ -185,6 +201,24 @@ impl AuthenticatedPolicySetDocument {
         }
         if let Some(resource_map) = &self.native_resource_map {
             resource_map.validate()?;
+        }
+        if let Some(platform_policy) = &self.platform_policy {
+            validate_embedded_document(platform_policy, "authenticated platform policy")?;
+            ensure!(
+                platform_policy
+                    .bindings
+                    .windows(2)
+                    .all(|pair| pair[0].id < pair[1].id),
+                "authenticated platform-policy bindings are not in strict identity order"
+            );
+            ensure!(
+                platform_policy.bindings.iter().all(|binding| {
+                    binding.policy_revision == platform_policy.policy_revision
+                        && binding.provider.environment == desired.environment.environment
+                        && binding.request.consumer.environment == desired.environment.environment
+                }),
+                "authenticated platform-policy binding differs from its policy revision or target environment"
+            );
         }
         Ok(())
     }
@@ -331,6 +365,12 @@ impl VerifiedAbilityActivationInputs {
         &self.policy_set
     }
 
+    /// Returns the exact sidecar descriptor protected by operator authority.
+    #[must_use]
+    pub const fn policy_sidecar(&self) -> &PinnedAbilitySidecar {
+        &self.policy_sidecar
+    }
+
     fn load_activation(activation: &AbilityActivationInput) -> Result<Self> {
         let desired_bytes = load_sidecar(&activation.desired_state, "desired state")?;
         let desired: ActivationDesiredInputDocument =
@@ -361,10 +401,20 @@ fn validate_policy_feature_binding(
 ) -> Result<()> {
     let native_execution = required_features
         .iter()
-        .any(|feature| feature == "native-resource-map-v1");
+        .any(|feature| feature == "native-resource-map-v2");
+    let native_platform_policy = required_features
+        .iter()
+        .any(|feature| feature == "native-platform-policy-v1");
     ensure!(
-        (policy_set.schema == AuthenticatedPolicySetDocument::SCHEMA_V1 && !native_execution)
-            || (policy_set.schema == AuthenticatedPolicySetDocument::SCHEMA_V2 && native_execution),
+        (policy_set.schema == AuthenticatedPolicySetDocument::SCHEMA_V1
+            && !native_execution
+            && !native_platform_policy)
+            || (policy_set.schema == AuthenticatedPolicySetDocument::SCHEMA_V2
+                && native_execution
+                && !native_platform_policy)
+            || (policy_set.schema == AuthenticatedPolicySetDocument::SCHEMA_V3
+                && native_execution
+                && native_platform_policy),
         "authenticated policy-set schema does not match its manifest feature gates"
     );
     Ok(())
@@ -387,6 +437,126 @@ pub fn specialize_activation(
     current: Option<&VerifiedAbilityActivationInputs>,
     packages: &VerifiedAbilityPackageSet,
     evaluator: &mut RestrictedAbilityEvaluator,
+) -> Result<SpecializedAbilityActivation> {
+    specialize_activation_with_reconciliation(desired, current, packages, evaluator, None)
+}
+
+/// Constructs a fresh linked repair graph from protected live observations.
+///
+/// The source activation must be effect-free and use the same desired and
+/// retained planning inputs. The resulting transition snapshot retains the
+/// source-plan link and the exact current-authority observation publication.
+///
+/// # Errors
+///
+/// Returns an error when the source plan can perform effects, a planning or
+/// policy commitment differs, observations do not cover the native map, or
+/// provider construction does not produce a distinct repair graph.
+pub fn specialize_reconciliation(
+    desired: &VerifiedAbilityActivationInputs,
+    current: &VerifiedAbilityActivationInputs,
+    packages: &VerifiedAbilityPackageSet,
+    evaluator: &mut RestrictedAbilityEvaluator,
+    source: &SpecializedAbilityActivation,
+    reconciliation: TransitionReconciliation,
+    supported_features: &BTreeSet<RequiredFeature>,
+) -> Result<SpecializedAbilityActivation> {
+    ensure!(
+        source.plan().operations().is_empty(),
+        "runtime reconciliation source plan is not effect-free"
+    );
+    ensure!(
+        reconciliation.source_plan == source.plan().id(),
+        "runtime reconciliation names another source plan"
+    );
+    validate_reconciliation_authority_source(desired, source, &reconciliation, supported_features)?;
+
+    let repaired = specialize_activation_with_reconciliation(
+        desired,
+        Some(current),
+        packages,
+        evaluator,
+        Some(&reconciliation),
+    )?;
+    ensure!(
+        repaired.bundle().desired_planning_digest() == source.bundle().desired_planning_digest()
+            && repaired.bundle().current_planning_digest()
+                == source.bundle().current_planning_digest(),
+        "runtime reconciliation changed its authenticated planning inputs"
+    );
+    ensure!(
+        !repaired.plan().operations().is_empty() && repaired.plan().id() != source.plan().id(),
+        "runtime reconciliation did not produce a distinct repair graph"
+    );
+    Ok(repaired)
+}
+
+fn validate_reconciliation_authority_source(
+    desired: &VerifiedAbilityActivationInputs,
+    source: &SpecializedAbilityActivation,
+    reconciliation: &TransitionReconciliation,
+    supported_features: &BTreeSet<RequiredFeature>,
+) -> Result<()> {
+    let authority: CurrentAbilityAuthorityDocument =
+        serde_json::from_value(reconciliation.authority_document.as_json().clone())
+            .context("decoding retained runtime reconciliation authority")?;
+    authority
+        .validate(supported_features)
+        .context("validating retained runtime reconciliation authority")?;
+    let binding_plan = source.plan().binding_plan().document();
+    let matching_policies = desired
+        .policy_set()
+        .policies
+        .iter()
+        .filter(|policy| {
+            policy.desired_state == binding_plan.desired_state
+                && policy.environment == binding_plan.environment
+                && policy.policy_revision == binding_plan.policy_revision
+        })
+        .collect::<Vec<_>>();
+    let [resolution_policy] = matching_policies.as_slice() else {
+        bail!("repair source does not select one authenticated resolution policy");
+    };
+    let expected_policy_fence = Sha256Digest::parse(&desired.policy_sidecar().document_sha256)
+        .context("decoding retained runtime reconciliation policy fence")?;
+    let expected_platform_policy = desired
+        .policy_set()
+        .platform_policy
+        .as_ref()
+        .map(VersionedDocument::content_digest)
+        .transpose()
+        .context("identifying retained runtime platform policy")?;
+    let expected_transition_authority = desired
+        .policy_set()
+        .transition_authority
+        .as_ref()
+        .map(VersionedDocument::content_digest)
+        .transpose()
+        .context("identifying retained runtime transition authority")?;
+    ensure!(
+        authority.content_digest()? == reconciliation.authority_publication,
+        "runtime reconciliation authority digest differs from its canonical document"
+    );
+    ensure!(
+        authority.plan == source.plan().id()
+            && authority.transaction.as_ref() == Some(&reconciliation.transaction)
+            && authority.policy_fence == aos_ability_model::RevisionId(expected_policy_fence)
+            && authority.policy_revision == binding_plan.policy_revision
+            && authority.resolution_policy == resolution_policy.content_digest()?
+            && authority.platform_policy == expected_platform_policy
+            && authority.transition_authority == expected_transition_authority
+            && authority.bindings == source.plan().binding_plan().bindings(),
+        "runtime reconciliation authority differs from its authenticated source inputs"
+    );
+    Ok(())
+}
+
+fn specialize_activation_with_reconciliation(
+    desired: &VerifiedAbilityActivationInputs,
+    current: Option<&VerifiedAbilityActivationInputs>,
+    packages: &VerifiedAbilityPackageSet,
+    evaluator: &mut RestrictedAbilityEvaluator,
+    reconciliation: Option<&TransitionReconciliation>,
 ) -> Result<SpecializedAbilityActivation> {
     let desired_packages = packages_for_inputs(desired, packages)?;
     let desired_catalog = desired_packages.planning_catalog()?;
@@ -411,6 +581,9 @@ pub fn specialize_activation(
                 .cloned()
         })
         .transpose()?;
+    if let Some(reconciliation) = reconciliation {
+        validate_runtime_reconciliation(desired, &desired_native_resources, reconciliation)?;
+    }
     validate_cross_generation_physical_claims(
         &desired_native_resources,
         &desired_planning.outcome().desired_state,
@@ -433,6 +606,7 @@ pub fn specialize_activation(
             TransitionInputs {
                 current: current_planning.as_ref(),
                 authority: authority.as_ref(),
+                reconciliation,
             },
             evaluator,
         )
@@ -477,6 +651,32 @@ pub fn specialize_activation(
         current_native_resources,
         policy_authority,
     })
+}
+
+fn validate_runtime_reconciliation(
+    desired: &VerifiedAbilityActivationInputs,
+    resources: &NativeResourceMap,
+    reconciliation: &TransitionReconciliation,
+) -> Result<()> {
+    let expected_policy_fence = aos_ability_model::RevisionId(
+        Sha256Digest::parse(&desired.policy_sidecar().document_sha256)
+            .context("decoding runtime reconciliation policy fence")?,
+    );
+    ensure!(
+        reconciliation.policy_fence == expected_policy_fence,
+        "runtime reconciliation uses another operator policy fence"
+    );
+    ensure!(
+        reconciliation.observations.len() == resources.entries.len(),
+        "runtime reconciliation does not classify the complete native resource map"
+    );
+    for (observation, mapping) in reconciliation.observations.iter().zip(&resources.entries) {
+        ensure!(
+            observation.resource == mapping.resource,
+            "runtime reconciliation observation names a foreign native resource"
+        );
+    }
+    Ok(())
 }
 
 fn packages_for_inputs(
@@ -560,6 +760,23 @@ fn validate_resource_map_against_planning(
                 && binding.implementation == mapping.implementation,
             "{generation} native mapping disagrees with its checked provider binding"
         );
+        if let NativeResourceQualification::SystemdService {
+            consumer_observation: Some(consumer_observation),
+            ..
+        } = &mapping.qualification
+        {
+            ensure!(
+                consumer_observation.expected_instance == binding.request.consumer,
+                "{generation} native consumer observation names another checked instance"
+            );
+            ensure!(
+                desired_state.resources.iter().any(|resource| {
+                    resource.resource == consumer_observation.content_resource
+                        && resource.revision == consumer_observation.expected_content_revision
+                }),
+                "{generation} native consumer observation names unauthenticated content"
+            );
+        }
         let owner = packages
             .iter()
             .find(|package| package.package_digest() == mapping.owner_package)
@@ -615,6 +832,38 @@ fn validate_mapping_outputs(
             );
             ensure_candidate_string(candidate, desired_state, generation)?;
         }
+        NativeResourceQualification::KubernetesObject {
+            kubectl,
+            api_version,
+            object_kind,
+            namespace,
+            name,
+            object_json,
+            resource_reference,
+            ..
+        } => {
+            ensure!(
+                owner.artifacts().contains(kubectl),
+                "{generation} kubectl executable is outside the mapped owner package"
+            );
+            ensure_kubernetes_object(
+                object_json,
+                desired_state,
+                &mapping.resource,
+                mapping.revision,
+                api_version,
+                object_kind,
+                namespace.as_deref(),
+                name,
+                generation,
+            )?;
+            ensure_resource_reference(
+                resource_reference,
+                desired_state,
+                &mapping.resource,
+                generation,
+            )?;
+        }
     }
     Ok(())
 }
@@ -631,6 +880,86 @@ fn ensure_candidate_string(
     ensure!(
         value.as_str().is_some(),
         "{generation} native candidate locator does not select a string"
+    );
+    Ok(())
+}
+
+fn ensure_kubernetes_object(
+    locator: &NativeOutputLocator,
+    desired_state: &DesiredStateDocument,
+    resource: &aos_ability_model::ResourceId,
+    revision: aos_ability_model::RevisionId,
+    api_version: &str,
+    kind: &str,
+    namespace: Option<&str>,
+    name: &str,
+    generation: &str,
+) -> Result<()> {
+    let output = locate_aggregate_output(locator, desired_state, generation)?;
+    let candidate = locate_literal_json(&output.value, &locator.field_path)
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| {
+            format!("{generation} Kubernetes object locator does not select a string")
+        })?;
+    let object =
+        aos_contract::canonical::require_canonical(candidate.as_bytes(), "Kubernetes object")?;
+    ensure!(
+        object.get("apiVersion").and_then(serde_json::Value::as_str) == Some(api_version)
+            && object.get("kind").and_then(serde_json::Value::as_str) == Some(kind),
+        "{generation} Kubernetes object type differs from its native qualification"
+    );
+    let metadata = object
+        .get("metadata")
+        .and_then(serde_json::Value::as_object)
+        .with_context(|| format!("{generation} Kubernetes object has no metadata object"))?;
+    ensure!(
+        metadata.get("name").and_then(serde_json::Value::as_str) == Some(name)
+            && metadata
+                .get("namespace")
+                .and_then(serde_json::Value::as_str)
+                == namespace,
+        "{generation} Kubernetes object identity differs from its native qualification"
+    );
+    ensure!(
+        metadata.get("generateName").is_none(),
+        "{generation} Kubernetes object may not use generated identity"
+    );
+    let annotations = metadata
+        .get("annotations")
+        .and_then(serde_json::Value::as_object)
+        .with_context(|| format!("{generation} Kubernetes object has no metadata annotations"))?;
+    let expected_owner = kubernetes_resource_owner(resource)?.to_string();
+    let expected_revision = revision.0.to_string();
+    ensure!(
+        annotations
+            .get("aos.andyl.com/object-revision")
+            .and_then(serde_json::Value::as_str)
+            == Some(expected_revision.as_str())
+            && annotations
+                .get("aos.andyl.com/resource-owner")
+                .and_then(serde_json::Value::as_str)
+                == Some(expected_owner.as_str()),
+        "{generation} Kubernetes object annotations differ from its resource revision or owner"
+    );
+    ensure!(
+        object.get("status").is_none(),
+        "{generation} Kubernetes desired object contains the server-managed status field"
+    );
+    const SERVER_METADATA_FIELDS: [&str; 8] = [
+        "creationTimestamp",
+        "deletionGracePeriodSeconds",
+        "deletionTimestamp",
+        "generation",
+        "managedFields",
+        "resourceVersion",
+        "selfLink",
+        "uid",
+    ];
+    ensure!(
+        SERVER_METADATA_FIELDS
+            .iter()
+            .all(|field| !metadata.contains_key(*field)),
+        "{generation} Kubernetes desired object contains server-managed metadata"
     );
     Ok(())
 }
@@ -742,10 +1071,11 @@ fn validate_cross_generation_physical_claims(
 
     let mut unique_claims = BTreeSet::new();
     let mut units = BTreeMap::new();
+    let mut consumer_endpoints = BTreeMap::new();
     let mut paths = Vec::new();
     for entry in desired.entries.iter().chain(&current.entries) {
         let (class, object, is_path) = physical_claim(&entry.qualification);
-        if !unique_claims.insert((entry.resource.clone(), class, object)) {
+        if !unique_claims.insert((entry.resource.clone(), class, object.clone())) {
             continue;
         }
         if is_path {
@@ -754,6 +1084,23 @@ fn validate_cross_generation_physical_claims(
             && owner != &entry.resource
         {
             bail!("desired and current native mappings alias one physical unit");
+        }
+        if let NativeResourceQualification::SystemdService {
+            consumer_observation: Some(consumer_observation),
+            ..
+        } = &entry.qualification
+        {
+            let endpoint: std::net::SocketAddr = consumer_observation
+                .endpoint
+                .parse()
+                .context("parsing validated native consumer observation endpoint")?;
+            if let Some(owner) = consumer_endpoints.insert(endpoint, &entry.resource)
+                && owner != &entry.resource
+            {
+                bail!(
+                    "desired and current native mappings alias one consumer observation endpoint"
+                );
+            }
         }
     }
     paths.sort_by(|left, right| {
@@ -804,6 +1151,14 @@ fn resolved_native_execution_inputs<'a>(
         NativeResourceQualification::NginxValidation { candidate, .. } => {
             Ok((Some(mapped_candidate(candidate, desired_state)?), None))
         }
+        NativeResourceQualification::KubernetesObject {
+            object_json,
+            resource_reference,
+            ..
+        } => Ok((
+            Some(mapped_candidate(object_json, desired_state)?),
+            Some(mapped_reference(resource_reference, desired_state)?),
+        )),
     }
 }
 
@@ -836,17 +1191,31 @@ fn path_claims_overlap(left: &str, right: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
-fn physical_claim(qualification: &NativeResourceQualification) -> (&'static str, &str, bool) {
+fn physical_claim(qualification: &NativeResourceQualification) -> (&'static str, String, bool) {
     match qualification {
         NativeResourceQualification::ManagedConfiguration { destination, .. } => {
-            ("managed-configuration", destination, true)
+            ("managed-configuration", destination.clone(), true)
         }
         NativeResourceQualification::SystemdService { unit, .. } => {
-            ("systemd-service", unit, false)
+            ("systemd-service", unit.clone(), false)
         }
         NativeResourceQualification::NginxValidation {
             validation_prefix, ..
-        } => ("nginx-validation", validation_prefix, true),
+        } => ("nginx-validation", validation_prefix.clone(), true),
+        NativeResourceQualification::KubernetesObject {
+            api_version,
+            object_kind,
+            namespace,
+            name,
+            ..
+        } => (
+            "kubernetes-object",
+            format!(
+                "{api_version}/{object_kind}/{}/{name}",
+                namespace.as_deref().unwrap_or("")
+            ),
+            false,
+        ),
     }
 }
 
@@ -927,6 +1296,7 @@ fn is_native_interface(interface: &str) -> bool {
         "aos.managed-configuration-effects"
             | "aos.systemd-service-effects"
             | aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME
+            | aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME
             | "aos.nginx-validation"
     )
 }
@@ -947,6 +1317,9 @@ fn qualification_supports_interface(
         ) | (
             NativeResourceQualification::NginxValidation { .. },
             "aos.nginx-validation"
+        ) | (
+            NativeResourceQualification::KubernetesObject { .. },
+            aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME
         )
     )
 }
@@ -960,6 +1333,9 @@ fn mapped_resource_reference<'a>(
             resource_reference, ..
         }
         | NativeResourceQualification::SystemdService {
+            resource_reference, ..
+        }
+        | NativeResourceQualification::KubernetesObject {
             resource_reference, ..
         } => resource_reference,
         NativeResourceQualification::NginxValidation { .. } => return Ok(None),
@@ -1307,9 +1683,9 @@ mod tests {
         ArtifactReference, BindingId, EnvironmentId, ExecutionStage, ExportDeclaration,
         HandlerDescriptor, ImplementationKind, InstanceId, InterfaceKey, InterfaceName, LocalKey,
         OperationFamily, OperationPhase, OutputDescriptor, PackageDocument, PackageImplementation,
-        ProviderImplementation, ProviderImplementationReference, ResourceId, ResourceLifetime,
-        ResourceReference, RevisionId, ScopePath, ValueExpression, ValuePhase, ValueSchema,
-        ValueVisibility,
+        PlanId, ProviderImplementation, ProviderImplementationReference, ResourceId,
+        ResourceLifetime, ResourceReference, RevisionId, ScopePath, TransactionId, ValueExpression,
+        ValuePhase, ValueSchema, ValueVisibility,
     };
 
     use super::*;
@@ -1446,18 +1822,42 @@ mod tests {
         let execution_features = vec![
             "abilities-v1".to_string(),
             "ability-effects-v1".to_string(),
-            "native-resource-map-v1".to_string(),
+            "native-resource-map-v2".to_string(),
+        ];
+        let platform_execution_features = vec![
+            "abilities-v1".to_string(),
+            "ability-effects-v1".to_string(),
+            "native-platform-policy-v1".to_string(),
+            "native-resource-map-v2".to_string(),
         ];
         validate_policy_feature_binding(&planning_features, &planning_only.policy_set)
             .expect("planning-only v1 remains readable with the historical feature set");
         assert!(
             validate_policy_feature_binding(&planning_features, &desired.policy_set).is_err(),
-            "v2 execution policy must require the resource-map feature gate"
+            "v3 execution policy must require the platform-policy feature gate"
         );
         assert!(
             validate_policy_feature_binding(&execution_features, &planning_only.policy_set)
                 .is_err(),
             "planning-only policy must not advertise execution compatibility"
+        );
+        validate_policy_feature_binding(&platform_execution_features, &desired.policy_set)
+            .expect("v3 execution policy matches the explicit platform feature gate");
+
+        let mut v2_with_platform = desired.clone();
+        v2_with_platform.policy_set.schema = AuthenticatedPolicySetDocument::SCHEMA_V2.to_string();
+        v2_with_platform.policy_set.platform_policy = Some(CurrentPlatformPolicyDocument {
+            schema: CurrentPlatformPolicyDocument::SCHEMA.to_string(),
+            required_features: Vec::new(),
+            policy_revision: policy.policy_revision,
+            bindings: Vec::new(),
+        });
+        assert!(
+            v2_with_platform
+                .policy_set
+                .validate(&v2_with_platform.desired)
+                .is_err(),
+            "policy-set/v2 must reject v3 platform authority fields"
         );
 
         let mut mismatched = desired.clone();
@@ -1470,6 +1870,60 @@ mod tests {
         let error = specialize_activation(&mismatched, Some(&current), &packages, &mut evaluator)
             .expect_err("map must bind the fixed-point desired state");
         assert!(error.to_string().contains("different fixed-point"));
+    }
+
+    #[test]
+    fn runtime_reconciliation_requires_the_exact_policy_fence_and_complete_map() {
+        let (inputs, resources) = test_reconciliation_inputs();
+        let mapping = &resources.entries[0];
+        let expected_policy_fence = RevisionId(
+            Sha256Digest::parse(&inputs.policy_sidecar.document_sha256)
+                .expect("test policy fence must parse"),
+        );
+        let mut reconciliation = TransitionReconciliation {
+            schema: aos_ability_plan::RUNTIME_OBSERVATIONS_SCHEMA.to_string(),
+            source_plan: PlanId(digest("source plan")),
+            transaction: TransactionId(local("repair-attempt")),
+            policy_fence: expected_policy_fence,
+            authority_epoch: 2,
+            sequence: 3,
+            observed_at_restart_millis: 5,
+            max_age_millis: 1_000,
+            authority_publication: digest("current authority"),
+            authority_document: AbilityValue::new(serde_json::json!({})).unwrap(),
+            observations: vec![aos_ability_plan::RuntimeResourceObservation {
+                resource: mapping.resource.clone(),
+                state: aos_ability_plan::RuntimeResourceState::Present {
+                    revision: mapping.revision,
+                    health: aos_ability_plan::RuntimeResourceHealth::Stopped,
+                },
+            }],
+        };
+
+        validate_runtime_reconciliation(&inputs, &resources, &reconciliation)
+            .expect("exact complete classification must be accepted");
+
+        reconciliation.observations.clear();
+        let error = validate_runtime_reconciliation(&inputs, &resources, &reconciliation)
+            .expect_err("an incomplete resource classification must fail closed");
+        assert!(error.to_string().contains("complete native resource map"));
+
+        reconciliation.observations = vec![aos_ability_plan::RuntimeResourceObservation {
+            resource: ResourceId {
+                provider: instance("foreign"),
+                key: local("configuration"),
+            },
+            state: aos_ability_plan::RuntimeResourceState::Absent,
+        }];
+        let error = validate_runtime_reconciliation(&inputs, &resources, &reconciliation)
+            .expect_err("a foreign resource classification must fail closed");
+        assert!(error.to_string().contains("foreign native resource"));
+
+        reconciliation.observations[0].resource = mapping.resource.clone();
+        reconciliation.policy_fence = RevisionId(digest("revoked policy"));
+        let error = validate_runtime_reconciliation(&inputs, &resources, &reconciliation)
+            .expect_err("another operator policy fence must fail closed");
+        assert!(error.to_string().contains("another operator policy fence"));
     }
 
     #[test]
@@ -1542,7 +1996,62 @@ mod tests {
             &desired_state,
             Some((&current, &current_state)),
         )
-        .expect("provenance-only change retains exact execution semantics");
+        .expect("fresh provenance retains the same logical provider and execution semantics");
+        assert_ne!(desired, current);
+        assert!(
+            crate::config_eval::native_dispatch::retained_maps_match_execution(&desired, &current)
+        );
+    }
+
+    #[test]
+    fn provider_replacement_cannot_adopt_a_retained_physical_path() {
+        let current_entry = test_native_mapping("/etc/example.conf");
+        let mut desired_entry = current_entry.clone();
+        desired_entry.resource.provider.key = local("replacement-provider");
+        desired_entry.owner_package = digest("replacement package");
+        desired_entry.binding = BindingId(local("replacement-binding"));
+        let current = NativeResourceMap::new(digest("current"), vec![current_entry])
+            .expect("current map is valid");
+        let desired = NativeResourceMap::new(digest("desired"), vec![desired_entry])
+            .expect("desired map is independently valid");
+        let current_state = test_native_desired_state(&current.entries[0], "candidate bytes");
+        let desired_state = test_native_desired_state(&desired.entries[0], "candidate bytes");
+
+        let error = validate_cross_generation_physical_claims(
+            &desired,
+            &desired_state,
+            Some((&current, &current_state)),
+        )
+        .expect_err("a different logical provider cannot adopt the retained physical path");
+        assert!(error.to_string().contains("overlap physical paths"));
+    }
+
+    #[test]
+    fn provider_replacement_can_use_a_distinct_physical_resource() {
+        let current_entry = test_native_mapping("/etc/example.conf");
+        let mut desired_entry = current_entry.clone();
+        desired_entry.resource.provider.key = local("replacement-provider");
+        desired_entry.owner_package = digest("replacement package");
+        desired_entry.binding = BindingId(local("replacement-binding"));
+        let NativeResourceQualification::ManagedConfiguration { destination, .. } =
+            &mut desired_entry.qualification
+        else {
+            panic!("test mapping is managed configuration");
+        };
+        *destination = "/etc/replacement-example.conf".to_string();
+        let current = NativeResourceMap::new(digest("current"), vec![current_entry])
+            .expect("current map is valid");
+        let desired = NativeResourceMap::new(digest("desired"), vec![desired_entry])
+            .expect("desired map is independently valid");
+        let current_state = test_native_desired_state(&current.entries[0], "candidate bytes");
+        let desired_state = test_native_desired_state(&desired.entries[0], "candidate bytes");
+
+        validate_cross_generation_physical_claims(
+            &desired,
+            &desired_state,
+            Some((&current, &current_state)),
+        )
+        .expect("a different logical provider can use a distinct physical resource");
     }
 
     #[test]
@@ -1885,6 +2394,44 @@ mod tests {
         }
     }
 
+    fn test_reconciliation_inputs() -> (VerifiedAbilityActivationInputs, NativeResourceMap) {
+        let (fixture, _) = aos_ability_plan::test_support::verified_planning_transition_plan();
+        let mut environment = fixture.checked_binding().environment().clone();
+        environment.providers.clear();
+        environment.resources.clear();
+        environment.controllers.clear();
+        environment.guarantees.clear();
+        let environment_digest = environment.content_digest().unwrap();
+
+        let mut seed = fixture.outcome().seed.clone();
+        seed.environment = environment_digest;
+        seed.instances.clear();
+        seed.contributions.clear();
+        seed.child_requests.clear();
+        seed.resources.clear();
+        seed.outputs.clear();
+        seed.controllers.clear();
+
+        let mut policy = fixture.outcome().policies[0].clone();
+        policy.desired_state = seed.content_digest().unwrap();
+        policy.environment = environment_digest;
+        policy.policy_revision = environment.policy_revision;
+        policy.candidates.clear();
+        policy.explicit_bindings.clear();
+        policy.existing_pins.clear();
+        policy.operator_orders.clear();
+        policy.enabled_providers.clear();
+        policy.obligations.clear();
+
+        let package = crate::ability_package::seal_test_package(test_package("1.0.0")).unwrap();
+        let inputs = test_inputs(&seed, &environment, &policy, &package);
+        let mapping = test_native_mapping("/etc/example.conf");
+        let resources = NativeResourceMap::new(seed.content_digest().unwrap(), vec![mapping])
+            .expect("test native resource map must be valid");
+
+        (inputs, resources)
+    }
+
     fn test_locator(field: &str) -> NativeOutputLocator {
         NativeOutputLocator {
             aggregate: AggregateId {
@@ -1997,6 +2544,7 @@ mod tests {
                 native_resource_map: Some(
                     NativeResourceMap::new(seed.content_digest().unwrap(), Vec::new()).unwrap(),
                 ),
+                platform_policy: None,
             },
             policy_sidecar: PinnedAbilitySidecar {
                 store_path: "/nix/store/00000000000000000000000000000000-policy".to_string(),

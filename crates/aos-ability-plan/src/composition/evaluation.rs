@@ -10,7 +10,7 @@ use aos_ability_model::{
     InstanceId, InterfaceKey, LocalKey, PackageDocument, ProviderImplementation,
     ProviderImplementationReference, ResourceRevision, ValuePhase, compare_resource_ids,
 };
-use aos_ability_validate::ValidationContext;
+use aos_ability_validate::{ValidationContext, validate_value};
 use aos_contract::Sha256Digest;
 use serde::Serialize;
 
@@ -161,6 +161,12 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
             .iter()
             .filter(|contribution| contribution.aggregate.provider == provider)
             .collect();
+        let configuration = desired_state
+            .instances
+            .iter()
+            .find(|desired| desired.enabled && desired.instance == provider)
+            .and_then(|desired| desired.configuration.as_ref());
+        validate_operator_configuration(context, &provider, group.interface, configuration)?;
         if desired_state.outputs.iter().any(|output| {
             !output.value.is_within_limits(
                 ABILITY_LIMITS_V1.max_structural_depth,
@@ -177,6 +183,7 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
             interface: group.interface,
             implementation: reference,
             package: provider_package,
+            configuration,
             requests: incoming_requests,
             bindings,
             contributions,
@@ -256,6 +263,8 @@ struct BorrowedCompositionContext<'a> {
     interface: &'a InterfaceKey,
     implementation: &'a ProviderImplementationReference,
     package: Sha256Digest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configuration: Option<&'a AbilityValue>,
     requests: Vec<&'a BindingRequest>,
     bindings: &'a [Binding],
     contributions: Vec<&'a Contribution>,
@@ -754,22 +763,72 @@ pub(super) fn validate_enabled_providers(
             }
             ImplementationKind::TerminalHandler { .. } => false,
         };
-        let methods_valid = context
-            .interface(&selection.interface)
-            .is_some_and(|interface| {
-                selection
-                    .provider_grant
-                    .methods
-                    .iter()
-                    .all(|method| interface.interface.methods.contains_key(method))
-            });
+        let selected_interface = context.interface(&selection.interface);
+        let methods_valid = selected_interface.is_some_and(|interface| {
+            selection
+                .provider_grant
+                .methods
+                .iter()
+                .all(|method| interface.interface.methods.contains_key(method))
+        });
         if !exported || !valid_entry || !methods_valid {
             return Err(CompositionError::MissingImplementation {
                 provider: selection.instance.clone(),
             });
         }
+
+        validate_operator_configuration(
+            context,
+            &selection.instance,
+            &selection.interface,
+            desired.configuration.as_ref(),
+        )?;
     }
     Ok(())
+}
+
+fn validate_operator_configuration(
+    context: &ValidationContext,
+    provider: &InstanceId,
+    interface: &InterfaceKey,
+    configuration: Option<&AbilityValue>,
+) -> Result<(), CompositionError> {
+    let Some(interface) = context.interface(interface) else {
+        return Err(CompositionError::MissingImplementation {
+            provider: provider.clone(),
+        });
+    };
+
+    match (&interface.interface.configuration, configuration) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(CompositionError::InvalidFragment {
+            provider: provider.clone(),
+            reason: "operator configuration is undeclared by the selected interface".to_string(),
+        }),
+        (Some(_), None) => Err(CompositionError::InvalidFragment {
+            provider: provider.clone(),
+            reason: "selected interface requires operator configuration".to_string(),
+        }),
+        (Some(schema), Some(configuration)) => {
+            configuration
+                .encoded_size()
+                .map_err(|error| CompositionError::InvalidFragment {
+                    provider: provider.clone(),
+                    reason: format!("operator configuration exceeds value limits: {error}"),
+                })?;
+            let expression = aos_ability_model::ValueExpression::Literal {
+                value: configuration.clone(),
+            };
+            validate_value(schema, &expression).map_err(|errors| {
+                CompositionError::InvalidFragment {
+                    provider: provider.clone(),
+                    reason: format!(
+                        "operator configuration violates its interface schema: {errors}"
+                    ),
+                }
+            })
+        }
+    }
 }
 
 fn provider_artifacts(

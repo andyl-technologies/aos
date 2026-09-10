@@ -8,6 +8,7 @@ description = "External final-byte assembly and verification for AOS release ima
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+aos-ability-model = { workspace = true }
 aos-release = { workspace = true }
 base64 = { workspace = true }
 serde = { workspace = true }

@@ -236,6 +236,18 @@ pub enum CredentialAction {
     Deliver,
 }
 
+/// Selects one Kubernetes object operation without collapsing its semantics.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KubernetesObjectAction {
+    /// Applies the exact authenticated object document.
+    Apply,
+    /// Observes the exact object identity without mutating it.
+    Observe,
+    /// Deletes the exact object identity under an expected revision.
+    Delete,
+}
+
 /// Identifies the initial semantic operation families.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
@@ -248,6 +260,11 @@ pub enum OperationFamily {
     Credential {
         /// Selects acquisition or workload delivery.
         action: CredentialAction,
+    },
+    /// Applies, observes, or deletes one exact Kubernetes object.
+    KubernetesObject {
+        /// Selects apply, observation, or deletion semantics.
+        action: KubernetesObjectAction,
     },
     /// Validates a candidate in its intended identity and resource views.
     ValidateCandidate,

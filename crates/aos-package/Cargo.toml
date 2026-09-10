@@ -37,6 +37,7 @@ base64 = { workspace = true }
 humantime = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
+rnix = { workspace = true }
 clap = { workspace = true }
 semver = { workspace = true }
 zstd = { workspace = true }
@@ -52,7 +53,7 @@ ssh-key = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 rayon = { workspace = true }
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["event", "net", "process"] }
 
 [dev-dependencies]
 aos-ability-plan = { workspace = true, features = ["test-support"] }

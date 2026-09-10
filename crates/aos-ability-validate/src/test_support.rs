@@ -650,6 +650,7 @@ fn interface_document() -> InterfaceDocument {
             name: InterfaceName::new("test.service").expect("valid test interface name"),
             abi: NonZeroU32::new(1).expect("positive test ABI"),
             request: ValueSchema::Boolean,
+            configuration: None,
             outputs: BTreeMap::new(),
             methods: BTreeMap::from([(
                 key("observe"),

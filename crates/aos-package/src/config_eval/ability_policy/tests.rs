@@ -14,7 +14,8 @@ use tempfile::TempDir;
 use super::storage::publish_authority_file;
 use super::*;
 use crate::config_eval::native_resource_map::{
-    NativeOutputLocator, NativeResourceMap, NativeResourceMapping, NativeResourceQualification,
+    NativeHttpConsumerObservation, NativeOutputLocator, NativeResourceMap, NativeResourceMapping,
+    NativeResourceQualification,
 };
 
 #[test]
@@ -51,6 +52,7 @@ struct AuthorityFixture {
     assignment: ProviderAssignment,
     resource: ResourceId,
     revision: RevisionId,
+    transaction: TransactionId,
     owner: u32,
 }
 
@@ -117,6 +119,9 @@ impl AuthorityFixture {
             assignment,
             resource,
             revision,
+            transaction: TransactionId(
+                LocalKey::new("authority-fixture").expect("valid fixture transaction"),
+            ),
             owner: rustix::process::geteuid().as_raw(),
         }
     }
@@ -145,6 +150,11 @@ impl AuthorityFixture {
     ) -> CurrentAuthorityPublication<'_> {
         CurrentAuthorityPublication {
             policy_fence,
+            transaction: matches!(
+                state,
+                CurrentResourceState::Stopped { .. } | CurrentResourceState::Divergent { .. }
+            )
+            .then_some(&self.transaction),
             resolution_policy: &self.policy,
             platform_policy: Some(&self.platform_policy),
             transition_authority: None,
@@ -175,6 +185,7 @@ impl AuthorityFixture {
             TestClock(document.observed_at_restart_millis),
             CurrentAuthorityCommitment {
                 plan: document.plan,
+                transaction: document.transaction.clone(),
                 authority_epoch: document.authority_epoch,
                 policy_fence: document.policy_fence,
                 policy_revision: document.policy_revision,
@@ -185,6 +196,32 @@ impl AuthorityFixture {
             },
             BTreeSet::new(),
         )
+    }
+
+    fn publishing_policy(&self, transaction_linked: bool) -> PublishingNativeAdmissionPolicy {
+        PublishingNativeAdmissionPolicy {
+            publisher: CurrentAbilityAuthorityPublisher::for_test(
+                self.path.clone(),
+                self.trust_anchor.clone(),
+                self.owner,
+            ),
+            source: RootOwnedCurrentAuthoritySource::for_test(
+                self.path.clone(),
+                self.trust_anchor.clone(),
+                self.owner,
+            ),
+            clock: SystemMonotonicClock::new(),
+            transaction: self.transaction.clone(),
+            policy_fence: policy_fence(),
+            resolution_policy: self.policy.clone(),
+            platform_policy: Some(self.platform_policy.clone()),
+            transition_authority: None,
+            supported_features: BTreeSet::new(),
+            transaction_linked,
+            sequence: 0,
+            max_age_millis: 100,
+            admission: None,
+        }
     }
 
     fn authorize_resources(
@@ -522,6 +559,7 @@ fn expired_current_observations_fail_closed() {
         TestClock(1_101),
         CurrentAuthorityCommitment {
             plan: document.plan,
+            transaction: document.transaction.clone(),
             authority_epoch: document.authority_epoch,
             policy_fence: document.policy_fence,
             policy_revision: document.policy_revision,
@@ -648,6 +686,7 @@ fn publisher_rejects_cross_policy_binding_shadowing() {
     )
     .publish(CurrentAuthorityPublication {
         policy_fence: policy_fence(),
+        transaction: None,
         resolution_policy: &fixture.policy,
         platform_policy: Some(&fixture.platform_policy),
         transition_authority: Some(&transition),
@@ -672,11 +711,102 @@ fn publisher_rejects_cross_policy_binding_shadowing() {
 fn first_activation_accepts_only_explicit_authoritative_absence() {
     let fixture = AuthorityFixture::new();
     let document = fixture.publish(1, 1_000, CurrentResourceState::Absent);
+    assert_eq!(document.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA);
+    assert_eq!(document.transaction, None);
     let mut policy = fixture.admission_policy(&document);
 
     fixture
         .authorize_resources(&mut policy, ResourceRevisionObservation::Absent)
         .expect("matching authoritative absence must be admitted");
+}
+
+#[test]
+fn repair_transaction_remains_linked_after_health_converges() {
+    let fixture = AuthorityFixture::new();
+    let mut policy = fixture.publishing_policy(false);
+    let initial = policy
+        .publish_authority(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            vec![CurrentResourceObservation {
+                resource: fixture.resource.clone(),
+                state: CurrentResourceState::Present {
+                    revision: fixture.revision,
+                },
+            }],
+        )
+        .expect("ordinary effect authority publication");
+    let repair = policy
+        .publish_authority(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            vec![CurrentResourceObservation {
+                resource: fixture.resource.clone(),
+                state: CurrentResourceState::Divergent {
+                    revision: fixture.revision,
+                },
+            }],
+        )
+        .expect("partial-effect authority publication");
+    let operation = &fixture.plan.operations()[0];
+    let binding = fixture
+        .plan
+        .binding_plan()
+        .binding(&operation.binding)
+        .expect("fixture binding");
+    let evidence = ResourceAdmissionEvidence::new_with_revision_observation(
+        fixture.resource.clone(),
+        Some(fixture.assignment.incarnation.clone()),
+        ResourceRevisionObservation::Unknown,
+        AbilityValue::new(serde_json::json!({"probe": "partial-effect"}))
+            .expect("bounded observation"),
+    );
+    policy
+        .authorize_resources(
+            &fixture.plan,
+            binding,
+            operation,
+            Some(&fixture.assignment),
+            &[evidence],
+        )
+        .expect("retained reconciliation admits its exact partial-effect evidence");
+    let converged = policy
+        .publish_authority(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            vec![CurrentResourceObservation {
+                resource: fixture.resource.clone(),
+                state: CurrentResourceState::Present {
+                    revision: fixture.revision,
+                },
+            }],
+        )
+        .expect("converged repair authority publication");
+
+    assert_eq!(initial.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA_V2);
+    assert_eq!(initial.transaction.as_ref(), Some(&fixture.transaction));
+    assert_eq!(repair.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA_V2);
+    assert_eq!(converged.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA_V2);
+    assert_eq!(converged.transaction.as_ref(), Some(&fixture.transaction));
+}
+
+#[test]
+fn absent_reconciliation_publication_is_transaction_linked() {
+    let fixture = AuthorityFixture::new();
+    let mut policy = fixture.publishing_policy(true);
+    let authority = policy
+        .publish_authority(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            vec![CurrentResourceObservation {
+                resource: fixture.resource.clone(),
+                state: CurrentResourceState::Absent,
+            }],
+        )
+        .expect("absent repair authority publication");
+
+    assert_eq!(authority.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA_V2);
+    assert_eq!(authority.transaction.as_ref(), Some(&fixture.transaction));
 }
 
 #[test]
@@ -690,7 +820,48 @@ fn unknown_resource_observation_fails_closed() {
         )
         .expect_err("unknown state must not be treated as absence");
 
-    assert!(error.to_string().contains("unknown observation"));
+    assert!(error.to_string().contains("authoritative current state"));
+}
+
+#[test]
+fn repair_admission_requires_matching_runtime_health_evidence() {
+    let fixture = AuthorityFixture::new();
+    let stopped = fixture.publish(
+        1,
+        1_000,
+        CurrentResourceState::Stopped {
+            revision: fixture.revision,
+        },
+    );
+    assert_eq!(stopped.schema, CURRENT_ABILITY_AUTHORITY_SCHEMA_V2);
+    assert_eq!(stopped.transaction.as_ref(), Some(&fixture.transaction));
+    fixture
+        .authorize_resources(
+            &mut fixture.admission_policy(&stopped),
+            ResourceRevisionObservation::Present(fixture.revision),
+        )
+        .expect("loaded exact revision evidence may accompany stopped health");
+
+    let divergent = fixture.publish(
+        2,
+        1_001,
+        CurrentResourceState::Divergent {
+            revision: fixture.revision,
+        },
+    );
+    fixture
+        .authorize_resources(
+            &mut fixture.admission_policy(&divergent),
+            ResourceRevisionObservation::Unknown,
+        )
+        .expect("trusted catalog divergence may accompany divergent authority");
+    let error = fixture
+        .authorize_resources(
+            &mut fixture.admission_policy(&divergent),
+            ResourceRevisionObservation::Absent,
+        )
+        .expect_err("absence must not satisfy divergent current authority");
+    assert!(error.to_string().contains("authoritative current state"));
 }
 
 #[test]
@@ -906,6 +1077,21 @@ fn native_resource_map(fixture: &AuthorityFixture) -> NativeResourceMap {
             qualification: NativeResourceQualification::SystemdService {
                 unit: "fixture.service".to_string(),
                 resource_reference: locator,
+                consumer_observation: Some(NativeHttpConsumerObservation {
+                    schema: NativeHttpConsumerObservation::SCHEMA.to_string(),
+                    endpoint: "127.0.0.1:18081".to_string(),
+                    authority: "fixture.invalid".to_string(),
+                    path: "/__aos/consumer".to_string(),
+                    expected_instance: binding.request.consumer.clone(),
+                    expected_controller_revision: fixture.revision,
+                    content_resource: ResourceId {
+                        provider: binding.request.consumer.clone(),
+                        key: LocalKey::new("content").expect("valid content key"),
+                    },
+                    expected_content_revision: RevisionId(Sha256Digest::of_bytes(
+                        "fixture content revision",
+                    )),
+                }),
             },
         }],
     )

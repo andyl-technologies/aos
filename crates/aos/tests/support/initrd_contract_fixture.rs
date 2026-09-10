@@ -5,8 +5,9 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_image_finalizer::assembly::UNSIGNED_IMAGE_ASSEMBLY_V3;
+use aos_image_finalizer::assembly::UNSIGNED_IMAGE_ASSEMBLY_V4;
 use aos_image_finalizer::capture::capture_unsigned_assembly;
+use aos_image_finalizer::finalize::verify_static_ability_contract_attachments;
 use aos_image_finalizer::initrd_contract::InitrdStageContractV1;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
@@ -60,8 +61,8 @@ pub(super) fn verify(arguments: &[String]) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error when the assembly is malformed, an input changes during
-/// capture, the image is not schema v3, or the embedded initrd contract and
-/// exact archive bytes disagree.
+/// capture, the image is not schema v4, the embedded initrd contract and exact
+/// archive bytes disagree, or either stage-specific ability contract is absent.
 pub(super) fn verify_assembly(arguments: &[String]) -> Result<()> {
     if arguments.len() != 2 {
         bail!("usage: aos-release-fleet-fixture image-assembly-contract ROOT RELEASE_ID");
@@ -70,8 +71,37 @@ pub(super) fn verify_assembly(arguments: &[String]) -> Result<()> {
         Ok(format!("sha256:{}", "a".repeat(64)))
     })?;
     ensure!(
-        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3 && assembly.initrd_contract.is_some(),
-        "producer assembly lacks its version-3 initrd contract"
+        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V4 && assembly.initrd_contract.is_some(),
+        "producer assembly lacks its version-4 initrd and ability contracts"
     );
     Ok(())
+}
+
+/// Verifies real extracted image trees through the production attachment check.
+///
+/// # Errors
+///
+/// Returns an error when the assembly is invalid or either extracted tree does
+/// not contain the exact captured stage contract at its immutable path.
+pub(super) fn verify_assembly_attachments(arguments: &[String]) -> Result<()> {
+    if arguments.len() != 4 {
+        bail!(
+            "usage: aos-release-fleet-fixture image-assembly-attachments ROOT RELEASE_ID INITRD_TREE ROOT_TREE"
+        );
+    }
+    let assembly = capture_unsigned_assembly(Path::new(&arguments[0]), &arguments[1], |_| {
+        Ok(format!("sha256:{}", "a".repeat(64)))
+    })?;
+    ensure!(
+        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V4,
+        "producer assembly lacks version-4 ability contracts"
+    );
+    let captured_inputs = tempfile::tempdir()?;
+    verify_static_ability_contract_attachments(
+        Path::new(&arguments[0]),
+        &assembly,
+        captured_inputs.path(),
+        Path::new(&arguments[2]),
+        Path::new(&arguments[3]),
+    )
 }

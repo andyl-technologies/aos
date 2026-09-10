@@ -18,10 +18,10 @@ use aos_ability_model::document::{
 };
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
-    ContributionPermission, DesiredStateDocument, EnvironmentDocument, EnvironmentId,
-    ExecutionStage, ImplementationKind, InstanceId, InterfaceDescriptor, InterfaceDocument,
-    InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor, OperationFamily,
-    OutcomeSemantics, OutputDescriptor, PackageDocument, ProviderImplementation,
+    ContributionPermission, CredentialAction, DesiredStateDocument, EnvironmentDocument,
+    EnvironmentId, ExecutionStage, ImplementationKind, InstanceId, InterfaceDescriptor,
+    InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor,
+    OperationFamily, OutcomeSemantics, OutputDescriptor, PackageDocument, ProviderImplementation,
     ProviderImplementationReference, RequiredFeature, ResourceId, ResourceLifetime,
     ResourcePermission, RevisionId, ScopePath, ServiceAction, StringConstraint, StringSyntax,
     ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
@@ -39,12 +39,14 @@ use aos_package::config_eval::ability::{AbilityEvaluationLimits, RestrictedAbili
 use aos_package::config_eval::ability_activation::{
     ActivationDesiredInputDocument, AuthenticatedPolicySetDocument,
 };
+use aos_package::config_eval::ability_policy::CurrentPlatformPolicyDocument;
 use aos_package::config_eval::ability_policy_authority::{
     OperatorPolicyAuthorityRecord, OperatorPolicyAuthorityStore,
 };
 use aos_package::config_eval::materialize::PinnedAbilitySidecar;
 use aos_package::config_eval::native_resource_map::{
-    NativeOutputLocator, NativeResourceMap, NativeResourceMapping, NativeResourceQualification,
+    NativeHttpConsumerObservation, NativeOutputLocator, NativeResourceMap, NativeResourceMapping,
+    NativeResourceQualification,
 };
 use aos_package::config_eval::runtime::{RuntimeResolution, resolve_runtime};
 use aos_package::platform::native_platform;
@@ -83,64 +85,122 @@ struct ComposedReference {
     bindings: Vec<aos_ability_model::Binding>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReferenceLifecycle {
+    Full,
+    RemovePrimaryContributor,
+    RemoveMainContributors,
+    DisableMain,
+}
+
+impl ReferenceLifecycle {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "full" => Ok(Self::Full),
+            "remove-primary-contributor" => Ok(Self::RemovePrimaryContributor),
+            "remove-main-contributors" => Ok(Self::RemoveMainContributors),
+            "disable-main" => Ok(Self::DisableMain),
+            _ => bail!("unknown reference lifecycle scenario {value:?}"),
+        }
+    }
+
+    const fn includes_primary(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    const fn includes_main_contributors(self) -> bool {
+        matches!(self, Self::Full | Self::RemovePrimaryContributor)
+    }
+
+    const fn enables_main(self) -> bool {
+        !matches!(self, Self::DisableMain)
+    }
+}
+
 /// Generates one immutable activation-input descriptor for the reference VM.
 ///
-/// Arguments are `OUTPUT RESPONSE --operator-authority-output AUTHORITY_DIR`,
-/// where `RESPONSE` becomes the response body for `alpha.example`. The
-/// generated descriptor is written to `OUTPUT/activation.json` and names two
-/// fixed-output sidecars added to the local Nix store. The separate authority
-/// directory receives the explicit operator anchor that the VM provisions.
+/// Arguments are `OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE
+/// --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO]`, where the
+/// responses become the bodies for `alpha.example` and `gamma.example`.
+/// `SCENARIO` selects a bounded removal or disable transition for lifecycle
+/// qualification. The generated descriptor is written to
+/// `OUTPUT/activation.json` and names two fixed-output sidecars added to the
+/// local Nix store. The separate authority directory receives the explicit
+/// operator anchor that the VM provisions.
 ///
 /// # Errors
 ///
 /// Returns an error when registry package authentication, restricted Nix
 /// evaluation, planning, native qualification, or sidecar retention fails.
 pub(super) fn generate(arguments: &[String]) -> Result<()> {
-    if arguments.len() != 4 || arguments[2] != "--operator-authority-output" {
+    if !matches!(arguments.len(), 5 | 7)
+        || arguments[3] != "--operator-authority-output"
+        || (arguments.len() == 7 && arguments[5] != "--lifecycle")
+    {
         bail!(
-            "usage: aos-release-fleet-fixture ability-activation OUTPUT RESPONSE --operator-authority-output AUTHORITY_DIR"
+            "usage: aos-release-fleet-fixture ability-activation OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO]"
         );
     }
     let output = Path::new(&arguments[0]);
-    let response = &arguments[1];
-    let authority_output = Path::new(&arguments[3]);
+    let primary_response = &arguments[1];
+    let secondary_response = &arguments[2];
+    let authority_output = Path::new(&arguments[4]);
+    let lifecycle = arguments
+        .get(6)
+        .map(String::as_str)
+        .map(ReferenceLifecycle::parse)
+        .transpose()?
+        .unwrap_or(ReferenceLifecycle::Full);
     ensure!(
         authority_output != output,
         "operator authority output must be separate from the activation descriptor output"
     );
     ensure!(
-        !response.is_empty()
-            && response.len() <= 256
-            && response
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"-._:/ ".contains(&byte)),
-        "reference response is outside the fixture's safe value subset"
+        [primary_response, secondary_response]
+            .into_iter()
+            .all(|response| {
+                !response.is_empty()
+                    && response.len() <= 256
+                    && response
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"-._:/ ".contains(&byte))
+            }),
+        "a reference response is outside the fixture's safe value subset"
     );
 
     fs::create_dir_all(output)
         .with_context(|| format!("creating ability fixture output {}", output.display()))?;
     let (_runtime, packages) = load_verified_packages()?;
     let fixture = ReferenceFixture::new(&packages)?;
-    let composed = fixture.compose(response)?;
+    let composed = fixture.compose(primary_response, secondary_response, lifecycle)?;
 
     let native_resource_map = reference_native_resource_map(&composed)?;
+    let platform_policy = reference_platform_policy(&composed);
     let desired_document = ActivationDesiredInputDocument {
         schema: ActivationDesiredInputDocument::SCHEMA.to_string(),
         seed: composed.seed,
         environment: composed.environment,
     };
-    let policy_document = AuthenticatedPolicySetDocument::new(
+    let mut policy_document = AuthenticatedPolicySetDocument::new(
         &desired_document,
         composed.policies,
         None,
         native_resource_map,
     )?;
+    policy_document.schema = AuthenticatedPolicySetDocument::SCHEMA_V3.to_string();
+    policy_document.platform_policy = Some(platform_policy);
+    policy_document.validate(&desired_document)?;
     let desired_sidecar = retain_sidecar(output, "desired", "desired.json", &desired_document)?;
     let policy_sidecar = retain_sidecar(output, "policy", "policy.json", &policy_document)?;
     write_operator_authority(authority_output, &policy_sidecar)?;
     let activation = serde_json::json!({
         "schema": "aos.ability.activation-input/v1",
-        "required_features": ["abilities-v1", "ability-effects-v1", "native-resource-map-v1"],
+        "required_features": [
+            "abilities-v1",
+            "ability-effects-v1",
+            "native-platform-policy-v1",
+            "native-resource-map-v2"
+        ],
         "desired_state": desired_sidecar,
         "authenticated_policy_set": policy_sidecar,
         "packages": [],
@@ -197,7 +257,11 @@ fn write_operator_authority(output: &Path, policy_set: &PinnedAbilitySidecar) ->
 fn load_verified_packages() -> Result<(RuntimeResolution, VerifiedAbilityPackageSet)> {
     let config = ApmConfig::load(ProfileScope::System)?;
     let enabled = config.enabled_registries();
-    let registries = RegistrySet::load(&config.cache_path(), &enabled, &native_platform())?;
+    let registries = RegistrySet::load_for_config_evaluation(
+        &config.cache_path(),
+        &enabled,
+        &native_platform(),
+    )?;
     let names = PACKAGE_NAMES
         .iter()
         .map(ToString::to_string)
@@ -307,23 +371,24 @@ impl ReferenceFixture {
                 });
             }
         }
-        let nginx = instance(&environment_id, "nginx-main")?;
-        providers.push(ProviderInventory {
-            provider: nginx,
-            interface: interfaces
-                .get("aos.nginx-validation")
-                .context("missing nginx validation interface")?
-                .clone(),
-            implementation: terminal_implementations
-                .get("aos.nginx-validation")
-                .context("missing nginx validation implementation")?
-                .clone(),
-            state: ProviderState::Available,
-            incarnation: Some(aos_ability_model::IncarnationId::new(
-                "reference-nginx-terminal",
-            )?),
-            guarantees: Vec::new(),
-        });
+        for name in ["nginx-main", "nginx-secondary"] {
+            providers.push(ProviderInventory {
+                provider: instance(&environment_id, name)?,
+                interface: interfaces
+                    .get("aos.nginx-validation")
+                    .context("missing nginx validation interface")?
+                    .clone(),
+                implementation: terminal_implementations
+                    .get("aos.nginx-validation")
+                    .context("missing nginx validation implementation")?
+                    .clone(),
+                state: ProviderState::Available,
+                incarnation: Some(aos_ability_model::IncarnationId::new(&format!(
+                    "reference-{name}-terminal"
+                ))?),
+                guarantees: Vec::new(),
+            });
+        }
         providers.sort_by(|left, right| left.provider.cmp(&right.provider));
 
         let evaluator = RestrictedAbilityEvaluator::new(
@@ -365,8 +430,13 @@ impl ReferenceFixture {
         })
     }
 
-    fn compose(mut self, response: &str) -> Result<ComposedReference> {
-        let seed = self.seed(response)?;
+    fn compose(
+        mut self,
+        primary_response: &str,
+        secondary_response: &str,
+        lifecycle: ReferenceLifecycle,
+    ) -> Result<ComposedReference> {
+        let seed = self.seed(primary_response, secondary_response, lifecycle)?;
         let mut policies = Vec::new();
         loop {
             match RecursiveComposer::new(&self.context).compose(
@@ -393,20 +463,50 @@ impl ReferenceFixture {
         }
     }
 
-    fn seed(&self, response: &str) -> Result<DesiredStateDocument> {
+    fn seed(
+        &self,
+        primary_response: &str,
+        secondary_response: &str,
+        lifecycle: ReferenceLifecycle,
+    ) -> Result<DesiredStateDocument> {
         let environment = self.environment.content_digest()?;
-        let nginx = instance(&self.environment.environment, "nginx-main")?;
-        let mut instances = vec![DesiredInstance {
-            instance: nginx.clone(),
-            package: self.nginx_package,
-            enabled: true,
-        }];
+        let nginx_main = instance(&self.environment.environment, "nginx-main")?;
+        let nginx_secondary = instance(&self.environment.environment, "nginx-secondary")?;
+        let mut instances = vec![
+            DesiredInstance {
+                instance: nginx_main.clone(),
+                package: self.nginx_package,
+                enabled: lifecycle.enables_main(),
+                configuration: Some(AbilityValue::new(serde_json::json!({
+                    "address": "127.0.0.1",
+                    "port": 18081,
+                }))?),
+            },
+            DesiredInstance {
+                instance: nginx_secondary.clone(),
+                package: self.nginx_package,
+                enabled: true,
+                configuration: Some(AbilityValue::new(serde_json::json!({
+                    "address": "127.0.0.1",
+                    "port": 18082,
+                }))?),
+            },
+        ];
         let mut child_requests = Vec::new();
         let mut contributions = Vec::new();
-        for (application, host, content) in [
-            ("app-a", "alpha.example", response),
-            ("app-b", "beta.example", "beta-v1"),
-        ] {
+        let mut applications = vec![(
+            "app-c",
+            &nginx_secondary,
+            "gamma.example",
+            secondary_response,
+        )];
+        if lifecycle.includes_main_contributors() {
+            applications.push(("app-b", &nginx_main, "beta.example", "beta-v1"));
+        }
+        if lifecycle.includes_primary() {
+            applications.push(("app-a", &nginx_main, "alpha.example", primary_response));
+        }
+        for (application, provider, host, content) in applications {
             let application = instance(&self.environment.environment, application)?;
             let request = aos_ability_model::RequestId {
                 consumer: application.clone(),
@@ -417,6 +517,7 @@ impl ReferenceFixture {
                 instance: application.clone(),
                 package: self.consumer_package,
                 enabled: true,
+                configuration: None,
             });
             child_requests.push(BindingRequest {
                 id: request.clone(),
@@ -428,7 +529,7 @@ impl ReferenceFixture {
             contributions.push(Contribution {
                 request: request.clone(),
                 aggregate: AggregateId {
-                    provider: nginx.clone(),
+                    provider: provider.clone(),
                     group: key("nginx")?,
                 },
                 slot: application.key.clone(),
@@ -471,27 +572,35 @@ impl ReferenceFixture {
             })
             .collect::<Vec<_>>();
         explicit_bindings.sort_by(|left, right| left.request.cmp(&right.request));
-        let nginx = instance(&self.environment.environment, "nginx-main")?;
-        let enabled_providers = vec![EnabledProviderSelection {
-            instance: nginx.clone(),
-            interface: self.interface("aos.nginx")?,
-            implementation: self.implementation("aos.nginx")?,
-            provider_grant: aos_ability_model::AuthorityGrant {
-                principal: nginx.clone(),
-                methods: Vec::new(),
-                contributions: Vec::new(),
-                resources: vec![ResourcePermission {
-                    resource: ResourceId {
-                        provider: nginx,
-                        key: key("virtual-hosts")?,
+        let mut enabled_providers = desired
+            .instances
+            .iter()
+            .filter(|desired| desired.enabled && desired.package == self.nginx_package)
+            .map(|desired| {
+                let nginx = desired.instance.clone();
+                Ok(EnabledProviderSelection {
+                    instance: nginx.clone(),
+                    interface: self.interface("aos.nginx")?,
+                    implementation: self.implementation("aos.nginx")?,
+                    provider_grant: aos_ability_model::AuthorityGrant {
+                        principal: nginx.clone(),
+                        methods: Vec::new(),
+                        contributions: Vec::new(),
+                        resources: vec![ResourcePermission {
+                            resource: ResourceId {
+                                provider: nginx,
+                                key: key("virtual-hosts")?,
+                            },
+                            access: AccessMode::ExclusiveWrite,
+                            operations: Vec::new(),
+                        }],
                     },
-                    access: AccessMode::ExclusiveWrite,
-                    operations: Vec::new(),
-                }],
-            },
-            policy_revision: self.policy_revision,
-            lifetime: ResourceLifetime::Instance,
-        }];
+                    policy_revision: self.policy_revision,
+                    lifetime: ResourceLifetime::Instance,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        enabled_providers.sort_by(|left, right| left.instance.cmp(&right.instance));
         Ok(ResolutionPolicyDocument {
             schema: ResolutionPolicyDocument::SCHEMA.to_string(),
             required_features: Vec::new(),
@@ -527,10 +636,17 @@ impl ReferenceFixture {
             } else {
                 request.id.consumer.clone()
             };
+            let exact_service_key = (request.id.key.as_str() == "service-terminal")
+                .then(|| format!("{}-service", request.id.consumer.key));
             let resources = desired
                 .resources
                 .iter()
-                .filter(|revision| revision.resource.provider == provider)
+                .filter(|revision| {
+                    revision.resource.provider == provider
+                        && exact_service_key
+                            .as_ref()
+                            .is_none_or(|expected| revision.resource.key.as_str() == expected)
+                })
                 .map(|revision| ResourcePermission {
                     resource: revision.resource.clone(),
                     access: AccessMode::ExclusiveWrite,
@@ -548,7 +664,18 @@ impl ReferenceFixture {
                 Vec::new(),
             )
         } else if interface == self.interface("aos.nginx")? {
-            let provider = instance(&self.environment.environment, "nginx-main")?;
+            let matching_contributions = desired
+                .contributions
+                .iter()
+                .filter(|contribution| contribution.request == request.id)
+                .collect::<Vec<_>>();
+            let [contribution] = matching_contributions.as_slice() else {
+                bail!(
+                    "reference nginx request has {} matching contributions",
+                    matching_contributions.len()
+                );
+            };
+            let provider = contribution.aggregate.provider.clone();
             let contributions = vec![ContributionPermission {
                 aggregate: AggregateId {
                     provider: provider.clone(),
@@ -672,77 +799,133 @@ impl ReferenceFixture {
 
 fn reference_native_resource_map(composed: &ComposedReference) -> Result<NativeResourceMap> {
     let environment = &composed.environment.environment;
-    let nginx = instance(environment, "nginx-main")?;
     let configuration_provider = lower_provider(environment, "configuration")?;
     let service_provider = lower_provider(environment, "service")?;
+    let mut mappings = Vec::new();
 
-    let configuration = native_mapping(
-        composed,
-        &configuration_provider,
-        "nginx-main-configuration",
-        &configuration_provider,
-        "effects",
-        NativeResourceQualification::ManagedConfiguration {
-            destination: "/var/lib/aos/ability-reference/nginx-main.conf".to_string(),
-            candidate: output_locator(
-                &configuration_provider,
-                "configuration",
-                fixture_interface(composed, "aos.managed-configuration")?,
-                "rendered-configurations",
-                &["nginx-main"],
-            )?,
-            resource_reference: output_locator(
-                &configuration_provider,
-                "configuration",
-                fixture_interface(composed, "aos.managed-configuration")?,
-                "published-configurations",
-                &["nginx-main"],
-            )?,
-        },
-    )?;
-    ensure_reference_managed_configuration_grant(composed, &configuration)?;
-    let service = native_mapping(
-        composed,
-        &service_provider,
-        "nginx-main-service",
-        &nginx,
-        "service-terminal",
-        NativeResourceQualification::SystemdService {
-            unit: "nginx-nginx-main.service".to_string(),
-            resource_reference: output_locator(
-                &service_provider,
-                "services",
-                fixture_interface(composed, "aos.systemd-service")?,
-                "managers",
-                &["nginx-main"],
-            )?,
-        },
-    )?;
-    let validation_binding = find_binding(composed, &nginx, "validation-terminal")?;
-    let nginx_resource = resource_revision(composed, &nginx, "virtual-hosts")?;
-    let validation = NativeResourceMapping {
-        resource: nginx_resource.resource.clone(),
-        revision: nginx_resource.revision,
-        owner_package: binding_package(validation_binding)?,
-        binding: validation_binding.id.clone(),
-        implementation: validation_binding.implementation.clone(),
-        qualification: NativeResourceQualification::NginxValidation {
-            executable: validation_binding.implementation.artifact.clone(),
-            validation_prefix: "/var/lib/aos/ability-reference/nginx-main".to_string(),
-            candidate: output_locator(
-                &nginx,
-                "nginx",
-                fixture_interface(composed, "aos.nginx")?,
-                "rendered-configuration",
-                &[],
-            )?,
-        },
-    };
+    for (name, endpoint) in [
+        ("nginx-main", "127.0.0.1:18081"),
+        ("nginx-secondary", "127.0.0.1:18082"),
+    ]
+    .into_iter()
+    .filter(|(name, _)| {
+        composed.desired_state.instances.iter().any(|desired| {
+            desired.enabled
+                && desired.instance.environment == *environment
+                && desired.instance.key.as_str() == *name
+        })
+    }) {
+        let nginx = instance(environment, name)?;
+        let nginx_resource = resource_revision(composed, &nginx, "virtual-hosts")?;
 
-    NativeResourceMap::new(
-        composed.desired_state.content_digest()?,
-        vec![configuration, service, validation],
-    )
+        let configuration = native_mapping(
+            composed,
+            &configuration_provider,
+            &format!("{name}-configuration"),
+            &configuration_provider,
+            "effects",
+            NativeResourceQualification::ManagedConfiguration {
+                destination: format!("/var/lib/aos/ability-reference/{name}.conf"),
+                candidate: output_locator(
+                    &configuration_provider,
+                    "configuration",
+                    fixture_interface(composed, "aos.managed-configuration")?,
+                    "rendered-configurations",
+                    &[name],
+                )?,
+                resource_reference: output_locator(
+                    &configuration_provider,
+                    "configuration",
+                    fixture_interface(composed, "aos.managed-configuration")?,
+                    "published-configurations",
+                    &[name],
+                )?,
+            },
+        )?;
+        ensure_reference_managed_configuration_grant(composed, &configuration)?;
+
+        let service_resource =
+            resource_revision(composed, &service_provider, &format!("{name}-service"))?;
+        let service = native_mapping(
+            composed,
+            &service_provider,
+            &format!("{name}-service"),
+            &nginx,
+            "service-terminal",
+            NativeResourceQualification::SystemdService {
+                unit: format!("nginx-{name}.service"),
+                resource_reference: output_locator(
+                    &service_provider,
+                    "services",
+                    fixture_interface(composed, "aos.systemd-service")?,
+                    "managers",
+                    &[name],
+                )?,
+                consumer_observation: Some(NativeHttpConsumerObservation {
+                    schema: NativeHttpConsumerObservation::SCHEMA.to_string(),
+                    endpoint: endpoint.to_string(),
+                    authority: "aos-consumer.invalid".to_string(),
+                    path: "/__aos/consumer".to_string(),
+                    expected_instance: nginx.clone(),
+                    expected_controller_revision: service_resource.revision,
+                    content_resource: nginx_resource.resource.clone(),
+                    expected_content_revision: nginx_resource.revision,
+                }),
+            },
+        )?;
+
+        let validation_binding = find_binding(composed, &nginx, "validation-terminal")?;
+        let validation = NativeResourceMapping {
+            resource: nginx_resource.resource.clone(),
+            revision: nginx_resource.revision,
+            owner_package: binding_package(validation_binding)?,
+            binding: validation_binding.id.clone(),
+            implementation: validation_binding.implementation.clone(),
+            qualification: NativeResourceQualification::NginxValidation {
+                executable: validation_binding.implementation.artifact.clone(),
+                validation_prefix: format!("/var/lib/aos/ability-reference/{name}"),
+                candidate: output_locator(
+                    &nginx,
+                    "nginx",
+                    fixture_interface(composed, "aos.nginx")?,
+                    "rendered-configuration",
+                    &[],
+                )?,
+            },
+        };
+
+        mappings.extend([configuration, service, validation]);
+    }
+
+    NativeResourceMap::new(composed.desired_state.content_digest()?, mappings)
+}
+
+fn reference_platform_policy(composed: &ComposedReference) -> CurrentPlatformPolicyDocument {
+    let mut bindings = composed
+        .bindings
+        .iter()
+        .filter(|binding| {
+            !composed.policies.iter().any(|policy| {
+                policy.candidates.iter().any(|candidate| {
+                    candidate.request == binding.request
+                        && candidate.interface == binding.interface
+                        && candidate.provider == binding.provider
+                        && Some(candidate.provider_package) == binding.provider_package
+                        && candidate.implementation == binding.implementation
+                        && candidate.policy_revision == binding.policy_revision
+                })
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    bindings.sort_by(|left, right| left.id.cmp(&right.id));
+
+    CurrentPlatformPolicyDocument {
+        schema: CurrentPlatformPolicyDocument::SCHEMA.to_string(),
+        required_features: Vec::new(),
+        policy_revision: composed.environment.policy_revision,
+        bindings,
+    }
 }
 
 fn ensure_reference_managed_configuration_grant(
@@ -967,6 +1150,25 @@ fn store_hash(path: &str) -> Result<String> {
 }
 
 fn interface_documents() -> Result<Vec<InterfaceDocument>> {
+    let consumer_probe = ValueSchema::Record {
+        fields: BTreeMap::from([
+            (
+                key("address")?,
+                ValueSchema::String {
+                    max_length: 15,
+                    syntax: None,
+                },
+            ),
+            (
+                key("port")?,
+                ValueSchema::Integer {
+                    minimum: 1024,
+                    maximum: 65535,
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    };
     let nginx_request = ValueSchema::Record {
         fields: BTreeMap::from([
             (key("host")?, string_schema()),
@@ -992,6 +1194,7 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
         interface_document(
             "aos.nginx",
             nginx_request.clone(),
+            Some(consumer_probe.clone()),
             vec![
                 ("configuration", ValueSchema::ResourceReference),
                 (
@@ -1014,15 +1217,22 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
         interface_document(
             "aos.managed-configuration",
             ValueSchema::Record {
-                fields: BTreeMap::from([(
-                    key("virtualHosts")?,
-                    ValueSchema::List {
-                        element: Box::new(nginx_request),
-                        max_items: 1024,
-                    },
-                )]),
+                fields: BTreeMap::from([
+                    (
+                        key("virtualHosts")?,
+                        ValueSchema::List {
+                            element: Box::new(nginx_request),
+                            max_items: 1024,
+                        },
+                    ),
+                    (key("consumer_content_revision")?, string_schema()),
+                    (key("consumer_controller_revision")?, string_schema()),
+                    (key("consumer_instance")?, string_schema()),
+                    (key("consumer_probe")?, consumer_probe),
+                ]),
                 optional_fields: Vec::new(),
             },
+            None,
             vec![
                 ("published-configurations", resource_map_schema()),
                 (
@@ -1047,13 +1257,21 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
                 )]),
                 optional_fields: Vec::new(),
             },
+            None,
             vec![("credential-views", resource_map_schema())],
+        )?,
+        interface_document(
+            "aos.credential-delivery-effects",
+            ValueSchema::Boolean,
+            None,
+            Vec::new(),
         )?,
         interface_document(
             "aos.systemd-service",
             ValueSchema::Record {
                 fields: BTreeMap::from([
                     (key("configuration_revision")?, string_schema()),
+                    (key("consumer_endpoint")?, string_schema()),
                     (key("unit")?, string_schema()),
                     (
                         key("virtual_host_count")?,
@@ -1065,17 +1283,25 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
                 ]),
                 optional_fields: Vec::new(),
             },
+            None,
             vec![("managers", resource_map_schema())],
         )?,
-        interface_document("aos.nginx-validation", ValueSchema::Boolean, Vec::new())?,
+        interface_document(
+            "aos.nginx-validation",
+            ValueSchema::Boolean,
+            None,
+            Vec::new(),
+        )?,
         interface_document(
             "aos.managed-configuration-effects",
             ValueSchema::Boolean,
+            None,
             Vec::new(),
         )?,
         interface_document(
             "aos.systemd-service-effects",
             ValueSchema::Boolean,
+            None,
             Vec::new(),
         )?,
     ];
@@ -1086,6 +1312,7 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
 fn interface_document(
     name: &str,
     request: ValueSchema,
+    configuration: Option<ValueSchema>,
     outputs: Vec<(&str, ValueSchema)>,
 ) -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(name)?;
@@ -1105,8 +1332,21 @@ fn interface_document(
                         completion_evidence: ValueSchema::Boolean,
                         observation_evidence: ValueSchema::Boolean,
                         supports_rejected_before_effect: true,
-                        indeterminate:
-                            aos_ability_model::IndeterminateSemantics::InterventionRequired,
+                        indeterminate: if matches!(
+                            method,
+                            "deliver"
+                                | "observe"
+                                | "prepare"
+                                | "publish"
+                                | "record"
+                                | "release"
+                                | "stop"
+                                | "validate"
+                        ) {
+                            aos_ability_model::IndeterminateSemantics::Reconcile
+                        } else {
+                            aos_ability_model::IndeterminateSemantics::InterventionRequired
+                        },
                     },
                 },
             ))
@@ -1119,6 +1359,7 @@ fn interface_document(
             name: interface_name,
             abi: NonZeroU32::new(1).context("interface ABI must be nonzero")?,
             request,
+            configuration,
             outputs: outputs
                 .into_iter()
                 .map(|(name, schema)| {
@@ -1147,6 +1388,15 @@ fn interface_document(
 
 fn reference_method_families(name: &str) -> Vec<(&'static str, OperationFamily)> {
     match name {
+        "aos.credential-delivery-effects" => vec![
+            (
+                "deliver",
+                OperationFamily::Credential {
+                    action: CredentialAction::Deliver,
+                },
+            ),
+            ("release", OperationFamily::ReleaseResource),
+        ],
         "aos.nginx-validation" => vec![
             ("record", OperationFamily::RecordGenerationAssociation),
             ("release", OperationFamily::ReleaseResource),
@@ -1225,6 +1475,7 @@ fn lower_interface_name(suffix: &str) -> Result<&'static str> {
 
 fn terminal_interface_name(interface: &str) -> &'static str {
     match interface {
+        "aos.credential-delivery" => "aos.credential-delivery-effects",
         "aos.managed-configuration" => "aos.managed-configuration-effects",
         "aos.systemd-service" => "aos.systemd-service-effects",
         _ => "",

@@ -1157,7 +1157,7 @@ pub async fn rollback_system(
         return Ok(());
     }
     let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
-    let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
+    let switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
     let mut state = load_generation_state(&profile_path)?;
 
     let current = state
@@ -1204,9 +1204,34 @@ pub async fn rollback_system(
         match target.reactivation_plan(running_abi)? {
             ReactivationPlan::DirectReactivate => {
                 let manifest_path = validate_generation_manifest(&profile_path, &target)?;
-                validate_direct_reactivation(&target, &running_image, &manifest_path)?;
                 let manifest: crate::config_eval::materialize::ConfigManifest =
                     serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+                if manifest.inputs.ability_activation.is_some() {
+                    drop(switch_guard);
+                    let marker_root = PathBuf::from(format!(
+                        "/run/aos/rollback-native-{}-{}",
+                        target.number,
+                        std::process::id()
+                    ));
+                    stage_retained_runtime(config, &manifest_path, &marker_root)?;
+                    let activated = crate::config_eval::activation::activate_config(
+                        &crate::config_eval::activation::ActivateConfigParams {
+                            manifest: manifest_path,
+                            graph: marker_root.join("graph.json"),
+                            marker_root,
+                            profile: profile_path.clone(),
+                            module_abi: running_abi,
+                            running_image: Some(running_image),
+                            switch_lock,
+                            ..crate::config_eval::activation::ActivateConfigParams::default()
+                        },
+                    )?;
+                    printer.success(&format!(
+                        "Configuration generation {activated} is active under the running image."
+                    ));
+                    return Ok(());
+                }
+                validate_direct_reactivation(&target, &running_image, &manifest_path)?;
                 let reconciliation = crate::credential_artifact::reconcile_secret_refs(
                     &config.settings,
                     &crate::credential_artifact::aos_root_path(),

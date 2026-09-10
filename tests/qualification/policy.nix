@@ -164,6 +164,16 @@
   imageRecovery = builtins.head (
     builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
   );
+  abilityRequirements = builtins.listToAttrs (map (id: {
+      name = id;
+      value = builtins.head (
+        builtins.filter (requirement: requirement.id == id) contract.requirements
+      );
+    }) [
+      "ability-native-activation"
+      "ability-native-kubernetes"
+      "ability-native-recovery"
+    ]);
   recoveryPackage = builtins.head (
     builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
   );
@@ -250,6 +260,19 @@ in
     "checks.fleet.boot-identity-fail-closed"
     "checks.fleet.measured-boot"
   ];
+  assert abilityRequirements.ability-native-activation.regressions
+  == ["checks.fleet.ability-native-activation"];
+  assert abilityRequirements.ability-native-kubernetes.regressions
+  == ["checks.fleet.ability-native-kubernetes"];
+  assert abilityRequirements.ability-native-recovery.regressions
+  == ["checks.fleet.ability-native-power-loss"];
+  assert builtins.all (requirement:
+    requirement.phase
+    == "staging"
+    && requirement.scope == "release"
+    && requirement.method == "automated"
+    && requirement.invalidated_by == ["subject" "policy" "executor" "environment"])
+  (builtins.attrValues abilityRequirements);
   assert packageCoverage.schema_version == "aos.release.package-probe-coverage/v1";
   assert packageCoverage.total == builtins.length packageNames;
   assert packageCoverage.total
@@ -297,6 +320,9 @@ in
   };
   assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
   == [
+    "ability-native-activation"
+    "ability-native-kubernetes"
+    "ability-native-recovery"
     "claim-container-x86_64-linux-functional"
     "claim-container-x86_64-linux-qualified"
     "claim-disk-x86_64-linux-functional"
@@ -309,6 +335,9 @@ in
     "staging-delivery"
   ];
   assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
+  assert builtins.all (id:
+    builtins.match ".*/aos-qualification-x86_64-linux-report" releaseExecutor.passthru.qualification.scenarios.${id}
+    != null) (builtins.attrNames abilityRequirements);
   assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
   assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios == ["package-function/aos-recovery/x86_64-linux"];

@@ -89,8 +89,9 @@ pub const FEATURE_ABILITIES_V1: &str = "abilities-v1";
 
 /// Registry feature flag for RFC-0022 structured effect activation.
 ///
-/// This client deliberately does not advertise this feature until structured
-/// activation owns the corresponding resources on every mutation path.
+/// The ordinary package reader deliberately does not advertise this feature
+/// until every direct package mutation path dispatches structured lifecycle
+/// effects or rejects the package before publication.
 pub const FEATURE_ABILITY_EFFECTS_V1: &str = "ability-effects-v1";
 
 /// Names the retained derivation output containing an ability manifest.
@@ -665,6 +666,24 @@ pub enum PolicyTier {
 /// permission.
 pub fn validate_supported_package_meta(meta: &PackageMeta) -> Result<()> {
     validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, SUPPORTED_PACKAGE_FEATURES)
+}
+
+/// Validates package metadata for an ability-aware trusted consumer.
+///
+/// Release authoring and structured configuration evaluation both understand
+/// authenticated ability metadata. This capability does not grant ordinary
+/// install, upgrade, removal, or rollback paths permission to consume
+/// structured effects they do not yet dispatch.
+///
+/// # Errors
+///
+/// Returns an error when the trusted consumer cannot safely validate the
+/// package metadata.
+pub(crate) fn validate_ability_aware_package_meta(meta: &PackageMeta) -> Result<()> {
+    let mut supported_features = SUPPORTED_PACKAGE_FEATURES.to_vec();
+    supported_features.extend([FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1]);
+
+    validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, &supported_features)
 }
 
 /// Validate a package metadata entry against an explicit format/feature set.
@@ -6393,6 +6412,54 @@ provenance = "provenance/firewall.jsonl"
     }
 
     #[test]
+    fn release_author_accepts_ability_features_while_package_readers_fail_closed() {
+        let mut meta = sample_package_meta();
+        meta.requires_features = vec![
+            FEATURE_ATTESTATION_V1.to_string(),
+            FEATURE_ABILITIES_V1.to_string(),
+            FEATURE_ABILITY_EFFECTS_V1.to_string(),
+        ];
+        meta.ability = Some(structured_ability_meta());
+        meta.attestation.provenance =
+            Some("provenance/f/firewall/x86_64-linux/package.intoto.jsonl".to_string());
+
+        validate_ability_aware_package_meta(&meta)
+            .expect("the release author validates authenticated structured abilities");
+
+        let package_reader_error = validate_supported_package_meta(&meta)
+            .expect_err("ordinary package mutation paths do not advertise ability effects");
+        assert!(
+            package_reader_error
+                .to_string()
+                .contains(FEATURE_ABILITIES_V1)
+        );
+
+        let contracts_only_error = validate_supported_package_meta_with(
+            &meta,
+            PACKAGE_META_FORMAT,
+            &[FEATURE_ATTESTATION_V1],
+        )
+        .expect_err("a reader predating ability metadata must reject the feature gate");
+        assert!(
+            contracts_only_error
+                .to_string()
+                .contains(FEATURE_ABILITIES_V1)
+        );
+
+        let structured_effects_error = validate_supported_package_meta_with(
+            &meta,
+            PACKAGE_META_FORMAT,
+            &[FEATURE_ATTESTATION_V1, FEATURE_ABILITIES_V1],
+        )
+        .expect_err("a contracts-only reader must reject structured effects");
+        assert!(
+            structured_effects_error
+                .to_string()
+                .contains(FEATURE_ABILITY_EFFECTS_V1)
+        );
+    }
+
+    #[test]
     fn structured_ability_cannot_retain_legacy_activation_owner() {
         let mut meta = sample_package_meta();
         meta.requires_features = vec![
@@ -6401,24 +6468,7 @@ provenance = "provenance/firewall.jsonl"
             FEATURE_CONFIG_MODULE_V1.to_string(),
         ];
         meta.config_module = Some(sample_config_module());
-        meta.ability = Some(AbilityPackageMeta {
-            store_path: "/nix/store/0000000000000000000000000000000e-firewall-abilities"
-                .to_string(),
-            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_string(),
-            nar_size: 1,
-            references: Vec::new(),
-            manifest_sha256:
-                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                    .to_string(),
-            manifest_size: 1,
-            package_digest:
-                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    .to_string(),
-            activation_mode: "structured-effects".to_string(),
-            artifacts: Vec::new(),
-            provenance: "provenance/firewall.ability.intoto.jsonl".to_string(),
-        });
+        meta.ability = Some(structured_ability_meta());
 
         let error = validate_supported_package_meta_with(
             &meta,
@@ -6436,6 +6486,27 @@ provenance = "provenance/firewall.jsonl"
                 .to_string()
                 .contains("structured ability effects together with legacy activation metadata")
         );
+    }
+
+    fn structured_ability_meta() -> AbilityPackageMeta {
+        AbilityPackageMeta {
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-firewall-abilities"
+                .to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            nar_size: 1,
+            references: Vec::new(),
+            manifest_sha256:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            manifest_size: 1,
+            package_digest:
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_string(),
+            activation_mode: "structured-effects".to_string(),
+            artifacts: Vec::new(),
+            provenance: "provenance/firewall.ability.intoto.jsonl".to_string(),
+        }
     }
 
     fn sample_package_meta() -> PackageMeta {

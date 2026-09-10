@@ -673,6 +673,55 @@ fn ability_activation_input_survives_removal_of_the_last_structured_package() {
 }
 
 #[test]
+fn legacy_host_selection_cannot_activate_a_structured_package_without_owned_input() {
+    use super::runtime::{RuntimePackageOrigin, RuntimePackagePin, RuntimeResolution};
+    use crate::types::AbilityPackageMeta;
+
+    let runtime = RuntimeResolution {
+        packages: BTreeMap::from([(
+            "web".to_string(),
+            RuntimePackagePin {
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                registry: "aos-core".to_string(),
+                origin: RuntimePackageOrigin::Registry,
+                store_path: "/nix/store/0000000000000000000000000000000a-web".to_string(),
+                nar_hash: format!("sha256:{}", "8".repeat(52)),
+                nar_size: 1,
+                config_dependency_outputs: BTreeMap::new(),
+                closure: Vec::new(),
+                expose: None,
+                expose_artifact: None,
+                config_projection: None,
+                ability: Some(AbilityPackageMeta {
+                    store_path: "/nix/store/0000000000000000000000000000000b-web-abilities"
+                        .to_string(),
+                    nar_hash: format!("sha256:{}", "5".repeat(64)),
+                    nar_size: 1,
+                    references: Vec::new(),
+                    manifest_sha256: format!("sha256:{}", "6".repeat(64)),
+                    manifest_size: 1,
+                    package_digest: format!("sha256:{}", "7".repeat(64)),
+                    activation_mode: "structured-effects".to_string(),
+                    artifacts: Vec::new(),
+                    provenance: "provenance/web.ability.intoto.jsonl".to_string(),
+                }),
+                legacy_config: None,
+            },
+        )]),
+        edges: BTreeMap::new(),
+    };
+
+    let error = super::enrich_ability_activation(None, &runtime)
+        .expect_err("a legacy host selection does not own structured activation input");
+
+    assert_eq!(
+        error.to_string(),
+        "structured-effects package selection requires an ability_activation input"
+    );
+}
+
+#[test]
 fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
     use aos_doc_model::{
         DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, InlineSpan,

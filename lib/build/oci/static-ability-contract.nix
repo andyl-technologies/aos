@@ -1,8 +1,10 @@
 ##! lib/build/oci/static-ability-contract.nix -- Static OCI ability contracts.
 ##!
 ##! A platform contract is derived from realized RFC-0022 package companions.
-##! A coordinated contract combines already-validated platform contracts. Both
-##! forms retain unresolved required bindings while carrying no runtime grants.
+##! Container contracts preserve their existing schema. Bootable host and
+##! initrd contracts add an explicit execution stage so an artifact cannot
+##! claim that a later manager satisfies an early consumer. Every form retains
+##! unresolved required bindings while carrying no runtime grants.
 {
   lib,
   mkDerivation,
@@ -18,8 +20,19 @@
   runtimeRoots ? [],
   contracts ? [],
   pname ? "aos-container-static-ability-contract",
+  artifactClass ? "container",
+  executionStage ? null,
 }: let
-  mediaType = "application/vnd.aos.container.static-abilities.v1+json";
+  supportedArtifactClasses = ["container" "bootable"];
+  supportedExecutionStages = ["initrd" "host"];
+  schema =
+    if artifactClass == "container"
+    then "aos.container.static-abilities/v1"
+    else "aos.boot.static-abilities/v1";
+  mediaType =
+    if artifactClass == "container"
+    then "application/vnd.aos.container.static-abilities.v1+json"
+    else "application/vnd.aos.boot.static-abilities.v1+json";
   packagePaths =
     map (entry: {
       payload = builtins.toString entry.payload;
@@ -29,6 +42,16 @@
   contractPaths = map builtins.toString contracts;
   platformMode = platform != null && contracts == [];
   combinedMode = platform == null && packages == [] && runtimeRoots == [] && contracts != [];
+  checkedArtifactClass =
+    if builtins.elem artifactClass supportedArtifactClasses
+    then artifactClass
+    else common.fail "static ability contract artifactClass must be container or bootable";
+  checkedExecutionStage =
+    if artifactClass == "container" && executionStage == null
+    then null
+    else if artifactClass == "bootable" && builtins.elem executionStage supportedExecutionStages
+    then executionStage
+    else common.fail "bootable static ability contracts require an initrd or host executionStage";
   checkedPlatform =
     if platformMode
     then common.validatePlatform platform
@@ -48,7 +71,13 @@
     then packagePaths
     else common.fail "static ability contract packages must name unique AOS ability companions";
   checkedContracts =
-    if lib.all (contract: builtins.isAttrs contract && (contract.passthru.ociStaticAbilityContract or false)) contracts
+    if
+      lib.all (contract:
+        builtins.isAttrs contract
+        && (contract.passthru.ociStaticAbilityContract or false)
+        && contract.passthru.artifactClass == checkedArtifactClass
+        && contract.passthru.executionStage == checkedExecutionStage)
+      contracts
     then contractPaths
     else common.fail "static ability contract inputs must be produced by mkStaticAbilityContract";
   runtimeRootPaths = map builtins.toString runtimeRoots;
@@ -63,14 +92,23 @@
     else common.fail "static ability contract runtimeRoots must contain unique derivations";
   validated =
     if platformMode || combinedMode
-    then builtins.deepSeq [checkedPlatform checkedPackages checkedRuntimeRoots checkedContracts] true
+    then
+      builtins.deepSeq [
+        checkedArtifactClass
+        checkedExecutionStage
+        checkedPlatform
+        checkedPackages
+        checkedRuntimeRoots
+        checkedContracts
+      ]
+      true
     else common.fail "static ability contract requires exactly one platform package set or a non-empty contract set";
   contractSpec = {
     mode =
       if platformMode
       then "platform"
       else "combine";
-    inherit mediaType;
+    inherit mediaType schema artifactClass executionStage;
     platform = checkedPlatform;
     packages = checkedPackages;
     contracts = checkedContracts;
@@ -80,6 +118,10 @@
     then map (entry: entry.manifest) checkedPackages
     else checkedContracts
   );
+  executionStageArgument =
+    if executionStage == null
+    then ""
+    else executionStage;
 in
   builtins.deepSeq validated (mkDerivation {
     inherit pname;
@@ -270,13 +312,18 @@ in
               --slurpfile abilitySet abilities.json \
               --slurpfile obligationSet obligations.json '
                 {
-                  schema: "aos.container.static-abilities/v1",
-                  platforms: [{
-                    platform: ($spec[0].platform | with_entries(select(.value != null))),
-                    packages: $packageSet[0],
-                    abilities: $abilitySet[0],
-                    unresolved_launch_obligations: $obligationSet[0]
-                  }],
+                  schema: $spec[0].schema,
+                  platforms: [({
+                      platform: ($spec[0].platform | with_entries(select(.value != null))),
+                      packages: $packageSet[0],
+                      abilities: $abilitySet[0],
+                      unresolved_launch_obligations: $obligationSet[0]
+                    } + (
+                      if $spec[0].executionStage == null
+                      then {}
+                      else {execution_stage: $spec[0].executionStage}
+                      end
+                    ))],
                   runtime_grants: []
                 }
               ' > contract.pretty.json
@@ -285,10 +332,17 @@ in
             for contract_path in ${inputArguments}; do
               contract="$contract_path/contract.json"
               test -f "$contract"
-              jq -e '
-                .schema == "aos.container.static-abilities/v1"
+              jq -e \
+                --arg expectedSchema "$(${jq}/bin/jq -r .schema contract-spec.json)" \
+                --arg artifactClass ${lib.escapeShellArg artifactClass} \
+                --arg executionStage ${lib.escapeShellArg executionStageArgument} '
+                .schema == $expectedSchema
                 and .runtime_grants == []
                 and (.platforms | type == "array" and length > 0)
+                and (
+                  $artifactClass != "bootable"
+                  or all(.platforms[]; .execution_stage == $executionStage)
+                )
               ' "$contract" >/dev/null
               jq -c '.platforms[]' "$contract" >> platforms.jsonl
             done
@@ -301,9 +355,10 @@ in
                 end
             ' platforms.jsonl > platforms.json
             jq -S -n \
+              --slurpfile spec contract-spec.json \
               --slurpfile platforms platforms.json '
                 {
-                  schema: "aos.container.static-abilities/v1",
+                  schema: $spec[0].schema,
                   platforms: $platforms[0],
                   runtime_grants: []
                 }
@@ -335,7 +390,7 @@ in
 
     passthru = {
       ociStaticAbilityContract = true;
-      inherit mediaType checkedPlatform runtimeRootPaths;
+      inherit mediaType schema artifactClass executionStage checkedPlatform runtimeRootPaths;
       inputContractPaths = contractPaths;
       selectedPayloadPaths = map (entry: entry.payload) packagePaths;
     };

@@ -537,6 +537,8 @@ mod oci_gc;
 pub use oci_gc::*;
 mod package_ability_reference_reads;
 pub use package_ability_reference_reads::*;
+mod ability_deployment_overlays;
+pub use ability_deployment_overlays::*;
 mod package_documentation_reads;
 mod placement_policy;
 mod publication_admission;
@@ -595,6 +597,7 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("migration_002_package_ability_references.sql"),
+    include_str!("migration_003_ability_deployment_overlays.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.

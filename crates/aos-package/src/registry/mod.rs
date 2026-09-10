@@ -50,13 +50,13 @@ pub use aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES;
 pub use aos_registry_surface::pack_index;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::types::{PackageMeta, RegistryConfig, TrackingMode};
-use parse::parse_registry_matching;
+use parse::{parse_registry_matching, parse_registry_matching_for_ability_aware_consumer};
 use store::StoreMap;
 
 /// Cache-local receipt for the signed release tag that authenticated the
@@ -147,21 +147,57 @@ impl Registry {
     /// `packages/` directory cannot be read, any package TOML file inside
     /// it fails to parse, or a present `store/` graph is malformed.
     pub fn load(cache_dir: &Path, config: &RegistryConfig, platform: &str) -> Result<Self> {
+        Self::load_with_profile(
+            cache_dir,
+            config,
+            platform,
+            RegistryMetadataProfile::OrdinaryPackage,
+        )
+    }
+
+    fn load_for_config_evaluation(
+        cache_dir: &Path,
+        config: &RegistryConfig,
+        platform: &str,
+    ) -> Result<Self> {
+        Self::load_with_profile(
+            cache_dir,
+            config,
+            platform,
+            RegistryMetadataProfile::AbilityAware,
+        )
+    }
+
+    fn load_with_profile(
+        cache_dir: &Path,
+        config: &RegistryConfig,
+        platform: &str,
+        profile: RegistryMetadataProfile,
+    ) -> Result<Self> {
         let registry_dir = cache_dir.join(&config.name);
         let version_req = match config.tracking_mode()? {
             TrackingMode::Version(req) => Some(req),
             _ => None,
         };
-        let (mut packages, mut hash_index, mut versions) =
-            parse_registry_matching(&registry_dir, platform, version_req.as_ref()).with_context(
-                || {
-                    format!(
-                        "loading registry '{}' from {}",
-                        config.name,
-                        registry_dir.display()
-                    )
-                },
-            )?;
+        let parsed = match profile {
+            RegistryMetadataProfile::OrdinaryPackage => {
+                parse_registry_matching(&registry_dir, platform, version_req.as_ref())
+            }
+            RegistryMetadataProfile::AbilityAware => {
+                parse_registry_matching_for_ability_aware_consumer(
+                    &registry_dir,
+                    platform,
+                    version_req.as_ref(),
+                )
+            }
+        };
+        let (mut packages, mut hash_index, mut versions) = parsed.with_context(|| {
+            format!(
+                "loading registry '{}' from {}",
+                config.name,
+                registry_dir.display()
+            )
+        })?;
 
         // The realisation graph is signed security data: a malformed or
         // misfiled record fails the registry load rather than degrading
@@ -251,10 +287,23 @@ impl Registry {
     }
 }
 
+#[derive(Clone, Copy)]
+enum RegistryMetadataProfile {
+    OrdinaryPackage,
+    AbilityAware,
+}
+
 /// Multi-registry resolver that wraps multiple registries sorted by priority.
 #[derive(Debug)]
 pub struct RegistrySet {
     registries: Vec<Registry>,
+    config_evaluation_order: Option<Vec<ConfigEvaluationRegistry>>,
+}
+
+#[derive(Debug)]
+enum ConfigEvaluationRegistry {
+    Loaded(usize),
+    Unavailable { name: String, path: PathBuf },
 }
 
 impl RegistrySet {
@@ -263,7 +312,10 @@ impl RegistrySet {
     /// Registries should already be sorted by priority (highest first);
     /// [`RegistrySet::resolve`] returns the first match in iteration order.
     pub fn new(registries: Vec<Registry>) -> Self {
-        Self { registries }
+        Self {
+            registries,
+            config_evaluation_order: None,
+        }
     }
 
     /// Loads all enabled registries from the cache directory.
@@ -289,6 +341,193 @@ impl RegistrySet {
             }
         }
         Ok(Self::new(registries))
+    }
+
+    /// Loads the authenticated registry snapshot for configuration evaluation.
+    ///
+    /// This reader understands structured ability metadata because the
+    /// configuration pipeline authenticates and owns those effects. Present
+    /// snapshots are validated eagerly. An absent snapshot remains as an
+    /// ordered resolution barrier: image-seeded packages can still boot, but a
+    /// lower-priority registry cannot win because a higher registry is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any present registry's package, ability,
+    /// store-graph, or release-trust metadata is invalid.
+    pub fn load_for_config_evaluation(
+        cache_dir: &Path,
+        configs: &[&RegistryConfig],
+        platform: &str,
+    ) -> Result<Self> {
+        let mut registries = Vec::new();
+        let mut config_evaluation_order = Vec::with_capacity(configs.len());
+        for config in configs {
+            config.tracking_mode().with_context(|| {
+                format!(
+                    "validating configured registry '{}' before configuration evaluation",
+                    config.name
+                )
+            })?;
+
+            let registry_dir = cache_dir.join(&config.name);
+            match std::fs::symlink_metadata(&registry_dir) {
+                Ok(_) => {
+                    let metadata = std::fs::metadata(&registry_dir).with_context(|| {
+                        format!(
+                            "inspecting configured registry '{}' at {}",
+                            config.name,
+                            registry_dir.display()
+                        )
+                    })?;
+                    if !metadata.is_dir() {
+                        anyhow::bail!(
+                            "configured registry '{}' cache path {} is not a directory",
+                            config.name,
+                            registry_dir.display()
+                        );
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    config_evaluation_order.push(ConfigEvaluationRegistry::Unavailable {
+                        name: config.name.clone(),
+                        path: registry_dir,
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "inspecting configured registry '{}' at {}",
+                            config.name,
+                            registry_dir.display()
+                        )
+                    });
+                }
+            }
+
+            let registry = Registry::load_for_config_evaluation(cache_dir, config, platform)?;
+            config_evaluation_order.push(ConfigEvaluationRegistry::Loaded(registries.len()));
+            registries.push(registry);
+        }
+
+        Ok(Self {
+            registries,
+            config_evaluation_order: Some(config_evaluation_order),
+        })
+    }
+
+    /// Resolves a package for configuration evaluation without crossing an
+    /// unavailable higher-priority registry.
+    ///
+    /// Registry sets built by [`RegistrySet::new`] or [`RegistrySet::load`]
+    /// retain ordinary resolution behavior. A set built by
+    /// [`RegistrySet::load_for_config_evaluation`] remembers absent configured
+    /// snapshots in priority order and refuses to search below the first gap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an unavailable registry precedes any loaded
+    /// registry that might otherwise satisfy `name`.
+    pub fn resolve_for_config_evaluation(
+        &self,
+        name: &str,
+    ) -> Result<Option<(&Registry, &PackageMeta)>> {
+        let Some(order) = &self.config_evaluation_order else {
+            return Ok(self.resolve(name));
+        };
+
+        for entry in order {
+            match entry {
+                ConfigEvaluationRegistry::Loaded(index) => {
+                    let registry = &self.registries[*index];
+                    if let Some(package) = registry.get(name) {
+                        return Ok(Some((registry, package)));
+                    }
+                }
+                ConfigEvaluationRegistry::Unavailable {
+                    name: registry_name,
+                    path,
+                } => {
+                    anyhow::bail!(
+                        "configured registry '{registry_name}' is unavailable at {} while resolving package '{name}'",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Resolves an exact package version for configuration evaluation without
+    /// crossing an unavailable higher-priority registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an unavailable registry precedes any loaded
+    /// registry that might otherwise satisfy the requested package identity.
+    pub fn resolve_exact_for_config_evaluation(
+        &self,
+        name: &str,
+        version: Option<&str>,
+        runtime_output: Option<&str>,
+    ) -> Result<Option<(&Registry, &PackageMeta)>> {
+        let Some(order) = &self.config_evaluation_order else {
+            return Ok(self.registries.iter().find_map(|registry| {
+                registry
+                    .package_versions()
+                    .find(|package| {
+                        package.name == name
+                            && version.is_none_or(|want| package.version == want)
+                            && runtime_output.is_none_or(|want| package.store_path == want)
+                    })
+                    .map(|package| (registry, package))
+            }));
+        };
+
+        for entry in order {
+            match entry {
+                ConfigEvaluationRegistry::Loaded(index) => {
+                    let registry = &self.registries[*index];
+                    if let Some(package) = registry.package_versions().find(|package| {
+                        package.name == name
+                            && version.is_none_or(|want| package.version == want)
+                            && runtime_output.is_none_or(|want| package.store_path == want)
+                    }) {
+                        return Ok(Some((registry, package)));
+                    }
+                }
+                ConfigEvaluationRegistry::Unavailable {
+                    name: registry_name,
+                    path,
+                } => {
+                    anyhow::bail!(
+                        "configured registry '{registry_name}' is unavailable at {} while resolving exact package '{name}'",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Returns loaded configuration registries above the first unavailable
+    /// priority slot.
+    pub fn registries_before_config_evaluation_gap(&self) -> Vec<&Registry> {
+        let Some(order) = &self.config_evaluation_order else {
+            return self.registries.iter().collect();
+        };
+
+        order
+            .iter()
+            .take_while(|entry| matches!(entry, ConfigEvaluationRegistry::Loaded(_)))
+            .filter_map(|entry| match entry {
+                ConfigEvaluationRegistry::Loaded(index) => Some(&self.registries[*index]),
+                ConfigEvaluationRegistry::Unavailable { .. } => None,
+            })
+            .collect()
     }
 
     /// Resolves a package name to the package offered by the
@@ -498,7 +737,13 @@ pub(crate) mod tests {
             fs::write(dir.join(ia), content).unwrap();
         }
 
-        let config = RegistryConfig {
+        let config = registry_config(name, priority);
+
+        Registry::load(tmp.path(), &config, "x86_64-linux").unwrap()
+    }
+
+    pub(crate) fn registry_config(name: &str, priority: u32) -> RegistryConfig {
+        RegistryConfig {
             name: name.to_string(),
             url: format!("https://registry.example.com/{name}"),
             priority,
@@ -515,9 +760,198 @@ pub(crate) mod tests {
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
-        };
+        }
+    }
 
-        Registry::load(tmp.path(), &config, "x86_64-linux").unwrap()
+    fn write_ability_package(tmp: &TempDir, registry: &str, package: &str) {
+        let directory = tmp
+            .path()
+            .join(registry)
+            .join("packages")
+            .join(&package[..1]);
+        fs::create_dir_all(&directory).unwrap();
+
+        let path = directory.join(format!("{package}.toml"));
+        let content = format!(
+            "[package]\nname = \"{package}\"\ndescription = \"test ability package\"\nlicense = \"MIT\"\nmaintainer = \"AOS test\"\n\n[[versions]]\nversion = \"1.0.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/nix/store/0000000000000000000000000000000a-{package}\"\nclosure_size = 1\nsource_drv = \"\"\nsource_nar_hash = \"\"\nmin-format = 1\nrequires-features = [\"attestation-v1\"]\nprovenance = \"provenance/a/{package}/x86_64-linux/package.intoto.jsonl\"\n\n[versions.platforms.x86_64-linux.references]\nhashes = []\nmin-format = 1\nrequires-features = [\"attestation-v1\"]\n"
+        );
+        let ability = crate::types::AbilityPackageMeta {
+            store_path: format!("/nix/store/0000000000000000000000000000000b-{package}-abilities"),
+            nar_hash: format!("sha256:{}", "1".repeat(64)),
+            nar_size: 1,
+            references: Vec::new(),
+            manifest_sha256: format!("sha256:{}", "2".repeat(64)),
+            manifest_size: 1,
+            package_digest: format!("sha256:{}", "3".repeat(64)),
+            activation_mode: "structured-effects".to_string(),
+            artifacts: Vec::new(),
+            provenance: format!("provenance/a/{package}/x86_64-linux/package.ability.intoto.jsonl"),
+        };
+        let content = crate::registry_ops::record_ability_output(
+            &content,
+            package,
+            "1.0.0",
+            "x86_64-linux",
+            &ability,
+        )
+        .unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn config_evaluation_loads_ability_metadata_without_broadening_package_readers() {
+        let tmp = TempDir::new().unwrap();
+        let config = registry_config("aos-core", 500);
+        write_ability_package(&tmp, &config.name, "ability-web");
+
+        let package_error = Registry::load(tmp.path(), &config, "x86_64-linux").unwrap_err();
+        assert!(
+            package_error
+                .to_string()
+                .contains("loading registry 'aos-core'")
+        );
+        assert!(format!("{package_error:#}").contains("abilities-v1"));
+
+        let ordinary = RegistrySet::load(tmp.path(), &[&config], "x86_64-linux").unwrap();
+        assert!(ordinary.resolve("ability-web").is_none());
+
+        let ability_aware =
+            RegistrySet::load_for_config_evaluation(tmp.path(), &[&config], "x86_64-linux")
+                .unwrap();
+        let (_, package) = ability_aware.resolve("ability-web").unwrap();
+
+        assert_eq!(
+            package.ability.as_ref().unwrap().activation_mode,
+            "structured-effects"
+        );
+    }
+
+    #[test]
+    fn config_evaluation_fails_closed_on_an_invalid_configured_registry() {
+        let tmp = TempDir::new().unwrap();
+        let higher = registry_config("higher", 500);
+        let lower = registry_config("lower", 400);
+        write_ability_package(&tmp, &lower.name, "ability-web");
+
+        let invalid_directory = tmp.path().join(&higher.name).join("packages").join("a");
+        fs::create_dir_all(&invalid_directory).unwrap();
+        fs::write(invalid_directory.join("ability-web.toml"), "not = [valid").unwrap();
+
+        let error =
+            RegistrySet::load_for_config_evaluation(tmp.path(), &[&higher, &lower], "x86_64-linux")
+                .unwrap_err();
+
+        assert!(format!("{error:#}").contains("loading registry 'higher'"));
+    }
+
+    #[test]
+    fn config_evaluation_allows_a_cold_empty_registry_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let missing = registry_config("andyl", 500);
+
+        let registries =
+            RegistrySet::load_for_config_evaluation(tmp.path(), &[&missing], "x86_64-linux")
+                .unwrap();
+
+        assert!(registries.registries().is_empty());
+        assert!(
+            registries
+                .registries_before_config_evaluation_gap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn config_evaluation_does_not_treat_a_present_file_as_an_image_fallback_gap() {
+        let tmp = TempDir::new().unwrap();
+        let configured = registry_config("andyl", 500);
+        fs::write(
+            tmp.path().join(&configured.name),
+            b"not a registry directory",
+        )
+        .unwrap();
+
+        let error =
+            RegistrySet::load_for_config_evaluation(tmp.path(), &[&configured], "x86_64-linux")
+                .unwrap_err();
+
+        assert!(format!("{error:#}").contains("cache path"), "{error:#}");
+        assert!(format!("{error:#}").contains("is not a directory"));
+    }
+
+    #[test]
+    fn config_evaluation_rejects_invalid_tracking_for_an_absent_registry() {
+        let tmp = TempDir::new().unwrap();
+        let mut configured = registry_config("andyl", 500);
+        configured.commit = Some("a".repeat(40));
+        configured.branch = Some("main".to_string());
+
+        let error =
+            RegistrySet::load_for_config_evaluation(tmp.path(), &[&configured], "x86_64-linux")
+                .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("validating configured registry 'andyl'"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn config_evaluation_resolves_a_loaded_registry_before_an_absent_slot() {
+        let tmp = TempDir::new().unwrap();
+        let loaded = registry_config("ability-reg", 500);
+        let missing = registry_config("andyl", 500);
+        let _ = make_registry(&tmp, &loaded.name, loaded.priority, &[("curl", CURL_TOML)]);
+
+        let registries = RegistrySet::load_for_config_evaluation(
+            tmp.path(),
+            &[&loaded, &missing],
+            "x86_64-linux",
+        )
+        .unwrap();
+        let (registry, package) = registries
+            .resolve_for_config_evaluation("curl")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(registry.config.name, "ability-reg");
+        assert_eq!(package.name, "curl");
+    }
+
+    #[test]
+    fn config_evaluation_does_not_fall_through_an_absent_registry() {
+        let tmp = TempDir::new().unwrap();
+        let missing = registry_config("primary", 600);
+        let lower = registry_config("fallback", 500);
+        let _ = make_registry(&tmp, &lower.name, lower.priority, &[("curl", CURL_TOML)]);
+
+        let registries = RegistrySet::load_for_config_evaluation(
+            tmp.path(),
+            &[&missing, &lower],
+            "x86_64-linux",
+        )
+        .unwrap();
+
+        assert_eq!(
+            registries.resolve("curl").unwrap().0.config.name,
+            "fallback"
+        );
+        let error = registries
+            .resolve_for_config_evaluation("curl")
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("configured registry 'primary' is unavailable"),
+            "{error:#}"
+        );
+        assert!(
+            registries
+                .resolve_exact_for_config_evaluation(
+                    "curl",
+                    Some("8.5.0"),
+                    Some("/var/lib/store/h7j3k8l2m9n4-curl-8.5.0"),
+                )
+                .is_err()
+        );
     }
 
     #[test]

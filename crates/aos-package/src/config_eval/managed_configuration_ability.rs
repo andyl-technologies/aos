@@ -21,6 +21,7 @@ use aos_ability_model::{
     MethodReference, Operation, OperationFamily, ProviderAssignment,
     ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId, ValueSchema,
 };
+use aos_ability_plan::{RuntimeResourceHealth, RuntimeResourceState};
 use aos_ability_runtime::adapter::{
     AdapterCompletion, AdapterRecord, CancellationDisposition, CatalogReservation,
     EffectDisposition, InvocationPurpose, ReconcileDisposition, ReservationContext,
@@ -42,10 +43,11 @@ use crate::config_eval::native_ability_fs::{
 
 const INTERFACE_NAME: &str = "aos.managed-configuration-effects";
 const INTERFACE_DESCRIPTOR: &str =
-    "sha256:2b5e3051194f29f19bdf178c7e51f3bc4dbee7b67eafb04cba7953580dd990bf";
+    "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab";
 const HANDLER_KEY: &str = "managed-configuration-terminal";
 const ENTRY_POINT: &str = "bin/.aos-package-runtime-unwrapped";
 const REQUEST_SCHEMA: &str = "aos.ability.managed-configuration-request/v1";
+const REQUEST_SCHEMA_V2: &str = "aos.ability.managed-configuration-request/v2";
 const MARKER_SCHEMA: &str = "aos.ability.managed-configuration-revision/v2";
 const MAX_MARKER_BYTES: u64 = 16 * 1024;
 
@@ -79,6 +81,9 @@ struct QualifiedManagedConfiguration {
 pub struct ManagedConfigurationResourceHandle {
     resource: QualifiedManagedConfiguration,
     action: ManagedConfigurationAction,
+    owned_divergence: bool,
+    converged_owned_desired: bool,
+    publish_crash_window: bool,
     reservation: NativeResourceReservation,
 }
 
@@ -212,6 +217,26 @@ impl ManagedConfigurationResourceCatalog {
             .ok_or_else(|| invalid_data("managed configuration no-op resource is not cataloged"))?;
         Ok((resource.qualified.clone(), observe_revision(resource)?))
     }
+
+    /// Classifies owned live content while rejecting ambiguous ownership evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the resource is absent from the catalog, its
+    /// destination cannot be inspected, or its ownership evidence is foreign.
+    pub(crate) fn classify_runtime_revision(
+        &self,
+        resource: &ResourceId,
+    ) -> Result<(NativeQualifiedResource, RuntimeResourceState), io::Error> {
+        let resource = self
+            .resources
+            .get(resource)
+            .ok_or_else(|| invalid_data("managed configuration resource is not cataloged"))?;
+        Ok((
+            resource.qualified.clone(),
+            classify_owned_revision(resource)?,
+        ))
+    }
 }
 
 impl TrustedResourceCatalog for ManagedConfigurationResourceCatalog {
@@ -247,7 +272,51 @@ impl TrustedResourceCatalog for ManagedConfigurationResourceCatalog {
             .inventory
             .reserve(&resource.qualified, context, operation, access)
             .map_err(store_error)?;
-        let revision = observe_revision(&resource)?;
+        let state = classify_owned_revision(&resource)?;
+        let destination_contains_candidate = destination_has_candidate(&resource)?;
+        let converged_owned_desired = destination_contains_candidate
+            && matches!(
+                state,
+                RuntimeResourceState::Present {
+                    revision,
+                    health: RuntimeResourceHealth::Healthy,
+                } if Some(revision) == resource.spec.desired_revision
+            );
+        let publish_crash_window = action == ManagedConfigurationAction::Publish
+            && destination_contains_candidate
+            && matches!(
+                state,
+                RuntimeResourceState::Present {
+                    revision,
+                    health: RuntimeResourceHealth::Divergent,
+                } if Some(revision) == resource.spec.current_revision
+            );
+        let (revision, owned_divergence) = match state {
+            RuntimeResourceState::Absent => (ResourceRevisionObservation::Absent, false),
+            RuntimeResourceState::Present {
+                revision,
+                health: RuntimeResourceHealth::Healthy,
+            } => (ResourceRevisionObservation::Present(revision), false),
+            RuntimeResourceState::Present {
+                revision,
+                health: RuntimeResourceHealth::Divergent,
+            } => {
+                if resource.spec.current_revision != Some(revision) {
+                    return Err(invalid_data(
+                        "owned managed configuration divergence uses another current revision",
+                    ));
+                }
+                (ResourceRevisionObservation::Unknown, true)
+            }
+            RuntimeResourceState::Present {
+                health: RuntimeResourceHealth::Stopped,
+                ..
+            } => {
+                return Err(invalid_data(
+                    "managed configuration cannot carry stopped runtime health",
+                ));
+            }
+        };
         let evidence = ResourceAdmissionEvidence::new_with_revision_observation(
             access.resource.clone(),
             Some(self.assignment.incarnation.clone()),
@@ -258,6 +327,9 @@ impl TrustedResourceCatalog for ManagedConfigurationResourceCatalog {
             ManagedConfigurationResourceHandle {
                 resource,
                 action,
+                owned_divergence,
+                converged_owned_desired,
+                publish_crash_window,
                 reservation,
             },
             evidence,
@@ -303,6 +375,12 @@ struct ManagedConfigurationDurableRequest {
     candidate_digest: Sha256Digest,
     current_revision: Option<RevisionId>,
     desired_revision: Option<RevisionId>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    owned_divergence: bool,
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Boolean completion or observation evidence for a managed configuration call.
@@ -415,7 +493,11 @@ impl TrustedAdapter for NativeManagedConfigurationAdapter {
             ));
         }
         validate_action_spec(&action, &resource.native().resource.spec)?;
-        encode_request(durable_request(action, &resource.native().resource)?)
+        encode_request(durable_request(
+            action,
+            &resource.native().resource,
+            resource.native().owned_divergence,
+        )?)
     }
 
     fn recover_request(
@@ -429,7 +511,10 @@ impl TrustedAdapter for NativeManagedConfigurationAdapter {
                     "invalid durable managed configuration request: {error}"
                 ))
             })?;
-        if request.schema != REQUEST_SCHEMA {
+        if !matches!(
+            (request.schema.as_str(), request.owned_divergence),
+            (REQUEST_SCHEMA, false) | (REQUEST_SCHEMA_V2, true)
+        ) {
             return Err(invalid_data(
                 "unsupported durable managed configuration request schema",
             ));
@@ -443,6 +528,9 @@ impl TrustedAdapter for NativeManagedConfigurationAdapter {
             &request,
             &resource.native().action,
             &resource.native().resource,
+            resource.native().owned_divergence,
+            resource.native().converged_owned_desired,
+            resource.native().publish_crash_window,
         )?;
         Ok(ManagedConfigurationRequest {
             durable: request,
@@ -506,6 +594,9 @@ fn validate_recovered_request(
     request: &ManagedConfigurationDurableRequest,
     acquired_action: &ManagedConfigurationAction,
     resource: &QualifiedManagedConfiguration,
+    acquired_owned_divergence: bool,
+    converged_owned_desired: bool,
+    publish_crash_window: bool,
 ) -> Result<(), io::Error> {
     if &request.action != acquired_action {
         return Err(invalid_data(
@@ -513,7 +604,23 @@ fn validate_recovered_request(
         ));
     }
     validate_action_spec(&request.action, &resource.spec)?;
-    if request != &durable_request(request.action.clone(), resource)? {
+    let completed_divergent_publish = request.action == ManagedConfigurationAction::Publish
+        && request.owned_divergence
+        && !acquired_owned_divergence
+        && converged_owned_desired;
+    let incomplete_ordinary_publish = request.action == ManagedConfigurationAction::Publish
+        && !request.owned_divergence
+        && acquired_owned_divergence
+        && publish_crash_window;
+    if request.owned_divergence != acquired_owned_divergence
+        && !completed_divergent_publish
+        && !incomplete_ordinary_publish
+    {
+        return Err(invalid_data(
+            "durable managed configuration divergence differs from fresh ownership evidence",
+        ));
+    }
+    if request != &durable_request(request.action.clone(), resource, request.owned_divergence)? {
         return Err(invalid_data(
             "durable managed configuration request disagrees with fresh acquisition",
         ));
@@ -531,7 +638,9 @@ enum ReconcileState {
 fn execute_request(request: &ManagedConfigurationRequest) -> Result<(), io::Error> {
     match request.durable.action {
         ManagedConfigurationAction::Prepare => stage_candidate(&request.resource),
-        ManagedConfigurationAction::Publish => publish_candidate(&request.resource),
+        ManagedConfigurationAction::Publish => {
+            publish_candidate(&request.resource, request.durable.owned_divergence)
+        }
         ManagedConfigurationAction::Release => release_destination(&request.resource),
     }
 }
@@ -568,7 +677,7 @@ fn reconcile_request(request: &ManagedConfigurationRequest) -> Result<ReconcileS
                 return Ok(ReconcileState::Completed);
             }
             Ok(
-                if observation == expected_observation(resource.spec.current_revision) {
+                if matches_expected_current(resource, request.durable.owned_divergence)? {
                     ReconcileState::SafeToRetry
                 } else {
                     ReconcileState::Intervention
@@ -606,9 +715,12 @@ fn stage_candidate(resource: &QualifiedManagedConfiguration) -> Result<(), io::E
         .atomic_write(&resource.spec.candidate, true)
 }
 
-fn publish_candidate(resource: &QualifiedManagedConfiguration) -> Result<(), io::Error> {
+fn publish_candidate(
+    resource: &QualifiedManagedConfiguration,
+    owned_divergence: bool,
+) -> Result<(), io::Error> {
     verify_candidate(resource)?;
-    if observe_revision(resource)? != expected_observation(resource.spec.current_revision) {
+    if !matches_expected_current(resource, owned_divergence)? {
         return Err(invalid_data(
             "managed configuration expected revision is stale",
         ));
@@ -617,6 +729,26 @@ fn publish_candidate(resource: &QualifiedManagedConfiguration) -> Result<(), io:
         .destination
         .atomic_write(&resource.spec.candidate, false)?;
     write_marker(resource)
+}
+
+fn matches_expected_current(
+    resource: &QualifiedManagedConfiguration,
+    owned_divergence: bool,
+) -> Result<bool, io::Error> {
+    let expected = resource.spec.current_revision;
+    if observe_revision(resource)? == expected_observation(expected) {
+        return Ok(true);
+    }
+    if !owned_divergence {
+        return Ok(false);
+    }
+    Ok(matches!(
+        classify_owned_revision(resource)?,
+        RuntimeResourceState::Present {
+            revision,
+            health: RuntimeResourceHealth::Divergent,
+        } if Some(revision) == expected
+    ))
 }
 
 fn release_destination(resource: &QualifiedManagedConfiguration) -> Result<(), io::Error> {
@@ -656,6 +788,38 @@ fn observe_revision(
             Ok(ResourceRevisionObservation::Present(marker.revision))
         }
         _ => Ok(ResourceRevisionObservation::Unknown),
+    }
+}
+
+fn classify_owned_revision(
+    resource: &QualifiedManagedConfiguration,
+) -> Result<RuntimeResourceState, io::Error> {
+    let destination = resource.destination.read_optional(16 * 1024 * 1024)?;
+    let marker = read_marker_optional(&resource.marker_path)?;
+    match (destination, marker) {
+        (None, None) => Ok(RuntimeResourceState::Absent),
+        (Some(bytes), Some(marker))
+            if marker.schema == MARKER_SCHEMA
+                && marker.resource == resource.spec.resource
+                && marker.destination == path_string(resource.destination.display())? =>
+        {
+            if marker.content == Sha256Digest::of_bytes(&bytes) {
+                Ok(RuntimeResourceState::Present {
+                    revision: marker.revision,
+                    health: RuntimeResourceHealth::Healthy,
+                })
+            } else {
+                // The authenticated marker establishes ownership and revision;
+                // only the live bytes contradict that retained contract.
+                Ok(RuntimeResourceState::Present {
+                    revision: marker.revision,
+                    health: RuntimeResourceHealth::Divergent,
+                })
+            }
+        }
+        _ => Err(invalid_data(
+            "managed configuration ownership evidence is incomplete or foreign",
+        )),
     }
 }
 
@@ -770,15 +934,22 @@ fn validate_action_spec(
 fn durable_request(
     action: ManagedConfigurationAction,
     resource: &QualifiedManagedConfiguration,
+    owned_divergence: bool,
 ) -> Result<ManagedConfigurationDurableRequest, io::Error> {
     Ok(ManagedConfigurationDurableRequest {
-        schema: REQUEST_SCHEMA.to_string(),
+        schema: if owned_divergence {
+            REQUEST_SCHEMA_V2
+        } else {
+            REQUEST_SCHEMA
+        }
+        .to_string(),
         action,
         resource: resource.spec.resource.clone(),
         destination: path_string(resource.destination.display())?,
         candidate_digest: resource.candidate_digest,
         current_revision: resource.spec.current_revision,
         desired_revision: resource.spec.desired_revision,
+        owned_divergence,
     })
 }
 
@@ -945,15 +1116,52 @@ mod tests {
 
     #[test]
     fn publish_reconcile_repairs_destination_before_marker_crash_window() {
-        let fixture = managed_fixture(None, Some(revision("desired")), b"candidate");
+        let fixture = managed_fixture(
+            Some(revision("current")),
+            Some(revision("desired")),
+            b"candidate",
+        );
+        stage_candidate(&fixture.resource).expect("candidate is staged");
+        fixture
+            .resource
+            .destination
+            .atomic_write(b"current content", false)
+            .expect("current destination is installed");
+        write_test_marker(&fixture.resource, revision("current"), b"current content");
+        let durable = durable_request(
+            ManagedConfigurationAction::Publish,
+            &fixture.resource,
+            false,
+        )
+        .expect("durable request encodes before the effect");
+
         fixture
             .resource
             .destination
             .atomic_write(b"candidate", false)
-            .expect("simulated destination rename succeeds");
+            .expect("destination rename commits before the marker write");
+        let state = classify_owned_revision(&fixture.resource)
+            .expect("fresh catalog classification retains owned divergence");
+        assert_eq!(
+            state,
+            RuntimeResourceState::Present {
+                revision: revision("current"),
+                health: RuntimeResourceHealth::Divergent,
+            }
+        );
+        let publish_crash_window =
+            destination_has_candidate(&fixture.resource).expect("destination is inspected");
+        validate_recovered_request(
+            &durable,
+            &ManagedConfigurationAction::Publish,
+            &fixture.resource,
+            true,
+            false,
+            publish_crash_window,
+        )
+        .expect("fresh recovery accepts the exact rename-before-marker window");
         let request = ManagedConfigurationRequest {
-            durable: durable_request(ManagedConfigurationAction::Publish, &fixture.resource)
-                .expect("durable request encodes"),
+            durable,
             resource: fixture.resource.clone(),
         };
 
@@ -994,6 +1202,68 @@ mod tests {
         assert_eq!(
             observe_revision(&fixture.resource).expect("marker is observed"),
             ResourceRevisionObservation::Unknown
+        );
+        assert!(
+            classify_owned_revision(&fixture.resource).is_err(),
+            "foreign ownership must not select a repair action"
+        );
+        stage_candidate(&fixture.resource).expect("candidate is staged");
+        assert!(
+            publish_candidate(&fixture.resource, true).is_err(),
+            "foreign ownership at publication must fail closed"
+        );
+    }
+
+    #[test]
+    fn owned_content_mismatch_is_classified_as_divergence() {
+        let fixture = managed_fixture(
+            Some(revision("desired")),
+            Some(revision("desired")),
+            b"candidate",
+        );
+        fixture
+            .resource
+            .destination
+            .atomic_write(b"candidate", false)
+            .expect("candidate destination is installed");
+        write_test_marker(&fixture.resource, revision("desired"), b"candidate");
+        fixture
+            .resource
+            .destination
+            .atomic_write(b"tampered", false)
+            .expect("owned destination is changed");
+
+        assert_eq!(
+            classify_owned_revision(&fixture.resource).expect("owned mismatch is classified"),
+            RuntimeResourceState::Present {
+                revision: revision("desired"),
+                health: RuntimeResourceHealth::Divergent,
+            }
+        );
+
+        stage_candidate(&fixture.resource).expect("repair candidate is staged");
+        fixture
+            .resource
+            .marker_path
+            .remove()
+            .expect("owned marker is removed after classification");
+        assert!(
+            publish_candidate(&fixture.resource, true).is_err(),
+            "incomplete ownership at publication must fail closed"
+        );
+
+        write_test_marker(&fixture.resource, revision("changed"), b"candidate");
+        assert!(
+            publish_candidate(&fixture.resource, true).is_err(),
+            "a marker revision changed after classification must fail closed"
+        );
+
+        write_test_marker(&fixture.resource, revision("desired"), b"candidate");
+        publish_candidate(&fixture.resource, true)
+            .expect("exact owned divergence may be overwritten by the repair candidate");
+        assert_eq!(
+            observe_revision(&fixture.resource).expect("repaired revision is observed"),
+            ResourceRevisionObservation::Present(revision("desired"))
         );
     }
 
@@ -1060,7 +1330,7 @@ mod tests {
             .expect("stale marker is installed");
         stage_candidate(&fixture.resource).expect("new candidate is staged");
 
-        assert!(publish_candidate(&fixture.resource).is_err());
+        assert!(publish_candidate(&fixture.resource, false).is_err());
         assert_eq!(
             fixture
                 .resource
@@ -1085,8 +1355,12 @@ mod tests {
             .expect("candidate destination is installed");
         write_test_marker(&fixture.resource, revision("foreign"), b"candidate");
         let request = ManagedConfigurationRequest {
-            durable: durable_request(ManagedConfigurationAction::Publish, &fixture.resource)
-                .expect("durable request encodes"),
+            durable: durable_request(
+                ManagedConfigurationAction::Publish,
+                &fixture.resource,
+                false,
+            )
+            .expect("durable request encodes"),
             resource: fixture.resource.clone(),
         };
 
@@ -1105,8 +1379,12 @@ mod tests {
         let fixture = managed_fixture(Some(revision("expected")), None, b"");
         write_test_marker(&fixture.resource, revision("foreign"), b"old candidate");
         let request = ManagedConfigurationRequest {
-            durable: durable_request(ManagedConfigurationAction::Release, &fixture.resource)
-                .expect("durable request encodes"),
+            durable: durable_request(
+                ManagedConfigurationAction::Release,
+                &fixture.resource,
+                false,
+            )
+            .expect("durable request encodes"),
             resource: fixture.resource.clone(),
         };
 
@@ -1126,8 +1404,12 @@ mod tests {
     #[test]
     fn recovery_rejects_a_mutated_durable_action() {
         let fixture = managed_fixture(None, Some(revision("desired")), b"candidate");
-        let mut durable = durable_request(ManagedConfigurationAction::Prepare, &fixture.resource)
-            .expect("durable request encodes");
+        let mut durable = durable_request(
+            ManagedConfigurationAction::Prepare,
+            &fixture.resource,
+            false,
+        )
+        .expect("durable request encodes");
         durable.action = ManagedConfigurationAction::Publish;
 
         assert!(
@@ -1135,8 +1417,94 @@ mod tests {
                 &durable,
                 &ManagedConfigurationAction::Prepare,
                 &fixture.resource,
+                false,
+                false,
+                false,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn divergent_publish_recovers_after_candidate_reaches_the_destination() {
+        let fixture = managed_fixture(
+            Some(revision("current")),
+            Some(revision("desired")),
+            b"desired candidate",
+        );
+        fixture
+            .resource
+            .candidate_path
+            .atomic_write(&fixture.resource.spec.candidate, true)
+            .expect("candidate is staged");
+        fixture
+            .resource
+            .destination
+            .atomic_write(b"drifted content", false)
+            .expect("drifted destination is installed");
+        write_test_marker(&fixture.resource, revision("current"), b"drifted content");
+        let durable = durable_request(ManagedConfigurationAction::Publish, &fixture.resource, true)
+            .expect("divergent durable request encodes");
+
+        publish_candidate(&fixture.resource, true)
+            .expect("publish commits before its success record");
+        let state = classify_owned_revision(&fixture.resource)
+            .expect("fresh acquisition classifies the committed destination");
+        let converged_owned_desired = matches!(
+            state,
+            RuntimeResourceState::Present {
+                revision,
+                health: RuntimeResourceHealth::Healthy,
+            } if Some(revision) == fixture.resource.spec.desired_revision
+        ) && destination_has_candidate(&fixture.resource)
+            .expect("destination is inspected");
+
+        validate_recovered_request(
+            &durable,
+            &ManagedConfigurationAction::Publish,
+            &fixture.resource,
+            false,
+            converged_owned_desired,
+            false,
+        )
+        .expect("the committed divergent publish remains recoverable");
+        let request = ManagedConfigurationRequest {
+            durable,
+            resource: fixture.resource.clone(),
+        };
+        assert_eq!(
+            reconcile_request(&request).expect("committed publish reconciles"),
+            ReconcileState::Completed
+        );
+    }
+
+    #[test]
+    fn divergent_publish_recovery_rejects_changed_owned_content() {
+        let fixture = managed_fixture(
+            Some(revision("current")),
+            Some(revision("desired")),
+            b"desired candidate",
+        );
+        let durable = durable_request(ManagedConfigurationAction::Publish, &fixture.resource, true)
+            .expect("divergent durable request encodes");
+        fixture
+            .resource
+            .destination
+            .atomic_write(b"changed content", false)
+            .expect("changed destination is installed");
+        write_test_marker(&fixture.resource, revision("desired"), b"changed content");
+
+        assert!(
+            validate_recovered_request(
+                &durable,
+                &ManagedConfigurationAction::Publish,
+                &fixture.resource,
+                false,
+                destination_has_candidate(&fixture.resource).expect("destination is inspected"),
+                false,
+            )
+            .is_err(),
+            "a desired marker cannot authorize different destination content"
         );
     }
 

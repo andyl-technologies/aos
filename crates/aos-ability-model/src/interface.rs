@@ -141,6 +141,9 @@ pub struct InterfaceDescriptor {
     pub abi: std::num::NonZeroU32,
     /// Defines one contribution or request value.
     pub request: ValueSchema,
+    /// Defines operator-owned configuration for each enabled provider instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<ValueSchema>,
     /// Defines aggregate caller-visible outputs.
     pub outputs: BTreeMap<LocalKey, OutputDescriptor>,
     /// Defines callable methods in canonical name order.

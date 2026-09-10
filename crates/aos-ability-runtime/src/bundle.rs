@@ -197,6 +197,12 @@ impl ReloadablePlanBundle {
         self.transition_authority_digest
     }
 
+    /// Returns the protected runtime classification retained by a repair graph.
+    #[must_use]
+    pub const fn reconciliation(&self) -> Option<&aos_ability_plan::TransitionReconciliation> {
+        self.transition.reconciliation()
+    }
+
     /// Encodes the bundle in the canonical AOS JSON dialect.
     ///
     /// # Errors

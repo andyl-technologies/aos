@@ -16,8 +16,9 @@ use aos_ability_model::document::{
 };
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, AggregateOutput, Binding, BindingId, BindingRequest,
-    ControllerAssignment, EnvironmentId, InstanceId, ProviderImplementationReference, RequestId,
-    ResourceRevision, RevisionId, ScopePath, TeardownProviderAuthorization,
+    ControllerAssignment, EnvironmentId, InstanceId, PlanId, ProviderImplementationReference,
+    RequestId, ResourceRevision, RevisionId, ScopePath, TeardownProviderAuthorization,
+    TransactionId,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,12 @@ use super::TransitionError;
 
 /// Exact schema discriminator passed to pure transition constructors.
 pub const TRANSITION_CONTEXT_SCHEMA: &str = "aos.ability.transition-context/v1";
+
+/// Schema discriminator for transition contexts carrying live reconciliation input.
+pub const TRANSITION_CONTEXT_SCHEMA_V2: &str = "aos.ability.transition-context/v2";
+
+/// Exact schema discriminator for one trusted runtime observation publication.
+pub const RUNTIME_OBSERVATIONS_SCHEMA: &str = "aos.ability.runtime-observations/v1";
 
 /// Classifies one provider-owned logical resource change.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -41,6 +48,103 @@ pub enum ResourceChangeKind {
     Remove,
     /// Preserves the same logical resource and semantic revision.
     Unchanged,
+    /// Repairs a desired resource that was observed at its exact revision but stopped.
+    ReconcileStopped,
+    /// Repairs a desired resource whose live behavior contradicted its exact revision.
+    ReconcileDivergent,
+}
+
+/// Classifies the live health of one present native resource.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeResourceHealth {
+    /// The resource is available and its behavior matches the desired contract.
+    Healthy,
+    /// The resource exists at the expected revision but is not running.
+    Stopped,
+    /// The resource exists, but direct behavior evidence contradicts its contract.
+    Divergent,
+}
+
+/// Carries one authoritative live resource classification.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum RuntimeResourceState {
+    /// An authoritative probe established that the resource is absent.
+    Absent,
+    /// An authoritative probe established a present semantic revision and health.
+    Present {
+        /// Identifies the semantic revision established by the probe.
+        revision: RevisionId,
+        /// Classifies direct live behavior at that revision.
+        health: RuntimeResourceHealth,
+    },
+}
+
+/// Records one exact resource observation used to construct a repair graph.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeResourceObservation {
+    /// Identifies the logical resource that was probed.
+    pub resource: aos_ability_model::ResourceId,
+    /// Carries the authoritative presence, revision, and health result.
+    pub state: RuntimeResourceState,
+}
+
+/// Links one live classification publication to the repair graph it produced.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransitionReconciliation {
+    /// Carries [`RUNTIME_OBSERVATIONS_SCHEMA`].
+    pub schema: String,
+    /// Identifies the initially checked graph whose no-op assumption was disproved.
+    pub source_plan: PlanId,
+    /// Separates this protected classification from other attempts for that graph.
+    pub transaction: TransactionId,
+    /// Identifies the revocation-sensitive operator policy publication.
+    pub policy_fence: RevisionId,
+    /// Binds the observation to the protected current-authority epoch.
+    pub authority_epoch: u64,
+    /// Identifies the exact current-authority publication in that epoch.
+    pub sequence: u64,
+    /// Records the trusted restart-stable time at which resources were classified.
+    pub observed_at_restart_millis: u64,
+    /// Bounds how long the classification may be used to construct a repair graph.
+    pub max_age_millis: u64,
+    /// Commits to the protected current-authority document used for classification.
+    pub authority_publication: Sha256Digest,
+    /// Retains the exact protected current-authority publication as bounded JSON.
+    pub authority_document: AbilityValue,
+    /// Lists exact classified resources in canonical logical-resource order.
+    pub observations: Vec<RuntimeResourceObservation>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct LinkedCurrentAuthorityDocument {
+    pub(super) schema: String,
+    pub(super) policy_fence: RevisionId,
+    pub(super) transaction: TransactionId,
+    pub(super) authority_epoch: u64,
+    pub(super) sequence: u64,
+    pub(super) observed_at_restart_millis: u64,
+    pub(super) max_age_millis: u64,
+    pub(super) plan: PlanId,
+    pub(super) resource_observations: Vec<LinkedCurrentResourceObservation>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct LinkedCurrentResourceObservation {
+    pub(super) resource: aos_ability_model::ResourceId,
+    pub(super) state: LinkedCurrentResourceState,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub(super) enum LinkedCurrentResourceState {
+    Absent,
+    Present { revision: RevisionId },
+    Stopped { revision: RevisionId },
+    Divergent { revision: RevisionId },
 }
 
 /// Supplies one exact before-and-after resource comparison to a constructor.
@@ -276,8 +380,9 @@ pub(super) fn bounded_evaluation_message(error: &EvaluationError) -> String {
 pub(super) fn resource_changes(
     current: &[ResourceRevision],
     desired: &[ResourceRevision],
+    observations: Option<&[RuntimeResourceObservation]>,
 ) -> Vec<ResourceChange> {
-    let current: BTreeMap<_, _> = current
+    let mut current: BTreeMap<_, _> = current
         .iter()
         .map(|revision| (revision.resource.clone(), revision.revision))
         .collect();
@@ -285,6 +390,21 @@ pub(super) fn resource_changes(
         .iter()
         .map(|revision| (revision.resource.clone(), revision.revision))
         .collect();
+    let observations: BTreeMap<_, _> = observations
+        .unwrap_or_default()
+        .iter()
+        .map(|observation| (observation.resource.clone(), observation.state))
+        .collect();
+    for (resource, state) in &observations {
+        match state {
+            RuntimeResourceState::Absent => {
+                current.remove(resource);
+            }
+            RuntimeResourceState::Present { revision, .. } => {
+                current.insert(resource.clone(), *revision);
+            }
+        }
+    }
     current
         .keys()
         .chain(desired.keys())
@@ -294,12 +414,22 @@ pub(super) fn resource_changes(
         .filter_map(|resource| {
             let current = current.get(&resource).copied();
             let desired = desired.get(&resource).copied();
-            let kind = match (current, desired) {
-                (None, Some(_)) => ResourceChangeKind::Create,
-                (Some(_), None) => ResourceChangeKind::Remove,
-                (Some(left), Some(right)) if left != right => ResourceChangeKind::Update,
-                (Some(_), Some(_)) => ResourceChangeKind::Unchanged,
-                (None, None) => return None,
+            let kind = match observations.get(&resource) {
+                Some(RuntimeResourceState::Present {
+                    revision,
+                    health: RuntimeResourceHealth::Stopped,
+                }) if desired == Some(*revision) => ResourceChangeKind::ReconcileStopped,
+                Some(RuntimeResourceState::Present {
+                    revision,
+                    health: RuntimeResourceHealth::Divergent,
+                }) if desired == Some(*revision) => ResourceChangeKind::ReconcileDivergent,
+                _ => match (current, desired) {
+                    (None, Some(_)) => ResourceChangeKind::Create,
+                    (Some(_), None) => ResourceChangeKind::Remove,
+                    (Some(left), Some(right)) if left != right => ResourceChangeKind::Update,
+                    (Some(_), Some(_)) => ResourceChangeKind::Unchanged,
+                    (None, None) => return None,
+                },
             };
             Some(ResourceChange {
                 resource,
@@ -520,6 +650,125 @@ mod tests {
         };
 
         assert_eq!(visible.resource, remapped);
+    }
+
+    #[test]
+    fn runtime_observations_select_bounded_repair_change_kinds() {
+        let provider = instance("provider");
+        let stopped = resource(&provider, "stopped");
+        let divergent = resource(&provider, "divergent");
+        let absent = resource(&provider, "absent");
+        let stale = resource(&provider, "stale");
+        let desired_revision = RevisionId(Sha256Digest::separated(
+            "aos.test.transition-context/v1",
+            b"desired",
+        ));
+        let stale_revision = RevisionId(Sha256Digest::separated(
+            "aos.test.transition-context/v1",
+            b"stale",
+        ));
+        let desired = [&stopped, &divergent, &absent, &stale]
+            .into_iter()
+            .map(|resource| ResourceRevision {
+                resource: resource.clone(),
+                revision: desired_revision,
+            })
+            .collect::<Vec<_>>();
+        let current = desired.clone();
+        let observations = vec![
+            RuntimeResourceObservation {
+                resource: absent.clone(),
+                state: RuntimeResourceState::Absent,
+            },
+            RuntimeResourceObservation {
+                resource: divergent.clone(),
+                state: RuntimeResourceState::Present {
+                    revision: desired_revision,
+                    health: RuntimeResourceHealth::Divergent,
+                },
+            },
+            RuntimeResourceObservation {
+                resource: stale.clone(),
+                state: RuntimeResourceState::Present {
+                    revision: stale_revision,
+                    health: RuntimeResourceHealth::Healthy,
+                },
+            },
+            RuntimeResourceObservation {
+                resource: stopped.clone(),
+                state: RuntimeResourceState::Present {
+                    revision: desired_revision,
+                    health: RuntimeResourceHealth::Stopped,
+                },
+            },
+        ];
+
+        let changes = resource_changes(&current, &desired, Some(&observations));
+        let kinds = changes
+            .into_iter()
+            .map(|change| (change.resource, (change.kind, change.current)))
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(
+            kinds[&stopped],
+            (ResourceChangeKind::ReconcileStopped, Some(desired_revision))
+        );
+        assert_eq!(
+            kinds[&divergent],
+            (
+                ResourceChangeKind::ReconcileDivergent,
+                Some(desired_revision)
+            )
+        );
+        assert_eq!(kinds[&absent], (ResourceChangeKind::Create, None));
+        assert_eq!(
+            kinds[&stale],
+            (ResourceChangeKind::Update, Some(stale_revision))
+        );
+    }
+
+    #[test]
+    fn mismatched_runtime_revision_selects_update_before_health_repair() {
+        let provider = instance("provider");
+        let stopped = resource(&provider, "stopped-old");
+        let divergent = resource(&provider, "divergent-old");
+        let desired_revision = RevisionId(Sha256Digest::separated(
+            "aos.test.transition-context/v1",
+            b"desired",
+        ));
+        let old_revision = RevisionId(Sha256Digest::separated(
+            "aos.test.transition-context/v1",
+            b"old",
+        ));
+        let desired = [&stopped, &divergent]
+            .into_iter()
+            .map(|resource| ResourceRevision {
+                resource: resource.clone(),
+                revision: desired_revision,
+            })
+            .collect::<Vec<_>>();
+        let observations = vec![
+            RuntimeResourceObservation {
+                resource: divergent.clone(),
+                state: RuntimeResourceState::Present {
+                    revision: old_revision,
+                    health: RuntimeResourceHealth::Divergent,
+                },
+            },
+            RuntimeResourceObservation {
+                resource: stopped.clone(),
+                state: RuntimeResourceState::Present {
+                    revision: old_revision,
+                    health: RuntimeResourceHealth::Stopped,
+                },
+            },
+        ];
+
+        let changes = resource_changes(&desired, &desired, Some(&observations));
+
+        assert!(changes.iter().all(|change| {
+            change.kind == ResourceChangeKind::Update && change.current == Some(old_revision)
+        }));
     }
 
     fn authorized(binding: Binding) -> AuthorizedTransitionBinding {

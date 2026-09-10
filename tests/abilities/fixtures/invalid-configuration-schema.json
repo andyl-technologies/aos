@@ -1,0 +1,16 @@
+{
+  "fields": {
+    "routes": {
+      "element": {
+        "kind": "optional",
+        "value": {
+          "kind": "resource-reference"
+        }
+      },
+      "kind": "list",
+      "max_items": 8
+    }
+  },
+  "kind": "record",
+  "optional_fields": []
+}

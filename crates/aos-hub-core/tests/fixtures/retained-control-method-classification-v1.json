@@ -3973,6 +3973,32 @@
     "class": { "class": "controller_observation" }, "external_effects": false
   },
   {
+    "service": "AbilityDeploymentService", "method": "PlanConfigureReporter",
+    "exposure": "public", "durability": "durable",
+    "class": { "class": "plan", "pair": "configure_ability_deployment_reporter" },
+    "external_effects": false
+  },
+  {
+    "service": "AbilityDeploymentService", "method": "ConfigureReporter",
+    "exposure": "public", "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "configure_ability_deployment_reporter",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AbilityDeploymentService", "method": "ReportPackageOverlay",
+    "exposure": "public", "durability": "durable",
+    "class": { "class": "data_plane_write" }, "external_effects": false
+  },
+  {
+    "service": "AbilityDeploymentService", "method": "GetPackageOverlay",
+    "exposure": "public", "durability": "read_only",
+    "class": { "class": "read" }, "external_effects": false
+  },
+  {
     "service": "DocumentationService", "method": "GetPackageDocumentation",
     "exposure": "public", "durability": "read_only",
     "class": { "class": "read" }, "external_effects": false

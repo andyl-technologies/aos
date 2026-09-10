@@ -424,12 +424,39 @@
     outcome = normalizeOutcome "method '${name}' outcome" checked.outcome;
   };
 
+  configurationSchemaIsLiteral = schema:
+    if
+      builtins.elem schema.kind [
+        "artifact-reference"
+        "resource-reference"
+        "provider-assignment"
+        "operation-result-reference"
+      ]
+    then false
+    else if schema.kind == "list"
+    then configurationSchemaIsLiteral schema.element
+    else if schema.kind == "map" || schema.kind == "optional"
+    then configurationSchemaIsLiteral schema.value
+    else if schema.kind == "record"
+    then builtins.all configurationSchemaIsLiteral (builtins.attrValues schema.fields)
+    else if schema.kind == "tagged-union"
+    then builtins.all configurationSchemaIsLiteral (builtins.attrValues schema.variants)
+    else true;
+
+  normalizeConfigurationSchema = value: let
+    schema = schemas.validateSchema "export configurationSchema" value;
+  in
+    if configurationSchemaIsLiteral schema
+    then schema
+    else fail "export configurationSchema must contain evaluation literals only";
+
   define = value: let
     checked =
       requireAttrs "export" [
         "interface"
         "abi"
         "requestSchema"
+        "configurationSchema"
         "outputs"
         "methods"
         "lifecycle"
@@ -473,6 +500,10 @@
         abi = requireU32Positive "interface ABI" checked.abi;
       };
       request_schema = schemas.validateSchema "export requestSchema" checked.requestSchema;
+      configuration_schema =
+        if (checked.configurationSchema or null) == null
+        then null
+        else normalizeConfigurationSchema checked.configurationSchema;
       outputs =
         builtins.mapAttrs (
           name: normalizeOutput "interface output '${requireLocalKey "output name" name}'"
@@ -500,11 +531,17 @@
 
   normalizeExport = value: let
     export = requireMarker "export" "aos-ability-export" value;
-  in {
-    inherit (export.interface) name abi;
-    request = export.request_schema;
-    inherit (export) outputs methods lifecycle guarantees;
-  };
+  in
+    {
+      inherit (export.interface) name abi;
+      request = export.request_schema;
+      inherit (export) outputs methods lifecycle guarantees;
+    }
+    // (
+      if export.configuration_schema == null
+      then {}
+      else {configuration = export.configuration_schema;}
+    );
 
   normalizeImplementation = artifact: value: let
     export = requireMarker "export" "aos-ability-export" value;

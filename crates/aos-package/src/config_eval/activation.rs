@@ -15,7 +15,7 @@ use std::{error::Error, fmt};
 
 use anyhow::{Context, Result, bail};
 use rustix::fs::{FlockOperation, flock};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::materialize::ConfigManifest;
@@ -66,6 +66,166 @@ struct ActivationRecord<'a> {
     dropped_packages: Vec<&'a str>,
     status: &'static str,
     activation_exit: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_ability_transaction: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_ability_prior_generation: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredActivationRecord {
+    schema: String,
+    generation: u32,
+    generation_id: String,
+    transaction_manifest: String,
+    #[serde(rename = "dropped_packages")]
+    _dropped_packages: Vec<String>,
+    status: String,
+    activation_exit: i32,
+    native_ability_transaction: Option<String>,
+    native_ability_prior_generation: Option<u32>,
+}
+
+/// Returns generations retained by the current native recovery record.
+///
+/// A failed post-publication transition may leave the declarative pointer on
+/// the new generation while the old consumer still uses resources rooted by
+/// its predecessor. Configuration GC must retain that predecessor until a
+/// later successful activation detaches it.
+///
+/// # Errors
+///
+/// Returns an error when the current activation record is malformed, differs
+/// from configuration state, or names an unavailable recovery generation.
+pub(crate) fn required_native_recovery_generations(
+    profile: &Path,
+    state: &crate::types::ConfigGenerationState,
+) -> Result<std::collections::BTreeSet<u32>> {
+    let mut required = std::collections::BTreeSet::new();
+    if state.current == 0 {
+        return Ok(required);
+    }
+    let mut visited = std::collections::BTreeSet::new();
+    let mut generation = state.current;
+    loop {
+        if !visited.insert(generation) {
+            bail!("native recovery generation chain contains a cycle");
+        }
+        let generation_state = state
+            .generations
+            .iter()
+            .find(|candidate| candidate.number == generation)
+            .with_context(|| {
+                format!("native recovery generation {generation} is absent from state")
+            })?;
+        let generation_directory = profile.join(format!("gen-{generation}"));
+        if !generation_directory
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_dir())
+        {
+            bail!("native recovery generation {generation} has no protected directory");
+        }
+        let structured =
+            manifest_has_structured_activation(&generation_directory.join("manifest.json"))?;
+        let record = read_stored_activation_record(
+            &generation_directory.join(ACTIVATION_RECORD),
+            structured,
+        )?;
+        let Some(record) = record else {
+            break;
+        };
+        if record.schema != "aos.config-activation/v1"
+            || record.generation != generation
+            || record.generation_id != generation_state.manifest_hash
+        {
+            bail!("activation record differs from configuration state");
+        }
+        let native_recovery = match record.status.as_str() {
+            "complete" if record.activation_exit == 0 => false,
+            "degraded" | "native-pending" | "native-failed" if record.activation_exit == 6 => true,
+            "complete" | "degraded" | "native-pending" | "native-failed" => {
+                bail!("activation record has an inconsistent status and exit code");
+            }
+            _ => bail!("activation record has an unknown status"),
+        };
+        if !structured || !native_recovery {
+            break;
+        }
+        if record.transaction_manifest.is_empty()
+            || record
+                .native_ability_transaction
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            bail!("structured recovery record is incomplete");
+        }
+        let prior = record
+            .native_ability_prior_generation
+            .context("structured recovery record has no prior generation")?;
+        if prior == 0 {
+            break;
+        }
+        if prior == generation {
+            bail!("native recovery generation references itself");
+        }
+        required.insert(prior);
+        generation = prior;
+    }
+    Ok(required)
+}
+
+fn read_stored_activation_record(
+    path: &Path,
+    required: bool,
+) -> Result<Option<StoredActivationRecord>> {
+    const MAX_ACTIVATION_RECORD_BYTES: u64 = 64 * 1024;
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !required => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            bail!(
+                "structured recovery generation has no activation record at {}",
+                path.display()
+            );
+        }
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > MAX_ACTIVATION_RECORD_BYTES {
+        bail!(
+            "activation record {} is not a bounded regular file",
+            path.display()
+        );
+    }
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .with_context(|| format!("parsing {}", path.display()))
+}
+
+fn manifest_has_structured_activation(path: &Path) -> Result<bool> {
+    const MAX_CONFIG_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
+
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("reading current manifest metadata at {}", path.display()))?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_CONFIG_MANIFEST_BYTES {
+        bail!(
+            "current manifest {} is not a bounded regular file",
+            path.display()
+        );
+    }
+    let document: Value = serde_json::from_slice(
+        &std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", path.display()))?;
+    let inputs = document
+        .get("inputs")
+        .and_then(Value::as_object)
+        .context("current manifest has no inputs object")?;
+    Ok(inputs
+        .get("ability_activation")
+        .is_some_and(|activation| !activation.is_null()))
 }
 
 /// Inputs consumed by the activation commit.
@@ -128,6 +288,14 @@ impl ActivationFailure {
         }
     }
 
+    /// Classifies a post-commit structured transition failure as degraded.
+    pub(crate) fn degraded(message: impl Into<String>) -> Self {
+        Self {
+            exit_code: 6,
+            message: message.into(),
+        }
+    }
+
     /// Returns the process exit code the service contract must observe.
     pub fn exit_code(&self) -> i32 {
         self.exit_code
@@ -158,12 +326,144 @@ impl Error for ActivationFailure {}
 /// as an error *after* committing because the switch stands but the system is
 /// degraded.
 pub fn activate_config(params: &ActivateConfigParams) -> Result<u32> {
+    let manifest = load_config_manifest(&params.manifest)?;
+    if manifest.inputs.ability_activation.is_some() {
+        return super::native_activation::activate_config(params, manifest);
+    }
     activate_config_with(
         params,
         true,
         true,
         true,
         run_activation_with_credential_barrier,
+    )
+}
+
+pub(crate) fn load_config_manifest(path: &Path) -> Result<ConfigManifest> {
+    let manifest_text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let manifest: ConfigManifest = serde_json::from_str(&manifest_text)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    manifest
+        .validate()
+        .with_context(|| format!("validating {}", path.display()))?;
+    Ok(manifest)
+}
+
+/// Replaces a committed activation's provisional status after native convergence.
+///
+/// # Errors
+///
+/// Returns an error when the committed record is missing, malformed, belongs
+/// to another generation, or cannot be durably replaced.
+pub(crate) fn publish_structured_activation_success(
+    params: &ActivateConfigParams,
+    generation: u32,
+    expected_generation_id: &str,
+    expected_transaction_manifest: &str,
+    expected_native_transaction: &aos_ability_model::TransactionId,
+) -> Result<()> {
+    let generation_record = params
+        .profile
+        .join(format!("gen-{generation}"))
+        .join(ACTIVATION_RECORD);
+    let mut record: Value = serde_json::from_slice(
+        &std::fs::read(&generation_record)
+            .with_context(|| format!("reading {}", generation_record.display()))?,
+    )
+    .with_context(|| format!("parsing {}", generation_record.display()))?;
+    if record.get("schema").and_then(Value::as_str) != Some("aos.config-activation/v1")
+        || record.get("generation").and_then(Value::as_u64) != Some(u64::from(generation))
+        || record.get("generation_id").and_then(Value::as_str) != Some(expected_generation_id)
+        || record.get("transaction_manifest").and_then(Value::as_str)
+            != Some(expected_transaction_manifest)
+        || record.get("status").and_then(Value::as_str) != Some("native-pending")
+        || record
+            .get("native_ability_transaction")
+            .and_then(Value::as_str)
+            != Some(expected_native_transaction.0.as_str())
+    {
+        bail!("committed activation record differs from the pending native transaction");
+    }
+    record["status"] = Value::String("complete".to_string());
+    record["activation_exit"] = Value::from(0);
+    write_json_atomic(&generation_record, &record)?;
+    write_json_atomic(&params.marker_root.join(ACTIVATION_RECORD), &record)
+}
+
+/// Records that a pending native transaction settled without installing its target.
+///
+/// # Errors
+///
+/// Returns an error unless the current proof names the exact pending manifest
+/// and transaction, or when the replacement cannot be durably published.
+pub(crate) fn publish_structured_activation_settled_failure(
+    params: &ActivateConfigParams,
+    generation: u32,
+    expected_generation_id: &str,
+    expected_transaction_manifest: &str,
+    expected_native_transaction: &aos_ability_model::TransactionId,
+) -> Result<()> {
+    let generation_record = params
+        .profile
+        .join(format!("gen-{generation}"))
+        .join(ACTIVATION_RECORD);
+    let mut record: Value = serde_json::from_slice(
+        &std::fs::read(&generation_record)
+            .with_context(|| format!("reading {}", generation_record.display()))?,
+    )
+    .with_context(|| format!("parsing {}", generation_record.display()))?;
+    if record.get("schema").and_then(Value::as_str) != Some("aos.config-activation/v1")
+        || record.get("generation").and_then(Value::as_u64) != Some(u64::from(generation))
+        || record.get("generation_id").and_then(Value::as_str) != Some(expected_generation_id)
+        || record.get("transaction_manifest").and_then(Value::as_str)
+            != Some(expected_transaction_manifest)
+        || record.get("status").and_then(Value::as_str) != Some("native-pending")
+        || record
+            .get("native_ability_transaction")
+            .and_then(Value::as_str)
+            != Some(expected_native_transaction.0.as_str())
+    {
+        bail!("committed activation record differs from the settled native transaction");
+    }
+    record["status"] = Value::String("native-failed".to_string());
+    record["activation_exit"] = Value::from(6);
+    write_json_atomic(&generation_record, &record)?;
+    write_json_atomic(&params.marker_root.join(ACTIVATION_RECORD), &record)
+}
+
+/// Commits a prevalidated structured candidate while its caller owns the switch lock.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`activate_config`].
+pub(crate) fn commit_structured_config_while_locked(
+    params: &ActivateConfigParams,
+    manifest: &ConfigManifest,
+    transaction: &aos_ability_model::TransactionId,
+    prior_generation: u32,
+) -> Result<u32> {
+    let mut locked = params.clone();
+    locked.switch_lock_held = true;
+    activate_config_with_reconciliation_mode(
+        &locked,
+        true,
+        true,
+        true,
+        run_activation_with_credential_barrier,
+        |reconciliation, plan| {
+            reconciliation
+                .publish_with(|units| {
+                    if units.is_empty() {
+                        Ok(())
+                    } else {
+                        crate::sysroot::augment_reconcile_plan_with_credential_units(plan, units)
+                    }
+                })
+                .map(|_| ())
+        },
+        Some(manifest),
+        Some((transaction, prior_generation)),
     )
 }
 
@@ -398,6 +698,37 @@ where
     ) -> Result<Option<i32>>,
     G: FnOnce(crate::credential_artifact::CredentialReconciliation, &Path) -> Result<()>,
 {
+    activate_config_with_reconciliation_mode(
+        params,
+        verify_realized_paths,
+        resolve_credentials,
+        detect_tpm,
+        run_activate,
+        apply_credentials,
+        None,
+        None,
+    )
+}
+
+fn activate_config_with_reconciliation_mode<F, G>(
+    params: &ActivateConfigParams,
+    verify_realized_paths: bool,
+    resolve_credentials: bool,
+    detect_tpm: bool,
+    run_activate: F,
+    apply_credentials: G,
+    provided_manifest: Option<&ConfigManifest>,
+    structured_transaction: Option<(&aos_ability_model::TransactionId, u32)>,
+) -> Result<u32>
+where
+    F: FnOnce(
+        &Path,
+        u32,
+        &str,
+        &mut dyn FnMut(CredentialBarrier<'_>) -> Result<()>,
+    ) -> Result<Option<i32>>,
+    G: FnOnce(crate::credential_artifact::CredentialReconciliation, &Path) -> Result<()>,
+{
     let _switch_lock = if params.switch_lock_held {
         None
     } else {
@@ -408,14 +739,13 @@ where
         .clone()
         .map(Ok)
         .unwrap_or_else(crate::sysroot::running_image_generation)?;
-    let manifest_text = std::fs::read_to_string(&params.manifest)
-        .with_context(|| format!("reading {}", params.manifest.display()))?;
-    let manifest: ConfigManifest = serde_json::from_str(&manifest_text)
-        .with_context(|| format!("parsing {}", params.manifest.display()))?;
-    manifest
-        .validate()
-        .with_context(|| format!("validating {}", params.manifest.display()))?;
-    reject_structured_activation_on_legacy_path(&manifest)?;
+    let manifest = match provided_manifest {
+        Some(manifest) => manifest.clone(),
+        None => load_config_manifest(&params.manifest)?,
+    };
+    if structured_transaction.is_none() {
+        reject_structured_activation_on_legacy_path(&manifest)?;
+    }
     if manifest.module_abi != params.module_abi || manifest.module_abi != running_image.module_abi {
         bail!(
             "manifest module_abi {} does not match running image ABI {}",
@@ -545,6 +875,22 @@ where
         }
     };
 
+    if let Some((transaction, prior_generation)) = structured_transaction {
+        // Select recovery identity before the activation script can swap /etc.
+        // A projected candidate is already known to be degraded, while a
+        // complete candidate remains pending until its native effects settle.
+        publish_activation_record(
+            params,
+            &projection,
+            number,
+            6,
+            !projection.projected,
+            Some(transaction),
+            Some(prior_generation),
+            false,
+        )?;
+    }
+
     let activate = Path::new(&running_image.toplevel).join("activate");
     let nonce = write_activation_intent_pub(&params.profile, &state, number)?;
     let mut credential_reconciliation = Some(credential_reconciliation);
@@ -600,6 +946,29 @@ where
                 }
                 .into());
             }
+            let native_pending = structured_transaction.is_some()
+                && !projection.projected
+                && matches!(activation_exit, 0 | 5);
+            let recorded_exit = if projection.projected || native_pending {
+                6
+            } else {
+                activation_exit
+            };
+            if structured_transaction.is_some() && !native_pending && !projection.projected {
+                let native_transaction = structured_transaction.map(|(transaction, _)| transaction);
+                let native_prior_generation =
+                    structured_transaction.map(|(_, prior_generation)| prior_generation);
+                publish_activation_record(
+                    params,
+                    &projection,
+                    number,
+                    recorded_exit,
+                    false,
+                    native_transaction,
+                    native_prior_generation,
+                    false,
+                )?;
+            }
             commit_current_generation_pub(&params.profile, &mut state, number).map_err(|error| {
                 ActivationFailure {
                     exit_code: 4,
@@ -608,19 +977,33 @@ where
                     ),
                 }
             })?;
-            let recorded_exit = if projection.projected {
-                6
+            if structured_transaction.is_some() {
+                publish_runtime_activation_marker(params, number).map_err(|error| {
+                    ActivationFailure {
+                        exit_code: 4,
+                        message: format!(
+                            "configuration activation committed generation {number} but its runtime activation marker failed: {error:#}; retry is required"
+                        ),
+                    }
+                })?;
             } else {
-                activation_exit
-            };
-            publish_activation_record(params, &projection, number, recorded_exit).map_err(
-                |error| ActivationFailure {
+                publish_activation_record(
+                    params,
+                    &projection,
+                    number,
+                    recorded_exit,
+                    false,
+                    None,
+                    None,
+                    true,
+                )
+                .map_err(|error| ActivationFailure {
                     exit_code: 4,
                     message: format!(
                         "configuration activation committed generation {number} but its activation record failed: {error:#}; rescue mode is required"
                     ),
-                },
-            )?;
+                })?;
+            }
             if recorded_exit == 6 {
                 return Err(ActivationFailure {
                     exit_code: 6,
@@ -667,6 +1050,10 @@ fn publish_activation_record(
     projection: &crate::graph_compile::reproject::Reprojection,
     generation: u32,
     activation_exit: i32,
+    native_pending: bool,
+    native_transaction: Option<&aos_ability_model::TransactionId>,
+    native_prior_generation: Option<u32>,
+    publish_runtime_marker: bool,
 ) -> Result<()> {
     let transaction = crate::graph_compile::read_transaction(&params.marker_root)?
         .context("graph transaction state disappeared before activation commit")?;
@@ -680,12 +1067,16 @@ fn publish_activation_record(
             .iter()
             .map(|record| record.package.as_str())
             .collect(),
-        status: if activation_exit == 6 || projection.projected {
+        status: if native_pending {
+            "native-pending"
+        } else if activation_exit == 6 || projection.projected {
             "degraded"
         } else {
             "complete"
         },
         activation_exit,
+        native_ability_transaction: native_transaction.map(|transaction| transaction.0.as_str()),
+        native_ability_prior_generation: native_prior_generation,
     };
     let value = serde_json::to_value(record).context("serializing activation record")?;
     let generation_path = params
@@ -693,6 +1084,22 @@ fn publish_activation_record(
         .join(format!("gen-{generation}"))
         .join(ACTIVATION_RECORD);
     write_json_atomic(&generation_path, &value)?;
+    if publish_runtime_marker {
+        write_json_atomic(&params.marker_root.join(ACTIVATION_RECORD), &value)?;
+    }
+    Ok(())
+}
+
+fn publish_runtime_activation_marker(params: &ActivateConfigParams, generation: u32) -> Result<()> {
+    let generation_path = params
+        .profile
+        .join(format!("gen-{generation}"))
+        .join(ACTIVATION_RECORD);
+    let value: Value = serde_json::from_slice(
+        &std::fs::read(&generation_path)
+            .with_context(|| format!("reading {}", generation_path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", generation_path.display()))?;
     write_json_atomic(&params.marker_root.join(ACTIVATION_RECORD), &value)
 }
 
@@ -1008,6 +1415,9 @@ fn sync_tree_directories(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::os::unix::fs::MetadataExt as _;
+
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -1801,5 +2211,112 @@ mod tests {
         assert_eq!(activation["status"], "degraded");
         assert_eq!(activation["activation_exit"], 6);
         assert_eq!(activation["dropped_packages"], json!(["firewall", "web"]));
+    }
+
+    #[test]
+    fn structured_recovery_identity_is_durable_before_the_swap() {
+        let (_root, params, _) = setup();
+        mark(&params, "firewall");
+        mark(&params, "web");
+        let manifest: ConfigManifest =
+            serde_json::from_slice(&std::fs::read(&params.manifest).unwrap()).unwrap();
+        let transaction = aos_ability_model::TransactionId(
+            aos_ability_model::LocalKey::new("native-crash-window").unwrap(),
+        );
+
+        let error = activate_config_with_reconciliation_mode(
+            &params,
+            false,
+            false,
+            false,
+            |_activate, number, _nonce, _barrier| {
+                let record: Value = serde_json::from_slice(
+                    &std::fs::read(params.profile.join(format!("gen-{number}/activation.json")))
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(record["status"], "native-pending");
+                assert_eq!(record["native_ability_transaction"], "native-crash-window");
+                assert_eq!(record["native_ability_prior_generation"], 1);
+                assert!(
+                    !params.marker_root.join(ACTIVATION_RECORD).exists(),
+                    "the runtime marker must continue to describe the current generation"
+                );
+                anyhow::bail!("injected crash before activation-script dispatch")
+            },
+            |_reconciliation, _plan| Ok(()),
+            Some(&manifest),
+            Some((&transaction, 1)),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("injected crash"));
+        let state = load_generation_state_pub(&params.profile).unwrap();
+        assert_eq!(state.current, 1, "pre-swap crash must not move current");
+    }
+
+    #[test]
+    fn structured_commit_preserves_the_prepublished_recovery_identity() {
+        let (_root, params, _) = setup();
+        mark(&params, "firewall");
+        mark(&params, "web");
+        let manifest: ConfigManifest =
+            serde_json::from_slice(&std::fs::read(&params.manifest).unwrap()).unwrap();
+        let transaction = aos_ability_model::TransactionId(
+            aos_ability_model::LocalKey::new("native-published-window").unwrap(),
+        );
+        let prepublished = RefCell::new(None);
+
+        let error = activate_config_with_reconciliation_mode(
+            &params,
+            false,
+            false,
+            false,
+            |_activate, number, _nonce, barrier| {
+                let record_path = params.profile.join(format!("gen-{number}/activation.json"));
+                let bytes = std::fs::read(&record_path).unwrap();
+                let inode = std::fs::metadata(&record_path).unwrap().ino();
+                prepublished.replace(Some((bytes, inode)));
+                assert!(
+                    !params.marker_root.join(ACTIVATION_RECORD).exists(),
+                    "the candidate must not become the runtime marker before current changes"
+                );
+
+                barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
+                barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
+                Ok(Some(0))
+            },
+            |_reconciliation, _plan| Ok(()),
+            Some(&manifest),
+            Some((&transaction, 1)),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("was committed"));
+        let state = load_generation_state_pub(&params.profile).unwrap();
+        assert_eq!(state.current, 2);
+
+        let record_path = params.profile.join("gen-2/activation.json");
+        let (expected_bytes, expected_inode) = prepublished.into_inner().unwrap();
+        assert_eq!(std::fs::read(&record_path).unwrap(), expected_bytes);
+        assert_eq!(
+            std::fs::metadata(&record_path).unwrap().ino(),
+            expected_inode
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &std::fs::read(params.marker_root.join(ACTIVATION_RECORD)).unwrap()
+            )
+            .unwrap(),
+            serde_json::from_slice::<Value>(&expected_bytes).unwrap()
+        );
+
+        let record: Value = serde_json::from_slice(&expected_bytes).unwrap();
+        assert_eq!(record["status"], "native-pending");
+        assert_eq!(
+            record["native_ability_transaction"],
+            "native-published-window"
+        );
+        assert_eq!(record["native_ability_prior_generation"], 1);
     }
 }

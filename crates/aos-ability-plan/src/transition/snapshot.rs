@@ -24,12 +24,17 @@ use thiserror::Error;
 
 use crate::{CompositionEvaluator, EvaluationError, VerifiedPlanningSnapshot};
 
-use super::{TransitionError, TransitionInputs, TransitionPlanner};
+use super::{TransitionError, TransitionInputs, TransitionPlanner, TransitionReconciliation};
 
 /// Exact schema discriminator for retained transition-construction provenance.
 pub const TRANSITION_SNAPSHOT_SCHEMA: &str = "aos.ability.transition-snapshot/v1";
 
-const TRANSITION_SNAPSHOT_COMPONENT_LIMIT: usize = 4;
+/// Schema discriminator for snapshots carrying linked live reconciliation input.
+pub const TRANSITION_SNAPSHOT_SCHEMA_V2: &str = "aos.ability.transition-snapshot/v2";
+
+// Version 2 adds one bounded current-authority document and its normalized
+// observation projection to the existing transition transcript components.
+const TRANSITION_SNAPSHOT_COMPONENT_LIMIT: usize = 6;
 
 /// Maximum encoded byte length accepted for one retained transition snapshot.
 pub const TRANSITION_SNAPSHOT_MAX_BYTES: usize = (ABILITY_LIMITS_V1.max_document_bytes as usize)
@@ -75,6 +80,8 @@ pub struct TransitionSnapshot {
     desired_planning: Sha256Digest,
     current_planning: Option<Sha256Digest>,
     transition_authority: Option<Sha256Digest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reconciliation: Option<TransitionReconciliation>,
     evaluations: Vec<TransitionEvaluation>,
     effect_plan: PlanId,
     effect_document: EffectPlanDocument,
@@ -194,14 +201,21 @@ impl TransitionSnapshot {
         desired: &VerifiedPlanningSnapshot,
         current: Option<&VerifiedPlanningSnapshot>,
         authority: Option<&CheckedTransitionAuthority>,
+        reconciliation: Option<&TransitionReconciliation>,
         evaluations: Vec<TransitionEvaluation>,
         checked_effect: &CheckedEffectPlan,
     ) -> Result<Self, TransitionSnapshotError> {
         let snapshot = Self {
-            schema: TRANSITION_SNAPSHOT_SCHEMA.to_string(),
+            schema: if reconciliation.is_some() {
+                TRANSITION_SNAPSHOT_SCHEMA_V2
+            } else {
+                TRANSITION_SNAPSHOT_SCHEMA
+            }
+            .to_string(),
             desired_planning: desired.snapshot_digest(),
             current_planning: current.map(VerifiedPlanningSnapshot::snapshot_digest),
             transition_authority: authority.map(CheckedTransitionAuthority::digest),
+            reconciliation: reconciliation.cloned(),
             evaluations,
             effect_plan: checked_effect.id(),
             effect_document: checked_effect.document().clone(),
@@ -227,6 +241,12 @@ impl TransitionSnapshot {
     #[must_use]
     pub const fn transition_authority_digest(&self) -> Option<Sha256Digest> {
         self.transition_authority
+    }
+
+    /// Returns the protected live classification used for this repair graph.
+    #[must_use]
+    pub const fn reconciliation(&self) -> Option<&TransitionReconciliation> {
+        self.reconciliation.as_ref()
     }
 
     /// Returns every retained transition-constructor exchange.
@@ -273,7 +293,7 @@ impl TransitionSnapshot {
         let bytes =
             aos_contract::canonical::to_vec(self).map_err(TransitionSnapshotError::Encode)?;
         transition_snapshot_limits()
-            .decode::<serde_json::Value>(&bytes, TRANSITION_SNAPSHOT_SCHEMA)
+            .decode::<serde_json::Value>(&bytes, &self.schema)
             .map_err(TransitionSnapshotError::Encode)?;
         Ok(bytes)
     }
@@ -285,7 +305,7 @@ impl TransitionSnapshot {
     /// Returns an error if canonical encoding fails or exceeds its bound.
     pub fn digest(&self) -> Result<Sha256Digest, TransitionSnapshotError> {
         Ok(Sha256Digest::separated(
-            TRANSITION_SNAPSHOT_SCHEMA,
+            &self.schema,
             self.canonical_bytes()?,
         ))
     }
@@ -298,9 +318,12 @@ impl TransitionSnapshot {
     /// noncanonical, or internally inconsistent input.
     pub fn decode(bytes: &[u8]) -> Result<Self, TransitionSnapshotError> {
         let snapshot = transition_snapshot_limits()
-            .decode::<Self>(bytes, TRANSITION_SNAPSHOT_SCHEMA)
+            .decode::<Self>(bytes, "transition snapshot")
             .map_err(TransitionSnapshotError::Decode)?;
-        if snapshot.schema != TRANSITION_SNAPSHOT_SCHEMA {
+        if !matches!(
+            snapshot.schema.as_str(),
+            TRANSITION_SNAPSHOT_SCHEMA | TRANSITION_SNAPSHOT_SCHEMA_V2
+        ) {
             return Err(TransitionSnapshotError::UnsupportedSchema);
         }
         if snapshot.canonical_bytes()? != bytes {
@@ -329,6 +352,7 @@ impl TransitionSnapshot {
         let transition_inputs = TransitionInputs {
             current: inputs.current,
             authority: inputs.authority,
+            reconciliation: self.reconciliation.as_ref(),
         };
         let (checked_effect, evaluations) = planner
             .construct(inputs.desired, &transition_inputs, &mut evaluator)
@@ -353,6 +377,7 @@ impl TransitionSnapshot {
         let transition_inputs = TransitionInputs {
             current: inputs.current,
             authority: inputs.authority,
+            reconciliation: self.reconciliation.as_ref(),
         };
         let (checked_effect, evaluations) = planner
             .construct(inputs.desired, &transition_inputs, evaluator)
@@ -388,10 +413,11 @@ impl TransitionSnapshot {
         checked_effect: CheckedEffectPlan,
     ) -> Result<VerifiedTransitionPlan, TransitionSnapshotError> {
         let reconstructed = Self {
-            schema: TRANSITION_SNAPSHOT_SCHEMA.to_string(),
+            schema: self.schema.clone(),
             desired_planning: self.desired_planning,
             current_planning: self.current_planning,
             transition_authority: self.transition_authority,
+            reconciliation: self.reconciliation.clone(),
             evaluations,
             effect_plan: checked_effect.id(),
             effect_document: checked_effect.document().clone(),
@@ -407,7 +433,10 @@ impl TransitionSnapshot {
     }
 
     fn validate_linkage(&self) -> Result<(), TransitionSnapshotError> {
-        if self.schema != TRANSITION_SNAPSHOT_SCHEMA {
+        if !matches!(
+            (self.schema.as_str(), self.reconciliation.is_some()),
+            (TRANSITION_SNAPSHOT_SCHEMA, false) | (TRANSITION_SNAPSHOT_SCHEMA_V2, true)
+        ) {
             return Err(TransitionSnapshotError::UnsupportedSchema);
         }
         let document_id = self

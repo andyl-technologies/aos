@@ -18,6 +18,21 @@ pub struct PackageAbilityReferencePanel {
     pub platform: String,
     /// Bounded public projection of the signed companion documents.
     pub reference: aos_doc_model::PackageAbilityReference,
+    /// Exact retained locator used when matching private deployment overlays.
+    pub locator: crate::db::PackageAbilityReferenceLocator,
+}
+
+/// One authenticated, fresh private deployment assertion prepared for rendering.
+#[derive(Debug, Clone)]
+pub struct PackageAbilityDeploymentPanel {
+    /// Bounded reporter-authored plan and observation projection.
+    pub overlay: aos_doc_model::PackageAbilityDeploymentOverlay,
+    /// Labels the bearer authority that submitted the assertion.
+    pub authority: String,
+    /// Hub receipt time, independent of the reporter clock.
+    pub received_at: i64,
+    /// Hub-computed expiry time.
+    pub expires_at: i64,
 }
 
 /// Renders a release-pinned package ability reference section.
@@ -26,6 +41,8 @@ pub fn section(
     slug: &str,
     panel: Option<&PackageAbilityReferencePanel>,
     unavailable: bool,
+    deployments: Option<&[PackageAbilityDeploymentPanel]>,
+    deployments_unavailable: bool,
 ) -> String {
     let mut html =
         String::from("<section id=\"abilities\" class=\"package-abilities\"><h2>Abilities</h2>");
@@ -94,8 +111,16 @@ pub fn section(
             hash_value(&export.interface.interface_key().map(|key| key.descriptor.to_string()).unwrap_or_else(|_| "invalid".into())),
             hash_value(&export.implementation.to_string()),
         );
-        html.push_str("<h5>Configuration request</h5>");
+        html.push_str("<h5>Request or contribution schema</h5>");
         schema(&mut html, &interface.request);
+        if let Some(configuration) = &interface.configuration {
+            html.push_str("<h5>Operator-owned provider instance configuration schema</h5>");
+            schema(&mut html, configuration);
+        } else {
+            html.push_str(
+                "<p class=\"dim\">No operator-owned provider instance configuration is declared.</p>",
+            );
+        }
 
         if interface.outputs.is_empty() {
             html.push_str("<p class=\"dim\">No aggregate outputs.</p>");
@@ -243,8 +268,105 @@ pub fn section(
         }
     }
 
-    html.push_str("<p class=\"dim\">This is a signed package contract. Live provider selection, assignment health, and observed runtime state belong to deployment views.</p></section>");
+    if let Some(deployments) = deployments {
+        html.push_str("<h3>Private deployment state</h3>");
+        if deployments_unavailable {
+            html.push_str(
+                "<p class=\"warn\">Fresh deployment assertions are temporarily unavailable.</p>",
+            );
+        } else if deployments.is_empty() {
+            html.push_str(
+                "<p class=\"dim\">No fresh assertion matches this exact release, package, version, platform, and ability contract.</p>",
+            );
+        }
+        for deployment in deployments {
+            deployment_section(&mut html, deployment);
+        }
+    }
+
+    html.push_str(concat!(
+        "<p class=\"dim\">This is a signed package contract. Operator configuration sections ",
+        "show public schemas only, never deployed instance values. Live provider selection, ",
+        "assignment health, and observed runtime state belong to deployment views.</p></section>"
+    ));
     html
+}
+
+fn deployment_section(html: &mut String, panel: &PackageAbilityDeploymentPanel) {
+    let overlay = &panel.overlay;
+    let _ = write!(
+        html,
+        "<article class=\"ability-deployment\"><h4>{}</h4><p class=\"dim\">Private reporter bearer assertion; reported {} · received {} · expires {} · sequence {}</p><dl class=\"meta\"><dt>Authority</dt><dd>{}</dd><dt>Environment</dt><dd>{}/{}/{}</dd><dt>Plan</dt><dd>{}</dd><dt>Policy revision</dt><dd>{}</dd><dt>Plan state</dt><dd>{}</dd></dl>",
+        escape(overlay.deployment.as_str()),
+        overlay.reported_at_unix_seconds,
+        panel.received_at,
+        panel.expires_at,
+        overlay.sequence,
+        escape(&panel.authority),
+        escape(overlay.plan.environment.authority.as_str()),
+        escape(overlay.plan.environment.key.as_str()),
+        scalar(&overlay.plan.environment.stage),
+        hash_value(&overlay.plan.plan.0.to_string()),
+        hash_value(&overlay.plan.policy_revision.0.to_string()),
+        scalar(&overlay.plan.state),
+    );
+    if overlay.plan.exports.is_empty() {
+        html.push_str("<p class=\"dim\">The plan selects no exports from this package.</p>");
+    } else {
+        html.push_str("<table><thead><tr><th>export</th><th>interface</th><th>exact provider</th><th>observation</th></tr></thead><tbody>");
+        for export in &overlay.plan.exports {
+            let provider = export
+                .provider
+                .as_ref()
+                .map(instance_identity)
+                .unwrap_or_else(|| "unresolved".to_string());
+            let observation = overlay
+                .observations
+                .iter()
+                .find(|observation| {
+                    observation.export == export.export
+                        && export.provider.as_ref() == Some(&observation.instance)
+                })
+                .map(observation_summary)
+                .unwrap_or_else(|| "not reported".to_string());
+            let _ = write!(
+                html,
+                "<tr><td>{}</td><td>{} ABI {} · {}</td><td>{}</td><td>{}</td></tr>",
+                escape(export.export.as_str()),
+                escape(export.interface.name.as_str()),
+                export.interface.abi,
+                hash_value(&export.interface.descriptor.to_string()),
+                escape(&provider),
+                escape(&observation),
+            );
+        }
+        html.push_str("</tbody></table>");
+    }
+    html.push_str("</article>");
+}
+
+fn instance_identity(instance: &aos_ability_model::InstanceId) -> String {
+    format!(
+        "{}/{}/{}/{}",
+        instance.environment.authority.as_str(),
+        instance.environment.key.as_str(),
+        scalar(&instance.environment.stage),
+        instance.key.as_str(),
+    )
+}
+
+fn observation_summary(observation: &aos_doc_model::AbilityDeploymentObservation) -> String {
+    let revision = observation
+        .revision
+        .as_ref()
+        .map(|revision| revision.0.to_string())
+        .unwrap_or_else(|| "unknown revision".to_string());
+    format!(
+        "{}; observed {}; revision {}",
+        scalar(&observation.state),
+        observation.observed_at_unix_seconds,
+        revision,
+    )
 }
 
 fn schema(html: &mut String, value: &ValueSchema) {
@@ -272,8 +394,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use aos_ability_model::{
-        AbilityActivationMode, InterfaceDescriptor, InterfaceDocument, InterfaceName,
-        LifecycleSemantics, LocalKey, RequiredFeature, RequirementDeclaration, ScopePath,
+        AbilityActivationMode, EnvironmentId, ExecutionStage, InstanceId, InterfaceDescriptor,
+        InterfaceDocument, InterfaceName, LifecycleSemantics, LocalKey, PlanId, RequiredFeature,
+        RequirementDeclaration, RevisionId, ScopePath,
     };
     use aos_contract::Sha256Digest;
 
@@ -291,6 +414,10 @@ mod tests {
                 name: InterfaceName::new("aos.test.service").expect("interface name"),
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
                 request: ValueSchema::Boolean,
+                configuration: Some(ValueSchema::String {
+                    max_length: 64,
+                    syntax: None,
+                }),
                 outputs: BTreeMap::new(),
                 methods: BTreeMap::new(),
                 lifecycle: LifecycleSemantics {
@@ -332,19 +459,120 @@ mod tests {
                 handlers: Vec::new(),
                 ownership: vec![ScopePath::new(vec![key("services")]).expect("scope")],
             },
+            locator: crate::db::PackageAbilityReferenceLocator {
+                indexed_commit: "a".repeat(64),
+                package_name: "demo".into(),
+                package_version: "1.2.3".into(),
+                platform: "x86_64-linux".into(),
+                manifest_sha256: Sha256Digest::of_bytes(b"manifest").to_string(),
+                package_digest: Sha256Digest::of_bytes(b"package").to_string(),
+                canonical_json: Vec::new(),
+            },
+        }
+    }
+
+    fn deployment_panel(reference: &PackageAbilityReferencePanel) -> PackageAbilityDeploymentPanel {
+        let environment = EnvironmentId {
+            authority: key("fleet"),
+            key: key("production"),
+            stage: ExecutionStage::Host,
+        };
+        let provider = InstanceId {
+            environment: environment.clone(),
+            key: key("demo-east"),
+        };
+        let export = &reference.reference.exports[0];
+        let interface = export.interface.interface_key().expect("interface key");
+        let revision = RevisionId(Sha256Digest::of_bytes(b"revision"));
+
+        PackageAbilityDeploymentPanel {
+            overlay: aos_doc_model::PackageAbilityDeploymentOverlay {
+                schema: aos_doc_model::ABILITY_DEPLOYMENT_OVERLAY_SCHEMA.into(),
+                required_features: aos_doc_model::ability_deployment_supported_features()
+                    .expect("deployment features")
+                    .into_iter()
+                    .collect(),
+                deployment: key("production"),
+                sequence: 7,
+                package: aos_doc_model::AbilityDeploymentPackage {
+                    registry_commit: reference.locator.indexed_commit.clone(),
+                    package: reference.reference.package.clone(),
+                    version: reference.reference.version.clone(),
+                    platform: reference.platform.clone(),
+                    manifest_sha256: reference.reference.manifest_sha256,
+                    package_digest: reference.reference.package_digest,
+                },
+                plan: aos_doc_model::AbilityDeploymentPlan {
+                    environment,
+                    plan: PlanId(Sha256Digest::of_bytes(b"plan")),
+                    policy_revision: RevisionId(Sha256Digest::of_bytes(b"policy")),
+                    transaction: None,
+                    state: aos_doc_model::AbilityDeploymentPlanState::Committed,
+                    exports: vec![aos_doc_model::AbilityDeploymentExport {
+                        export: export.name.clone(),
+                        interface,
+                        implementation: export.implementation,
+                        provider: Some(provider.clone()),
+                        resources: Vec::new(),
+                        binding_revision: Some(revision.clone()),
+                    }],
+                },
+                observations: vec![aos_doc_model::AbilityDeploymentObservation {
+                    export: export.name.clone(),
+                    instance: provider,
+                    state: aos_doc_model::AbilityDeploymentObservationState::Available,
+                    revision: Some(revision),
+                    evidence: Vec::new(),
+                    observed_at_unix_seconds: 90,
+                }],
+                reported_at_unix_seconds: 100,
+                valid_for_seconds: 60,
+            },
+            authority: "reporter-bearer:service_account:deployer".into(),
+            received_at: 101,
+            expires_at: 150,
         }
     }
 
     #[test]
     fn renders_release_pinned_public_contract_without_runtime_claims() {
-        let html = section("demo", Some(&panel()), false);
+        let html = section("demo", Some(&panel()), false, None, false);
 
         assert!(html.contains("href=\"/demo/-/releases/1.2.3\""));
         assert!(html.contains("server: aos.test.service"));
         assert!(html.contains("href=\"#ability-export-server\">ABI 1</a>"));
+        assert!(html.contains("Request or contribution schema"));
+        assert!(html.contains("Operator-owned provider instance configuration schema"));
+        assert!(html.contains("&quot;max_length&quot;: 64"));
         assert!(html.contains("<strong>network</strong>"));
         assert!(html.contains("Structured effect ownership"));
         assert!(html.contains("signed package contract"));
+        assert!(html.contains("public schemas only, never deployed instance values"));
         assert!(html.contains("observed runtime state belong to deployment views"));
+        assert!(!html.contains("Private deployment state"));
+        assert!(!html.contains("reporter-bearer:"));
+    }
+
+    #[test]
+    fn states_when_an_interface_declares_no_operator_configuration() {
+        let mut panel = panel();
+        panel.reference.exports[0].interface.interface.configuration = None;
+
+        let html = section("demo", Some(&panel), false, None, false);
+
+        assert!(html.contains("No operator-owned provider instance configuration is declared."));
+    }
+
+    #[test]
+    fn renders_exact_private_selection_and_observation_authority() {
+        let reference = panel();
+        let deployment = deployment_panel(&reference);
+
+        let html = section("demo", Some(&reference), false, Some(&[deployment]), false);
+
+        assert!(html.contains("Private reporter bearer assertion; reported 100"));
+        assert!(html.contains("fleet/production/host/demo-east"));
+        assert!(html.contains("available; observed 90; revision sha256:"));
+        assert!(html.contains("reporter-bearer:service_account:deployer"));
     }
 }

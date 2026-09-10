@@ -18,7 +18,7 @@ use git2::{Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::parse::{parse_package_file, parse_registry_matching};
+use super::parse::{parse_package_file, parse_registry_matching_for_ability_aware_consumer};
 use super::store::StoreMap;
 use crate::config::ApmConfig;
 use crate::provenance::ProvenanceSigner;
@@ -1130,8 +1130,9 @@ fn validate_materialized_entries(directory: &Path, entries: &[RegistryReleaseEnt
         .map(|entry| entry.platform.as_str())
         .collect::<BTreeSet<_>>();
     for platform in platforms {
-        let (_, _, versions) = parse_registry_matching(directory, platform, None)
-            .with_context(|| format!("validating prepared {platform} catalog"))?;
+        let (_, _, versions) =
+            parse_registry_matching_for_ability_aware_consumer(directory, platform, None)
+                .with_context(|| format!("validating prepared {platform} catalog"))?;
         for entry in entries
             .iter()
             .filter(|entry| entry.platform == platform && entry.output == "out")
@@ -1481,6 +1482,8 @@ mod tests {
 
     struct WritesPackageEntry;
 
+    struct WritesAbilityPackageEntries;
+
     #[derive(Default)]
     struct MockRegistrySigner {
         requests: Vec<RegistryGitSigningRequest>,
@@ -1535,6 +1538,66 @@ mod tests {
     }
 
     #[async_trait]
+    impl RegistryEntryAuthor for WritesAbilityPackageEntries {
+        async fn author_entry(
+            &mut self,
+            isolated_registry: &Path,
+            entry: &RegistryReleaseEntry,
+        ) -> Result<()> {
+            if entry.output == "out" {
+                let directory = isolated_registry.join("packages").join(&entry.name[..1]);
+                fs::create_dir_all(&directory)?;
+                let path = directory.join(format!("{}.toml", entry.name));
+                let content = format!(
+                    "[package]\nname = \"{}\"\ndescription = \"test ability package\"\nlicense = \"MIT\"\nmaintainer = \"AOS test\"\n\n[[versions]]\nversion = \"{}\"\n\n[versions.platforms.{}]\nstore_path = \"{}\"\nclosure_size = 1\nsource_drv = \"\"\nsource_nar_hash = \"\"\nmin-format = 1\nrequires-features = [\"attestation-v1\"]\nprovenance = \"provenance/a/{}/x86_64-linux/package.intoto.jsonl\"\n\n[versions.platforms.{}.references]\nhashes = []\nmin-format = 1\nrequires-features = [\"attestation-v1\"]\n",
+                    entry.name,
+                    entry.version,
+                    entry.platform,
+                    entry.store_path,
+                    entry.name,
+                    entry.platform,
+                );
+                fs::write(path, content)?;
+                return Ok(());
+            }
+
+            if entry.output != crate::types::ABILITY_MANIFEST_OUTPUT {
+                bail!("unexpected test output '{}'", entry.output);
+            }
+
+            let path = isolated_registry
+                .join("packages")
+                .join(&entry.name[..1])
+                .join(format!("{}.toml", entry.name));
+            let existing = fs::read_to_string(&path)?;
+            let ability = crate::types::AbilityPackageMeta {
+                store_path: entry.store_path.clone(),
+                nar_hash: format!("sha256:{}", "1".repeat(64)),
+                nar_size: 1,
+                references: Vec::new(),
+                manifest_sha256: format!("sha256:{}", "2".repeat(64)),
+                manifest_size: 1,
+                package_digest: format!("sha256:{}", "3".repeat(64)),
+                activation_mode: "structured-effects".to_string(),
+                artifacts: Vec::new(),
+                provenance: format!(
+                    "provenance/a/{}/x86_64-linux/package.ability.intoto.jsonl",
+                    entry.name
+                ),
+            };
+            let content = crate::registry_ops::record_ability_output(
+                &existing,
+                &entry.name,
+                &entry.version,
+                &entry.platform,
+                &ability,
+            )?;
+            fs::write(path, content)?;
+            Ok(())
+        }
+    }
+
+    #[async_trait]
     impl RegistryObjectSigner for MockRegistrySigner {
         async fn sign_git_object(
             &mut self,
@@ -1573,6 +1636,43 @@ mod tests {
             entries: vec![
                 entry("alpha@x86_64-linux", "alpha"),
                 entry("beta@x86_64-linux", "beta"),
+            ],
+            expected: RegistrySurfaceDigests {
+                catalog: empty_digest.clone(),
+                store_graph: empty_digest.clone(),
+                policy: empty_digest,
+            },
+            support: None,
+        }
+    }
+
+    fn ability_transaction(base_commit: String) -> RegistryReleaseTransaction {
+        let empty_digest = format!("sha256:{}", "0".repeat(64));
+        RegistryReleaseTransaction {
+            schema: TRANSACTION_SCHEMA.to_string(),
+            registry: "andyl/main".to_string(),
+            base_commit,
+            release: "2026.1.0".to_string(),
+            plan_digest: empty_digest.clone(),
+            entries: vec![
+                RegistryReleaseEntry {
+                    id: "alpha-0-out@x86_64-linux".to_string(),
+                    name: "alpha".to_string(),
+                    version: "1.0.0".to_string(),
+                    platform: "x86_64-linux".to_string(),
+                    output: "out".to_string(),
+                    store_path: "/nix/store/00000000000000000000000000000000-alpha-1.0.0"
+                        .to_string(),
+                },
+                RegistryReleaseEntry {
+                    id: "alpha-1-abilities@x86_64-linux".to_string(),
+                    name: "alpha".to_string(),
+                    version: "1.0.0".to_string(),
+                    platform: "x86_64-linux".to_string(),
+                    output: crate::types::ABILITY_MANIFEST_OUTPUT.to_string(),
+                    store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-alpha-abilities"
+                        .to_string(),
+                },
             ],
             expected: RegistrySurfaceDigests {
                 catalog: empty_digest.clone(),
@@ -1714,6 +1814,41 @@ mod tests {
         let output = temporary.path().join("prepared");
         let report = transaction
             .prepare(&source, &output, &mut WritesPackageEntry)
+            .await?;
+
+        assert_eq!(report.entry_count, 2);
+        assert_eq!(report.directory, output);
+        assert_eq!(report.surfaces, transaction.expected);
+        require_head(&report.directory, &base)?;
+        require_worktree_changes(&report.directory)?;
+        validate_materialized_entries(&report.directory, &transaction.entries)?;
+        require_clean(&Repository::open(&source)?)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn complete_release_preparation_validates_authored_structured_abilities() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let source = temporary.path().join("source");
+        fs::create_dir(&source)?;
+        let base = initialize_registry(&source)?;
+        let mut transaction = ability_transaction(base.clone());
+
+        let expected_clone = temporary.path().join("expected");
+        Repository::clone(
+            source.to_str().context("test path encoding")?,
+            &expected_clone,
+        )?;
+        let mut expected_author = WritesAbilityPackageEntries;
+        for entry in &transaction.entries {
+            expected_author.author_entry(&expected_clone, entry).await?;
+        }
+        transaction.expected = registry_surface_digests(&expected_clone)?;
+        fs::remove_dir_all(&expected_clone)?;
+
+        let output = temporary.path().join("prepared");
+        let report = transaction
+            .prepare(&source, &output, &mut WritesAbilityPackageEntries)
             .await?;
 
         assert_eq!(report.entry_count, 2);

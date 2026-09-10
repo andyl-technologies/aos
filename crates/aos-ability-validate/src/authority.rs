@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use aos_ability_model::{
     AbilityValue, AccessMode, ArtifactReference, AuthorityGrant, AuthorityRole, Binding,
-    CredentialAction, InterfaceDocument, InterfaceKey, MethodReference, Operation, OperationFamily,
-    ResourceId, ResourceLifetime, ResourceReference, ValueSchema, compare_resource_ids,
+    CredentialAction, InterfaceDocument, InterfaceKey, KubernetesObjectAction, MethodReference,
+    Operation, OperationFamily, ResourceId, ResourceLifetime, ResourceReference, ValueSchema,
+    compare_resource_ids,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -151,6 +152,9 @@ pub(crate) const fn required_target_access(family: &OperationFamily) -> AccessMo
         }
         | OperationFamily::ValidateCandidate
         | OperationFamily::ObserveReadiness => AccessMode::Read,
+        OperationFamily::KubernetesObject {
+            action: KubernetesObjectAction::Observe,
+        } => AccessMode::Read,
         OperationFamily::RecordGenerationAssociation => AccessMode::SharedWrite,
         OperationFamily::PrepareManagedConfiguration
         | OperationFamily::Credential {
@@ -159,6 +163,9 @@ pub(crate) const fn required_target_access(family: &OperationFamily) -> AccessMo
         | OperationFamily::PublishConfiguration
         | OperationFamily::PrepareManagerConfiguration
         | OperationFamily::ServiceLifecycle { .. }
+        | OperationFamily::KubernetesObject {
+            action: KubernetesObjectAction::Apply | KubernetesObjectAction::Delete,
+        }
         | OperationFamily::ReleaseResource => AccessMode::ExclusiveWrite,
     }
 }

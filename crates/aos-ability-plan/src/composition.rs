@@ -48,6 +48,9 @@ pub struct CompositionContext {
     pub implementation: ProviderImplementationReference,
     /// Pins the exact package manifest supplying the pure implementation.
     pub package: Sha256Digest,
+    /// Carries the operator-owned configuration of this provider instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<AbilityValue>,
     /// Lists all requests currently bound to this provider aggregate.
     pub requests: Vec<BindingRequest>,
     /// Lists the complete canonical current-pass binding set.

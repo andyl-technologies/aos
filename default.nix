@@ -1659,6 +1659,9 @@ in {
     fleet = let
       base = discoverFleetTests // crucibleFleetChecks;
       runtimeConfigNames = [
+        "ability-native-activation"
+        "ability-native-kubernetes"
+        "ability-native-power-loss"
         "apm-desired-sequencing"
         "apm-sysroot-lock"
         "apm-system-activation-fail"

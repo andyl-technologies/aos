@@ -169,9 +169,11 @@ pub fn resolve_runtime(registries: &RegistrySet, selected: &[String]) -> Result<
 
 /// Resolves packages with registry priority and measured-image fallback.
 ///
-/// A local package is considered only when no configured registry publishes
-/// its name. Registry parse, trust, graph, and integrity failures therefore
-/// remain terminal rather than silently crossing the trust boundary.
+/// A local package is considered when no configured registry publishes its
+/// name or when an absent registry prevents a safe priority decision. Only the
+/// caller's authenticated image catalog is eligible for that fallback. An
+/// absent higher-priority registry never permits a loaded lower-priority
+/// registry to win.
 ///
 /// # Errors
 ///
@@ -194,22 +196,30 @@ pub fn resolve_runtime_with_local(
         {
             continue;
         }
-        if registries.resolve(&name).is_some() {
-            let closure = crate::resolve::resolve_closure(registries, &name, None)
-                .with_context(|| format!("resolving package '{name}'"))?;
-            if let Some(expose) = &closure.root.expose {
-                pending.extend(expose.requires.iter().cloned());
-                pending.extend(expose.uses.iter().map(|route| route.provider.clone()));
+        match registries.resolve_for_config_evaluation(&name) {
+            Ok(Some(_)) => {
+                let closure = crate::resolve::resolve_closure(registries, &name, None)
+                    .with_context(|| format!("resolving package '{name}'"))?;
+                if let Some(expose) = &closure.root.expose {
+                    pending.extend(expose.requires.iter().cloned());
+                    pending.extend(expose.uses.iter().map(|route| route.provider.clone()));
+                }
+                closures.push(closure);
             }
-            closures.push(closure);
-        } else if let Some(package) = local.get(&name) {
-            if let Some(expose) = &package.expose {
-                pending.extend(expose.requires.iter().cloned());
-                pending.extend(expose.uses.iter().map(|route| route.provider.clone()));
+            Ok(None) | Err(_) if local.contains_key(&name) => {
+                let package = &local[&name];
+                if let Some(expose) = &package.expose {
+                    pending.extend(expose.requires.iter().cloned());
+                    pending.extend(expose.uses.iter().map(|route| route.provider.clone()));
+                }
+                local_names.insert(name);
             }
-            local_names.insert(name);
-        } else {
-            return Err(aos_core::error::AosError::PackageNotFound { name }.into());
+            Err(error) => {
+                return Err(error).with_context(|| format!("resolving package '{name}'"));
+            }
+            Ok(None) => {
+                return Err(aos_core::error::AosError::PackageNotFound { name }.into());
+            }
         }
     }
     let selected_roots: BTreeMap<String, String> = closures
@@ -630,7 +640,8 @@ mod tests {
     use super::*;
     use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
     use crate::registry::tests::{
-        FIX_NAR, curl_store_record, make_registry, make_registry_with_store, zlib_store_record,
+        FIX_NAR, curl_store_record, make_registry, make_registry_with_store, registry_config,
+        zlib_store_record,
     };
     use tempfile::TempDir;
 
@@ -684,6 +695,67 @@ mod tests {
         let error = resolve_runtime(&set, &["curl".to_string()]).unwrap_err();
         assert!(
             format!("{error:#}").contains("publishes no authenticated store graph"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn absent_registry_uses_only_an_authenticated_image_fallback() {
+        let temp = TempDir::new().unwrap();
+        let missing = registry_config("andyl", 500);
+        let registries =
+            RegistrySet::load_for_config_evaluation(temp.path(), &[&missing], "x86_64-linux")
+                .unwrap();
+        let store_path = "/nix/store/00000000000000000000000000000000-image-web";
+        let mut image_packages = BTreeMap::new();
+        image_packages.insert(
+            "image-web".to_string(),
+            LocalRuntimePackage {
+                version: "1.2.3".to_string(),
+                store_path: store_path.to_string(),
+                expose: None,
+                expose_artifact: None,
+                config_module: None,
+                ability: None,
+                closure: RefCell::new(Some(vec![RuntimeClosurePin {
+                    store_path_hash: store_path_hash(store_path).to_string(),
+                    store_path: Some(store_path.to_string()),
+                    realisations: vec![RuntimeRealisationPin {
+                        nar_hash: format!("sha256:{FIX_NAR}"),
+                        nar_size: 64,
+                    }],
+                }])),
+            },
+        );
+
+        let resolution =
+            resolve_runtime_with_local(&registries, &image_packages, &["image-web".to_string()])
+                .unwrap();
+        let selected = &resolution.packages["image-web"];
+
+        assert_eq!(selected.origin, RuntimePackageOrigin::Image);
+        assert_eq!(selected.registry, "image");
+        assert_eq!(selected.version, "1.2.3");
+        assert_eq!(selected.store_path, store_path);
+    }
+
+    #[test]
+    fn absent_higher_registry_blocks_a_loaded_lower_runtime_package() {
+        let temp = TempDir::new().unwrap();
+        let missing = registry_config("primary", 600);
+        let lower = registry_config("fallback", 500);
+        let _ = make_registry(&temp, &lower.name, lower.priority, &[("curl", CURL_TOML)]);
+        let registries = RegistrySet::load_for_config_evaluation(
+            temp.path(),
+            &[&missing, &lower],
+            "x86_64-linux",
+        )
+        .unwrap();
+
+        let error = resolve_runtime(&registries, &["curl".to_string()]).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("configured registry 'primary' is unavailable"),
             "{error:#}"
         );
     }

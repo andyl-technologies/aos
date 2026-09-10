@@ -43,7 +43,8 @@ pub fn ability_reference_supported_features() -> Result<BTreeSet<RequiredFeature
 pub struct AbilityExportReference {
     /// Names the export inside the package.
     pub name: LocalKey,
-    /// Retains the complete public request, result, method, and guarantee contract.
+    /// Retains the complete public request, operator configuration, result,
+    /// method, and guarantee contract.
     pub interface: InterfaceDocument,
     /// Defines contribution aggregation when the export accepts contributions.
     pub aggregation: Option<AggregationContract>,
@@ -66,6 +67,9 @@ pub struct AbilityHandlerReference {
 }
 
 /// Bounded public reference projection of one signed package ability companion.
+///
+/// The projection retains public operator configuration schemas, but never a
+/// desired deployment instance's configuration value.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageAbilityReference {

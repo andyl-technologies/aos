@@ -19,10 +19,18 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+mod ability_deployment;
 mod ability_nar;
 mod ability_reference;
 mod nar;
 
+pub use ability_deployment::{
+    ABILITY_DEPLOYMENT_OVERLAY_SCHEMA, AbilityDeploymentExport, AbilityDeploymentObservation,
+    AbilityDeploymentObservationState, AbilityDeploymentPackage, AbilityDeploymentPlan,
+    AbilityDeploymentPlanState, MAX_ABILITY_DEPLOYMENT_OVERLAY_BYTES,
+    MAX_ABILITY_DEPLOYMENT_VALID_FOR_SECONDS, PackageAbilityDeploymentOverlay,
+    ability_deployment_supported_features,
+};
 pub use ability_nar::{
     AbilityCompanionDocuments, MAX_ABILITY_COMPANION_NAR_BYTES, decode_ability_companion_nar,
 };

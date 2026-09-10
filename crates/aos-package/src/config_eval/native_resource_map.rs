@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! {
-//!   "schema": "aos.ability.native-resource-map/v1",
+//!   "schema": "aos.ability.native-resource-map/v2",
 //!   "desired_state": "sha256:<64 lowercase hex characters>",
 //!   "entries": [
 //!     {
@@ -31,11 +31,12 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::net::SocketAddr;
 
 use anyhow::{Result, bail, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AggregateId, ArtifactReference, BindingId, InterfaceKey, LocalKey,
-    ProviderImplementationReference, ResourceId, RevisionId,
+    ABILITY_LIMITS_V1, AggregateId, ArtifactReference, BindingId, InstanceId, InterfaceKey,
+    LocalKey, ProviderImplementationReference, ResourceId, RevisionId,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -54,7 +55,7 @@ pub struct NativeResourceMap {
 
 impl NativeResourceMap {
     /// Current native resource-map schema.
-    pub const SCHEMA: &'static str = "aos.ability.native-resource-map/v1";
+    pub const SCHEMA: &'static str = "aos.ability.native-resource-map/v2";
 
     /// Constructs and validates a canonically ordered native resource map.
     ///
@@ -109,6 +110,11 @@ impl NativeResourceMap {
 
         let mut claimed_paths: Vec<(&str, &ResourceId)> = Vec::new();
         let mut claimed_units: BTreeMap<&str, &ResourceId> = BTreeMap::new();
+        let mut claimed_consumer_endpoints: BTreeMap<SocketAddr, &ResourceId> = BTreeMap::new();
+        let mut claimed_kubernetes_objects: BTreeMap<
+            (String, String, Option<String>, String),
+            &ResourceId,
+        > = BTreeMap::new();
         for entry in &self.entries {
             validate_mapping(entry, &mut remaining_items)?;
 
@@ -116,13 +122,45 @@ impl NativeResourceMap {
                 NativeResourceQualification::ManagedConfiguration { destination, .. } => {
                     claimed_paths.push((destination, &entry.resource));
                 }
-                NativeResourceQualification::SystemdService { unit, .. } => {
+                NativeResourceQualification::SystemdService {
+                    unit,
+                    consumer_observation,
+                    ..
+                } => {
                     claim_physical(&mut claimed_units, unit, &entry.resource, "systemd unit")?;
+                    if let Some(consumer_observation) = consumer_observation {
+                        let endpoint = parse_consumer_endpoint(consumer_observation)?;
+                        claim_physical(
+                            &mut claimed_consumer_endpoints,
+                            endpoint,
+                            &entry.resource,
+                            "consumer observation endpoint",
+                        )?;
+                    }
                 }
                 NativeResourceQualification::NginxValidation {
                     validation_prefix, ..
                 } => {
                     claimed_paths.push((validation_prefix, &entry.resource));
+                }
+                NativeResourceQualification::KubernetesObject {
+                    api_version,
+                    object_kind,
+                    namespace,
+                    name,
+                    ..
+                } => {
+                    claim_physical(
+                        &mut claimed_kubernetes_objects,
+                        (
+                            api_version.clone(),
+                            object_kind.clone(),
+                            namespace.clone(),
+                            name.clone(),
+                        ),
+                        &entry.resource,
+                        "Kubernetes object",
+                    )?;
                 }
             }
         }
@@ -190,6 +228,9 @@ pub enum NativeResourceQualification {
         unit: String,
         /// Locates the logical resource reference authorizing service control.
         resource_reference: NativeOutputLocator,
+        /// Optionally defines a bounded read-only proof from an HTTP consumer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        consumer_observation: Option<NativeHttpConsumerObservation>,
     },
     /// Validates an nginx candidate beneath one private host prefix.
     NginxValidation {
@@ -200,6 +241,66 @@ pub enum NativeResourceQualification {
         /// Locates the candidate nginx configuration in the provider output.
         candidate: NativeOutputLocator,
     },
+    /// Applies, observes, or deletes one exact Kubernetes API object.
+    KubernetesObject {
+        /// Pins the exact authenticated kubectl executable artifact.
+        kubectl: ArtifactReference,
+        /// Names the protected root-owned kubeconfig used for this cluster.
+        kubeconfig: String,
+        /// Names the exact Kubernetes API version, such as `apps/v1`.
+        api_version: String,
+        /// Names the exact Kubernetes kind, such as `Deployment`.
+        object_kind: String,
+        /// Names the namespace, or is absent for a cluster-scoped object.
+        namespace: Option<String>,
+        /// Names the exact object within its scope.
+        name: String,
+        /// Locates the canonical JSON object supplied by planning.
+        object_json: NativeOutputLocator,
+        /// Locates the logical resource reference authorizing the effect.
+        resource_reference: NativeOutputLocator,
+    },
+}
+
+/// Defines the versioned loopback HTTP proof emitted by an active consumer.
+///
+/// The authenticated resource map supplies the only permitted socket, HTTP
+/// authority, and path. The response must identify the exact checked consumer
+/// instance and the same revision as the systemd resource mapping.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeHttpConsumerObservation {
+    /// Carries [`Self::SCHEMA`].
+    pub schema: String,
+    /// Names one numeric loopback socket such as `127.0.0.1:18081`.
+    pub endpoint: String,
+    /// Supplies the exact HTTP `Host` authority sent to the consumer.
+    pub authority: String,
+    /// Supplies the exact origin-form request target sent to the consumer.
+    pub path: String,
+    /// Identifies the checked instance that must answer the request.
+    pub expected_instance: InstanceId,
+    /// Identifies the service-controller revision that the process must report.
+    pub expected_controller_revision: RevisionId,
+    /// Names the consumer-owned content resource whose bytes are active.
+    pub content_resource: ResourceId,
+    /// Identifies the content-specific revision that the process must report.
+    pub expected_content_revision: RevisionId,
+}
+
+impl NativeHttpConsumerObservation {
+    /// Current native HTTP consumer-observation schema.
+    pub const SCHEMA: &'static str = "aos.ability.native-http-consumer-observation/v1";
+}
+
+/// Computes the stable ownership annotation for one logical Kubernetes resource.
+///
+/// # Errors
+///
+/// Returns an error when the structured resource identity cannot be encoded in
+/// the canonical AOS JSON dialect.
+pub(crate) fn kubernetes_resource_owner(resource: &ResourceId) -> Result<Sha256Digest> {
+    Sha256Digest::of_canonical("aos.ability.kubernetes-object-owner/v1", resource)
 }
 
 fn validate_mapping(mapping: &NativeResourceMapping, remaining_items: &mut u64) -> Result<()> {
@@ -223,8 +324,9 @@ fn validate_mapping(mapping: &NativeResourceMapping, remaining_items: &mut u64) 
         NativeResourceQualification::SystemdService {
             unit,
             resource_reference,
+            consumer_observation,
         } => {
-            consume_items(remaining_items, 3)?;
+            consume_items(remaining_items, 4)?;
             validate_string(unit, "systemd service unit")?;
             crate::types::validate_unit_name(unit)?;
             ensure!(
@@ -232,6 +334,13 @@ fn validate_mapping(mapping: &NativeResourceMapping, remaining_items: &mut u64) 
                 "native systemd unit must be a .service unit"
             );
             validate_locator(resource_reference, remaining_items)?;
+            if let Some(consumer_observation) = consumer_observation {
+                validate_http_consumer_observation(consumer_observation, remaining_items)?;
+                ensure!(
+                    consumer_observation.expected_controller_revision == mapping.revision,
+                    "native consumer observation revision differs from its systemd resource"
+                );
+            }
         }
         NativeResourceQualification::NginxValidation {
             executable,
@@ -246,8 +355,86 @@ fn validate_mapping(mapping: &NativeResourceMapping, remaining_items: &mut u64) 
             validate_safe_host_path(validation_prefix, "nginx validation prefix")?;
             validate_locator(candidate, remaining_items)?;
         }
+        NativeResourceQualification::KubernetesObject {
+            kubectl,
+            kubeconfig,
+            api_version,
+            object_kind,
+            namespace,
+            name,
+            object_json,
+            resource_reference,
+        } => {
+            consume_items(remaining_items, 9)?;
+            validate_string(&kubectl.store_path, "kubectl executable store path")?;
+            validate_safe_host_path(kubeconfig, "Kubernetes kubeconfig")?;
+            validate_kubernetes_api_version(api_version)?;
+            validate_kubernetes_kind(object_kind)?;
+            if let Some(namespace) = namespace {
+                validate_kubernetes_name(namespace, "Kubernetes namespace")?;
+            }
+            validate_kubernetes_name(name, "Kubernetes object name")?;
+            validate_locator(object_json, remaining_items)?;
+            validate_locator(resource_reference, remaining_items)?;
+        }
     }
     Ok(())
+}
+
+fn validate_http_consumer_observation(
+    observation: &NativeHttpConsumerObservation,
+    remaining_items: &mut u64,
+) -> Result<()> {
+    consume_items(remaining_items, 8)?;
+    validate_string(&observation.schema, "native consumer observation schema")?;
+    validate_string(
+        &observation.endpoint,
+        "native consumer observation endpoint",
+    )?;
+    validate_string(
+        &observation.authority,
+        "native consumer observation authority",
+    )?;
+    validate_string(&observation.path, "native consumer observation path")?;
+    ensure!(
+        observation.schema == NativeHttpConsumerObservation::SCHEMA,
+        "unsupported native consumer observation schema {:?}",
+        observation.schema
+    );
+    let endpoint = parse_consumer_endpoint(observation)?;
+    ensure!(
+        endpoint.ip().is_loopback() && endpoint.port() != 0,
+        "native consumer observation endpoint must be a nonzero loopback socket"
+    );
+    ensure!(
+        !observation.authority.is_empty()
+            && observation
+                .authority
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'/' | b'\\' | b'#')),
+        "native consumer observation authority is not a safe HTTP authority"
+    );
+    ensure!(
+        observation.path.starts_with('/')
+            && !observation.path.starts_with("//")
+            && observation
+                .path
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && byte != b'#'),
+        "native consumer observation path is not a safe origin-form target"
+    );
+    ensure!(
+        observation.content_resource.provider == observation.expected_instance,
+        "native consumer content resource belongs to another instance"
+    );
+    Ok(())
+}
+
+fn parse_consumer_endpoint(observation: &NativeHttpConsumerObservation) -> Result<SocketAddr> {
+    observation
+        .endpoint
+        .parse()
+        .map_err(|_| anyhow::anyhow!("native consumer observation endpoint is not numeric"))
 }
 
 fn validate_locator(locator: &NativeOutputLocator, remaining_items: &mut u64) -> Result<()> {
@@ -256,6 +443,52 @@ fn validate_locator(locator: &NativeOutputLocator, remaining_items: &mut u64) ->
     ensure!(
         locator.field_path.len() <= ABILITY_LIMITS_V1.max_structural_depth as usize,
         "native output locator exceeds the version-1 structural-depth limit"
+    );
+    Ok(())
+}
+
+fn validate_kubernetes_api_version(value: &str) -> Result<()> {
+    validate_string(value, "Kubernetes API version")?;
+    ensure!(
+        !value.is_empty()
+            && value.len() <= 253
+            && value
+                .bytes()
+                .all(|byte| { byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'/') })
+            && !value.starts_with('/')
+            && !value.ends_with('/')
+            && value.matches('/').count() <= 1,
+        "Kubernetes API version is not canonical"
+    );
+    Ok(())
+}
+
+fn validate_kubernetes_kind(value: &str) -> Result<()> {
+    validate_string(value, "Kubernetes kind")?;
+    ensure!(
+        !value.is_empty()
+            && value.len() <= 63
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && value.as_bytes()[0].is_ascii_alphanumeric()
+            && value.as_bytes()[value.len() - 1].is_ascii_alphanumeric(),
+        "Kubernetes kind is not canonical"
+    );
+    Ok(())
+}
+
+fn validate_kubernetes_name(value: &str, label: &str) -> Result<()> {
+    validate_string(value, label)?;
+    ensure!(
+        !value.is_empty()
+            && value.len() <= 253
+            && value.bytes().all(|byte| byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'-'))
+            && value.as_bytes()[0].is_ascii_alphanumeric()
+            && value.as_bytes()[value.len() - 1].is_ascii_alphanumeric(),
+        "{label} is not a canonical DNS-style Kubernetes name"
     );
     Ok(())
 }
@@ -326,17 +559,21 @@ fn paths_overlap(left: &str, right: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
-fn claim_physical<'a>(
-    claims: &mut BTreeMap<&'a str, &'a ResourceId>,
-    physical: &'a str,
+fn claim_physical<'a, Physical>(
+    claims: &mut BTreeMap<Physical, &'a ResourceId>,
+    physical: Physical,
     resource: &'a ResourceId,
     label: &str,
-) -> Result<()> {
-    if let Some(owner) = claims.insert(physical, resource) {
+) -> Result<()>
+where
+    Physical: Ord + std::fmt::Debug,
+{
+    if let Some(owner) = claims.get(&physical) {
         bail!(
             "native {label} {physical:?} is claimed by distinct resources {owner:?} and {resource:?}"
         );
     }
+    claims.insert(physical, resource);
     Ok(())
 }
 
@@ -457,9 +694,11 @@ mod tests {
         }
 
         let mut entry = mapping("resource", qualification("/etc/nginx.conf"));
+        let observation = http_observation(entry.revision);
         entry.qualification = NativeResourceQualification::SystemdService {
             unit: "nginx.target".to_string(),
             resource_reference: locator(),
+            consumer_observation: Some(observation),
         };
         assert!(NativeResourceMap::new(digest("desired"), vec![entry]).is_err());
     }
@@ -509,6 +748,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn systemd_consumer_observation_is_loopback_and_revision_bound() {
+        let mut entry = mapping("service", qualification("/etc/unused"));
+        let valid_observation = http_observation(entry.revision);
+        entry.qualification = NativeResourceQualification::SystemdService {
+            unit: "fixture.service".to_string(),
+            resource_reference: locator(),
+            consumer_observation: Some(valid_observation),
+        };
+        NativeResourceMap::new(digest("desired"), vec![entry.clone()])
+            .expect("valid consumer observation");
+
+        let NativeResourceQualification::SystemdService {
+            consumer_observation,
+            ..
+        } = &mut entry.qualification
+        else {
+            panic!("fixture remains a systemd service");
+        };
+        consumer_observation
+            .as_mut()
+            .expect("fixture has consumer observation")
+            .endpoint = "192.0.2.10:18081".to_string();
+        assert!(NativeResourceMap::new(digest("desired"), vec![entry]).is_err());
+
+        let mut entry = mapping("service", qualification("/etc/unused"));
+        let mut observation = http_observation(entry.revision);
+        observation.expected_controller_revision = RevisionId(digest("another controller"));
+        entry.qualification = NativeResourceQualification::SystemdService {
+            unit: "fixture.service".to_string(),
+            resource_reference: locator(),
+            consumer_observation: Some(observation),
+        };
+        assert!(NativeResourceMap::new(digest("desired"), vec![entry]).is_err());
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_consumer_observation_sockets() {
+        let mut first = mapping("service-a", qualification("/etc/unused-a"));
+        first.qualification = NativeResourceQualification::SystemdService {
+            unit: "fixture-a.service".to_string(),
+            resource_reference: locator(),
+            consumer_observation: Some(http_observation(first.revision)),
+        };
+        let mut second = mapping("service-b", qualification("/etc/unused-b"));
+        second.qualification = NativeResourceQualification::SystemdService {
+            unit: "fixture-b.service".to_string(),
+            resource_reference: locator(),
+            consumer_observation: Some(http_observation(second.revision)),
+        };
+
+        let error = NativeResourceMap::new(digest("desired"), vec![first, second])
+            .expect_err("one loopback socket cannot prove two distinct consumers");
+        assert!(error.to_string().contains("consumer observation endpoint"));
+    }
+
+    #[test]
+    fn kubernetes_qualifications_validate_names_and_object_collisions() {
+        let first = mapping("object-a", kubernetes_qualification("example"));
+        let second = mapping("object-b", kubernetes_qualification("example"));
+        let error = NativeResourceMap::new(digest("desired"), vec![first, second])
+            .expect_err("one Kubernetes API object cannot back two logical resources");
+        assert!(error.to_string().contains("Kubernetes object"));
+
+        let invalid_name = mapping("invalid", kubernetes_qualification("Example_Invalid"));
+        assert!(NativeResourceMap::new(digest("desired"), vec![invalid_name]).is_err());
+
+        let mut unsafe_kubeconfig = mapping("unsafe", kubernetes_qualification("example"));
+        let NativeResourceQualification::KubernetesObject { kubeconfig, .. } =
+            &mut unsafe_kubeconfig.qualification
+        else {
+            panic!("fixture remains a Kubernetes object");
+        };
+        *kubeconfig = "/tmp/kubeconfig".to_string();
+        assert!(NativeResourceMap::new(digest("desired"), vec![unsafe_kubeconfig]).is_err());
+    }
+
     fn mapping(key: &str, qualification: NativeResourceQualification) -> NativeResourceMapping {
         NativeResourceMapping {
             resource: ResourceId {
@@ -532,6 +848,35 @@ mod tests {
             destination: destination.to_string(),
             candidate: locator(),
             resource_reference: locator(),
+        }
+    }
+
+    fn kubernetes_qualification(name: &str) -> NativeResourceQualification {
+        NativeResourceQualification::KubernetesObject {
+            kubectl: artifact("kubectl"),
+            kubeconfig: "/etc/rancher/k3s/k3s.yaml".to_string(),
+            api_version: "apps/v1".to_string(),
+            object_kind: "Deployment".to_string(),
+            namespace: Some("default".to_string()),
+            name: name.to_string(),
+            object_json: locator(),
+            resource_reference: locator(),
+        }
+    }
+
+    fn http_observation(expected_revision: RevisionId) -> NativeHttpConsumerObservation {
+        NativeHttpConsumerObservation {
+            schema: NativeHttpConsumerObservation::SCHEMA.to_string(),
+            endpoint: "127.0.0.1:18081".to_string(),
+            authority: "fixture.invalid".to_string(),
+            path: "/__aos/consumer".to_string(),
+            expected_instance: instance("consumer"),
+            expected_controller_revision: expected_revision,
+            content_resource: ResourceId {
+                provider: instance("consumer"),
+                key: local("content"),
+            },
+            expected_content_revision: RevisionId(digest("content revision")),
         }
     }
 

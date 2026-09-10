@@ -22,15 +22,16 @@ use aos_ability_model::{
     AbilityValue, ArtifactReference, ExecutionStage, RequiredFeature, ScopedOperationKey,
     TransactionId,
 };
+use aos_ability_plan::TransitionReconciliation;
 use aos_ability_runtime::adapter::{
     CancellationToken, MonotonicClock, PlanRetentionReceipt, RootRetentionReceipt, TrustedAdapter,
     TrustedPlanStore, TrustedResourceCatalog, TrustedRootStore,
 };
 use aos_ability_runtime::bundle::{PLAN_BUNDLE_MAX_BYTES, PlanBundleError, ReloadablePlanBundle};
 use aos_ability_runtime::execution::{
-    AdmissionFailure, AdmissionResult, AdmittedOperation, ExecutionError, ExecutionStep,
-    ExecutionTransaction, ReadyOperation, ResourceReleaseFailure, TransactionError,
-    TrustedAdmissionPolicy,
+    AdmissionFailure, AdmissionResult, AdmittedOperation, CheckedExecutionJournalSnapshot,
+    ExecutionBoundaryObserver, ExecutionError, ExecutionStep, ExecutionTransaction, ReadyOperation,
+    ResourceReleaseFailure, TerminalResult, TransactionError, TrustedAdmissionPolicy,
 };
 use aos_ability_runtime::journal::JournalLimits;
 use aos_ability_validate::CheckedEffectPlan;
@@ -63,6 +64,9 @@ const EXECUTION_JOURNAL_FILE: &str = "execution.journal";
 const TERMINAL_MARKER_FILE: &str = "terminal.json";
 const TERMINAL_MARKER_SCHEMA: &str = "aos.ability.transaction-terminal/v1";
 const TERMINAL_MARKER_MAX_BYTES: usize = 64 * 1024;
+const NATIVE_NO_OP_VERIFICATION_FILE: &str = "native-no-op-verification.json";
+const NATIVE_NO_OP_VERIFICATION_SCHEMA: &str = "aos.ability.native-no-op-verification/v1";
+const NATIVE_NO_OP_VERIFICATION_MAX_BYTES: usize = 64 * 1024;
 const PLAN_EVIDENCE_SCHEMA: &str = "aos.ability.plan-retention/v1";
 const ROOT_EVIDENCE_SCHEMA: &str = "aos.ability.root-retention/v1";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -213,6 +217,54 @@ pub struct NativeAbilitySession<'plan> {
     store: GenerationAbilityStore<NativeAbilityArtifactVerifier>,
 }
 
+/// Holds a read-only, switch-lock-bound native inventory for drift classification.
+///
+/// This session creates no execution journal and cannot reserve or mutate a
+/// resource. It gives trusted catalogs the same machine-global identity domain
+/// used by a later transaction while the orchestrator still owns the switch
+/// lock.
+pub(crate) struct NativeObservationSession {
+    transaction: TransactionId,
+    inventory: Arc<NativeInventoryState>,
+    inventory_admission: Arc<()>,
+}
+
+impl NativeObservationSession {
+    /// Opens a read-only observation boundary for one retained generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generation or plan is outside the supported
+    /// host-native collision domain.
+    pub(crate) fn open(
+        generation: &Path,
+        transaction: TransactionId,
+        plan: &CheckedEffectPlan,
+        switch_lock: Arc<SwitchLockGuard>,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        require_host_effect_plan(plan)?;
+        let inventory =
+            NativeInventoryState::for_generation(generation, &transaction, plan, switch_lock)?;
+        Ok(Self {
+            transaction,
+            inventory,
+            inventory_admission: Arc::new(()),
+        })
+    }
+
+    /// Returns the unique attempt identity used for transient provider assignments.
+    #[must_use]
+    pub(crate) const fn transaction(&self) -> &TransactionId {
+        &self.transaction
+    }
+
+    /// Returns the lock-bound read-only inventory supplied to trusted catalogs.
+    #[must_use]
+    pub(crate) fn resource_inventory(&self) -> NativeResourceInventory {
+        NativeResourceInventory::new(&self.inventory, &self.inventory_admission)
+    }
+}
+
 struct NativeSessionPaths {
     generation: PathBuf,
     journal: PathBuf,
@@ -233,6 +285,8 @@ pub struct RetainedAbilityDiagnosticSource {
     plan: CheckedEffectPlan,
     plan_bundle: Sha256Digest,
     desired_planning: Sha256Digest,
+    reconciliation: Option<TransitionReconciliation>,
+    native_no_op_verified: bool,
     journal: File,
     journal_path: PathBuf,
 }
@@ -345,9 +399,16 @@ impl RetainedAbilityDiagnosticSource {
             .digest()
             .map_err(GenerationAbilityStoreError::Bundle)?;
         let desired_planning = bundle.desired_planning_digest();
+        let reconciliation = bundle.reconciliation().cloned();
         let plan = bundle
             .revalidate(supported_features)
             .map_err(GenerationAbilityStoreError::Bundle)?;
+        let native_no_op_verified = load_native_no_op_verification(
+            &transaction_directory,
+            transaction,
+            plan.id(),
+            plan_bundle,
+        )?;
 
         Ok(Self {
             generation,
@@ -355,6 +416,8 @@ impl RetainedAbilityDiagnosticSource {
             plan,
             plan_bundle,
             desired_planning,
+            reconciliation,
+            native_no_op_verified,
             journal,
             journal_path,
         })
@@ -390,6 +453,18 @@ impl RetainedAbilityDiagnosticSource {
         self.desired_planning
     }
 
+    /// Returns the protected live classification retained by a repair graph.
+    #[must_use]
+    pub const fn reconciliation(&self) -> Option<&TransitionReconciliation> {
+        self.reconciliation.as_ref()
+    }
+
+    /// Reports whether protected orchestration completed this empty native plan.
+    #[must_use]
+    pub const fn native_no_op_verified(&self) -> bool {
+        self.native_no_op_verified
+    }
+
     /// Consumes the source into its checked plan, bundle identity, and journal.
     ///
     /// The open file descriptor remains bound to the regular file selected
@@ -398,6 +473,37 @@ impl RetainedAbilityDiagnosticSource {
     #[must_use]
     pub fn into_parts(self) -> (CheckedEffectPlan, Sha256Digest, File, PathBuf) {
         (self.plan, self.plan_bundle, self.journal, self.journal_path)
+    }
+
+    /// Replays this protected selection and returns its durable terminal state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal is corrupt, has a torn tail, or names
+    /// another selected transaction or plan bundle.
+    pub(crate) fn terminal_result(
+        self,
+        limits: JournalLimits,
+    ) -> Result<Option<TerminalResult>, GenerationAbilityStoreError> {
+        let expected_transaction = self.transaction.clone();
+        let expected_bundle = self.plan_bundle;
+        let snapshot = CheckedExecutionJournalSnapshot::read_file(
+            &self.plan,
+            self.journal,
+            self.journal_path,
+            limits,
+        )
+        .map_err(GenerationAbilityStoreError::Transaction)?;
+        if snapshot.transaction() != &expected_transaction
+            || snapshot.plan_bundle() != expected_bundle
+            || snapshot.incomplete_tail_bytes() != 0
+        {
+            return Err(GenerationAbilityStoreError::Conflict(
+                "retained native transaction journal differs from its protected selection"
+                    .to_string(),
+            ));
+        }
+        Ok(snapshot.terminal())
     }
 }
 
@@ -449,6 +555,80 @@ impl<'plan> NativeAbilitySession<'plan> {
             packages,
             paths,
         )
+    }
+
+    /// Opens or recovers a transaction while the caller retains the switch lock.
+    ///
+    /// This entry point lets configuration activation hold one uninterrupted
+    /// ownership interval across generation publication and native effects.
+    /// The session retains its own reference to `switch_lock`, so the lock
+    /// cannot be released while a catalog handle or transaction remains live.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generation lies outside the system profile,
+    /// artifact or plan verification fails, or transaction recovery fails.
+    pub(crate) fn open_with_switch_lock(
+        plan: &'plan CheckedEffectPlan,
+        transaction: TransactionId,
+        limits: JournalLimits,
+        generation: impl Into<PathBuf>,
+        supported_features: BTreeSet<RequiredFeature>,
+        bundle: ReloadablePlanBundle,
+        packages: VerifiedAbilityPackageSet,
+        switch_lock: Arc<SwitchLockGuard>,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        let generation = generation.into();
+        let expected_profile = ProfileScope::System.profile_path();
+        if generation.parent() != Some(expected_profile.as_path()) {
+            return Err(GenerationAbilityStoreError::Conflict(format!(
+                "native ability generation {} is outside the canonical system profile {}",
+                generation.display(),
+                expected_profile.display()
+            )));
+        }
+        let journal = generation
+            .join(TRANSACTION_ROOT)
+            .join(transaction.0.as_str())
+            .join(EXECUTION_JOURNAL_FILE);
+        require_host_effect_plan(plan)?;
+        packages
+            .verify_plan_inputs(
+                &plan.binding_plan().environment().platform,
+                plan.binding_plan().packages(),
+                plan.required_runtime_artifacts(),
+            )
+            .map_err(GenerationAbilityStoreError::Artifact)?;
+        packages
+            .verify_live_retention(&NativeAbilityRetentionVerifier::new())
+            .map_err(GenerationAbilityStoreError::Artifact)?;
+        let verifier = NativeAbilityArtifactVerifier {
+            authenticated: packages,
+            platform: plan.binding_plan().environment().platform.clone(),
+        };
+        let mut store = GenerationAbilityStore::with_bundle_and_lock(
+            &generation,
+            bundle,
+            supported_features,
+            verifier,
+            switch_lock,
+        );
+        let inventory = NativeInventoryState::for_generation(
+            &generation,
+            &transaction,
+            plan,
+            Arc::clone(&store.switch_lock),
+        )?;
+        let transaction =
+            ExecutionTransaction::open(plan, transaction, &journal, limits, &mut store)
+                .map_err(GenerationAbilityStoreError::Transaction)?;
+        let inventory_admission = Arc::new(());
+        Ok(Self {
+            transaction,
+            inventory,
+            inventory_admission,
+            store,
+        })
     }
 
     fn open_at(
@@ -590,6 +770,39 @@ impl<'plan> NativeAbilitySession<'plan> {
         Ok(result)
     }
 
+    /// Advances one admitted token while reporting exact execution boundaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an outer error when terminal-marker publication fails. Checked
+    /// execution or observer failures remain in the inner result.
+    pub fn drive_admitted_with_observer<Adapter, Policy, Clock, Observer>(
+        &mut self,
+        admitted: &AdmittedOperation<'plan, Adapter::Request, Adapter::Handle>,
+        adapter: &mut Adapter,
+        policy: &mut Policy,
+        clock: &Clock,
+        cancellation: &CancellationToken,
+        observer: &mut Observer,
+    ) -> Result<Result<ExecutionStep, ExecutionError>, GenerationAbilityStoreError>
+    where
+        Adapter: TrustedAdapter,
+        Policy: TrustedAdmissionPolicy,
+        Clock: MonotonicClock,
+        Observer: ExecutionBoundaryObserver,
+    {
+        let result = self.transaction.drive_admitted_with_observer(
+            admitted,
+            adapter,
+            policy,
+            clock,
+            cancellation,
+            observer,
+        );
+        self.persist_terminal_marker()?;
+        Ok(result)
+    }
+
     /// Requests checked cancellation for one current admitted attempt.
     ///
     /// # Errors
@@ -694,6 +907,50 @@ impl<'plan> NativeAbilitySession<'plan> {
         self.preserve_outcome_on_marker_failure(result)
     }
 
+    /// Publishes protected evidence after an empty native transition is verified.
+    ///
+    /// This marker is deliberately separate from generic journal success. An
+    /// empty graph is vacuously terminal as soon as its plan root is durable,
+    /// while native orchestration must still reauthorize and observe every
+    /// retained consumer before that result can be reused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless this is a successful empty plan, or when the
+    /// immutable verification or terminal marker cannot be published.
+    pub(crate) fn persist_native_no_op_verification(
+        &self,
+    ) -> Result<(), GenerationAbilityStoreError> {
+        if !self.transaction.plan().operations().is_empty()
+            || self.transaction.summary().terminal()
+                != Some(aos_ability_model::document::TerminalResult::Succeeded)
+        {
+            return Err(GenerationAbilityStoreError::Conflict(
+                "native no-op verification requires a successful empty plan".to_string(),
+            ));
+        }
+
+        let marker = NativeNoOpVerificationMarker {
+            schema: NATIVE_NO_OP_VERIFICATION_SCHEMA.to_string(),
+            transaction: self.transaction.transaction().clone(),
+            plan: self.transaction.plan().id(),
+            plan_bundle: self.transaction.plan_retention().bundle(),
+        };
+        let bytes = aos_contract::canonical::to_vec(&marker).map_err(|source| {
+            GenerationAbilityStoreError::Operation(anyhow::anyhow!(
+                "encoding native no-op verification marker: {source:#}"
+            ))
+        })?;
+        publish_named_immutable(
+            &self
+                .store
+                .transaction_dir(self.transaction.transaction())
+                .join(NATIVE_NO_OP_VERIFICATION_FILE),
+            &bytes,
+        )?;
+        self.persist_terminal_marker()
+    }
+
     fn preserve_outcome_on_marker_failure<T>(
         &self,
         outcome: T,
@@ -767,6 +1024,70 @@ struct TerminalMarker {
     terminal: aos_ability_model::document::TerminalResult,
 }
 
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NativeNoOpVerificationMarker {
+    schema: String,
+    transaction: TransactionId,
+    plan: aos_ability_model::PlanId,
+    plan_bundle: Sha256Digest,
+}
+
+fn load_native_no_op_verification(
+    transaction_directory: &RootedDirectory,
+    transaction: &TransactionId,
+    plan: aos_ability_model::PlanId,
+    plan_bundle: Sha256Digest,
+) -> Result<bool, GenerationAbilityStoreError> {
+    let marker_file = transaction_directory
+        .resolve(Path::new(NATIVE_NO_OP_VERIFICATION_FILE))
+        .map_err(|source| {
+            io_error(
+                "resolving native no-op verification marker",
+                &transaction_directory
+                    .display()
+                    .join(NATIVE_NO_OP_VERIFICATION_FILE),
+                source,
+            )
+        })?;
+    let Some(bytes) = marker_file
+        .read_optional(NATIVE_NO_OP_VERIFICATION_MAX_BYTES as u64)
+        .map_err(|source| {
+            io_error(
+                "reading native no-op verification marker",
+                marker_file.display(),
+                source,
+            )
+        })?
+    else {
+        return Ok(false);
+    };
+    let marker: NativeNoOpVerificationMarker =
+        aos_contract::canonical::from_slice(&bytes, "native no-op verification marker").map_err(
+            |source| {
+                GenerationAbilityStoreError::Conflict(format!(
+                    "invalid native no-op verification marker: {source}"
+                ))
+            },
+        )?;
+    let canonical = aos_contract::canonical::to_vec(&marker).map_err(|source| {
+        GenerationAbilityStoreError::Operation(anyhow::anyhow!(
+            "encoding native no-op verification marker: {source:#}"
+        ))
+    })?;
+    if canonical != bytes
+        || marker.schema != NATIVE_NO_OP_VERIFICATION_SCHEMA
+        || &marker.transaction != transaction
+        || marker.plan != plan
+        || marker.plan_bundle != plan_bundle
+    {
+        return Err(GenerationAbilityStoreError::Conflict(
+            "native no-op verification marker differs from its retained transaction".to_string(),
+        ));
+    }
+    Ok(true)
+}
+
 fn terminal_is_prune_eligible(terminal: aos_ability_model::document::TerminalResult) -> bool {
     matches!(
         terminal,
@@ -819,13 +1140,29 @@ impl<Verifier> GenerationAbilityStore<Verifier> {
             acquire_switch_lock_pub(switch_lock.as_ref())
                 .map_err(GenerationAbilityStoreError::SwitchLock)?,
         );
-        Ok(Self {
+        Ok(Self::with_bundle_and_lock(
+            generation,
+            bundle,
+            supported_features,
+            verifier,
+            switch_lock,
+        ))
+    }
+
+    fn with_bundle_and_lock(
+        generation: impl Into<PathBuf>,
+        bundle: ReloadablePlanBundle,
+        supported_features: BTreeSet<RequiredFeature>,
+        verifier: Verifier,
+        switch_lock: Arc<SwitchLockGuard>,
+    ) -> Self {
+        Self {
             generation: generation.into(),
             pending_bundle: Some(bundle),
             supported_features,
             verifier,
             switch_lock,
-        })
+        }
     }
 
     /// Reloads and semantically validates one transaction's retained plan.
@@ -1837,6 +2174,57 @@ mod tests {
             .id(),
             plan.id()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_no_op_verification_marker_is_bound_to_retained_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let transaction_directory = directory.path().join("transaction");
+        std::fs::create_dir(&transaction_directory)?;
+        let rooted = RootedDirectory::open(
+            &transaction_directory,
+            rustix::process::geteuid().as_raw(),
+            "native no-op verification test",
+        )?;
+        let transaction = TransactionId(aos_ability_model::LocalKey::new("native-no-op")?);
+        let plan = checked_effect_plan().id();
+        let plan_bundle = Sha256Digest::of_bytes("plan bundle");
+
+        assert!(!load_native_no_op_verification(
+            &rooted,
+            &transaction,
+            plan,
+            plan_bundle,
+        )?);
+
+        let marker = NativeNoOpVerificationMarker {
+            schema: NATIVE_NO_OP_VERIFICATION_SCHEMA.to_string(),
+            transaction: transaction.clone(),
+            plan,
+            plan_bundle,
+        };
+        std::fs::write(
+            transaction_directory.join(NATIVE_NO_OP_VERIFICATION_FILE),
+            aos_contract::canonical::to_vec(&marker)?,
+        )?;
+
+        assert!(load_native_no_op_verification(
+            &rooted,
+            &transaction,
+            plan,
+            plan_bundle,
+        )?);
+        assert!(matches!(
+            load_native_no_op_verification(
+                &rooted,
+                &transaction,
+                plan,
+                Sha256Digest::of_bytes("another bundle"),
+            ),
+            Err(GenerationAbilityStoreError::Conflict(_))
+        ));
         Ok(())
     }
 
