@@ -2,7 +2,58 @@
 
 use super::*;
 
+/// Bounded process-local validation state exposed to conformance tests.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignValidationCheckpointMetrics {
+    /// Number of validated heads retained across all campaigns in this repository.
+    pub retained_heads: usize,
+    /// Number of snapshots in the authenticated ancestry of the selected head.
+    pub ancestry_depth: usize,
+    /// Conservative count of authenticated objects reachable from the selected head.
+    pub closure_objects: usize,
+    /// Fixed in-memory size of one retained checkpoint value.
+    pub checkpoint_bytes: usize,
+}
+
 impl CampaignRepository {
+    /// Reports the bounded acceleration checkpoint for one campaign head.
+    ///
+    /// This diagnostic exists only with the `test-support` feature. It exposes
+    /// counts rather than mutable cache state so conformance gates can verify
+    /// bounds without acquiring repository internals or changing semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the campaign head is absent or fails complete
+    /// ancestry and closure validation.
+    #[cfg(feature = "test-support")]
+    pub fn validation_checkpoint_metrics(
+        &self,
+        campaign: &str,
+    ) -> Result<CampaignValidationCheckpointMetrics, CampaignRepositoryError> {
+        let head = self.head(campaign)?;
+        let checkpoint = self.load_validation_checkpoint(head.snapshot_id().content_id())?;
+
+        Ok(CampaignValidationCheckpointMetrics {
+            retained_heads: self.validation_checkpoints().len(),
+            ancestry_depth: checkpoint.ancestry_depth,
+            closure_objects: checkpoint.closure_objects,
+            checkpoint_bytes: std::mem::size_of::<ValidationCheckpoint>(),
+        })
+    }
+
+    /// Reports whether a content ID is present in the validation cache.
+    ///
+    /// This diagnostic performs no object or ref read and never validates or
+    /// inserts a checkpoint. It exists so conformance tests can observe the
+    /// failure-atomic cache state before any later read repairs a cache miss.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn has_retained_validation_checkpoint(&self, content: ContentId) -> bool {
+        self.validation_checkpoints().contains_key(&content)
+    }
+
     pub(super) fn validate_complete_head(
         &self,
         head: ContentId,
