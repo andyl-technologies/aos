@@ -1200,6 +1200,7 @@ in rec {
         "checks.crucible.phase4.gates.attemptIdempotence" = phase4.gates.attemptIdempotence;
         "checks.crucible.phase4.gates.branchPointModel" = phase4.gates.branchPointModel;
         "checks.crucible.phase4.gates.campaignMutationScaling" = phase4.gates.campaignMutationScaling;
+        "checks.crucible.phase4.gates.campaignReplay.rawGate" = phase4.gates.campaignReplay.rawGate;
         "checks.crucible.phase4.gates.campaignStatistics" = phase4.gates.campaignStatistics;
         "checks.crucible.phase4.gates.controlResponsiveness" = phase4.gates.controlResponsiveness;
         "checks.crucible.phase4.gates.lazyFrontier" = phase4.gates.lazyFrontier;
@@ -1308,6 +1309,22 @@ in rec {
           dependencies = [attemptIdempotence.rawGate];
         };
         dependencies = [attemptIdempotence];
+      };
+      campaignReplay = redBeforeAdvance {
+        attrPath = "checks.crucible.phase4.gates.campaignReplay";
+        # lint needle: campaignReplay = import ./phase4-campaign-replay.nix
+        gate = import ./phase4-campaign-replay.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase4.gates.campaignReplay.rawGate";
+          dependencies = [];
+          taskIds = [];
+        };
+        dependencies = [];
+        phase = "phase4";
+        reason = "production QEMU and native campaign replay acceptance remain incomplete";
+        taskIds = ["T-CAM-3.5" "T-CAM-4.10" "T-CAM-8.4"];
+        gateName = "gate:campaign-replay";
+        owner = "crucible-campaign";
       };
       e2eDeterminism = redBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.e2eDeterminism";

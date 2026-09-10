@@ -2233,6 +2233,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "crucible-campaign",
+ "crucible-cas",
  "crucible-device",
  "crucible-harness",
  "crucible-protocol",

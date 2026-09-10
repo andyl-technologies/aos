@@ -295,7 +295,16 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         "checks.crucible.phase4.gates.campaignMutationScaling",
     ),
     unsupported("gate:campaign-operator-acceptance", "crucible-cli"),
-    unsupported("gate:campaign-replay", "crucible-campaign"),
+    component_automated(
+        "gate:campaign-replay",
+        "crucible-campaign",
+        &[
+            integration_target("crucible-campaign", "gate_campaign_replay"),
+            integration_target("crucible", "gate_campaign_replay"),
+        ],
+        "checks.crucible.phase4.gates.campaignReplay.rawGate",
+        &["production-qemu", "native"],
+    ),
     automated(
         "gate:campaign-statistics",
         "crucible-campaign",

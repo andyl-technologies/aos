@@ -53,6 +53,7 @@ enum TestShape {
     CampaignContinuity,
     CampaignContinuityV2,
     CampaignModel,
+    CampaignReplay,
     CampaignStatistics,
     BranchPointModel,
     LazyFrontier,
@@ -172,6 +173,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         owner_packages: &["crucible-campaign"],
         layers: &[Layer::L3],
         shape: TestShape::CampaignModel,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-replay",
+        owner_packages: &["crucible", "crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignReplay,
         backend: TestBackend::InProcess,
     },
     GateTestingStandard {
@@ -441,6 +449,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:checkpoint-materialization",
             "gate:state-space-search",
             "gate:signal-fault-system",
+            "gate:campaign-replay",
         ],
     },
     CrateTestingOwnership {
@@ -463,6 +472,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:campaign-continuity-v2",
             "gate:lazy-frontier",
             "gate:typed-choice",
+            "gate:campaign-replay",
         ],
     },
     CrateTestingOwnership {

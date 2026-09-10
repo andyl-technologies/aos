@@ -34,6 +34,12 @@ const IMPLEMENTED_GATE_TEST_MODELS: &[ImplementedGateTestModel] = &[
         gate_entry_point: "campaign_continuity_v2_survives_pause_restart_archive_restore_and_resume",
         ignored_process_helpers: &["continuity_process_helper"],
     },
+    ImplementedGateTestModel {
+        package: "crucible",
+        test_target: "gate_campaign_replay",
+        gate_entry_point: "offline_rich_finding_replays_without_campaign_store",
+        ignored_process_helpers: &["offline_campaign_replay_consumer"],
+    },
 ];
 
 #[test]
@@ -248,6 +254,12 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-campaign",
                 "gate_campaign_model"
             ),
+            (
+                "gate:campaign-replay",
+                "crucible-campaign",
+                "gate_campaign_replay"
+            ),
+            ("gate:campaign-replay", "crucible", "gate_campaign_replay"),
             (
                 "gate:campaign-statistics",
                 "crucible-campaign",
@@ -526,6 +538,67 @@ fn mapping_regression_failures() -> Vec<String> {
     {
         failures.push(
             "gate-target mapping regression failed to reject an unmodeled ignored helper"
+                .to_string(),
+        );
+    }
+
+    let replay_target = GateTargetSpec {
+        gate: "gate:campaign-replay",
+        package: "crucible",
+        test_target: "gate_campaign_replay",
+        required_features: &[],
+        placeholder: false,
+    };
+    let runnable_replay_gate = r#"
+        #[test]
+        fn offline_rich_finding_replays_without_campaign_store() {}
+
+        #[test]
+        #[ignore = "spawned process helper"]
+        fn offline_campaign_replay_consumer() {}
+    "#;
+    let runnable_findings = implemented_gate_test_failures(
+        &replay_target,
+        runnable_replay_gate,
+        "synthetic campaign replay gate",
+    );
+    if !runnable_findings.is_empty() {
+        failures.push(format!(
+            "gate-target mapping regression rejected modeled process helper: {}",
+            runnable_findings.join(", ")
+        ));
+    }
+
+    let ignored_entry_point = runnable_replay_gate.replace(
+        "#[test]\n        fn offline_rich_finding",
+        "#[test]\n        #[ignore]\n        fn offline_rich_finding",
+    );
+    if !implemented_gate_test_failures(
+        &replay_target,
+        &ignored_entry_point,
+        "synthetic campaign replay gate",
+    )
+    .iter()
+    .any(|finding| finding.contains("gate entry point") && finding.contains("must not be ignored"))
+    {
+        failures.push(
+            "gate-target mapping regression failed to reject ignored replay gate entry point"
+                .to_string(),
+        );
+    }
+
+    let unmodeled_helper =
+        format!("{runnable_replay_gate}\n#[test]\n#[ignore]\nfn unmodeled_process_helper() {{}}");
+    if !implemented_gate_test_failures(
+        &replay_target,
+        &unmodeled_helper,
+        "synthetic campaign replay gate",
+    )
+    .iter()
+    .any(|finding| finding.contains("unmodeled_process_helper"))
+    {
+        failures.push(
+            "campaign replay mapping regression failed to reject an unmodeled ignored helper"
                 .to_string(),
         );
     }

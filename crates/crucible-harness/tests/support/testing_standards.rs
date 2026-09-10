@@ -259,6 +259,34 @@ pub(super) fn source_shape_failures(
         }
     }
 
+    if standard.shape == TestShape::CampaignReplay {
+        let required = if target.package == "crucible-campaign" {
+            &[
+                "CampaignRepository::with_component_authorities",
+                "CanonicalFrontierPlanner",
+                "restarted_repository",
+                "assert_wrong_planner_authority_is_rejected",
+                "assert_eq!(reordered.steps, ordered.steps)",
+            ][..]
+        } else {
+            &[
+                "env_clear",
+                "offline_campaign_replay_consumer",
+                "FindingTriageReplayEvidence::from_canonical_bytes",
+                "FailureTriageReplayEvidence::from_compact_binary",
+                "InvalidExport::MissingEvidence",
+                "InvalidExport::CorruptEvidence",
+                "InvalidExport::WrongObservedSignature",
+            ][..]
+        };
+        if required.iter().any(|needle| !code.contains(needle)) {
+            failures.push(format!(
+                "{}:{} must prove every-step strict planner replay or separate-process rich finding reconstruction with fail-closed corruptions",
+                target.package, target.test_target,
+            ));
+        }
+    }
+
     if standard.shape == TestShape::CampaignStatistics {
         for required in [
             "CampaignRepository::with_component_authorities",

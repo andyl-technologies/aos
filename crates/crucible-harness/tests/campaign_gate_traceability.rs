@@ -303,6 +303,33 @@ fn world_fork_component_evidence_does_not_complete_the_canonical_gate() -> Resul
 }
 
 #[test]
+fn campaign_replay_component_evidence_keeps_production_scope_open() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let gate =
+        find_campaign_gate("gate:campaign-replay").ok_or("campaign-replay gate is missing")?;
+    let CampaignGateContract::ComponentAutomated {
+        targets,
+        nix_attr,
+        remaining_scope,
+    } = gate.contract
+    else {
+        return Err("campaign-replay must remain component-automated".into());
+    };
+
+    assert_eq!(targets.len(), 2);
+    assert_eq!(remaining_scope, ["production-qemu", "native"]);
+    let wired_default = format!("\"{nix_attr}\" = component_evidence;");
+    assert_eq!(
+        contract_failures(&root, &wired_default, gate),
+        [String::from(
+            "gate:campaign-replay: component automation does not complete the RFC contract; remaining scope: production-qemu,native"
+        )]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn every_rfc_requirement_has_an_executable_gate_contract() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;

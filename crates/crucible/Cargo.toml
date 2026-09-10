@@ -29,6 +29,7 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+crucible-cas = { workspace = true }
 crucible-harness = { path = "../crucible-harness" }
 
 [[test]]
