@@ -171,6 +171,11 @@ in
             destructive-recovery-faults \
             content_store::s3::tests::credential_expiry_preserves_identity_and_authenticated_retry
 
+          run_exact_feature_lib_test \
+            crucible-cas \
+            destructive-recovery-faults \
+            content_store::tests::corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier
+
           for cas_test in \
             content_store::tests::changing_and_failing_sources_leave_no_published_object_or_staging_file \
             content_store::s3::tests::interrupted_upload_aborts_and_failed_abort_is_explicit \
@@ -207,9 +212,9 @@ in
           tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:campaign-destructive-recovery
           injection_classes=14
-          prerequisite_tests=24
+          prerequisite_tests=25
           operator_commands=contract-validated
-          fault_build_hooks=coordinator-before-observation-commit,daemon-during-snapshot-publication,exact-capture-enospc,multipart-remove-leaf,store-credential-expiry-implemented;remaining-required
+          fault_build_hooks=coordinator-before-observation-commit,daemon-during-snapshot-publication,exact-capture-enospc,multipart-remove-leaf,store-credential-expiry,corrupt-tier-copy-implemented;remaining-required
           manual_evidence=required
           acceptance=not-evaluated
           RESULT
