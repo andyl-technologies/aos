@@ -1,6 +1,7 @@
 ##! systemd — System and service manager
 {
   mkDerivation,
+  stdenv,
   fetchurl,
   gnumake,
   pkg-config,
@@ -257,7 +258,7 @@ in
                   meson setup .. \
                     $mesonFlags \
                     --prefix=$out \
-                    --sysconfdir=$out/etc \
+                    --sysconfdir=/etc \
                     -Dwerror=false \
                     --buildtype=release \
                     -Dmode=release \
@@ -513,6 +514,45 @@ in
           exec "${python3}/bin/python3" "$ukify_hook.unwrapped" "\$@"
           EOF
           chmod +x "$ukify_hook"
+        '';
+      }
+      {
+        name = "verify-runtime-configuration-paths";
+        script = ''
+          # Administrator state belongs to the live /etc overlay. Compiling
+          # the output path into systemd would let runtime tools mutate the
+          # package through the writable /nix overlay.
+          grep -F '/etc/profile.d/70-systemd-shell-extra.sh' \
+            "$out/lib/tmpfiles.d/20-systemd-shell-extra.conf" >/dev/null
+          grep -F '/etc/profile.d/80-systemd-osc-context.sh' \
+            "$out/lib/tmpfiles.d/20-systemd-osc-context.conf" >/dev/null
+          if grep -F "$out/etc/profile.d" \
+            "$out/lib/tmpfiles.d/20-systemd-shell-extra.conf" \
+            "$out/lib/tmpfiles.d/20-systemd-osc-context.conf" >/dev/null; then
+            echo "systemd tmpfiles targets its immutable output" >&2
+            exit 1
+          fi
+
+          test ! -e "$out/etc"
+
+          ${
+            if stdenv.isCross
+            then ''
+              echo "skipping target systemd path execution while cross-compiling"
+            ''
+            else ''
+              test "$($out/bin/systemd-path system-configuration)" = /etc
+
+              unitPaths="$($out/bin/systemd-analyze unit-paths)"
+              printf '%s\n' "$unitPaths" \
+                | grep -Fx /etc/systemd/system >/dev/null
+              if printf '%s\n' "$unitPaths" \
+                | grep -Fx "$out/etc/systemd/system" >/dev/null; then
+                echo "systemd runtime unit lookup includes its immutable output" >&2
+                exit 1
+              fi
+            ''
+          }
         '';
       }
     ];
