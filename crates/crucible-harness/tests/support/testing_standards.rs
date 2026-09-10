@@ -549,6 +549,7 @@ pub(super) fn testing_standard_regression_failures() -> Vec<String> {
 }
 
 pub(super) fn testing_source_regression_failures() -> Vec<String> {
+    let mut failures = Vec::new();
     let findings = flaky_escape_failures(
         "crucible",
         "gate_replay_oracle",
@@ -560,11 +561,50 @@ pub(super) fn testing_source_regression_failures() -> Vec<String> {
         "#,
     );
 
-    if findings.len() == 2 {
-        Vec::new()
-    } else {
-        vec!["testing-standard regression failed to reject flaky/retry escapes".to_string()]
+    if findings.len() != 2 {
+        failures
+            .push("testing-standard regression failed to reject flaky/retry escapes".to_string());
     }
+
+    let native_scenario_target = "src/qemu_hot_fork_world_factory/tests/native_acceptance/scenario";
+    let modeled_retry = flaky_escape_failures(
+        "crucible-daemon",
+        native_scenario_target,
+        "let retry_domain = modeled_guest_choice();",
+    );
+    let semantic_baseline = TestingStandardsBaseline {
+        caps: BTreeMap::from([(
+            TestingStandardsBaselineKey {
+                package: "crucible-daemon".to_string(),
+                test_target: native_scenario_target.to_string(),
+                pattern: "retry".to_string(),
+            },
+            1,
+        )]),
+    };
+    if !semantic_baseline
+        .filter_flaky_findings(modeled_retry)
+        .is_empty()
+    {
+        failures.push(
+            "testing-standard regression rejected the scoped modeled-retry baseline".to_string(),
+        );
+    }
+
+    let unrelated_retry =
+        flaky_escape_failures("crucible-daemon", "tests/unrelated", "retry_failed_test();");
+    if !semantic_baseline
+        .filter_flaky_findings(unrelated_retry)
+        .iter()
+        .any(|finding| finding.starts_with("crucible-daemon:tests/unrelated "))
+    {
+        failures.push(
+            "testing-standard regression allowed retry behavior outside its exact baseline target"
+                .to_string(),
+        );
+    }
+
+    failures
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
