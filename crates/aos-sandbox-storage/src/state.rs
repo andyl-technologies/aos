@@ -7,6 +7,8 @@
 //! helper may invoke ZFS. Recovery exposes that phase only for re-observation;
 //! this module contains no API that returns or reissues mutation argv.
 
+mod workspace_projection;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -1964,78 +1966,7 @@ impl StorageTransactionStore {
     pub(crate) fn workspace_projection(
         &self,
     ) -> Result<Vec<StorageWorkspaceProjection>, StorageStateError> {
-        self.ensure_authority_readable()?;
-        let mut workspace_projection = Vec::new();
-        for projection in self.catalog_transitions.workspace_projection()? {
-            match projection {
-                PhysicalWorkspaceProjection::Active {
-                    operation_id,
-                    object_guid,
-                } => {
-                    let result = self.projected_committed_result(operation_id)?;
-                    if result.object_guid() != Some(object_guid) {
-                        return Err(StorageStateError::AuthorityLinkMismatch);
-                    }
-                    if !self.publication_intents.contains_key(&operation_id) {
-                        return Err(StorageStateError::MissingAuthorityLink);
-                    }
-                    let workspace_handle = result
-                        .storage_handle()
-                        .ok_or(StorageStateError::MissingAuthorityLink)?;
-                    if self
-                        .satisfied_workspace_ensure_pin_for_active_creation(
-                            operation_id,
-                            workspace_handle,
-                        )
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    workspace_projection.push(StorageWorkspaceProjection::Active(result));
-                }
-                PhysicalWorkspaceProjection::Retired {
-                    operation_id,
-                    object_guid,
-                } => {
-                    let Some(creation) = self.managed_workspace_creation(object_guid)? else {
-                        continue;
-                    };
-                    let retirement = self.projected_committed_result(operation_id)?;
-                    let record = self
-                        .records
-                        .get(&operation_id)
-                        .ok_or(StorageStateError::MissingAuthorityLink)?;
-                    let catalog =
-                        ResolvedCatalogCommitmentV1::from_canonical_bytes(&record.catalog_bytes)
-                            .map_err(|_| StorageStateError::CorruptRecord)?;
-                    let CatalogPlanV1::DestroyDataset { dataset } = catalog.plan() else {
-                        return Err(StorageStateError::AuthorityLinkMismatch);
-                    };
-                    if dataset.guid() != object_guid
-                        || retirement.object_guid().is_some()
-                        || retirement.storage_handle() != Some(dataset.storage_handle())
-                        || creation.storage_handle() != retirement.storage_handle()
-                    {
-                        return Err(StorageStateError::AuthorityLinkMismatch);
-                    }
-                    if self
-                        .require_satisfied_workspace_pin_effect(
-                            operation_id,
-                            dataset.storage_handle(),
-                            WorkspacePinActionV1::RemoveAndDestroy,
-                        )
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    workspace_projection.push(StorageWorkspaceProjection::Retired {
-                        creation,
-                        retirement,
-                    });
-                }
-            }
-        }
-        Ok(workspace_projection)
+        self.workspace_projection_plan()?.compatibility_projection()
     }
 
     pub(crate) fn managed_workspace_creation(
@@ -4053,7 +3984,7 @@ mod tests {
         ZfsTransaction,
     };
 
-    fn key(byte: u8) -> StorageStateKey {
+    pub(super) fn key(byte: u8) -> StorageStateKey {
         StorageStateKey::new([byte; 16], [byte.wrapping_add(1); 32]).unwrap()
     }
 
@@ -4067,11 +3998,11 @@ mod tests {
         .unwrap()
     }
 
-    fn catalog(generation: u64, destination_name: &str) -> ResolvedCatalogCommitmentV1 {
+    pub(super) fn catalog(generation: u64, destination_name: &str) -> ResolvedCatalogCommitmentV1 {
         catalog_with_physical_identity(generation, destination_name, 10, 15)
     }
 
-    fn publication_intent(
+    pub(super) fn publication_intent(
         operation_id: [u8; 16],
         catalog: &ResolvedCatalogCommitmentV1,
         marker: u8,
@@ -4171,7 +4102,7 @@ mod tests {
         (catalog, ancestor)
     }
 
-    fn destroy_dataset_catalog(
+    pub(super) fn destroy_dataset_catalog(
         generation: u64,
         name: &str,
         guid: u64,
@@ -4222,11 +4153,14 @@ mod tests {
         .unwrap()
     }
 
-    fn digest(byte: u8) -> ObjectDigest {
+    pub(super) fn digest(byte: u8) -> ObjectDigest {
         ObjectDigest::from_bytes([byte; 32])
     }
 
-    fn initialize(store: &mut StorageTransactionStore, catalog: &ResolvedCatalogCommitmentV1) {
+    pub(super) fn initialize(
+        store: &mut StorageTransactionStore,
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) {
         store
             .initialize_catalog_from_protected_snapshot(
                 catalog.generation() - 1,
@@ -4274,7 +4208,7 @@ mod tests {
         .unwrap()
     }
 
-    fn prepare_workspace_remove_attempt(
+    pub(super) fn prepare_workspace_remove_attempt(
         store: &mut StorageTransactionStore,
     ) -> (WorkspacePinAttemptV1, ObjectDigest) {
         let create = catalog(7, "tank/aos/project/work");
