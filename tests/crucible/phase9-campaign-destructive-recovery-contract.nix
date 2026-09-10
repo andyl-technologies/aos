@@ -151,6 +151,11 @@ in
             destructive-recovery-faults \
             repository::tests::execution::driver::coordinator_fault_before_observation_commit_recovers_exactly_once
 
+          run_exact_feature_lib_test \
+            crucible-campaign \
+            destructive-recovery-faults \
+            repository::tests::destructive_recovery::daemon_fault_during_snapshot_publication_recovers_complete_ref
+
           for cas_test in \
             content_store::tests::changing_and_failing_sources_leave_no_published_object_or_staging_file \
             content_store::s3::tests::interrupted_upload_aborts_and_failed_abort_is_explicit \
@@ -187,9 +192,9 @@ in
           tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:campaign-destructive-recovery
           injection_classes=14
-          prerequisite_tests=20
+          prerequisite_tests=21
           operator_commands=contract-validated
-          fault_build_hooks=coordinator-before-observation-commit-implemented;remaining-required
+          fault_build_hooks=coordinator-before-observation-commit,daemon-during-snapshot-publication-implemented;remaining-required
           manual_evidence=required
           acceptance=not-evaluated
           RESULT
