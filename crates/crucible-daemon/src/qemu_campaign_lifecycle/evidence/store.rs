@@ -9,7 +9,7 @@ use super::{
     MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, MAX_TERMINAL_FINGERPRINT_SAMPLES,
 };
 
-/// Scheduler progress and reproduction evidence from one fresh QEMU attempt.
+/// Scheduler progress and reproduction evidence from one QEMU attempt.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct QemuAttemptExecutionEvidenceSnapshot {
     quanta: u64,
@@ -59,7 +59,7 @@ impl QemuAttemptExecutionEvidenceSnapshot {
     }
 }
 
-/// Shared read-only evidence for the most recently constructed fresh attempt.
+/// Shared read-only evidence for the most recently constructed attempt.
 #[derive(Clone, Debug, Default)]
 pub struct QemuAttemptExecutionEvidence {
     snapshot: Arc<Mutex<QemuAttemptExecutionEvidenceSnapshot>>,

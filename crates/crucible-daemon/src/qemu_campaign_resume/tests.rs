@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, Decision, ScenarioDef, SchedulerEventLogEntry,
-    SchedulerQuiescence, SelectionDecision, VirtualTime,
+    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, ExecutionFingerprint,
+    FingerprintSample, NodeId, ScenarioDef, SchedulerEventLogEntry, SchedulerQuiescence,
+    SelectionDecision, VirtualTime,
 };
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleResumeState};
 use crucible_campaign::{
@@ -123,6 +124,15 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
             .terminal_fingerprint_prepares
             .fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        let hash = ContentHash::from_bytes(node.name.as_bytes());
+        Ok(FingerprintSample {
+            node,
+            at: self.state.scheduler_frontier(),
+            fingerprint: ExecutionFingerprint { hash },
+        })
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -406,6 +416,67 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
     );
     assert_eq!(calls.shutdowns.load(Ordering::SeqCst), 1);
     assert_eq!(calls.seals.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn observed_resume_factory_publishes_the_exact_terminal_world_node_set() {
+    let calls = Arc::new(ResumeCalls::default());
+    let observed = Arc::new(Mutex::new(None));
+    let input = test_input();
+    let terminal_at = VirtualTime { ticks: 23 };
+    let state = ProductionVmLifecycleResumeState::new(
+        test_configuration(),
+        Vec::new(),
+        0,
+        5,
+        terminal_at,
+        SchedulerQuiescence::default(),
+        None,
+    );
+    let factory = FakeResumeFactory {
+        calls: Arc::clone(&calls),
+        state: Some(state),
+        final_events: Vec::new(),
+    };
+    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
+    let mut runner = QemuProductionExactResumeExecutionRunner::new(
+        test_checkpoint_store(),
+        factory,
+        FakeResumeDriver { calls, observed },
+    );
+    let checkpoint = checkpoint_id("observed-resume-terminal-fingerprints");
+
+    runner
+        .execute(&input, &test_context(Some(checkpoint)))
+        .expect("observed exact resume");
+
+    let mut expected_nodes = input
+        .scenario()
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    expected_nodes.sort_by(|left, right| left.name.cmp(&right.name));
+    let expected = expected_nodes
+        .into_iter()
+        .map(|node| {
+            let hash = ContentHash::from_bytes(node.name.as_bytes());
+            FingerprintSample {
+                node,
+                at: terminal_at,
+                fingerprint: ExecutionFingerprint { hash },
+            }
+        })
+        .collect::<Vec<_>>();
+    assert!(!expected.is_empty());
+    assert_eq!(
+        evidence
+            .snapshot()
+            .expect("resume evidence snapshot")
+            .terminal_fingerprints(),
+        Some(expected.as_slice())
+    );
 }
 
 #[test]
