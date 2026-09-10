@@ -45,6 +45,11 @@ const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_REC
 const MULTIPART_REMOVE_LEAF_TRIGGER: &str = "crucible.destructive-recovery.multipart-remove-leaf";
 #[cfg(feature = "destructive-recovery-faults")]
 static MULTIPART_REMOVE_LEAF_TRIGGERED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "destructive-recovery-faults")]
+const STORE_CREDENTIAL_EXPIRY_TRIGGER: &str =
+    "crucible.destructive-recovery.store-credential-expiry";
+#[cfg(feature = "destructive-recovery-faults")]
+static STORE_CREDENTIAL_EXPIRY_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
 /// Maximum unfinished multipart uploads returned or reclaimed by one call.
 pub const MAX_S3_MULTIPART_LIST_ITEMS: u16 = 1_000;
@@ -848,6 +853,18 @@ fn inject_multipart_remove_leaf(id: ContentId, part_number: u32) -> Result<(), S
     Err(StoreError::NotFound { id })
 }
 
+#[cfg(feature = "destructive-recovery-faults")]
+fn inject_store_credential_expiry() -> Result<(), StoreError> {
+    let requested = std::env::var_os(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT);
+    if requested.as_deref() != Some(std::ffi::OsStr::new(STORE_CREDENTIAL_EXPIRY_TRIGGER))
+        || STORE_CREDENTIAL_EXPIRY_TRIGGERED.swap(true, Ordering::AcqRel)
+    {
+        return Ok(());
+    }
+
+    Err(StoreError::Unauthorized)
+}
+
 impl ImmutableBlobBackend for S3BlobBackend {
     fn name(&self) -> &str {
         &self.name
@@ -877,6 +894,9 @@ impl ImmutableBlobBackend for S3BlobBackend {
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        #[cfg(feature = "destructive-recovery-faults")]
+        // Fail before provider lookup so denied access cannot be mistaken for absence.
+        inject_store_credential_expiry()?;
         let logical_length = self.read_length(id)?;
         if let Some(range) = range {
             validate_range(logical_length, range)?;
@@ -1071,6 +1091,14 @@ mod tests {
         "content_store::s3::tests::multipart_remove_leaf_aborts_before_completion_and_retries";
     #[cfg(feature = "destructive-recovery-faults")]
     const MULTIPART_REMOVE_LEAF_CHILD_EXIT_CODE: i32 = 88;
+    #[cfg(feature = "destructive-recovery-faults")]
+    const STORE_CREDENTIAL_EXPIRY_CHILD_ENVIRONMENT: &str =
+        "CRUCIBLE_DESTRUCTIVE_RECOVERY_STORE_CREDENTIAL_EXPIRY_CHILD";
+    #[cfg(feature = "destructive-recovery-faults")]
+    const STORE_CREDENTIAL_EXPIRY_TEST_NAME: &str =
+        "content_store::s3::tests::credential_expiry_preserves_identity_and_authenticated_retry";
+    #[cfg(feature = "destructive-recovery-faults")]
+    const STORE_CREDENTIAL_EXPIRY_CHILD_EXIT_CODE: i32 = 89;
 
     struct UploadState {
         bucket: String,
@@ -2011,6 +2039,79 @@ mod tests {
             ),
             Err(StoreError::InvalidComposition { .. })
         ));
+    }
+
+    #[cfg(feature = "destructive-recovery-faults")]
+    #[test]
+    fn credential_expiry_preserves_identity_and_authenticated_retry() {
+        if std::env::var_os(STORE_CREDENTIAL_EXPIRY_CHILD_ENVIRONMENT).is_some() {
+            run_store_credential_expiry_child();
+            panic!("credential-expiry child returned without recording recovery");
+        }
+
+        let child =
+            std::process::Command::new(std::env::current_exe().expect("current test binary"))
+                .arg("--exact")
+                .arg(STORE_CREDENTIAL_EXPIRY_TEST_NAME)
+                .arg("--nocapture")
+                .env(STORE_CREDENTIAL_EXPIRY_CHILD_ENVIRONMENT, "1")
+                .env(
+                    DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
+                    STORE_CREDENTIAL_EXPIRY_TRIGGER,
+                )
+                .output()
+                .expect("run credential-expiry child");
+        assert_eq!(
+            child.status.code(),
+            Some(STORE_CREDENTIAL_EXPIRY_CHILD_EXIT_CODE),
+            "credential-expiry child did not recover:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr),
+        );
+    }
+
+    #[cfg(feature = "destructive-recovery-faults")]
+    fn run_store_credential_expiry_child() {
+        let endpoint = StoreS3EndpointId::new("minio/credential-expiry").expect("endpoint");
+        let client = Arc::new(FakeS3Client::new(endpoint.clone()));
+        let backend = backend(client.clone());
+        let bytes = b"credential-expiry-authenticated-object".to_vec();
+        let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+        let location = ("campaign-archive".to_string(), backend.key(id));
+        client
+            .objects
+            .lock()
+            .expect("object lock")
+            .insert(location.clone(), Arc::from(bytes.clone()));
+
+        assert!(matches!(
+            backend.read(id, None),
+            Err(StoreError::Unauthorized)
+        ));
+        let retained = client
+            .objects
+            .lock()
+            .expect("object lock")
+            .get(&location)
+            .cloned()
+            .expect("retained authenticated object");
+        assert_eq!(retained.as_ref(), bytes.as_slice());
+        assert_eq!(backend.endpoint_id(), &endpoint);
+
+        let restored = backend
+            .read(id, None)
+            .expect("retry read after credential recovery")
+            .read_all(bytes.len() as u64)
+            .expect("authenticate retry bytes");
+        assert_eq!(restored, bytes);
+        let receipt = backend
+            .put_if_absent(id, &BlobHandle::from_bytes(restored))
+            .expect("retry existing-object write after credential recovery");
+        assert_eq!(receipt.id, id);
+        assert!(receipt.is_durable());
+        assert_eq!(client.upload_parts.load(Ordering::SeqCst), 0);
+
+        std::process::exit(STORE_CREDENTIAL_EXPIRY_CHILD_EXIT_CODE);
     }
 
     #[test]
