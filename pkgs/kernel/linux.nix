@@ -8,6 +8,7 @@
   perl,
   bash,
   gawk,
+  patch,
   openssl,
   kmod,
   bison,
@@ -78,6 +79,7 @@ in
       perl
       bash
       gawk
+      patch
       openssl
       bison
       flex
@@ -111,6 +113,12 @@ in
               '#!'*python*) sed -i "1s|.*|#!${buildPackages.python3}/bin/python3|" "$f" ;;
             esac
           done
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          patch -p1 < ${./linux-gawk-array-argument.patch}
         '';
       }
       {
