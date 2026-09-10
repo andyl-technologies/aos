@@ -11,8 +11,18 @@
   buildPlatform,
   hostPlatform,
   perl ? null,
+  fixRiscvSyscallArguments ? false,
   ...
 }: let
+  syscallArgumentFix =
+    if fixRiscvSyscallArguments
+    then ''
+      # Evaluate syscall arguments before assigning caller-clobbered registers.
+      # Otherwise posix_spawn's RESETIDS path issues getuid in place of setresuid.
+      patch -d "$SRC" -p1 < ${./patches/glibc-2.28-riscv-syscall-arguments.patch}
+    ''
+    else "";
+
   # The construction sysroot precedes the target interpreter. Complete the
   # public libc utilities once the cross tier has built its static Perl.
   perlCommand =
@@ -67,7 +77,7 @@ in
 
         SRC="$TMPDIR/glibc-2.28"
 
-        # Patch plural.y: replace bison 2.7+ directive with 2.4 equivalent
+        ${syscallArgumentFix}# Patch plural.y: replace bison 2.7+ directive with 2.4 equivalent
         ${prev.sed}/bin/sed -i 's/%define api.pure full/%pure-parser/' "$SRC/intl/plural.y"
 
         # Fix hardcoded /bin/pwd

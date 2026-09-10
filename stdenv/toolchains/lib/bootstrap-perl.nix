@@ -4,7 +4,20 @@
   targetTools,
   buildPlatform,
   nssLibraries ? "-lnss_files -lnss_dns",
+  archname ? null,
 }: let
+  configureArchname =
+    if archname == null
+    then ""
+    else "-Darchname=${archname} ";
+  checkArchname =
+    if archname == null
+    then ""
+    else ''
+      "$out/bin/perl" -MConfig -e \
+        '$Config{archname} eq "${archname}" or die "incorrect target architecture"'
+    '';
+
   version = "5.10.1";
   src = builtins.fetchTarball {
     url = "https://www.cpan.org/src/5.0/perl-${version}.tar.bz2";
@@ -74,7 +87,7 @@ in
           -Dccflags="-O2 -isystem ${targetTools.glibc}/include" \
           -Dldflags="-static -L${targetTools.glibc}/lib" \
           -Dlibs="-lm -ldl -lcrypt -lpthread -Wl,--start-group -lc ${nssLibraries} -lresolv -Wl,--end-group" \
-          -Uusedl -Uuseshrplib
+          ${configureArchname}-Uusedl -Uuseshrplib
 
         make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" miniperl
         # Keep extension generation serial while compiling the core in parallel.
@@ -98,7 +111,7 @@ in
           gunzip(\$compressed => \$restored) or die "gunzip failed";
           $restored eq $source or die "compression round trip failed";
         '
-      ''
+        ${checkArchname}''
     ];
   }
   // {
