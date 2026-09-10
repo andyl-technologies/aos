@@ -4,8 +4,6 @@ use super::*;
 
 use std::path::{Component, Path};
 
-#[cfg(test)]
-use crucible_daemon::DirectoryExactPinMaterializationStore;
 use crucible_daemon::campaign_store_composition::{
     BackendCapabilities, ContentId, ImmutableBlobBackend, StoreGraph, StoreNodeKind,
 };
@@ -13,10 +11,12 @@ use crucible_daemon::{
     CampaignGcApplyStatus, CampaignGcCandidateManifest, CampaignGcCandidateReason,
     CampaignGcJournalCreateDisposition, CampaignGcJournalPhase, CampaignGcJournalTransition,
     CampaignGcPlan, CampaignGcPlanVersion, CampaignLocalServiceConfig, CampaignLocalServiceMode,
-    CampaignLoopbackEndpointConfig, CampaignLoopbackServerConfig, DirectoryAssignmentLedger,
-    DirectoryCampaignGcJournal, DirectoryExactPinMaterializationReader,
-    EXACT_PIN_MATERIALIZATION_DIRECTORY,
+    CampaignLoopbackEndpointConfig, CampaignLoopbackServerConfig,
+    DirectoryAssignmentRetentionReader, DirectoryCampaignGcJournal,
+    DirectoryExactPinMaterializationReader, EXACT_PIN_MATERIALIZATION_DIRECTORY,
 };
+#[cfg(test)]
+use crucible_daemon::{DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore};
 use serde::Serialize;
 
 use crate::cli_campaign_store::{
@@ -302,7 +302,7 @@ pub(super) fn run_campaign_store_gc(
         maintenance_error(format!("campaign GC authority unavailable: {error}"))
     })?;
     let ledger_path = args.state.join("executor-ledger");
-    let mut ledger = DirectoryAssignmentLedger::open_existing(&ledger_path)
+    let mut ledger = DirectoryAssignmentRetentionReader::open_optional_existing(&ledger_path)
         .map_err(|error| maintenance_error(format!("assignment ledger open failed: {error}")))?;
     let exact_pin_path = args.state.join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
     let mut exact_pins = DirectoryExactPinMaterializationReader::open_optional_existing(

@@ -189,8 +189,8 @@ pub use assignment_ledger::{
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptExecutionOrigin,
     AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
-    CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointResumeBasis,
-    MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
+    CompletedFindingCandidate, DirectoryAssignmentLedger, DirectoryAssignmentRetentionReader,
+    ExactCheckpointResumeBasis, MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
 };
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
