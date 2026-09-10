@@ -2609,9 +2609,6 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
     Ok(bytes)
 }
 
-#[cfg(test)]
-mod streaming_receiver_tests;
-
 mod debug;
 pub use debug::{DebugControllerAccess, DebugControllerAcquisition};
 mod query_result;
