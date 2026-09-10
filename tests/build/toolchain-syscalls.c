@@ -1,4 +1,4 @@
-/* Exercises syscall wrappers that must remain distinct under parallel builds. */
+/* Exercises syscall wrappers and the compiler's floating-point printf analysis. */
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -11,6 +11,11 @@ static int fail(const char *operation) {
     return 1;
 }
 
+/* External linkage keeps the unknown-value formatting path in the compiler. */
+int format_decimal(char *buffer, size_t length, double value) {
+    return snprintf(buffer, length, "%.8g", value);
+}
+
 int main(void) {
     int descriptors[2];
     int duplicate;
@@ -18,6 +23,7 @@ int main(void) {
     char data[4];
     char before[4096];
     char after[4096];
+    char formatted[32];
     struct statfs path_filesystem;
     struct statfs descriptor_filesystem;
 
@@ -73,6 +79,16 @@ int main(void) {
     }
     if (close(directory) != 0) {
         return fail("close directory");
+    }
+
+    if (format_decimal(formatted, sizeof(formatted), 1.25) != 4
+        || strcmp(formatted, "1.25") != 0) {
+        fputs("floating-point formatting mismatch\n", stderr);
+        return 1;
+    }
+    if (format_decimal(formatted, 4, 1.25) != 4 || strcmp(formatted, "1.2") != 0) {
+        fputs("bounded formatting mismatch\n", stderr);
+        return 1;
     }
 
     puts("syscall contracts passed");
