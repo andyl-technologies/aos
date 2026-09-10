@@ -1652,7 +1652,7 @@ fn store_path_root(target: &str) -> Option<&str> {
     Some(&target[.."/nix/store/".len() + first.len()])
 }
 
-pub(super) fn validate_canonical_store_path(path: &str) -> Result<()> {
+pub(crate) fn validate_canonical_store_path(path: &str) -> Result<()> {
     let suffix = path
         .strip_prefix("/nix/store/")
         .ok_or_else(|| anyhow::anyhow!("manifest store path is outside /nix/store: {path:?}"))?;

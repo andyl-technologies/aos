@@ -17,13 +17,58 @@ use crate::types::{
     FEATURE_ABILITIES_V1, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
     FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1,
     FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
-    FEATURE_NETWORK_POLICY_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1,
-    FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryUkiEntry,
-    SbatEntry, UkiSlot,
+    FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
+    FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT,
+    PermissionsMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
 };
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
+
+#[test]
+fn sysroot_publication_emits_structural_native_rollout_gate() {
+    let info = StorePathInfo {
+        path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-system".to_string(),
+        nar_hash: format!("sha256:{}", "1".repeat(64)),
+        nar_size: 1024,
+        references: Vec::new(),
+        closure_size: 1024,
+    };
+    let content = build_package_toml(
+        "",
+        "aos",
+        "1",
+        "x86_64-linux",
+        &info,
+        Some("AOS system"),
+        None,
+        Some("Apache-2.0"),
+        Some("Andyl, Inc."),
+        true,
+        None,
+        &[],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("build sysroot metadata");
+    let parsed = crate::registry::parse::parse_package_file(&content)
+        .expect("parse published sysroot metadata");
+    let platform = &parsed.versions[0].platforms["x86_64-linux"];
+
+    assert!(platform.references.is_gate());
+    for features in [
+        platform.requires_features.as_slice(),
+        platform.references.requires_features(),
+    ] {
+        assert_eq!(features, [FEATURE_NATIVE_IMAGE_ROLLOUT_V1]);
+    }
+    assert_eq!(platform.min_format, Some(PACKAGE_META_FORMAT));
+    assert_eq!(platform.references.min_format(), Some(PACKAGE_META_FORMAT));
+}
 
 #[test]
 fn record_ability_preserves_stronger_format_and_feature_gates() {

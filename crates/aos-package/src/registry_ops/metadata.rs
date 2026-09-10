@@ -19,11 +19,11 @@ use crate::types::{
     ExposeArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1,
     FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
     FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_OPTIONAL_CREDENTIALS_V1,
-    FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1, FEATURE_RECOVERY_UKIS_V1,
-    FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1, PACKAGE_META_FORMAT,
-    validate_attestation_meta, validate_config_module_meta, validate_documentation_artifact_meta,
-    validate_expose_artifact_meta,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1,
+    FEATURE_OPTIONAL_CREDENTIALS_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1,
+    FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
+    PACKAGE_META_FORMAT, validate_attestation_meta, validate_config_module_meta,
+    validate_documentation_artifact_meta, validate_expose_artifact_meta,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeSet, HashSet};
@@ -79,6 +79,12 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
         expose_artifact_info,
         expose_manifest_digest,
     )?;
+    if sysroot {
+        let table = platform_table
+            .as_table_mut()
+            .context("new sysroot platform metadata is not a TOML table")?;
+        record_native_image_rollout_gate(table)?;
+    }
     if let Some(documentation) = documentation {
         let table = platform_table
             .as_table_mut()
@@ -464,6 +470,36 @@ fn merge_minimum_format(
         "min-format".into(),
         toml::Value::Integer(i64::from(required)),
     );
+    Ok(())
+}
+
+fn record_native_image_rollout_gate(
+    platform: &mut toml::map::Map<String, toml::Value>,
+) -> Result<()> {
+    let features = BTreeSet::from([FEATURE_NATIVE_IMAGE_ROLLOUT_V1.to_string()]);
+    merge_feature_gate(platform, "requires-features", &features)?;
+    merge_minimum_format(platform, "sysroot platform")?;
+
+    // The table representation makes readers that predate structural feature
+    // gates reject the sysroot before they can stage its A/B payload.
+    let prior_references = platform.remove("references");
+    let mut reference_gate = match prior_references {
+        Some(toml::Value::Array(hashes)) => {
+            let mut gate = toml::map::Map::new();
+            gate.insert("hashes".into(), toml::Value::Array(hashes));
+            gate
+        }
+        Some(toml::Value::Table(gate)) => gate,
+        Some(_) => bail!("sysroot references metadata is neither a hash list nor a gate table"),
+        None => {
+            let mut gate = toml::map::Map::new();
+            gate.insert("hashes".into(), toml::Value::Array(Vec::new()));
+            gate
+        }
+    };
+    merge_feature_gate(&mut reference_gate, "requires-features", &features)?;
+    merge_minimum_format(&mut reference_gate, "sysroot references")?;
+    platform.insert("references".into(), toml::Value::Table(reference_gate));
     Ok(())
 }
 

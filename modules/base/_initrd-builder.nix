@@ -25,6 +25,9 @@
 ##!   9. The canonical initrd-stage static ability contract. It carries
 ##!      package declarations and unresolved early-boot obligations, but no
 ##!      runtime grants.
+##!  10. The explicit initrd activation selection, bound to the exact static
+##!      ability contract digest. A `none` selection remains an authenticated
+##!      input rather than being inferred from file absence.
 ##!
 ##! Arguments:
 ##!   pkgs          — AOS package set
@@ -39,6 +42,8 @@
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
 ##!   keepBinutils — retain current binutils for signed UKI section inspection
 ##!                  in recovery-enabled normal initrds.
+##!   abilityActivationSelection — closed required/none selection whose static
+##!                  contract digest is added while assembling the archive.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
@@ -54,6 +59,7 @@
   renderedUnits,
   renderedNetworks,
   handoff,
+  abilityActivationSelection,
   maskedUnits ? [],
   validateBootIdentity ? false,
   keepBinutils ? false,
@@ -495,6 +501,7 @@ in
       gawk
       jq
     ];
+    abilityActivationSelectionJson = builtins.toJSON abilityActivationSelection;
 
     # `exportReferencesGraph` writes one file per package/name pair
     # containing that package's transitive runtime closure. Nix
@@ -650,6 +657,24 @@ in
           cp ${initrdStaticAbilityContract}/contract.json \
             root/lib/aos/initrd/static-ability-contract.json
           chmod 0444 root/lib/aos/initrd/static-ability-contract.json
+
+          static_contract_hex=$(sha256sum \
+            root/lib/aos/initrd/static-ability-contract.json | cut -d ' ' -f 1)
+          mkdir -p root/etc/aos
+          jq -cS \
+            --argjson selection "$abilityActivationSelectionJson" \
+            --arg digest "sha256:$static_contract_hex" \
+            --null-input \
+            '$selection + {static_ability_contract_sha256:$digest}' \
+            > root/etc/aos/initrd-ability-activation.json.tmp
+          activation_size=$(stat -c %s \
+            root/etc/aos/initrd-ability-activation.json.tmp)
+          [ "$activation_size" -gt 1 ]
+          truncate -s $((activation_size - 1)) \
+            root/etc/aos/initrd-ability-activation.json.tmp
+          mv root/etc/aos/initrd-ability-activation.json.tmp \
+            root/etc/aos/initrd-ability-activation.json
+          chmod 0444 root/etc/aos/initrd-ability-activation.json
 
           # Make the interactive stage-1 recovery shells usable:
           cat > root/etc/profile <<PROFILE

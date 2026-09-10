@@ -17,7 +17,7 @@ use aos_ability_model::{
 use aos_ability_plan::{
     RUNTIME_OBSERVATIONS_SCHEMA, ResolutionPolicyDocument, TransitionReconciliation,
 };
-use aos_ability_runtime::adapter::{CancellationToken, MonotonicClock, SystemMonotonicClock};
+use aos_ability_runtime::adapter::{MonotonicClock, SystemMonotonicClock};
 use aos_ability_runtime::execution::TerminalResult;
 use aos_ability_runtime::journal::JournalLimits;
 use aos_contract::Sha256Digest;
@@ -613,6 +613,8 @@ fn execute_native_transition(
     retained_no_op: Option<RetainedAbilityDiagnosticSource>,
     switch_lock: Arc<super::activation::SwitchLockGuard>,
 ) -> Result<()> {
+    let cancellation = super::native_cancellation::NativeCancellationGuard::install()
+        .context("installing native activation cancellation listeners")?;
     let systemd = systemd_connection()?;
     let mut dispatcher = NativeDispatcher::new(&activation, &packages, systemd)
         .context("constructing native dispatcher")?;
@@ -655,7 +657,7 @@ fn execute_native_transition(
         &mut session,
         &mut policy,
         &mut no_op_verifier,
-        &CancellationToken::default(),
+        cancellation.token(),
         &mut boundary_observer,
     )?;
     ensure!(

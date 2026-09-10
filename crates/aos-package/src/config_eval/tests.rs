@@ -1726,6 +1726,130 @@ fn retained_identity_rejects_modified_config_module_nar() {
 }
 
 #[test]
+fn retained_nar_hash_reads_the_exact_local_eval_store() {
+    let store_root = tempfile::tempdir().expect("temporary local store root");
+    let source = tempfile::tempdir().expect("temporary retained input");
+    std::fs::write(source.path().join("module.nix"), b"{ lib, ... }: {}\n")
+        .expect("retained input");
+    let store_uri = format!("local?root={}", store_root.path().display());
+    let output = std::process::Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "--store",
+            &store_uri,
+            "store",
+            "add-path",
+        ])
+        .arg(source.path())
+        .output()
+        .expect("add retained input to local store");
+    assert!(
+        output.status.success(),
+        "adding retained input failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let store_path = PathBuf::from(
+        String::from_utf8(output.stdout)
+            .expect("UTF-8 store path")
+            .trim(),
+    );
+    assert!(
+        !store_path.exists(),
+        "test input unexpectedly exists in the ambient store"
+    );
+
+    let hash =
+        super::retained_store_path_nar_hash_in(&store_path, Some(std::ffi::OsStr::new(&store_uri)))
+            .expect("hash retained input through its local store");
+    assert!(hash.starts_with("sha256:"), "{hash}");
+    assert_eq!(hash.len(), "sha256:".len() + 64);
+}
+
+#[test]
+fn retained_nar_hash_derives_the_exact_aos_root_store() {
+    let root = tempfile::tempdir().expect("temporary AOS root");
+    let source = tempfile::tempdir().expect("temporary retained input");
+    std::fs::write(source.path().join("module.nix"), b"{ lib, ... }: {}\n")
+        .expect("retained input");
+    let store_dir = root.path().join("store");
+    let state_dir = root.path().join("var/nix");
+    let log_dir = root.path().join("var/nix/log/nix");
+    let rooted_nix_environment = vec![
+        ("NIX_STORE_DIR", store_dir.display().to_string()),
+        ("NIX_STATE_DIR", state_dir.display().to_string()),
+        ("NIX_LOG_DIR", log_dir.display().to_string()),
+    ];
+    let store_uri = super::retained_eval_store_uri(None, Some(&rooted_nix_environment))
+        .expect("derive local store URI")
+        .expect("AOS_ROOT selects a local store");
+    let output = std::process::Command::new("nix")
+        .args(["--extra-experimental-features", "nix-command"])
+        .arg("--store")
+        .arg(&store_uri)
+        .args(["store", "add-path"])
+        .arg(source.path())
+        .output()
+        .expect("add retained input to rooted local store");
+    assert!(
+        output.status.success(),
+        "adding retained input failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let store_path = PathBuf::from(
+        String::from_utf8(output.stdout)
+            .expect("UTF-8 store path")
+            .trim(),
+    );
+    assert!(store_path.starts_with(&store_dir));
+
+    let hash = super::retained_store_path_nar_hash_in(&store_path, Some(&store_uri))
+        .expect("hash retained input through the AOS_ROOT-derived store");
+    assert!(hash.starts_with("sha256:"), "{hash}");
+    assert_eq!(hash.len(), "sha256:".len() + 64);
+}
+
+#[test]
+fn retained_eval_store_prefers_a_nonempty_explicit_store() {
+    let rooted = vec![
+        ("NIX_STORE_DIR", "/ignored/store".to_string()),
+        ("NIX_STATE_DIR", "/ignored/state".to_string()),
+        ("NIX_LOG_DIR", "/ignored/log".to_string()),
+    ];
+    let explicit = std::ffi::OsStr::new("local?root=/explicit");
+
+    let selected = super::retained_eval_store_uri(Some(explicit), Some(&rooted))
+        .expect("select explicit evaluator store")
+        .expect("explicit evaluator store is present");
+
+    assert_eq!(selected, explicit);
+    assert!(
+        super::retained_eval_store_uri(Some(std::ffi::OsStr::new("")), Some(&rooted))
+            .expect_err("an empty explicit store must fail closed")
+            .to_string()
+            .contains("must not be empty")
+    );
+}
+
+#[test]
+fn retained_eval_store_percent_encodes_rooted_override_paths() {
+    let rooted = vec![
+        ("NIX_STORE_DIR", "/srv/aos store".to_string()),
+        ("NIX_STATE_DIR", "/srv/aos&state".to_string()),
+        ("NIX_LOG_DIR", "/srv/aos?log".to_string()),
+    ];
+
+    let selected = super::retained_eval_store_uri(None, Some(&rooted))
+        .expect("derive rooted evaluator store")
+        .expect("rooted evaluator store is present");
+
+    assert_eq!(
+        selected,
+        "local?store=%2Fsrv%2Faos+store&state=%2Fsrv%2Faos%26state&log=%2Fsrv%2Faos%3Flog"
+    );
+}
+
+#[test]
 fn evaluator_identity_uses_decoded_store_path_hash() {
     let path = PathBuf::from(format!("/nix/store/{}-aos/bin/apm", "0".repeat(32)));
     assert_eq!(

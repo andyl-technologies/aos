@@ -1692,6 +1692,8 @@ mod tests {
             toplevel: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos".to_string(),
             package_name: "aos".to_string(),
             version: "1".to_string(),
+            state_version: None,
+            native_executor_ref: None,
             registry: "aos-core".to_string(),
             kernel_path: None,
             evaluator_ref: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-base-lib".to_string(),

@@ -856,6 +856,45 @@ pub enum PackageCommand {
         #[arg(long = "run-root")]
         run_root: Option<PathBuf>,
     },
+    /// Hidden: complete initrd ability work and release journal ownership.
+    #[command(name = "__ability-stage-run", hide = true)]
+    AbilityStageRun {
+        /// Execution stage owned by this controller.
+        #[arg(long)]
+        stage: String,
+        /// Mounted root that will become the host root.
+        #[arg(long)]
+        root: PathBuf,
+        /// Durable image profile beneath the mounted host root.
+        #[arg(long = "image-profile")]
+        image_profile: PathBuf,
+        /// Signed initrd activation selection.
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Hidden: validate initrd ownership release before switch-root.
+    #[command(name = "__ability-stage-validate", hide = true)]
+    AbilityStageValidate {
+        /// Earlier execution stage releasing ownership.
+        #[arg(long = "from-stage")]
+        from_stage: String,
+        /// Mounted root that will become the host root.
+        #[arg(long)]
+        root: PathBuf,
+        /// Durable image profile beneath the mounted host root.
+        #[arg(long = "image-profile")]
+        image_profile: PathBuf,
+    },
+    /// Hidden: revalidate and receive an initrd ability journal.
+    #[command(name = "__ability-stage-receive", hide = true)]
+    AbilityStageReceive {
+        /// Earlier execution stage releasing ownership.
+        #[arg(long = "from-stage")]
+        from_stage: String,
+        /// Durable image profile for the running image.
+        #[arg(long = "image-profile")]
+        image_profile: PathBuf,
+    },
 }
 
 /// Canonical package-documentation operations.
@@ -1249,6 +1288,9 @@ impl PackageCommand {
                 | PackageCommand::Fetch { .. }
                 | PackageCommand::RenderOne { .. }
                 | PackageCommand::GraphCompile { .. }
+                | PackageCommand::AbilityStageRun { .. }
+                | PackageCommand::AbilityStageValidate { .. }
+                | PackageCommand::AbilityStageReceive { .. }
         )
     }
 
@@ -1270,6 +1312,9 @@ impl PackageCommand {
             | PackageCommand::Fetch { .. }
             | PackageCommand::RenderOne { .. }
             | PackageCommand::GraphCompile { .. } => LiveAos,
+            PackageCommand::AbilityStageRun { .. }
+            | PackageCommand::AbilityStageValidate { .. }
+            | PackageCommand::AbilityStageReceive { .. } => Portable,
             PackageCommand::RecoverCredentialTransactions | PackageCommand::Switch { .. } => {
                 AosRoot
             }
@@ -3870,6 +3915,30 @@ pub async fn run(
             &credential_artifact::aos_root_path(),
         );
     }
+    if let PackageCommand::AbilityStageRun {
+        stage,
+        root,
+        image_profile,
+        input,
+    } = command
+    {
+        return config_eval::stage_handoff::run_initrd_stage(stage, root, image_profile, input);
+    }
+    if let PackageCommand::AbilityStageValidate {
+        from_stage,
+        root,
+        image_profile,
+    } = command
+    {
+        return config_eval::stage_handoff::validate_initrd_stage(from_stage, root, image_profile);
+    }
+    if let PackageCommand::AbilityStageReceive {
+        from_stage,
+        image_profile,
+    } = command
+    {
+        return config_eval::stage_handoff::receive_initrd_stage(from_stage, image_profile);
+    }
 
     validate_system_transition_options(command)?;
 
@@ -4216,6 +4285,15 @@ pub async fn run(
         }
         PackageCommand::GraphCompile { .. } => {
             unreachable!("GraphCompile is handled before ApmConfig::load")
+        }
+        PackageCommand::AbilityStageRun { .. } => {
+            unreachable!("AbilityStageRun is handled before ApmConfig::load")
+        }
+        PackageCommand::AbilityStageValidate { .. } => {
+            unreachable!("AbilityStageValidate is handled before ApmConfig::load")
+        }
+        PackageCommand::AbilityStageReceive { .. } => {
+            unreachable!("AbilityStageReceive is handled before ApmConfig::load")
         }
         PackageCommand::Fetch { .. } => {
             unreachable!("Fetch is handled before ApmConfig::load")

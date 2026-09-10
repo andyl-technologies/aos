@@ -47,7 +47,7 @@ in {
         Initrd stash directory (read-only). A child of `/run` so it survives
         `mount --move /run /sysroot/run` during switch_root and is staged into
         the evaluator root `/run/aos-eval/` by stage-2. This path is **hardcoded
-        in the `aos metadata` binary** (`DetectOptions`/`FetchOptions::default`),
+        in the metadata runtime** (`DetectOptions`/`FetchOptions::default`),
         so it is fixed here rather than configurable — a different value would
         only mis-point the `EnvironmentFile`/`ConditionPathExists` without moving
         where the binary actually writes.
@@ -59,6 +59,7 @@ in {
     aos.boot.initrd.extraPackages = [
       configTrustAnchors
       config.aos.config.evalAtBoot.baseLib
+      pkgs.aos.metadataRuntime
       pkgs.nix
     ];
 
@@ -135,7 +136,7 @@ in {
           StandardError = "journal+console";
         };
         script = ''
-          if ${pkgs.aos}/bin/aos metadata detect; then
+          if ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime detect; then
             exit 0
           fi
           if [ -e ${cfg.stashDir}/provisioned ]; then
@@ -191,7 +192,7 @@ in {
           StandardError = "journal+console";
         };
         script = ''
-          if ${pkgs.aos}/bin/aos metadata fetch; then
+          if ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime fetch; then
             exit 0
           fi
           if [ -e ${cfg.stashDir}/provisioned ]; then
@@ -257,7 +258,7 @@ in {
           StandardError = "journal+console";
         };
         script = ''
-          if ${pkgs.aos}/bin/aos metadata authorize \
+          if ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime authorize \
             --trust ${trust} \
             ${lib.optionalString (trust == "signed") "--trusted-config-keys-dir ${configTrustAnchors}"}; then
             exit 0
@@ -312,7 +313,7 @@ in {
             exit 0
           fi
 
-          if ${pkgs.aos}/bin/aos metadata eval-provisioning \
+          if ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime eval-provisioning \
             --base-lib ${config.aos.config.evalAtBoot.baseLib} \
             ${lib.optionalString measured "--measured-boot"} \
             $committed_arg; then

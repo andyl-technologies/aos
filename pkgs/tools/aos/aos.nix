@@ -85,14 +85,16 @@
     else dbus;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
-  # The four executables share Rust libraries and one Cargo build, but their
-  # installed outputs are separate security and portability boundaries. Each
-  # wrapper below refers only to the tools its command surface is allowed to
-  # invoke. Nix therefore computes a distinct runtime closure for every output.
+  # The five command surfaces share Rust libraries and one Cargo build. Their
+  # installed wrappers remain separate portability boundaries, while apm and
+  # the private package runtime share executable bytes. Each wrapper below
+  # refers only to the tools its command surface is allowed to invoke, so Nix
+  # still computes a bounded runtime closure for every output.
   # The caller's PATH is retained solely for explicit user-supplied commands;
   # internal subprocesses always use the corresponding hermetic PATH.
   aosRuntimeTools = [bash git-minimal nix qemu-img zstd];
   aprRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img zstd];
+  metadataRuntimeTools = [bash nix];
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
   apmRuntimeTools =
     apmPortableRuntimeTools
@@ -262,7 +264,7 @@ in
     pname = "aos";
     inherit version src;
 
-    outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
+    outputs = ["out" "apm" "apr" "packageRuntime" "metadataRuntime" "testSupport"];
 
     # Enforce command-surface separation after fixup and reference scrubbing.
     # Cross-linkers can leave build-environment paths in intermediate binaries;
@@ -519,20 +521,21 @@ in
     # preserving full coverage without weakening the release security posture.
     checkType = "debug";
 
-    # Install each Cargo binary into its own output behind a thin wrapper. The
-    # programs have independent parsers and entry points; none derives
-    # authority or command shape from argv[0]. The wrapper execs an absolute
-    # store path baked in at build time -- deriving it with dirname would
-    # require coreutils on PATH and enlarge the runtime contract.
+    # Install each command surface behind a thin wrapper. The public apm and
+    # private package runtime share one executable in the apm output; their
+    # distinct entry-point names select distinct parsers. Native effects still
+    # require the signed handler artifact and current operator authority. Each
+    # wrapper execs an absolute store path baked in at build time -- deriving it
+    # with dirname would require coreutils on PATH and enlarge the closure.
     postInstall = ''
-          install_cli() {
+          write_cli_wrapper() {
             name=$1
             destination=$2
             tool_path=$3
             include_linux_environment=$4
+            entry_point=$5
 
             mkdir -p "$destination/bin"
-            mv "$out/bin/$name" "$destination/bin/.$name-unwrapped"
             {
               cat << 'WRAPPER_HEADER'
       #!${bash}/bin/bash
@@ -582,23 +585,67 @@ in
               esac
               printf '%s\n' \
                 "export PATH=\"$tool_path\"" \
-                "exec \"$destination/bin/.$name-unwrapped\" \"\$@\""
+                "exec \"$destination/bin/$entry_point\" \"\$@\""
             } > "$destination/bin/$name"
             chmod +x "$destination/bin/$name"
+          }
+
+          install_cli() {
+            name=$1
+            destination=$2
+            tool_path=$3
+            include_linux_environment=$4
+
+            mkdir -p "$destination/bin"
+            mv "$out/bin/$name" "$destination/bin/.$name-unwrapped"
+            write_cli_wrapper \
+              "$name" "$destination" "$tool_path" \
+              "$include_linux_environment" ".$name-unwrapped"
           }
 
           install_cli aos "$out" ${lib.escapeShellArg (runtimeBinPath aosRuntimeTools)} 0
           install_cli apm "$apm" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
           install_cli apr "$apr" ${lib.escapeShellArg (runtimeBinPath aprRuntimeTools)} 0
-          install_cli aos-package-runtime "$packageRuntime" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
+          install_cli aos-metadata-runtime "$metadataRuntime" ${lib.escapeShellArg (runtimeBinPath metadataRuntimeTools)} 0
+
+          # Give the shared binary the private entry-point name so
+          # current_exe() resolves to the exact signed handler path. The public
+          # and split-output private links preserve their own argv[0], which
+          # selects the corresponding parser in crates/aos/src/apm.rs.
+          mv \
+            "$apm/bin/.apm-unwrapped" \
+            "$apm/bin/.aos-package-runtime-unwrapped"
+          ln -s .aos-package-runtime-unwrapped "$apm/bin/.apm-unwrapped"
+          rm "$out/bin/aos-package-runtime"
+
+          mkdir -p "$packageRuntime/bin"
+          ln -s \
+            "$apm/bin/.aos-package-runtime-unwrapped" \
+            "$packageRuntime/bin/.aos-package-runtime-unwrapped"
+          write_cli_wrapper \
+            aos-package-runtime \
+            "$packageRuntime" \
+            ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} \
+            1 \
+            .aos-package-runtime-unwrapped
 
           grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/bin/aos-package-runtime"
           grep -Fqx 'export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"' "$packageRuntime/bin/aos-package-runtime"
+          test "$(readlink "$apm/bin/.apm-unwrapped")" = .aos-package-runtime-unwrapped
+          test "$(readlink "$packageRuntime/bin/.aos-package-runtime-unwrapped")" = \
+            "$apm/bin/.aos-package-runtime-unwrapped"
           ${lib.optionalString (!isDarwinCross) ''
         grep -Fqx 'export AOS_PRLIMIT="${util-linux}/bin/prlimit"' "$packageRuntime/bin/aos-package-runtime"
       ''}
           ${lib.optionalString (!isCross) ''
+        if PATH=/unreachable "$apm/bin/.apm-unwrapped" __eval --help > /dev/null 2>&1; then
+          echo "public apm entry point accepted a private runtime command" >&2
+          exit 1
+        fi
+        PATH=/unreachable "$apm/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
+        PATH=/unreachable "$packageRuntime/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
         PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" __eval --help > /dev/null
+        PATH=/unreachable "$metadataRuntime/bin/aos-metadata-runtime" --help > /dev/null
       ''}
 
           # This deterministic signer/fixture process exists only for the
@@ -614,9 +661,9 @@ in
           # command surfaces.
           for binary in \
             "$out/bin/.aos-unwrapped" \
-            "$apm/bin/.apm-unwrapped" \
+            "$apm/bin/.aos-package-runtime-unwrapped" \
             "$apr/bin/.apr-unwrapped" \
-            "$packageRuntime/bin/.aos-package-runtime-unwrapped"; do
+            "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped"; do
             strip -s "$binary"
           done
 
@@ -626,9 +673,9 @@ in
           # entry so apm/apr/runtime do not retain the aos output itself.
           if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
             for binary in \
-              "$apm/bin/.apm-unwrapped" \
+              "$apm/bin/.aos-package-runtime-unwrapped" \
               "$apr/bin/.apr-unwrapped" \
-              "$packageRuntime/bin/.aos-package-runtime-unwrapped"; do
+              "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped"; do
               rpath=$(patchelf --print-rpath "$binary")
               rpath=$(printf '%s' "$rpath" | sed \
                 -e "s|$out/lib:||g" \
@@ -642,7 +689,7 @@ in
             done
           fi
 
-          # Cargo links all four command surfaces in one build environment, so
+          # Cargo links all five command surfaces in one build environment, so
           # cross linkers can retain target tool paths from sibling binaries
           # even after stripping. Remove each policy-forbidden reference before
           # the general derivation scrub preserves the union of every output's

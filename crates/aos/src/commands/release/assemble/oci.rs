@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_oci_types::{
-    ContainerRelease, ContainerSignatureInput, Descriptor, ImageIndex, ImageManifest, MediaType,
     CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
-    CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1, CONTAINER_SIGNATURE_INPUT_SCHEMA_V1,
+    CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1, CONTAINER_SIGNATURE_INPUT_SCHEMA_V1, ContainerRelease,
+    ContainerSignatureInput, Descriptor, ImageIndex, ImageManifest, MediaType,
 };
 use aos_release::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression};
 use aos_release::digest::Sha256Digest;

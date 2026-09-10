@@ -31,17 +31,61 @@
   system = mkSystem {
     modules = [../../systems/server.nix fixtureAuthorities];
   };
+  securityDisabledSystem = mkSystem {
+    modules = [
+      ../../systems/server.nix
+      {aos.security.verity.enable = lib.mkForce false;}
+    ];
+  };
   initrd = system.config.system.build.initrd;
   initrdAbilities = system.config.system.build.initrdStaticAbilityContract;
   hostAbilities = system.config.system.build.staticAbilityContract;
   assembly = system.config.system.build.unsignedImageAssembly;
+  baseLib = system.config.aos.config.evalAtBoot.baseLib;
+  frozenHostAbilities = baseLib.passthru.frozenArtifacts."host-static-ability-contract";
+  moduleAbi = system.config.aos.system.moduleAbi;
+  emptyHost = builtins.toFile "static-contract-runtime-host.nix" "{}\n";
+  emptyFacts = builtins.toFile "static-contract-runtime-facts.json" "{}\n";
+  securityDisabledInitrdServices = securityDisabledSystem.config.boot.initrd.systemd.services;
+  securityDisabledHostServices = securityDisabledSystem.config.systemd.services;
 in
   assert assembly != null;
+  assert securityDisabledInitrdServices ? aos-ability-initrd-controller;
+  assert securityDisabledInitrdServices ? aos-ability-initrd-handoff-barrier;
+  assert securityDisabledInitrdServices ? mount-var;
+  assert securityDisabledInitrdServices ? nix-overlay-setup;
+  assert securityDisabledInitrdServices ? aos-seed-profiles;
+  assert securityDisabledInitrdServices ? aos-credential-recovery;
+  assert securityDisabledInitrdServices.aos-ability-initrd-controller.requiredBy
+  == [
+    "initrd-fs.target"
+    "initrd-switch-root.target"
+  ];
+  assert securityDisabledInitrdServices.aos-ability-initrd-controller.serviceConfig.RemainAfterExit;
+  assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.requires
+  == ["aos-ability-initrd-controller.service"];
+  assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.after
+  == ["aos-ability-initrd-controller.service"];
+  assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.requiredBy
+  == [
+    "initrd-fs.target"
+    "initrd-switch-root.target"
+  ];
+  assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.serviceConfig.RemainAfterExit;
+  assert securityDisabledHostServices ? aos-ability-host-receiver;
+  assert securityDisabledHostServices ? aos-nix-db;
+  assert securityDisabledHostServices ? aos-credential-recovery;
+  assert securityDisabledHostServices.aos-ability-host-receiver.requiredBy
+  == [
+    "aos-eval.service"
+    "aos-graph-compile.service"
+    "aos-config.target"
+  ];
     pkgs.mkDerivation {
       pname = "aos-initrd-stage-contract-check";
       version = "1";
       src = null;
-      buildDeps = [assembly hostAbilities initrdAbilities pkgs.aos.testSupport pkgs.coreutils pkgs.cpio pkgs.erofs-utils pkgs.gawk pkgs.grep pkgs.jq pkgs.zstd];
+      buildDeps = [assembly baseLib frozenHostAbilities hostAbilities initrdAbilities pkgs.aos.packageRuntime pkgs.aos.testSupport pkgs.coreutils pkgs.cpio pkgs.erofs-utils pkgs.gawk pkgs.grep pkgs.jq pkgs.zstd];
       phases = [
         {
           name = "check";
@@ -52,6 +96,56 @@ in
             archive=${initrd}/initrd.img
             initrd_abilities=${initrdAbilities}/contract.json
             host_abilities=${hostAbilities}/contract.json
+
+            # The on-host package set intentionally omits the builder
+            # interfaces that create this contract. Its stage-1 path must
+            # survive both the frozen artifact map and runtime evaluation.
+            base_lib=${baseLib}
+            host_static_contract=${frozenHostAbilities}
+            ${pkgs.jq}/bin/jq -e '
+              (has("buildPackages") | not)
+              and ((.stdenv // {}) | has("hostPlatform") | not)
+            ' "$base_lib/frozen-pkgs.json" >/dev/null
+            test "$(${pkgs.jq}/bin/jq -r '."host-static-ability-contract"' \
+              "$base_lib/frozen-artifacts.json")" = "$host_static_contract"
+            test "$(readlink \
+              "$base_lib/artifact-roots/host-static-ability-contract")" = \
+              "$host_static_contract"
+
+            runtime_state="$TMPDIR/static-contract-runtime-root"
+            runtime_profile="$TMPDIR/static-contract-runtime-profiles"
+            runtime_config="$TMPDIR/static-contract-runtime-config"
+            runtime_cache="$TMPDIR/static-contract-runtime-cache"
+            runtime_eval="$TMPDIR/static-contract-runtime-eval"
+            mkdir -p \
+              "$runtime_state/var/lib/apm/config/registries.d" \
+              "$runtime_profile/system" \
+              "$runtime_config/registries.d" \
+              "$runtime_cache" \
+              "$runtime_eval"
+
+            runtime_store="local?root=$TMPDIR/static-contract-runtime-store"
+            export AOS_ROOT="$runtime_state"
+            export AOS_PROFILE_ROOT="$runtime_profile"
+            export APM_SYSTEM_CONFIG_DIR="$runtime_config"
+            export AOS_NIX_EVAL_CACHE_ROOT="$runtime_cache"
+            export AOS_NIX_EVAL_STORE="$runtime_store"
+            export NIX_REMOTE="$runtime_store"
+
+            ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __eval \
+              --host-nix ${emptyHost} \
+              --base-lib "$base_lib" \
+              --facts ${emptyFacts} \
+              --module-abi ${toString moduleAbi} \
+              --out "$runtime_eval/manifest.json" \
+              --eval-root "$runtime_eval"
+            ${pkgs.jq}/bin/jq -e \
+              --arg contract "$host_static_contract" '
+              .etc."aos/static-ability-contract.json".kind == "store-symlink"
+              and .etc."aos/static-ability-contract.json".target
+                == ($contract + "/contract.json")
+              and .ownership.etc."aos/static-ability-contract.json" == "@base"
+            ' "$runtime_eval/manifest.json" >/dev/null
 
             validate_contract() {
               candidate=$1
@@ -216,11 +310,83 @@ in
             )
             cmp "$initrd_abilities" \
               unit-graph/usr/lib/aos/initrd/static-ability-contract.json
+            activation_selection=unit-graph/etc/aos/initrd-ability-activation.json
+            static_contract_hex=$(sha256sum "$initrd_abilities" | cut -d ' ' -f1)
+            ${pkgs.jq}/bin/jq -e \
+              --arg digest "sha256:$static_contract_hex" '
+                keys == [
+                  "activation",
+                  "disposition",
+                  "execution_stage",
+                  "schema",
+                  "static_ability_contract_sha256"
+                ]
+                and .schema == "aos.ability.initrd-activation-selection/v1"
+                and .execution_stage == "initrd"
+                and .disposition == "none"
+                and .static_ability_contract_sha256 == $digest
+                and .activation == null
+              ' "$activation_selection" >/dev/null
+            ${pkgs.jq}/bin/jq -cS . "$activation_selection" > canonical-activation.json
+            canonical_activation_size=$(stat -c %s canonical-activation.json)
+            truncate -s $((canonical_activation_size - 1)) canonical-activation.json
+            cmp canonical-activation.json "$activation_selection"
+
+            initrd_controller=unit-graph/etc/systemd/system/aos-ability-initrd-controller.service
+            grep -F "Before=initrd-fs.target initrd-switch-root.target" \
+              "$initrd_controller" >/dev/null
+            grep -F "RemainAfterExit=true" "$initrd_controller" >/dev/null
+            switch_root_requirement="unit-graph/etc/systemd/system/initrd-switch-root.target.requires/aos-ability-initrd-controller.service"
+            test -L "$switch_root_requirement"
+            switch_root_requirement_target=$(readlink "$switch_root_requirement")
+            resolved_switch_root_requirement=$(realpath -m -s \
+              "$(dirname "$switch_root_requirement")/$switch_root_requirement_target")
+            resolved_initrd_controller=$(realpath -m -s "$initrd_controller")
+            test "$resolved_switch_root_requirement" = "$resolved_initrd_controller"
+            grep -F "__ability-stage-run" "$initrd_controller" >/dev/null
+            grep -F -- "--input /etc/aos/initrd-ability-activation.json" \
+              "$initrd_controller" >/dev/null
+            initrd_barrier=unit-graph/etc/systemd/system/aos-ability-initrd-handoff-barrier.service
+            grep -F "Requires=aos-ability-initrd-controller.service" \
+              "$initrd_barrier" >/dev/null
+            grep -F "After=aos-ability-initrd-controller.service" \
+              "$initrd_barrier" >/dev/null
+            grep -F "Before=initrd-fs.target initrd-switch-root.target" \
+              "$initrd_barrier" >/dev/null
+            grep -F "RemainAfterExit=true" "$initrd_barrier" >/dev/null
+            grep -F "__ability-stage-validate" "$initrd_barrier" >/dev/null
+            grep -F -- "--from-stage initrd" "$initrd_barrier" >/dev/null
+            grep -F -- "--root /sysroot" "$initrd_barrier" >/dev/null
+            grep -F -- "--image-profile /sysroot/var/lib/profiles/image" \
+              "$initrd_barrier" >/dev/null
+            barrier_requirement="unit-graph/etc/systemd/system/initrd-switch-root.target.requires/aos-ability-initrd-handoff-barrier.service"
+            test -L "$barrier_requirement"
+            barrier_requirement_target=$(readlink "$barrier_requirement")
+            resolved_barrier_requirement=$(realpath -m -s \
+              "$(dirname "$barrier_requirement")/$barrier_requirement_target")
+            resolved_initrd_barrier=$(realpath -m -s "$initrd_barrier")
+            test "$resolved_barrier_requirement" = "$resolved_initrd_barrier"
             ${pkgs.erofs-utils}/bin/fsck.erofs \
               --extract=root-tree --xattrs --preserve \
               ${assembly}/inputs/root.img >/dev/null
             cmp "$host_abilities" \
               root-tree/usr/lib/aos/host/static-ability-contract.json
+            cmp "$initrd_abilities" \
+              root-tree/usr/lib/aos/initrd/static-ability-contract.json
+            receiver_unit=root-tree/etc/systemd/system/aos-ability-host-receiver.service
+            test -e "$receiver_unit"
+            for dependent in \
+              aos-eval.service \
+              aos-graph-compile.service \
+              aos-config.target; do
+              requirement="root-tree/etc/systemd/system/$dependent.requires/aos-ability-host-receiver.service"
+              test -L "$requirement"
+              requirement_target=$(readlink "$requirement")
+              resolved_requirement=$(realpath -m -s \
+                "$(dirname "$requirement")/$requirement_target")
+              resolved_receiver=$(realpath -m -s "$receiver_unit")
+              test "$resolved_requirement" = "$resolved_receiver"
+            done
             ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
               image-assembly-attachments \
               ${assembly} initrd-stage-contract-check unit-graph root-tree

@@ -1225,6 +1225,8 @@ mod tests {
             toplevel: format!("/nix/store/top-{number}"),
             package_name: "aos-system".to_string(),
             version: number.to_string(),
+            state_version: None,
+            native_executor_ref: None,
             registry: "core".to_string(),
             kernel_path: None,
             evaluator_ref: format!("/nix/store/base-lib-{number}"),
@@ -1248,6 +1250,8 @@ mod tests {
             pending: None,
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
             generations: vec![
                 image_generation(1, ImageSlot::A, 7),
                 image_generation(2, ImageSlot::B, 7),
@@ -1296,6 +1300,8 @@ mod tests {
             pending: None,
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
             generations,
         };
         let configs = ConfigGenerationState {
@@ -1326,6 +1332,8 @@ mod tests {
             pending: None,
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
             generations: vec![
                 image_generation(1, ImageSlot::A, 1),
                 image_generation(2, ImageSlot::A, 2),
@@ -1355,6 +1363,8 @@ mod tests {
             pending: None,
             recovery_known_good: None,
             recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
             generations: vec![
                 image_generation(1, ImageSlot::A, 1),
                 image_generation(2, ImageSlot::A, 2),

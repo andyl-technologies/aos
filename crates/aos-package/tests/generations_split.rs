@@ -33,6 +33,8 @@ fn generation_axes_round_trip_independently() {
         toplevel: "/nix/store/top-aos".into(),
         package_name: "aos".into(),
         version: "3".into(),
+        state_version: None,
+        native_executor_ref: None,
         registry: "core".into(),
         kernel_path: Some("/nix/store/kernel".into()),
         evaluator_ref: "/nix/store/base-lib".into(),
@@ -50,6 +52,8 @@ fn generation_axes_round_trip_independently() {
         pending: None,
         recovery_known_good: None,
         recovery_pending: None,
+        active_rollout: None,
+        last_rollout: None,
         generations: vec![image],
     };
     let decoded: ImageGenerationState =

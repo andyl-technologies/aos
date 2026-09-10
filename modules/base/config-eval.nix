@@ -26,6 +26,133 @@
     config.aos.packages;
   packageSeedReadinessUnits =
     lib.optionals (exposedBundledPackages != {}) ["aos-seed-baked-packages.service"];
+  rolloutRecordValid = ''
+    .active_rollout as $rollout
+    | $rollout.schema == "aos.image-rollout/v1"
+      and $rollout.candidate != $rollout.prior
+      and .pending == $rollout.candidate
+      and ($rollout.state_version | type == "string" and length > 0)
+      and ([.generations[]
+            | select(.number == $rollout.candidate
+                     and .state_version == $rollout.state_version)] | length) == 1
+      and ([.generations[]
+            | select(.number == $rollout.prior
+                     and .state_version == $rollout.state_version)] | length) == 1
+      and ($rollout.status == "staged"
+           or $rollout.status == "candidate_booted"
+           or $rollout.status == "health_failed")
+  '';
+  observeRolloutBoot = ''
+    if $running == .active_rollout.candidate
+    then if .active_rollout.status == "health_failed"
+         then .
+         else .active_rollout.status = "candidate_booted"
+         end
+    elif $running == .active_rollout.prior
+    then .active_rollout.status = "health_failed"
+    else error("running image is outside the qualified rollout pair")
+    end
+  '';
+  markRolloutHealthFailed = ''.active_rollout.status = "health_failed"'';
+  finalizeRollout = ''
+    if $qualified
+    then .last_rollout = (.active_rollout
+           | .status = (if $running == .candidate
+                        then "succeeded"
+                        else "health_failed"
+                        end))
+         | del(.active_rollout)
+    else .
+    end
+  '';
+  rolloutStateCheck =
+    pkgs.runCommand "aos-image-rollout-state-check" {
+      buildDeps = [pkgs.coreutils pkgs.jq];
+    } ''
+      state=$TMPDIR/state.json
+      config_state=$TMPDIR/config-state.json
+      new_state() {
+        ${pkgs.jq}/bin/jq -n '
+          {running: 1, default: 2, pending: 2,
+           active_rollout: {
+             schema: "aos.image-rollout/v1", candidate: 2, prior: 1,
+             state_version: "7", status: "staged"
+           },
+           generations: [
+             {number: 1, state_version: "7"},
+             {number: 2, state_version: "7"}
+           ]}' > "$state"
+      }
+      assert_valid() {
+        ${pkgs.jq}/bin/jq -e '${rolloutRecordValid}' "$state" >/dev/null
+      }
+
+      printf '%s\n' '{"current":9,"authority":"unchanged"}' > "$config_state"
+      authority_before=$(${pkgs.coreutils}/bin/sha256sum "$config_state")
+
+      # A candidate that never boots records authoritative prior-image fallback.
+      new_state
+      assert_valid
+      ${pkgs.jq}/bin/jq --argjson running 1 '${observeRolloutBoot}' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      ${pkgs.jq}/bin/jq -e '.active_rollout.status == "health_failed"' "$state" >/dev/null
+      ${pkgs.jq}/bin/jq --argjson running 1 --argjson qualified true \
+        '${finalizeRollout}' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      ${pkgs.jq}/bin/jq -e \
+        '.active_rollout == null and .last_rollout.status == "health_failed"
+         and .last_rollout.candidate == 2 and .last_rollout.prior == 1' \
+        "$state" >/dev/null
+
+      # A strict-health failure remains failed through counted candidate retries,
+      # then completes only after the prior image is authoritative again.
+      new_state
+      ${pkgs.jq}/bin/jq --argjson running 2 '${observeRolloutBoot}' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      ${pkgs.jq}/bin/jq -e '.active_rollout.status == "candidate_booted"' "$state" >/dev/null
+      ${pkgs.jq}/bin/jq '${markRolloutHealthFailed}' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      ${pkgs.jq}/bin/jq --argjson running 2 '${observeRolloutBoot}' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      ${pkgs.jq}/bin/jq -e '.active_rollout.status == "health_failed"' "$state" >/dev/null
+      ${pkgs.jq}/bin/jq '.running = 1' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      ${pkgs.jq}/bin/jq --argjson running 1 '${observeRolloutBoot}' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      ${pkgs.jq}/bin/jq --argjson running 1 --argjson qualified true \
+        '${finalizeRollout}' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      ${pkgs.jq}/bin/jq -e '.last_rollout.status == "health_failed"' "$state" >/dev/null
+
+      # A healthy candidate produces a distinct successful terminal outcome.
+      new_state
+      ${pkgs.jq}/bin/jq --argjson running 2 '${observeRolloutBoot}' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      ${pkgs.jq}/bin/jq --argjson running 2 --argjson qualified true \
+        '${finalizeRollout}' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      ${pkgs.jq}/bin/jq -e '.last_rollout.status == "succeeded"' "$state" >/dev/null
+
+      # Ambiguous and vacuous rollout identities fail the shared validator.
+      new_state
+      ${pkgs.jq}/bin/jq '.active_rollout.prior = 2' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      if ${pkgs.jq}/bin/jq -e '${rolloutRecordValid}' "$state" >/dev/null; then
+        echo "vacuous rollout unexpectedly passed validation" >&2
+        exit 1
+      fi
+      new_state
+      ${pkgs.jq}/bin/jq '.generations += [.generations[1]]' "$state" > "$state.next"
+      mv "$state.next" "$state"
+      if ${pkgs.jq}/bin/jq -e '${rolloutRecordValid}' "$state" >/dev/null; then
+        echo "ambiguous rollout unexpectedly passed validation" >&2
+        exit 1
+      fi
+
+      authority_after=$(${pkgs.coreutils}/bin/sha256sum "$config_state")
+      [ "$authority_before" = "$authority_after" ]
+      touch $out
+    '';
 in {
   options.aos.config.evalAtBoot = {
     hostNix = lib.mkOption {
@@ -107,6 +234,8 @@ in {
   };
 
   config = {
+    system.build.checks.image-rollout-state = rolloutStateCheck;
+
     assertions = [
       {
         assertion = cfg.baseLib != null;
@@ -238,6 +367,26 @@ in {
           ${pkgs.coreutils}/bin/sync /var/lib/profiles/image
         fi
 
+        # A qualified rollout is created only by an explicit drained reboot
+        # after exact state-version admission. Carry its phase across boot so
+        # health failure and automatic fallback remain visible in durable
+        # image state even when activation never reaches its commit service.
+        rollout_schema=$(${pkgs.jq}/bin/jq -r '.active_rollout.schema // ""' "$image_state")
+        if [ -n "$rollout_schema" ]; then
+          if ! ${pkgs.jq}/bin/jq -e '${rolloutRecordValid}' "$image_state" >/dev/null; then
+            echo "aos-firstboot-reeval: qualified rollout record is invalid" >&2
+            exit 1
+          fi
+          if ! ${pkgs.jq}/bin/jq --argjson running "$running" \
+            '${observeRolloutBoot}' "$image_state" > "''${image_state}.new"; then
+            echo "aos-firstboot-reeval: running image is outside the qualified rollout pair" >&2
+            exit 1
+          fi
+          ${pkgs.coreutils}/bin/sync "''${image_state}.new"
+          mv "''${image_state}.new" "$image_state"
+          ${pkgs.coreutils}/bin/sync /var/lib/profiles/image
+        fi
+
         parent=$(${pkgs.jq}/bin/jq -er \
           '.current as $current | [.generations[] | select(.number == $current) | .image_gen_parent][0] // 0' \
           "$config_state")
@@ -270,7 +419,7 @@ in {
         StateDirectoryMode = "0700";
       };
       script = ''
-        ${pkgs.aos}/bin/aos metadata persist-provisioning \
+        ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime persist-provisioning \
           --state-dir ${provisioningStateDir} \
           --module-abi ${toString cfg.moduleAbi} \
           --image-version ${config.aos.system.version}
@@ -294,7 +443,7 @@ in {
       script = ''
         set -eu
         if [ ! -e "${cfg.hostNix}" ]; then
-          if ! ${pkgs.aos}/bin/aos metadata restore-runtime \
+          if ! ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime restore-runtime \
             --state-dir ${provisioningStateDir}; then
             echo "aos-eval: cached host input is invalid; retaining the active generation" >&2
             exit 1
@@ -598,7 +747,7 @@ in {
                 # config generation to the running image before boot assessment.
                 image_default_arg=""
                 if [ -e "${cfg.hostNix}" ]; then
-                  ${pkgs.aos}/bin/aos metadata verify-binding
+                  ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime verify-binding
                   cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
                 else
                   printf '{}\n' > /run/aos-eval/host.nix
@@ -681,6 +830,7 @@ in {
         # but they have no firmware-selected UKI or ESP to bless.
         "/sys/firmware/efi"
       ];
+      unitConfig.OnFailure = ["aos-image-rollout-fallback.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -727,6 +877,32 @@ in {
         state=/var/lib/profiles/image/state.json
         running=$(${pkgs.jq}/bin/jq -er '.running' "$state")
         pending=$(${pkgs.jq}/bin/jq -er '.pending // 0' "$state")
+        qualified=false
+        rollout_schema=$(${pkgs.jq}/bin/jq -r '.active_rollout.schema // ""' "$state")
+        if [ -n "$rollout_schema" ]; then
+          if ! ${pkgs.jq}/bin/jq -e '${rolloutRecordValid}' "$state" >/dev/null; then
+            echo "aos-image-boot-commit: qualified rollout record is invalid" >&2
+            exit 1
+          fi
+          rollout_candidate=$(${pkgs.jq}/bin/jq -er '.active_rollout.candidate' "$state")
+          rollout_prior=$(${pkgs.jq}/bin/jq -er '.active_rollout.prior' "$state")
+          rollout_status=$(${pkgs.jq}/bin/jq -er '.active_rollout.status' "$state")
+          if [ "$running" -eq "$rollout_candidate" ]; then
+            [ "$rollout_status" = candidate_booted ] || {
+              echo "aos-image-boot-commit: rollout candidate is not health-eligible" >&2
+              exit 1
+            }
+          elif [ "$running" -eq "$rollout_prior" ]; then
+            [ "$rollout_status" = health_failed ] || {
+              echo "aos-image-boot-commit: rollout fallback lacks failure evidence" >&2
+              exit 1
+            }
+          else
+            echo "aos-image-boot-commit: running image is outside the qualified rollout pair" >&2
+            exit 1
+          fi
+          qualified=true
+        fi
         current=$(${pkgs.jq}/bin/jq -er '.current' /var/lib/profiles/system/state.json)
         parent=$(${pkgs.jq}/bin/jq -er \
           '.current as $current | .generations[] | select(.number == $current) | .image_gen_parent // 0' \
@@ -740,15 +916,32 @@ in {
           /var/lib/profiles/system/state.json)
         proof="/var/lib/profiles/system/gen-$current/activation.json"
         attestation="/var/lib/profiles/system/gen-$current/gen-attestation.json"
+        if [ "$qualified" = true ]; then
+          proof_filter='.schema == "aos.config-activation/v1"
+                        and .generation == $current
+                        and .generation_id == $hash
+                        and .status == "complete"
+                        and .activation_exit == 0'
+        else
+          proof_filter='.schema == "aos.config-activation/v1"
+                        and .generation == $current
+                        and .generation_id == $hash
+                        and (.status == "complete" or .status == "degraded")
+                        and (.activation_exit == 0 or .activation_exit == 5 or .activation_exit == 6)'
+        fi
         if ! ${pkgs.jq}/bin/jq -e \
           --argjson current "$current" --arg hash "$manifest_hash" \
-          '.schema == "aos.config-activation/v1"
-           and .generation == $current
-           and .generation_id == $hash
-           and (.status == "complete" or .status == "degraded")
-           and (.activation_exit == 0 or .activation_exit == 5 or .activation_exit == 6)' \
-          "$proof" >/dev/null; then
+          "$proof_filter" "$proof" >/dev/null; then
           echo "aos-image-boot-commit: configuration activation proof is incomplete" >&2
+          exit 1
+        fi
+        manifest="/var/lib/profiles/system/gen-$current/manifest.json"
+        if [ "$qualified" = true ] \
+          && ${pkgs.jq}/bin/jq -e '.inputs.ability_activation != null' "$manifest" >/dev/null \
+          && ! ${pkgs.jq}/bin/jq -e \
+            '(.native_ability_transaction | type == "string" and length > 0)' \
+            "$proof" >/dev/null; then
+          echo "aos-image-boot-commit: native ability health evidence is missing" >&2
           exit 1
         fi
         if ! ${pkgs.jq}/bin/jq -e \
@@ -890,7 +1083,7 @@ in {
         boot_writable=false
         ${espSync}/bin/aos-sync-esps
 
-        ${pkgs.jq}/bin/jq --argjson running "$running" \
+        ${pkgs.jq}/bin/jq --argjson running "$running" --argjson qualified "$qualified" \
           '.default = $running
            | .pending = null
            | .recovery_pending = null
@@ -898,7 +1091,8 @@ in {
            | if ($generation.recovery // null) != null
              then .recovery_known_good = $generation.slot
              else .
-             end' "$state" > "''${state}.new"
+             end
+           | ${finalizeRollout}' "$state" > "''${state}.new"
         ${pkgs.coreutils}/bin/sync "''${state}.new"
         mv "''${state}.new" "$state"
         ${pkgs.coreutils}/bin/sync "$(dirname "$state")"
@@ -910,6 +1104,35 @@ in {
         ${pkgs.coreutils}/bin/sync /var/lib/profiles/image
         rm -f /run/aos/image-reeval-required
         trap - EXIT
+      '';
+    };
+
+    systemd.services.aos-image-rollout-fallback = {
+      description = "Continue counted-boot fallback after qualified rollout failure";
+      after = ["aos-image-boot-commit.service"];
+      serviceConfig.Type = "oneshot";
+      script = ''
+        set -euo pipefail
+        state=/var/lib/profiles/image/state.json
+        [ -s "$state" ] || exit 0
+        if ! ${pkgs.jq}/bin/jq -e '.active_rollout != null' "$state" >/dev/null; then
+          exit 0
+        fi
+        if ! ${pkgs.jq}/bin/jq -e \
+          '(${rolloutRecordValid})
+           and (.running == .active_rollout.candidate)
+           and (.active_rollout.status == "candidate_booted"
+                or .active_rollout.status == "health_failed")' \
+          "$state" >/dev/null; then
+          echo "aos-image-rollout-fallback: refusing an invalid rollout record" >&2
+          exit 1
+        fi
+        ${pkgs.jq}/bin/jq '${markRolloutHealthFailed}' \
+          "$state" > "''${state}.new"
+        ${pkgs.coreutils}/bin/sync "''${state}.new"
+        mv "''${state}.new" "$state"
+        ${pkgs.coreutils}/bin/sync "$(dirname "$state")"
+        ${pkgs.systemd}/bin/systemctl --no-block reboot
       '';
     };
 
@@ -926,7 +1149,7 @@ in {
       };
       script = ''
         if [ -s "${cfg.manifest}" ] && [ -s "${cfg.hostNix}" ]; then
-          ${pkgs.aos}/bin/aos metadata cache-runtime \
+          ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime cache-runtime \
             --state-dir ${provisioningStateDir}
         fi
       '';

@@ -379,11 +379,14 @@ in
                 # shrink step.
                 #
                 # Compression tuning (measured on the server closure):
-                #   * -C262144 — 256 KiB compression cluster. The 4 KiB default is
-                #     far too small for zstd to find context; 256 KiB is the knee of
-                #     the size/read-amplification curve for a RAM-ample, read-mostly
-                #     server root (a cold page fault decompresses one 256 KiB cluster;
-                #     the hot path is served from the page cache regardless).
+                #   * -C1048576 — 1 MiB physical compression cluster. On the
+                #     measured server closure this reduces root.img from
+                #     679661568 to 669159424 bytes, leaving 1929216 bytes below
+                #     the 640 MiB release budget without changing its contents.
+                #     Linux 7.2 accepts encoded EROFS pclusters up to 1 MiB; its
+                #     12 MiB decoded-size limit is unchanged. A cold read can
+                #     consume up to 1 MiB of compressed input, while hot reads
+                #     remain page-cache hits on this RAM-ample, read-mostly root.
                 #   * -Eztailpacking — packs compressed tails into inode metadata
                 #     without sharing a fragment block between unrelated files.
                 #     Do not enable `fragments` with parallel compression here:
@@ -413,12 +416,12 @@ in
                   -U bdfb6fc9-0000-4000-8000-000000000001 \
                   --workers="$NIX_BUILD_CORES" \
                   -z zstd,level=${toString erofsCompressionLevel} \
-                  -C262144 \
+                  -C1048576 \
                   -Eztailpacking \
                   -L ${label} root.img rootfs
                 fsck.erofs root.img >/dev/null
                 final_bytes=$(stat -c %s root.img)
-                echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-${toString erofsCompressionLevel}, 256K cluster, ztailpacking)"
+                echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-${toString erofsCompressionLevel}, 1M cluster, ztailpacking)"
                 echo "$final_bytes" > rootfs-size-bytes
               ''
               else ''
