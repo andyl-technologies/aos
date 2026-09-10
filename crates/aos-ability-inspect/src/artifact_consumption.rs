@@ -9,13 +9,16 @@ use aos_ability_model::document::PlatformIdentity;
 use aos_ability_model::{
     ABILITY_LIMITS_V1, ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA, ArtifactConsumptionContract,
     ArtifactConsumptionEvidenceDocument, ArtifactConsumptionMechanism,
-    ArtifactConsumptionObservation, ArtifactFileEvidence, ArtifactRetentionRequirement,
-    BUILD_TOOL_EXECUTION_FEATURE, ELF_STARTUP_LINKAGE_FEATURE, HELPER_EXECUTION_FEATURE,
-    IMMUTABLE_DATA_INPUT_FEATURE, RUNTIME_PLUGIN_LOAD_FEATURE, RequiredFeature, decode_canonical,
+    ArtifactConsumptionObservation, ArtifactFileEvidence, ArtifactReference,
+    ArtifactRetentionRequirement, BUILD_TOOL_EXECUTION_FEATURE, ELF_STARTUP_LINKAGE_FEATURE,
+    HELPER_EXECUTION_FEATURE, IMMUTABLE_DATA_INPUT_FEATURE, PlanId, RUNTIME_PLUGIN_LOAD_FEATURE,
+    RequiredFeature, VersionedDocument, decode_canonical,
 };
 use aos_contract::Sha256Digest;
 use serde::Serialize;
 use thiserror::Error;
+
+use crate::{CheckedInspectionBundle, InspectionNode, InspectionView, InspectionViewError};
 
 /// Maximum bytes accepted for one canonical artifact-consumption report.
 pub const ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES: u64 = ABILITY_LIMITS_V1.max_document_bytes;
@@ -63,8 +66,47 @@ pub struct ArtifactConsumptionExplanation {
     pub provider_access_observed: Option<bool>,
     /// Classifies the authority carried by this portable report.
     pub provenance: ArtifactConsumptionProvenance,
+    /// Binds both evidence artifacts to one semantically checked ability graph.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ability_graph: Option<ArtifactConsumptionGraphBinding>,
     /// States conclusions that this evidence mechanism cannot establish.
     pub limitations: Vec<ArtifactConsumptionLimitation>,
+}
+
+/// Identifies the checked ability graph that contains both evidence artifacts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactConsumptionGraphBinding {
+    /// Identifies the canonical portable inspection bundle.
+    pub bundle: Sha256Digest,
+    /// Identifies the checked provider-binding plan reconstructed from the bundle.
+    pub binding_plan: PlanId,
+    /// Identifies the checked effect plan reconstructed from the bundle.
+    pub effect_plan: PlanId,
+    /// Identifies the exact semantically checked consumption edge.
+    pub edge: Sha256Digest,
+    /// Identifies the inspected mechanism retained by the checked edge.
+    pub mechanism: ArtifactConsumptionMechanism,
+    /// Places the consumption in its build or runtime phase.
+    pub phase: ArtifactConsumptionPhase,
+    /// States whether the provider belongs in the consumer runtime closure.
+    pub retention: ArtifactRetentionRequirement,
+    /// Retains the complete consumer artifact reference matched in the graph.
+    pub consumer: ArtifactReference,
+    /// Retains the complete provider artifact reference matched in the graph.
+    pub provider: ArtifactReference,
+}
+
+/// Places an artifact-consumption relationship in its execution phase.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArtifactConsumptionPhase {
+    /// A hermetic build action executes a tool while producing the consumer.
+    Build,
+    /// The runtime loader consumes a provider before the program starts.
+    RuntimeStartup,
+    /// A running program explicitly loads, executes, or reads the provider.
+    RuntimeOperation,
 }
 
 /// Classifies where a checked artifact-consumption claim originated.
@@ -165,6 +207,21 @@ pub enum ArtifactConsumptionEvidenceError {
     /// A query named another provider artifact.
     #[error("artifact-consumption query does not match the checked provider")]
     ProviderMismatch,
+    /// The checked ability graph could not be projected.
+    #[error("artifact-consumption ability graph projection failed: {0}")]
+    AbilityGraph(#[source] InspectionViewError),
+    /// The evidence consumer artifact is absent from the checked ability graph.
+    #[error("artifact-consumption consumer is absent from the checked ability graph")]
+    ConsumerAbsentFromAbilityGraph,
+    /// The evidence provider artifact is absent from the checked ability graph.
+    #[error("artifact-consumption provider is absent from the checked ability graph")]
+    ProviderAbsentFromAbilityGraph,
+    /// No checked graph edge connects the exact evidence endpoints and semantics.
+    #[error("artifact-consumption exact edge is absent from the checked ability graph")]
+    ConsumptionEdgeAbsentFromAbilityGraph,
+    /// The checked evidence edge could not be assigned its exact identity.
+    #[error("artifact-consumption evidence identity failed: {0}")]
+    EvidenceIdentity(#[source] aos_ability_model::document::DocumentError),
 }
 
 impl ArtifactConsumptionQuery {
@@ -292,8 +349,88 @@ impl CheckedArtifactConsumptionEvidence {
             search_resolves_exact_provider,
             provider_access_observed,
             provenance: ArtifactConsumptionProvenance::ReportedRealizedBuildGate,
+            ability_graph: None,
             limitations: limitations(self.document.mechanism),
         })
+    }
+
+    /// Joins realized evidence to the exact artifact nodes in a checked ability graph.
+    ///
+    /// Matching compares the complete [`ArtifactReference`], including content,
+    /// store path, NAR hash, and closure identity. A content-only coincidence is
+    /// therefore insufficient.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query fails, the graph cannot be projected, or
+    /// either exact evidence artifact is absent from the checked graph.
+    pub fn query_with_bundle(
+        &self,
+        query: &ArtifactConsumptionQuery,
+        bundle: &CheckedInspectionBundle,
+    ) -> Result<ArtifactConsumptionExplanation, ArtifactConsumptionEvidenceError> {
+        let mut explanation = self.query(query)?;
+        let view = InspectionView::from_bundle(bundle)
+            .map_err(ArtifactConsumptionEvidenceError::AbilityGraph)?;
+        let mut graph_artifacts = view.nodes().iter().filter_map(|node| match node {
+            InspectionNode::Artifact { reference, .. } => Some(reference),
+            _ => None,
+        });
+        let consumer_present = graph_artifacts
+            .clone()
+            .any(|reference| reference == &self.document.consumer.artifact);
+        if !consumer_present {
+            return Err(ArtifactConsumptionEvidenceError::ConsumerAbsentFromAbilityGraph);
+        }
+        let provider_present =
+            graph_artifacts.any(|reference| reference == &self.document.provider.artifact);
+        if !provider_present {
+            return Err(ArtifactConsumptionEvidenceError::ProviderAbsentFromAbilityGraph);
+        }
+        if !bundle
+            .artifact_consumption_edges()
+            .iter()
+            .any(|edge| edge == &self.document)
+        {
+            return Err(ArtifactConsumptionEvidenceError::ConsumptionEdgeAbsentFromAbilityGraph);
+        }
+
+        explanation.ability_graph = Some(ArtifactConsumptionGraphBinding {
+            bundle: bundle.digest(),
+            binding_plan: view.binding_plan(),
+            effect_plan: view.plan(),
+            edge: self
+                .document
+                .content_digest()
+                .map_err(ArtifactConsumptionEvidenceError::EvidenceIdentity)?,
+            mechanism: self.document.mechanism,
+            phase: consumption_phase(self.document.mechanism),
+            retention: consumption_retention(&self.document.contract),
+            consumer: self.document.consumer.artifact.clone(),
+            provider: self.document.provider.artifact.clone(),
+        });
+        Ok(explanation)
+    }
+}
+
+const fn consumption_phase(mechanism: ArtifactConsumptionMechanism) -> ArtifactConsumptionPhase {
+    match mechanism {
+        ArtifactConsumptionMechanism::BuildToolExecution => ArtifactConsumptionPhase::Build,
+        ArtifactConsumptionMechanism::ElfStartupLinkage => ArtifactConsumptionPhase::RuntimeStartup,
+        ArtifactConsumptionMechanism::RuntimePluginLoad
+        | ArtifactConsumptionMechanism::HelperExecution
+        | ArtifactConsumptionMechanism::ImmutableDataInput => {
+            ArtifactConsumptionPhase::RuntimeOperation
+        }
+    }
+}
+
+const fn consumption_retention(
+    contract: &ArtifactConsumptionContract,
+) -> ArtifactRetentionRequirement {
+    match contract {
+        ArtifactConsumptionContract::ElfStartupLinkage(_) => ArtifactRetentionRequirement::Required,
+        ArtifactConsumptionContract::ObservedPath(contract) => contract.retention,
     }
 }
 
@@ -714,8 +851,10 @@ mod tests {
         ArtifactConsumptionPlatforms, ElfSearchPathKind, ElfStartupLinkageContract,
         ElfStartupLinkageObservation, ElfSymbolVersion, LocalKey, encode_canonical,
     };
+    use aos_ability_validate::test_support::plan_fixture;
 
     use super::*;
+    use crate::InspectionBundle;
 
     const CONSUMER_STORE: &str = "/nix/store/00000000000000000000000000000000-consumer";
     const PROVIDER_STORE: &str = "/nix/store/11111111111111111111111111111111-provider";
@@ -820,6 +959,29 @@ mod tests {
         document
     }
 
+    fn bundle_with_artifacts(
+        artifacts: Vec<ArtifactReference>,
+        edges: Vec<ArtifactConsumptionEvidenceDocument>,
+    ) -> CheckedInspectionBundle {
+        let mut fixture = plan_fixture();
+        fixture.effect_plan.artifacts.extend(artifacts);
+        fixture.effect_plan.artifacts.sort_by(|left, right| {
+            left.content
+                .cmp(&right.content)
+                .then_with(|| left.store_path.cmp(&right.store_path))
+        });
+        fixture.effect_plan.artifacts.dedup();
+        fixture.refresh_commitments();
+
+        let checked = fixture.validate().unwrap();
+        InspectionBundle::from_checked(&checked)
+            .unwrap()
+            .with_artifact_consumption_edges(edges)
+            .unwrap()
+            .check(None)
+            .unwrap()
+    }
+
     #[test]
     fn checked_evidence_answers_exact_consumer_and_provider_query() {
         let document = document();
@@ -854,6 +1016,99 @@ mod tests {
                 .limitations
                 .contains(&ArtifactConsumptionLimitation::NoDataInputEvidence)
         );
+    }
+
+    #[test]
+    fn checked_evidence_joins_both_exact_artifacts_to_one_checked_graph() {
+        let document = document();
+        let bundle = bundle_with_artifacts(
+            vec![
+                document.consumer.artifact.clone(),
+                document.provider.artifact.clone(),
+            ],
+            vec![document.clone()],
+        );
+        let checked = CheckedArtifactConsumptionEvidence::check(document.clone()).unwrap();
+
+        let explanation = checked
+            .query_with_bundle(&ArtifactConsumptionQuery::default(), &bundle)
+            .unwrap();
+        let graph = explanation.ability_graph.unwrap();
+
+        assert_eq!(graph.bundle, bundle.digest());
+        assert_eq!(graph.effect_plan, bundle.plan().id());
+        assert_eq!(graph.binding_plan, bundle.plan().binding_plan().id());
+        assert_eq!(graph.consumer, document.consumer.artifact);
+        assert_eq!(graph.provider, document.provider.artifact);
+    }
+
+    #[test]
+    fn checked_evidence_rejects_graph_without_the_consumer_artifact() {
+        let document = document();
+        let mut fixture = plan_fixture();
+        fixture
+            .effect_plan
+            .artifacts
+            .push(document.provider.artifact.clone());
+        fixture.effect_plan.artifacts.sort_by(|left, right| {
+            left.content
+                .cmp(&right.content)
+                .then_with(|| left.store_path.cmp(&right.store_path))
+        });
+        fixture.effect_plan.artifacts.dedup();
+        fixture.refresh_commitments();
+        let checked_plan = fixture.validate().unwrap();
+        let error = InspectionBundle::from_checked(&checked_plan)
+            .unwrap()
+            .with_artifact_consumption_edges(vec![document])
+            .unwrap()
+            .check(None)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::InspectionBundleError::ArtifactConsumptionEdgeEndpoint
+        ));
+    }
+
+    #[test]
+    fn checked_evidence_does_not_join_on_content_digest_alone() {
+        let document = document();
+        let mut different_consumer_identity = document.consumer.artifact.clone();
+        different_consumer_identity.nar_hash = Sha256Digest::of_bytes("different consumer NAR");
+        let bundle = bundle_with_artifacts(
+            vec![
+                different_consumer_identity,
+                document.provider.artifact.clone(),
+            ],
+            Vec::new(),
+        );
+        let checked = CheckedArtifactConsumptionEvidence::check(document).unwrap();
+
+        assert!(matches!(
+            checked.query_with_bundle(&ArtifactConsumptionQuery::default(), &bundle),
+            Err(ArtifactConsumptionEvidenceError::ConsumerAbsentFromAbilityGraph)
+        ));
+    }
+
+    #[test]
+    fn checked_evidence_rejects_unrelated_edge_with_both_artifacts_present() {
+        let document = document();
+        let mut unrelated = observed_helper_document(vec![format!("{PROVIDER_STORE}/bin/helper")]);
+        unrelated.id = LocalKey::new("unrelated-helper-edge").unwrap();
+        let bundle = bundle_with_artifacts(
+            vec![
+                document.consumer.artifact.clone(),
+                document.provider.artifact.clone(),
+            ],
+            vec![unrelated],
+        );
+        let checked = CheckedArtifactConsumptionEvidence::check(document).unwrap();
+
+        assert!(matches!(
+            checked.query_with_bundle(&ArtifactConsumptionQuery::default(), &bundle),
+            Err(ArtifactConsumptionEvidenceError::ConsumptionEdgeAbsentFromAbilityGraph)
+        ));
     }
 
     #[test]

@@ -48,6 +48,14 @@ pub struct AbilityArtifactConsumptionArgs {
     /// Read canonical realized artifact-consumption evidence from this file
     pub evidence: PathBuf,
 
+    /// Join both evidence artifacts to this canonical checked inspection bundle
+    #[arg(long, value_name = "FILE")]
+    pub bundle: Option<PathBuf>,
+
+    /// Match an independently obtained inspection-bundle digest
+    #[arg(long, value_name = "SHA256", requires = "bundle")]
+    pub expected_bundle_digest: Option<String>,
+
     /// Require this exact consuming executable path
     #[arg(long, value_name = "STORE-FILE")]
     pub consumer: Option<String>,

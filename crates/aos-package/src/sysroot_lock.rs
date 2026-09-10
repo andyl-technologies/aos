@@ -7,6 +7,10 @@
 //! version skew between the sysroot and explicitly installed packages.
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
+use std::path::Path;
+
+use anyhow::{Context as _, Result};
 
 use crate::config::ApmConfig;
 use crate::platform::native_platform;
@@ -227,18 +231,26 @@ impl IgnoreSysrootLock {
 /// Build the registry lookup table: `store_path_hash -> (name, version, store_path)`.
 ///
 /// This is used by `check_sysroot_lock` to resolve reference hashes to
-/// package names and versions. Failures to load the registry caches are
-/// swallowed and yield an empty lookup (the lock check then finds no
-/// violations).
-pub fn build_registry_lookup(config: &ApmConfig) -> HashMap<String, (String, String, String)> {
+/// package names and versions.
+///
+/// # Errors
+///
+/// Returns an error when any present configured registry cannot be loaded or
+/// carries unsupported metadata. Enforcement callers must propagate this error
+/// so malformed registry state cannot disable the lock check.
+pub fn build_registry_lookup(
+    config: &ApmConfig,
+) -> Result<HashMap<String, (String, String, String)>> {
     let reg_configs = config.enabled_registries();
     let cache_dir = config.cache_path();
     let platform = native_platform();
 
-    let registries = match crate::registry::RegistrySet::load(&cache_dir, &reg_configs, &platform) {
-        Ok(r) => r,
-        Err(_) => return HashMap::new(),
-    };
+    let registries = crate::registry::RegistrySet::load_for_package_operations(
+        &cache_dir,
+        &reg_configs,
+        &platform,
+    )
+    .context("loading registry metadata for sysroot-lock lookup")?;
 
     let mut lookup = HashMap::new();
     for reg in registries.registries() {
@@ -284,22 +296,38 @@ pub fn build_registry_lookup(config: &ApmConfig) -> HashMap<String, (String, Str
         }
     }
 
-    lookup
+    Ok(lookup)
 }
 
 /// Get the current sysroot's reference list from the system generation state.
 ///
 /// Returns `(references, sysroot package name, sysroot version)`, or `None`
-/// if there is no active sysroot or the sysroot package cannot be found in
-/// any registry.
-pub fn get_sysroot_references(config: &ApmConfig) -> Option<(Vec<String>, String, String)> {
-    let current = sysroot::running_image_generation().ok()?;
+/// if this host has no AOS toplevel or no registry entry matches the active
+/// sysroot.
+///
+/// # Errors
+///
+/// Returns an error when a present AOS image identity is unreadable or invalid,
+/// or when any present configured registry cannot be loaded or carries
+/// unsupported metadata.
+pub fn get_sysroot_references(config: &ApmConfig) -> Result<Option<(Vec<String>, String, String)>> {
+    match std::fs::symlink_metadata(Path::new("/aos-toplevel")) {
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspecting the running AOS toplevel"),
+    }
+    let current = sysroot::running_image_generation()
+        .context("validating the running AOS image for sysroot-lock enforcement")?;
 
     // Load registries to get the sysroot package's references.
     let reg_configs = config.enabled_registries();
     let cache_dir = config.cache_path();
-    let registries =
-        crate::registry::RegistrySet::load(&cache_dir, &reg_configs, &native_platform()).ok()?;
+    let registries = crate::registry::RegistrySet::load_for_package_operations(
+        &cache_dir,
+        &reg_configs,
+        &native_platform(),
+    )
+    .context("loading registry metadata for the running sysroot")?;
 
     for reg in registries.registries() {
         if let Some(meta) = reg.package_versions().find(|meta| {
@@ -308,15 +336,15 @@ pub fn get_sysroot_references(config: &ApmConfig) -> Option<(Vec<String>, String
                 && meta.version == current.version
                 && meta.store_path == current.toplevel
         }) {
-            return Some((
+            return Ok(Some((
                 meta.references.clone(),
                 current.package_name.clone(),
                 current.version.clone(),
-            ));
+            )));
         }
     }
 
-    None
+    Ok(None)
 }
 
 /// Format the sysroot-lock violation error message for display.

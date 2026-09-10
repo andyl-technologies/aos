@@ -451,6 +451,7 @@ let
   linuxOnly = [
     "acl"
     "alsa-lib"
+    "aos-ability-crucible"
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"

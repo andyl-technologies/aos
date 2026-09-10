@@ -28,8 +28,9 @@ pub mod view;
 
 pub use artifact_consumption::{
     ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES, ArtifactConsumptionEvidenceError,
-    ArtifactConsumptionExplanation, ArtifactConsumptionLimitation, ArtifactConsumptionProvenance,
-    ArtifactConsumptionQuery, CheckedArtifactConsumptionEvidence,
+    ArtifactConsumptionExplanation, ArtifactConsumptionGraphBinding, ArtifactConsumptionLimitation,
+    ArtifactConsumptionPhase, ArtifactConsumptionProvenance, ArtifactConsumptionQuery,
+    CheckedArtifactConsumptionEvidence,
 };
 pub use bundle::{
     CheckedInspectionBundle, INSPECTION_BUNDLE_MAX_BYTES, INSPECTION_BUNDLE_SCHEMA,

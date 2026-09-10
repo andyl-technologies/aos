@@ -320,27 +320,75 @@ impl RegistrySet {
 
     /// Loads all enabled registries from the cache directory.
     ///
-    /// Registries that fail to load (typically because they have not been
-    /// synced yet) are skipped with a warning on stderr rather than failing
-    /// the whole set.
+    /// Registries whose cache directory is absent are skipped because they
+    /// have not been synced yet. A present cache is authoritative and any
+    /// malformed or unsupported metadata in it fails the whole load.
     ///
     /// # Errors
     ///
-    /// Currently never returns an error; the `Result` is kept for forward
-    /// compatibility with stricter loading policies.
+    /// Returns an error when an enabled registry has a present cache that
+    /// cannot be loaded or validated.
     pub fn load(cache_dir: &Path, configs: &[&RegistryConfig], platform: &str) -> Result<Self> {
         let mut registries = Vec::new();
         for config in configs {
-            match Registry::load(cache_dir, config, platform) {
-                Ok(r) => registries.push(r),
-                Err(e) => {
-                    // Log warning but continue — a missing cache just means
-                    // the registry hasn't been synced yet.
-                    eprintln!("warning: skipping registry '{}': {e:#}", config.name);
+            config.tracking_mode().with_context(|| {
+                format!(
+                    "validating configured registry '{}' before package selection",
+                    config.name
+                )
+            })?;
+
+            let registry_dir = cache_dir.join(&config.name);
+            match std::fs::symlink_metadata(&registry_dir) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "inspecting configured registry '{}' at {}",
+                            config.name,
+                            registry_dir.display()
+                        )
+                    });
                 }
             }
+
+            let metadata = std::fs::metadata(&registry_dir).with_context(|| {
+                format!(
+                    "inspecting configured registry '{}' at {}",
+                    config.name,
+                    registry_dir.display()
+                )
+            })?;
+            if !metadata.is_dir() {
+                anyhow::bail!(
+                    "configured registry '{}' cache path {} is not a directory",
+                    config.name,
+                    registry_dir.display()
+                );
+            }
+
+            registries.push(Registry::load(cache_dir, config, platform)?);
         }
         Ok(Self::new(registries))
+    }
+
+    /// Loads the fail-closed registry view shared by package command entries.
+    ///
+    /// Install, upgrade, rollback, dependency, query, source, and sysroot-lock
+    /// paths use this named boundary so none can substitute a permissive reader
+    /// or continue with a partial registry set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an enabled registry has a present cache that
+    /// cannot be loaded or validated, including unsupported metadata.
+    pub fn load_for_package_operations(
+        cache_dir: &Path,
+        configs: &[&RegistryConfig],
+        platform: &str,
+    ) -> Result<Self> {
+        Self::load(cache_dir, configs, platform)
     }
 
     /// Loads the authenticated registry snapshot for configuration evaluation.
@@ -812,8 +860,8 @@ pub(crate) mod tests {
         );
         assert!(format!("{package_error:#}").contains("abilities-v1"));
 
-        let ordinary = RegistrySet::load(tmp.path(), &[&config], "x86_64-linux").unwrap();
-        assert!(ordinary.resolve("ability-web").is_none());
+        let ordinary_error = RegistrySet::load(tmp.path(), &[&config], "x86_64-linux").unwrap_err();
+        assert!(format!("{ordinary_error:#}").contains("abilities-v1"));
 
         let ability_aware =
             RegistrySet::load_for_config_evaluation(tmp.path(), &[&config], "x86_64-linux")
@@ -824,6 +872,34 @@ pub(crate) mod tests {
             package.ability.as_ref().unwrap().activation_mode,
             "structured-effects"
         );
+    }
+
+    #[test]
+    fn ordinary_loading_never_bypasses_unsupported_metadata_to_a_lower_registry() {
+        let tmp = TempDir::new().unwrap();
+        let higher = registry_config("structured", 600);
+        let lower = registry_config("legacy", 500);
+        write_ability_package(&tmp, &higher.name, "curl");
+        let _ = make_registry(&tmp, &lower.name, lower.priority, &[("curl", CURL_TOML)]);
+
+        let error = RegistrySet::load_for_package_operations(
+            tmp.path(),
+            &[&higher, &lower],
+            "x86_64-linux",
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("abilities-v1"), "{error:#}");
+    }
+
+    #[test]
+    fn ordinary_loading_still_allows_an_unsynced_registry() {
+        let tmp = TempDir::new().unwrap();
+        let missing = registry_config("unsynced", 500);
+
+        let registries = RegistrySet::load(tmp.path(), &[&missing], "x86_64-linux").unwrap();
+
+        assert!(registries.registries().is_empty());
     }
 
     #[test]

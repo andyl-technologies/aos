@@ -465,9 +465,9 @@ fn show_registry_package(
         // Show sysroot-lock violations if installed.
         if is_installed {
             if let Some((sysroot_refs, _sys_name, _sys_version)) =
-                sysroot_lock::get_sysroot_references(config)
+                sysroot_lock::get_sysroot_references(config)?
             {
-                let lookup = sysroot_lock::build_registry_lookup(config);
+                let lookup = sysroot_lock::build_registry_lookup(config)?;
                 let pkg_refs: Vec<String> = meta
                     .references
                     .iter()
@@ -635,9 +635,9 @@ pub async fn list(
     let installed_by_source_map = installed_by_source(&meta_list);
 
     // Pre-load sysroot references and registry lookup for sysroot-lock checks.
-    let sysroot_info_for_lock = sysroot_lock::get_sysroot_references(config);
+    let sysroot_info_for_lock = sysroot_lock::get_sysroot_references(config)?;
     let registry_lookup = if sysroot_info_for_lock.is_some() {
-        sysroot_lock::build_registry_lookup(config)
+        sysroot_lock::build_registry_lookup(config)?
     } else {
         HashMap::new()
     };
@@ -918,7 +918,7 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let enabled = config.enabled_registries();
     let cache_dir = config.cache_path();
     let platform = native_platform();
-    RegistrySet::load(&cache_dir, &enabled, &platform)
+    RegistrySet::load_for_package_operations(&cache_dir, &enabled, &platform)
 }
 
 /// Names of enabled registries that have never been synced in the current
