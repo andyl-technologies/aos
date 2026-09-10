@@ -299,7 +299,7 @@ ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
 ExplainCampaignAttemptResponseV2 = version | request_digest |
                                    CampaignSnapshotV2OrV3 | AttemptV1-or-V2 |
-                                   AttemptAdmissionV1-or-V2 | BranchPathV2 |
+                                   AttemptAdmissionV1-through-V3 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV1 |
                                    optional PlannerStepV4 |
                                    optional ObservationV1-through-V8 |
@@ -726,7 +726,7 @@ does not grant evidence bodies, checkpoint bytes, or any other child closure.
 `ExplainCampaignAttempt` is the separately authorized provenance view for one
 exact attempt in the current authenticated snapshot. Two minimal accounting
 lookup proofs bind the complete `AttemptV1-or-V2` body and its unique execution-basis
-`AttemptAdmissionV1-or-V2`; a third proof binds the execution-basis `ProposalV1` in
+`AttemptAdmissionV1-through-V3`; a third proof binds the execution-basis `ProposalV1` in
 the exploration root for branch attempts, and an observations-root proof binds
 either the canonical `ObservationV1-through-V8` or authenticated absence. The response
 also carries the exact content-addressed `BranchPathV2` and, for a branch,

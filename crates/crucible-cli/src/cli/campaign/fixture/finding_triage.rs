@@ -82,7 +82,8 @@ pub(in crate::cli_campaign) fn generate_finding_triage_fixture(
 
     let native = build_native_finding_fixture()?;
     let campaign = start_fixture_campaign(&native.form)?;
-    let published = publish_campaign_finding_fixture(&native, campaign)?;
+    let published =
+        publish_campaign_finding_fixture(&native, campaign, VerificationReplayPayload::Ordinary)?;
     let captures = capture_campaign_finding_fixture(&published, native.report.clone())?;
 
     write_finding_triage_fixture(&output, &native, &captures)
@@ -100,6 +101,15 @@ struct NativeFindingFixture {
     verification_selected_native_replay: crucible::FailureTriageReplayEvidence,
 }
 
+#[derive(Clone, Copy)]
+enum VerificationReplayPayload {
+    Ordinary,
+    #[cfg(test)]
+    ExactInlineEnvelope,
+    #[cfg(test)]
+    Maximum,
+}
+
 struct CampaignFixtureContext {
     repository: CampaignRepository,
     scenario: ScenarioDefId,
@@ -113,6 +123,10 @@ struct PublishedFindingFixture {
     campaign: CampaignName,
     snapshot: crucible_campaign::CampaignSnapshotId,
     finding: crucible_campaign::FindingId,
+    #[cfg(test)]
+    bundle: crucible_campaign::FindingCandidateBundleId,
+    #[cfg(test)]
+    verification_selected: crucible_campaign::FindingTriageReplayEvidenceId,
 }
 
 struct FindingFixtureCaptures {
@@ -332,6 +346,7 @@ fn start_fixture_campaign(
 fn publish_campaign_finding_fixture(
     native: &NativeFindingFixture,
     campaign: CampaignFixtureContext,
+    verification_payload: VerificationReplayPayload,
 ) -> Result<PublishedFindingFixture, CliError> {
     let repository = &campaign.repository;
     let scenario = campaign.scenario;
@@ -344,7 +359,7 @@ fn publish_campaign_finding_fixture(
     let minimized_model_finding = &native.minimized_model_finding;
     let native_replay = &native.native_replay;
     let minimized_native_replay = &native.minimized_native_replay;
-    let verification_selected_native_replay = &native.verification_selected_native_replay;
+    let ordinary_verification_selected_native_replay = &native.verification_selected_native_replay;
 
     let child = ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
     let child_artifact = fixture_step(
@@ -501,6 +516,48 @@ fn publish_campaign_finding_fixture(
         ),
     )?;
 
+    let ordinary_verification_payload = fixture_step(
+        "encode verification selected",
+        ordinary_verification_selected_native_replay.to_compact_binary(),
+    )?;
+    let verification_payload_bytes = match verification_payload {
+        VerificationReplayPayload::Ordinary => ordinary_verification_payload,
+        #[cfg(test)]
+        VerificationReplayPayload::Maximum => {
+            vec![b'm'; crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES]
+        }
+        #[cfg(test)]
+        VerificationReplayPayload::ExactInlineEnvelope => {
+            let sample = fixture_step(
+                "build inline sizing replay",
+                FindingTriageReplayEvidence::new(
+                    minimized,
+                    minimized_signature.clone(),
+                    crucible::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
+                    ordinary_verification_payload.clone(),
+                ),
+            )?;
+            let sample_id = fixture_step(
+                "publish inline sizing replay",
+                repository.publish_finding_triage_replay_evidence(&sample),
+            )?;
+            let description = fixture_step(
+                "describe inline sizing replay",
+                repository.describe_finding_triage_replay_storage(sample_id),
+            )?;
+            let stored_bytes = usize::try_from(description.objects()[0].stored_envelope_bytes())
+                .map_err(|_| fixture_error("inline replay size exceeds platform limits"))?;
+            let fixed_bytes = stored_bytes
+                .checked_sub(ordinary_verification_payload.len())
+                .ok_or_else(|| fixture_error("inline replay sizing is inconsistent"))?;
+            let target_payload_bytes = (64 * 1024 * 1024_usize)
+                .checked_sub(fixed_bytes)
+                .ok_or_else(|| fixture_error("inline replay metadata exceeds its envelope"))?;
+
+            vec![b'i'; target_payload_bytes]
+        }
+    };
+
     let publish_triage_replay =
         |reproduction, observed_signature: &FindingSignature, payload: Vec<u8>| {
             let evidence = fixture_step(
@@ -539,15 +596,10 @@ fn publish_campaign_finding_fixture(
                 native_replay.to_compact_binary(),
             )?,
         )?,
-        publish_triage_replay(
-            minimized,
-            &minimized_signature,
-            fixture_step(
-                "encode verification selected",
-                verification_selected_native_replay.to_compact_binary(),
-            )?,
-        )?,
+        publish_triage_replay(minimized, &minimized_signature, verification_payload_bytes)?,
     );
+    #[cfg(test)]
+    let verification_selected = triage_evidence.verification_selected();
     let bundle = fixture_step(
         "build finding candidate bundle",
         FindingCandidateBundle::new_with_triage_evidence(
@@ -573,6 +625,10 @@ fn publish_campaign_finding_fixture(
         campaign: fixture_step("build fixture campaign name", CampaignName::new(CAMPAIGN))?,
         snapshot: published.new_snapshot,
         finding: published.finding,
+        #[cfg(test)]
+        bundle,
+        #[cfg(test)]
+        verification_selected,
     })
 }
 
@@ -774,12 +830,13 @@ fn write_payload_mutation(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
 
 fn triage_verification_selected_response(
     evidence: &CampaignTriageFindingEvidence,
-) -> Result<&crucible_campaign::GetCampaignFindingOccurrenceObjectResponse, CliError> {
+) -> Result<&crucible_campaign::GetCampaignFindingTriageReplaySegmentResponse, CliError> {
     evidence
         .occurrence_proofs
         .first()
         .and_then(|proof| proof.triage_evidence.as_ref())
-        .map(|triage| &triage.verification_selected.response)
+        .and_then(|triage| triage.verification_selected.segments.first())
+        .map(|segment| &segment.response)
         .ok_or_else(|| fixture_error("fixture is missing verification replay proof"))
 }
 
@@ -788,4 +845,136 @@ where
     E: fmt::Display,
 {
     result.map_err(|error| fixture_error(format!("{action}: {error}")))
+}
+
+#[cfg(test)]
+// crucible-lint: allow rust-allow -- boundary tests use panic shortcuts.
+#[allow(clippy::expect_used)]
+mod segmented_replay_tests {
+    use super::*;
+
+    fn capture_fixture(
+        verification_payload: VerificationReplayPayload,
+    ) -> Result<(PublishedFindingFixture, CampaignFindingTriageReplayProof), CliError> {
+        let native = build_native_finding_fixture()?;
+        let campaign = start_fixture_campaign(&native.form)?;
+        let published = publish_campaign_finding_fixture(&native, campaign, verification_payload)?;
+        let client = CampaignClient::new(RepositoryCampaignService::new(
+            &published.repository,
+            PermitFindingExport,
+        ));
+        let proof =
+            crate::cli_triage_debug::campaign_evidence::capture_campaign_finding_triage_replay(
+                &client,
+                CampaignPrincipal::new("operator:segmented-replay-test")
+                    .map_err(|error| fixture_error(format!("build test principal: {error}")))?,
+                published.campaign.clone(),
+                published.snapshot,
+                published.finding,
+                published.bundle,
+                crucible_campaign::CampaignFindingTriageReplayRole::VerificationSelected,
+                published.verification_selected,
+            )?;
+        Ok((published, proof))
+    }
+
+    #[test]
+    fn exact_inline_envelope_uses_segments_when_the_ordinary_response_overflows() {
+        let (published, proof) = capture_fixture(VerificationReplayPayload::ExactInlineEnvelope)
+            .expect("capture exact-fitting inline replay");
+        let first = proof.segments.first().expect("root segment");
+        let description = first.response.description();
+        assert_eq!(description.storage_schema_version(), 1);
+        assert_eq!(description.objects().len(), 1);
+        assert_eq!(
+            description.objects()[0].stored_envelope_bytes(),
+            64 * 1024 * 1024
+        );
+        assert_eq!(proof.segments.len(), 2);
+
+        let client = CampaignClient::new(RepositoryCampaignService::new(
+            &published.repository,
+            PermitFindingExport,
+        ));
+        let ordinary_request = crucible_campaign::GetCampaignFindingOccurrenceObjectRequest::new(
+            first.request.principal().clone(),
+            first.request.campaign().clone(),
+            first.request.snapshot(),
+            first.request.finding(),
+            first.request.bundle(),
+            crucible_campaign::CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence,
+        )
+        .expect("build ordinary replay request");
+        let ordinary_error = client
+            .get_campaign_finding_occurrence_object(&ordinary_request)
+            .expect_err("the proof-bearing ordinary response must exceed 64 MiB");
+        assert!(matches!(
+            ordinary_error,
+            crucible_campaign::CampaignClientError::Service(
+                crucible_campaign::CampaignServiceFailure::IntegrityFailure
+            )
+        ));
+
+        let mut reordered = proof.clone();
+        reordered.segments.swap(0, 1);
+        let reorder_error =
+            crate::cli_triage_debug::campaign_evidence::reassemble_campaign_triage_replay_proof(
+                &reordered,
+            )
+            .expect_err("reordered replay segments must be rejected");
+        assert!(
+            reorder_error
+                .to_string()
+                .contains("reordered or substituted")
+        );
+    }
+
+    #[test]
+    fn maximum_replay_uses_three_chunks_and_fits_the_raised_v4_aggregate_bound() {
+        let (_published, proof) =
+            capture_fixture(VerificationReplayPayload::Maximum).expect("capture maximum replay");
+        let description = proof.segments[0].response.description();
+        assert_eq!(description.storage_schema_version(), 2);
+        assert_eq!(
+            description.logical_payload_bytes(),
+            crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES as u64
+        );
+        assert_eq!(description.objects().len(), 4);
+        assert_eq!(proof.segments.len(), 6);
+
+        let one_role_hex_bytes = proof
+            .segments
+            .iter()
+            .try_fold(0_usize, |total, segment| {
+                total
+                    .checked_add(segment.request.canonical_bytes().len())
+                    .and_then(|total| total.checked_add(segment.response.canonical_bytes().len()))
+            })
+            .and_then(|canonical| canonical.checked_mul(2))
+            .expect("maximum replay transcript size");
+        let four_role_hex_bytes = one_role_hex_bytes
+            .checked_mul(4)
+            .expect("four-role maximum transcript size");
+        assert!(four_role_hex_bytes > 512 * 1024 * 1024);
+        assert!(four_role_hex_bytes < 1024 * 1024 * 1024);
+
+        for (index, object) in description.objects()[1..].iter().enumerate() {
+            let crucible_campaign::FindingTriageReplayStorageObjectRole::PayloadChunk {
+                index: described_index,
+                logical_payload_bytes,
+            } = object.role()
+            else {
+                panic!("non-chunk object after manifest root");
+            };
+            assert_eq!(described_index as usize, index);
+            assert_eq!(
+                logical_payload_bytes as usize,
+                if index < 2 {
+                    32 * 1024 * 1024
+                } else {
+                    16 * 1024 * 1024
+                }
+            );
+        }
+    }
 }

@@ -22,6 +22,7 @@ use crate::{
 mod create;
 mod derive;
 mod discovery;
+mod finding_triage;
 mod get_snapshot;
 mod list;
 mod pin;
@@ -38,6 +39,10 @@ pub use create::{
 };
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
 pub use discovery::{SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse};
+pub use finding_triage::{
+    CampaignFindingTriageReplayRole, GetCampaignFindingTriageReplaySegmentRequest,
+    GetCampaignFindingTriageReplaySegmentResponse,
+};
 pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
 pub use list::{
     CampaignListEntry, ListCampaignsRequest, ListCampaignsResponse, MAX_CAMPAIGN_LIST_PAGE_ITEMS,
@@ -193,6 +198,8 @@ pub enum CampaignServiceOperation {
     QueryCampaignFindingOccurrences,
     /// Read one exact dependency named by a retained candidate bundle.
     GetCampaignFindingOccurrenceObject,
+    /// Read one bounded stored-envelope segment for candidate triage evidence.
+    GetCampaignFindingTriageReplaySegment,
     /// Read one exact dependency named by an authenticated finding.
     GetCampaignFindingObject,
     /// Explain one exact attempt, execution basis, proposal, and completion.
@@ -543,6 +550,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this request's exact snapshot.
     pub fn validate_for_get_campaign_finding_occurrence_object(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact triage-replay storage-segment read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this request's exact snapshot.
+    pub fn validate_for_get_campaign_finding_triage_replay_segment(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1911,6 +1931,19 @@ pub trait CampaignFindingOccurrenceService: CampaignService {
         &self,
         request: &GetCampaignFindingOccurrenceObjectRequest,
     ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error>;
+
+    /// Returns one canonical segment of a triage replay's stored envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, finding or bundle membership, replay-role or
+    /// storage-object binding, repository access, or response construction
+    /// fails.
+    fn get_campaign_finding_triage_replay_segment(
+        &self,
+        request: &GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, Self::Error>;
 }
 
 /// Failure from the checked campaign-service client.
@@ -2350,6 +2383,38 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_get_campaign_finding_occurrence_object(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Reads one candidate triage-replay storage segment and validates its basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different snapshot, finding, bundle, role, storage object, or segment.
+    pub fn get_campaign_finding_triage_replay_segment(
+        &self,
+        request: &GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, CampaignClientError>
+    where
+        S: CampaignFindingOccurrenceService,
+    {
+        let response = match self
+            .service
+            .get_campaign_finding_triage_replay_segment(request)
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign_finding_triage_replay_segment(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }

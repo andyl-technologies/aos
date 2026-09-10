@@ -2,6 +2,8 @@
 
 use super::*;
 
+#[path = "campaign_evidence/guarded_export.rs"]
+mod guarded_export;
 #[path = "campaign_evidence/ledger.rs"]
 mod ledger;
 #[path = "campaign_evidence/service.rs"]
@@ -9,11 +11,19 @@ mod service;
 
 pub(super) use ledger::parse_failure_findings_ledger_v4_bytes;
 // crucible-lint: allow rust-allow -- the producer consumes these staged boundaries in the composed integration stack.
+#[cfg(test)]
+pub(crate) use ledger::failure_findings_ledger_v4_bytes_with_test_limit;
 #[allow(unused_imports)]
-pub(crate) use ledger::write_failure_findings_ledger_v4;
+pub(crate) use ledger::{
+    write_failure_findings_ledger_v4, write_guarded_campaign_finding_exports_v4,
+};
 // crucible-lint: allow rust-allow -- the producer consumes these staged boundaries in the composed integration stack.
+#[cfg(test)]
+pub(crate) use guarded_export::{
+    guarded_finding_report, validate_guarded_finding_query_chain_parts,
+};
 #[allow(unused_imports)]
-pub(crate) use service::capture_campaign_triage_finding;
+pub(crate) use service::{capture_campaign_finding_triage_replay, capture_campaign_triage_finding};
 
 pub(super) fn build_campaign_triage_minimization(
     plan: &TriageInvocationPlan,
@@ -264,6 +274,9 @@ fn campaign_occurrence_native_triage_replays(
     let Some(triage) = &occurrence.triage_evidence else {
         return Ok(None);
     };
+    let bundle_triage = campaign_occurrence_bundle(occurrence)?
+        .triage_evidence()
+        .ok_or_else(|| artifact_error("campaign occurrence bundle has no triage evidence set"))?;
     let original_reproduction = campaign_occurrence_reproduction(occurrence)?;
     let selected_reproduction = campaign_occurrence_minimized_reproduction(occurrence)?;
     let original_finding =
@@ -274,25 +287,29 @@ fn campaign_occurrence_native_triage_replays(
     Ok(Some(CampaignOccurrenceNativeTriageReplays {
         minimization_original: decode_campaign_occurrence_triage_replay(
             &triage.minimization_original,
-            crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizationOriginalTriageEvidence,
+            crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal,
+            bundle_triage.minimization_original(),
             original_reproduction,
             original_finding.clone(),
         )?,
         minimization_selected: decode_campaign_occurrence_triage_replay(
             &triage.minimization_selected,
-            crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizationSelectedTriageEvidence,
+            crucible_campaign::CampaignFindingTriageReplayRole::MinimizationSelected,
+            bundle_triage.minimization_selected(),
             selected_reproduction,
             selected_finding.clone(),
         )?,
         verification_original: decode_campaign_occurrence_triage_replay(
             &triage.verification_original,
-            crucible_campaign::CampaignFindingOccurrenceObjectKind::VerificationOriginalTriageEvidence,
+            crucible_campaign::CampaignFindingTriageReplayRole::VerificationOriginal,
+            bundle_triage.verification_original(),
             original_reproduction,
             original_finding,
         )?,
         verification_selected: decode_campaign_occurrence_triage_replay(
             &triage.verification_selected,
-            crucible_campaign::CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence,
+            crucible_campaign::CampaignFindingTriageReplayRole::VerificationSelected,
+            bundle_triage.verification_selected(),
             selected_reproduction,
             selected_finding,
         )?,
@@ -300,40 +317,21 @@ fn campaign_occurrence_native_triage_replays(
 }
 
 fn decode_campaign_occurrence_triage_replay(
-    proof: &CampaignFindingOccurrenceObjectProof,
-    expected_kind: crucible_campaign::CampaignFindingOccurrenceObjectKind,
+    proof: &CampaignFindingTriageReplayProof,
+    expected_role: crucible_campaign::CampaignFindingTriageReplayRole,
+    expected_evidence: crucible_campaign::FindingTriageReplayEvidenceId,
     reproduction: &crucible_campaign::ReproductionArtifact,
     finding: crucible::FindingReproductionArtifact,
 ) -> Result<crucible::FailureTriageReplayEvidence, CliError> {
-    let record = match (expected_kind, proof.response.object()) {
-        (
-            crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizationOriginalTriageEvidence,
-            crucible_campaign::CampaignFindingOccurrenceObject::MinimizationOriginalTriageEvidence(record),
-        )
-        | (
-            crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizationSelectedTriageEvidence,
-            crucible_campaign::CampaignFindingOccurrenceObject::MinimizationSelectedTriageEvidence(record),
-        )
-        | (
-            crucible_campaign::CampaignFindingOccurrenceObjectKind::VerificationOriginalTriageEvidence,
-            crucible_campaign::CampaignFindingOccurrenceObject::VerificationOriginalTriageEvidence(record),
-        )
-        | (
-            crucible_campaign::CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence,
-            crucible_campaign::CampaignFindingOccurrenceObject::VerificationSelectedTriageEvidence(record),
-        ) => record,
-        _ => {
-            return Err(artifact_error(
-                "campaign occurrence triage proof has another object kind",
-            ));
-        }
-    };
+    let record = reassemble_campaign_triage_replay_proof(proof)?;
     let reproduction_id = reproduction.id().map_err(|error| {
         artifact_error(format!(
             "campaign occurrence triage reproduction ID is invalid: {error}"
         ))
     })?;
-    if proof.request.kind() != expected_kind
+    if proof.segments.iter().any(|segment| {
+        segment.request.role() != expected_role || segment.request.evidence() != expected_evidence
+    }) || record.id().ok() != Some(expected_evidence)
         || record.reproduction() != reproduction_id
         || record.payload_schema() != crucible::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
     {
@@ -348,8 +346,78 @@ fn decode_campaign_occurrence_triage_replay(
                     "campaign occurrence triage payload is invalid: {error}"
                 ))
             })?;
-    validate_campaign_native_signature_binding(record, reproduction, &replay)?;
+    validate_campaign_native_signature_binding(&record, reproduction, &replay)?;
     Ok(replay)
+}
+
+pub(crate) fn reassemble_campaign_triage_replay_proof(
+    proof: &CampaignFindingTriageReplayProof,
+) -> Result<crucible_campaign::FindingTriageReplayEvidence, CliError> {
+    let first = proof
+        .segments
+        .first()
+        .ok_or_else(|| artifact_error("campaign occurrence triage proof has no segment"))?;
+    let description = first.response.description();
+    let mut envelopes = Vec::with_capacity(description.objects().len());
+    let mut segment_position = 0;
+    for object in description.objects() {
+        let object_bytes = usize::try_from(object.stored_envelope_bytes())
+            .map_err(|_| artifact_error("campaign triage storage envelope length is invalid"))?;
+        let mut envelope = Vec::with_capacity(object_bytes);
+        let segment_count = object
+            .stored_envelope_bytes()
+            .checked_add(crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES - 1)
+            .ok_or_else(|| artifact_error("campaign triage segment count overflows"))?
+            / crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES;
+        for segment_index in 0..u32::try_from(segment_count)
+            .map_err(|_| artifact_error("campaign triage segment count is invalid"))?
+        {
+            let segment = proof.segments.get(segment_position).ok_or_else(|| {
+                artifact_error("campaign occurrence triage proof ends before its description")
+            })?;
+            segment
+                .response
+                .validate_for(&segment.request)
+                .map_err(|error| {
+                    artifact_error(format!(
+                        "campaign occurrence triage segment response is invalid: {error}"
+                    ))
+                })?;
+            if segment.request.principal() != first.request.principal()
+                || segment.request.campaign() != first.request.campaign()
+                || segment.request.snapshot() != first.request.snapshot()
+                || segment.request.finding() != first.request.finding()
+                || segment.request.bundle() != first.request.bundle()
+                || segment.request.role() != first.request.role()
+                || segment.request.evidence() != first.request.evidence()
+                || segment.request.object_ordinal() != object.ordinal()
+                || segment.request.object() != object.content()
+                || segment.request.segment_index() != segment_index
+                || segment.response.description() != description
+            {
+                return Err(artifact_error(
+                    "campaign occurrence triage proof is reordered or substituted",
+                ));
+            }
+            envelope.extend_from_slice(segment.response.range_bytes());
+            segment_position += 1;
+        }
+        if envelope.len() != object_bytes {
+            return Err(artifact_error(
+                "campaign occurrence triage envelope is incomplete",
+            ));
+        }
+        envelopes.push(envelope);
+    }
+    if segment_position != proof.segments.len() {
+        return Err(artifact_error(
+            "campaign occurrence triage proof has unexpected segments",
+        ));
+    }
+    crucible_campaign::FindingTriageReplayEvidence::from_storage_envelopes(description, &envelopes)
+        .map_err(|error| {
+            artifact_error(format!("campaign triage storage proof is invalid: {error}"))
+        })
 }
 
 fn validate_campaign_native_signature_binding(

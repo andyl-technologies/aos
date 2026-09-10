@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration()
+pub(super) fn cli_fork_workflow_requires_guarded_authority_before_local_qemu_launch()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let store_root = temp.path().join("store");
@@ -131,20 +131,18 @@ pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration(
     assert!(!artifact_dir.exists());
     let error =
         run_local_qemu_fork_workflow(&plan_cli_invocation(&cli), &backend_plan, None, &fork_plan)
-            .expect_err("fixture QEMU fork must reach live-guest discovery or production launch");
+            .expect_err("local QEMU fork must require guarded campaign authority");
     let message = error.to_string();
     assert!(
-        matches!(error, CliError::Backend(_)),
+        matches!(error, CliError::Serve(_)),
         "unexpected QEMU fork error: {error}"
     );
-    assert!(
-        message.contains("requires the AOS kernel")
-            || message.contains("requires the AOS root image")
-            || message.contains("session execution backend construction failed"),
-        "unexpected QEMU fork error: {error}"
+    assert_eq!(
+        message,
+        "local QEMU execution requires guarded campaign host authority; pass \
+         --campaign-deployment PATH, set CRUCIBLE_CAMPAIGN_DEPLOYMENT, or provision \
+         /etc/crucible/packaged-executor.toml"
     );
-    assert!(!message.contains("execution is unavailable"));
-    assert!(!message.contains("double fallback"));
 
     Ok(())
 }

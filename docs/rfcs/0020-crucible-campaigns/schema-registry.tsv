@@ -46,7 +46,7 @@ crucible.campaign.branch-request	9	crucible-campaign::exploration	campaign-fact	
 crucible.campaign.proposal	2	crucible-campaign::exploration	campaign-fact	gate:lazy-frontier,gate:content-address
 crucible.campaign.branch-path	2	crucible-campaign::exploration	campaign-fact	gate:campaign-replay,gate:content-address
 crucible.campaign.attempt	8	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
-crucible.campaign.attempt-admission	2	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
+crucible.campaign.attempt-admission	3	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.planner-step	4	crucible-campaign::exploration	campaign-fact	gate:campaign-component-contract,gate:content-address
 crucible.campaign.planner-step-proposal	1	crucible-campaign::exploration	component-message	gate:campaign-component-contract
 crucible.campaign.planner-submission	1	crucible-campaign::authority	component-message	gate:campaign-component-contract
@@ -91,6 +91,8 @@ crucible.campaign.query-campaign-finding-occurrences-request	1	crucible-campaign
 crucible.campaign.query-campaign-finding-occurrences-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.get-campaign-finding-occurrence-object-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.get-campaign-finding-occurrence-object-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
+crucible.campaign.get-campaign-finding-triage-replay-segment-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract,gate:campaign-replay
+crucible.campaign.get-campaign-finding-triage-replay-segment-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract,gate:campaign-replay
 crucible.campaign.get-campaign-finding-object-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.get-campaign-finding-object-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.explain-campaign-attempt-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
