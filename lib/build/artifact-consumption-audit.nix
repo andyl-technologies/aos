@@ -1,9 +1,10 @@
 ##! artifact-consumption-audit - actual-output checks for typed artifact use
 ##!
-##! Produces canonical evidence for one target ELF's startup dependency on an
-##! exact shared-library artifact. Artifact identities use the same content,
-##! NAR and closure digests as RFC-0022 `ArtifactReference`. The audit inspects
-##! realized outputs; dependency metadata alone cannot satisfy it.
+##! Produces canonical evidence for one exact realized artifact use: ELF startup
+##! linkage, plugin loading, helper execution, build-tool execution, or a data
+##! read. Artifact identities use the same content, NAR and closure digests as
+##! RFC-0022 `ArtifactReference`. The audit inspects realized outputs; dependency
+##! metadata alone cannot satisfy it.
 {
   pkgs,
   lib,
@@ -13,12 +14,15 @@
   provider,
   providerPath,
   targetPlatform,
-  soname,
-  needed,
-  searchPath,
-  searchPathKind,
-  symbols,
-  loader,
+  mechanism ? "elf-startup-linkage",
+  arguments ? [],
+  expectedOutputSha256 ? null,
+  soname ? null,
+  needed ? [],
+  searchPath ? [],
+  searchPathKind ? null,
+  symbols ? [],
+  loader ? null,
   inspector,
 }: let
   buildPkgs = pkgs.buildPackages or pkgs;
@@ -42,6 +46,19 @@
     if left.name != right.name
     then left.name < right.name
     else left.version < right.version;
+  mechanismFeature =
+    {
+      elf-startup-linkage = "elf-startup-linkage-v1";
+      runtime-plugin-load = "runtime-plugin-load-v1";
+      helper-execution = "helper-execution-v1";
+      build-tool-execution = "build-tool-execution-v1";
+      immutable-data-input = "immutable-data-input-v1";
+    }
+    .${
+      mechanism
+    }
+    or (throw "artifact consumption audit: unsupported mechanism");
+  pathMechanism = mechanism != "elf-startup-linkage";
   checked =
     if builtins.match localKeyPattern name == null
     then throw "artifact consumption audit: name must be a local key"
@@ -51,17 +68,21 @@
     then throw "artifact consumption audit: providerPath must be absolute within the provider artifact"
     else if !(builtins.isAttrs targetPlatform && builtins.attrNames targetPlatform == ["architecture" "system"])
     then throw "artifact consumption audit: targetPlatform must use the RFC-0022 platform identity"
-    else if !isCanonicalList needed || needed == []
+    else if pathMechanism && !(builtins.isList arguments && builtins.all builtins.isString arguments)
+    then throw "artifact consumption audit: arguments must be a list of strings"
+    else if pathMechanism && !(builtins.isString expectedOutputSha256 && builtins.match "sha256:[0-9a-f]{64}" expectedOutputSha256 != null)
+    then throw "artifact consumption audit: expectedOutputSha256 must be a canonical SHA-256 digest"
+    else if !pathMechanism && (!isCanonicalList needed || needed == [])
     then throw "artifact consumption audit: needed must be a sorted, unique non-empty list"
-    else if !(builtins.isList searchPath && searchPath != [] && builtins.all (path: builtins.isString path && builtins.match storeDirectoryPattern path != null && !hasDotComponent path) searchPath)
+    else if !pathMechanism && !(builtins.isList searchPath && searchPath != [] && builtins.all (path: builtins.isString path && builtins.match storeDirectoryPattern path != null && !hasDotComponent path) searchPath)
     then throw "artifact consumption audit: searchPath must be a non-empty ordered list of exact Nix store directories"
-    else if lib.unique searchPath != searchPath
+    else if !pathMechanism && lib.unique searchPath != searchPath
     then throw "artifact consumption audit: searchPath must not contain duplicates"
-    else if !(builtins.elem searchPathKind ["runpath" "rpath"])
+    else if !pathMechanism && !(builtins.elem searchPathKind ["runpath" "rpath"])
     then throw "artifact consumption audit: searchPathKind must be runpath or rpath"
-    else if !(builtins.isList symbols && symbols != [] && builtins.all validSymbol symbols && symbols == builtins.sort symbolLessThan symbols && symbols == lib.unique symbols)
+    else if !pathMechanism && !(builtins.isList symbols && symbols != [] && builtins.all validSymbol symbols && symbols == builtins.sort symbolLessThan symbols && symbols == lib.unique symbols)
     then throw "artifact consumption audit: symbols must contain sorted unique name/version pairs"
-    else if !(builtins.isString loader && builtins.match storeFilePattern loader != null && !hasDotComponent loader)
+    else if !pathMechanism && !(builtins.isString loader && builtins.match storeFilePattern loader != null && !hasDotComponent loader)
     then throw "artifact consumption audit: loader must be an exact Nix store path"
     else true;
   artifactSpecs = [
@@ -78,9 +99,9 @@
   ];
   template = {
     schema = "aos.artifact-consumption.evidence/v1";
-    required_features = ["elf-startup-linkage-v1"];
+    required_features = [mechanismFeature];
     id = name;
-    mechanism = "elf-startup-linkage";
+    inherit mechanism;
     platforms = {
       build = {
         system = pkgs.stdenv.buildPlatform.constraints.os;
@@ -102,11 +123,21 @@
       path = providerPath;
       sha256 = null;
     };
-    contract = {
-      inherit soname needed symbols loader;
-      search_path = searchPath;
-      search_path_kind = searchPathKind;
-    };
+    contract =
+      if pathMechanism
+      then {
+        inherit arguments;
+        output_sha256 = expectedOutputSha256;
+        retention =
+          if mechanism == "build-tool-execution"
+          then "forbidden"
+          else "required";
+      }
+      else {
+        inherit soname needed symbols loader;
+        search_path = searchPath;
+        search_path_kind = searchPathKind;
+      };
   };
 in
   assert checked;
@@ -129,6 +160,7 @@ in
         buildPkgs.jq
         buildPkgs.nix
         buildPkgs.sed
+        buildPkgs.strace
         inspector
       ];
       dontStrip = true;
@@ -186,6 +218,10 @@ in
                 -f ${../../pkgs/build-support/_ability-closure-graph.jq} \
                 work/exported-graph.json > work/graph.jsonl
 
+              if [ "$key" = consumer ]; then
+                jq -s 'map(.path)' work/graph.jsonl > work/consumer-closure-paths.json
+              fi
+
               : > work/closure-members.jsonl
               while IFS= read -r member; do
                 member_path=$(printf '%s\n' "$member" | jq -r .path)
@@ -238,12 +274,33 @@ in
                | .provider.artifact = $references[0].provider' \
               work/template.json > work/config.json
 
-            jq -e --arg provider ${lib.escapeShellArg (builtins.toString provider)} \
-              '.consumerGraph | any(.path == $provider)' "$NIX_ATTRS_JSON_FILE" >/dev/null \
-              || { echo "artifact consumption audit: consumer closure does not retain provider" >&2; exit 1; }
+            ${
+              if mechanism == "build-tool-execution"
+              then ''
+                if jq -e --arg provider ${lib.escapeShellArg (builtins.toString provider)} \
+                  'index($provider) != null' work/consumer-closure-paths.json >/dev/null; then
+                  echo "artifact consumption audit: build-only tool leaked into consumer closure" >&2
+                  exit 1
+                fi
+              ''
+              else ''
+                jq -e --arg provider ${lib.escapeShellArg (builtins.toString provider)} \
+                  'index($provider) != null' work/consumer-closure-paths.json >/dev/null \
+                  || { echo "artifact consumption audit: consumer closure does not retain provider" >&2; exit 1; }
+              ''
+            }
 
-            ${buildPkgs.bash}/bin/bash ${./artifact-consumption-elf-check.sh} \
-              work/config.json "$out/evidence.json"
+            ${
+              if pathMechanism
+              then ''
+                ${buildPkgs.bash}/bin/bash ${./artifact-consumption-path-check.sh} \
+                  work/config.json "$out/evidence.json"
+              ''
+              else ''
+                ${buildPkgs.bash}/bin/bash ${./artifact-consumption-elf-check.sh} \
+                  work/config.json "$out/evidence.json"
+              ''
+            }
 
             provider_content=$(jq -er .provider.artifact.content "$out/evidence.json")
             ${inspector}/bin/aos ability artifact-consumption "$out/evidence.json" \
@@ -256,19 +313,22 @@ in
               '.evidence_schema == "aos.artifact-consumption.evidence/v1"
                and (.consumer.artifact.store_path + .consumer.path) == $consumer
                and .provider.artifact.content == $provider_content
-               and .provider_elf_compatible
-               and .loader_elf_compatible
-               and .search_resolves_exact_provider
-               and .provider_retained_by_consumer
+               and (if .mechanism == "elf-startup-linkage"
+                    then .provider_elf_compatible and .loader_elf_compatible
+                      and .search_resolves_exact_provider
+                    else .provider_access_observed
+                    end)
+               and (if .mechanism == "build-tool-execution"
+                    then (.provider_retained_by_consumer | not)
+                    else .provider_retained_by_consumer
+                    end)
                and .provenance == "reported-realized-build-gate"
-               and (.limitations | index("no-live-loader-enforcement") != null)
-               and (.limitations | index("no-helper-execution-evidence") != null)
-               and (.limitations | index("no-build-tool-execution-evidence") != null)
-               and (.limitations | index("no-data-input-evidence") != null)' \
+               and (.limitations | index("no-publication-authentication") != null)
+               and (.limitations | index("no-deployment-runtime-state") != null)' \
               "$out/explanation.json" >/dev/null
           '';
         }
       ];
 
-      meta.description = "Actual ELF artifact-consumption evidence for ${name}";
+      meta.description = "Actual artifact-consumption evidence for ${name}";
     }

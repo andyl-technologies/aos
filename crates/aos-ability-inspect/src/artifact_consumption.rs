@@ -1,18 +1,18 @@
 //! Checked decoding and focused queries for realized artifact consumption.
 //!
-//! The version-1 reader accepts only ELF startup linkage. Its answer explains
-//! why one exact executable retains and names one exact shared library. It
-//! cannot answer questions about plugins, explicit `dlopen` calls, runtime
-//! helpers, build tools, or data artifacts because those mechanisms require
-//! different observations.
+//! The version-1 reader keeps each consumption mechanism distinct and accepts
+//! only evidence produced from realized files or an observed invocation.
 
 use std::collections::BTreeSet;
 
 use aos_ability_model::document::PlatformIdentity;
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA, ArtifactConsumptionEvidenceDocument,
-    ArtifactConsumptionMechanism, ArtifactFileEvidence, ELF_STARTUP_LINKAGE_FEATURE,
-    ElfStartupLinkageContract, RequiredFeature, decode_canonical,
+    decode_canonical, ArtifactConsumptionContract, ArtifactConsumptionEvidenceDocument,
+    ArtifactConsumptionMechanism, ArtifactConsumptionObservation, ArtifactFileEvidence,
+    ArtifactRetentionRequirement, RequiredFeature, ABILITY_LIMITS_V1,
+    ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA, BUILD_TOOL_EXECUTION_FEATURE,
+    ELF_STARTUP_LINKAGE_FEATURE, HELPER_EXECUTION_FEATURE, IMMUTABLE_DATA_INPUT_FEATURE,
+    RUNTIME_PLUGIN_LOAD_FEATURE,
 };
 use aos_contract::Sha256Digest;
 use serde::Serialize;
@@ -46,20 +46,22 @@ pub struct ArtifactConsumptionExplanation {
     pub mechanism: ArtifactConsumptionMechanism,
     /// Identifies the build, host, and target platforms.
     pub platforms: aos_ability_model::ArtifactConsumptionPlatforms,
-    /// Pins the exact consuming executable.
+    /// Pins the exact consuming executable or produced file.
     pub consumer: ArtifactFileEvidence,
-    /// Pins the exact shared-library provider.
+    /// Pins the exact library, executable, or data provider.
     pub provider: ArtifactFileEvidence,
-    /// Records the checked ELF relationship that explains the consumption.
-    pub linkage: ElfStartupLinkageContract,
+    /// Records the checked mechanism-specific contract.
+    pub contract: ArtifactConsumptionContract,
     /// Confirms that the consumer's realized closure retains the provider.
     pub provider_retained_by_consumer: bool,
-    /// Confirms compatible consumer and provider ELF identities.
-    pub provider_elf_compatible: bool,
+    /// Confirms compatible consumer and provider ELF identities when applicable.
+    pub provider_elf_compatible: Option<bool>,
     /// Confirms a compatible program interpreter ELF identity.
-    pub loader_elf_compatible: bool,
+    pub loader_elf_compatible: Option<bool>,
     /// Confirms the embedded search order selects this exact provider first.
-    pub search_resolves_exact_provider: bool,
+    pub search_resolves_exact_provider: Option<bool>,
+    /// Confirms a syscall observation of the exact mechanism-specific provider access.
+    pub provider_access_observed: Option<bool>,
     /// Classifies the authority carried by this portable report.
     pub provenance: ArtifactConsumptionProvenance,
     /// States conclusions that this evidence mechanism cannot establish.
@@ -74,7 +76,7 @@ pub enum ArtifactConsumptionProvenance {
     ReportedRealizedBuildGate,
 }
 
-/// Names a conclusion deliberately excluded from ELF startup-linkage evidence.
+/// Names a conclusion deliberately excluded from artifact-consumption evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ArtifactConsumptionLimitation {
@@ -92,6 +94,8 @@ pub enum ArtifactConsumptionLimitation {
     NoBuildToolExecutionEvidence,
     /// The report does not establish reads from an immutable data artifact.
     NoDataInputEvidence,
+    /// The invocation does not establish continued state in a deployment after it exits.
+    NoDeploymentRuntimeState,
 }
 
 /// Reports why artifact-consumption evidence or a query was rejected.
@@ -104,11 +108,14 @@ pub enum ArtifactConsumptionEvidenceError {
     #[error("artifact-consumption evidence decoding failed: {0}")]
     Decode(#[source] aos_ability_model::document::DocumentError),
     /// The document did not declare exactly the version-1 mechanism feature.
-    #[error("artifact-consumption evidence must require exactly '{ELF_STARTUP_LINKAGE_FEATURE}'")]
+    #[error("artifact-consumption evidence must require exactly its version-1 mechanism feature")]
     RequiredFeatures,
     /// The evidence mechanism does not agree with its feature declaration.
     #[error("artifact-consumption evidence mechanism and required feature disagree")]
     MechanismFeatureMismatch,
+    /// The mechanism does not carry its required contract and observation shape.
+    #[error("artifact-consumption evidence mechanism and payload shape disagree")]
+    MechanismPayloadMismatch,
     /// A platform is not a valid ELF startup-linkage platform identity.
     #[error("artifact-consumption evidence has an unsupported platform relationship")]
     Platform,
@@ -150,9 +157,9 @@ pub enum ArtifactConsumptionEvidenceError {
     /// The observed ELF machine does not match the exact target platform.
     #[error("artifact-consumption ELF machine does not match its target platform")]
     MachineMismatch,
-    /// The closure observation did not establish exact provider retention.
-    #[error("artifact-consumption evidence does not establish provider retention")]
-    ProviderNotRetained,
+    /// The closure observation did not match the mechanism's retention rule.
+    #[error("artifact-consumption evidence does not satisfy its provider-retention contract")]
+    ProviderRetentionMismatch,
     /// A query named another consumer file.
     #[error("artifact-consumption query does not match the checked consumer")]
     ConsumerMismatch,
@@ -180,9 +187,17 @@ impl CheckedArtifactConsumptionEvidence {
     /// Returns an error for malformed, oversized, noncanonical, unsupported, or
     /// internally inconsistent evidence.
     pub fn decode(bytes: &[u8]) -> Result<Self, ArtifactConsumptionEvidenceError> {
-        let supported_features =
-            BTreeSet::from([RequiredFeature::new(ELF_STARTUP_LINKAGE_FEATURE)
-                .map_err(ArtifactConsumptionEvidenceError::Feature)?]);
+        let supported_features = [
+            ELF_STARTUP_LINKAGE_FEATURE,
+            RUNTIME_PLUGIN_LOAD_FEATURE,
+            HELPER_EXECUTION_FEATURE,
+            BUILD_TOOL_EXECUTION_FEATURE,
+            IMMUTABLE_DATA_INPUT_FEATURE,
+        ]
+        .into_iter()
+        .map(RequiredFeature::new)
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(ArtifactConsumptionEvidenceError::Feature)?;
         let document = decode_canonical::<ArtifactConsumptionEvidenceDocument>(
             bytes,
             ABILITY_LIMITS_V1,
@@ -206,8 +221,7 @@ impl CheckedArtifactConsumptionEvidence {
         validate_platforms(&document.platforms)?;
         validate_artifact_file("consumer", &document.consumer)?;
         validate_artifact_file("provider", &document.provider)?;
-        validate_contract(&document)?;
-        validate_observation(&document)?;
+        validate_contract_and_observation(&document)?;
 
         Ok(Self { document })
     }
@@ -242,6 +256,29 @@ impl CheckedArtifactConsumptionEvidence {
             return Err(ArtifactConsumptionEvidenceError::ProviderMismatch);
         }
 
+        let (
+            retained,
+            provider_elf_compatible,
+            loader_elf_compatible,
+            search_resolves_exact_provider,
+            provider_access_observed,
+        ) = match &self.document.observation {
+            ArtifactConsumptionObservation::ElfStartupLinkage(observation) => (
+                observation.provider_retained_by_consumer,
+                Some(observation.provider_elf_compatible),
+                Some(observation.loader_elf_compatible),
+                Some(observation.search_resolves_exact_provider),
+                None,
+            ),
+            ArtifactConsumptionObservation::ObservedPath(observation) => (
+                observation.provider_retained_by_consumer,
+                None,
+                None,
+                None,
+                Some(observation.provider_access_observed),
+            ),
+        };
+
         Ok(ArtifactConsumptionExplanation {
             evidence_schema: ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA.to_string(),
             id: self.document.id.as_str().to_string(),
@@ -249,24 +286,14 @@ impl CheckedArtifactConsumptionEvidence {
             platforms: self.document.platforms.clone(),
             consumer: self.document.consumer.clone(),
             provider: self.document.provider.clone(),
-            linkage: self.document.contract.clone(),
-            provider_retained_by_consumer: self.document.observation.provider_retained_by_consumer,
-            provider_elf_compatible: self.document.observation.provider_elf_compatible,
-            loader_elf_compatible: self.document.observation.loader_elf_compatible,
-            search_resolves_exact_provider: self
-                .document
-                .observation
-                .search_resolves_exact_provider,
+            contract: self.document.contract.clone(),
+            provider_retained_by_consumer: retained,
+            provider_elf_compatible,
+            loader_elf_compatible,
+            search_resolves_exact_provider,
+            provider_access_observed,
             provenance: ArtifactConsumptionProvenance::ReportedRealizedBuildGate,
-            limitations: vec![
-                ArtifactConsumptionLimitation::NoPublicationAuthentication,
-                ArtifactConsumptionLimitation::NoLiveLoaderEnforcement,
-                ArtifactConsumptionLimitation::NoRuntimeRebinding,
-                ArtifactConsumptionLimitation::NoPluginOrExplicitLoadEvidence,
-                ArtifactConsumptionLimitation::NoHelperExecutionEvidence,
-                ArtifactConsumptionLimitation::NoBuildToolExecutionEvidence,
-                ArtifactConsumptionLimitation::NoDataInputEvidence,
-            ],
+            limitations: limitations(self.document.mechanism),
         })
     }
 }
@@ -274,15 +301,69 @@ impl CheckedArtifactConsumptionEvidence {
 fn validate_features(
     document: &ArtifactConsumptionEvidenceDocument,
 ) -> Result<(), ArtifactConsumptionEvidenceError> {
-    if document.required_features.len() != 1
-        || document.required_features[0].as_str() != ELF_STARTUP_LINKAGE_FEATURE
-    {
+    let expected = feature_for(document.mechanism);
+    if document.required_features.len() != 1 || document.required_features[0].as_str() != expected {
         return Err(ArtifactConsumptionEvidenceError::RequiredFeatures);
     }
-    if document.mechanism != ArtifactConsumptionMechanism::ElfStartupLinkage {
-        return Err(ArtifactConsumptionEvidenceError::MechanismFeatureMismatch);
-    }
     Ok(())
+}
+
+const fn feature_for(mechanism: ArtifactConsumptionMechanism) -> &'static str {
+    match mechanism {
+        ArtifactConsumptionMechanism::ElfStartupLinkage => ELF_STARTUP_LINKAGE_FEATURE,
+        ArtifactConsumptionMechanism::RuntimePluginLoad => RUNTIME_PLUGIN_LOAD_FEATURE,
+        ArtifactConsumptionMechanism::HelperExecution => HELPER_EXECUTION_FEATURE,
+        ArtifactConsumptionMechanism::BuildToolExecution => BUILD_TOOL_EXECUTION_FEATURE,
+        ArtifactConsumptionMechanism::ImmutableDataInput => IMMUTABLE_DATA_INPUT_FEATURE,
+    }
+}
+
+fn limitations(mechanism: ArtifactConsumptionMechanism) -> Vec<ArtifactConsumptionLimitation> {
+    use ArtifactConsumptionLimitation::{
+        NoBuildToolExecutionEvidence, NoDataInputEvidence, NoDeploymentRuntimeState,
+        NoHelperExecutionEvidence, NoLiveLoaderEnforcement, NoPluginOrExplicitLoadEvidence,
+        NoPublicationAuthentication, NoRuntimeRebinding,
+    };
+
+    let mut limitations = vec![NoPublicationAuthentication, NoDeploymentRuntimeState];
+    match mechanism {
+        ArtifactConsumptionMechanism::ElfStartupLinkage => limitations.extend([
+            NoLiveLoaderEnforcement,
+            NoRuntimeRebinding,
+            NoPluginOrExplicitLoadEvidence,
+            NoHelperExecutionEvidence,
+            NoBuildToolExecutionEvidence,
+            NoDataInputEvidence,
+        ]),
+        ArtifactConsumptionMechanism::RuntimePluginLoad => limitations.extend([
+            NoRuntimeRebinding,
+            NoHelperExecutionEvidence,
+            NoBuildToolExecutionEvidence,
+            NoDataInputEvidence,
+        ]),
+        ArtifactConsumptionMechanism::HelperExecution => limitations.extend([
+            NoLiveLoaderEnforcement,
+            NoRuntimeRebinding,
+            NoPluginOrExplicitLoadEvidence,
+            NoBuildToolExecutionEvidence,
+            NoDataInputEvidence,
+        ]),
+        ArtifactConsumptionMechanism::BuildToolExecution => limitations.extend([
+            NoLiveLoaderEnforcement,
+            NoRuntimeRebinding,
+            NoPluginOrExplicitLoadEvidence,
+            NoHelperExecutionEvidence,
+            NoDataInputEvidence,
+        ]),
+        ArtifactConsumptionMechanism::ImmutableDataInput => limitations.extend([
+            NoLiveLoaderEnforcement,
+            NoRuntimeRebinding,
+            NoPluginOrExplicitLoadEvidence,
+            NoHelperExecutionEvidence,
+            NoBuildToolExecutionEvidence,
+        ]),
+    }
+    limitations
 }
 
 fn validate_platforms(
@@ -327,10 +408,78 @@ fn validate_artifact_file(
     Ok(())
 }
 
-fn validate_contract(
+fn validate_contract_and_observation(
     document: &ArtifactConsumptionEvidenceDocument,
 ) -> Result<(), ArtifactConsumptionEvidenceError> {
-    let contract = &document.contract;
+    match (&document.contract, &document.observation) {
+        (
+            ArtifactConsumptionContract::ElfStartupLinkage(contract),
+            ArtifactConsumptionObservation::ElfStartupLinkage(observation),
+        ) if document.mechanism == ArtifactConsumptionMechanism::ElfStartupLinkage => {
+            validate_elf_contract(document, contract)?;
+            validate_elf_observation(document, contract, observation)
+        }
+        (
+            ArtifactConsumptionContract::ObservedPath(contract),
+            ArtifactConsumptionObservation::ObservedPath(observation),
+        ) if document.mechanism != ArtifactConsumptionMechanism::ElfStartupLinkage => {
+            validate_path_contract(contract)?;
+            let required_retention = match document.mechanism {
+                ArtifactConsumptionMechanism::BuildToolExecution => {
+                    ArtifactRetentionRequirement::Forbidden
+                }
+                ArtifactConsumptionMechanism::RuntimePluginLoad
+                | ArtifactConsumptionMechanism::HelperExecution
+                | ArtifactConsumptionMechanism::ImmutableDataInput => {
+                    ArtifactRetentionRequirement::Required
+                }
+                ArtifactConsumptionMechanism::ElfStartupLinkage => {
+                    return Err(ArtifactConsumptionEvidenceError::MechanismPayloadMismatch);
+                }
+            };
+            if contract.retention != required_retention {
+                return Err(ArtifactConsumptionEvidenceError::ProviderRetentionMismatch);
+            }
+            if observation.arguments != contract.arguments
+                || observation.exit_code != 0
+                || observation.output_sha256 != contract.output_sha256
+                || !observation.provider_access_observed
+            {
+                return Err(ArtifactConsumptionEvidenceError::ObservationMismatch);
+            }
+            let retention_matches = match contract.retention {
+                ArtifactRetentionRequirement::Required => observation.provider_retained_by_consumer,
+                ArtifactRetentionRequirement::Forbidden => {
+                    !observation.provider_retained_by_consumer
+                }
+            };
+            if !retention_matches {
+                return Err(ArtifactConsumptionEvidenceError::ProviderRetentionMismatch);
+            }
+            Ok(())
+        }
+        _ => Err(ArtifactConsumptionEvidenceError::MechanismPayloadMismatch),
+    }
+}
+
+fn validate_path_contract(
+    contract: &aos_ability_model::ObservedPathConsumptionContract,
+) -> Result<(), ArtifactConsumptionEvidenceError> {
+    if contract.arguments.len() as u64 > ABILITY_LIMITS_V1.max_collection_items {
+        return Err(ArtifactConsumptionEvidenceError::Bound {
+            field: "invocation arguments",
+        });
+    }
+    for argument in &contract.arguments {
+        validate_string("invocation argument", argument)?;
+    }
+    Ok(())
+}
+
+fn validate_elf_contract(
+    document: &ArtifactConsumptionEvidenceDocument,
+    contract: &aos_ability_model::ElfStartupLinkageContract,
+) -> Result<(), ArtifactConsumptionEvidenceError> {
     validate_string("ELF linkage", &contract.soname)?;
     if contract.soname.contains('/') || file_name(&document.provider.path) != contract.soname {
         return Err(ArtifactConsumptionEvidenceError::Needed);
@@ -390,16 +539,17 @@ fn validate_contract(
     Ok(())
 }
 
-fn validate_observation(
+fn validate_elf_observation(
     document: &ArtifactConsumptionEvidenceDocument,
+    contract: &aos_ability_model::ElfStartupLinkageContract,
+    observation: &aos_ability_model::ElfStartupLinkageObservation,
 ) -> Result<(), ArtifactConsumptionEvidenceError> {
-    let observation = &document.observation;
-    if observation.soname != document.contract.soname
-        || observation.needed != document.contract.needed
-        || observation.search_path != document.contract.search_path
-        || observation.search_path_kind != document.contract.search_path_kind
-        || observation.loader != document.contract.loader
-        || observation.symbols != document.contract.symbols
+    if observation.soname != contract.soname
+        || observation.needed != contract.needed
+        || observation.search_path != contract.search_path
+        || observation.search_path_kind != contract.search_path_kind
+        || observation.loader != contract.loader
+        || observation.symbols != contract.symbols
     {
         return Err(ArtifactConsumptionEvidenceError::ObservationMismatch);
     }
@@ -413,7 +563,7 @@ fn validate_observation(
     validate_string("ELF OS/ABI", &observation.os_abi)?;
     validate_string("ELF ABI version", &observation.abi_version)?;
     if !observation.provider_retained_by_consumer {
-        return Err(ArtifactConsumptionEvidenceError::ProviderNotRetained);
+        return Err(ArtifactConsumptionEvidenceError::ProviderRetentionMismatch);
     }
     if !observation.provider_elf_compatible
         || !observation.loader_elf_compatible
@@ -553,8 +703,8 @@ fn has_duplicate<T: Ord + Clone>(values: &[T]) -> bool {
 #[cfg(test)]
 mod tests {
     use aos_ability_model::{
-        ArtifactConsumptionPlatforms, ElfSearchPathKind, ElfStartupLinkageObservation,
-        ElfSymbolVersion, LocalKey, encode_canonical,
+        encode_canonical, ArtifactConsumptionPlatforms, ElfSearchPathKind,
+        ElfStartupLinkageContract, ElfStartupLinkageObservation, ElfSymbolVersion, LocalKey,
     };
 
     use super::*;
@@ -614,24 +764,26 @@ mod tests {
                 path: "/lib/libaos-contract.so.1".to_string(),
                 sha256: Sha256Digest::of_bytes("provider file"),
             },
-            observation: ElfStartupLinkageObservation {
-                elf_class: "ELF64".to_string(),
-                data_encoding: "2's complement, little endian".to_string(),
-                machine: "Advanced Micro Devices X86-64".to_string(),
-                os_abi: "UNIX - System V".to_string(),
-                abi_version: "0".to_string(),
-                soname: contract.soname.clone(),
-                needed: contract.needed.clone(),
-                search_path: contract.search_path.clone(),
-                search_path_kind: contract.search_path_kind,
-                loader: contract.loader.clone(),
-                symbols,
-                provider_elf_compatible: true,
-                loader_elf_compatible: true,
-                search_resolves_exact_provider: true,
-                provider_retained_by_consumer: true,
-            },
-            contract,
+            observation: ArtifactConsumptionObservation::ElfStartupLinkage(
+                ElfStartupLinkageObservation {
+                    elf_class: "ELF64".to_string(),
+                    data_encoding: "2's complement, little endian".to_string(),
+                    machine: "Advanced Micro Devices X86-64".to_string(),
+                    os_abi: "UNIX - System V".to_string(),
+                    abi_version: "0".to_string(),
+                    soname: contract.soname.clone(),
+                    needed: contract.needed.clone(),
+                    search_path: contract.search_path.clone(),
+                    search_path_kind: contract.search_path_kind,
+                    loader: contract.loader.clone(),
+                    symbols,
+                    provider_elf_compatible: true,
+                    loader_elf_compatible: true,
+                    search_resolves_exact_provider: true,
+                    provider_retained_by_consumer: true,
+                },
+            ),
+            contract: ArtifactConsumptionContract::ElfStartupLinkage(contract),
         }
     }
 
@@ -649,28 +801,33 @@ mod tests {
             ))
             .unwrap();
 
-        assert_eq!(explanation.linkage.soname, "libaos-contract.so.1");
+        assert!(matches!(
+            explanation.contract,
+            ArtifactConsumptionContract::ElfStartupLinkage(ref contract)
+                if contract.soname == "libaos-contract.so.1"
+        ));
         assert!(explanation.provider_retained_by_consumer);
         assert_eq!(
             explanation.provenance,
             ArtifactConsumptionProvenance::ReportedRealizedBuildGate
         );
-        assert!(
-            explanation
-                .limitations
-                .contains(&ArtifactConsumptionLimitation::NoLiveLoaderEnforcement)
-        );
-        assert!(
-            explanation
-                .limitations
-                .contains(&ArtifactConsumptionLimitation::NoDataInputEvidence)
-        );
+        assert!(explanation
+            .limitations
+            .contains(&ArtifactConsumptionLimitation::NoLiveLoaderEnforcement));
+        assert!(explanation
+            .limitations
+            .contains(&ArtifactConsumptionLimitation::NoDataInputEvidence));
     }
 
     #[test]
     fn checked_evidence_rejects_contract_observation_disagreement() {
         let mut document = document();
-        document.observation.needed = vec!["libsubstituted.so.1".to_string()];
+        let ArtifactConsumptionObservation::ElfStartupLinkage(observation) =
+            &mut document.observation
+        else {
+            panic!("ELF observation fixture");
+        };
+        observation.needed = vec!["libsubstituted.so.1".to_string()];
         let bytes = encode_canonical(&document).unwrap();
 
         assert!(matches!(
@@ -682,11 +839,18 @@ mod tests {
     #[test]
     fn checked_evidence_rejects_search_entries_outside_the_store() {
         let mut document = document();
-        document
-            .contract
-            .search_path
-            .insert(0, "/tmp/shadow".to_string());
-        document.observation.search_path = document.contract.search_path.clone();
+        let ArtifactConsumptionContract::ElfStartupLinkage(contract) = &mut document.contract
+        else {
+            panic!("ELF contract fixture");
+        };
+        contract.search_path.insert(0, "/tmp/shadow".to_string());
+        let search_path = contract.search_path.clone();
+        let ArtifactConsumptionObservation::ElfStartupLinkage(observation) =
+            &mut document.observation
+        else {
+            panic!("ELF observation fixture");
+        };
+        observation.search_path = search_path;
 
         assert!(matches!(
             CheckedArtifactConsumptionEvidence::check(document),
@@ -703,6 +867,66 @@ mod tests {
         assert!(matches!(
             checked.query(&query),
             Err(ArtifactConsumptionEvidenceError::ProviderMismatch)
+        ));
+    }
+
+    #[test]
+    fn observed_helper_evidence_requires_access_output_and_retention() {
+        let mut document = document();
+        let arguments = vec![format!("{PROVIDER_STORE}/bin/helper")];
+        let output_sha256 = Sha256Digest::of_bytes("helper output");
+        document.required_features = vec![RequiredFeature::new(HELPER_EXECUTION_FEATURE).unwrap()];
+        document.mechanism = ArtifactConsumptionMechanism::HelperExecution;
+        document.provider.path = "/bin/helper".to_string();
+        document.contract = ArtifactConsumptionContract::ObservedPath(
+            aos_ability_model::ObservedPathConsumptionContract {
+                arguments: arguments.clone(),
+                output_sha256,
+                retention: ArtifactRetentionRequirement::Required,
+            },
+        );
+        document.observation = ArtifactConsumptionObservation::ObservedPath(
+            aos_ability_model::ObservedPathConsumptionObservation {
+                arguments,
+                exit_code: 0,
+                output_sha256,
+                provider_access_observed: true,
+                provider_retained_by_consumer: true,
+            },
+        );
+
+        let checked = CheckedArtifactConsumptionEvidence::check(document.clone()).unwrap();
+        let explanation = checked.query(&ArtifactConsumptionQuery::default()).unwrap();
+        assert_eq!(explanation.provider_access_observed, Some(true));
+        assert!(!explanation
+            .limitations
+            .contains(&ArtifactConsumptionLimitation::NoHelperExecutionEvidence));
+
+        let mut invalid_retention = document.clone();
+        let ArtifactConsumptionContract::ObservedPath(contract) = &mut invalid_retention.contract
+        else {
+            panic!("observed path contract fixture");
+        };
+        contract.retention = ArtifactRetentionRequirement::Forbidden;
+        let ArtifactConsumptionObservation::ObservedPath(observation) =
+            &mut invalid_retention.observation
+        else {
+            panic!("observed path fixture");
+        };
+        observation.provider_retained_by_consumer = false;
+        assert!(matches!(
+            CheckedArtifactConsumptionEvidence::check(invalid_retention),
+            Err(ArtifactConsumptionEvidenceError::ProviderRetentionMismatch)
+        ));
+
+        let ArtifactConsumptionObservation::ObservedPath(observation) = &mut document.observation
+        else {
+            panic!("observed path fixture");
+        };
+        observation.provider_access_observed = false;
+        assert!(matches!(
+            CheckedArtifactConsumptionEvidence::check(document),
+            Err(ArtifactConsumptionEvidenceError::ObservationMismatch)
         ));
     }
 }
