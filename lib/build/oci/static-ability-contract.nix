@@ -85,7 +85,7 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils jq] ++ map (entry: entry.manifest) packages ++ contracts;
+    buildDeps = [coreutils jq];
     exportReferencesGraph.staticAbilityRuntime = checkedRuntimeRoots;
 
     outputChecks.out = {};

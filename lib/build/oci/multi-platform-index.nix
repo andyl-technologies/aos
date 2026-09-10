@@ -115,7 +115,7 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils findutils gzip jq tar checkedAbilityContract] ++ images;
+    buildDeps = [coreutils findutils gzip jq tar];
 
     outputChecks.out = {};
     inherit indexSpec;

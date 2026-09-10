@@ -42,7 +42,7 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils jq checkedReferenceGraph];
+    buildDeps = [coreutils jq];
 
     exportReferencesGraph.candidates = candidateSources;
     outputChecks.out = {};

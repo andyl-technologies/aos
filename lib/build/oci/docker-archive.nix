@@ -33,7 +33,7 @@ in
     inherit pname dockerSpec;
     version = "1";
     src = null;
-    buildDeps = [coreutils findutils gzip jq tar image];
+    buildDeps = [coreutils findutils gzip jq tar];
     outputChecks.out = {};
     unsafeDiscardReferences.out = true;
     dontStrip = true;

@@ -170,7 +170,7 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils findutils gzip jq tar] ++ storeLayers;
+    buildDeps = [coreutils findutils gzip jq tar];
 
     outputChecks.out = {};
     inherit metadataSpec;
