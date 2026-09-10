@@ -5610,6 +5610,65 @@ a pending catalog typestate, production runtime use, installed-systemd
 behavior, enforcing MAC, ownership initialization, or Apply readiness.
 Storage Apply remains unadvertised and no Storage or P0 checkbox closes.
 
+### Authenticated pending Storage workspace catalog composition (source qualification)
+
+Commit `f2099c639f269efdfadd7041c07b9e39dcbe693f` composes the preceding
+authenticated workspace projection into a closed structural catalog plan. The
+plan binds the transaction-journal sequence and snapshot digest, projection
+digest, physical-catalog head, and every managed workspace's handle, dataset
+GUID, creation operation, and permanently reserved identity range. Each row
+selects exactly one of four policies: absent, permitted retained active,
+converging active, or converging retired. Its ordered active prefixes retain
+every authenticated satisfied Ensure attempt by ID, ordinal, record digest,
+publication, and pin proof; retirement additionally requires the exact
+satisfied RemoveAndDestroy attempt and committed retirement. Duplicate or
+unordered handles, operation IDs, dataset GUIDs, attempts, or overlapping
+identity ranges fail closed.
+
+The new pending catalog typestate requires caller-established runtime custody,
+then uses protected journal opening without initializing a semantic head or
+accessing the ambient workspace-pin root. It rejects foreign namespaces,
+malformed or orphan rows, changed identity pools, inconsistent generations,
+and headless committed history. Its snapshot digest frames the journal
+sequence, identity pool, optional head, and every namespace/key/value tuple.
+Validation requires every durable row to belong to the complete planned handle
+set and any present row to match an exact permitted historical prefix; absent
+planned rows remain pending. The resulting validated typestate exposes its
+snapshot, recovery report, retained sequence, initialization state, and plan,
+but no allocation, physical observation, convergence, mutation, or inventory
+operation. Opening may truncate and synchronize a bounded uncommitted journal
+tail; that recovery does not grant semantic catalog authority or establish
+ambient path custody.
+
+Qualification used immutable source
+`/nix/store/s2b32s5585awhg8wl5zn4dl7bg3f7f22-aos-storage-b2a-structural-final-20260910`
+in the pinned realized development shell. The source manifest's five file
+digests match this commit; the manifest has SHA-256
+`06a43d06c9e7bfc042a9b11c5ec5713f1feebbcaad7417d072ae7b1f8961d45e`
+and the preserved exact patch has SHA-256
+`7f1eb36cf586b9d756a90255da22441cc588b46fdf8d10f98bf3b2d91ed99dc6`.
+Rust formatting passed. The full `aos-sandbox` library run passed all 369
+tests. The full Storage library run executed 201 tests: 198 passed, none
+failed, and three installed-systemd fixtures were ignored. Focused runs also
+passed the one complete-journal-ordering test, all 10 preceding projection
+tests, all eight pending-catalog tests, and the three exact broker composition,
+historical-prefix, and retirement tests.
+
+This qualifies source-level structural composition only. No production runtime
+opens or retains the pending typestate, invokes the closed plan composer, or
+consumes the validated plan at a physical-evidence activation boundary; the
+current runtime still opens the active catalog directly and uses the legacy
+ready-only convergence path. For this new path, composition with retained
+transaction-journal, workspace-journal, host mount-namespace, and pin-root
+custody; fresh ZFS and root-pin observation; a freshness recheck followed by
+controlled activation; and an installed-service or VM result remain
+unimplemented or unqualified. The production method set still omits Prepare
+and Apply. New-dataset ownership initialization, the narrow capability and
+enforcing-MAC boundary, controller and Host orchestration, and an end-to-end
+production Prepare/Apply lifecycle also remain open. Storage Apply stays
+unadvertised, and no `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, or `SBX-P0-10`
+checkbox is closed.
+
 ### Verified Storage resolution and execution metadata (in progress)
 
 Commit `ac8196c5fa0aa107374131b9803bc14a9f5de565` adds the protected,
