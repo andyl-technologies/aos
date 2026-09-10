@@ -3,8 +3,8 @@
 use std::sync::{Arc, Barrier};
 
 use aos_ability_model::{
-    AbilityValue, AccessMode, IncarnationId, LocalKey, MethodReference, ResourceAccess, ResourceId,
-    RevisionId, TeardownBindingAuthorization,
+    AbilityValue, AccessMode, AggregateId, IncarnationId, LocalKey, MethodReference,
+    ResourceAccess, ResourceId, RevisionId, TeardownBindingAuthorization,
 };
 use aos_ability_runtime::adapter::ResourceRevisionObservation;
 use aos_ability_validate::CheckedEffectPlan;
@@ -13,6 +13,9 @@ use tempfile::TempDir;
 
 use super::storage::publish_authority_file;
 use super::*;
+use crate::config_eval::native_resource_map::{
+    NativeOutputLocator, NativeResourceMap, NativeResourceMapping, NativeResourceQualification,
+};
 
 #[test]
 fn system_authority_paths_are_scoped_by_plan_and_transaction() {
@@ -553,6 +556,64 @@ fn expired_current_observations_fail_closed() {
 }
 
 #[test]
+fn native_no_op_requires_fresh_exact_grants_assignments_and_resource_revision() {
+    let fixture = AuthorityFixture::new();
+    let document = fixture.publish(
+        1,
+        1_000,
+        CurrentResourceState::Present {
+            revision: fixture.revision,
+        },
+    );
+    let resources = native_resource_map(&fixture);
+    let mut admission = fixture.admission_policy(&document);
+    admission
+        .authorize_native_no_op(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            &resources,
+        )
+        .expect("fresh exact no-op authority");
+
+    let drifted_revision = RevisionId(Sha256Digest::of_bytes("drifted revision"));
+    fixture.publish(
+        2,
+        1_000,
+        CurrentResourceState::Present {
+            revision: drifted_revision,
+        },
+    );
+    let error = admission
+        .authorize_native_no_op(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            &resources,
+        )
+        .expect_err("resource drift must reject a native no-op");
+    assert!(error.to_string().contains("revision differs"), "{error}");
+
+    CurrentAbilityAuthorityPublisher::for_test(
+        fixture.path.clone(),
+        fixture.trust_anchor.clone(),
+        fixture.owner,
+    )
+    .revoke()
+    .expect("revoke current no-op authority");
+    let error = admission
+        .authorize_native_no_op(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            &resources,
+        )
+        .expect_err("revoked grants must reject a native no-op");
+    assert!(
+        error
+            .to_string()
+            .contains("opening protected authority file")
+    );
+}
+
+#[test]
 fn publisher_rejects_cross_policy_binding_shadowing() {
     let fixture = AuthorityFixture::new();
     let binding = fixture.plan.binding_plan().bindings()[0].clone();
@@ -816,4 +877,37 @@ fn competing_publishers_leave_the_highest_sequence_selected() {
 
 fn policy_fence() -> RevisionId {
     RevisionId(Sha256Digest::of_bytes("test policy fence"))
+}
+
+fn native_resource_map(fixture: &AuthorityFixture) -> NativeResourceMap {
+    let operation = &fixture.plan.operations()[0];
+    let binding = fixture
+        .plan
+        .binding_plan()
+        .binding(&operation.binding)
+        .expect("fixture binding");
+    let locator = NativeOutputLocator {
+        aggregate: AggregateId {
+            provider: fixture.resource.provider.clone(),
+            group: LocalKey::new("systemd").expect("valid aggregate group"),
+        },
+        interface: operation.interface.clone(),
+        port: LocalKey::new("unit").expect("valid output port"),
+        field_path: Vec::new(),
+    };
+    NativeResourceMap::new(
+        Sha256Digest::of_bytes("fixture desired state"),
+        vec![NativeResourceMapping {
+            resource: fixture.resource.clone(),
+            revision: fixture.revision,
+            owner_package: Sha256Digest::of_bytes("fixture package"),
+            binding: operation.binding.clone(),
+            implementation: binding.implementation.clone(),
+            qualification: NativeResourceQualification::SystemdService {
+                unit: "fixture.service".to_string(),
+                resource_reference: locator,
+            },
+        }],
+    )
+    .expect("valid fixture native resource map")
 }

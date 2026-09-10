@@ -332,6 +332,12 @@ impl<Request, H> AdmittedOperation<'_, Request, H> {
 impl<'plan> ExecutionTransaction<'plan> {
     /// Performs fresh method authorization, resource acquisition, and journaling.
     ///
+    /// A settled operation whose durable ownership was not released before a
+    /// process loss follows a narrower path: it reacquires matching catalog
+    /// handles solely for [`ExecutionTransaction::release_admitted`]. That path
+    /// does not reauthorize or redispatch the completed effect, recheck its old
+    /// preconditions, or enforce its expired execution deadline.
+    ///
     /// # Errors
     ///
     /// Returns a failure for an unexecutable plan, inadmissible state, authority
@@ -438,123 +444,43 @@ impl<'plan> ExecutionTransaction<'plan> {
             transaction_limit,
         );
 
-        check_deadline_or_record_compensation(
+        check_admission_deadline(
             self,
             operation_key,
             admission.invocation_purpose,
             &timer,
+            admission.release_only,
         )
         .map_err(failure)?;
-        if matches!(
-            admission.invocation_purpose,
-            InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation
-        ) && !adapter.supports_compensation()
-        {
-            return Err(failure(AdmissionError::AdapterMismatch(
+        if !admission.release_only {
+            // Recovery after a crash may reacquire process-scoped catalog
+            // handles solely to release durable ownership. That path must not
+            // reauthorize or redispatch the already settled effect.
+            if matches!(
                 admission.invocation_purpose,
-            )));
-        }
-        if matches!(
-            admission.invocation_purpose,
-            InvocationPurpose::Reconcile | InvocationPurpose::ReconcileCompensation
-        ) {
-            let method = admission
-                .operation
-                .recovery
-                .reconcile
-                .as_ref()
-                .ok_or_else(|| failure(AdmissionError::StateDoesNotPermitAdmission))?;
-            check_invocation(
-                plan,
-                admission.operation,
-                admission.binding,
-                method,
-                admission.invocation_purpose,
-                adapter,
-                policy,
-            )
-            .map_err(failure)?;
-            check_deadline_or_record_compensation(
-                self,
-                operation_key,
-                admission.invocation_purpose,
-                &timer,
-            )
-            .map_err(failure)?;
-        } else if admission.invocation_purpose == InvocationPurpose::Compensate {
-            let method = admission
-                .operation
-                .recovery
-                .compensate
-                .as_ref()
-                .ok_or_else(|| failure(AdmissionError::StateDoesNotPermitAdmission))?;
-            check_invocation(
-                plan,
-                admission.operation,
-                admission.binding,
-                method,
-                InvocationPurpose::Compensate,
-                adapter,
-                policy,
-            )
-            .map_err(failure)?;
-            check_deadline_or_record_compensation(
-                self,
-                operation_key,
-                admission.invocation_purpose,
-                &timer,
-            )
-            .map_err(failure)?;
-            if let Some(reconcile) = &admission.operation.recovery.reconcile {
-                check_invocation(
-                    plan,
-                    admission.operation,
-                    admission.binding,
-                    reconcile,
-                    InvocationPurpose::ReconcileCompensation,
-                    adapter,
-                    policy,
-                )
-                .map_err(failure)?;
-                check_deadline_or_record_compensation(
-                    self,
-                    operation_key,
-                    admission.invocation_purpose,
-                    &timer,
-                )
-                .map_err(failure)?;
-            }
-        } else {
-            if admission.operation.recovery.compensate.is_some() && !adapter.supports_compensation()
+                InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation
+            ) && !adapter.supports_compensation()
             {
                 return Err(failure(AdmissionError::AdapterMismatch(
-                    InvocationPurpose::Compensate,
+                    admission.invocation_purpose,
                 )));
             }
-            check_invocation(
-                plan,
-                admission.operation,
-                admission.binding,
-                &effect_method(admission.operation),
-                InvocationPurpose::Effect,
-                adapter,
-                policy,
-            )
-            .map_err(failure)?;
-            check_deadline_or_record_compensation(
-                self,
-                operation_key,
+            if matches!(
                 admission.invocation_purpose,
-                &timer,
-            )
-            .map_err(failure)?;
-            if let Some(method) = &admission.operation.recovery.reconcile {
+                InvocationPurpose::Reconcile | InvocationPurpose::ReconcileCompensation
+            ) {
+                let method = admission
+                    .operation
+                    .recovery
+                    .reconcile
+                    .as_ref()
+                    .ok_or_else(|| failure(AdmissionError::StateDoesNotPermitAdmission))?;
                 check_invocation(
                     plan,
                     admission.operation,
                     admission.binding,
                     method,
-                    InvocationPurpose::Reconcile,
+                    admission.invocation_purpose,
                     adapter,
                     policy,
                 )
@@ -566,27 +492,13 @@ impl<'plan> ExecutionTransaction<'plan> {
                     &timer,
                 )
                 .map_err(failure)?;
-            }
-            if let Some(method) = &admission.operation.recovery.cancel {
-                check_invocation(
-                    plan,
-                    admission.operation,
-                    admission.binding,
-                    method,
-                    InvocationPurpose::Cancel,
-                    adapter,
-                    policy,
-                )
-                .map_err(failure)?;
-                check_deadline_or_record_compensation(
-                    self,
-                    operation_key,
-                    admission.invocation_purpose,
-                    &timer,
-                )
-                .map_err(failure)?;
-            }
-            if let Some(method) = &admission.operation.recovery.compensate {
+            } else if admission.invocation_purpose == InvocationPurpose::Compensate {
+                let method = admission
+                    .operation
+                    .recovery
+                    .compensate
+                    .as_ref()
+                    .ok_or_else(|| failure(AdmissionError::StateDoesNotPermitAdmission))?;
                 check_invocation(
                     plan,
                     admission.operation,
@@ -623,6 +535,107 @@ impl<'plan> ExecutionTransaction<'plan> {
                     )
                     .map_err(failure)?;
                 }
+            } else {
+                if admission.operation.recovery.compensate.is_some()
+                    && !adapter.supports_compensation()
+                {
+                    return Err(failure(AdmissionError::AdapterMismatch(
+                        InvocationPurpose::Compensate,
+                    )));
+                }
+                check_invocation(
+                    plan,
+                    admission.operation,
+                    admission.binding,
+                    &effect_method(admission.operation),
+                    InvocationPurpose::Effect,
+                    adapter,
+                    policy,
+                )
+                .map_err(failure)?;
+                check_deadline_or_record_compensation(
+                    self,
+                    operation_key,
+                    admission.invocation_purpose,
+                    &timer,
+                )
+                .map_err(failure)?;
+                if let Some(method) = &admission.operation.recovery.reconcile {
+                    check_invocation(
+                        plan,
+                        admission.operation,
+                        admission.binding,
+                        method,
+                        InvocationPurpose::Reconcile,
+                        adapter,
+                        policy,
+                    )
+                    .map_err(failure)?;
+                    check_deadline_or_record_compensation(
+                        self,
+                        operation_key,
+                        admission.invocation_purpose,
+                        &timer,
+                    )
+                    .map_err(failure)?;
+                }
+                if let Some(method) = &admission.operation.recovery.cancel {
+                    check_invocation(
+                        plan,
+                        admission.operation,
+                        admission.binding,
+                        method,
+                        InvocationPurpose::Cancel,
+                        adapter,
+                        policy,
+                    )
+                    .map_err(failure)?;
+                    check_deadline_or_record_compensation(
+                        self,
+                        operation_key,
+                        admission.invocation_purpose,
+                        &timer,
+                    )
+                    .map_err(failure)?;
+                }
+                if let Some(method) = &admission.operation.recovery.compensate {
+                    check_invocation(
+                        plan,
+                        admission.operation,
+                        admission.binding,
+                        method,
+                        InvocationPurpose::Compensate,
+                        adapter,
+                        policy,
+                    )
+                    .map_err(failure)?;
+                    check_deadline_or_record_compensation(
+                        self,
+                        operation_key,
+                        admission.invocation_purpose,
+                        &timer,
+                    )
+                    .map_err(failure)?;
+                    if let Some(reconcile) = &admission.operation.recovery.reconcile {
+                        check_invocation(
+                            plan,
+                            admission.operation,
+                            admission.binding,
+                            reconcile,
+                            InvocationPurpose::ReconcileCompensation,
+                            adapter,
+                            policy,
+                        )
+                        .map_err(failure)?;
+                        check_deadline_or_record_compensation(
+                            self,
+                            operation_key,
+                            admission.invocation_purpose,
+                            &timer,
+                        )
+                        .map_err(failure)?;
+                    }
+                }
             }
         }
 
@@ -641,11 +654,12 @@ impl<'plan> ExecutionTransaction<'plan> {
         for access in accesses {
             let expected_resource_provider =
                 expected_provider_for_resource(expected_provider.as_ref(), &access.resource);
-            if let Err(error) = check_deadline_or_record_compensation(
+            if let Err(error) = check_admission_deadline(
                 self,
                 operation_key,
                 admission.invocation_purpose,
                 &timer,
+                admission.release_only,
             ) {
                 return Err(cleanup_failure(error, resources, catalog, live_reservation));
             }
@@ -655,7 +669,11 @@ impl<'plan> ExecutionTransaction<'plan> {
                     operation: &admission.operation_id,
                     attempt: admission.attempt,
                     expected_provider: expected_resource_provider,
-                    recovery_remaining_millis: timer.remaining_millis(),
+                    recovery_remaining_millis: if admission.release_only {
+                        admission.operation.deadline.attempt_timeout_millis.get()
+                    } else {
+                        timer.remaining_millis()
+                    },
                 },
                 admission.operation,
                 &access,
@@ -689,17 +707,23 @@ impl<'plan> ExecutionTransaction<'plan> {
                 );
                 return Err(cleanup_failure(error, resources, catalog, live_reservation));
             }
-            if let Err(error) = check_deadline_or_record_compensation(
+            if let Err(error) = check_admission_deadline(
                 self,
                 operation_key,
                 admission.invocation_purpose,
                 &timer,
+                admission.release_only,
             ) {
                 return Err(cleanup_failure(error, resources, catalog, live_reservation));
             }
         }
 
-        for precondition in &admission.operation.preconditions {
+        for precondition in admission
+            .operation
+            .preconditions
+            .iter()
+            .filter(|_| !admission.release_only)
+        {
             let evidence = resources
                 .iter()
                 .find(|resource| resource.resource() == &precondition.resource)
@@ -729,29 +753,32 @@ impl<'plan> ExecutionTransaction<'plan> {
                 ));
             }
         }
-        let resource_evidence: Vec<_> = resources
-            .iter()
-            .map(|resource| resource.evidence().clone())
-            .collect();
-        if let Err(source) = policy.authorize_resources(
-            plan,
-            admission.binding,
-            admission.operation,
-            expected_provider.as_ref(),
-            &resource_evidence,
-        ) {
-            return Err(cleanup_failure(
-                AdmissionError::FreshResourceAuthorization(anyhow::Error::new(source)),
-                resources,
-                catalog,
-                live_reservation,
-            ));
+        if !admission.release_only {
+            let resource_evidence: Vec<_> = resources
+                .iter()
+                .map(|resource| resource.evidence().clone())
+                .collect();
+            if let Err(source) = policy.authorize_resources(
+                plan,
+                admission.binding,
+                admission.operation,
+                expected_provider.as_ref(),
+                &resource_evidence,
+            ) {
+                return Err(cleanup_failure(
+                    AdmissionError::FreshResourceAuthorization(anyhow::Error::new(source)),
+                    resources,
+                    catalog,
+                    live_reservation,
+                ));
+            }
         }
-        if let Err(error) = check_deadline_or_record_compensation(
+        if let Err(error) = check_admission_deadline(
             self,
             operation_key,
             admission.invocation_purpose,
             &timer,
+            admission.release_only,
         ) {
             return Err(cleanup_failure(error, resources, catalog, live_reservation));
         }
@@ -785,11 +812,12 @@ impl<'plan> ExecutionTransaction<'plan> {
                 }
             }
         };
-        if let Err(error) = check_deadline_or_record_compensation(
+        if let Err(error) = check_admission_deadline(
             self,
             operation_key,
             admission.invocation_purpose,
             &timer,
+            admission.release_only,
         ) {
             return Err(cleanup_failure(error, resources, catalog, live_reservation));
         }
@@ -804,11 +832,12 @@ impl<'plan> ExecutionTransaction<'plan> {
                 ));
             }
         };
-        if let Err(error) = check_deadline_or_record_compensation(
+        if let Err(error) = check_admission_deadline(
             self,
             operation_key,
             admission.invocation_purpose,
             &timer,
+            admission.release_only,
         ) {
             return Err(cleanup_failure(error, resources, catalog, live_reservation));
         }
@@ -908,6 +937,10 @@ fn check_admission<'plan>(
         .binding_plan()
         .binding(&operation.binding)
         .ok_or(AdmissionError::BindingMissing)?;
+    let release_only = matches!(
+        action,
+        RecoveryAction::ReleaseResources | RecoveryAction::ReleaseCompensationResources
+    );
     let (attempt, already_durable, durable_request, invocation_purpose) = match action {
         RecoveryAction::Admit => (NonZeroU32::MIN, false, None, InvocationPurpose::Effect),
         RecoveryAction::Retry { attempt } => (attempt, false, None, InvocationPurpose::Effect),
@@ -956,6 +989,30 @@ fn check_admission<'plan>(
             ),
             InvocationPurpose::ReconcileCompensation,
         ),
+        RecoveryAction::ReleaseResources => (
+            history
+                .current_attempt()
+                .ok_or(AdmissionError::StateDoesNotPermitAdmission)?,
+            true,
+            Some(
+                history
+                    .durable_request()
+                    .cloned()
+                    .ok_or(AdmissionError::RecoveryRequestMissing)?,
+            ),
+            InvocationPurpose::Effect,
+        ),
+        RecoveryAction::ReleaseCompensationResources => (
+            NonZeroU32::MIN,
+            true,
+            Some(
+                history
+                    .compensation_request()
+                    .cloned()
+                    .ok_or(AdmissionError::RecoveryRequestMissing)?,
+            ),
+            InvocationPurpose::Compensate,
+        ),
         _ => return Err(AdmissionError::StateDoesNotPermitAdmission),
     };
 
@@ -968,6 +1025,7 @@ fn check_admission<'plan>(
         already_durable,
         durable_request,
         invocation_purpose,
+        release_only,
     })
 }
 
@@ -980,6 +1038,7 @@ struct CheckedAdmission<'plan> {
     already_durable: bool,
     durable_request: Option<aos_ability_model::AbilityValue>,
     invocation_purpose: InvocationPurpose,
+    release_only: bool,
 }
 
 pub(crate) fn check_invocation<Adapter, Policy>(
@@ -1117,6 +1176,23 @@ where
         .record_compensation_intervention(operation, reason, timer.operation_elapsed_millis())
         .map_err(AdmissionError::Transaction)?;
     Err(deadline_error)
+}
+
+fn check_admission_deadline<Clock>(
+    transaction: &mut ExecutionTransaction<'_>,
+    operation: &ScopedOperationKey,
+    purpose: InvocationPurpose,
+    timer: &AdmissionTimer<'_, Clock>,
+    release_only: bool,
+) -> Result<(), AdmissionError>
+where
+    Clock: MonotonicClock,
+{
+    if release_only {
+        Ok(())
+    } else {
+        check_deadline_or_record_compensation(transaction, operation, purpose, timer)
+    }
 }
 
 fn cleanup_failure<H, Catalog>(

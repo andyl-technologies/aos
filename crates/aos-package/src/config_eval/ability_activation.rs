@@ -205,6 +205,7 @@ pub struct SpecializedAbilityActivation {
     plan: CheckedEffectPlan,
     bundle: ReloadablePlanBundle,
     desired_state: DesiredStateDocument,
+    current_desired_state: Option<DesiredStateDocument>,
     desired_native_resources: NativeResourceMap,
     current_native_resources: Option<NativeResourceMap>,
     policy_authority: Vec<PinnedAbilitySidecar>,
@@ -227,6 +228,12 @@ impl SpecializedAbilityActivation {
     #[must_use]
     pub const fn desired_state(&self) -> &DesiredStateDocument {
         &self.desired_state
+    }
+
+    /// Returns the retained generation's fixed-point desired state, when present.
+    #[must_use]
+    pub const fn current_desired_state(&self) -> Option<&DesiredStateDocument> {
+        self.current_desired_state.as_ref()
     }
 
     /// Returns the independently authorized desired native-resource mapping.
@@ -266,6 +273,7 @@ impl SpecializedAbilityActivation {
         CheckedEffectPlan,
         ReloadablePlanBundle,
         DesiredStateDocument,
+        Option<DesiredStateDocument>,
         NativeResourceMap,
         Option<NativeResourceMap>,
         Vec<PinnedAbilitySidecar>,
@@ -274,6 +282,7 @@ impl SpecializedAbilityActivation {
             self.plan,
             self.bundle,
             self.desired_state,
+            self.current_desired_state,
             self.desired_native_resources,
             self.current_native_resources,
             self.policy_authority,
@@ -451,6 +460,9 @@ pub fn specialize_activation(
     )
     .context("constructing reloadable native ability plan")?;
     let desired_state = desired_planning.outcome().desired_state.clone();
+    let current_desired_state = current_planning
+        .as_ref()
+        .map(|planning| planning.outcome().desired_state.clone());
     let plan = transition.into_checked_effect();
     // Only desired policy remains a live execution grant. Retained current
     // mappings are historical facts authenticated by generation evidence;
@@ -460,6 +472,7 @@ pub fn specialize_activation(
         plan,
         bundle,
         desired_state,
+        current_desired_state,
         desired_native_resources,
         current_native_resources,
         policy_authority,

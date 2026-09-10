@@ -401,6 +401,58 @@ where
         });
         Ok(document)
     }
+
+    /// Revalidates all authority needed to retain an unchanged native mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the publication is stale or revoked, its checked
+    /// bindings or live assignments changed, or any mapped resource is absent
+    /// or has a different observed revision.
+    pub(crate) fn authorize_native_no_op(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: &super::native_resource_map::NativeResourceMap,
+    ) -> Result<(), CurrentAuthorityError> {
+        let current = self.refresh()?;
+        if plan.id() != self.commitment.plan {
+            return Err(invalid("native no-op uses another checked plan"));
+        }
+        if current.bindings != plan.binding_plan().bindings() {
+            return Err(invalid(
+                "current policy bindings differ from the checked no-op plan",
+            ));
+        }
+        if current.provider_assignments != assignments {
+            return Err(invalid(
+                "current provider assignments differ from the no-op observations",
+            ));
+        }
+        if current.resource_observations.len() != resources.entries.len() {
+            return Err(invalid(
+                "current resource observations differ from the retained native map",
+            ));
+        }
+        for mapping in &resources.entries {
+            let observation = current
+                .resource_observations
+                .binary_search_by(|observation| observation.resource.cmp(&mapping.resource))
+                .ok()
+                .map(|index| &current.resource_observations[index])
+                .ok_or_else(|| invalid("current authority lacks a retained native resource"))?;
+            if observation.state
+                != (CurrentResourceState::Present {
+                    revision: mapping.revision,
+                })
+            {
+                return Err(invalid(
+                    "current resource revision differs from the retained native map",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<Source, Clock> TrustedAdmissionPolicy for NativeCurrentAdmissionPolicy<Source, Clock>

@@ -58,6 +58,24 @@ pub enum Error {
         /// Carries the object identity observed immediately before dispatch.
         actual: String,
     },
+
+    /// A loaded unit carries no single AOS revision marker.
+    #[error("systemd unit {unit} has no unambiguous loaded AOS revision")]
+    UnitRevisionUnknown {
+        /// Names the exact canonical unit requested by the caller.
+        unit: String,
+    },
+
+    /// A loaded unit's parsed revision differs from the admitted revision.
+    #[error("systemd unit {unit} changed loaded revision before the pinned operation")]
+    UnitRevisionChanged {
+        /// Names the exact canonical unit requested by the caller.
+        unit: String,
+        /// Carries the revision established during admission.
+        expected: String,
+        /// Carries the revision read from the manager's loaded unit object.
+        actual: String,
+    },
 }
 
 impl Error {
@@ -74,7 +92,9 @@ impl Error {
             | Self::JobCompletionOverflow
             | Self::ManagerIncarnationChanged
             | Self::UnitAlias { .. }
-            | Self::UnitIdentityChanged { .. } => false,
+            | Self::UnitIdentityChanged { .. }
+            | Self::UnitRevisionUnknown { .. }
+            | Self::UnitRevisionChanged { .. } => false,
         }
     }
 }

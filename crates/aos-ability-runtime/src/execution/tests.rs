@@ -54,6 +54,7 @@ fn executable_no_op_transaction_creates_and_replays_a_zero_budget_journal()
         JournalLimits::default(),
     )?;
     assert_eq!(snapshot.records().len(), 1);
+    assert_eq!(snapshot.terminal(), Some(TerminalResult::Succeeded));
     assert!(matches!(
         snapshot.records()[0].body().body(),
         ExecutionEventKind::TransactionPlanned {
@@ -122,6 +123,7 @@ fn read_only_execution_snapshot_replays_exact_plan_membership_without_mutation()
     assert_eq!(snapshot.records().len(), 1);
     assert_eq!(snapshot.head_digest(), snapshot.records()[0].digest());
     assert_eq!(snapshot.incomplete_tail_bytes(), 0);
+    assert_eq!(snapshot.terminal(), None);
     assert_eq!(
         std::fs::metadata(fixture.journal_path())?.len(),
         length_before
@@ -184,6 +186,67 @@ fn public_controller_completes_and_releases_a_checked_operation()
         transaction.next_action(fixture.operation())?,
         RecoveryAction::None
     );
+    assert_eq!(catalog.release_calls, 1);
+    Ok(())
+}
+
+#[test]
+fn reopened_settled_operation_reacquires_handles_only_for_release()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::new()?;
+    let mut store = TestStore;
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let mut adapter = TestAdapter::valid();
+    let clock = TestClock;
+    let mut transaction = fixture.open(&mut store)?;
+    let admitted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &clock,
+        )
+        .map_err(admission_error)?;
+    assert_eq!(
+        transaction.drive_admitted(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &clock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Completed
+    );
+    drop(admitted);
+    drop(transaction);
+
+    let mut reopened = fixture.open(&mut store)?;
+    assert_eq!(
+        reopened.next_action(fixture.operation())?,
+        RecoveryAction::ReleaseResources
+    );
+    let mut release_policy = RecordingPolicy::default();
+    let release = reopened
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut release_policy,
+            &clock,
+        )
+        .map_err(admission_error)?;
+
+    assert!(release_policy.purposes.is_empty());
+    reopened
+        .release_admitted::<TestAdapter, _, _>(release, &mut catalog, &clock)
+        .map_err(release_error)?;
+    assert_eq!(
+        reopened.next_action(fixture.operation())?,
+        RecoveryAction::None
+    );
+    assert_eq!(catalog.acquire_calls, 2);
     assert_eq!(catalog.release_calls, 1);
     Ok(())
 }
@@ -483,6 +546,13 @@ fn settled_failure_propagates_to_a_required_dependent_and_survives_reopen()
     );
     drop(transaction);
 
+    let snapshot = CheckedExecutionJournalSnapshot::read(
+        &fixture.plan,
+        fixture.journal_path(),
+        JournalLimits::default(),
+    )?;
+    assert_eq!(snapshot.terminal(), Some(TerminalResult::SettledFailure));
+
     let mut reopened = fixture.open(&mut store)?;
     assert_eq!(
         reopened.summary().terminal(),
@@ -762,6 +832,75 @@ fn planned_provider_admission_rejects_missing_live_incarnation_before_effect()
 }
 
 #[test]
+fn reopened_release_rejects_a_reassigned_provider_incarnation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_planned_provider_chain())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let first = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    let assignment_b = provider_assignment(&fixture.plan, "b", "planned-b-live")?;
+    complete_with_output(
+        &mut transaction,
+        first[0].operation(),
+        assignment_value(&assignment_b)?,
+    )?;
+    let second = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    let assignment_c = provider_assignment(&fixture.plan, "c", "planned-c-live")?;
+    complete_with_expected_provider(
+        &mut transaction,
+        second[0].operation(),
+        &assignment_b,
+        assignment_value(&assignment_c)?,
+    )?;
+    let third = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    let operation = third[0].operation().clone();
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let mut adapter = TestAdapter::with_output(assignment_value(&assignment_c)?);
+    let admitted = transaction
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+    transaction.drive_admitted(
+        &admitted,
+        &mut adapter,
+        &mut policy,
+        &TestClock,
+        &CancellationToken::default(),
+    )?;
+    drop(admitted);
+    drop(transaction);
+
+    let mut reopened = fixture.open(&mut store)?;
+    let mut reassigned = TestCatalog {
+        omit_expected_incarnation: true,
+        ..TestCatalog::default()
+    };
+    let mut release_policy = RecordingPolicy::default();
+    let failure = reopened
+        .admit(
+            &operation,
+            &adapter,
+            &mut reassigned,
+            &mut release_policy,
+            &TestClock,
+        )
+        .expect_err("reopened cleanup must not acquire a reassigned resource");
+
+    assert!(matches!(
+        failure.error(),
+        AdmissionError::CatalogEvidenceMismatch(_)
+    ));
+    assert!(release_policy.purposes.is_empty());
+    assert_eq!(reassigned.acquire_calls, 1);
+    assert_eq!(reassigned.release_calls, 1);
+    assert_eq!(
+        reopened.next_action(&operation)?,
+        RecoveryAction::ReleaseResources
+    );
+    Ok(())
+}
+
+#[test]
 fn reopened_indeterminate_effect_authorizes_only_reconciliation_and_preserves_budget()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_recovery_plan())?;
@@ -798,6 +937,13 @@ fn reopened_indeterminate_effect_authorizes_only_reconciliation_and_preserves_bu
     );
     drop(admitted);
     drop(transaction);
+
+    let snapshot = CheckedExecutionJournalSnapshot::read(
+        &fixture.plan,
+        fixture.journal_path(),
+        JournalLimits::default(),
+    )?;
+    assert_eq!(snapshot.terminal(), None);
 
     let mut recovered = fixture.open(&mut store)?;
     let mut recovery_policy = RecordingPolicy::default();

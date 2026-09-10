@@ -22,8 +22,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, ExecutionStage, InterfaceKey, InterfaceName, LocalKey,
-    MethodReference, Operation, OperationFamily, ProviderAssignment,
+    AbilityActivationMode, AbilityValue, ArtifactReference, ExecutionStage, InterfaceKey,
+    InterfaceName, LocalKey, MethodReference, Operation, OperationFamily, ProviderAssignment,
     ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId, ValueSchema,
 };
 use aos_ability_runtime::adapter::{
@@ -58,6 +58,8 @@ const MAX_ASSOCIATION_BYTES: u64 = 16 * 1024;
 pub struct NginxResourceSpec {
     /// Names the logical resource declared by the checked provider.
     pub resource: ResourceId,
+    /// Names the independently authorized validation working directory.
+    pub validation_prefix: PathBuf,
     /// Carries the exact configuration bytes selected by native orchestration.
     pub candidate: Vec<u8>,
     /// Identifies the currently selected generation, when one exists.
@@ -98,8 +100,9 @@ pub struct NginxResourceCatalog {
 impl NginxResourceCatalog {
     /// Constructs a catalog under an existing canonical private-state root.
     ///
-    /// The root must contain canonical `candidates`, `validations`,
-    /// `associations`, and `sandbox` directories created by native orchestration.
+    /// The state root must contain canonical `candidates`, `validations`, and
+    /// `associations` directories created by native orchestration. Each resource
+    /// separately names its operator-authorized validation working directory.
     ///
     /// # Errors
     ///
@@ -127,9 +130,9 @@ impl NginxResourceCatalog {
         let candidate_root = existing_private_directory(&private_state_root, "candidates")?;
         let validation_root = existing_private_directory(&private_state_root, "validations")?;
         let association_root = existing_private_directory(&private_state_root, "associations")?;
-        let validation_prefix = existing_private_directory(&private_state_root, "sandbox")?;
 
         let mut association_paths = BTreeSet::new();
+        let mut validation_prefixes = BTreeSet::new();
         let mut indexed = BTreeMap::new();
         for spec in resources {
             if spec.resource.provider != assignment.provider {
@@ -142,6 +145,16 @@ impl NginxResourceCatalog {
             }
             if spec.desired_generation.is_some() && spec.candidate.is_empty() {
                 return Err(invalid_data("nginx candidate is empty"));
+            }
+            let validation_prefix = RootedDirectory::open(
+                &spec.validation_prefix,
+                trusted_owner,
+                "nginx validation prefix",
+            )?;
+            if !validation_prefixes.insert(validation_prefix.display().to_path_buf()) {
+                return Err(invalid_data(
+                    "distinct nginx resources share a validation prefix",
+                ));
             }
             let candidate_digest = Sha256Digest::of_bytes(&spec.candidate);
             let candidate_path = candidate_root.child(candidate_digest.to_string())?;
@@ -161,12 +174,12 @@ impl NginxResourceCatalog {
                     "distinct nginx resources share an association record",
                 ));
             }
-            let object = association_path
+            let object = validation_prefix
                 .display()
                 .to_str()
-                .ok_or_else(|| invalid_data("nginx association path is not UTF-8"))?;
+                .ok_or_else(|| invalid_data("nginx validation prefix is not UTF-8"))?;
             let qualified =
-                NativeQualifiedResource::nginx_generation(spec.resource.clone(), object)
+                NativeQualifiedResource::nginx_validation_prefix(spec.resource.clone(), object)
                     .map_err(store_error)?;
             let logical = spec.resource.clone();
             if indexed
@@ -207,6 +220,17 @@ impl NginxResourceCatalog {
     #[must_use]
     pub fn resource_spec(&self, resource: &ResourceId) -> Option<&NginxResourceSpec> {
         self.resources.get(resource).map(|entry| &entry.spec)
+    }
+
+    pub(crate) fn observe_no_op(
+        &self,
+        resource: &ResourceId,
+    ) -> Result<(NativeQualifiedResource, ResourceRevisionObservation), io::Error> {
+        let resource = self
+            .resources
+            .get(resource)
+            .ok_or_else(|| invalid_data("nginx no-op resource is not cataloged"))?;
+        Ok((resource.qualified.clone(), observe_association(resource)?))
     }
 }
 
@@ -896,6 +920,15 @@ fn authenticate(
     package: &VerifiedAbilityPackage,
     assignment: &ProviderAssignment,
 ) -> Result<PathBuf, io::Error> {
+    preflight_native_nginx(package, assignment, &assignment.implementation.artifact)?;
+    authenticate_executable(&assignment.implementation.artifact.store_path)
+}
+
+pub(crate) fn preflight_native_nginx(
+    package: &VerifiedAbilityPackage,
+    assignment: &ProviderAssignment,
+    executable: &ArtifactReference,
+) -> Result<(), io::Error> {
     if package.activation_mode() != AbilityActivationMode::StructuredEffects
         || assignment.interface != expected_interface()?
     {
@@ -929,7 +962,12 @@ fn authenticate(
             "authenticated nginx provider linkage differs from the assignment",
         ));
     }
-    authenticate_executable(&assignment.implementation.artifact.store_path)
+    if executable != &assignment.implementation.artifact {
+        return Err(invalid_data(
+            "nginx resource map selects an executable outside the assigned terminal artifact",
+        ));
+    }
+    Ok(())
 }
 
 fn authenticate_executable(store_path: &str) -> Result<PathBuf, io::Error> {
@@ -1096,12 +1134,12 @@ mod tests {
         let association_path = association_root
             .child(identity.clone())
             .expect("association resolves");
-        let qualified = NativeQualifiedResource::nginx_generation(
+        let qualified = NativeQualifiedResource::nginx_validation_prefix(
             resource_id.clone(),
-            association_path
+            validation_prefix
                 .display()
                 .to_str()
-                .expect("association path is UTF-8"),
+                .expect("validation prefix is UTF-8"),
         )
         .expect("physical resource qualifies");
         NginxFixture {
@@ -1109,6 +1147,7 @@ mod tests {
             resource: QualifiedNginxResource {
                 spec: NginxResourceSpec {
                     resource: resource_id,
+                    validation_prefix: validation_prefix.display().to_path_buf(),
                     candidate,
                     current_generation: None,
                     current_candidate_digest: None,

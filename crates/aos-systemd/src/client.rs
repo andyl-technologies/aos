@@ -1018,6 +1018,49 @@ impl PinnedSystemdManager {
         &self.incarnation
     }
 
+    /// Loads one exact unit definition without starting the unit.
+    ///
+    /// This is a preparation operation for a newly published unit after a
+    /// daemon reload. The returned identity is the loaded object path, and the
+    /// unit's canonical `Id` must equal `name` so aliases cannot acquire
+    /// lifecycle authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager incarnation changed, systemd cannot
+    /// load the unit, or the requested name resolves as an alias.
+    pub async fn load_unit(&self, name: &str) -> Result<String> {
+        self.ensure_current().await?;
+        let path = self.manager.load_unit(name).await?;
+        let identity = path.as_str().to_string();
+        let unit = UnitProxy::builder(&self.conn)
+            .destination(self.incarnation.owner.clone())?
+            .path(path)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let canonical_name = unit.id().await?;
+        if canonical_name != name {
+            return Err(Error::UnitAlias {
+                requested: name.to_string(),
+                canonical: canonical_name,
+            });
+        }
+        Ok(identity)
+    }
+
+    /// Reloads manager configuration through this exact manager incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager changes before or during the reload,
+    /// or when systemd rejects the request.
+    pub async fn daemon_reload(&self) -> Result<()> {
+        self.ensure_current().await?;
+        self.manager.reload().await?;
+        self.ensure_current().await
+    }
+
     /// Starts a unit through the pinned owner and awaits its exact job result.
     ///
     /// # Errors
@@ -1084,6 +1127,29 @@ impl PinnedSystemdManager {
         self.await_submission(submission, path).await
     }
 
+    /// Starts one canonical unit after rechecking its object and loaded revision.
+    ///
+    /// `expected_revision` is the semantic revision encoded by the canonical
+    /// AOS `file:` receipt URI in the unit's parsed `Documentation=` property.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unit identity or loaded revision changed, the
+    /// revision marker is missing or ambiguous, or the job does not complete.
+    pub async fn start_unit_exact_revision(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self
+            .exact_unit_revision(name, expected_identity, expected_revision)
+            .await?;
+        let submission = self.begin_submission()?;
+        let path = unit.start("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
     /// Stops one canonical unit after rechecking its admission-qualified identity.
     ///
     /// # Errors
@@ -1091,6 +1157,25 @@ impl PinnedSystemdManager {
     /// Returns the same errors as [`Self::start_unit_exact`].
     pub async fn stop_unit_exact(&self, name: &str, expected_identity: &str) -> Result<JobOutcome> {
         let unit = self.exact_unit(name, expected_identity).await?;
+        let submission = self.begin_submission()?;
+        let path = unit.stop("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Stops one canonical unit after rechecking its object and loaded revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact_revision`].
+    pub async fn stop_unit_exact_revision(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self
+            .exact_unit_revision(name, expected_identity, expected_revision)
+            .await?;
         let submission = self.begin_submission()?;
         let path = unit.stop("replace").await?;
         self.await_submission(submission, path).await
@@ -1112,6 +1197,25 @@ impl PinnedSystemdManager {
         self.await_submission(submission, path).await
     }
 
+    /// Restarts one canonical unit after rechecking its object and loaded revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact_revision`].
+    pub async fn restart_unit_exact_revision(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self
+            .exact_unit_revision(name, expected_identity, expected_revision)
+            .await?;
+        let submission = self.begin_submission()?;
+        let path = unit.restart("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
     /// Reloads one canonical unit after rechecking its admission-qualified identity.
     ///
     /// # Errors
@@ -1123,6 +1227,25 @@ impl PinnedSystemdManager {
         expected_identity: &str,
     ) -> Result<JobOutcome> {
         let unit = self.exact_unit(name, expected_identity).await?;
+        let submission = self.begin_submission()?;
+        let path = unit.reload("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Reloads one canonical unit after rechecking its object and loaded revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact_revision`].
+    pub async fn reload_unit_exact_revision(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self
+            .exact_unit_revision(name, expected_identity, expected_revision)
+            .await?;
         let submission = self.begin_submission()?;
         let path = unit.reload("replace").await?;
         self.await_submission(submission, path).await
@@ -1184,6 +1307,24 @@ impl PinnedSystemdManager {
         Ok(UnitActiveState::from_systemd(&unit.active_state().await?))
     }
 
+    /// Returns a unit's active state after checking its object and loaded revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact_revision`], plus
+    /// failures while reading the unit's active state.
+    pub async fn active_state_exact_revision(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<UnitActiveState> {
+        let unit = self
+            .exact_unit_revision(name, expected_identity, expected_revision)
+            .await?;
+        Ok(UnitActiveState::from_systemd(&unit.active_state().await?))
+    }
+
     /// Resolves a configured unit name to systemd's canonical object identity.
     ///
     /// The resolved object's canonical `Id` must equal `name`, so aliases are
@@ -1201,6 +1342,27 @@ impl PinnedSystemdManager {
                 canonical: canonical_name,
             });
         }
+        Ok(identity)
+    }
+
+    /// Resolves a canonical unit and verifies the revision parsed by systemd.
+    ///
+    /// This reads the uncached `Documentation` property from the loaded unit
+    /// object. Exactly one entry must equal the canonical AOS `file:` receipt
+    /// URI for this unit and revision; missing, duplicate, or conflicting AOS
+    /// receipt markers fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager changed, the name is an alias, the
+    /// unit is not loaded, or its loaded AOS revision is absent or differs.
+    pub async fn unit_identity_at_revision(
+        &self,
+        name: &str,
+        expected_revision: &str,
+    ) -> Result<String> {
+        let (identity, unit) = self.resolve_unit(name).await?;
+        require_unit_revision(name, &unit.documentation().await?, expected_revision)?;
         Ok(identity)
     }
 
@@ -1235,17 +1397,41 @@ impl PinnedSystemdManager {
         Ok(unit)
     }
 
+    async fn exact_unit_revision<'a>(
+        &'a self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<UnitProxy<'a>> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        require_unit_revision(name, &unit.documentation().await?, expected_revision)?;
+        Ok(unit)
+    }
+
     async fn resolve_unit_identity(&self, name: &str) -> Result<(String, String)> {
+        let (identity, unit) = self.resolve_unit(name).await?;
+        let canonical_name = unit.id().await?;
+        Ok((identity, canonical_name))
+    }
+
+    async fn resolve_unit<'a>(&'a self, name: &str) -> Result<(String, UnitProxy<'a>)> {
         self.ensure_current().await?;
         let path = self.manager.get_unit(name).await?;
+        let identity = path.as_str().to_string();
         let unit = UnitProxy::builder(&self.conn)
             .destination(self.incarnation.owner.clone())?
-            .path(path.clone())?
+            .path(path)?
             .cache_properties(CacheProperties::No)
             .build()
             .await?;
         let canonical_name = unit.id().await?;
-        Ok((path.as_str().to_string(), canonical_name))
+        if canonical_name != name {
+            return Err(Error::UnitAlias {
+                requested: name.to_string(),
+                canonical: canonical_name,
+            });
+        }
+        Ok((identity, unit))
     }
 
     async fn ensure_current(&self) -> Result<()> {
@@ -1288,6 +1474,72 @@ impl PinnedSystemdManager {
             result,
         })
     }
+}
+
+const UNIT_REVISION_RECEIPT_PREFIX: &str = "file:/etc/aos/ability-revisions/";
+
+fn require_unit_revision(
+    unit: &str,
+    documentation: &[String],
+    expected_revision: &str,
+) -> Result<()> {
+    let mut revisions = documentation
+        .iter()
+        .filter(|entry| entry.starts_with(UNIT_REVISION_RECEIPT_PREFIX));
+    let Some(actual) = revisions.next() else {
+        return Err(Error::UnitRevisionUnknown {
+            unit: unit.to_string(),
+        });
+    };
+    if revisions.next().is_some() {
+        return Err(Error::UnitRevisionUnknown {
+            unit: unit.to_string(),
+        });
+    }
+    let expected = unit_revision_receipt_uri(unit, expected_revision).ok_or_else(|| {
+        Error::UnitRevisionUnknown {
+            unit: unit.to_string(),
+        }
+    })?;
+    if actual != &expected {
+        return Err(Error::UnitRevisionChanged {
+            unit: unit.to_string(),
+            expected,
+            actual: (*actual).clone(),
+        });
+    }
+    Ok(())
+}
+
+fn unit_revision_receipt_uri(unit: &str, revision: &str) -> Option<String> {
+    let digest = revision.strip_prefix("sha256:")?;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return None;
+    }
+    Some(format!(
+        "{UNIT_REVISION_RECEIPT_PREFIX}{}/sha256/{digest}",
+        encode_uri_path_segment(unit)
+    ))
+}
+
+fn encode_uri_path_segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
 }
 
 impl SystemdManagerConnection {
@@ -1411,6 +1663,53 @@ async fn systemctl_status(unit: &str) -> String {
 #[cfg(test)]
 mod pinned_tests {
     use super::*;
+
+    #[test]
+    fn loaded_unit_revision_requires_one_exact_marker() {
+        let revision = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let marker = unit_revision_receipt_uri("example.service", revision).unwrap();
+
+        require_unit_revision("example.service", &[marker.clone()], revision).unwrap();
+        assert!(matches!(
+            require_unit_revision("example.service", &[], revision),
+            Err(Error::UnitRevisionUnknown { .. })
+        ));
+        assert!(matches!(
+            require_unit_revision(
+                "example.service",
+                &[marker.clone(), marker.clone(),],
+                revision,
+            ),
+            Err(Error::UnitRevisionUnknown { .. })
+        ));
+        assert!(matches!(
+            require_unit_revision(
+                "example.service",
+                &[
+                    marker,
+                    unit_revision_receipt_uri(
+                        "example.service",
+                        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    )
+                    .unwrap(),
+                ],
+                revision,
+            ),
+            Err(Error::UnitRevisionUnknown { .. })
+        ));
+        assert!(matches!(
+            require_unit_revision(
+                "example.service",
+                &[unit_revision_receipt_uri(
+                    "example.service",
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                )
+                .unwrap()],
+                revision,
+            ),
+            Err(Error::UnitRevisionChanged { .. })
+        ));
+    }
 
     #[test]
     fn unrelated_early_completions_fail_closed_at_the_bound() {

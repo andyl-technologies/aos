@@ -102,6 +102,14 @@ pub struct NativeQualifiedResource {
     pub(super) physical: NativePhysicalResource,
 }
 
+/// Records one directly requalified resource used by native no-op verification.
+#[derive(Clone, Debug)]
+pub(crate) struct NativeNoOpResourceObservation {
+    pub(crate) qualified: NativeQualifiedResource,
+    pub(crate) revision: RevisionId,
+    pub(crate) requires_consumer: bool,
+}
+
 impl NativeQualifiedResource {
     pub(crate) fn systemd(
         logical: ResourceId,
@@ -134,19 +142,19 @@ impl NativeQualifiedResource {
         )
     }
 
-    /// Qualifies one nginx generation-association record selected by its trusted catalog.
+    /// Qualifies one nginx validation prefix selected by its trusted catalog.
     ///
     /// # Errors
     ///
     /// Returns an error when `canonical_object` is not a canonical absolute
-    /// association path or does not fit the native resource ledger contract.
-    pub(crate) fn nginx_generation(
+    /// working prefix or does not fit the native resource ledger contract.
+    pub(crate) fn nginx_validation_prefix(
         logical: ResourceId,
         canonical_object: &str,
     ) -> Result<Self, GenerationAbilityStoreError> {
         Self::new(
             logical,
-            "nginx-generation-association",
+            "nginx-validation-prefix",
             "nginx-runtime",
             canonical_object,
         )
@@ -196,7 +204,13 @@ impl NativePhysicalResource {
                 validate_catalog_object(&self.object, "managed-configuration destination")?;
             }
             ("nginx-generation-association", "nginx-runtime") => {
-                validate_catalog_object(&self.object, "nginx generation association")?;
+                return Err(GenerationAbilityStoreError::Conflict(
+                    "legacy nginx association ledger identity does not prove validation-prefix ownership; migration is required"
+                        .to_string(),
+                ));
+            }
+            ("nginx-validation-prefix", "nginx-runtime") => {
+                validate_catalog_object(&self.object, "nginx validation prefix")?;
             }
             _ => {
                 return Err(GenerationAbilityStoreError::Conflict(
@@ -206,6 +220,24 @@ impl NativePhysicalResource {
             }
         }
         Ok(())
+    }
+
+    fn conflicts_with(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        if !self.is_host_path() || !other.is_host_path() {
+            return false;
+        }
+        path_overlaps(&self.object, &other.object)
+    }
+
+    fn is_host_path(&self) -> bool {
+        matches!(
+            (self.class.as_str(), self.authority.as_str()),
+            ("managed-configuration", "configuration-generation")
+                | ("nginx-validation-prefix", "nginx-runtime")
+        )
     }
 
     fn validate_systemd_unit(&self) -> Result<(), GenerationAbilityStoreError> {
@@ -230,6 +262,16 @@ impl NativePhysicalResource {
             ))
         }
     }
+}
+
+fn path_overlaps(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn validate_catalog_object(object: &str, label: &str) -> Result<(), GenerationAbilityStoreError> {
@@ -297,6 +339,43 @@ mod physical_resource_tests {
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
             assert!(error.to_string().contains("machine-global"));
         }
+    }
+
+    #[test]
+    fn host_paths_conflict_across_catalogs_and_ancestor_boundaries() {
+        let managed = NativePhysicalResource {
+            class: "managed-configuration".to_string(),
+            authority: "configuration-generation".to_string(),
+            object: "/etc/nginx".to_string(),
+        };
+        let nginx_child = NativePhysicalResource {
+            class: "nginx-validation-prefix".to_string(),
+            authority: "nginx-runtime".to_string(),
+            object: "/etc/nginx/conf.d".to_string(),
+        };
+        let sibling = NativePhysicalResource {
+            class: "managed-configuration".to_string(),
+            authority: "configuration-generation".to_string(),
+            object: "/etc/nginx-extra".to_string(),
+        };
+
+        assert!(managed.conflicts_with(&nginx_child));
+        assert!(nginx_child.conflicts_with(&managed));
+        assert!(!managed.conflicts_with(&sibling));
+    }
+
+    #[test]
+    fn legacy_nginx_association_identity_requires_explicit_migration() {
+        let legacy = NativePhysicalResource {
+            class: "nginx-generation-association".to_string(),
+            authority: "nginx-runtime".to_string(),
+            object: "/var/lib/aos/nginx/associations/resource.json".to_string(),
+        };
+
+        let error = legacy
+            .validate()
+            .expect_err("association paths cannot stand in for validation prefixes");
+        assert!(error.to_string().contains("migration is required"));
     }
 }
 
@@ -577,16 +656,19 @@ impl NativeInventoryState {
         if let Some(active) = ledger
             .consumers
             .iter()
-            .find(|active| active.physical == resource.physical)
-            && active.logical != resource.logical
+            .find(|active| active.physical.conflicts_with(&resource.physical))
+            && (active.logical != resource.logical || active.physical != resource.physical)
         {
             return Err(GenerationAbilityStoreError::Conflict(format!(
                 "native physical resource is retained by logical resource {:?}",
                 active.logical
             )));
         }
-        if let Some(live) = reservations.get(&resource.physical) {
-            if live.logical != resource.logical {
+        if let Some((physical, live)) = reservations
+            .iter()
+            .find(|(physical, _)| physical.conflicts_with(&resource.physical))
+        {
+            if live.logical != resource.logical || physical != &resource.physical {
                 return Err(GenerationAbilityStoreError::Conflict(format!(
                     "native physical resource already has a live reservation for {:?}",
                     live.logical
@@ -758,6 +840,85 @@ fn same_native_consumer_identity(
         && left.attempt == right.attempt
 }
 
+pub(crate) fn verify_retained_native_consumers(
+    generation: &Path,
+    transaction: &TransactionId,
+    plan: aos_ability_model::PlanId,
+    observations: &[NativeNoOpResourceObservation],
+) -> Result<(), GenerationAbilityStoreError> {
+    validate_generation_directory(generation)?;
+    let generation_name = generation
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            GenerationAbilityStoreError::Conflict(
+                "retained no-op generation has no UTF-8 name".to_string(),
+            )
+        })?;
+    validate_generation_name(generation_name)?;
+    let profile = generation.parent().ok_or_else(|| {
+        GenerationAbilityStoreError::Conflict(
+            "retained no-op generation has no profile parent".to_string(),
+        )
+    })?;
+    let ledger = load_native_resource_ledger(&profile.join(NATIVE_RESOURCE_LEDGER_FILE))?;
+
+    let expected = observations
+        .iter()
+        .filter(|observation| observation.requires_consumer)
+        .collect::<Vec<_>>();
+    let retained = ledger
+        .consumers
+        .iter()
+        .filter(|consumer| consumer.generation == generation_name)
+        .collect::<Vec<_>>();
+    for observation in &expected {
+        let consumer = retained
+            .iter()
+            .copied()
+            .find(|consumer| consumer.logical == observation.qualified.logical)
+            .ok_or_else(|| {
+                GenerationAbilityStoreError::Conflict(
+                    "retained native resource has no active consumer".to_string(),
+                )
+            })?;
+        if consumer.physical != observation.qualified.physical
+            || consumer.provider != observation.qualified.logical.provider
+            || consumer.desired_revision != Some(observation.revision)
+            || &consumer.transaction != transaction
+            || consumer.plan != plan
+            || consumer.operation.plan != plan
+        {
+            return Err(GenerationAbilityStoreError::Conflict(
+                "retained native consumer differs from its directly observed resource".to_string(),
+            ));
+        }
+    }
+    for consumer in retained {
+        let Some(observation) = expected
+            .iter()
+            .copied()
+            .find(|observation| observation.qualified.logical == consumer.logical)
+        else {
+            return Err(GenerationAbilityStoreError::Conflict(
+                "retained generation has an unobserved active native consumer".to_string(),
+            ));
+        };
+        if consumer.physical != observation.qualified.physical
+            || consumer.provider != observation.qualified.logical.provider
+            || consumer.desired_revision != Some(observation.revision)
+            || &consumer.transaction != transaction
+            || consumer.plan != plan
+            || consumer.operation.plan != plan
+        {
+            return Err(GenerationAbilityStoreError::Conflict(
+                "retained native consumer differs from its directly observed resource".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn validate_generation_name(name: &str) -> Result<(), GenerationAbilityStoreError> {
     let number = name.strip_prefix("gen-").ok_or_else(|| {
         GenerationAbilityStoreError::Conflict(format!(
@@ -916,6 +1077,7 @@ fn canonicalize_native_consumers(
     consumers: &mut [ActiveNativeConsumer],
 ) -> Result<(), GenerationAbilityStoreError> {
     let mut physical_owners = BTreeMap::new();
+    let mut unique_path_owners = Vec::new();
     let mut identities = BTreeSet::new();
     for consumer in consumers.iter_mut() {
         consumer.physical.validate()?;
@@ -932,14 +1094,20 @@ fn canonicalize_native_consumers(
         }
         consumer.artifacts = canonical_artifacts(&consumer.artifacts)?;
 
-        if let Some(owner) =
-            physical_owners.insert(consumer.physical.clone(), consumer.logical.clone())
-            && owner != consumer.logical
-        {
-            return Err(GenerationAbilityStoreError::Conflict(format!(
-                "native physical resource maps to conflicting logical resources {owner:?} and {:?}",
-                consumer.logical
-            )));
+        match physical_owners.get(&consumer.physical) {
+            Some(owner) if owner != &consumer.logical => {
+                return Err(GenerationAbilityStoreError::Conflict(format!(
+                    "native physical resource maps to conflicting logical resources {owner:?} and {:?}",
+                    consumer.logical
+                )));
+            }
+            Some(_) => {}
+            None => {
+                physical_owners.insert(consumer.physical.clone(), consumer.logical.clone());
+                if consumer.physical.is_host_path() {
+                    unique_path_owners.push((consumer.physical.clone(), consumer.logical.clone()));
+                }
+            }
         }
         if !identities.insert((
             consumer.generation.clone(),
@@ -955,6 +1123,23 @@ fn canonicalize_native_consumers(
         }
     }
 
+    unique_path_owners.sort_by(|(left, _), (right, _)| {
+        left.object
+            .split('/')
+            .cmp(right.object.split('/'))
+            .then_with(|| left.cmp(right))
+    });
+    for pair in unique_path_owners.windows(2) {
+        let [(left, left_owner), (right, right_owner)] = pair else {
+            continue;
+        };
+        if left.conflicts_with(right) {
+            return Err(GenerationAbilityStoreError::Conflict(format!(
+                "overlapping native paths map to incompatible physical owners {left_owner:?} and {right_owner:?}"
+            )));
+        }
+    }
+
     consumers.sort_by(|left, right| {
         left.physical
             .cmp(&right.physical)
@@ -967,4 +1152,82 @@ fn canonicalize_native_consumers(
             .then_with(|| left.attempt.cmp(&right.attempt))
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod no_op_tests {
+    use aos_ability_model::{LocalKey, OperationId, TransactionId};
+    use aos_ability_validate::test_support::checked_systemd_manager_effect_plan;
+
+    use super::*;
+
+    #[test]
+    fn retained_consumer_must_match_the_directly_loaded_revision() {
+        let root = tempfile::tempdir().expect("temporary profile");
+        let generation = root.path().join("gen-1");
+        std::fs::create_dir(&generation).expect("generation directory");
+        let plan = checked_systemd_manager_effect_plan();
+        let operation = &plan.operations()[0];
+        let binding = plan
+            .binding_plan()
+            .binding(&operation.binding)
+            .expect("fixture binding");
+        let revision = plan.document().desired_revisions[0].revision;
+        let qualified = NativeQualifiedResource::systemd(
+            operation.target.resource.clone(),
+            "/org/freedesktop/systemd1/unit/fixture_2eservice",
+        )
+        .expect("qualified fixture resource");
+        let consumer = ActiveNativeConsumer {
+            physical: qualified.physical.clone(),
+            logical: qualified.logical.clone(),
+            generation: "gen-1".to_string(),
+            transaction: TransactionId(LocalKey::new("activate").expect("transaction")),
+            plan: plan.id(),
+            binding: binding.id.clone(),
+            consumer: binding.request.consumer.clone(),
+            provider: binding.provider.clone(),
+            desired_revision: Some(revision),
+            artifacts: plan.required_runtime_artifacts().to_vec(),
+            operation: OperationId {
+                plan: plan.id(),
+                operation: operation.key.clone(),
+            },
+            attempt: 1,
+        };
+        save_native_resource_ledger(
+            &root.path().join(NATIVE_RESOURCE_LEDGER_FILE),
+            &NativeResourceLedger {
+                schema: NATIVE_RESOURCE_LEDGER_SCHEMA.to_string(),
+                consumers: vec![consumer],
+            },
+        )
+        .expect("fixture ledger");
+        let exact = NativeNoOpResourceObservation {
+            qualified: qualified.clone(),
+            revision,
+            requires_consumer: true,
+        };
+        verify_retained_native_consumers(
+            &generation,
+            &TransactionId(LocalKey::new("activate").expect("transaction")),
+            plan.id(),
+            std::slice::from_ref(&exact),
+        )
+        .expect("exact retained consumer");
+
+        let loaded_new_revision = NativeNoOpResourceObservation {
+            qualified,
+            revision: RevisionId(aos_contract::Sha256Digest::of_bytes("new loaded revision")),
+            requires_consumer: true,
+        };
+        let error = verify_retained_native_consumers(
+            &generation,
+            &TransactionId(LocalKey::new("activate").expect("transaction")),
+            plan.id(),
+            &[loaded_new_revision],
+        )
+        .expect_err("an old consumer cannot stand in for a newly loaded revision");
+        assert!(error.to_string().contains("directly observed resource"));
+    }
 }
