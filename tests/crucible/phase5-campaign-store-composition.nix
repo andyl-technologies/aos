@@ -59,6 +59,17 @@ in
           fi
 
           target="$TMPDIR/crucible-campaign-store-composition-target"
+          component_test=same_campaign_survives_direct_rpc_and_independent_component_restarts
+          component_listing=$(cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-daemon \
+            --test gate_campaign_component_contract \
+            "$component_test" \
+            -- --list)
+          printf '%s\n' "$component_listing" | grep -Fqx "$component_test: test"
           cargo test \
             --frozen \
             --offline \
@@ -76,6 +87,15 @@ in
             --features test-double \
             --test gate_campaign_store_composition \
             -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-daemon \
+            --test gate_campaign_component_contract \
+            "$component_test" \
+            -- --exact --test-threads=1
 
           run_exact_lib_test() {
             package=$1
@@ -132,6 +152,37 @@ in
             run_exact_lib_test crucible-daemon "$daemon_test"
           done
 
+          # Preserve the full component-contract negative surface with exact
+          # planner, restart, stale-epoch, and cancellation/completion cases.
+          for daemon_contract_test in \
+            executor_supervisor::tests::completion_and_cancellation_races_are_idempotent \
+            executor_supervisor::tests::durable_restart_replaces_stale_running_and_preserves_completion \
+            campaign_attachment::tests::attached_frontier_planner_rejects_a_later_explorer_change_before_invocation \
+            planner_loopback::tests::direct_and_loopback_planner_components_are_identical \
+            planner_loopback::tests::planner_loopback_rejects_partial_frames_with_a_finite_deadline \
+            planner_process::tests::process_frame_rejects_reserved_version_and_size_drift \
+            planner_process::pipes::tests::unread_request_pipe_obeys_the_exchange_deadline \
+            planner_process::pipes::tests::inherited_output_pipe_does_not_outlive_deadline_or_block_next_evaluation
+          do
+            run_exact_lib_test crucible-daemon "$daemon_contract_test"
+          done
+
+          # Planner identity, aggregate bounds, deterministic replay, and raw
+          # vectors remain explicit rather than inferred from process flight.
+          for campaign_contract_test in \
+            planner_service::tests::planner_request_is_strict_bounded_and_has_a_golden_vector \
+            planner_service::tests::raw_planner_request_and_response_vectors_decode_and_validate_without_construction \
+            planner_service::tests::planning_bundle_stops_retaining_at_the_aggregate_byte_bound \
+            planner_service::tests::checked_direct_planner_rejects_cross_request_replay \
+            planner_service::tests::planner_response_digest_binds_same_invocation_bundle_bytes \
+            repository::tests::coordination::planning::planner_driver_rejects_invalid_static_configuration_without_repository_writes \
+            repository::tests::coordination::planning::planner_no_work_is_owned_replayable_and_state_continuous \
+            campaign_service::tests::campaign_status_messages_are_snapshot_bound_and_have_raw_vectors \
+            tests::scenario_default_records_have_frozen_versioned_vectors
+          do
+            run_exact_lib_test crucible-campaign "$campaign_contract_test"
+          done
+
           mkdir -p "$out"
           cat > "$out/result" <<RESULT
           PASS
@@ -144,6 +195,14 @@ in
           write_through=true
           write_back=true
           public_store_owner=true
+          same_campaign_direct_and_split_process=true
+          independent_coordinator_executor_restart=true
+          accepted_cancellation_completion_race=true
+          stale_assignment_rejection=true
+          planner_negative_results=oversized,incompatible,stalled,nondeterministic
+          planner_raw_golden_vectors=true
+          semantic_observation_publication=true
+          branch_edge_credit_exactly_once=true
           global_gc=true
           interrupted_gc_journal=true
           packed_restart_and_repack=true
