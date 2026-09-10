@@ -69,6 +69,29 @@ struct GraphPageService {
     attempt_proposal: Proposal,
 }
 
+macro_rules! impl_unused_finding_occurrence_service {
+    ($service:ty) => {
+        impl CampaignFindingOccurrenceService for $service {
+            fn query_campaign_finding_occurrences(
+                &self,
+                _request: &QueryCampaignFindingOccurrencesRequest,
+            ) -> Result<QueryCampaignFindingOccurrencesResponse, Self::Error> {
+                unreachable!("unused campaign finding occurrence query")
+            }
+
+            fn get_campaign_finding_occurrence_object(
+                &self,
+                _request: &GetCampaignFindingOccurrenceObjectRequest,
+            ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error> {
+                unreachable!("unused campaign finding occurrence object query")
+            }
+        }
+    };
+}
+
+impl_unused_finding_occurrence_service!(FixedHeadService);
+impl_unused_finding_occurrence_service!(GraphPageService);
+
 fn fixed_branch_response(
     request: &SubmitCampaignBranchRequest,
     label: &str,

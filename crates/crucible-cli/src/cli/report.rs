@@ -37,12 +37,78 @@ pub(super) struct TriageRunReport {
 pub(super) struct LoadedTriageFindings {
     pub(super) ledger: crucible::FailureFindingsLedger,
     pub(super) evidence: BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+    pub(super) campaign_evidence: Vec<CampaignTriageFindingEvidence>,
     pub(super) artifact_bytes: Vec<u8>,
+}
+
+/// Authenticated campaign records retained beside one report projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignTriageFindingEvidence {
+    pub(super) campaign: crucible_campaign::CampaignName,
+    pub(super) snapshot: crucible_campaign::CampaignSnapshotId,
+    pub(super) membership: CampaignFindingsMembershipProof,
+    pub(super) observation_proof: CampaignFindingObjectProof,
+    pub(super) reproduction_proof: CampaignFindingObjectProof,
+    pub(super) minimized_reproduction_proof: Option<CampaignFindingObjectProof>,
+    pub(super) occurrence_proofs: Vec<CampaignFindingOccurrenceProof>,
+    pub(super) finding: crucible_campaign::Finding,
+    pub(super) observation: crucible_campaign::Observation,
+    pub(super) reproduction: crucible_campaign::ReproductionArtifact,
+    pub(super) minimized_reproduction: Option<crucible_campaign::ReproductionArtifact>,
+    pub(super) report: TriageFindingEvidence,
+}
+
+/// Exact checked service exchange proving final-snapshot Finding membership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingsMembershipProof {
+    pub(super) request: crucible_campaign::QueryCampaignFindingsRequest,
+    pub(super) response: crucible_campaign::QueryCampaignFindingsResponse,
+}
+
+/// Exact checked service exchange resolving one Finding-owned dependency.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingObjectProof {
+    pub(super) request: crucible_campaign::GetCampaignFindingObjectRequest,
+    pub(super) response: crucible_campaign::GetCampaignFindingObjectResponse,
+}
+
+/// Exact checked service exchange for one page of retained candidate occurrences.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingOccurrencesProof {
+    pub(super) request: crucible_campaign::QueryCampaignFindingOccurrencesRequest,
+    pub(super) response: crucible_campaign::QueryCampaignFindingOccurrencesResponse,
+}
+
+/// Exact checked exchanges resolving one retained candidate occurrence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingOccurrenceProof {
+    pub(super) page: CampaignFindingOccurrencesProof,
+    pub(super) observation: CampaignFindingOccurrenceObjectProof,
+    pub(super) reproduction: CampaignFindingOccurrenceObjectProof,
+    pub(super) minimized_reproduction: CampaignFindingOccurrenceObjectProof,
+    pub(super) triage_evidence: Option<CampaignFindingOccurrenceTriageProof>,
+}
+
+/// Four independently replayed native signatures retained by a rich candidate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingOccurrenceTriageProof {
+    pub(super) minimization_original: CampaignFindingOccurrenceObjectProof,
+    pub(super) minimization_selected: CampaignFindingOccurrenceObjectProof,
+    pub(super) verification_original: CampaignFindingOccurrenceObjectProof,
+    pub(super) verification_selected: CampaignFindingOccurrenceObjectProof,
+}
+
+/// Exact checked service exchange resolving one candidate-owned dependency.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingOccurrenceObjectProof {
+    pub(super) request: crucible_campaign::GetCampaignFindingOccurrenceObjectRequest,
+    pub(super) response: crucible_campaign::GetCampaignFindingOccurrenceObjectResponse,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TriageFindingEvidence {
     pub(super) finding: crucible::FindingReproductionArtifact,
+    pub(super) causal_entries: Vec<crucible::SchedulerEventLogEntry>,
     pub(super) recorded_event_log: crucible_model::FailureRecordedEventLog,
     pub(super) failure: crucible_model::FailureClusterReportFailure,
     pub(super) discovery_signature: crucible_model::FailureSignature,
