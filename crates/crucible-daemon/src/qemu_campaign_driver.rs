@@ -208,6 +208,28 @@ impl From<PreparedSemanticResultCodecError> for QemuFreshModeledDriverError {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QemuFreshModeledDriver;
 
+/// Modeled driver allowed to project private finding-replay evidence.
+///
+/// This capability is deliberately separate from [`QemuFreshAttemptDriver`]:
+/// a driver must reproduce every property source it applies during admitted
+/// execution before its runner may authenticate a minimized candidate.
+pub(crate) trait QemuFindingReplayDriver:
+    QemuFreshAttemptDriver<Pending = QemuFreshPendingObservation, Error = QemuFreshModeledDriverError>
+{
+    /// Projects one exact candidate after final lifecycle drain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the complete candidate boundary cannot be
+    /// evaluated with the driver's admitted property sources.
+    fn build_finding_candidate_boundary_evidence(
+        &self,
+        pending: QemuFreshPendingObservation,
+        candidate: &ConfigurationArtifact,
+        final_events: Vec<SchedulerEventLogEntry>,
+    ) -> Result<QemuFindingCandidateBoundaryEvidence, QemuFreshModeledDriverError>;
+}
+
 /// Fresh modeled driver with one immutable supplemental property oracle.
 pub(crate) struct QemuFreshSupplementalModeledDriver {
     oracle: Option<Arc<dyn GuardedCampaignFindingOracle>>,
@@ -914,6 +936,17 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
         )
         .map_err(AttemptWorkerFailure::Terminal)?;
         build_observation_candidate(pending).map_err(AttemptWorkerFailure::Terminal)
+    }
+}
+
+impl QemuFindingReplayDriver for QemuFreshModeledDriver {
+    fn build_finding_candidate_boundary_evidence(
+        &self,
+        pending: QemuFreshPendingObservation,
+        candidate: &ConfigurationArtifact,
+        final_events: Vec<SchedulerEventLogEntry>,
+    ) -> Result<QemuFindingCandidateBoundaryEvidence, QemuFreshModeledDriverError> {
+        build_finding_candidate_boundary_evidence(pending, candidate, final_events)
     }
 }
 
