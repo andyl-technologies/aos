@@ -8,6 +8,8 @@
   extraToolNames ? [],
   compilerSource ? directory + "/gcc.nix",
   compilerToolOverrides ? {},
+  binutilsBuildOverrides ? {},
+  libcBuildOverrides ? {},
   manifestToolOverrides ? {},
   staticNoPie ? false,
   buildPlatform,
@@ -129,7 +131,7 @@
       };
       inherit (privateTools) linuxHeaders;
       glibc = let
-        package = finish (call libcBuildScope (directory + "/glibc.nix") {});
+        package = finish (call libcBuildScope (directory + "/glibc.nix") libcBuildOverrides);
       in
         if privateTools ? perl
         then
@@ -139,7 +141,7 @@
             constructionPerl = privateTools.perl;
           }
         else package;
-      binutils = finish (call compilerBuildScope (directory + "/binutils.nix") {});
+      binutils = finish (call compilerBuildScope (directory + "/binutils.nix") binutilsBuildOverrides);
       gcc = finish (call (compilerBuildScope
         // {
           prev = compilerBuildTools // {binutils = exports.binutils;} // compilerToolOverrides;

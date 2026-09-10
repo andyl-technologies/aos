@@ -151,5 +151,14 @@ in
     gccVersion = "8.5.0";
     manifestNames = manifestToolNames;
     extraToolNames = [];
+    # The private binutils is already complete; filter only its public rebuild.
+    binutilsBuildOverrides =
+      if hostPlatform.constraints.cpu == "aarch64"
+      then {sourceScriptFilter = scope.perl;}
+      else {};
+    libcBuildOverrides =
+      if hostPlatform.constraints.cpu == "aarch64"
+      then {sourceScriptFilter = scope.perl;}
+      else {};
     inherit buildPlatform hostPlatform targetPlatform;
   }
