@@ -203,5 +203,9 @@ in
     extraToolNames = [];
     compiler = gccRaw;
     compilerSource = ./gcc-export.nix;
+    publicScriptFilter =
+      if hostPlatform.constraints.cpu != "x86_64"
+      then scope.perl
+      else null;
     inherit buildPlatform hostPlatform targetPlatform;
   }

@@ -10,6 +10,7 @@
   compilerToolOverrides ? {},
   binutilsBuildOverrides ? {},
   libcBuildOverrides ? {},
+  publicScriptFilter ? null,
   manifestToolOverrides ? {},
   staticNoPie ? false,
   buildPlatform,
@@ -40,6 +41,12 @@
     withRuntimeShell {
       inherit package buildTools;
       shell = "${exports.bash}/bin/bash";
+    };
+  finishFiltered = package:
+    withRuntimeShell {
+      inherit package buildTools;
+      shell = "${exports.bash}/bin/bash";
+      scriptFilterTool = publicScriptFilter;
     };
 
   libcBuildScope =
@@ -104,10 +111,11 @@
   manifest = call manifestScope (directory + "/manifest.nix") {};
   constructionManifest = call publicBuildScope (directory + "/manifest.nix") {};
   compileTool = spec:
-    finish (mkTool (spec
+    finishFiltered (mkTool (spec
       // {
         inherit gccVersion;
         runtimeShell = "${exports.bash}/bin/bash";
+        sourceScriptFilter = publicScriptFilter;
       }));
 
   manifestTools = builtins.listToAttrs (map (name: {
@@ -142,7 +150,7 @@
           }
         else package;
       binutils = finish (call compilerBuildScope (directory + "/binutils.nix") binutilsBuildOverrides);
-      gcc = finish (call (compilerBuildScope
+      gcc = finishFiltered (call (compilerBuildScope
         // {
           prev = compilerBuildTools // {binutils = exports.binutils;} // compilerToolOverrides;
           binutils = exports.binutils;

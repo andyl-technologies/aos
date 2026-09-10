@@ -3,9 +3,19 @@
   package,
   buildTools,
   shell,
+  scriptFilterTool ? null,
 }: let
   attrs = package.drvAttrs;
   buildShell = "${buildTools.bash}/bin/bash";
+  scriptFilter = import ./source-script-filter.nix {
+    filter = scriptFilterTool;
+    sourceRoot = ''"''${!runtime_output}"'';
+    # Build directories and store outputs can be separate mounts. Keep the
+    # temporary hard links in the output filesystem and exclude them from scans.
+    temporaryRoot = "\${!runtime_output}";
+    temporaryName = ".aos-runtime-inputs";
+    filterProgram = ../../filter-output-scripts.pl;
+  };
   path = builtins.concatStringsSep ":" (map (tool: "${tool}/bin") [
     buildTools.coreutils
     buildTools.findutils
@@ -18,7 +28,7 @@
     export AOS_RUNTIME_SHELL="${shell}"
     export AOS_BUILD_SHELL="${attrs.builder}"
     for runtime_output in ${builtins.concatStringsSep " " (package.outputs or ["out"])}; do
-      ${buildShell} ${../../runtime-scripts.sh} "''${!runtime_output}"
+      ${scriptFilter.setup}${buildShell} ${../../runtime-scripts.sh} ${scriptFilter.root}${scriptFilter.cleanup}
     done
   '';
 in

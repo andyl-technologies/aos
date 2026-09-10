@@ -88,6 +88,10 @@
   installFlags = concat " " installFlagsList;
 
   configureEnv = spec.configureEnv or "";
+  scriptFilter = import ./source-script-filter.nix {
+    filter = spec.sourceScriptFilter or null;
+    temporaryName = "autotools-source-runtime-inputs";
+  };
   preConfigure =
     optionalString (spec.pname == "perl" && !staticNssWrapper) ''
       # Config is a runtime build interface. Retain its compiler wrapper
@@ -190,8 +194,8 @@
         ${commonCompilerEnv}
 
         # Configure and make can execute source helpers by their shebang.
-        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
-          "$CONFIG_SHELL" ${../../runtime-scripts.sh} .
+        ${scriptFilter.setup}AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} ${scriptFilter.root}${scriptFilter.cleanup}
 
         ${optionalString (builtins.elem spec.pname ["make" "gnumake"]) ''
           "$CONFIG_SHELL" ${../../pin-make-shell.sh} "${spec.runtimeShell or tierStdenv.shell}"
