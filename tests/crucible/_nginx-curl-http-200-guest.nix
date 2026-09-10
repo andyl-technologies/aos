@@ -1,4 +1,7 @@
-{pkgs}: let
+{
+  pkgs,
+  hotForkEquivalence ? false,
+}: let
   closureDeps = [
     pkgs.bash
     pkgs.coreutils
@@ -22,6 +25,10 @@
     ])
     closureDeps
   );
+  hotForkEquivalenceEnabled =
+    if hotForkEquivalence
+    then "1"
+    else "0";
 in
   pkgs.mkDerivation {
     pname = "crucible-nginx-curl-http-200-root-image";
@@ -118,6 +125,13 @@ in
               ;;
             *" crucible.workload=httpget "*)
               ip address add 10.0.0.3/24 dev eth0
+              if [ "${hotForkEquivalenceEnabled}" = 1 ]; then
+                crucible-guest selectable register-u64 \
+                  1 hot-fork.retry-quanta 1 9 2 3 quanta
+                crucible-guest setup-complete
+                crucible-guest measurement-begin hot-fork-window instance-1
+                crucible-guest semantic-marker hot-fork-window-begin instance-1
+              fi
               case "$cmdline" in
                 *" probe-block=1 "*)
                   block_prefix=$(dd if=/dev/vdb bs=18 count=1 2>/dev/null)
@@ -129,6 +143,7 @@ in
                   ;;
               esac
               reported=0
+              selection_complete=0
               while :; do
                 status=$(curl \
                   --connect-timeout 30 \
@@ -144,6 +159,38 @@ in
                       'Curl receives an HTTP 200 response from Nginx' \
                       1
                     reported=1
+                  fi
+                  if [ "${hotForkEquivalenceEnabled}" = 1 ] \
+                    && [ "$selection_complete" = 0 ]; then
+                    (
+                      while :; do
+                        curl \
+                          --connect-timeout 30 \
+                          --max-time 60 \
+                          --output /dev/null \
+                          --silent \
+                          http://10.0.0.2:8080/ || true
+                        dd if=/dev/zero of=/dev/vdb \
+                          bs=512 count=1 seek=8 conv=notrunc 2>/dev/null
+                      done
+                    ) &
+                    # Let the modeled permanent-failure signal settle before
+                    # the guest blocks at the retained choice boundary. Under
+                    # deterministic icount this is guest virtual time, not a
+                    # host-side readiness delay.
+                    sleep 35
+                    selection=$(crucible-guest selectable choose-u64 \
+                      1 hot-fork.retry-quanta continuation/one 1 9 2)
+                    test "$selection" = u64=7
+                    crucible-guest metric-sample \
+                      hot-fork-window instance-1 selected-retry u64 7
+                    crucible-guest measurement-end hot-fork-window instance-1
+                    crucible-guest semantic-marker hot-fork-window-end instance-1
+                    crucible-guest sometimes \
+                      hot-fork-continuation-complete \
+                      'The selected continuation completed' \
+                      1
+                    selection_complete=1
                   fi
                   case "$cmdline" in
                     *" continue=1 "*) ;;
@@ -164,6 +211,33 @@ in
               crucible-guest sometimes \
                 io-probe-complete \
                 'The I/O probe read its 9p sub-node' \
+                1
+              while :; do
+                sleep 3600
+              done
+              ;;
+            *" crucible.workload=hot-fork-single "*)
+              block_prefix=$(dd if=/dev/vdb bs=18 count=1 2>/dev/null)
+              test "$block_prefix" = CRUCIBLE-BLOCK-OK
+              mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192 crucible /mnt
+              ninep_content=$(cat /mnt/probe.txt)
+              test "$ninep_content" = CRUCIBLE-9P-OK
+
+              crucible-guest selectable register-u64 \
+                1 hot-fork.retry-quanta 1 9 2 3 quanta
+              crucible-guest setup-complete
+              crucible-guest measurement-begin hot-fork-window instance-1
+              crucible-guest semantic-marker hot-fork-window-begin instance-1
+              selection=$(crucible-guest selectable choose-u64 \
+                1 hot-fork.retry-quanta continuation/one 1 9 2)
+              test "$selection" = u64=7
+              crucible-guest metric-sample \
+                hot-fork-window instance-1 selected-retry u64 7
+              crucible-guest measurement-end hot-fork-window instance-1
+              crucible-guest semantic-marker hot-fork-window-end instance-1
+              crucible-guest sometimes \
+                hot-fork-continuation-complete \
+                'The selected continuation completed' \
                 1
               while :; do
                 sleep 3600

@@ -25,6 +25,8 @@ use crate::{
     LinuxQemuAttemptHostResourceFactory, QemuAttemptProductionVmLifecycleFactory,
 };
 
+#[path = "native_acceptance/equivalence.rs"]
+mod equivalence;
 #[path = "native_acceptance/failures.rs"]
 mod failures;
 #[path = "native_acceptance/scenario.rs"]

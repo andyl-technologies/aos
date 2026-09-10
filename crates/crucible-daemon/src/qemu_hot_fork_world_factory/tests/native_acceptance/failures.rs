@@ -9,7 +9,9 @@ use crucible_api::vm_lifecycle::{
     hot_fork_adoption_count_for_test, reset_hot_fork_adoption_count_for_test,
 };
 use crucible_campaign::DiscoveryRequest;
-use rustix::process::{Pid, Signal, kill_process};
+use rustix::event::{PollFd, PollFlags, poll};
+use rustix::process::{Pid, PidfdFlags, Signal, kill_process, pidfd_open};
+use rustix::time::Timespec;
 
 use super::*;
 
@@ -218,6 +220,52 @@ fn production_factory_exposes_no_world_when_second_real_fork_fails() {
     assert!(!factory.sources().available());
     eprintln!(
         "atomic-world phase=fork-failure-complete failed_source_pid={failed_pid} public_world=false"
+    );
+}
+
+#[test]
+#[ignore = "requires the packaged patched QEMU, cgroup v2, and project quotas"]
+fn production_source_preparation_failure_exposes_no_template() {
+    let paths = NativeGatePaths::from_environment();
+    let prepared = prepare_native_source(&paths, "preparation-failure", 0x7a, 5_500);
+    let failed_pid = prepared
+        .world
+        .continuation()
+        .nodes()
+        .iter()
+        .find(|node| node.node().name == "nginx")
+        .and_then(|node| node.process())
+        .map(|identity| identity.process_id)
+        .expect("nginx source process");
+    let mut lifecycle = prepared
+        .world
+        .recover()
+        .expect("roll back the initially prepared source world");
+    let pid = Pid::from_raw(i32::try_from(failed_pid).expect("QEMU PID fits i32"))
+        .expect("positive QEMU PID");
+    let pidfd = pidfd_open(pid, PidfdFlags::empty()).expect("open source process pidfd");
+    kill_process(pid, Signal::KILL).expect("kill source before renewed preparation");
+    let timeout = Timespec::try_from(Duration::from_secs(5)).expect("bounded pidfd timeout");
+    let mut descriptors = [PollFd::new(&pidfd, PollFlags::IN)];
+    assert_eq!(
+        poll(&mut descriptors, Some(&timeout)).expect("observe source process death"),
+        1,
+        "source process did not become terminal within five seconds"
+    );
+
+    let failure = match lifecycle.prepare_hot_fork_source_world() {
+        Ok(_) => panic!("dead source must reject complete-world preparation"),
+        Err(failure) => failure,
+    };
+    assert!(failure.unreconciled_nodes().is_empty());
+    lifecycle = failure
+        .into_recovered_lifecycle()
+        .expect("preparation failure retains recoverable lifecycle authority");
+    QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle)
+        .expect("reap preparation-failure source world");
+
+    eprintln!(
+        "atomic-world phase=source-preparation-failure failed_source_pid={failed_pid} public_template=false"
     );
 }
 
