@@ -32,22 +32,22 @@ use crate::{
     DebuggerAuthorityKey, DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile,
     ExecutorRejection, ExpansionCredit, ExpansionState, ExpansionStateId, Finding,
     FindingCandidateBundle, FindingCandidateBundleId, FindingCandidateOccurrenceSet, FindingId,
-    FindingMinimizationEvidence, FindingOccurrenceSet, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MeasurementSet, MeasurementSetId,
-    MerkleMap, MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
-    NonModeledAttemptDisposition, ObjectEnvelope, ObjectiveEvaluation, ObjectiveEvaluationId,
-    Observation, ObservationId, PinRequest, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
-    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
-    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
-    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
-    PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
-    ProposalId, PurePlannerEngine, RankingExplanation, RankingExplanationId, ReproductionArtifact,
-    ReproductionArtifactId, RetainedPlannerRequestId, SavepointCaptureOutcome,
-    SavepointCaptureRequest, SavepointCaptureResolution, SavepointContinuationSelection,
-    ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId,
-    Selection, SelectionId, StopCondition, StopOutcome, SubmitAttemptDisposition,
-    SubmitAttemptRequest, SubmitAttemptResponse, SurvivorSelection, SurvivorSelectionBundle,
-    SurvivorSelectionId,
+    FindingMinimizationEvidence, FindingOccurrenceSet, FindingTriageReplayEvidence,
+    FindingTriageReplayEvidenceId, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof,
+    MerkleMapPage, MerkleMapPageProof, MerkleMapRoot, NonModeledAttemptDisposition, ObjectEnvelope,
+    ObjectiveEvaluation, ObjectiveEvaluationId, Observation, ObservationId, PinRequest,
+    PlannerAuthorityKey, PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
+    PlannerProposalDisposition, PlannerRequest, PlannerState, PlannerStep, PlannerStepId,
+    PlannerStepProposal, PlanningAccounting, PlanningBudget, PlanningScanPage,
+    PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
+    PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
+    RankingExplanation, RankingExplanationId, ReproductionArtifact, ReproductionArtifactId,
+    RetainedPlannerRequestId, SavepointCaptureOutcome, SavepointCaptureRequest,
+    SavepointCaptureResolution, SavepointContinuationSelection, ScenarioArtifact,
+    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
+    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    SubmitAttemptResponse, SurvivorSelection, SurvivorSelectionBundle, SurvivorSelectionId,
 };
 use crate::{BranchAcceptanceCount, BranchAcceptanceSummary};
 
@@ -1170,6 +1170,20 @@ impl CampaignExecutorStore {
         bundle: &FindingCandidateBundle,
     ) -> Result<FindingCandidateBundleId, CampaignRepositoryError> {
         self.repository.publish_finding_candidate_bundle(bundle)
+    }
+
+    /// Publishes one executor-prepared native finding replay record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reproduction or observed-signature closure is
+    /// unavailable or inconsistent.
+    pub fn publish_executor_finding_triage_replay_evidence(
+        &self,
+        evidence: &FindingTriageReplayEvidence,
+    ) -> Result<FindingTriageReplayEvidenceId, CampaignRepositoryError> {
+        self.repository
+            .publish_finding_triage_replay_evidence(evidence)
     }
 }
 

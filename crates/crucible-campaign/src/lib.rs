@@ -29,6 +29,7 @@ mod executor_capability;
 mod exploration;
 mod finding;
 mod finding_candidate;
+mod finding_triage_evidence;
 mod identity;
 mod merkle;
 mod model;
@@ -148,7 +149,10 @@ pub use finding::{
 };
 pub use finding_candidate::{
     FindingCandidateBundle, FindingReplaySignature, FindingReplayTargetKind,
-    FindingSignatureMinimizationEvidence,
+    FindingSignatureMinimizationEvidence, FindingTriageEvidenceSet,
+};
+pub use finding_triage_evidence::{
+    FindingTriageReplayEvidence, MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES,
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
@@ -158,13 +162,14 @@ pub use identity::{
     ChoiceDomainId, ChoiceDomainSemanticId, ChoiceGroupId, ChoiceOpportunityId,
     ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId,
     ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId, ExactCheckpointId,
-    ExpansionStateId, FindingCandidateBundleId, FindingId, MeasurementSetId, ObjectiveEvaluationId,
-    ObservationId, PlannerBeamCandidateId, PlannerCandidateBudgetId, PlannerCandidateGuidanceId,
-    PlannerEngineId, PlannerInvocationId, PlannerSearchCandidateId, PlannerStateId, PlannerStepId,
-    PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId, ProposalId, RankingExplanationId,
-    ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId,
-    SelectableId, SelectableSemanticId, SelectionId, StatisticalGenerationId,
-    StatisticalParticleId, SurvivorSelectionId,
+    ExpansionStateId, FindingCandidateBundleId, FindingId, FindingTriageReplayEvidenceId,
+    MeasurementSetId, ObjectiveEvaluationId, ObservationId, PlannerBeamCandidateId,
+    PlannerCandidateBudgetId, PlannerCandidateGuidanceId, PlannerEngineId, PlannerInvocationId,
+    PlannerSearchCandidateId, PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId,
+    PropertyVerdictSetId, ProposalId, RankingExplanationId, ReproductionArtifactId,
+    RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId, SelectableId,
+    SelectableSemanticId, SelectionId, StatisticalGenerationId, StatisticalParticleId,
+    SurvivorSelectionId,
 };
 pub use merkle::{
     CampaignStoreError, MAX_PROVEN_LOOKUP_KEYS, MAX_PROVEN_PAGE_ITEMS, MerkleMap,

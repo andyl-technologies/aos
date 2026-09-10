@@ -628,8 +628,15 @@ content_object_id!(
 content_object_id!(
     FindingCandidateBundleId,
     ObjectKind::Finding,
+    [1, 2],
     "crucible.campaign.finding-candidate-bundle",
-    "Identifies one durable executor-produced finding candidate handoff."
+    "Identifies one durable executor-produced finding candidate handoff; version 1 remains decodable for history compatibility."
+);
+content_object_id!(
+    FindingTriageReplayEvidenceId,
+    ObjectKind::Finding,
+    "crucible.campaign.finding-triage-replay-evidence",
+    "Identifies one exact replay and its independently observed finding signature."
 );
 content_object_id!(
     ReproductionArtifactId,

@@ -2,10 +2,11 @@
 
 use super::*;
 use crate::{
-    CampaignFindingOccurrenceObject, CampaignFindingOccurrenceObjectKind,
+    CampaignFindingOccurrenceObject, CampaignFindingOccurrenceObjectKind, FindingTriageEvidenceSet,
     GetCampaignFindingOccurrenceObjectRequest, GetCampaignFindingOccurrenceObjectResponse,
     MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
+    MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES, QueryCampaignFindingOccurrencesRequest,
+    QueryCampaignFindingOccurrencesResponse,
 };
 
 /// Installs a frozen historical finding through the same snapshot transition
@@ -723,18 +724,90 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
         vec![Some(signature.clone()), Some(signature.clone())],
     )
     .expect("signature minimization evidence");
-    let bundle = FindingCandidateBundle::new(
+    let minimization_original_triage = FindingTriageReplayEvidence::new(
+        original,
+        signature.clone(),
+        1,
+        b"minimization original native replay".to_vec(),
+    )
+    .expect("minimization original triage evidence");
+    let minimization_selected_triage = FindingTriageReplayEvidence::new(
+        minimized,
+        signature.clone(),
+        1,
+        b"minimization selected native replay".to_vec(),
+    )
+    .expect("minimization selected triage evidence");
+    let verification_original_triage = FindingTriageReplayEvidence::new(
+        original,
+        signature.clone(),
+        1,
+        b"verification original native replay".to_vec(),
+    )
+    .expect("verification original triage evidence");
+    let verification_selected_triage = FindingTriageReplayEvidence::new(
+        minimized,
+        signature.clone(),
+        1,
+        b"verification selected native replay".to_vec(),
+    )
+    .expect("verification selected triage evidence");
+    let triage_evidence = FindingTriageEvidenceSet::new(
+        repository
+            .publish_finding_triage_replay_evidence(&minimization_original_triage)
+            .expect("publish minimization original triage evidence"),
+        repository
+            .publish_finding_triage_replay_evidence(&minimization_selected_triage)
+            .expect("publish minimization selected triage evidence"),
+        repository
+            .publish_finding_triage_replay_evidence(&verification_original_triage)
+            .expect("publish verification original triage evidence"),
+        repository
+            .publish_finding_triage_replay_evidence(&verification_selected_triage)
+            .expect("publish verification selected triage evidence"),
+    );
+    let bundle = FindingCandidateBundle::new_with_triage_evidence(
         observed.observation,
         signature.clone(),
         original,
         minimized,
         signature_minimization,
         FindingExactPins::default(),
+        triage_evidence,
     )
     .expect("finding candidate bundle");
+    assert_eq!(bundle.schema_version(), 2);
+
+    let mismatched_triage_bundle = FindingCandidateBundle::new_with_triage_evidence(
+        observed.observation,
+        signature.clone(),
+        original,
+        minimized,
+        bundle.signature_minimization().clone(),
+        FindingExactPins::default(),
+        FindingTriageEvidenceSet::new(
+            triage_evidence.minimization_selected(),
+            triage_evidence.minimization_original(),
+            triage_evidence.verification_original(),
+            triage_evidence.verification_selected(),
+        ),
+    )
+    .expect("structurally valid mismatched triage bundle");
+    assert!(matches!(
+        repository.publish_finding_candidate_bundle(&mismatched_triage_bundle),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "finding-triage-replay-evidence-basis-mismatch"
+        })
+    ));
     let bundle_id = repository
         .publish_finding_candidate_bundle(&bundle)
         .expect("publish finding candidate bundle");
+    assert_eq!(
+        repository
+            .load_finding_candidate_bundle(bundle_id)
+            .expect("load schema-v2 finding candidate bundle"),
+        bundle
+    );
     let legacy_minimized = repository
         .publish_reproduction_artifact(
             lineage.scenario(),
@@ -941,7 +1014,7 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         ],
         vec![
             Some(signature.clone()),
-            Some(different_failure_class),
+            Some(different_failure_class.clone()),
             Some(signature.clone()),
         ],
     )
@@ -958,11 +1031,104 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
     let bundle_id = repository
         .publish_finding_candidate_bundle(&bundle)
         .expect("publish finding candidate bundle");
+    assert_eq!(bundle.schema_version(), 1);
+    assert_eq!(
+        repository
+            .load_finding_candidate_bundle(bundle_id)
+            .expect("load schema-v1 finding candidate bundle"),
+        bundle
+    );
     assert_eq!(
         repository
             .publish_finding_candidate_bundle(&bundle)
             .expect("republish finding candidate bundle"),
         bundle_id
+    );
+
+    let rejected_tail_state =
+        CampaignHash::derive("test-finding", b"rejected-tail final replayed state");
+    let rejected_tail_minimization = FindingMinimizationEvidence::new(
+        original,
+        1,
+        b"rejected-tail policy".to_vec(),
+        vec![FindingMinimizationAttempt::new(
+            0,
+            CampaignHash::derive("test-finding", b"rejected-tail artifact"),
+            CampaignHash::derive("test-finding", b"rejected-tail schedule"),
+            rejected_tail_state,
+            None,
+            false,
+        )],
+        rejected_tail_state,
+    )
+    .expect("rejected-tail minimization evidence");
+    let rejected_tail_minimized = repository
+        .publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"verified original candidate reproduction".to_vec(),
+            rejected_tail_minimization.clone(),
+        )
+        .expect("publish rejected-tail minimized reproduction");
+    let rejected_tail_signatures = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &rejected_tail_minimization,
+        vec![
+            Some(signature.clone()),
+            Some(different_failure_class.clone()),
+        ],
+        vec![
+            Some(signature.clone()),
+            Some(different_failure_class.clone()),
+        ],
+    )
+    .expect("rejected-tail signature evidence");
+    let publish_rejected_tail_triage = |reproduction, payload: &'static [u8]| {
+        repository
+            .publish_finding_triage_replay_evidence(
+                &FindingTriageReplayEvidence::new(
+                    reproduction,
+                    signature.clone(),
+                    1,
+                    payload.to_vec(),
+                )
+                .expect("rejected-tail triage evidence"),
+            )
+            .expect("publish rejected-tail triage evidence")
+    };
+    let rejected_tail_bundle = FindingCandidateBundle::new_with_triage_evidence(
+        observed.observation,
+        signature.clone(),
+        original,
+        rejected_tail_minimized,
+        rejected_tail_signatures,
+        FindingExactPins::default(),
+        FindingTriageEvidenceSet::new(
+            publish_rejected_tail_triage(original, b"rejected-tail minimization original replay"),
+            publish_rejected_tail_triage(
+                rejected_tail_minimized,
+                b"rejected-tail minimization selected replay",
+            ),
+            publish_rejected_tail_triage(original, b"rejected-tail verification original replay"),
+            publish_rejected_tail_triage(
+                rejected_tail_minimized,
+                b"rejected-tail verification selected replay",
+            ),
+        ),
+    )
+    .expect("rejected-tail finding candidate bundle");
+    let rejected_tail_bundle_id = repository
+        .publish_finding_candidate_bundle(&rejected_tail_bundle)
+        .expect("publish rejected-tail finding candidate bundle");
+    assert_eq!(
+        repository
+            .load_finding_candidate_bundle(rejected_tail_bundle_id)
+            .expect("load rejected-tail finding candidate bundle"),
+        rejected_tail_bundle
     );
 
     let second_request = branch_request(
@@ -1076,19 +1242,53 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         vec![Some(signature.clone()), Some(signature.clone())],
     )
     .expect("second signature minimization evidence");
-    let second_bundle = FindingCandidateBundle::new(
+    let publish_second_triage = |reproduction, payload: Vec<u8>| -> FindingTriageReplayEvidenceId {
+        repository
+            .publish_finding_triage_replay_evidence(
+                &FindingTriageReplayEvidence::new(reproduction, signature.clone(), 1, payload)
+                    .expect("second occurrence triage evidence"),
+            )
+            .expect("publish second occurrence triage evidence")
+    };
+    let second_triage_evidence = FindingTriageEvidenceSet::new(
+        publish_second_triage(
+            second_original,
+            b"second minimization original replay".to_vec(),
+        ),
+        publish_second_triage(
+            second_minimized,
+            b"second minimization selected replay".to_vec(),
+        ),
+        publish_second_triage(
+            second_original,
+            b"second verification original replay".to_vec(),
+        ),
+        publish_second_triage(
+            second_minimized,
+            vec![b't'; MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES],
+        ),
+    );
+    let second_bundle = FindingCandidateBundle::new_with_triage_evidence(
         second_observed.observation,
         signature.clone(),
         second_original,
         second_minimized,
         second_signature_minimization,
         FindingExactPins::default(),
+        second_triage_evidence,
     )
     .expect("second finding candidate bundle");
+    assert_eq!(second_bundle.schema_version(), 2);
     assert_eq!(second_bundle.signature(), bundle.signature());
     let second_bundle_id = repository
         .publish_finding_candidate_bundle(&second_bundle)
         .expect("publish second finding candidate bundle");
+    assert_eq!(
+        repository
+            .load_finding_candidate_bundle(second_bundle_id)
+            .expect("load schema-v2 finding candidate bundle"),
+        second_bundle
+    );
     assert_ne!(second_bundle_id, bundle_id);
 
     let legacy_no_min_occurrences = repository
@@ -1321,6 +1521,7 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
     ));
     let mut after = None;
     let mut queried_bundle_ids = BTreeSet::new();
+    let mut queried_rich_triage_objects = 0;
     loop {
         let request = QueryCampaignFindingOccurrencesRequest::new(
             principal.clone(),
@@ -1344,11 +1545,20 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         for occurrence in response.entries() {
             let bundle_id = occurrence.bundle().id().expect("queried bundle ID");
             queried_bundle_ids.insert(bundle_id);
-            for kind in [
+            let mut object_kinds = vec![
                 CampaignFindingOccurrenceObjectKind::Observation,
                 CampaignFindingOccurrenceObjectKind::Reproduction,
                 CampaignFindingOccurrenceObjectKind::MinimizedReproduction,
-            ] {
+            ];
+            if occurrence.bundle().triage_evidence().is_some() {
+                object_kinds.extend([
+                    CampaignFindingOccurrenceObjectKind::MinimizationOriginalTriageEvidence,
+                    CampaignFindingOccurrenceObjectKind::MinimizationSelectedTriageEvidence,
+                    CampaignFindingOccurrenceObjectKind::VerificationOriginalTriageEvidence,
+                    CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence,
+                ]);
+            }
+            for kind in object_kinds {
                 let object_request = GetCampaignFindingOccurrenceObjectRequest::new(
                     principal.clone(),
                     campaign.clone(),
@@ -1371,6 +1581,12 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
                     )
                 {
                     assert!(encoded.len() > 32 * 1024 * 1024);
+                }
+                if matches!(
+                    kind,
+                    CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence
+                ) {
+                    assert!(encoded.len() > MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES);
                 }
                 let decoded =
                     GetCampaignFindingOccurrenceObjectResponse::from_canonical_bytes(&encoded)
@@ -1397,6 +1613,58 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
                             occurrence.bundle().minimized()
                         );
                     }
+                    CampaignFindingOccurrenceObject::MinimizationOriginalTriageEvidence(value) => {
+                        queried_rich_triage_objects += 1;
+                        assert_eq!(
+                            value
+                                .id()
+                                .expect("minimization original triage evidence ID"),
+                            occurrence
+                                .bundle()
+                                .triage_evidence()
+                                .expect("bundle triage evidence")
+                                .minimization_original()
+                        );
+                    }
+                    CampaignFindingOccurrenceObject::MinimizationSelectedTriageEvidence(value) => {
+                        queried_rich_triage_objects += 1;
+                        assert_eq!(
+                            value
+                                .id()
+                                .expect("minimization selected triage evidence ID"),
+                            occurrence
+                                .bundle()
+                                .triage_evidence()
+                                .expect("bundle triage evidence")
+                                .minimization_selected()
+                        );
+                    }
+                    CampaignFindingOccurrenceObject::VerificationOriginalTriageEvidence(value) => {
+                        queried_rich_triage_objects += 1;
+                        assert_eq!(
+                            value
+                                .id()
+                                .expect("verification original triage evidence ID"),
+                            occurrence
+                                .bundle()
+                                .triage_evidence()
+                                .expect("bundle triage evidence")
+                                .verification_original()
+                        );
+                    }
+                    CampaignFindingOccurrenceObject::VerificationSelectedTriageEvidence(value) => {
+                        queried_rich_triage_objects += 1;
+                        assert_eq!(
+                            value
+                                .id()
+                                .expect("verification selected triage evidence ID"),
+                            occurrence
+                                .bundle()
+                                .triage_evidence()
+                                .expect("bundle triage evidence")
+                                .verification_selected()
+                        );
+                    }
                 }
             }
         }
@@ -1409,6 +1677,7 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         queried_bundle_ids,
         BTreeSet::from([bundle_id, second_bundle_id])
     );
+    assert_eq!(queried_rich_triage_objects, 4);
     let orphaned =
         CampaignRepository::new(repository.blobs.clone(), Arc::new(MemoryRefBackend::new()));
     assert!(

@@ -30,10 +30,12 @@ use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     CampaignCodecError, CampaignHash, CampaignRecordKind, FindingCandidateBundleId,
     FindingExactPins, FindingKind, FindingMinimizationEvidence, FindingSignature, FindingTarget,
-    MAX_FINDING_MINIMIZATION_ATTEMPTS, ObjectEnvelope, ObservationId, ReproductionArtifactId,
+    FindingTriageReplayEvidenceId, MAX_FINDING_MINIMIZATION_ATTEMPTS, ObjectEnvelope,
+    ObservationId, ReproductionArtifactId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
+const TRIAGE_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 const REPLAY_SIGNATURE_SCHEMA_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SIGNATURE_REPLAYS_PER_PASS: usize = MAX_FINDING_MINIMIZATION_ATTEMPTS + 1;
@@ -395,6 +397,96 @@ impl Canonical for FindingSignatureMinimizationEvidence {
     }
 }
 
+/// Four native replay records required to reconstruct successful triage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindingTriageEvidenceSet {
+    minimization_original: FindingTriageReplayEvidenceId,
+    minimization_selected: FindingTriageReplayEvidenceId,
+    verification_original: FindingTriageReplayEvidenceId,
+    verification_selected: FindingTriageReplayEvidenceId,
+}
+
+impl FindingTriageEvidenceSet {
+    /// Builds the complete two-pass replay evidence set.
+    #[must_use]
+    pub const fn new(
+        minimization_original: FindingTriageReplayEvidenceId,
+        minimization_selected: FindingTriageReplayEvidenceId,
+        verification_original: FindingTriageReplayEvidenceId,
+        verification_selected: FindingTriageReplayEvidenceId,
+    ) -> Self {
+        Self {
+            minimization_original,
+            minimization_selected,
+            verification_original,
+            verification_selected,
+        }
+    }
+
+    /// Returns the minimization pass replay of the original reproduction.
+    #[must_use]
+    pub const fn minimization_original(self) -> FindingTriageReplayEvidenceId {
+        self.minimization_original
+    }
+
+    /// Returns the minimization pass replay of the selected reproduction.
+    #[must_use]
+    pub const fn minimization_selected(self) -> FindingTriageReplayEvidenceId {
+        self.minimization_selected
+    }
+
+    /// Returns the verification pass replay of the original reproduction.
+    #[must_use]
+    pub const fn verification_original(self) -> FindingTriageReplayEvidenceId {
+        self.verification_original
+    }
+
+    /// Returns the verification pass replay of the selected reproduction.
+    #[must_use]
+    pub const fn verification_selected(self) -> FindingTriageReplayEvidenceId {
+        self.verification_selected
+    }
+
+    fn content_children(self) -> Vec<(String, ContentId)> {
+        vec![
+            (
+                "triage-evidence.minimization.original".to_owned(),
+                self.minimization_original.content_id(),
+            ),
+            (
+                "triage-evidence.minimization.selected".to_owned(),
+                self.minimization_selected.content_id(),
+            ),
+            (
+                "triage-evidence.verification.original".to_owned(),
+                self.verification_original.content_id(),
+            ),
+            (
+                "triage-evidence.verification.selected".to_owned(),
+                self.verification_selected.content_id(),
+            ),
+        ]
+    }
+}
+
+impl Canonical for FindingTriageEvidenceSet {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.minimization_original.encode(encoder);
+        self.minimization_selected.encode(encoder);
+        self.verification_original.encode(encoder);
+        self.verification_selected.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self::new(
+            FindingTriageReplayEvidenceId::decode(decoder)?,
+            FindingTriageReplayEvidenceId::decode(decoder)?,
+            FindingTriageReplayEvidenceId::decode(decoder)?,
+            FindingTriageReplayEvidenceId::decode(decoder)?,
+        ))
+    }
+}
+
 /// Immutable worker-produced basis for one minimized finding publication.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FindingCandidateBundle {
@@ -405,6 +497,7 @@ pub struct FindingCandidateBundle {
     minimized: ReproductionArtifactId,
     signature_minimization: FindingSignatureMinimizationEvidence,
     exact_pins: FindingExactPins,
+    triage_evidence: Option<FindingTriageEvidenceSet>,
 }
 
 impl FindingCandidateBundle {
@@ -426,6 +519,56 @@ impl FindingCandidateBundle {
         signature_minimization: FindingSignatureMinimizationEvidence,
         exact_pins: FindingExactPins,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            RECORD_SCHEMA_VERSION,
+            observation,
+            signature,
+            reproduction,
+            minimized,
+            signature_minimization,
+            exact_pins,
+            None,
+        )
+    }
+
+    /// Builds a candidate with native replay evidence for both triage passes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] under the same conditions as [`Self::new`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_triage_evidence(
+        observation: ObservationId,
+        signature: FindingSignature,
+        reproduction: ReproductionArtifactId,
+        minimized: ReproductionArtifactId,
+        signature_minimization: FindingSignatureMinimizationEvidence,
+        exact_pins: FindingExactPins,
+        triage_evidence: FindingTriageEvidenceSet,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            TRIAGE_EVIDENCE_SCHEMA_VERSION,
+            observation,
+            signature,
+            reproduction,
+            minimized,
+            signature_minimization,
+            exact_pins,
+            Some(triage_evidence),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_versioned(
+        schema_version: u32,
+        observation: ObservationId,
+        signature: FindingSignature,
+        reproduction: ReproductionArtifactId,
+        minimized: ReproductionArtifactId,
+        signature_minimization: FindingSignatureMinimizationEvidence,
+        exact_pins: FindingExactPins,
+        triage_evidence: Option<FindingTriageEvidenceSet>,
+    ) -> Result<Self, CampaignCodecError> {
         if reproduction.content_id().schema_version() != 1
             || minimized.content_id().schema_version() != 2
         {
@@ -434,15 +577,21 @@ impl FindingCandidateBundle {
             });
         }
         signature_minimization.validate_signature_basis(&signature)?;
+        if matches!(schema_version, RECORD_SCHEMA_VERSION) != triage_evidence.is_none() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "finding candidate schema disagrees with triage evidence",
+            });
+        }
 
         let value = Self {
-            schema_version: RECORD_SCHEMA_VERSION,
+            schema_version,
             observation,
             signature,
             reproduction,
             minimized,
             signature_minimization,
             exact_pins,
+            triage_evidence,
         };
         codec::ensure_encoded_size(
             &value,
@@ -450,6 +599,12 @@ impl FindingCandidateBundle {
             "finding-candidate-bundle-encoded-bytes",
         )?;
         Ok(value)
+    }
+
+    /// Returns the canonical record-body and envelope schema version.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
     }
 
     /// Returns the observation that produced this finding candidate.
@@ -488,6 +643,12 @@ impl FindingCandidateBundle {
         &self.exact_pins
     }
 
+    /// Returns native replay evidence for both passes, when retained.
+    #[must_use]
+    pub const fn triage_evidence(&self) -> Option<FindingTriageEvidenceSet> {
+        self.triage_evidence
+    }
+
     /// Returns strict canonical record-body bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
@@ -516,8 +677,9 @@ impl FindingCandidateBundle {
     /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
     pub fn id(&self) -> Result<FindingCandidateBundleId, CampaignCodecError> {
         FindingCandidateBundleId::from_content_id(
-            ObjectEnvelope::for_record(
+            ObjectEnvelope::for_record_versioned(
                 CampaignRecordKind::FindingCandidateBundle,
+                self.schema_version,
                 crate::object::content_children(self.content_children())?,
                 self.canonical_bytes(),
             )?
@@ -534,6 +696,9 @@ impl FindingCandidateBundle {
         children.extend(signature_children("signature", &self.signature));
         children.extend(self.signature_minimization.content_children());
         children.extend(exact_pin_children(&self.exact_pins));
+        if let Some(triage_evidence) = self.triage_evidence {
+            children.extend(triage_evidence.content_children());
+        }
         children
     }
 }
@@ -547,26 +712,42 @@ impl Canonical for FindingCandidateBundle {
         self.minimized.encode(encoder);
         self.signature_minimization.encode(encoder);
         self.exact_pins.encode(encoder);
+        if self.schema_version == TRIAGE_EVIDENCE_SCHEMA_VERSION {
+            self.triage_evidence.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        if u32::decode(decoder)? != RECORD_SCHEMA_VERSION {
+        let schema_version = u32::decode(decoder)?;
+        if !matches!(
+            schema_version,
+            RECORD_SCHEMA_VERSION | TRIAGE_EVIDENCE_SCHEMA_VERSION
+        ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported finding candidate bundle schema version",
             });
         }
-        Self::new(
+        Self::new_versioned(
+            schema_version,
             ObservationId::decode(decoder)?,
             FindingSignature::decode(decoder)?,
             ReproductionArtifactId::decode(decoder)?,
             ReproductionArtifactId::decode(decoder)?,
             FindingSignatureMinimizationEvidence::decode(decoder)?,
             FindingExactPins::decode(decoder)?,
+            if schema_version == TRIAGE_EVIDENCE_SCHEMA_VERSION {
+                Option::<FindingTriageEvidenceSet>::decode(decoder)?
+            } else {
+                None
+            },
         )
     }
 }
 
-fn signature_children(prefix: &str, signature: &FindingSignature) -> Vec<(String, ContentId)> {
+pub(crate) fn signature_children(
+    prefix: &str,
+    signature: &FindingSignature,
+) -> Vec<(String, ContentId)> {
     let mut children = signature
         .causal_evidence()
         .iter()
@@ -691,6 +872,39 @@ mod tests {
                 .iter()
                 .all(|(_, child)| *child != decoded.id().expect("bundle ID").content_id())
         );
+
+        let triage_id = |label: &[u8]| {
+            FindingTriageReplayEvidenceId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Finding,
+                1,
+                label,
+            ))
+            .expect("triage replay evidence ID")
+        };
+        let triage_evidence = FindingTriageEvidenceSet::new(
+            triage_id(b"minimization-original"),
+            triage_id(b"minimization-selected"),
+            triage_id(b"verification-original"),
+            triage_id(b"verification-selected"),
+        );
+        let rich_bundle = FindingCandidateBundle::new_with_triage_evidence(
+            bundle.observation(),
+            bundle.signature().clone(),
+            bundle.reproduction(),
+            bundle.minimized(),
+            bundle.signature_minimization().clone(),
+            bundle.exact_pins().clone(),
+            triage_evidence,
+        )
+        .expect("rich finding candidate bundle");
+
+        let decoded_rich =
+            FindingCandidateBundle::from_canonical_bytes(&rich_bundle.canonical_bytes())
+                .expect("decode rich finding candidate bundle");
+        assert_eq!(decoded_rich, rich_bundle);
+        assert_eq!(decoded_rich.schema_version(), 2);
+        assert_eq!(decoded_rich.triage_evidence(), Some(triage_evidence));
+        assert_eq!(decoded_rich.content_children().len(), 7);
     }
 
     #[test]

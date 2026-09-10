@@ -6,8 +6,8 @@ use super::*;
 use crate::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptId, AttemptStart, BranchPath,
     BranchRequestId, ChoiceDomain, ChoiceOpportunity, ContinuationProjection, Finding,
-    FindingCandidateBundle, FindingId, Observation, PlannerStep, Proposal, ReproductionArtifact,
-    SelectableDeclaration, Selection, SelectionOrigin,
+    FindingCandidateBundle, FindingId, FindingTriageReplayEvidence, Observation, PlannerStep,
+    Proposal, ReproductionArtifact, SelectableDeclaration, Selection, SelectionOrigin,
 };
 
 const EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 2;
@@ -1384,6 +1384,14 @@ pub enum CampaignFindingOccurrenceObjectKind {
     Reproduction,
     /// The candidate's minimized reproduction and verifier trace.
     MinimizedReproduction,
+    /// The minimization pass replay of the original reproduction.
+    MinimizationOriginalTriageEvidence,
+    /// The minimization pass replay of the selected reproduction.
+    MinimizationSelectedTriageEvidence,
+    /// The verification pass replay of the original reproduction.
+    VerificationOriginalTriageEvidence,
+    /// The verification pass replay of the selected reproduction.
+    VerificationSelectedTriageEvidence,
 }
 
 impl Canonical for CampaignFindingOccurrenceObjectKind {
@@ -1392,6 +1400,10 @@ impl Canonical for CampaignFindingOccurrenceObjectKind {
             Self::Observation => 0,
             Self::Reproduction => 1,
             Self::MinimizedReproduction => 2,
+            Self::MinimizationOriginalTriageEvidence => 3,
+            Self::MinimizationSelectedTriageEvidence => 4,
+            Self::VerificationOriginalTriageEvidence => 5,
+            Self::VerificationSelectedTriageEvidence => 6,
         });
     }
 
@@ -1400,6 +1412,10 @@ impl Canonical for CampaignFindingOccurrenceObjectKind {
             0 => Ok(Self::Observation),
             1 => Ok(Self::Reproduction),
             2 => Ok(Self::MinimizedReproduction),
+            3 => Ok(Self::MinimizationOriginalTriageEvidence),
+            4 => Ok(Self::MinimizationSelectedTriageEvidence),
+            5 => Ok(Self::VerificationOriginalTriageEvidence),
+            6 => Ok(Self::VerificationSelectedTriageEvidence),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-finding-occurrence-object-kind",
                 tag,
@@ -1417,6 +1433,14 @@ pub enum CampaignFindingOccurrenceObject {
     Reproduction(ReproductionArtifact),
     /// The candidate's minimized reproduction and verifier trace.
     MinimizedReproduction(ReproductionArtifact),
+    /// The minimization pass replay of the original reproduction.
+    MinimizationOriginalTriageEvidence(FindingTriageReplayEvidence),
+    /// The minimization pass replay of the selected reproduction.
+    MinimizationSelectedTriageEvidence(FindingTriageReplayEvidence),
+    /// The verification pass replay of the original reproduction.
+    VerificationOriginalTriageEvidence(FindingTriageReplayEvidence),
+    /// The verification pass replay of the selected reproduction.
+    VerificationSelectedTriageEvidence(FindingTriageReplayEvidence),
 }
 
 impl CampaignFindingOccurrenceObject {
@@ -1428,6 +1452,18 @@ impl CampaignFindingOccurrenceObject {
             Self::Reproduction(_) => CampaignFindingOccurrenceObjectKind::Reproduction,
             Self::MinimizedReproduction(_) => {
                 CampaignFindingOccurrenceObjectKind::MinimizedReproduction
+            }
+            Self::MinimizationOriginalTriageEvidence(_) => {
+                CampaignFindingOccurrenceObjectKind::MinimizationOriginalTriageEvidence
+            }
+            Self::MinimizationSelectedTriageEvidence(_) => {
+                CampaignFindingOccurrenceObjectKind::MinimizationSelectedTriageEvidence
+            }
+            Self::VerificationOriginalTriageEvidence(_) => {
+                CampaignFindingOccurrenceObjectKind::VerificationOriginalTriageEvidence
+            }
+            Self::VerificationSelectedTriageEvidence(_) => {
+                CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence
             }
         }
     }
@@ -1441,6 +1477,10 @@ impl Canonical for CampaignFindingOccurrenceObject {
             Self::Reproduction(value) | Self::MinimizedReproduction(value) => {
                 value.encode(encoder);
             }
+            Self::MinimizationOriginalTriageEvidence(value)
+            | Self::MinimizationSelectedTriageEvidence(value)
+            | Self::VerificationOriginalTriageEvidence(value)
+            | Self::VerificationSelectedTriageEvidence(value) => value.encode(encoder),
         }
     }
 
@@ -1454,6 +1494,22 @@ impl Canonical for CampaignFindingOccurrenceObject {
             }
             CampaignFindingOccurrenceObjectKind::MinimizedReproduction => {
                 ReproductionArtifact::decode(decoder).map(Self::MinimizedReproduction)
+            }
+            CampaignFindingOccurrenceObjectKind::MinimizationOriginalTriageEvidence => {
+                FindingTriageReplayEvidence::decode(decoder)
+                    .map(Self::MinimizationOriginalTriageEvidence)
+            }
+            CampaignFindingOccurrenceObjectKind::MinimizationSelectedTriageEvidence => {
+                FindingTriageReplayEvidence::decode(decoder)
+                    .map(Self::MinimizationSelectedTriageEvidence)
+            }
+            CampaignFindingOccurrenceObjectKind::VerificationOriginalTriageEvidence => {
+                FindingTriageReplayEvidence::decode(decoder)
+                    .map(Self::VerificationOriginalTriageEvidence)
+            }
+            CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence => {
+                FindingTriageReplayEvidence::decode(decoder)
+                    .map(Self::VerificationSelectedTriageEvidence)
             }
         }
     }
@@ -1790,6 +1846,18 @@ fn finding_occurrence_object_matches(
             && value
                 .minimization()
                 .is_some_and(|evidence| evidence.original() == bundle.reproduction())),
+        CampaignFindingOccurrenceObject::MinimizationOriginalTriageEvidence(value) => Ok(bundle
+            .triage_evidence()
+            .is_some_and(|evidence| value.id().ok() == Some(evidence.minimization_original()))),
+        CampaignFindingOccurrenceObject::MinimizationSelectedTriageEvidence(value) => Ok(bundle
+            .triage_evidence()
+            .is_some_and(|evidence| value.id().ok() == Some(evidence.minimization_selected()))),
+        CampaignFindingOccurrenceObject::VerificationOriginalTriageEvidence(value) => Ok(bundle
+            .triage_evidence()
+            .is_some_and(|evidence| value.id().ok() == Some(evidence.verification_original()))),
+        CampaignFindingOccurrenceObject::VerificationSelectedTriageEvidence(value) => Ok(bundle
+            .triage_evidence()
+            .is_some_and(|evidence| value.id().ok() == Some(evidence.verification_selected()))),
     }
 }
 

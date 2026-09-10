@@ -19,10 +19,10 @@ use crate::{
     CampaignArchiveManifest, CampaignCodecError, CampaignControlAction, CampaignFact,
     CampaignLineage, CampaignPlanningView, CampaignPolicy, CampaignSnapshot, ConfigurationArtifact,
     ContinuationProjection, CoverageProjection, ExpansionCredit, ExpansionState, Finding,
-    FindingCandidateBundle, MeasurementSet, ObjectiveEvaluation, Observation, PlannerEngine,
-    PlannerInvocation, PlannerRequest, PlannerState, PlannerStep, PolicyArtifact,
-    PropertyVerdictSet, Proposal, RankingExplanation, ReproductionArtifact, ScenarioArtifact,
-    SurvivorSelection,
+    FindingCandidateBundle, FindingTriageReplayEvidence, MeasurementSet, ObjectiveEvaluation,
+    Observation, PlannerEngine, PlannerInvocation, PlannerRequest, PlannerState, PlannerStep,
+    PolicyArtifact, PropertyVerdictSet, Proposal, RankingExplanation, ReproductionArtifact,
+    ScenarioArtifact, SurvivorSelection,
 };
 
 pub use crucible_cas::content_envelope::ContentChild as ChildReference;
@@ -116,6 +116,8 @@ pub enum CampaignRecordKind {
     PlannerBeamCandidate,
     /// Snapshot-bound graph-search ordering key for one frontier candidate.
     PlannerSearchCandidate,
+    /// Exact replay inputs for reconstructing one observed finding signature.
+    FindingTriageReplayEvidence,
     /// Durable executor-produced finding candidate handoff.
     FindingCandidateBundle,
     /// Authenticated partial or complete campaign archive boundary.
@@ -126,7 +128,7 @@ pub enum CampaignRecordKind {
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 46] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -172,6 +174,7 @@ impl CampaignRecordKind {
         Self::ArchiveInventoryPage,
         Self::PlannerBeamCandidate,
         Self::PlannerSearchCandidate,
+        Self::FindingTriageReplayEvidence,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -220,6 +223,7 @@ impl CampaignRecordKind {
             Self::PlannerCandidateBudget => "crucible.campaign.planner-candidate-budget",
             Self::PlannerBeamCandidate => "crucible.campaign.planner-beam-candidate",
             Self::PlannerSearchCandidate => "crucible.campaign.planner-search-candidate",
+            Self::FindingTriageReplayEvidence => "crucible.campaign.finding-triage-replay-evidence",
             Self::FindingCandidateBundle => "crucible.campaign.finding-candidate-bundle",
             Self::ArchiveManifest => "crucible.campaign.archive-manifest",
             Self::ArchiveInventoryPage => "crucible.campaign.archive-inventory-page",
@@ -246,7 +250,7 @@ impl CampaignRecordKind {
             Self::ObjectiveEvaluation | Self::RankingExplanation => 2,
             Self::ReproductionArtifact => 2,
             Self::Finding => 4,
-            Self::FindingCandidateBundle => RECORD_SCHEMA_VERSION,
+            Self::FindingCandidateBundle => 2,
             Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,
             Self::PlannerBeamCandidate => 2,
@@ -287,9 +291,10 @@ impl CampaignRecordKind {
             | Self::PropertyVerdictSet
             | Self::Observation
             | Self::ObjectiveEvaluation => ObjectKind::Observation,
-            Self::ReproductionArtifact | Self::Finding | Self::FindingCandidateBundle => {
-                ObjectKind::Finding
-            }
+            Self::ReproductionArtifact
+            | Self::Finding
+            | Self::FindingCandidateBundle
+            | Self::FindingTriageReplayEvidence => ObjectKind::Finding,
             Self::Lineage
             | Self::BudgetLedger
             | Self::Fact
@@ -360,6 +365,7 @@ impl Canonical for CampaignRecordKind {
             Self::ArchiveInventoryPage => 42,
             Self::PlannerBeamCandidate => 43,
             Self::PlannerSearchCandidate => 44,
+            Self::FindingTriageReplayEvidence => 45,
         });
     }
 
@@ -410,6 +416,7 @@ impl Canonical for CampaignRecordKind {
             42 => Ok(Self::ArchiveInventoryPage),
             43 => Ok(Self::PlannerBeamCandidate),
             44 => Ok(Self::PlannerSearchCandidate),
+            45 => Ok(Self::FindingTriageReplayEvidence),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -773,7 +780,9 @@ impl ObjectEnvelope {
                     | CampaignRecordKind::BudgetLedger
             ) && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::Finding
-                && matches!(envelope.schema_version(), 1..=3);
+                && matches!(envelope.schema_version(), 1..=3)
+            || record_kind == CampaignRecordKind::FindingCandidateBundle
+                && envelope.schema_version() == 1;
         if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign record schema version",
@@ -804,6 +813,7 @@ impl ObjectEnvelope {
                 | CampaignRecordKind::ReproductionArtifact
                 | CampaignRecordKind::Finding
                 | CampaignRecordKind::FindingCandidateBundle
+                | CampaignRecordKind::FindingTriageReplayEvidence
                 | CampaignRecordKind::PlannerCandidateGuidance
                 | CampaignRecordKind::PlannerBeamCandidate
                 | CampaignRecordKind::ArchiveManifest
@@ -983,6 +993,10 @@ fn expected_children(
         }
         CampaignRecordKind::FindingCandidateBundle => {
             let value = FindingCandidateBundle::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::FindingTriageReplayEvidence => {
+            let value = FindingTriageReplayEvidence::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
         CampaignRecordKind::PlannerCandidateGuidance => {

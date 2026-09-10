@@ -3,6 +3,7 @@
 use super::*;
 use crate::{
     CampaignName, FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingId,
+    FindingTarget,
 };
 
 /// Opaque proof that one snapshot directly retains a finding candidate bundle.
@@ -52,6 +53,49 @@ impl AuthenticatedFindingCandidateIncorporation {
 }
 
 impl CampaignRepository {
+    /// Publishes one transport-neutral native triage replay record.
+    ///
+    /// The referenced reproduction and every observed-signature dependency
+    /// must already be durable. Repeating the operation returns the same ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when any referenced object
+    /// is absent, corrupt, or inconsistent with the observed signature.
+    pub fn publish_finding_triage_replay_evidence(
+        &self,
+        evidence: &FindingTriageReplayEvidence,
+    ) -> Result<FindingTriageReplayEvidenceId, CampaignRepositoryError> {
+        self.validate_finding_triage_replay_evidence(evidence)?;
+        let content = self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::FindingTriageReplayEvidence,
+            crate::object::content_children(evidence.content_children())?,
+            evidence.canonical_bytes(),
+        )?)?;
+        if content != evidence.id()?.content_id() {
+            return Err(integrity(
+                "finding-triage-replay-evidence-publication-id-mismatch",
+            ));
+        }
+        self.verify_campaign_closure(content)?;
+        FindingTriageReplayEvidenceId::from_content_id(content).map_err(Into::into)
+    }
+
+    /// Loads and authenticates one native triage replay record.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the record or one of its
+    /// referenced objects is absent, corrupt, or inconsistent.
+    pub fn load_finding_triage_replay_evidence(
+        &self,
+        id: FindingTriageReplayEvidenceId,
+    ) -> Result<FindingTriageReplayEvidence, CampaignRepositoryError> {
+        let evidence = self.decode_finding_triage_replay_evidence(id.content_id())?;
+        self.validate_finding_triage_replay_evidence(&evidence)?;
+        Ok(evidence)
+    }
+
     /// Publishes one fully verified finding candidate handoff.
     ///
     /// The observation and both reproduction artifacts must already be durable.
@@ -69,8 +113,9 @@ impl CampaignRepository {
         bundle: &FindingCandidateBundle,
     ) -> Result<FindingCandidateBundleId, CampaignRepositoryError> {
         self.validate_finding_candidate_bundle(bundle)?;
-        let content = self.put_envelope(ObjectEnvelope::for_record(
+        let content = self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::FindingCandidateBundle,
+            bundle.schema_version(),
             crate::object::content_children(bundle.content_children())?,
             bundle.canonical_bytes(),
         )?)?;
@@ -206,6 +251,45 @@ impl CampaignRepository {
         Ok(bundle)
     }
 
+    pub(super) fn decode_finding_triage_replay_evidence(
+        &self,
+        id: ContentId,
+    ) -> Result<FindingTriageReplayEvidence, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::FindingTriageReplayEvidence)?;
+        let evidence = FindingTriageReplayEvidence::from_canonical_bytes(envelope.body())?;
+        if evidence.id()?.content_id() != id {
+            return Err(integrity("finding-triage-replay-evidence-envelope-shape"));
+        }
+        Ok(evidence)
+    }
+
+    pub(super) fn validate_finding_triage_replay_evidence(
+        &self,
+        evidence: &FindingTriageReplayEvidence,
+    ) -> Result<(), CampaignRepositoryError> {
+        let reproduction = self.read_reproduction_artifact(evidence.reproduction().content_id())?;
+        if reproduction.finding_fingerprint() != evidence.observed_signature().fingerprint() {
+            return Err(integrity(
+                "finding-triage-replay-evidence-fingerprint-mismatch",
+            ));
+        }
+        if matches!(
+            evidence.observed_signature().target(),
+            Some(FindingTarget::Configuration(configuration))
+                if configuration != reproduction.configuration_artifact()
+        ) {
+            return Err(integrity(
+                "finding-triage-replay-evidence-configuration-mismatch",
+            ));
+        }
+        for (_, child) in evidence.content_children() {
+            let handle = self.blobs.read(child, None)?;
+            handle.copy_to(&mut std::io::sink())?;
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_finding_candidate_bundle(
         &self,
         bundle: &FindingCandidateBundle,
@@ -224,6 +308,7 @@ impl CampaignRepository {
         bundle
             .signature_minimization()
             .validate_against(bundle.signature(), minimization)?;
+        self.validate_finding_candidate_triage_evidence(bundle, minimization)?;
         for (_, child) in bundle.signature_minimization().content_children() {
             let handle = self.blobs.read(child, None)?;
             handle.copy_to(&mut std::io::sink())?;
@@ -231,6 +316,72 @@ impl CampaignRepository {
         for pin in bundle.exact_pins().all() {
             let handle = self.blobs.read(pin.content_id(), None)?;
             handle.copy_to(&mut std::io::sink())?;
+        }
+        Ok(())
+    }
+
+    fn validate_finding_candidate_triage_evidence(
+        &self,
+        bundle: &FindingCandidateBundle,
+        minimization: &FindingMinimizationEvidence,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some(evidence) = bundle.triage_evidence() else {
+            return Ok(());
+        };
+        let selected_index = minimization
+            .attempts()
+            .iter()
+            .position(|attempt| attempt.accepted())
+            .map_or(0, |index| index + 1);
+        let signatures = bundle.signature_minimization();
+        let minimization_original = signatures
+            .minimization_pass()
+            .first()
+            .and_then(Option::as_ref)
+            .ok_or_else(|| integrity("finding-triage-minimization-original-is-missing"))?;
+        let minimization_selected = signatures
+            .minimization_pass()
+            .get(selected_index)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| integrity("finding-triage-minimization-selected-is-missing"))?;
+        let verification_original = signatures
+            .verification_pass()
+            .first()
+            .and_then(Option::as_ref)
+            .ok_or_else(|| integrity("finding-triage-verification-original-is-missing"))?;
+        let verification_selected = signatures
+            .verification_pass()
+            .get(selected_index)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| integrity("finding-triage-verification-selected-is-missing"))?;
+        for (id, reproduction, expected_signature) in [
+            (
+                evidence.minimization_original(),
+                bundle.reproduction(),
+                minimization_original,
+            ),
+            (
+                evidence.minimization_selected(),
+                bundle.minimized(),
+                minimization_selected,
+            ),
+            (
+                evidence.verification_original(),
+                bundle.reproduction(),
+                verification_original,
+            ),
+            (
+                evidence.verification_selected(),
+                bundle.minimized(),
+                verification_selected,
+            ),
+        ] {
+            let retained = self.load_finding_triage_replay_evidence(id)?;
+            if retained.reproduction() != reproduction
+                || retained.observed_signature() != expected_signature
+            {
+                return Err(integrity("finding-triage-replay-evidence-basis-mismatch"));
+            }
         }
         Ok(())
     }
