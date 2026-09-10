@@ -759,9 +759,10 @@ pub struct BranchPath {
 }
 
 pub struct AttemptAdmission {
-    pub schema_version: u32, // v2 only when ExecutionBasis carries ScenarioDefault
+    pub schema_version: u32, // v3 binds every new admission to retention policy
     pub attempt: AttemptId,
     pub role: AttemptAdmissionRole,
+    pub retention_policy: Option<CampaignPolicyId>, // present exactly in v3
 }
 
 pub enum AttemptAdmissionRole {
@@ -933,11 +934,16 @@ retroactively change estimator eligibility. A repeated attempt may produce
 identical bytes and deduplicate. If it does not, the replay oracle localizes a
 determinism defect.
 
-`AttemptAdmission` schema v2 is written only for an `ExecutionBasis` whose
-cause is `ScenarioDefault`; the nested cause carries the new tag. All other
-execution bases and every `AdditionalCause` retain schema v1 and their exact
-historical body and envelope identities. A v1 body containing the new cause or
-a v2 body without it is invalid.
+New `AttemptAdmission` records use schema v3 and carry the exact campaign policy
+whose retention rules govern the admitted execution and every additional
+cause. The policy is an authenticated envelope child. This direct binding
+prevents a later policy activation from changing whether an admitted attempt
+must retain its completion, exact checkpoints, findings, or replay evidence.
+Schema v1 and v2 remain readable with their original identities: v2 is valid
+only for an `ExecutionBasis` whose cause is `ScenarioDefault`, while v1 rejects
+that newer cause. Historical exhaustive and scenario-default bases derive their
+policy from the cause; proposal-backed v1 records resolve it through their
+authenticated proposal. A v3 body without its explicit policy is invalid.
 
 `AttemptStart::Discover` is the bootstrap form. It realizes a configuration
 until the next pending choice or terminal outcome without pretending a choice

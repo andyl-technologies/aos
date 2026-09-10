@@ -1072,4 +1072,67 @@ where
             occurrence_proof,
         )?)
     }
+
+    fn get_campaign_finding_triage_replay_segment(
+        &self,
+        request: &GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::GetCampaignFindingTriageReplaySegment,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+
+        let (finding, finding_proof) = self
+            .repository
+            .finding_with_proof(head.snapshot().roots().findings, request.finding())?;
+        let occurrence_root =
+            finding
+                .candidate_occurrences()
+                .ok_or(CampaignRepositoryError::InvalidRequest {
+                    reason: "campaign-finding-has-no-candidate-occurrence-index",
+                })?;
+        let (bundle, occurrence_proof) = self
+            .repository
+            .finding_candidate_bundle_with_proof(occurrence_root, request.bundle())?;
+        if request.role().evidence(&bundle) != Some(request.evidence()) {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-finding-triage-replay-role-evidence-mismatch",
+            }
+            .into());
+        }
+
+        let description = self
+            .repository
+            .describe_finding_triage_replay_storage(request.evidence())?;
+        let range = description.segment_range(
+            request.object_ordinal(),
+            request.object(),
+            request.segment_index(),
+        )?;
+        let range_bytes = self.repository.read_finding_triage_replay_storage_range(
+            request.evidence(),
+            request.object_ordinal(),
+            range,
+        )?;
+        Ok(GetCampaignFindingTriageReplaySegmentResponse::new(
+            request,
+            head.snapshot().clone(),
+            finding,
+            bundle,
+            description,
+            range_bytes,
+            finding_proof,
+            occurrence_proof,
+        )?)
+    }
 }

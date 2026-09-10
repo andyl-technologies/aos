@@ -2,8 +2,6 @@
 
 use super::*;
 
-// crucible-lint: allow rust-allow -- the durable finding producer consumes this staged export boundary in the integration stack.
-#[allow(dead_code)]
 pub(crate) fn capture_campaign_triage_finding<S>(
     client: &crucible_campaign::CampaignClient<S>,
     principal: crucible_campaign::CampaignPrincipal,
@@ -156,43 +154,47 @@ where
         )?;
         let triage_evidence = bundle
             .triage_evidence()
-            .map(|_| {
+            .map(|evidence| {
                 Ok::<_, CliError>(CampaignFindingOccurrenceTriageProof {
-                    minimization_original: capture_campaign_finding_occurrence_object(
+                    minimization_original: capture_campaign_finding_triage_replay(
                         client,
                         principal.clone(),
                         campaign.clone(),
                         snapshot,
                         finding_id,
                         bundle_id,
-                        crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizationOriginalTriageEvidence,
+                        crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal,
+                        evidence.minimization_original(),
                     )?,
-                    minimization_selected: capture_campaign_finding_occurrence_object(
+                    minimization_selected: capture_campaign_finding_triage_replay(
                         client,
                         principal.clone(),
                         campaign.clone(),
                         snapshot,
                         finding_id,
                         bundle_id,
-                        crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizationSelectedTriageEvidence,
+                        crucible_campaign::CampaignFindingTriageReplayRole::MinimizationSelected,
+                        evidence.minimization_selected(),
                     )?,
-                    verification_original: capture_campaign_finding_occurrence_object(
+                    verification_original: capture_campaign_finding_triage_replay(
                         client,
                         principal.clone(),
                         campaign.clone(),
                         snapshot,
                         finding_id,
                         bundle_id,
-                        crucible_campaign::CampaignFindingOccurrenceObjectKind::VerificationOriginalTriageEvidence,
+                        crucible_campaign::CampaignFindingTriageReplayRole::VerificationOriginal,
+                        evidence.verification_original(),
                     )?,
-                    verification_selected: capture_campaign_finding_occurrence_object(
+                    verification_selected: capture_campaign_finding_triage_replay(
                         client,
                         principal.clone(),
                         campaign.clone(),
                         snapshot,
                         finding_id,
                         bundle_id,
-                        crucible_campaign::CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence,
+                        crucible_campaign::CampaignFindingTriageReplayRole::VerificationSelected,
+                        evidence.verification_selected(),
                     )?,
                 })
             })
@@ -226,8 +228,6 @@ where
     Ok(evidence)
 }
 
-// crucible-lint: allow rust-allow -- this helper is reachable through the staged campaign finding export boundary.
-#[allow(dead_code)]
 fn capture_campaign_finding_object<S>(
     client: &crucible_campaign::CampaignClient<S>,
     principal: crucible_campaign::CampaignPrincipal,
@@ -250,8 +250,7 @@ where
     Ok(CampaignFindingObjectProof { request, response })
 }
 
-// crucible-lint: allow rust-allow -- this helper is reachable through the staged campaign finding export boundary.
-#[allow(dead_code, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn capture_campaign_finding_occurrence_object<S>(
     client: &crucible_campaign::CampaignClient<S>,
     principal: crucible_campaign::CampaignPrincipal,
@@ -275,12 +274,187 @@ where
     Ok(CampaignFindingOccurrenceObjectProof { request, response })
 }
 
+// crucible-lint: allow rust-allow -- the exact request carries every authenticated ownership coordinate.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn capture_campaign_finding_triage_replay<S>(
+    client: &crucible_campaign::CampaignClient<S>,
+    principal: crucible_campaign::CampaignPrincipal,
+    campaign: crucible_campaign::CampaignName,
+    snapshot: crucible_campaign::CampaignSnapshotId,
+    finding: crucible_campaign::FindingId,
+    bundle: crucible_campaign::FindingCandidateBundleId,
+    role: crucible_campaign::CampaignFindingTriageReplayRole,
+    evidence: crucible_campaign::FindingTriageReplayEvidenceId,
+) -> Result<CampaignFindingTriageReplayProof, CliError>
+where
+    S: crucible_campaign::CampaignFindingOccurrenceService,
+    S::Error: crucible_campaign::CampaignServiceFailureSource,
+{
+    let first_request = crucible_campaign::GetCampaignFindingTriageReplaySegmentRequest::new(
+        principal.clone(),
+        campaign.clone(),
+        snapshot,
+        finding,
+        bundle,
+        role,
+        evidence,
+        0,
+        evidence.content_id(),
+        0,
+    )
+    .map_err(|error| artifact_error(format!("build campaign triage segment query: {error}")))?;
+    let first_response = client
+        .get_campaign_finding_triage_replay_segment(&first_request)
+        .map_err(|error| artifact_error(format!("query campaign triage segment: {error}")))?;
+    let description = first_response.description().clone();
+    let mut segments = vec![CampaignFindingTriageReplaySegmentProof {
+        request: first_request,
+        response: first_response,
+    }];
+
+    let root = description
+        .objects()
+        .first()
+        .ok_or_else(|| artifact_error("campaign triage storage description has no root"))?;
+    let root_segment_count = object_segment_count(root.stored_envelope_bytes())?;
+    for segment_index in 1..root_segment_count {
+        let request = crucible_campaign::GetCampaignFindingTriageReplaySegmentRequest::new(
+            principal.clone(),
+            campaign.clone(),
+            snapshot,
+            finding,
+            bundle,
+            role,
+            evidence,
+            root.ordinal(),
+            root.content(),
+            segment_index,
+        )
+        .map_err(|error| artifact_error(format!("build campaign triage segment query: {error}")))?;
+        let response = client
+            .get_campaign_finding_triage_replay_segment(&request)
+            .map_err(|error| artifact_error(format!("query campaign triage segment: {error}")))?;
+        segments.push(CampaignFindingTriageReplaySegmentProof { request, response });
+    }
+    let root_bytes = campaign_triage_object_bytes(&description, root, &segments)?;
+    description
+        .authenticate_root_envelope(&root_bytes)
+        .map_err(|error| {
+            artifact_error(format!(
+                "campaign triage root storage proof is invalid: {error}"
+            ))
+        })?;
+
+    for object in &description.objects()[1..] {
+        let segment_count = object.stored_envelope_bytes();
+        let segment_count = object_segment_count(segment_count)?;
+        for segment_index in 0..segment_count {
+            let request = crucible_campaign::GetCampaignFindingTriageReplaySegmentRequest::new(
+                principal.clone(),
+                campaign.clone(),
+                snapshot,
+                finding,
+                bundle,
+                role,
+                evidence,
+                object.ordinal(),
+                object.content(),
+                segment_index,
+            )
+            .map_err(|error| {
+                artifact_error(format!("build campaign triage segment query: {error}"))
+            })?;
+            let response = client
+                .get_campaign_finding_triage_replay_segment(&request)
+                .map_err(|error| {
+                    artifact_error(format!("query campaign triage segment: {error}"))
+                })?;
+            segments.push(CampaignFindingTriageReplaySegmentProof { request, response });
+        }
+    }
+    let proof = CampaignFindingTriageReplayProof { segments };
+    reassemble_campaign_triage_replay_proof(&proof)?;
+    Ok(proof)
+}
+
+fn object_segment_count(stored_envelope_bytes: u64) -> Result<u32, CliError> {
+    let count = stored_envelope_bytes
+        .checked_add(crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES - 1)
+        .ok_or_else(|| artifact_error("campaign triage segment count overflows"))?
+        / crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES;
+    u32::try_from(count).map_err(|_| artifact_error("campaign triage segment count is invalid"))
+}
+
+fn campaign_triage_object_bytes(
+    description: &crucible_campaign::FindingTriageReplayStorageDescription,
+    object: &crucible_campaign::FindingTriageReplayStorageObject,
+    segments: &[CampaignFindingTriageReplaySegmentProof],
+) -> Result<Vec<u8>, CliError> {
+    let object_bytes = usize::try_from(object.stored_envelope_bytes())
+        .map_err(|_| artifact_error("campaign triage storage envelope length is invalid"))?;
+    let mut envelope = Vec::with_capacity(object_bytes);
+    for segment in segments
+        .iter()
+        .filter(|segment| segment.request.object_ordinal() == object.ordinal())
+    {
+        let expected_index = u32::try_from(
+            u64::try_from(envelope.len())
+                .map_err(|_| artifact_error("campaign triage storage envelope is oversized"))?
+                / crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
+        )
+        .map_err(|_| artifact_error("campaign triage segment count is invalid"))?;
+        if segment.request.object() != object.content()
+            || segment.request.segment_index() != expected_index
+            || segment.response.description() != description
+        {
+            return Err(artifact_error(
+                "campaign triage storage segments are reordered or substituted",
+            ));
+        }
+        segment
+            .response
+            .validate_for(&segment.request)
+            .map_err(|error| {
+                artifact_error(format!(
+                    "campaign triage segment response is invalid: {error}"
+                ))
+            })?;
+        envelope.extend_from_slice(segment.response.range_bytes());
+    }
+    if envelope.len() != object_bytes {
+        return Err(artifact_error(
+            "campaign triage storage envelope transfer is incomplete",
+        ));
+    }
+    Ok(envelope)
+}
+
 #[derive(Clone)]
-struct ImportedCampaignFindingService {
+/// Serves imported guarded proofs through the campaign finding query traits.
+pub(super) struct ImportedCampaignFindingService {
     membership: CampaignFindingsMembershipProof,
     objects: Vec<CampaignFindingObjectProof>,
     occurrences: Vec<CampaignFindingOccurrencesProof>,
     occurrence_objects: Vec<CampaignFindingOccurrenceObjectProof>,
+    triage_segments: Vec<CampaignFindingTriageReplaySegmentProof>,
+}
+
+impl ImportedCampaignFindingService {
+    /// Creates a service over one authenticated finding proof closure.
+    pub(super) fn new(
+        membership: CampaignFindingsMembershipProof,
+        objects: Vec<CampaignFindingObjectProof>,
+        occurrences: Vec<CampaignFindingOccurrencesProof>,
+        occurrence_objects: Vec<CampaignFindingOccurrenceObjectProof>,
+    ) -> Self {
+        Self {
+            membership,
+            objects,
+            occurrences,
+            occurrence_objects,
+            triage_segments: Vec::new(),
+        }
+    }
 }
 
 impl crucible_campaign::CampaignFindingOccurrenceService for ImportedCampaignFindingService {
@@ -300,6 +474,17 @@ impl crucible_campaign::CampaignFindingOccurrenceService for ImportedCampaignFin
         request: &crucible_campaign::GetCampaignFindingOccurrenceObjectRequest,
     ) -> Result<crucible_campaign::GetCampaignFindingOccurrenceObjectResponse, Self::Error> {
         self.occurrence_objects
+            .iter()
+            .find(|proof| &proof.request == request)
+            .map(|proof| proof.response.clone())
+            .ok_or(crucible_campaign::CampaignServiceFailure::ProtocolViolation)
+    }
+
+    fn get_campaign_finding_triage_replay_segment(
+        &self,
+        request: &crucible_campaign::GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<crucible_campaign::GetCampaignFindingTriageReplaySegmentResponse, Self::Error> {
+        self.triage_segments
             .iter()
             .find(|proof| &proof.request == request)
             .map(|proof| proof.response.clone())
@@ -419,6 +604,7 @@ pub(super) fn authenticate_campaign_triage_finding(
         .map(|proof| proof.page.clone())
         .collect();
     let mut occurrence_objects = Vec::new();
+    let mut triage_segments = Vec::new();
     for proof in &item.occurrence_proofs {
         occurrence_objects.extend([
             proof.observation.clone(),
@@ -426,12 +612,14 @@ pub(super) fn authenticate_campaign_triage_finding(
             proof.minimized_reproduction.clone(),
         ]);
         if let Some(triage) = &proof.triage_evidence {
-            occurrence_objects.extend([
-                triage.minimization_original.clone(),
-                triage.minimization_selected.clone(),
-                triage.verification_original.clone(),
-                triage.verification_selected.clone(),
-            ]);
+            for replay in [
+                &triage.minimization_original,
+                &triage.minimization_selected,
+                &triage.verification_original,
+                &triage.verification_selected,
+            ] {
+                triage_segments.extend(replay.segments.iter().cloned());
+            }
         }
     }
     let client = crucible_campaign::CampaignClient::new(ImportedCampaignFindingService {
@@ -439,6 +627,7 @@ pub(super) fn authenticate_campaign_triage_finding(
         objects,
         occurrences,
         occurrence_objects,
+        triage_segments,
     });
     let membership = client
         .query_campaign_findings(&item.membership.request)
@@ -598,7 +787,7 @@ fn authenticate_campaign_occurrences(
             ))
         })?;
 
-        let mut object_proofs = vec![
+        let object_proofs = [
             (
                 &occurrence_proof.observation,
                 crucible_campaign::CampaignFindingOccurrenceObjectKind::Observation,
@@ -613,24 +802,52 @@ fn authenticate_campaign_occurrences(
             ),
         ];
         match (&occurrence_proof.triage_evidence, bundle.triage_evidence()) {
-            (Some(triage), Some(_)) => object_proofs.extend([
-                (
+            (Some(triage), Some(evidence)) => {
+                authenticate_campaign_triage_replay(
+                    index,
+                    page,
+                    item,
+                    expected_finding_id,
+                    bundle_id,
+                    crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal,
+                    evidence.minimization_original(),
                     &triage.minimization_original,
-                    crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizationOriginalTriageEvidence,
-                ),
-                (
+                    client,
+                )?;
+                authenticate_campaign_triage_replay(
+                    index,
+                    page,
+                    item,
+                    expected_finding_id,
+                    bundle_id,
+                    crucible_campaign::CampaignFindingTriageReplayRole::MinimizationSelected,
+                    evidence.minimization_selected(),
                     &triage.minimization_selected,
-                    crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizationSelectedTriageEvidence,
-                ),
-                (
+                    client,
+                )?;
+                authenticate_campaign_triage_replay(
+                    index,
+                    page,
+                    item,
+                    expected_finding_id,
+                    bundle_id,
+                    crucible_campaign::CampaignFindingTriageReplayRole::VerificationOriginal,
+                    evidence.verification_original(),
                     &triage.verification_original,
-                    crucible_campaign::CampaignFindingOccurrenceObjectKind::VerificationOriginalTriageEvidence,
-                ),
-                (
+                    client,
+                )?;
+                authenticate_campaign_triage_replay(
+                    index,
+                    page,
+                    item,
+                    expected_finding_id,
+                    bundle_id,
+                    crucible_campaign::CampaignFindingTriageReplayRole::VerificationSelected,
+                    evidence.verification_selected(),
                     &triage.verification_selected,
-                    crucible_campaign::CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence,
-                ),
-            ]),
+                    client,
+                )?;
+            }
             (None, None) => {}
             _ => {
                 return Err(artifact_error(format!(
@@ -714,6 +931,132 @@ fn authenticate_campaign_occurrences(
         )));
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn authenticate_campaign_triage_replay(
+    finding_index: usize,
+    page_index: usize,
+    item: &CampaignTriageFindingEvidence,
+    finding: crucible_campaign::FindingId,
+    bundle: crucible_campaign::FindingCandidateBundleId,
+    role: crucible_campaign::CampaignFindingTriageReplayRole,
+    evidence: crucible_campaign::FindingTriageReplayEvidenceId,
+    proof: &CampaignFindingTriageReplayProof,
+    client: &crucible_campaign::CampaignClient<ImportedCampaignFindingService>,
+) -> Result<crucible_campaign::FindingTriageReplayEvidence, CliError> {
+    let first = proof.segments.first().ok_or_else(|| {
+        artifact_error(format!(
+            "finding {finding_index} occurrence page {page_index} has an empty triage replay transfer"
+        ))
+    })?;
+    let description = first.response.description().clone();
+    if description.evidence() != evidence {
+        return Err(artifact_error(format!(
+            "finding {finding_index} occurrence page {page_index} triage replay description names another evidence record"
+        )));
+    }
+
+    let mut expected_segments = 0_usize;
+    let mut total_envelope_bytes = 0_usize;
+    for object in description.objects() {
+        let object_bytes = usize::try_from(object.stored_envelope_bytes()).map_err(|_| {
+            artifact_error(format!(
+                "finding {finding_index} occurrence page {page_index} triage replay envelope length is invalid"
+            ))
+        })?;
+        total_envelope_bytes = total_envelope_bytes
+            .checked_add(object_bytes)
+            .ok_or_else(|| artifact_error("campaign triage replay transfer size overflows"))?;
+        let count = object
+            .stored_envelope_bytes()
+            .checked_add(crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES - 1)
+            .ok_or_else(|| artifact_error("campaign triage segment count overflows"))?
+            / crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES;
+        expected_segments =
+            expected_segments
+                .checked_add(usize::try_from(count).map_err(|_| {
+                    artifact_error("campaign triage replay segment count is invalid")
+                })?)
+                .ok_or_else(|| artifact_error("campaign triage replay segment count overflows"))?;
+    }
+    if total_envelope_bytes > 256 * 1024 * 1024 || proof.segments.len() != expected_segments {
+        return Err(artifact_error(format!(
+            "finding {finding_index} occurrence page {page_index} triage replay transfer bounds are invalid"
+        )));
+    }
+
+    let mut envelopes = Vec::with_capacity(description.objects().len());
+    let mut segment_position = 0;
+    for object in description.objects() {
+        let object_bytes = usize::try_from(object.stored_envelope_bytes())
+            .map_err(|_| artifact_error("campaign triage replay envelope length is invalid"))?;
+        let mut envelope = Vec::with_capacity(object_bytes);
+        let segment_count = object
+            .stored_envelope_bytes()
+            .checked_add(crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES - 1)
+            .ok_or_else(|| artifact_error("campaign triage segment count overflows"))?
+            / crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES;
+        for segment_index in 0..u32::try_from(segment_count)
+            .map_err(|_| artifact_error("campaign triage segment count is invalid"))?
+        {
+            let segment = proof.segments.get(segment_position).ok_or_else(|| {
+                artifact_error("campaign triage replay transfer ended before its description")
+            })?;
+            let request = &segment.request;
+            if request.campaign() != &item.campaign
+                || request.snapshot() != item.snapshot
+                || request.finding() != finding
+                || request.bundle() != bundle
+                || request.role() != role
+                || request.evidence() != evidence
+                || request.object_ordinal() != object.ordinal()
+                || request.object() != object.content()
+                || request.segment_index() != segment_index
+                || segment.response.description() != &description
+            {
+                return Err(artifact_error(format!(
+                    "finding {finding_index} occurrence page {page_index} triage replay segment is reordered or substituted"
+                )));
+            }
+            let response = client
+                .get_campaign_finding_triage_replay_segment(request)
+                .map_err(|error| {
+                    artifact_error(format!(
+                        "finding {finding_index} occurrence page {page_index} triage replay segment proof was rejected: {error}"
+                    ))
+                })?;
+            if response != segment.response {
+                return Err(artifact_error(format!(
+                    "finding {finding_index} occurrence page {page_index} triage replay segment response was substituted"
+                )));
+            }
+            envelope.extend_from_slice(response.range_bytes());
+            segment_position += 1;
+        }
+        if envelope.len() != object_bytes {
+            return Err(artifact_error(format!(
+                "finding {finding_index} occurrence page {page_index} triage replay envelope is incomplete"
+            )));
+        }
+        envelopes.push(envelope);
+    }
+
+    let replay = crucible_campaign::FindingTriageReplayEvidence::from_storage_envelopes(
+        &description,
+        &envelopes,
+    )
+    .map_err(|error| {
+        artifact_error(format!(
+            "finding {finding_index} occurrence page {page_index} triage replay storage proof is invalid: {error}"
+        ))
+    })?;
+    if replay.id().ok() != Some(evidence) {
+        return Err(artifact_error(format!(
+            "finding {finding_index} occurrence page {page_index} triage replay identity changed during reassembly"
+        )));
+    }
+    Ok(replay)
 }
 
 pub(super) fn validate_campaign_triage_finding(

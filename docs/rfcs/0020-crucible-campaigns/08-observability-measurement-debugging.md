@@ -672,6 +672,43 @@ observation child. It renders the identities needed to locate evidence and
 perform independent replay without granting arbitrary evidence or checkpoint
 body reads.
 
+A rich candidate may additionally name four closed triage replay roles:
+minimization-original, minimization-selected, verification-original, and
+verification-selected. `FindingTriageReplayEvidence` schema v1 retains an
+opaque execution-model payload of at most 80 MiB when its complete canonical
+envelope fits the generic 64 MiB object ceiling. Larger values use schema v2: a
+small manifest root commits the reproduction, observed campaign signature,
+payload schema, total payload length, and one to three ordered schema-v1 chunk
+children of at most 32 MiB each. The evidence ID is always the stored root ID;
+schema-v1 IDs and bytes remain unchanged.
+
+`GetCampaignFindingTriageReplaySegment` is the only checked service operation
+that transfers these stored envelopes. Its request binds the principal,
+campaign, exact current snapshot, finding, candidate bundle, closed replay
+role, evidence root, root-first object ordinal, exact object content ID, and
+fixed 32 MiB segment index. The response repeats the authenticated storage
+description and server-derived range, carries the finding and occurrence
+membership proofs, and is bounded by the ordinary 64 MiB component-message
+limit. A client fetches and authenticates every root segment before it learns
+or requests manifest children. It then fetches all child envelopes in declared
+order and authenticates the complete physical layout and logical evidence ID
+before decoding or exposing the replay. Missing, reordered, substituted,
+mixed-snapshot, wrong-role, stale-description, or corrupt segments fail closed.
+This root-first rule also applies to schema v1: a partial inline envelope
+reveals no replay bytes.
+
+Failure-findings ledger v4 retains the exact ordered request/response transcript
+for every replay role. Offline import revalidates each request binding, proof,
+description, canonical range, envelope content ID, manifest, chunk, and final
+logical identity before model-specific replay decoding. The complete ledger is
+bounded at 1 GiB. The encoder charges every fixed field, request, response,
+canonical object, projected report field, line terminator, and hexadecimal byte
+to that one bound. The four-role maximum segmented transcript is larger than
+512 MiB after hexadecimal expansion but remains below 1 GiB; fixed and
+non-exchange fields consume the remaining allowance. Construction stops before
+crossing the complete-artifact bound, and parsing rejects an oversized input
+before decoding its fields.
+
 The checked `ExplainCampaignAttempt` capability authenticates one attempt and
 its unique execution-basis admission in `roots.accounting`, its branch proposal
 in `roots.exploration` when present, and its canonical completion or absence in

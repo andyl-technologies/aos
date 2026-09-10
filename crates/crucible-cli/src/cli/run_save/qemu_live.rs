@@ -6,8 +6,8 @@ use crucible_campaign::{
     ObservationCondition, ObservationStopSatisfaction, StopCondition, StopOutcome,
 };
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignReplayClosure, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
-    run_guarded_default_campaign,
+    GuardedCampaignFindingExport, GuardedCampaignReplayClosure, GuardedDefaultCampaignRun,
+    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
 };
 
 #[path = "finding_frames.rs"]
@@ -223,15 +223,8 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
     let warmup = family
         .fuzz_coverage_guided(plan.config, &[])
         .map_err(|error| backend_error(format!("QEMU fuzz warm-up policy failed: {error}")))?;
-    let mut execution = execute_qemu_fuzz_iterations(
-        &config,
-        &deployment.host,
-        deployment.resources,
-        &warmup,
-        "warm-up",
-        plan,
-        backend_plan,
-    )?;
+    let mut execution =
+        execute_qemu_fuzz_iterations(&config, &deployment, &warmup, "warm-up", plan, backend_plan)?;
     let (run, mut report) = if let Some(corpus) = &plan.corpus {
         fs::create_dir_all(corpus).map_err(|error| {
             backend_error(format!(
@@ -263,15 +256,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         if plan.on_violation == SearchOnViolationArg::Stop && !execution.findings.is_empty() {
             QemuFuzzExecution::default()
         } else {
-            execute_qemu_fuzz_iterations(
-                &config,
-                &deployment.host,
-                deployment.resources,
-                &run,
-                "guided",
-                plan,
-                backend_plan,
-            )?
+            execute_qemu_fuzz_iterations(&config, &deployment, &run, "guided", plan, backend_plan)?
         };
     merge_qemu_fuzz_execution(&mut execution, guided_execution)?;
     report.property_findings = execution
@@ -336,6 +321,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         plan.findings_out.as_deref(),
         execution.findings,
         execution.reproduction_artifacts,
+        execution.finding_exports,
     )?;
     append_qemu_control_plane_execution_proof(&mut outcome, backend, "fuzz-live-campaign");
     Ok(outcome)
@@ -347,6 +333,7 @@ struct QemuFuzzExecution {
     campaigns: Vec<QemuFuzzCampaignRecord>,
     findings: Vec<TriageFindingEvidence>,
     reproduction_artifacts: Vec<Vec<u8>>,
+    finding_exports: Vec<GuardedCampaignFindingExport>,
 }
 
 struct QemuFuzzCampaignRecord {
@@ -447,8 +434,7 @@ fn qemu_fuzz_campaign_stop_label(stop: &StopOutcome) -> String {
 
 fn execute_qemu_fuzz_iterations(
     config: &production_api::ProductionVmLifecycleConfig,
-    host: &crucible_daemon::LinuxQemuAttemptHostConfig,
-    resources: crucible_campaign::AttemptResourceLimits,
+    deployment: &crate::cli_verify_serve::GuardedCampaignRunDeployment,
     run: &crucible::CoverageGuidedFuzzRun,
     phase: &str,
     plan: &FuzzDriverPlan,
@@ -472,14 +458,14 @@ fn execute_qemu_fuzz_iterations(
                 iteration.sequence,
             ))
         })?;
-        let request = GuardedDefaultCampaignRunRequest::new(
+        let mut request = GuardedDefaultCampaignRunRequest::new(
             form.clone(),
             form.scenario_def().seed(),
             env!("CARGO_PKG_VERSION"),
             qemu_build_id(backend_plan)?,
             config.clone(),
-            host.clone(),
-            resources,
+            deployment.host.clone(),
+            deployment.resources,
         )
         .with_initial_replay(schedule, replay_closure)
         .with_discovery_stop(StopCondition::Observation(
@@ -487,6 +473,9 @@ fn execute_qemu_fuzz_iterations(
                 execution_quanta: LIVE_FUZZ_QUANTUM_LIMIT,
             },
         ));
+        if deployment.verify_determinism_findings {
+            request = request.with_determinism_finding_verification();
+        }
         let campaign = run_guarded_default_campaign(request).map_err(|error| {
             backend_error(format!(
                 "execute QEMU fuzz {phase} iteration {} through campaign owner: {error}",
@@ -500,6 +489,9 @@ fn execute_qemu_fuzz_iterations(
             terminal_outcome,
             status,
         )?;
+        execution
+            .finding_exports
+            .push(campaign.finding_export().clone());
         let terminal = campaign.terminal();
         execution.campaigns.push(QemuFuzzCampaignRecord {
             phase: phase.to_owned(),
@@ -750,6 +742,7 @@ fn merge_qemu_fuzz_execution(
     }
     target.feedback.extend(source.feedback);
     target.campaigns.extend(source.campaigns);
+    target.finding_exports.extend(source.finding_exports);
     for (evidence, reproduction) in source
         .findings
         .into_iter()
@@ -767,15 +760,34 @@ fn attach_qemu_findings_outputs(
     findings_out: Option<&Path>,
     findings: Vec<crate::cli_report::TriageFindingEvidence>,
     reproduction_artifacts: Vec<Vec<u8>>,
+    finding_exports: Vec<GuardedCampaignFindingExport>,
 ) -> Result<(), CliError> {
-    if findings.is_empty() && findings_out.is_none() {
+    if findings.is_empty() && findings_out.is_none() && finding_exports.is_empty() {
         return Ok(());
     }
-    let (path, digest, ledger_bytes) = crate::cli_triage_debug::write_failure_findings_ledger_v3(
-        artifact_dir,
-        findings_out,
-        &findings,
-    )?;
+    let serialized_finding_count = if finding_exports.is_empty() {
+        findings.len()
+    } else {
+        finding_exports.iter().try_fold(0_usize, |count, export| {
+            count.checked_add(export.findings().len()).ok_or_else(|| {
+                artifact_error("guarded campaign finding export count exceeds platform limits")
+            })
+        })?
+    };
+    let (path, digest, ledger_bytes) = if finding_exports.is_empty() {
+        crate::cli_triage_debug::write_failure_findings_ledger_v3(
+            artifact_dir,
+            findings_out,
+            &findings,
+        )?
+    } else {
+        crate::cli_triage_debug::campaign_evidence::write_guarded_campaign_finding_exports_v4(
+            artifact_dir,
+            findings_out,
+            &finding_exports,
+            &findings,
+        )?
+    };
     let store = crucible::LocalDagStore::new(store_root.to_path_buf());
     let stored = store.put(&ledger_bytes).map_err(CliError::Store)?;
     if stored != digest {
@@ -787,7 +799,7 @@ fn attach_qemu_findings_outputs(
         "findings-ledger\tpath={}\tdigest={}\tfindings={}",
         path.display(),
         format_content_hash_ref(digest),
-        findings.len()
+        serialized_finding_count
     ));
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
@@ -797,7 +809,7 @@ fn attach_qemu_findings_outputs(
         summary: format!(
             "digest={} findings={}",
             format_content_hash_ref(digest),
-            findings.len()
+            serialized_finding_count
         ),
     });
     match reproduction_artifacts.as_slice() {

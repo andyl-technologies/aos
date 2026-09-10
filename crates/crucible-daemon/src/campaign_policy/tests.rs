@@ -381,6 +381,10 @@ fn policy_operation_labels_cover_the_closed_service_vocabulary() {
             CampaignServiceOperation::GetCampaignFindingOccurrenceObject,
         ),
         (
+            "get-campaign-finding-triage-replay-segment",
+            CampaignServiceOperation::GetCampaignFindingTriageReplaySegment,
+        ),
+        (
             "get-campaign-finding-object",
             CampaignServiceOperation::GetCampaignFindingObject,
         ),
