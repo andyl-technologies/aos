@@ -42,6 +42,13 @@
     then "--enable-cet"
     else "";
 
+  # AArch64 specs select endianness and ABI within the loader filename.
+  # Preserve those selections when relocating the loader into this tier.
+  dynamicLinkerSpec =
+    if hostPlatform.constraints.cpu == "aarch64"
+    then "ld-linux-aarch64%{mbig-endian:_be}%{mabi=ilp32:_ilp32}.so.1"
+    else hostPlatform.dynamicLinker;
+
   mkGcc = import ../lib/mk-gcc.nix {
     inherit
       prev
@@ -262,11 +269,11 @@ in
         "$SPEC_DIR/specs" 2>/dev/null || true
       ${prev.sed}/bin/sed -i \
         -e '/^\*link:$/{n; s|^|-L${glibc}/lib -L${glibc.static}/lib %{!static:%{!static-pie:-rpath ${glibc}/lib -rpath-link ${glibc}/lib}} |}' \
-        -e 's|/lib/${hostPlatform.dynamicLinker}|${glibc}/lib/${hostPlatform.dynamicLinker}|g' \
-        -e 's|/lib64/${hostPlatform.dynamicLinker}|${glibc}/lib/${hostPlatform.dynamicLinker}|g' \
+        -e 's|/lib/${dynamicLinkerSpec}|${glibc}/lib/${dynamicLinkerSpec}|g' \
+        -e 's|/lib64/${dynamicLinkerSpec}|${glibc}/lib/${dynamicLinkerSpec}|g' \
         "$SPEC_DIR/specs"
       ${prev.grep}/bin/grep -Fq -- "-L${glibc}/lib -L${glibc.static}/lib" "$SPEC_DIR/specs"
-      ${prev.grep}/bin/grep -Fq -- "${glibc}/lib/${hostPlatform.dynamicLinker}" "$SPEC_DIR/specs"
+      ${prev.grep}/bin/grep -Fq -- "${glibc}/lib/${dynamicLinkerSpec}" "$SPEC_DIR/specs"
 
       echo "/* Stub: redirect -lgcc_s to static libgcc */" > "$SPEC_DIR/libgcc_s.so"
       echo "INPUT(-lgcc)" >> "$SPEC_DIR/libgcc_s.so"
