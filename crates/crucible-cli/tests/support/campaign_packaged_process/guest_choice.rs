@@ -29,11 +29,6 @@ const GUEST_SELECTABLE_BOUNDARY_PREFIX: &str = "CRUCIBLE-GUEST-SELECTABLE-BOUNDA
 const MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS: usize = 256;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINES: usize = MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS + 1;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINE_BYTES: usize = 8 * 1024;
-const MAX_CHOICE_PUBLIC_OBSERVATIONS: usize = 900;
-const MAX_ATTEMPT_STATE_OBSERVATIONS: usize = 2_400;
-const MAX_QEMU_PROCESS_OBSERVATIONS: usize = 500;
-const MAX_PUBLICATION_OBSERVATIONS: usize = 600;
-const MAX_CHECKPOINT_STATE_OBSERVATIONS: usize = 3_600;
 
 type ProcessCommand = (u32, Vec<String>);
 
@@ -91,36 +86,30 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
 
     let fast_parent = json_string(&fast_explanation["observation"], "child_artifact")?;
     let fast_parent_configuration = json_string(&fast_explanation["observation"], "child")?;
-    let continuation = wait_for_choice(
+    let retry = wait_for_choice(
         &fixture,
         "campaign.retry-quanta",
         &fast_parent,
         &fast_parent_configuration,
     )?;
-    let fast_continuation_submission = submit_choice(
-        &fixture,
-        &continuation,
-        "u64:7",
-        "boundary:selected-fast-q7",
-        0x62,
-    )?;
-    let fast_continuation_request = accepted_branch_request(&fast_continuation_submission)?;
-    let fast_continuation_attempt = wait_for_new_completed_attempt(
+    let fast_retry_submission =
+        submit_choice(&fixture, &retry, "u64:7", "boundary:selected-fast-q7", 0x62)?;
+    let fast_retry_request = accepted_branch_request(&fast_retry_submission)?;
+    let fast_retry_attempt = wait_for_new_completed_attempt(
         &fixture,
         &mut service,
         &known_attempts,
-        &fast_continuation_request,
+        &fast_retry_request,
     )?;
-    known_attempts.insert(fast_continuation_attempt);
-    let fast_continuation_explanation =
-        wait_for_attempt_observation(&fixture, fast_continuation_attempt)?;
+    known_attempts.insert(fast_retry_attempt);
+    let fast_retry_explanation = wait_for_attempt_observation(&fixture, fast_retry_attempt)?;
     assert_eq!(
-        fast_continuation_explanation["proposal"]["request"],
-        fast_continuation_request
+        fast_retry_explanation["proposal"]["request"],
+        fast_retry_request
     );
-    assert_eq!(fast_continuation_explanation["selection"]["value"], "u64:7");
+    assert_eq!(fast_retry_explanation["selection"]["value"], "u64:7");
     assert_eq!(
-        fast_continuation_explanation["observation"]["stop"],
+        fast_retry_explanation["observation"]["stop"],
         "reached:boundary:selected-fast-q7"
     );
 
@@ -146,42 +135,41 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
 
     let safe_parent = json_string(&safe_explanation["observation"], "child_artifact")?;
     let safe_parent_configuration = json_string(&safe_explanation["observation"], "child")?;
-    let safe_continuation = wait_for_choice(
+    let safe_retry = wait_for_choice(
         &fixture,
         "campaign.retry-quanta",
         &safe_parent,
         &safe_parent_configuration,
     )?;
-    let safe_continuation_submission = submit_choice(
+    let safe_retry_submission = submit_choice(
         &fixture,
-        &safe_continuation,
+        &safe_retry,
         "u64:1",
         "boundary:selected-safe-q1",
         0x64,
     )?;
-    let safe_continuation_request = accepted_branch_request(&safe_continuation_submission)?;
-    let safe_continuation_attempt = wait_for_new_completed_attempt(
+    let safe_retry_request = accepted_branch_request(&safe_retry_submission)?;
+    let safe_retry_attempt = wait_for_new_completed_attempt(
         &fixture,
         &mut service,
         &known_attempts,
-        &safe_continuation_request,
+        &safe_retry_request,
     )?;
-    known_attempts.insert(safe_continuation_attempt);
-    let safe_continuation_explanation =
-        wait_for_attempt_observation(&fixture, safe_continuation_attempt)?;
+    known_attempts.insert(safe_retry_attempt);
+    let safe_retry_explanation = wait_for_attempt_observation(&fixture, safe_retry_attempt)?;
     assert_eq!(
-        safe_continuation_explanation["proposal"]["request"],
-        safe_continuation_request
+        safe_retry_explanation["proposal"]["request"],
+        safe_retry_request
     );
-    assert_eq!(safe_continuation_explanation["selection"]["value"], "u64:1");
+    assert_eq!(safe_retry_explanation["selection"]["value"], "u64:1");
     assert_eq!(
-        safe_continuation_explanation["observation"]["stop"],
+        safe_retry_explanation["observation"]["stop"],
         "reached:boundary:selected-safe-q1"
     );
 
     // Re-submit the fast/q7 branch with a terminal stop. The selected guest
     // parks after its marker, so checkpoint capture cannot race completion.
-    let terminal_submission = submit_choice(&fixture, &continuation, "u64:7", "terminal", 0x65)?;
+    let terminal_submission = submit_choice(&fixture, &retry, "u64:7", "terminal", 0x65)?;
     let terminal_request = accepted_branch_request(&terminal_submission)?;
     let terminal_attempt =
         wait_for_new_running_attempt(&fixture, &mut service, &known_attempts, &terminal_request)?;
@@ -194,15 +182,14 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     assert_eq!(terminal_before_pause["selection"]["value"], "u64:7");
     assert_eq!(
         terminal_before_pause["path"]["id"],
-        fast_continuation_explanation["path"]["id"]
+        fast_retry_explanation["path"]["id"]
     );
-    attest_on_demand_qemu_descendants(&fixture, &service, "pre-checkpoint terminal attempt")?;
+    attest_on_demand_qemu_descendants(&service, "pre-checkpoint terminal attempt")?;
     println!("\nguest_choice_initial_qemu_fingerprint_mode=on-demand-v1");
 
-    let mut checkpoint_command = 0x70;
+    let mut checkpoint_command = 0x70_u64;
     let (checkpoint, before_restart) = capture_checkpoint_after_progress(
         &fixture,
-        &service,
         terminal_attempt,
         "selected-fast-q7",
         1,
@@ -217,9 +204,9 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     let mut restarted = start_packaged_service(&fixture, &authority)?;
     let paused = campaign_status(&fixture)?;
     assert_eq!(paused["state"], "paused");
-    attest_on_demand_qemu_descendants(&fixture, &restarted, "restarted paused exact restore")?;
+    attest_on_demand_qemu_descendants(&restarted, "restarted paused exact restore")?;
     println!("\nguest_choice_restarted_qemu_fingerprint_mode=on-demand-v1");
-    resume_campaign(&fixture, next_command_byte(&mut checkpoint_command)?)?;
+    resume_campaign(&fixture, &next_command_identity(&mut checkpoint_command)?)?;
     let resumed = wait_for_resumed_attempt(&fixture, terminal_attempt, checkpoint)?;
     assert_eq!(resumed, checkpoint);
 
@@ -229,7 +216,6 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         .ok_or("guest progress sequence overflowed")?;
     let (after_resume_checkpoint, after_resume) = capture_checkpoint_after_progress(
         &fixture,
-        &restarted,
         terminal_attempt,
         "selected-fast-q7",
         minimum_resumed_progress,
@@ -246,10 +232,10 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     assert_eq!(resumed_explanation["selection"]["value"], "u64:7");
     assert_eq!(
         resumed_explanation["path"]["id"],
-        fast_continuation_explanation["path"]["id"]
+        fast_retry_explanation["path"]["id"]
     );
     assert_eq!(
-        fast_continuation_explanation["observation"]["stop"],
+        fast_retry_explanation["observation"]["stop"],
         "reached:boundary:selected-fast-q7"
     );
 
@@ -382,7 +368,7 @@ fn guest_choice_selectables(world: &World) -> Result<ScenarioSelectables, Box<dy
         true,
     )?;
 
-    let continuation_domain = ChoiceDomain::Integer(IntegerDomain::new(
+    let retry_domain = ChoiceDomain::Integer(IntegerDomain::new(
         1,
         IntegerRepresentation::Unsigned64,
         IntegerValue::Unsigned(1),
@@ -392,10 +378,10 @@ fn guest_choice_selectables(world: &World) -> Result<ScenarioSelectables, Box<dy
         ExactRational::new(1, 1)?,
         Vec::new(),
     )?);
-    let continuation = SelectableDeclaration::new(
+    let retry = SelectableDeclaration::new(
         "campaign.retry-quanta",
         source(),
-        continuation_domain,
+        retry_domain,
         ChoiceValue::Integer(IntegerValue::Unsigned(3)),
         class_context()?,
         BTreeSet::new(),
@@ -406,7 +392,7 @@ fn guest_choice_selectables(world: &World) -> Result<ScenarioSelectables, Box<dy
     Ok(ScenarioSelectables::new(
         world,
         limits,
-        vec![recovery, continuation],
+        vec![recovery, retry],
     )?)
 }
 
@@ -556,10 +542,27 @@ fn wait_for_choice(
     parent_artifact: &str,
     parent_configuration: &str,
 ) -> Result<PublicChoice, Box<dyn Error>> {
-    let mut remaining_observations = MAX_CHOICE_PUBLIC_OBSERVATIONS;
-    loop {
-        let head = campaign_status(fixture)?;
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut cursor = None;
+    let mut last_head = None;
+    let mut last_choices = None;
+    let matched = wait_for_process_observation(deadline, || {
+        let head = campaign_watch(fixture, cursor.as_deref())?;
         let snapshot = json_string(&head, "snapshot")?;
+        let advanced = head["advanced"]
+            .as_bool()
+            .ok_or("campaign watch omitted its cursor-advance verdict")?;
+        if cursor.as_deref() == Some(snapshot.as_str()) {
+            if advanced {
+                return Err("campaign watch advanced without changing its snapshot".into());
+            }
+            return Ok(None);
+        }
+        if !advanced {
+            return Err("campaign watch changed its snapshot without advancing".into());
+        }
+        cursor = Some(snapshot.clone());
+
         let choices = run_json(
             connected_campaign(fixture).args([
                 "choices",
@@ -580,6 +583,9 @@ fn wait_for_choice(
             )
             .into());
         }
+        last_head = Some(head);
+        last_choices = Some(choices.clone());
+
         let entries = choices["entries"]
             .as_array()
             .ok_or("campaign choices entries are not an array")?;
@@ -629,18 +635,28 @@ fn wait_for_choice(
                 }
             }
         }
-        if let Some(choice) = matched {
-            return Ok(choice);
-        }
-        if remaining_observations == 0 {
-            return Err(format!(
-                "campaign did not expose selectable `{selectable}` for parent artifact {parent_artifact} at configuration {parent_configuration}; status={head}; choices={choices}; attempts={:?}",
-                attempt_states(fixture)?
-            )
-            .into());
-        }
-        remaining_observations -= 1;
+        Ok(matched)
+    })?;
+    if let Some(choice) = matched {
+        return Ok(choice);
     }
+
+    Err(format!(
+        "campaign did not expose selectable `{selectable}` for parent artifact {parent_artifact} at configuration {parent_configuration}; status={:?}; choices={:?}; attempts={:?}",
+        last_head,
+        last_choices,
+        attempt_states(fixture)?
+    )
+    .into())
+}
+
+fn campaign_watch(fixture: &FlightFixture, after: Option<&str>) -> Result<Value, Box<dyn Error>> {
+    let mut command = connected_campaign(fixture);
+    command.args(["watch", CAMPAIGN]);
+    if let Some(after) = after {
+        command.args(["--after", after]);
+    }
+    run_json(&mut command, "watch guest-choice campaign head")
 }
 
 fn choice_is_authenticated_for_parent(
@@ -797,8 +813,8 @@ fn wait_for_initial_discovery(
     service: &mut CampaignServiceChild,
     genesis_artifact: &str,
 ) -> Result<(AttemptExecutionKey, Value), Box<dyn Error>> {
-    let mut remaining_observations = MAX_ATTEMPT_STATE_OBSERVATIONS;
-    loop {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let discovery = wait_for_process_observation(deadline, || {
         for (key, state) in attempt_states(fixture)? {
             if !matches!(state, AttemptRuntimeState::Completed { .. })
                 || state.origin() != AttemptExecutionOrigin::Initial
@@ -810,19 +826,20 @@ fn wait_for_initial_discovery(
             if explanation["attempt"]["start"] == "discover"
                 && explanation["attempt"]["configuration"] == genesis_artifact
             {
-                return Ok((key, explanation));
+                return Ok(Some((key, explanation)));
             }
         }
-        if remaining_observations == 0 {
-            let diagnostics = campaign_execution_diagnostics(fixture, service, &BTreeSet::new());
-            return Err(format!(
-                "initial guest-choice discovery from genesis artifact {genesis_artifact} did not complete; {diagnostics}"
-            )
-            .into());
-        }
-        campaign_status(fixture)?;
-        remaining_observations -= 1;
+        Ok(None)
+    })?;
+    if let Some(discovery) = discovery {
+        return Ok(discovery);
     }
+
+    let diagnostics = campaign_execution_diagnostics(fixture, service, &BTreeSet::new());
+    Err(format!(
+        "initial guest-choice discovery from genesis artifact {genesis_artifact} did not complete; {diagnostics}"
+    )
+    .into())
 }
 
 fn campaign_execution_diagnostics(
@@ -1110,7 +1127,6 @@ fn append_process_diagnostics(diagnostics: &mut String) {
 }
 
 fn attest_on_demand_qemu_descendants(
-    fixture: &FlightFixture,
     service: &CampaignServiceChild,
     phase: &str,
 ) -> Result<(), Box<dyn Error>> {
@@ -1120,9 +1136,8 @@ fn attest_on_demand_qemu_descendants(
     let expected_plugin = required_path("CRUCIBLE_FLIGHT_PLUGIN")?
         .to_string_lossy()
         .into_owned();
-    let mut remaining_observations = MAX_QEMU_PROCESS_OBSERVATIONS;
-
-    loop {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let observed = wait_for_process_observation(deadline, || {
         let descendants = descendant_process_commands(service.child.id())?;
         let qemu_commands = descendants
             .into_iter()
@@ -1154,19 +1169,19 @@ fn attest_on_demand_qemu_descendants(
                     .into());
                 }
             }
-            return Ok(());
+            return Ok(Some(()));
         }
-
-        if remaining_observations == 0 {
-            return Err(format!(
-                "{phase} exposed no live `{expected_qemu}` descendant of campaign service {} after {MAX_QEMU_PROCESS_OBSERVATIONS} process observations",
-                service.child.id()
-            )
-            .into());
-        }
-        campaign_status(fixture)?;
-        remaining_observations -= 1;
+        Ok(None)
+    })?;
+    if observed.is_some() {
+        return Ok(());
     }
+
+    Err(format!(
+        "{phase} exposed no live `{expected_qemu}` descendant of campaign service {} within 10s",
+        service.child.id()
+    )
+    .into())
 }
 
 fn descendant_process_commands(root_pid: u32) -> Result<Vec<ProcessCommand>, Box<dyn Error>> {
@@ -1243,190 +1258,157 @@ fn wait_for_new_attempt(
     request: Option<&str>,
     predicate: impl Fn(AttemptRuntimeState) -> bool,
 ) -> Result<AttemptExecutionKey, Box<dyn Error>> {
-    let mut remaining_observations = MAX_ATTEMPT_STATE_OBSERVATIONS;
-    loop {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let attempt = wait_for_process_observation(deadline, || {
         let states = attempt_states(fixture)?;
         if let Some((key, _)) = states
             .into_iter()
             .find(|(key, state)| !known.contains(key) && predicate(*state))
         {
-            return Ok(key);
+            return Ok(Some(key));
         }
-        if remaining_observations == 0 {
-            let request = request.unwrap_or("<not-captured>");
-            let diagnostics = campaign_execution_diagnostics(fixture, service, known);
-            return Err(format!(
-                "campaign attempt for branch request {request} did not reach executor state {expected_state}; {diagnostics}"
-            )
-            .into());
-        }
-        campaign_status(fixture)?;
-        remaining_observations -= 1;
+        Ok(None)
+    })?;
+    if let Some(attempt) = attempt {
+        return Ok(attempt);
     }
+
+    let request = request.unwrap_or("<not-captured>");
+    let diagnostics = campaign_execution_diagnostics(fixture, service, known);
+    Err(format!(
+        "campaign attempt for branch request {request} did not reach executor state {expected_state}; {diagnostics}"
+    )
+    .into())
 }
 
 fn wait_for_attempt_observation(
     fixture: &FlightFixture,
     key: AttemptExecutionKey,
 ) -> Result<Value, Box<dyn Error>> {
-    let mut remaining_observations = MAX_PUBLICATION_OBSERVATIONS;
-    loop {
-        let explanation = wait_for_attempt_explanation(fixture, key)?;
-        if !explanation["observation"].is_null() {
-            return Ok(explanation);
-        }
-        if remaining_observations == 0 {
-            return Err(format!(
-                "completed attempt {} was not incorporated into a public campaign snapshot",
-                key.attempt()
-            )
-            .into());
-        }
-        remaining_observations -= 1;
-    }
+    wait_for_attempt_explanation_matching(fixture, key, true)
 }
 
 fn wait_for_attempt_explanation(
     fixture: &FlightFixture,
     key: AttemptExecutionKey,
 ) -> Result<Value, Box<dyn Error>> {
-    let mut remaining_observations = MAX_PUBLICATION_OBSERVATIONS;
-    loop {
-        let head = campaign_status(fixture)?;
+    wait_for_attempt_explanation_matching(fixture, key, false)
+}
+
+fn wait_for_attempt_explanation_matching(
+    fixture: &FlightFixture,
+    key: AttemptExecutionKey,
+    require_observation: bool,
+) -> Result<Value, Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut cursor = None;
+    let mut last_output = None;
+    let explanation = wait_for_process_observation(deadline, || {
+        let head = campaign_watch(fixture, cursor.as_deref())?;
+        let snapshot = json_string(&head, "snapshot")?;
+        let advanced = head["advanced"]
+            .as_bool()
+            .ok_or("campaign watch omitted its cursor-advance verdict")?;
+        if cursor.as_deref() == Some(snapshot.as_str()) {
+            if advanced {
+                return Err("campaign watch advanced without changing its snapshot".into());
+            }
+            return Ok(None);
+        }
+        if !advanced {
+            return Err("campaign watch changed its snapshot without advancing".into());
+        }
+        cursor = Some(snapshot.clone());
+
         let output = connected_campaign(fixture)
             .args([
                 "explain-attempt",
                 CAMPAIGN,
                 "--snapshot",
-                &json_string(&head, "snapshot")?,
+                &snapshot,
                 "--attempt",
                 &key.attempt().to_string(),
             ])
             .output()?;
-        if output.status.success() {
-            return parse_json_output(output, "explain guest-choice attempt");
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let pending = stderr.contains("campaign-attempt-is-not-in-snapshot")
+                || stderr.contains("campaign request used stale snapshot");
+            if pending {
+                last_output = Some(output);
+                return Ok(None);
+            }
+            return parse_json_output(output, "explain guest-choice attempt").map(Some);
         }
-        if remaining_observations == 0 {
-            return Err(format!(
-                "campaign did not expose attempt {}; stdout=`{}` stderr=`{}`",
-                key.attempt(),
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
+
+        let explanation = parse_json_output(output, "explain guest-choice attempt")?;
+        if !require_observation || !explanation["observation"].is_null() {
+            return Ok(Some(explanation));
         }
-        remaining_observations -= 1;
+        Ok(None)
+    })?;
+    if let Some(explanation) = explanation {
+        return Ok(explanation);
     }
+
+    let (stdout, stderr) = last_output
+        .map(|output| (output.stdout, output.stderr))
+        .unwrap_or_default();
+    Err(format!(
+        "campaign did not expose attempt {}; stdout=`{}` stderr=`{}`",
+        key.attempt(),
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    )
+    .into())
 }
 
 fn capture_checkpoint_after_progress(
     fixture: &FlightFixture,
-    service: &CampaignServiceChild,
     key: AttemptExecutionKey,
     selection: &str,
     minimum_progress_sequence: u64,
-    command_byte: &mut u8,
+    command_sequence: &mut u64,
     scenario: &ScenarioDefForm,
 ) -> Result<(ExactCheckpointId, CheckpointProgress), Box<dyn Error>> {
-    let mut needs_progress_observation = false;
-    for _ in 0..20 {
-        if needs_progress_observation {
-            wait_for_qemu_cpu_progress(fixture, service)?;
-        }
-        pause_for_exact_checkpoint(fixture, next_command_byte(command_byte)?)?;
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let captured = wait_for_process_observation(deadline, || {
+        // A Running ledger state can precede the next quantum. Only the
+        // replay-authenticated marker in the promoted checkpoint acknowledges
+        // guest progress, so an unchanged marker is resumed and observed again.
+        pause_for_exact_checkpoint(fixture, &next_command_identity(command_sequence)?)?;
         let checkpoint = wait_for_promoted_checkpoint(fixture, key, scenario)?;
         let progress = checkpoint_progress(fixture, checkpoint, selection, scenario)?;
         if progress.progress_sequence >= minimum_progress_sequence {
-            return Ok((checkpoint, progress));
+            return Ok(Some((checkpoint, progress)));
         }
 
-        resume_campaign(fixture, next_command_byte(command_byte)?)?;
+        resume_campaign(fixture, &next_command_identity(command_sequence)?)?;
         wait_for_resumed_attempt(fixture, key, checkpoint)?;
-        needs_progress_observation = true;
+        Ok(None)
+    })?;
+    if let Some(captured) = captured {
+        return Ok(captured);
     }
 
     Err(format!(
-        "attempt {} did not emit `{selection}` progress sequence {minimum_progress_sequence} after 20 exact checkpoint windows",
+        "attempt {} did not emit `{selection}` progress sequence {minimum_progress_sequence} within 180s",
         key.attempt()
     )
     .into())
 }
 
-fn wait_for_qemu_cpu_progress(
-    fixture: &FlightFixture,
-    service: &CampaignServiceChild,
-) -> Result<(), Box<dyn Error>> {
-    let baseline = qemu_cpu_ticks(service)?;
-    if baseline.is_empty() {
-        return Err("resumed campaign exposed no packaged QEMU process".into());
-    }
-
-    let mut remaining_observations = MAX_QEMU_PROCESS_OBSERVATIONS;
-    loop {
-        let current = qemu_cpu_ticks(service)?;
-        if baseline.iter().any(|(pid, ticks)| {
-            current
-                .get(pid)
-                .is_some_and(|current_ticks| current_ticks > ticks)
-        }) {
-            return Ok(());
-        }
-        if remaining_observations == 0 {
-            return Err(format!(
-                "packaged QEMU consumed no CPU time after {MAX_QEMU_PROCESS_OBSERVATIONS} process observations"
-            )
-            .into());
-        }
-
-        campaign_status(fixture)?;
-        remaining_observations -= 1;
-    }
-}
-
-fn qemu_cpu_ticks(service: &CampaignServiceChild) -> Result<BTreeMap<u32, u64>, Box<dyn Error>> {
-    let expected_qemu = required_path("CRUCIBLE_FLIGHT_QEMU")?
-        .to_string_lossy()
-        .into_owned();
-    let mut ticks = BTreeMap::new();
-    for (pid, arguments) in descendant_process_commands(service.child.id())? {
-        if arguments.first() != Some(&expected_qemu) {
-            continue;
-        }
-        // A descendant can exit between enumerating /proc and reading its stat
-        // entry. Treat that as a changed process set and keep observing.
-        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            continue;
-        };
-        let fields = stat
-            .rsplit_once(") ")
-            .ok_or("QEMU process stat has no command terminator")?
-            .1
-            .split_whitespace()
-            .collect::<Vec<_>>();
-        let user_ticks = fields
-            .get(11)
-            .ok_or("QEMU process stat has no user CPU field")?
-            .parse::<u64>()?;
-        let system_ticks = fields
-            .get(12)
-            .ok_or("QEMU process stat has no system CPU field")?
-            .parse::<u64>()?;
-        ticks.insert(pid, user_ticks.saturating_add(system_ticks));
-    }
-    Ok(ticks)
-}
-
-fn next_command_byte(command_byte: &mut u8) -> Result<u8, Box<dyn Error>> {
-    let current = *command_byte;
-    *command_byte = command_byte
+fn next_command_identity(command_sequence: &mut u64) -> Result<String, Box<dyn Error>> {
+    let current = *command_sequence;
+    *command_sequence = command_sequence
         .checked_add(1)
-        .ok_or("guest-choice command identity byte overflowed")?;
-    Ok(current)
+        .ok_or("guest-choice command identity sequence overflowed")?;
+    Ok(format!("{current:064x}"))
 }
 
 fn pause_for_exact_checkpoint(
     fixture: &FlightFixture,
-    command_byte: u8,
+    command_identity: &str,
 ) -> Result<(), Box<dyn Error>> {
     let head = campaign_status(fixture)?;
     run_json(
@@ -1438,7 +1420,7 @@ fn pause_for_exact_checkpoint(
                 &json_string(&head, "snapshot")?,
                 "--command",
             ])
-            .arg(format!("{command_byte:02x}").repeat(32))
+            .arg(command_identity)
             .args(["--active", "checkpoint"]),
         "pause guest-choice campaign at exact checkpoint",
     )?;
@@ -1450,32 +1432,33 @@ fn wait_for_promoted_checkpoint(
     key: AttemptExecutionKey,
     scenario: &ScenarioDefForm,
 ) -> Result<ExactCheckpointId, Box<dyn Error>> {
-    let mut remaining_observations = MAX_CHECKPOINT_STATE_OBSERVATIONS;
+    let deadline = Instant::now() + Duration::from_secs(180);
     let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
         "guest-choice-checkpoint-inspection",
         &fixture.objects,
     ));
     let checkpoints = ExactCheckpointStore::new(backend, 1024 * 1024 * 1024)?;
-    loop {
+    let checkpoint = wait_for_process_observation(deadline, || {
         if let Some(AttemptRuntimeState::Paused { checkpoint, .. }) =
             attempt_states(fixture)?.get(&key).copied()
             && checkpoints
                 .load_attempt_checkpoint(checkpoint)
                 .is_ok_and(|loaded| checkpoint_is_replay_validated(fixture, &loaded, scenario))
         {
-            return Ok(checkpoint);
+            return Ok(Some(checkpoint));
         }
-        if remaining_observations == 0 {
-            return Err(format!(
-                "attempt {} did not publish a replay-validated exact checkpoint; ledger={:?}",
-                key.attempt(),
-                attempt_states(fixture)?
-            )
-            .into());
-        }
-        campaign_status(fixture)?;
-        remaining_observations -= 1;
+        Ok(None)
+    })?;
+    if let Some(checkpoint) = checkpoint {
+        return Ok(checkpoint);
     }
+
+    Err(format!(
+        "attempt {} did not publish a replay-validated exact checkpoint; ledger={:?}",
+        key.attempt(),
+        attempt_states(fixture)?
+    )
+    .into())
 }
 
 fn checkpoint_is_replay_validated(
@@ -1568,7 +1551,7 @@ fn checkpoint_progress(
     })
 }
 
-fn resume_campaign(fixture: &FlightFixture, command_byte: u8) -> Result<(), Box<dyn Error>> {
+fn resume_campaign(fixture: &FlightFixture, command_identity: &str) -> Result<(), Box<dyn Error>> {
     let head = campaign_status(fixture)?;
     run_json(
         connected_campaign(fixture)
@@ -1579,7 +1562,7 @@ fn resume_campaign(fixture: &FlightFixture, command_byte: u8) -> Result<(), Box<
                 &json_string(&head, "snapshot")?,
                 "--command",
             ])
-            .arg(format!("{command_byte:02x}").repeat(32)),
+            .arg(command_identity),
         "resume exact guest-choice campaign",
     )?;
     Ok(())
@@ -1590,8 +1573,8 @@ fn wait_for_resumed_attempt(
     key: AttemptExecutionKey,
     expected_checkpoint: ExactCheckpointId,
 ) -> Result<ExactCheckpointId, Box<dyn Error>> {
-    let mut remaining_observations = MAX_ATTEMPT_STATE_OBSERVATIONS;
-    loop {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let resumed = wait_for_process_observation(deadline, || {
         if let Some(AttemptRuntimeState::Running { origin, .. }) =
             attempt_states(fixture)?.get(&key).copied()
             && let AttemptExecutionOrigin::ExactCheckpoint { checkpoint, .. } = origin
@@ -1602,17 +1585,18 @@ fn wait_for_resumed_attempt(
                 )
                 .into());
             }
-            return Ok(checkpoint);
+            return Ok(Some(checkpoint));
         }
-        if remaining_observations == 0 {
-            return Err(format!(
-                "attempt {} did not resume from exact checkpoint {expected_checkpoint}; ledger={:?}",
-                key.attempt(),
-                attempt_states(fixture)?
-            )
-            .into());
-        }
-        campaign_status(fixture)?;
-        remaining_observations -= 1;
+        Ok(None)
+    })?;
+    if let Some(checkpoint) = resumed {
+        return Ok(checkpoint);
     }
+
+    Err(format!(
+        "attempt {} did not resume from exact checkpoint {expected_checkpoint}; ledger={:?}",
+        key.attempt(),
+        attempt_states(fixture)?
+    )
+    .into())
 }

@@ -12,6 +12,8 @@ use crucible_session::engine::{
     World, WorldNode,
 };
 
+const PROCESS_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
+
 #[path = "campaign_packaged_process/guest_choice.rs"]
 mod guest_choice;
 
@@ -353,9 +355,13 @@ fn execute_initial_discovery(
     )?;
 
     let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
+    let mut last_head = None;
+    let mut last_snapshot = None;
+    let completed = wait_for_process_observation(deadline, || {
         let head = campaign_status(fixture)?;
         let snapshot = snapshot_at(fixture, &json_string(&head, "snapshot")?)?;
+        last_head = Some(head.clone());
+        last_snapshot = Some(snapshot.clone());
         if snapshot["snapshot"]["roots"]["observations"]
             != before["snapshot"]["roots"]["observations"]
         {
@@ -376,10 +382,8 @@ fn execute_initial_discovery(
             if output.status.code() == Some(4)
                 && String::from_utf8_lossy(&output.stderr)
                     .contains("campaign request used stale snapshot")
-                && Instant::now() < deadline
             {
-                thread::sleep(Duration::from_millis(200));
-                continue;
+                return Ok(None);
             }
             let explanation =
                 parse_json_output(output, "authenticate initial discovery completion")?;
@@ -395,25 +399,48 @@ fn execute_initial_discovery(
                 explanation["observation"]["discovered_choices"],
                 serde_json::json!([])
             );
-            return Ok(());
+            return Ok(Some(()));
         }
-        if Instant::now() >= deadline {
-            let explanation = run_json(
-                connected_campaign(fixture).args([
-                    "explain-attempt",
-                    CAMPAIGN,
-                    "--snapshot",
-                    &json_string(&head, "snapshot")?,
-                    "--attempt",
-                    &attempt,
-                ]),
-                "explain stalled initial discovery",
-            );
-            return Err(format!("running packaged campaign produced no initial discovery observation within 30s: {head}; snapshot={snapshot}; attempt={explanation:?}").into());
+        Ok(None)
+    })?;
+    if completed.is_some() {
+        return Ok(());
+    }
+
+    let head = last_head.ok_or("packaged campaign produced no status observation")?;
+    let snapshot = last_snapshot.ok_or("packaged campaign produced no snapshot observation")?;
+    let explanation = run_json(
+        connected_campaign(fixture).args([
+            "explain-attempt",
+            CAMPAIGN,
+            "--snapshot",
+            &json_string(&head, "snapshot")?,
+            "--attempt",
+            &attempt,
+        ]),
+        "explain stalled initial discovery",
+    );
+    Err(format!("running packaged campaign produced no initial discovery observation within 30s: {head}; snapshot={snapshot}; attempt={explanation:?}").into())
+}
+
+/// Paces process observations while leaving readiness to authenticated state.
+///
+/// The deadline only bounds failure time. The observer closure must return a
+/// value only after it has validated the public or durable state it needs.
+fn wait_for_process_observation<T>(
+    deadline: Instant,
+    mut observe: impl FnMut() -> Result<Option<T>, Box<dyn Error>>,
+) -> Result<Option<T>, Box<dyn Error>> {
+    loop {
+        if let Some(observation) = observe()? {
+            return Ok(Some(observation));
         }
-        // The public watch command is a coalesced read, not a subscription.
-        // Bound this process-flight wait without a tight client request loop.
-        thread::sleep(Duration::from_millis(200));
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        thread::sleep(PROCESS_OBSERVATION_INTERVAL.min(remaining));
     }
 }
 

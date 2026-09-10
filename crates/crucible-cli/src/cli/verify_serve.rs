@@ -1093,6 +1093,7 @@ fn validate_remote_resume_replay_closure(
     checkpoint: &crucible::Checkpoint,
     // crucible-lint: allow host-nondeterminism-state -- the API envelope remains untrusted transport input until the daemon validates every bound identity.
     envelope: &crucible_api::ResumeReplayClosure,
+    // crucible-lint: allow host-nondeterminism-state -- the typed API error reports only this pure admission result and cannot alter scheduler state.
 ) -> Result<(), crucible_api::ResumeReplayClosureValidationError> {
     crucible_daemon::qemu_campaign_lifecycle::validate_remote_resume_replay_closure(
         scenario,
@@ -1100,6 +1101,7 @@ fn validate_remote_resume_replay_closure(
         checkpoint,
         envelope,
     )
+    // crucible-lint: allow host-nondeterminism-state -- this converts a deterministic closure-authentication failure at the API boundary.
     .map_err(|error| crucible_api::ResumeReplayClosureValidationError::new(error.to_string()))
 }
 
