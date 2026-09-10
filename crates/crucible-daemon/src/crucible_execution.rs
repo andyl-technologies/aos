@@ -11,9 +11,11 @@ use crucible::{
     SignalFaultSelectable, step,
 };
 use crucible_campaign::{
-    Attempt, AttemptResourceLimits, BranchPath, CampaignExecutorStore, CampaignLineage,
-    ChoiceSource, ExecutorRejection, ResolvedSelection,
+    Attempt, AttemptContinuationInput, AttemptResourceLimits, BranchPath, CampaignExecutorStore,
+    CampaignLineage, ChoiceSource, ExecutorRejection, ResolvedSelection, StopOutcome,
 };
+#[cfg(test)]
+use crucible_campaign::{AttemptStart, CampaignCodecError, ConfigurationArtifactId};
 
 use crate::executor_worker::ResolvedAttemptOrigins;
 use crate::{
@@ -60,6 +62,7 @@ impl SelectedOriginDecodeBudget {
         budget.charge_encoded_configuration(base_configuration_artifact(base)?)?;
         for origin in origins.iter() {
             budget.charge_encoded_configuration(origin.reached())?;
+            budget.charge(origin.source_stop_bytes())?;
         }
         let origin_slots = u64::try_from(origins.len())
             .ok()
@@ -317,6 +320,7 @@ pub struct CrucibleAttemptOrigin {
     attempt: Attempt,
     reached: Configuration,
     signal_fault_replay: SignalFaultCampaignReplayPlan,
+    source_stop: Option<StopOutcome>,
 }
 
 /// Nonempty decoded ancestry for one selected continuation boundary.
@@ -369,6 +373,23 @@ impl CrucibleAttemptOrigin {
             attempt,
             reached,
             signal_fault_replay,
+            source_stop: None,
+        }
+    }
+
+    /// Binds a controlled origin to its authenticated final stop outcome.
+    #[must_use]
+    pub fn new_with_source_stop(
+        attempt: Attempt,
+        reached: Configuration,
+        signal_fault_replay: SignalFaultCampaignReplayPlan,
+        source_stop: StopOutcome,
+    ) -> Self {
+        Self {
+            attempt,
+            reached,
+            signal_fault_replay,
+            source_stop: Some(source_stop),
         }
     }
 
@@ -388,6 +409,12 @@ impl CrucibleAttemptOrigin {
     #[must_use]
     pub const fn signal_fault_replay(&self) -> &SignalFaultCampaignReplayPlan {
         &self.signal_fault_replay
+    }
+
+    /// Returns the authenticated final stop outcome for controlled continuation.
+    #[must_use]
+    pub const fn source_stop(&self) -> Option<&StopOutcome> {
+        self.source_stop.as_ref()
     }
 }
 
@@ -450,9 +477,64 @@ pub struct CrucibleAttemptExecution {
     path: BranchPath,
     start: CrucibleResolvedAttemptStart,
     signal_fault_replay: SignalFaultCampaignReplayPlan,
+    replay_continuation_basis: Option<(
+        Box<CrucibleAttemptOrigins>,
+        Option<AttemptContinuationInput>,
+    )>,
 }
 
 impl CrucibleAttemptExecution {
+    /// Reconstructs a private fresh replay while retaining controlled source boundaries.
+    #[cfg(test)]
+    pub(crate) fn for_finding_replay(
+        &self,
+        scenario: ScenarioDefForm,
+        configuration_artifact: ConfigurationArtifactId,
+        configuration: Configuration,
+        signal_fault_replay: SignalFaultCampaignReplayPlan,
+    ) -> Result<Self, CampaignCodecError> {
+        if scenario.scenario_def().id() != configuration.def.id()
+            || signal_fault_replay.target() != &configuration
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "finding replay scenario or signal-fault plan differs from candidate",
+            });
+        }
+        if let Some((origins, _terminal)) = self.continuation_replay_basis() {
+            for origin in origins.iter() {
+                let reached = origin.reached();
+                let prefix = configuration
+                    .schedule
+                    .prefix(reached.schedule.len())
+                    .map_err(|_| CampaignCodecError::InvalidValue {
+                        reason: "finding replay candidate ends before a controlled source boundary",
+                    })?;
+                if prefix != reached.schedule {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "finding replay candidate diverges before a controlled source boundary",
+                    });
+                }
+            }
+        }
+        let attempt = Attempt::new(
+            AttemptStart::Discover {
+                configuration: configuration_artifact,
+            },
+            self.path.id()?,
+            self.attempt.stop().clone(),
+        )?;
+        let replay = Self {
+            lineage: self.lineage.clone(),
+            scenario,
+            attempt,
+            path: self.path.clone(),
+            start: CrucibleResolvedAttemptStart::Discover { configuration },
+            signal_fault_replay,
+            replay_continuation_basis: None,
+        };
+        Ok(replay.with_replay_continuation_basis_from(self))
+    }
+
     pub(crate) fn for_origin_replay(
         &self,
         attempt: Attempt,
@@ -466,6 +548,7 @@ impl CrucibleAttemptExecution {
             path: self.path.clone(),
             start,
             signal_fault_replay,
+            replay_continuation_basis: None,
         }
     }
 
@@ -491,6 +574,31 @@ impl CrucibleAttemptExecution {
             path,
             start,
             signal_fault_replay: SignalFaultCampaignReplayPlan::empty(target),
+            replay_continuation_basis: None,
+        }
+    }
+
+    /// Preserves controlled source boundaries while a private replay uses a fresh start.
+    #[cfg(test)]
+    pub(crate) fn with_replay_continuation_basis_from(mut self, source: &Self) -> Self {
+        self.replay_continuation_basis = source
+            .continuation_replay_basis()
+            .map(|(origins, terminal)| (Box::new(origins.clone()), terminal.cloned()));
+        self
+    }
+
+    pub(crate) fn continuation_replay_basis(
+        &self,
+    ) -> Option<(&CrucibleAttemptOrigins, Option<&AttemptContinuationInput>)> {
+        match &self.start {
+            CrucibleResolvedAttemptStart::AfterAttempt { origins, .. } => {
+                Some((origins, self.attempt.continuation_input()))
+            }
+            CrucibleResolvedAttemptStart::Discover { .. }
+            | CrucibleResolvedAttemptStart::Branch { .. } => self
+                .replay_continuation_basis
+                .as_ref()
+                .map(|(origins, terminal)| (origins.as_ref(), terminal.as_ref())),
         }
     }
 
@@ -635,6 +743,7 @@ fn decode_crucible_attempt_execution_with_origin_limit(
                     attempt: origin.attempt().clone(),
                     reached,
                     signal_fault_replay: replay,
+                    source_stop: origin.source_stop().cloned(),
                 });
             }
             let replay = terminal_replay.ok_or(CrucibleArtifactError::Campaign(
@@ -671,6 +780,7 @@ fn decode_crucible_attempt_execution_with_origin_limit(
         path: input.path().clone(),
         start,
         signal_fault_replay,
+        replay_continuation_basis: None,
     })
 }
 

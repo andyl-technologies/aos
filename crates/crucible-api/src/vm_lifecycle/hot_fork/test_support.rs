@@ -337,6 +337,7 @@ fn lifecycle_without_backends(
         initial_lifecycle_observations_pending: true,
         logical_replay_boundary: None,
         branch: None,
+        continuation_branches: VecDeque::new(),
         signal_fault_branches: VecDeque::new(),
         promote_signal_fault_campaign_choices: false,
         launch_configs: BTreeMap::new(),

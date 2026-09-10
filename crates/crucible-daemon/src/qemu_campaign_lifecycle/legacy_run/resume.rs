@@ -8,20 +8,28 @@ use super::*;
 
 /// Modeled scheduler control for one campaign-owned continuation.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GuardedCampaignContinuationControl {
-    input: crucible_campaign::AttemptContinuationInput,
+pub enum GuardedCampaignContinuationControl {
+    /// Re-seeds deterministic scheduler streams after the source boundary.
+    Reseed {
+        /// Exact scheduler frontier where the new seed begins.
+        frontier: VirtualTime,
+        /// Complete deterministic stream seed.
+        seed: Seed,
+    },
+    /// Applies ordered live-network overrides after the source boundary.
+    SchedulerOverrides {
+        /// Exact scheduler frontier where override matching begins.
+        frontier: VirtualTime,
+        /// Canonical scheduler override records in requested order.
+        decisions: Vec<Vec<u8>>,
+    },
 }
 
 impl GuardedCampaignContinuationControl {
     /// Re-seeds every post-boundary deterministic scheduler stream.
     #[must_use]
     pub fn reseed(frontier: VirtualTime, seed: Seed) -> Self {
-        Self {
-            input: crucible_campaign::AttemptContinuationInput::scheduler_reseed(
-                frontier.ticks,
-                seed.bytes(),
-            ),
-        }
+        Self::Reseed { frontier, seed }
     }
 
     /// Applies an ordered set of post-boundary live-network overrides.
@@ -34,23 +42,49 @@ impl GuardedCampaignContinuationControl {
         frontier: VirtualTime,
         overrides: Vec<crucible::OverrideDecision>,
     ) -> Result<Self, GuardedCampaignContinuationControlError> {
-        let decisions = overrides
+        let decisions: Vec<Vec<u8>> = overrides
             .into_iter()
             .map(|decision| {
                 Schedule::from_decisions([crucible::Decision::Override(decision)])
                     .to_compact_binary()
             })
             .collect();
-        Ok(Self {
-            input: crucible_campaign::AttemptContinuationInput::scheduler_overrides(
-                frontier.ticks,
-                decisions,
-            )?,
+        crucible_campaign::AttemptContinuationInput::validate_scheduler_overrides(&decisions)?;
+        Ok(Self::SchedulerOverrides {
+            frontier,
+            decisions,
         })
     }
 
-    pub(super) const fn input(&self) -> &crucible_campaign::AttemptContinuationInput {
-        &self.input
+    pub(super) const fn source_frontier_ticks(&self) -> u64 {
+        match self {
+            Self::Reseed { frontier, .. } | Self::SchedulerOverrides { frontier, .. } => {
+                frontier.ticks
+            }
+        }
+    }
+
+    pub(super) fn input(
+        &self,
+        source_observation: ObservationId,
+    ) -> Result<crucible_campaign::AttemptContinuationInput, CampaignCodecError> {
+        match self {
+            Self::Reseed { frontier, seed } => Ok(
+                crucible_campaign::AttemptContinuationInput::scheduler_reseed(
+                    source_observation,
+                    frontier.ticks,
+                    seed.bytes(),
+                ),
+            ),
+            Self::SchedulerOverrides {
+                frontier,
+                decisions,
+            } => crucible_campaign::AttemptContinuationInput::scheduler_overrides(
+                source_observation,
+                frontier.ticks,
+                decisions.clone(),
+            ),
+        }
     }
 }
 
@@ -189,7 +223,7 @@ where
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
     if source.continuation_control.as_ref().is_some_and(|control| {
-        control.input().source_frontier_ticks() != source.checkpoint.virtual_time.ticks
+        control.source_frontier_ticks() != source.checkpoint.virtual_time.ticks
     }) {
         return Err(GuardedDefaultCampaignInvariantError::ContinuationInputMismatch.into());
     }
@@ -296,25 +330,29 @@ where
     let Some(control) = &source.continuation_control else {
         return Ok(request.lifecycle.clone());
     };
-    if control.input().source_frontier_ticks() != source.checkpoint.virtual_time.ticks {
+    if control.source_frontier_ticks() != source.checkpoint.virtual_time.ticks {
         return Err(GuardedDefaultCampaignInvariantError::ContinuationInputMismatch.into());
     }
-
-    // Both the attempt input and live branch use this authenticated source.
-    let base = Configuration {
-        def: request.scenario.scenario_def(),
-        schedule: request.initial_schedule.clone(),
+    let GuardedCampaignContinuationControl::SchedulerOverrides { decisions, .. } = control else {
+        return Ok(request.lifecycle.clone());
     };
-    let continuation = super::super::OwnedQemuAttemptContinuation {
-        input: control.input().clone(),
-        source: base,
-    };
-    super::super::production_lifecycle_config_for_continuation(
-        request.lifecycle.clone(),
-        &request.scenario,
-        Some(&continuation),
-    )
-    .map_err(|_| GuardedDefaultCampaignInvariantError::InvalidContinuationInput.into())
+    let mut points = BTreeSet::new();
+    for bytes in decisions {
+        let schedule = Schedule::from_compact_binary(bytes)
+            .map_err(|_| GuardedDefaultCampaignInvariantError::InvalidContinuationInput)?;
+        if schedule.to_compact_binary() != *bytes {
+            return Err(GuardedDefaultCampaignInvariantError::InvalidContinuationInput.into());
+        }
+        let [crucible::Decision::Override(decision)] = schedule.decisions() else {
+            return Err(GuardedDefaultCampaignInvariantError::InvalidContinuationInput.into());
+        };
+        if !crucible::live_world_network_override_matches_world(request.scenario.world(), decision)
+            || !points.insert(decision.point.key.clone())
+        {
+            return Err(GuardedDefaultCampaignInvariantError::InvalidContinuationInput.into());
+        }
+    }
+    Ok(request.lifecycle.clone())
 }
 
 // crucible-lint: allow rust-allow -- the explicit inputs keep every repository, lineage, terminal-evidence, and source binding visible at resume-proof materialization.
@@ -344,6 +382,12 @@ where
         .iter()
         .find(|observation| observation.id() == proof.source_observation)
         .ok_or(GuardedDefaultCampaignInvariantError::MissingResumeProof)?;
+    let expected_continuation_input = source
+        .continuation_control
+        .as_ref()
+        .map(|control| control.input(proof.source_observation))
+        .transpose()
+        .map_err(GuardedDefaultCampaignRunError::Codec)?;
     if proof.source_checkpoint != source.checkpoint.id
         || proof.source_configuration != expected_configuration
         || proof.source_frontier != source.checkpoint.virtual_time
@@ -400,11 +444,7 @@ where
                 || capture.reached != expected_configuration
                 || capture.evidence != proof.source_evidence
                 || continuation_attempt.stop() != &source.final_stop
-                || continuation_attempt.continuation_input()
-                    != source
-                        .continuation_control
-                        .as_ref()
-                        .map(GuardedCampaignContinuationControl::input)
+                || continuation_attempt.continuation_input() != expected_continuation_input.as_ref()
                 || continuation_source.selection() != selection
                 || continuation_source.provenance().request != capture.request
                 || continuation_source.provenance().ready != ready

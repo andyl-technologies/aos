@@ -18,6 +18,8 @@ const PLUGIN_ARG_APP_RANDOM_CAP: &str = "app_random_cap";
 const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
 const PLUGIN_ARG_APP_RANDOM_BRANCH_SEED: &str = "app_random_branch_seed";
 const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER: &str = "app_random_branch_after";
+const PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS: &str = "app_random_branch_seeds";
+const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS: &str = "app_random_branch_afters";
 const PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET: &str = "app_random_draw_offset";
 const PLUGIN_ARG_APP_RANDOM_POSITIONS: &str = "app_random_positions";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
@@ -89,9 +91,10 @@ pub struct QemuLaunchAppRandomConfig {
     branch_seed: Option<Seed>,
     /// Number of this node's prefix draws served before the branch seed applies.
     pub branch_after_draws: Option<u64>,
+    branch_reseeds: Vec<(Seed, u64)>,
     /// Node-local draws already consumed before this process launches.
     pub draw_offset: u64,
-    /// Per-stream positions already consumed before this process launches.
+    /// Active-seed stream positions, distinct from the global node draw offset.
     pub stream_positions: BTreeMap<String, u64>,
     /// Immutable node-local campaign selections supplied during setup.
     branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
@@ -119,6 +122,7 @@ impl QemuLaunchAppRandomConfig {
             branch_decision_rng_root_seed: None,
             branch_seed: None,
             branch_after_draws: None,
+            branch_reseeds: Vec::new(),
             draw_offset: 0,
             stream_positions: BTreeMap::new(),
             branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::default(),
@@ -142,6 +146,23 @@ impl QemuLaunchAppRandomConfig {
         self.branch_decision_rng_root_seed = Some(branch_seed.decision_rng_root_seed());
         self.branch_seed = Some(branch_seed);
         self.branch_after_draws = Some(prefix_draws);
+        self.branch_reseeds = vec![(branch_seed, prefix_draws)];
+        self
+    }
+
+    /// Returns this configuration with ordered branch seeds and exact draw boundaries.
+    #[must_use]
+    pub fn with_branch_seed_sequence(mut self, reseeds: Vec<(Seed, u64)>) -> Self {
+        self.branch_reseeds = reseeds;
+        if let [(seed, after)] = self.branch_reseeds.as_slice() {
+            self.branch_decision_rng_root_seed = Some(seed.decision_rng_root_seed());
+            self.branch_seed = Some(*seed);
+            self.branch_after_draws = Some(*after);
+        } else {
+            self.branch_decision_rng_root_seed = None;
+            self.branch_seed = None;
+            self.branch_after_draws = None;
+        }
         self
     }
 
@@ -153,8 +174,13 @@ impl QemuLaunchAppRandomConfig {
 
     /// Returns the complete optional branch seed retained for host-side validation.
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn branch_seed(&self) -> Option<Seed> {
         self.branch_seed
+    }
+
+    pub(crate) fn branch_reseeds(&self) -> &[(Seed, u64)] {
+        &self.branch_reseeds
     }
 
     /// Returns this configuration with authoritative continuation cursors.
@@ -528,14 +554,29 @@ impl QemuLaunchPluginConfig {
                 "{PLUGIN_ARG_APP_RANDOM_NODE}={}",
                 app_random.node_name
             ));
-            if let (Some(branch_seed), Some(branch_after)) = (
-                app_random.branch_decision_rng_root_seed,
-                app_random.branch_after_draws,
-            ) {
-                args.push(format!("{PLUGIN_ARG_APP_RANDOM_BRANCH_SEED}={branch_seed}"));
+            if let [(branch_seed, branch_after)] = app_random.branch_reseeds.as_slice() {
+                args.push(format!(
+                    "{PLUGIN_ARG_APP_RANDOM_BRANCH_SEED}={}",
+                    branch_seed.decision_rng_root_seed()
+                ));
                 args.push(format!(
                     "{PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER}={branch_after}"
                 ));
+            } else if !app_random.branch_reseeds.is_empty() {
+                let seeds = app_random
+                    .branch_reseeds
+                    .iter()
+                    .map(|(seed, _)| seed.decision_rng_root_seed().to_string())
+                    .collect::<Vec<_>>()
+                    .join(";");
+                let afters = app_random
+                    .branch_reseeds
+                    .iter()
+                    .map(|(_, after)| after.to_string())
+                    .collect::<Vec<_>>()
+                    .join(";");
+                args.push(format!("{PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS}={seeds}"));
+                args.push(format!("{PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS}={afters}"));
             }
             if app_random.draw_offset != 0 {
                 args.push(format!(
@@ -627,11 +668,22 @@ impl QemuLaunchPluginConfig {
             if app_random.node_name.contains(',') || app_random.node_name.contains('=') {
                 return Err(QemuLaunchCommandError::InvalidAppRandomNodeName);
             }
-            if app_random.branch_decision_rng_root_seed.is_some()
-                != app_random.branch_after_draws.is_some()
+            let legacy_branch = match app_random.branch_reseeds.as_slice() {
+                [(seed, after)] => (Some(seed.decision_rng_root_seed()), Some(*after)),
+                _ => (None, None),
+            };
+            if (
+                app_random.branch_decision_rng_root_seed,
+                app_random.branch_after_draws,
+            ) != legacy_branch
                 || app_random
-                    .branch_after_draws
-                    .is_some_and(|after| after > app_random.draw_cap)
+                    .branch_reseeds
+                    .iter()
+                    .any(|(_, after)| *after > app_random.draw_cap)
+                || app_random
+                    .branch_reseeds
+                    .windows(2)
+                    .any(|pair| pair[0].1 > pair[1].1)
             {
                 return Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration);
             }
@@ -640,10 +692,11 @@ impl QemuLaunchPluginConfig {
                 .values()
                 .try_fold(0_u64, |sum, draws| sum.checked_add(*draws));
             if app_random.draw_offset > app_random.draw_cap
-                || position_draws != Some(app_random.draw_offset)
+                || position_draws.is_none_or(|draws| draws > app_random.draw_offset)
                 || app_random
-                    .branch_after_draws
-                    .is_some_and(|after| after < app_random.draw_offset)
+                    .branch_reseeds
+                    .iter()
+                    .any(|(_, after)| *after < app_random.draw_offset)
             {
                 return Err(QemuLaunchCommandError::InvalidAppRandomContinuationConfiguration);
             }

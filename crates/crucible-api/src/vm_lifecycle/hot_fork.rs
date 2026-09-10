@@ -1413,11 +1413,23 @@ impl ProductionVmLifecycleLoop {
                 "production world retains uncommitted network output",
             ));
         }
+        if !self.continuation_branches.is_empty() {
+            return Err(hot_fork_boundary_error(
+                "production world retains unapplied cold-replay branch generations",
+            ));
+        }
+        // Published closures are immutable evidence. In-flight states still own
+        // mutable snapshots or a publication transaction that cannot be forked.
         if self.debug_gateway.is_some()
             || self.debug_attach.is_some()
             || self.debug_gateway_teardown_required
             || self.indeterminate_debug_candidate.is_some()
-            || !self.checkpoint_targets.is_empty()
+            || self.checkpoint_targets.values().any(|state| {
+                !matches!(
+                    state,
+                    quantum_loop::ExactCheckpointPublicationState::Published(_)
+                )
+            })
         {
             return Err(hot_fork_boundary_error(
                 "production world has mutable debug or checkpoint ownership",

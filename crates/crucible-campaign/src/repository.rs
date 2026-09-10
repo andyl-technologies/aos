@@ -782,6 +782,19 @@ impl CampaignExecutorStore {
         self.repository.load_attempt_origin_chain(id)
     }
 
+    /// Loads and authenticates one modeled observation closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the observation or one of its referenced records
+    /// is missing, corrupt, or inconsistent.
+    pub fn load_observation(
+        &self,
+        id: ObservationId,
+    ) -> Result<Observation, CampaignRepositoryError> {
+        self.repository.load_observation(id)
+    }
+
     /// Loads and authenticates one semantic branch path.
     ///
     /// # Errors

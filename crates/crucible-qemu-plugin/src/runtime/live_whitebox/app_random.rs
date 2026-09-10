@@ -185,9 +185,8 @@ struct LiveAppRandomDecisionSource {
     node_name: String,
     draw_cap: u64,
     draws: u64,
-    branch_seed: Option<u64>,
-    branch_after_draws: Option<u64>,
-    branch_applied: bool,
+    branch_reseeds: Vec<(u64, u64)>,
+    next_branch_reseed: usize,
     branch_plan: AppRandomBranchPlan,
     next_branch_plan_entry: usize,
 }
@@ -212,9 +211,8 @@ impl LiveAppRandomDecisionSource {
             node_name: config.node_name().to_owned(),
             draw_cap: config.draw_cap(),
             draws: config.draw_offset(),
-            branch_seed: config.branch_seed(),
-            branch_after_draws: config.branch_after_draws(),
-            branch_applied: false,
+            branch_reseeds: config.branch_reseeds().to_vec(),
+            next_branch_reseed: 0,
             branch_plan: branch_plan.clone(),
             next_branch_plan_entry,
         }
@@ -225,13 +223,15 @@ impl LiveAppRandomDecisionSource {
     }
 
     fn apply_branch_reseed_if_due(&mut self) {
-        if self.branch_applied || self.branch_after_draws != Some(self.draws) {
-            return;
-        }
-        if let Some(seed) = self.branch_seed {
+        while let Some((seed, _)) = self
+            .branch_reseeds
+            .get(self.next_branch_reseed)
+            .filter(|(_, after)| *after == self.draws)
+            .copied()
+        {
             self.root_seed = seed;
             self.streams.clear();
-            self.branch_applied = true;
+            self.next_branch_reseed += 1;
         }
     }
 }
@@ -524,8 +524,78 @@ mod tests {
             .or_insert_with(|| PluginDecisionStream::new(source.root_seed, &stream_name))
             .next_u64();
 
-        assert!(source.branch_applied);
+        assert_eq!(source.next_branch_reseed, 1);
         assert_eq!(source.root_seed, 29);
         assert_eq!(actual_first_branch_draw, expected_first_branch_draw);
+    }
+
+    #[test]
+    fn ordered_branch_reseeds_apply_each_generation_and_last_same_draw_seed_wins() {
+        let args = PluginArgs::parse(
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_branch_seeds=29;47;61,app_random_branch_afters=1;1;3",
+        )
+        .unwrap_or_else(|error| panic!("branch sequence should parse: {error}"));
+        let config = args
+            .app_random()
+            .unwrap_or_else(|| panic!("branch sequence should include app-random"));
+        let mut source = LiveAppRandomDecisionSource::new(config, &AppRandomBranchPlan::default());
+        source.streams.insert(
+            String::from("node-a/workload"),
+            PluginDecisionStream::new(11, "node-a/workload"),
+        );
+
+        source.draws = 1;
+        source.apply_branch_reseed_if_due();
+        assert_eq!(source.root_seed, 47);
+        assert_eq!(source.next_branch_reseed, 2);
+        assert!(source.streams.is_empty());
+
+        source.streams.insert(
+            String::from("node-a/workload"),
+            PluginDecisionStream::new(47, "node-a/workload"),
+        );
+        source.draws = 3;
+        source.apply_branch_reseed_if_due();
+        assert_eq!(source.root_seed, 61);
+        assert_eq!(source.next_branch_reseed, 3);
+        assert!(source.streams.is_empty());
+    }
+
+    #[test]
+    fn replacement_source_resumes_active_seed_cursor_before_the_next_reseed() {
+        let stream_name = app_random_stream_name("node-a", "workload");
+        let encoded_stream_name = stream_name
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let raw_args = format!(
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=2,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=29,app_random_cap=8,app_random_node=node-a,app_random_branch_seed=47,app_random_branch_after=3,app_random_draw_offset=2,app_random_positions={encoded_stream_name}:1"
+        );
+        let args = PluginArgs::parse(&raw_args)
+            .unwrap_or_else(|error| panic!("replacement configuration should parse: {error}"));
+        let config = args
+            .app_random()
+            .unwrap_or_else(|| panic!("replacement configuration should include app-random"));
+        let resumed_request =
+            crate::AppRandomDoorbellRequest::test_request("node-a", 3, 8, "workload");
+        let reseeded_request =
+            crate::AppRandomDoorbellRequest::test_request("node-a", 4, 8, "workload");
+        let mut active_stream = PluginDecisionStream::new(29, &stream_name);
+        let _ = active_stream.next_u64();
+        let expected_resumed = active_stream.next_u64();
+        let expected_reseeded = PluginDecisionStream::new(47, &stream_name).next_u64();
+        let mut source = LiveAppRandomDecisionSource::new(config, &AppRandomBranchPlan::default());
+
+        let resumed = source
+            .serve_app_random(&resumed_request)
+            .unwrap_or_else(|error| panic!("replacement should serve the active future: {error}"));
+        let reseeded = source
+            .serve_app_random(&reseeded_request)
+            .unwrap_or_else(|error| panic!("replacement should apply the next seed: {error}"));
+
+        assert_eq!(resumed.value(), expected_resumed);
+        assert_eq!(reseeded.value(), expected_reseeded);
+        assert_eq!(source.next_branch_reseed, 1);
     }
 }

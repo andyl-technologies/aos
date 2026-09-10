@@ -11,6 +11,8 @@ use super::*;
 pub enum AttemptContinuationInput {
     /// Re-seeds post-boundary deterministic decision streams.
     SchedulerReseed {
+        /// Canonical observation proving the selected source boundary.
+        source_observation: ObservationId,
         /// Exact scheduler frontier where the new seed begins.
         source_frontier_ticks: u64,
         /// Complete deterministic stream seed.
@@ -18,6 +20,8 @@ pub enum AttemptContinuationInput {
     },
     /// Applies an ordered, finite set of recorded scheduler overrides.
     SchedulerOverrides {
+        /// Canonical observation proving the selected source boundary.
+        source_observation: ObservationId,
         /// Exact scheduler frontier where override matching begins.
         source_frontier_ticks: u64,
         /// Canonical scheduler decision records in requested order.
@@ -28,8 +32,13 @@ pub enum AttemptContinuationInput {
 impl AttemptContinuationInput {
     /// Builds a bounded scheduler re-seed input.
     #[must_use]
-    pub const fn scheduler_reseed(source_frontier_ticks: u64, seed: [u8; 32]) -> Self {
+    pub const fn scheduler_reseed(
+        source_observation: ObservationId,
+        source_frontier_ticks: u64,
+        seed: [u8; 32],
+    ) -> Self {
         Self::SchedulerReseed {
+            source_observation,
             source_frontier_ticks,
             seed,
         }
@@ -42,14 +51,39 @@ impl AttemptContinuationInput {
     /// Returns [`CampaignCodecError`] when the set is empty, contains duplicate
     /// records, or exceeds the fixed count, item, or aggregate byte bounds.
     pub fn scheduler_overrides(
+        source_observation: ObservationId,
         source_frontier_ticks: u64,
         decisions: Vec<Vec<u8>>,
     ) -> Result<Self, CampaignCodecError> {
         validate_continuation_override_decisions(&decisions)?;
         Ok(Self::SchedulerOverrides {
+            source_observation,
             source_frontier_ticks,
             decisions,
         })
+    }
+
+    /// Validates encoded scheduler overrides before a source observation is known.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the set is empty, contains duplicate
+    /// records, or exceeds the fixed count, item, or aggregate byte bounds.
+    pub fn validate_scheduler_overrides(decisions: &[Vec<u8>]) -> Result<(), CampaignCodecError> {
+        validate_continuation_override_decisions(decisions)
+    }
+
+    /// Returns the canonical observation proving the source boundary.
+    #[must_use]
+    pub const fn source_observation(&self) -> ObservationId {
+        match self {
+            Self::SchedulerReseed {
+                source_observation, ..
+            }
+            | Self::SchedulerOverrides {
+                source_observation, ..
+            } => *source_observation,
+        }
     }
 
     /// Returns the exact scheduler frontier where this input begins.
@@ -81,18 +115,22 @@ impl Canonical for AttemptContinuationInput {
     fn encode(&self, encoder: &mut Encoder) {
         match self {
             Self::SchedulerReseed {
+                source_observation,
                 source_frontier_ticks,
                 seed,
             } => {
                 encoder.u8(0);
+                source_observation.encode(encoder);
                 encoder.u64(*source_frontier_ticks);
                 encoder.fixed(seed);
             }
             Self::SchedulerOverrides {
+                source_observation,
                 source_frontier_ticks,
                 decisions,
             } => {
                 encoder.u8(1);
+                source_observation.encode(encoder);
                 encoder.u64(*source_frontier_ticks);
                 decisions.encode(encoder);
             }
@@ -102,10 +140,12 @@ impl Canonical for AttemptContinuationInput {
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         match decoder.u8()? {
             0 => Ok(Self::scheduler_reseed(
+                ObservationId::decode(decoder)?,
                 decoder.u64()?,
                 decoder.fixed::<32>()?,
             )),
             1 => {
+                let source_observation = ObservationId::decode(decoder)?;
                 let source_frontier_ticks = decoder.u64()?;
                 let mut aggregate_bytes = 0;
                 let decisions = decoder.sequence_bounded(
@@ -121,7 +161,7 @@ impl Canonical for AttemptContinuationInput {
                         )
                     },
                 )?;
-                Self::scheduler_overrides(source_frontier_ticks, decisions)
+                Self::scheduler_overrides(source_observation, source_frontier_ticks, decisions)
             }
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "attempt-continuation-input",
@@ -549,6 +589,12 @@ impl Attempt {
                 children.push(("origin-attempt", origin.content_id()));
                 children.push(("reached-configuration", reached.content_id()));
             }
+        }
+        if let Some(input) = &self.continuation_input {
+            children.push((
+                "source-observation",
+                input.source_observation().content_id(),
+            ));
         }
         children
     }

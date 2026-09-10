@@ -92,13 +92,19 @@ impl ProductionVmLifecycleLoop {
             limits,
             false,
         )?;
+        let remaining_branches = self
+            .branch
+            .iter()
+            .chain(self.continuation_branches.iter())
+            .cloned()
+            .collect::<Vec<_>>();
         let successor_app_random = launch
             .app_random_configured()
             .then(|| {
                 production_app_random_checkpoint_config(
                     scheduler_checkpoint,
                     &self.scenario,
-                    self.branch.as_ref(),
+                    &remaining_branches,
                     node,
                 )
             })

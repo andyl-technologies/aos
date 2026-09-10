@@ -29,9 +29,11 @@ use crucible_campaign::{
     Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, AttemptStartMode,
     BooleanDomain, BranchPath, BranchPathSegment, CampaignFactId, CampaignHash, CampaignLineage,
     CampaignRepository, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
-    ConfigurationArtifact, ConfigurationId, ExecutionId, ExecutionRetentionIntent, PropertyVerdict,
-    ScenarioArtifact, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
-    SelectionReplayMismatchKind, StopCondition,
+    ConfigurationArtifact, ConfigurationId, ExecutionId, ExecutionRetentionIntent,
+    ObservationCondition, ObservationEventLogProof, ObservationQuantumBoundary,
+    ObservationStopProof, ObservationStopSatisfaction, PropertyVerdict, ScenarioArtifact,
+    ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatchKind,
+    StopCondition, StopOutcome,
 };
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
@@ -617,9 +619,12 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
                 value: 7,
             }),
         );
+        let next_frontier = self.completed_quanta.saturating_add(1);
         self.complete_quantum(crucible::QuantumOutcome {
             configuration,
-            frontier: VirtualTime { ticks: 1 },
+            frontier: VirtualTime {
+                ticks: next_frontier,
+            },
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: Vec::new(),
@@ -808,7 +813,7 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
     observed.shutdown().expect("cleanup remains available");
     let snapshot = evidence.snapshot().expect("observed execution evidence");
     assert_eq!(snapshot.quanta(), 2);
-    assert_eq!(snapshot.frontier(), VirtualTime { ticks: 1 });
+    assert_eq!(snapshot.frontier(), VirtualTime { ticks: 2 });
     assert_eq!(snapshot.event_log_entries().len(), 1);
     assert_eq!(snapshot.execution_fingerprints().len(), 2);
     assert_eq!(snapshot.execution_fingerprints()[0].at.ticks, 0);
@@ -1195,19 +1200,19 @@ impl QemuFreshAttemptLifecycleFactory for ContinuationAcceptingFreshLifecycleFac
     type Lifecycle = FakeFreshLifecycle;
     type Error = &'static str;
 
-    fn configure_attempt_continuation(
+    fn configure_attempt_continuations(
         &mut self,
-        continuation: Option<crate::QemuAttemptContinuation<'_>>,
+        continuations: &[crate::QemuAttemptContinuation<'_>],
     ) -> bool {
-        if let Some(continuation) = continuation {
-            self.continuations
-                .lock()
-                .expect("accepted continuation trace")
-                .push((
+        self.continuations
+            .lock()
+            .expect("accepted continuation trace")
+            .extend(continuations.iter().map(|continuation| {
+                (
                     continuation.input().source_frontier_ticks(),
                     continuation.source().id(),
-                ));
-        }
+                )
+            }));
         true
     }
 
@@ -1718,7 +1723,11 @@ fn router_cold_executes_continuation_control_after_authenticating_exact_source()
             authentication_failure: None,
         },
     );
-    let continuation = AttemptContinuationInput::scheduler_reseed(1, [0x5a; 32]);
+    let continuation = AttemptContinuationInput::scheduler_reseed(
+        test_continuation_source_observation(),
+        1,
+        [0x5a; 32],
+    );
     let (input, source_attempt, source_checkpoint) =
         selected_after_genesis_input_with_continuation(Some(continuation));
     let source = input.start().configuration().id();
@@ -1762,6 +1771,126 @@ fn router_cold_executes_continuation_control_after_authenticating_exact_source()
 }
 
 #[test]
+fn router_cold_replays_each_control_in_a_two_generation_continuation_chain() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let continuations = Arc::new(Mutex::new(Vec::new()));
+    let authentications = Arc::new(AtomicUsize::new(0));
+    let fresh = QemuFreshExecutionRunner::new(
+        ContinuationAcceptingFreshLifecycleFactory {
+            inner: FakeFreshLifecycleFactory {
+                order: Arc::clone(&order),
+                cleanup_error: false,
+                terminal_after_replay: false,
+                checkpoint_ready: true,
+            },
+            continuations: Arc::clone(&continuations),
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let mut router = QemuAttemptExecutionRouter::new(
+        fresh,
+        AbsentSelectedSourceResume {
+            authentications: Arc::clone(&authentications),
+            authentication_failure: None,
+        },
+    );
+    let (input, source_attempt, source_checkpoint, expected_controls) =
+        selected_after_two_controlled_generations();
+    let origin = AttemptExecutionOrigin::SelectedSavepoint {
+        certificate: campaign_fact_id(0xb1),
+        request: campaign_fact_id(0xb2),
+        source_attempt,
+        source_execution: crucible_campaign::ExecutionId::from_bytes([0xb3; 16])
+            .expect("source execution"),
+        source_checkpoint,
+        resume: None,
+    };
+    let context = fresh_runner_context().with_execution_origin(origin);
+
+    let outcome = router
+        .execute(&input, &context)
+        .expect("two controlled generations should cold replay in order");
+
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::ExactCheckpoint(_)
+    ));
+    assert_eq!(authentications.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        continuations
+            .lock()
+            .expect("accepted continuation trace")
+            .as_slice(),
+        expected_controls
+    );
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "replay", "drive", "shutdown", "seal"]
+    );
+}
+
+#[test]
+fn private_fresh_replay_can_preserve_descendant_continuation_controls() {
+    let (source, _, _, expected_controls) = selected_after_two_controlled_generations();
+    let candidate = source.start().configuration().clone();
+    let candidate_artifact =
+        test_reached_configuration_artifact(&source, &candidate, b"finding-replay-candidate");
+    let replay = source
+        .for_finding_replay(
+            source.scenario().clone(),
+            candidate_artifact,
+            candidate.clone(),
+            crucible::SignalFaultCampaignReplayPlan::empty(candidate),
+        )
+        .unwrap_or_else(|error| panic!("private finding candidate should replay: {error}"));
+
+    let controls = validated_attempt_continuations(&replay)
+        .unwrap_or_else(|()| panic!("private replay continuation controls should validate"));
+    let actual = controls
+        .iter()
+        .map(|control| {
+            (
+                control.input().source_frontier_ticks(),
+                control.source().id(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(actual, expected_controls);
+}
+
+#[test]
+fn private_fresh_replay_rejects_a_candidate_shorter_than_its_descendant_controls() {
+    let (source, _, _, _) = selected_after_two_controlled_generations();
+    let full = source.start().configuration();
+    let shortened = Configuration {
+        def: full.def.clone(),
+        schedule: full
+            .schedule
+            .prefix(1)
+            .unwrap_or_else(|error| panic!("first controlled prefix should exist: {error}")),
+    };
+    let candidate_artifact =
+        test_reached_configuration_artifact(&source, &shortened, b"short-finding-replay-candidate");
+    let replay = source.for_finding_replay(
+        source.scenario().clone(),
+        candidate_artifact,
+        shortened.clone(),
+        crucible::SignalFaultCampaignReplayPlan::empty(shortened),
+    );
+
+    assert!(matches!(
+        replay,
+        Err(crucible_campaign::CampaignCodecError::InvalidValue {
+            reason: "finding replay candidate ends before a controlled source boundary"
+        })
+    ));
+}
+
+#[test]
 fn router_rejects_invalid_exact_source_before_cold_continuation_allocation() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let authentications = Arc::new(AtomicUsize::new(0));
@@ -1787,7 +1916,11 @@ fn router_rejects_invalid_exact_source_before_cold_continuation_allocation() {
             authentication_failure: Some("invalid exact continuation source"),
         },
     );
-    let continuation = AttemptContinuationInput::scheduler_reseed(1, [0x5a; 32]);
+    let continuation = AttemptContinuationInput::scheduler_reseed(
+        test_continuation_source_observation(),
+        1,
+        [0x5a; 32],
+    );
     let (input, source_attempt, source_checkpoint) =
         selected_after_genesis_input_with_continuation(Some(continuation));
     let origin = AttemptExecutionOrigin::SelectedSavepoint {
@@ -2828,7 +2961,11 @@ fn fresh_runner_rejects_unconsumed_continuation_input_before_factory_invocation(
             failure: None,
         },
     );
-    let continuation_input = AttemptContinuationInput::scheduler_reseed(1, [0x5a; 32]);
+    let continuation_input = AttemptContinuationInput::scheduler_reseed(
+        test_continuation_source_observation(),
+        1,
+        [0x5a; 32],
+    );
     let (input, _, _) = selected_after_genesis_input_with_continuation(Some(continuation_input));
 
     let error = runner
@@ -2852,6 +2989,61 @@ fn fresh_runner_rejects_continuation_at_a_different_virtual_time() {
     assert_invalid_continuation_source(StopCondition::VirtualTimeNanoseconds(2));
 }
 
+#[test]
+fn continuation_accepts_an_authenticated_observation_source_frontier() {
+    let condition = ObservationCondition::SchedulerQuiescent;
+    let proof = ObservationStopProof::new(
+        condition.clone(),
+        ObservationStopSatisfaction::SchedulerQuiescent,
+        ConfigurationId::from_hash(CampaignHash::derive(
+            "continuation-observation-source",
+            b"child",
+        )),
+        ObservationQuantumBoundary::new(1, 0, 1, 0).expect("observation source boundary"),
+        ObservationEventLogProof::new(
+            CampaignHash::derive("continuation-observation-source", b"prefix"),
+            None,
+            0,
+            0,
+            CampaignHash::derive("continuation-observation-source", b"digest"),
+        ),
+        None,
+    )
+    .expect("quiescent source proof");
+    let continuation = AttemptContinuationInput::scheduler_reseed(
+        test_continuation_source_observation(),
+        1,
+        [0x5a; 32],
+    );
+    let (input, _, _) = selected_after_genesis_input_with_continuation_source_evidence(
+        continuation,
+        StopCondition::Observation(condition),
+        StopOutcome::ObservationReached(Box::new(proof)),
+    );
+
+    let controls = validated_attempt_continuations(&input)
+        .unwrap_or_else(|()| panic!("authenticated observation source should validate"));
+
+    assert_eq!(controls.len(), 1);
+    assert_eq!(controls[0].input().source_frontier_ticks(), 1);
+}
+
+#[test]
+fn continuation_rejects_a_terminally_preempted_source_stop() {
+    let continuation = AttemptContinuationInput::scheduler_reseed(
+        test_continuation_source_observation(),
+        1,
+        [0x5a; 32],
+    );
+    let (input, _, _) = selected_after_genesis_input_with_continuation_source_evidence(
+        continuation,
+        StopCondition::VirtualTimeNanoseconds(1),
+        StopOutcome::TerminalSuccess,
+    );
+
+    assert!(validated_attempt_continuations(&input).is_err());
+}
+
 fn assert_invalid_continuation_source(source_stop: StopCondition) {
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
@@ -2869,7 +3061,11 @@ fn assert_invalid_continuation_source(source_stop: StopCondition) {
             failure: None,
         },
     );
-    let continuation = AttemptContinuationInput::scheduler_reseed(1, [0x5a; 32]);
+    let continuation = AttemptContinuationInput::scheduler_reseed(
+        test_continuation_source_observation(),
+        1,
+        [0x5a; 32],
+    );
     let (input, _, _) =
         selected_after_genesis_input_with_continuation_source_stop(continuation, source_stop);
 
@@ -3759,7 +3955,11 @@ fn production_continuation_plan_consumes_the_authenticated_reseed() {
     let frontier = VirtualTime { ticks: 37 };
     let seed = Seed::from_u64(0x51ec_7ed0);
     let continuation = OwnedQemuAttemptContinuation {
-        input: AttemptContinuationInput::scheduler_reseed(frontier.ticks, seed.bytes()),
+        input: AttemptContinuationInput::scheduler_reseed(
+            test_continuation_source_observation(),
+            frontier.ticks,
+            seed.bytes(),
+        ),
         source: source.clone(),
     };
 
@@ -3940,7 +4140,8 @@ fn selected_after_genesis_input_with_continuation(
         .unwrap_or(StopCondition::ExecutionQuanta(1));
     selected_after_genesis_input_with_optional_continuation_source_stop(
         continuation_input,
-        source_stop,
+        source_stop.clone(),
+        StopOutcome::Reached(source_stop),
     )
 }
 
@@ -3952,15 +4153,33 @@ fn selected_after_genesis_input_with_continuation_source_stop(
     crucible_campaign::AttemptId,
     ExactCheckpointId,
 ) {
+    selected_after_genesis_input_with_continuation_source_evidence(
+        continuation_input,
+        source_stop.clone(),
+        StopOutcome::Reached(source_stop),
+    )
+}
+
+fn selected_after_genesis_input_with_continuation_source_evidence(
+    continuation_input: AttemptContinuationInput,
+    source_stop: StopCondition,
+    source_outcome: StopOutcome,
+) -> (
+    CrucibleAttemptExecution,
+    crucible_campaign::AttemptId,
+    ExactCheckpointId,
+) {
     selected_after_genesis_input_with_optional_continuation_source_stop(
         Some(continuation_input),
         source_stop,
+        source_outcome,
     )
 }
 
 fn selected_after_genesis_input_with_optional_continuation_source_stop(
     continuation_input: Option<AttemptContinuationInput>,
     source_stop: StopCondition,
+    source_outcome: StopOutcome,
 ) -> (
     CrucibleAttemptExecution,
     crucible_campaign::AttemptId,
@@ -3986,7 +4205,7 @@ fn selected_after_genesis_input_with_optional_continuation_source_stop(
             configuration: configuration_artifact,
         },
         base.attempt().path(),
-        source_stop,
+        source_stop.clone(),
     )
     .expect("selected origin attempt");
     let source_attempt = origin.id().expect("selected origin attempt ID");
@@ -4022,7 +4241,12 @@ fn selected_after_genesis_input_with_optional_continuation_source_stop(
     let base_replay = crucible::SignalFaultCampaignReplayPlan::empty(configuration.clone());
     let reached_replay = crucible::SignalFaultCampaignReplayPlan::empty(reached.clone());
     let origins = CrucibleAttemptOrigins::new(
-        CrucibleAttemptOrigin::new(origin, reached, reached_replay),
+        CrucibleAttemptOrigin::new_with_source_stop(
+            origin,
+            reached,
+            reached_replay,
+            source_outcome,
+        ),
         Vec::new(),
     );
     let input = CrucibleAttemptExecution::from_test_parts(
@@ -4048,10 +4272,150 @@ fn selected_after_genesis_input_with_optional_continuation_source_stop(
     (input, source_attempt, source_checkpoint)
 }
 
+fn selected_after_two_controlled_generations() -> (
+    CrucibleAttemptExecution,
+    crucible_campaign::AttemptId,
+    ExactCheckpointId,
+    [(u64, crucible::ContentHash); 2],
+) {
+    let base = fresh_runner_input();
+    let configuration = base.start().configuration().clone();
+    let reached_first = step(
+        &configuration,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+            value: 7,
+        }),
+    );
+    let reached_second = step(
+        &reached_first,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+            value: 7,
+        }),
+    );
+    let AttemptStart::Discover {
+        configuration: configuration_artifact,
+    } = base.attempt().start()
+    else {
+        panic!("fresh fixture must discover from genesis");
+    };
+    let first = Attempt::new(
+        AttemptStart::Discover {
+            configuration: configuration_artifact,
+        },
+        base.attempt().path(),
+        StopCondition::VirtualTimeNanoseconds(1),
+    )
+    .expect("first source attempt");
+    let first_id = first.id().expect("first source attempt ID");
+    let reached_first_artifact =
+        test_reached_configuration_artifact(&base, &reached_first, b"two-control-first-reached");
+    let second = Attempt::new_with_continuation_input(
+        AttemptStart::AfterAttempt {
+            origin: first_id,
+            reached: reached_first_artifact,
+        },
+        base.attempt().path(),
+        StopCondition::VirtualTimeNanoseconds(2),
+        AttemptContinuationInput::scheduler_reseed(
+            test_continuation_source_observation_for(b"two-control-first-observation"),
+            1,
+            [0x29; 32],
+        ),
+    )
+    .expect("first controlled continuation");
+    let second_id = second.id().expect("first controlled continuation ID");
+    let reached_second_artifact =
+        test_reached_configuration_artifact(&base, &reached_second, b"two-control-second-reached");
+    let current = Attempt::new_with_continuation_input(
+        AttemptStart::AfterAttempt {
+            origin: second_id,
+            reached: reached_second_artifact,
+        },
+        base.attempt().path(),
+        StopCondition::Terminal,
+        AttemptContinuationInput::scheduler_reseed(
+            test_continuation_source_observation_for(b"two-control-second-observation"),
+            2,
+            [0x47; 32],
+        ),
+    )
+    .expect("second controlled continuation");
+    let first_origin = CrucibleAttemptOrigin::new_with_source_stop(
+        first,
+        reached_first.clone(),
+        crucible::SignalFaultCampaignReplayPlan::empty(reached_first.clone()),
+        crucible_campaign::StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(1)),
+    );
+    let second_origin = CrucibleAttemptOrigin::new_with_source_stop(
+        second,
+        reached_second.clone(),
+        crucible::SignalFaultCampaignReplayPlan::empty(reached_second.clone()),
+        crucible_campaign::StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(2)),
+    );
+    let expected_controls = [(1, reached_first.id()), (2, reached_second.id())];
+    let input = CrucibleAttemptExecution::from_test_parts(
+        base.lineage().clone(),
+        base.scenario().clone(),
+        current,
+        base.path().clone(),
+        CrucibleResolvedAttemptStart::AfterAttempt {
+            base: Box::new(CrucibleResolvedAttemptStart::Discover {
+                configuration: configuration.clone(),
+            }),
+            base_signal_fault_replay: crucible::SignalFaultCampaignReplayPlan::empty(configuration),
+            origins: Box::new(CrucibleAttemptOrigins::new(
+                first_origin,
+                vec![second_origin],
+            )),
+        },
+    );
+    let source_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        2,
+        b"two-control-selected-source-checkpoint",
+    ))
+    .expect("selected source checkpoint");
+
+    (input, second_id, source_checkpoint, expected_controls)
+}
+
+fn test_reached_configuration_artifact(
+    base: &CrucibleAttemptExecution,
+    reached: &Configuration,
+    bytes: &[u8],
+) -> crucible_campaign::ConfigurationArtifactId {
+    let reached_id = ConfigurationId::from_hash(CampaignHash::from_bytes(reached.id().bytes));
+    ConfigurationArtifact::new(
+        base.lineage().scenario(),
+        base.lineage().scenario_content(),
+        reached_id,
+        1,
+        bytes.to_vec(),
+    )
+    .expect("selected reached configuration artifact")
+    .id()
+    .expect("selected reached configuration artifact ID")
+}
+
 fn campaign_fact_id(byte: u8) -> CampaignFactId {
     let content = ContentId::for_bytes(ObjectKind::CampaignFact, 10, &[byte; 32]);
     CampaignFactId::parse(&format!("crucible.campaign.fact@{}", content.encode()))
         .expect("campaign fact")
+}
+
+fn test_continuation_source_observation() -> crucible_campaign::ObservationId {
+    test_continuation_source_observation_for(b"controlled-continuation-source-observation")
+}
+
+fn test_continuation_source_observation_for(bytes: &[u8]) -> crucible_campaign::ObservationId {
+    let content = ContentId::for_bytes(ObjectKind::Observation, 6, bytes);
+    crucible_campaign::ObservationId::parse(&format!(
+        "crucible.campaign.observation@{}",
+        content.encode()
+    ))
+    .expect("controlled continuation source observation")
 }
 
 fn non_genesis_fresh_runner_input() -> CrucibleAttemptExecution {

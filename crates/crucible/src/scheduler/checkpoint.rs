@@ -248,7 +248,7 @@ impl SingleSchedulerCheckpoint {
         &self,
         scenario: &ScenarioDef,
     ) -> Result<Configuration, SingleSchedulerCheckpointError> {
-        if self.wire.scenario != scenario.id() || self.future_decision_seed() != scenario.seed() {
+        if self.wire.scenario != scenario.id() {
             return Err(SingleSchedulerCheckpointError::Configuration);
         }
         let schedule = Schedule::from_compact_binary(&self.wire.schedule)

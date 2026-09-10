@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use crucible::{RngDecision, RngStreamId, step};
 use crucible_protocol::selectable_catalog_plan::{
     SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
     SelectablePlanLimits, SelectablePlanPendingRequest, SelectablePlanPhase,
@@ -865,6 +866,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         initial_lifecycle_observations_pending: true,
         logical_replay_boundary: None,
         branch: None,
+        continuation_branches: VecDeque::new(),
         signal_fault_branches: VecDeque::new(),
         promote_signal_fault_campaign_choices: false,
         launch_configs: BTreeMap::new(),
@@ -1134,6 +1136,238 @@ fn branch_reseed_changes_the_live_scheduler_seed_at_its_source_boundary() {
 
     assert_eq!(lifecycle.inner.loop_impl().future_decision_seed(), seed);
     assert!(lifecycle.branch.is_none());
+}
+
+#[test]
+fn ordered_branch_reseeds_advance_without_dropping_a_generation() {
+    let source = nonterminal_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let configuration = lifecycle.inner.loop_impl().configuration().clone();
+    let frontier = lifecycle.inner.loop_impl().frontier();
+    let first_seed = Seed::from_u64(29);
+    let second_seed = Seed::from_u64(47);
+    lifecycle.branch = Some(ProductionVmBranchConfig {
+        base: configuration.clone(),
+        frontier,
+        decisions: Vec::new(),
+        seed: Some(first_seed),
+    });
+    lifecycle
+        .continuation_branches
+        .push_back(ProductionVmBranchConfig {
+            base: configuration.clone(),
+            frontier,
+            decisions: Vec::new(),
+            seed: Some(second_seed),
+        });
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_branch_frontier_cap(frontier)
+        .unwrap_or_else(|error| panic!("first branch frontier should install: {error}"));
+
+    let first = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("first branch reseed should apply: {error}"));
+    assert_eq!(
+        lifecycle.inner.loop_impl().future_decision_seed(),
+        first_seed
+    );
+    assert!(lifecycle.branch.is_some());
+
+    lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: first.configuration,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("second branch reseed should apply: {error}"));
+    assert_eq!(
+        lifecycle.inner.loop_impl().future_decision_seed(),
+        second_seed
+    );
+    assert!(lifecycle.branch.is_none());
+    assert!(lifecycle.continuation_branches.is_empty());
+}
+
+#[test]
+fn two_generation_reseeds_survive_fork_advance_save_and_refork() {
+    fn assert_branch(
+        actual: Option<&ProductionVmBranchConfig>,
+        expected: &ProductionVmBranchConfig,
+    ) {
+        let actual = actual.unwrap_or_else(|| panic!("controlled branch should remain active"));
+        assert_eq!(actual.base, expected.base);
+        assert_eq!(actual.frontier, expected.frontier);
+        assert_eq!(actual.decisions, expected.decisions);
+        assert_eq!(actual.seed, expected.seed);
+    }
+
+    let (source, lifecycle) = production_permanently_failed_loop_for_test()
+        .unwrap_or_else(|error| panic!("source lifecycle should build: {error}"));
+    let scenario = source.scenario_def();
+    let mut source_world = lifecycle
+        .prepare_hot_fork_source_world()
+        .unwrap_or_else(|error| panic!("initial source world should prepare: {error}"));
+    let continuation = source_world
+        .fork_continuation()
+        .unwrap_or_else(|error| panic!("initial continuation should fork: {error}"));
+    let first_run_state = tempfile::tempdir()
+        .unwrap_or_else(|error| panic!("first child run-state directory: {error}"));
+    let mut lifecycle = build_production_vm_lifecycle_loop_from_hot_fork_with_launcher(
+        &scenario,
+        &source,
+        continuation,
+        Vec::new(),
+        first_run_state.path(),
+        RecordingFinishLauncher {
+            finish_order: Arc::new(std::sync::Mutex::new(Vec::new())),
+        },
+    )
+    .unwrap_or_else(|error| panic!("initial child lifecycle should install: {error}"));
+    lifecycle.initial_lifecycle_observations_pending = false;
+
+    let configuration = lifecycle.inner.loop_impl().configuration().clone();
+    let frontier = lifecycle.inner.loop_impl().frontier();
+    let first_seed = Seed::from_u64(29);
+    let second_seed = Seed::from_u64(47);
+    let first_branch = ProductionVmBranchConfig {
+        base: configuration.clone(),
+        frontier,
+        decisions: Vec::new(),
+        seed: Some(first_seed),
+    };
+    let second_branch = ProductionVmBranchConfig {
+        base: configuration.clone(),
+        frontier,
+        decisions: Vec::new(),
+        seed: Some(second_seed),
+    };
+    lifecycle.branch = Some(first_branch);
+    lifecycle
+        .continuation_branches
+        .push_back(second_branch.clone());
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_branch_frontier_cap(frontier)
+        .unwrap_or_else(|error| panic!("first branch frontier should install: {error}"));
+
+    let first = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("first controlled generation should advance: {error}"));
+    assert_eq!(
+        lifecycle.inner.loop_impl().future_decision_seed(),
+        first_seed
+    );
+    assert_branch(lifecycle.branch.as_ref(), &second_branch);
+    assert!(lifecycle.continuation_branches.is_empty());
+
+    let restore_config = lifecycle.config.clone();
+    let checkpoint = lifecycle
+        .capture_portable_exact_checkpoint()
+        .unwrap_or_else(|error| panic!("controlled generation should save exactly: {error}"));
+    let restored = build_production_vm_lifecycle_loop_from_exact_closure_with_launcher(
+        &scenario,
+        &source,
+        &restore_config,
+        checkpoint.identity(),
+        RecordingFinishLauncher {
+            finish_order: Arc::new(std::sync::Mutex::new(Vec::new())),
+        },
+    )
+    .unwrap_or_else(|error| panic!("saved controlled generation should restore: {error}"));
+    assert_branch(restored.branch.as_ref(), &second_branch);
+    assert!(restored.continuation_branches.is_empty());
+
+    let mut restored_source_world = restored
+        .prepare_hot_fork_source_world()
+        .unwrap_or_else(|error| panic!("restored source world should prepare: {error}"));
+    let descendant = restored_source_world
+        .fork_continuation()
+        .unwrap_or_else(|error| panic!("restored continuation should fork: {error}"));
+    let second_run_state = tempfile::tempdir()
+        .unwrap_or_else(|error| panic!("second child run-state directory: {error}"));
+    let mut descendant = build_production_vm_lifecycle_loop_from_hot_fork_with_launcher(
+        &scenario,
+        &source,
+        descendant,
+        Vec::new(),
+        second_run_state.path(),
+        RecordingFinishLauncher {
+            finish_order: Arc::new(std::sync::Mutex::new(Vec::new())),
+        },
+    )
+    .unwrap_or_else(|error| panic!("descendant lifecycle should install: {error}"));
+    assert_eq!(
+        descendant.inner.loop_impl().future_decision_seed(),
+        first_seed
+    );
+    assert_branch(descendant.branch.as_ref(), &second_branch);
+
+    descendant
+        .drive_quantum(QuantumRequest {
+            configuration: first.configuration,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("second controlled generation should advance: {error}"));
+    assert_eq!(
+        descendant.inner.loop_impl().future_decision_seed(),
+        second_seed
+    );
+    assert!(descendant.branch.is_none());
+    assert!(descendant.continuation_branches.is_empty());
+}
+
+#[test]
+fn ordered_branch_sequence_rejects_regressing_or_divergent_boundaries() {
+    let source = nonterminal_signal_replay_scenario();
+    let scenario = source.scenario_def();
+    let base = Configuration::genesis(scenario.clone());
+    let first = step(
+        &base,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("branch-sequence"),
+            value: 1,
+        }),
+    );
+    let divergent = step(
+        &base,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("branch-sequence"),
+            value: 2,
+        }),
+    );
+    let branch = |base, ticks| ProductionVmBranchConfig {
+        base,
+        frontier: VirtualTime { ticks },
+        decisions: Vec::new(),
+        seed: Some(Seed::from_u64(ticks)),
+    };
+
+    let regressing = [branch(first.clone(), 2), branch(first.clone(), 1)];
+    let error =
+        super::super::construction::validate_configured_branch_sequence(&scenario, &regressing)
+            .err()
+            .unwrap_or_else(|| panic!("regressing branch frontier must fail closed"));
+    assert!(error.to_string().contains("backward in virtual time"));
+
+    let divergent = [branch(first, 1), branch(divergent, 2)];
+    let error =
+        super::super::construction::validate_configured_branch_sequence(&scenario, &divergent)
+            .err()
+            .unwrap_or_else(|| panic!("divergent branch history must fail closed"));
+    assert!(
+        error
+            .to_string()
+            .contains("divergent configuration history")
+    );
 }
 
 pub(in crate::vm_lifecycle) fn nonterminal_signal_replay_scenario() -> ScenarioDefForm {

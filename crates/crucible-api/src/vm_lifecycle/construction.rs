@@ -7,6 +7,60 @@
 
 use super::*;
 
+fn configured_branches(
+    config: &ProductionVmLifecycleConfig,
+) -> impl Iterator<Item = &ProductionVmBranchConfig> {
+    config
+        .branch
+        .iter()
+        .chain(config.continuation_branches.iter())
+}
+
+fn first_configured_branch(
+    config: &ProductionVmLifecycleConfig,
+) -> Option<&ProductionVmBranchConfig> {
+    configured_branches(config).next()
+}
+
+pub(super) fn validate_configured_branch_sequence(
+    scenario: &ScenarioDef,
+    branches: &[ProductionVmBranchConfig],
+) -> Result<(), LifecycleApiError> {
+    if branches
+        .iter()
+        .any(|branch| branch.base.def.id() != scenario.id())
+    {
+        return Err(loop_factory_error(
+            "production branch sequence names a different scenario",
+        ));
+    }
+    for pair in branches.windows(2) {
+        let [previous, next] = pair else {
+            continue;
+        };
+        if next.frontier < previous.frontier {
+            return Err(loop_factory_error(
+                "production branch sequence moves backward in virtual time",
+            ));
+        }
+        let previous_prefix = next
+            .base
+            .schedule
+            .prefix(previous.base.schedule.len())
+            .map_err(|_| {
+                loop_factory_error(
+                    "production branch sequence moves backward in configuration history",
+                )
+            })?;
+        if previous_prefix != previous.base.schedule {
+            return Err(loop_factory_error(
+                "production branch sequence has divergent configuration history",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
@@ -21,7 +75,12 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         ));
     }
 
-    if config.branch.is_some()
+    if config.branch.is_some() && !config.continuation_branches.is_empty() {
+        return Err(loop_factory_error(
+            "single and ordered production branch configurations cannot coexist",
+        ));
+    }
+    if first_configured_branch(config).is_some()
         && config
             .signal_fault_replay
             .as_ref()
@@ -32,7 +91,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         ));
     }
     if config.logical_replay_boundary.is_some()
-        && (config.branch.is_some()
+        && (first_configured_branch(config).is_some()
             || config.signal_fault_replay.is_some()
             || restore_checkpoint.is_some())
     {
@@ -98,6 +157,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         ));
     }
     let nodes = source.world().vm_nodes();
+    let cold_branches = configured_branches(config).cloned().collect::<Vec<_>>();
+    validate_configured_branch_sequence(scenario, &cold_branches)?;
     validate_app_random_branch_replay_config(nodes, config)?;
     if let Some(checkpoint) = restore_checkpoint.as_ref() {
         let expected_selectable_nodes = nodes
@@ -420,7 +481,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 production_app_random_checkpoint_config(
                     &checkpoint.scheduler,
                     scenario,
-                    checkpoint.branch.as_ref(),
+                    checkpoint.branch.as_slice(),
                     &vm.id,
                 )
                 .map_err(|error| {
@@ -430,7 +491,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                     ))
                 })?
             } else {
-                production_app_random_launch_config(scenario, config.branch.as_ref(), &vm.id)
+                production_app_random_launch_config(scenario, &cold_branches, &vm.id)
             }
             .with_branch_plan(
                 config
@@ -854,9 +915,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 .map_err(|error| {
                     loop_factory_error(format!("cap QEMU logical replay frontier: {error}"))
                 })?;
-        } else if let Some(frontier) = config
-            .branch
-            .as_ref()
+        } else if let Some(frontier) = first_configured_branch(config)
             .map(|branch| branch.frontier)
             .or_else(|| {
                 config
@@ -1124,9 +1183,12 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             })?;
     }
 
-    let active_branch = restore_checkpoint.as_ref().map_or_else(
-        || config.branch.clone(),
-        |checkpoint| checkpoint.branch.clone(),
+    let (active_branch, continuation_branches) = restore_checkpoint.as_ref().map_or_else(
+        || {
+            let mut branches = configured_branches(config).cloned();
+            (branches.next(), branches.collect())
+        },
+        |checkpoint| (checkpoint.branch.clone(), VecDeque::new()),
     );
     let signal_fault_branches = if restore_checkpoint.is_some() {
         VecDeque::new()
@@ -1181,6 +1243,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             .is_none_or(|checkpoint| checkpoint.initial_lifecycle_observations_pending),
         logical_replay_boundary: config.logical_replay_boundary.clone(),
         branch: active_branch,
+        continuation_branches,
         signal_fault_branches,
         promote_signal_fault_campaign_choices: false,
         launch_configs,

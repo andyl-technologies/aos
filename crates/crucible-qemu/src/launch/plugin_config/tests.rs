@@ -89,6 +89,25 @@ fn app_random_branch_and_continuation_arguments_are_canonical() {
 }
 
 #[test]
+fn app_random_branch_sequence_arguments_preserve_order() {
+    let first = Seed::from_u64(29);
+    let second = Seed::from_u64(47);
+    let app_random = QemuLaunchAppRandomConfig::new(11, 8, "a")
+        .with_branch_seed_sequence(vec![(first, 1), (second, 4)]);
+    let arguments = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+        .with_whitebox(QemuLaunchPluginSwitch::On)
+        .with_app_random(app_random)
+        .plugin_args_raw();
+
+    assert!(arguments.contains(&format!(
+        "app_random_branch_seeds={};{}",
+        first.decision_rng_root_seed(),
+        second.decision_rng_root_seed()
+    )));
+    assert!(arguments.contains("app_random_branch_afters=1;4"));
+}
+
+#[test]
 fn process_generation_is_canonical_and_nonzero() {
     let config = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0).with_process_generation(42);
 

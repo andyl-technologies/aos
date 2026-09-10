@@ -2691,12 +2691,25 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
         ObjectKind::CampaignFact,
         "continuation-input-path"
     );
+    let source_observation = stored_id!(
+        ObservationId,
+        ObjectKind::Observation,
+        "continuation-input-source-observation"
+    );
+    let another_source_observation = stored_id!(
+        ObservationId,
+        ObjectKind::Observation,
+        "continuation-input-another-source-observation"
+    );
     let start = AttemptStart::AfterAttempt { origin, reached };
 
-    let base_seed = AttemptContinuationInput::scheduler_reseed(17, [0; 32]);
+    let base_seed = AttemptContinuationInput::scheduler_reseed(source_observation, 17, [0; 32]);
     let mut changed_seed_bytes = [0; 32];
     changed_seed_bytes[31] = 1;
-    let changed_seed = AttemptContinuationInput::scheduler_reseed(17, changed_seed_bytes);
+    let changed_seed =
+        AttemptContinuationInput::scheduler_reseed(source_observation, 17, changed_seed_bytes);
+    let changed_source =
+        AttemptContinuationInput::scheduler_reseed(another_source_observation, 17, [0; 32]);
     let seed_attempt = Attempt::new_with_continuation_input(
         start,
         path,
@@ -2707,12 +2720,26 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     let changed_seed_attempt =
         Attempt::new_with_continuation_input(start, path, StopCondition::Terminal, changed_seed)
             .expect("changed-seed continuation attempt");
+    let changed_source_attempt =
+        Attempt::new_with_continuation_input(start, path, StopCondition::Terminal, changed_source)
+            .expect("changed-source continuation attempt");
 
-    assert_eq!(seed_attempt.schema_version(), 5);
+    assert_eq!(seed_attempt.schema_version(), 7);
     assert_eq!(seed_attempt.continuation_input(), Some(&base_seed));
     assert_ne!(
         seed_attempt.id().expect("seed attempt id"),
         changed_seed_attempt.id().expect("changed seed attempt id")
+    );
+    assert_ne!(
+        seed_attempt.id().expect("seed attempt id"),
+        changed_source_attempt
+            .id()
+            .expect("changed source attempt id")
+    );
+    assert!(
+        seed_attempt
+            .content_children()
+            .contains(&("source-observation", source_observation.content_id()))
     );
     assert_eq!(
         Attempt::from_canonical_bytes(&seed_attempt.canonical_bytes())
@@ -2727,7 +2754,7 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
         base_seed.clone(),
     )
     .expect("observed continuation attempt");
-    assert_eq!(observed_attempt.schema_version(), 6);
+    assert_eq!(observed_attempt.schema_version(), 8);
     assert_eq!(
         Attempt::from_canonical_bytes(&observed_attempt.canonical_bytes())
             .expect("canonical observed continuation attempt"),
@@ -2737,15 +2764,24 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     let first = vec![0x10, 0x20];
     let second = vec![0x30, 0x40];
     let changed = vec![0x30, 0x41];
-    let ordered =
-        AttemptContinuationInput::scheduler_overrides(17, vec![first.clone(), second.clone()])
-            .expect("ordered override input");
-    let reordered =
-        AttemptContinuationInput::scheduler_overrides(17, vec![second.clone(), first.clone()])
-            .expect("reordered override input");
-    let changed_value =
-        AttemptContinuationInput::scheduler_overrides(17, vec![first.clone(), changed])
-            .expect("changed override input");
+    let ordered = AttemptContinuationInput::scheduler_overrides(
+        source_observation,
+        17,
+        vec![first.clone(), second.clone()],
+    )
+    .expect("ordered override input");
+    let reordered = AttemptContinuationInput::scheduler_overrides(
+        source_observation,
+        17,
+        vec![second.clone(), first.clone()],
+    )
+    .expect("reordered override input");
+    let changed_value = AttemptContinuationInput::scheduler_overrides(
+        source_observation,
+        17,
+        vec![first.clone(), changed],
+    )
+    .expect("changed override input");
 
     let ordered_attempt =
         Attempt::new_with_continuation_input(start, path, StopCondition::Terminal, ordered.clone())
@@ -2774,25 +2810,33 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     );
 
     assert!(matches!(
-        AttemptContinuationInput::scheduler_overrides(17, Vec::new()),
+        AttemptContinuationInput::scheduler_overrides(source_observation, 17, Vec::new()),
         Err(CampaignCodecError::InvalidValue {
             reason: "attempt continuation override set is empty"
         })
     ));
     assert!(matches!(
-        AttemptContinuationInput::scheduler_overrides(17, vec![first.clone(), first]),
+        AttemptContinuationInput::scheduler_overrides(
+            source_observation,
+            17,
+            vec![first.clone(), first],
+        ),
         Err(CampaignCodecError::InvalidValue {
             reason: "attempt continuation override set contains a duplicate decision"
         })
     ));
     assert!(matches!(
-        AttemptContinuationInput::scheduler_overrides(17, vec![vec![0; 1024 * 1024 + 1]]),
+        AttemptContinuationInput::scheduler_overrides(
+            source_observation,
+            17,
+            vec![vec![0; 1024 * 1024 + 1]],
+        ),
         Err(CampaignCodecError::LimitExceeded {
             limit: "attempt-continuation-override-item-bytes"
         })
     ));
     assert!(matches!(
-        AttemptContinuationInput::scheduler_overrides(17, vec![vec![0]; 4_097]),
+        AttemptContinuationInput::scheduler_overrides(source_observation, 17, vec![vec![0]; 4_097],),
         Err(CampaignCodecError::LimitExceeded {
             limit: "attempt-continuation-override-count"
         })
@@ -2807,6 +2851,49 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     assert_eq!(
         decode::<AttemptContinuationInput>(&[0]),
         Err(CampaignCodecError::Truncated)
+    );
+    let mut unreleased_legacy_reseed = Encoder::new();
+    unreleased_legacy_reseed.u8(0);
+    unreleased_legacy_reseed.u64(17);
+    unreleased_legacy_reseed.fixed(&[0; 32]);
+    assert_eq!(
+        decode::<AttemptContinuationInput>(&unreleased_legacy_reseed.finish()),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "typed content identity has the wrong record type",
+        })
+    );
+
+    let mut unreleased_v5_attempt = Encoder::new();
+    5_u32.encode(&mut unreleased_v5_attempt);
+    start.encode(&mut unreleased_v5_attempt);
+    path.encode(&mut unreleased_v5_attempt);
+    StopCondition::Terminal.encode(&mut unreleased_v5_attempt);
+    unreleased_v5_attempt.u8(0);
+    unreleased_v5_attempt.u64(17);
+    unreleased_v5_attempt.fixed(&[0; 32]);
+    assert_eq!(
+        Attempt::from_canonical_bytes(&unreleased_v5_attempt.finish()),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported attempt schema version",
+        })
+    );
+
+    let mut unreleased_v6_attempt = Encoder::new();
+    6_u32.encode(&mut unreleased_v6_attempt);
+    start.encode(&mut unreleased_v6_attempt);
+    path.encode(&mut unreleased_v6_attempt);
+    StopCondition::Observation(ObservationCondition::SchedulerQuiescent)
+        .encode(&mut unreleased_v6_attempt);
+    unreleased_v6_attempt.u8(1);
+    unreleased_v6_attempt.u64(17);
+    unreleased_v6_attempt.sequence(&[vec![0x10, 0x20]], |encoder, decision| {
+        encoder.bytes(decision);
+    });
+    assert_eq!(
+        Attempt::from_canonical_bytes(&unreleased_v6_attempt.finish()),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported attempt schema version",
+        })
     );
 
     assert!(matches!(
@@ -2828,6 +2915,7 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
             path,
             StopCondition::Terminal,
             AttemptContinuationInput::SchedulerOverrides {
+                source_observation,
                 source_frontier_ticks: 17,
                 decisions: Vec::new(),
             },

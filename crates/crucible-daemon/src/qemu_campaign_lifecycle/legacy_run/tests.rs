@@ -1172,6 +1172,7 @@ fn controlled_resume_preserves_source_capture_and_applies_after_continuation_adm
             None,
             Some(
                 crucible_campaign::AttemptContinuationInput::scheduler_reseed(
+                    first_resume.source_observation(),
                     5,
                     first_seed.bytes(),
                 )
@@ -1185,6 +1186,7 @@ fn controlled_resume_preserves_source_capture_and_applies_after_continuation_adm
             None,
             Some(
                 crucible_campaign::AttemptContinuationInput::scheduler_reseed(
+                    second_resume.source_observation(),
                     5,
                     second_seed.bytes(),
                 )

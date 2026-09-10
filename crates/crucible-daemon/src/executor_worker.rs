@@ -9,10 +9,11 @@
 
 use crucible::ContentHash;
 use crucible_campaign::{
-    Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode, BranchPath,
-    CampaignExecutorStore, CampaignLineage, CampaignRepositoryError, ConfigurationArtifact,
-    ExactCheckpointId, ExecutionId, ExecutionRetentionIntent, ExecutorRejection,
-    ObservationCandidate, ObservationId, ResolvedSelection, ScenarioArtifact, SubmitAttemptRequest,
+    Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, AttemptStartMode,
+    BranchPath, CampaignExecutorStore, CampaignLineage, CampaignRepositoryError,
+    ConfigurationArtifact, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
+    ExecutorRejection, ObservationCandidate, ObservationId, ResolvedSelection, ScenarioArtifact,
+    StopOutcome, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::ObjectKind;
 use std::collections::BTreeSet;
@@ -123,6 +124,8 @@ impl ResolvedAttemptOrigins {
 pub struct ResolvedAttemptOrigin {
     attempt: Attempt,
     reached: ConfigurationArtifact,
+    source_stop: Option<StopOutcome>,
+    source_stop_bytes: u64,
 }
 
 impl ResolvedAttemptOrigin {
@@ -136,6 +139,18 @@ impl ResolvedAttemptOrigin {
     #[must_use]
     pub const fn reached(&self) -> &ConfigurationArtifact {
         &self.reached
+    }
+
+    /// Returns the authenticated source outcome for controlled continuation.
+    #[must_use]
+    pub const fn source_stop(&self) -> Option<&StopOutcome> {
+        self.source_stop.as_ref()
+    }
+
+    /// Returns the retained canonical source-proof charge in bytes.
+    #[must_use]
+    pub const fn source_stop_bytes(&self) -> u64 {
+        self.source_stop_bytes
     }
 }
 
@@ -337,9 +352,29 @@ fn resolve_attempt_execution_input_with_origin_limit(
                 }
                 let reached = store.load_configuration_artifact(reached)?;
                 account_origin_artifact(&reached, &mut origin_bytes, maximum_origin_bytes)?;
+                let (source_stop, source_stop_bytes) = match descendant.continuation_input() {
+                    Some(continuation_input) => {
+                        let (stop, bytes) = resolve_continuation_source_stop(
+                            store,
+                            continuation_input,
+                            &origin_attempt,
+                            &reached,
+                        )?;
+                        account_origin_bytes(bytes, &mut origin_bytes, maximum_origin_bytes)?;
+                        let bytes = u64::try_from(bytes).map_err(|_| {
+                            CampaignRepositoryError::Integrity {
+                                reason: "attempt-origin-artifact-byte-count-overflow",
+                            }
+                        })?;
+                        (Some(stop), bytes)
+                    }
+                    None => (None, 0),
+                };
                 origins.push(ResolvedAttemptOrigin {
                     attempt: origin_attempt,
                     reached,
+                    source_stop,
+                    source_stop_bytes,
                 });
                 origin_attempt = descendant;
             }
@@ -421,6 +456,59 @@ fn account_origin_artifact(
     // headroom for one subsequent bounded artifact load.
     let bytes = payload_bytes
         .checked_add(SELECTED_ORIGIN_STRUCTURAL_BYTES)
+        .ok_or(CampaignRepositoryError::Integrity {
+            reason: "attempt-origin-artifact-byte-count-overflow",
+        })?;
+    *total = total
+        .checked_add(bytes)
+        .ok_or(CampaignRepositoryError::Integrity {
+            reason: "attempt-origin-artifact-byte-count-overflow",
+        })?;
+    if *total > limit {
+        return Err(CampaignRepositoryError::InvalidRequest {
+            reason: "attempt-origin-artifacts-exceed-resource-limit",
+        });
+    }
+    Ok(())
+}
+
+fn resolve_continuation_source_stop(
+    store: &CampaignExecutorStore,
+    continuation_input: &AttemptContinuationInput,
+    source_attempt: &Attempt,
+    reached: &ConfigurationArtifact,
+) -> Result<(StopOutcome, usize), CampaignRepositoryError> {
+    let observation = store.load_observation(continuation_input.source_observation())?;
+    if observation.attempt() != source_attempt.id()? {
+        return Err(CampaignRepositoryError::Integrity {
+            reason: "attempt-continuation-source-observation-origin-mismatch",
+        });
+    }
+    if observation.child_content() != reached.id()?
+        || observation.child() != reached.configuration()
+    {
+        return Err(CampaignRepositoryError::Integrity {
+            reason: "attempt-continuation-source-observation-reached-mismatch",
+        });
+    }
+    if !observation.stop().reaches(source_attempt.stop()) {
+        return Err(CampaignRepositoryError::Integrity {
+            reason: "attempt-continuation-source-observation-stop-mismatch",
+        });
+    }
+
+    let bytes = observation.canonical_bytes().len();
+    Ok((observation.stop().clone(), bytes))
+}
+
+fn account_origin_bytes(
+    encoded_bytes: usize,
+    total: &mut u64,
+    limit: u64,
+) -> Result<(), CampaignRepositoryError> {
+    let bytes = u64::try_from(encoded_bytes)
+        .ok()
+        .and_then(|bytes| bytes.checked_add(SELECTED_ORIGIN_STRUCTURAL_BYTES))
         .ok_or(CampaignRepositoryError::Integrity {
             reason: "attempt-origin-artifact-byte-count-overflow",
         })?;

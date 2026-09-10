@@ -519,19 +519,21 @@ fn validate_app_random_decisions(
         &continuation,
     );
     let mut evidence = LiveAppRandomEvidence::default();
-    let mut branch_applied = false;
+    let mut next_branch = 0;
     for decision in decisions {
         let current_draw = app_random.draw_offset.saturating_add(evidence.count as u64);
-        if !branch_applied
-            && app_random.branch_after_draws == Some(current_draw)
-            && let Some(branch_seed) = app_random.branch_seed()
+        while let Some((branch_seed, _)) = app_random
+            .branch_reseeds()
+            .get(next_branch)
+            .filter(|(_, after)| *after == current_draw)
+            .copied()
         {
             recorder = DecisionRecorder::from_seed_and_positions(
                 recorder.into_configuration(),
                 branch_seed,
                 &DecisionRngState::empty(),
             );
-            branch_applied = true;
+            next_branch += 1;
         }
         // crucible-lint: allow host-nondeterminism-state -- the plugin conjecture is compared and rejected on any mismatch.
         let Decision::AppRandom(expected) = decision else {
