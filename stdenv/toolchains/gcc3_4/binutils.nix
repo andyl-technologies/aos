@@ -29,12 +29,18 @@ in
         # Dummy lex/flex to satisfy configure checks — the actual build
         # uses pre-generated parser files and never invokes lex.
         mkdir -p "$TMPDIR/fakebin"
-        printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
-        printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
+        printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
+        printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
         chmod +x "$TMPDIR/fakebin/lex" "$TMPDIR/fakebin/flex"
         export PATH="$TMPDIR/fakebin:$PATH"
 
-        cd ${src}
+        mkdir -p "$TMPDIR/src"
+        (cd ${src} && tar cf - .) | (cd "$TMPDIR/src" && tar xf -)
+        chmod -R u+w "$TMPDIR/src"
+
+        # Configure and make execute helpers from this writable source tree.
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} "$TMPDIR/src"
 
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
@@ -42,7 +48,7 @@ in
         CC="${this.gcc}/bin/gcc" \
         CFLAGS="-O2 -I${prev.glibc}/include" \
         LDFLAGS="-L${prev.glibc}/lib -static" \
-        ${src}/configure \
+        "${prev.bash}/bin/bash" "$TMPDIR/src/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
           --disable-shared --disable-nls \
@@ -50,8 +56,8 @@ in
           --with-sysroot=/ \
           --program-transform-name=
 
-        make -j"$NIX_BUILD_CORES"
-        make install
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES"
+        make SHELL="${prev.bash}/bin/bash" install
 
         echo "binutils 2.15 installed to $out"
       ''

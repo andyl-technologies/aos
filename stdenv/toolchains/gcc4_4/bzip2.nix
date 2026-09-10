@@ -1,6 +1,6 @@
 # stdenv/toolchains/gcc4_4/bzip2.nix — bzip2 1.0.6 (RHEL 6)
 #
-# Built with THIS tier's GCC 4.4.7 + prev.glibc, dynamic linking with rpath.
+# Built with THIS tier's GCC 4.4.7 and the static-only construction libc.
 # bzip2 has a simple Makefile — no autoconf, no configure script.
 #
 {
@@ -29,10 +29,14 @@ in
         cd bzip2-1.0.6
         chmod -R u+w .
 
-        make \
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
+        make SHELL="${prev.bash}/bin/bash" \
           CC="${gcc}/bin/gcc" \
           CFLAGS="-O2 -I${prev.glibc}/include -D_FILE_OFFSET_BITS=64" \
-          LDFLAGS="-L${prev.glibc}/lib -Wl,-rpath,${prev.glibc}/lib" \
+          LDFLAGS="-L${prev.glibc}/lib -static" \
           PREFIX="$out" \
           -j"$NIX_BUILD_CORES" \
           bzip2 bzip2recover

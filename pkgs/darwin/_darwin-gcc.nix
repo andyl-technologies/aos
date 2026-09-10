@@ -111,6 +111,9 @@
         mv mpfr-4.2.2 mpfr
         mv mpc-1.3.1 mpc
 
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} .
+
         # GCC's generated libbacktrace configure script uses an absolute host
         # `file` path for its ELF ABI probe. Keep that build-machine tool inside
         # the source-built AOS closure instead of relying on the Linux host.
@@ -211,7 +214,7 @@
           CFLAGS="${buildCompileFlags}" \
           CXXFLAGS="${buildCompileFlags}" \
           LDFLAGS="${buildLinkFlags}" \
-          "$TMPDIR/${sourceDirectory}/configure" \
+          "$CONFIG_SHELL" "$TMPDIR/${sourceDirectory}/configure" \
             --prefix=$out \
             --build=${build} \
             --host=${build} \
@@ -227,7 +230,7 @@
           # prefix maps that cover DWARF, __FILE__, and target runtime objects.
           find . -name configargs.h -type f \
             -exec sed -i "s|$TMPDIR|.|g" {} +
-          make -j$NIX_BUILD_CORES \
+          make SHELL="$CONFIG_SHELL" -j$NIX_BUILD_CORES \
             ${targetMakeFlags}
         '';
       }
@@ -238,7 +241,7 @@
           # GNU install-strip requests the ELF-only --strip-unneeded option
           # from the target strip tool. Install the already release-optimized
           # compiler and Mach-O runtimes without that incompatible extra pass.
-          make install \
+          make SHELL="$CONFIG_SHELL" install \
             ${targetMakeFlags}
 
           # GCC installs only a versioned target-prefixed C driver in this
@@ -313,7 +316,7 @@ in
           LDFLAGS_FOR_BUILD="${buildLinkFlags}" \
           GCC_FOR_TARGET=${cross}/bin/${target}-gcc \
           GXX_FOR_TARGET=${cross}/bin/${target}-g++ \
-          "$TMPDIR/${sourceDirectory}/configure" \
+          "$CONFIG_SHELL" "$TMPDIR/${sourceDirectory}/configure" \
             --prefix=$out \
             --build=${build} \
             --host=${target} \
@@ -326,7 +329,7 @@ in
           export PATH="$TMPDIR/gcc-native-tools:$PATH"
           find . -name configargs.h -type f \
             -exec sed -i "s|$TMPDIR|.|g" {} +
-          make -j$NIX_BUILD_CORES all-gcc \
+          make SHELL="$CONFIG_SHELL" -j$NIX_BUILD_CORES all-gcc \
             GCC_FOR_TARGET=${cross}/bin/${target}-gcc \
             GXX_FOR_TARGET=${cross}/bin/${target}-g++ \
             ${targetMakeFlags}
@@ -336,7 +339,7 @@ in
         name = "install";
         script = ''
           export PATH="$TMPDIR/gcc-native-tools:$PATH"
-          make install-gcc \
+          make SHELL="$CONFIG_SHELL" install-gcc \
             GCC_FOR_TARGET=${cross}/bin/${target}-gcc \
             GXX_FOR_TARGET=${cross}/bin/${target}-g++ \
             ${targetMakeFlags}
@@ -389,6 +392,10 @@ in
             xargs -0r sed -i "s|$TMPDIR|.|g"
           { grep -arlZ -F /build "$out" || [ "$?" -eq 1 ]; } | \
             xargs -0r sed -i 's|/build|/.aos_|g'
+
+          # Source helpers become target programs after installation.
+          AOS_RUNTIME_SHELL="${bash}/bin/bash" AOS_BUILD_SHELL="$CONFIG_SHELL" \
+            "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} "$out"
         '';
       }
     ];

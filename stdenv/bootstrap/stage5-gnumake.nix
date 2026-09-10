@@ -23,6 +23,7 @@
   gawk, # GNU awk (stage 4)
   tar, # GNU tar (stage 4)
   buildPlatform,
+  runtimeShell ? null,
   ...
 }: let
   system = buildPlatform.system;
@@ -69,7 +70,14 @@ in
         chmod -R u+w $TMPDIR/src
         cd $TMPDIR/src
 
-        ${lib.freezeAutotoolsMtimes}
+        ${
+          if runtimeShell == null
+          then ""
+          else ''
+            ${bash}/bin/bash ${../pin-make-shell.sh} "${runtimeShell}"
+
+          ''
+        }${lib.freezeAutotoolsMtimes}
 
         # Bypass automake sanity check (coreutils-tcc's ls -t is broken)
         ${bash}/bin/bash ${lib.bypassSanityCheck} configure

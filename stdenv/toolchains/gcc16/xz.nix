@@ -29,7 +29,7 @@ in
 
         # CC wrapper: always pass -static (libtool strips -static from LDFLAGS)
         mkdir -p "$TMPDIR/ccwrap"
-        printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${glibc.static}/lib -L${glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
+        printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -L${glibc.static}/lib -L${glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
         chmod +x "$TMPDIR/ccwrap/gcc"
         export PATH="$TMPDIR/ccwrap:$PATH"
 
@@ -38,20 +38,24 @@ in
         cd xz-5.6.4
         chmod -R u+w .
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
         export LIBRARY_PATH="${glibc}/lib"
         CC="$TMPDIR/ccwrap/gcc" \
         CFLAGS="-O2 -isystem ${glibc.dev}/include" \
         CPPFLAGS="-isystem ${glibc.dev}/include" \
         LDFLAGS="-L${glibc}/lib -no-pie" \
-        ./configure \
+        "${prev.bash}/bin/bash" ./configure \
           --prefix="$out" \
           --disable-shared \
           --enable-static \
           --disable-nls \
           --disable-doc
 
-        make -j"$NIX_BUILD_CORES"
-        make install
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES"
+        make SHELL="${prev.bash}/bin/bash" install
 
         echo "XZ Utils 5.6.4 installed to $out"
       ''

@@ -53,6 +53,10 @@ in
         cp -r ${mpcSrc} "$TMPDIR/gcc-8.5.0/mpc"
         chmod -R u+w "$TMPDIR/gcc-8.5.0/mpc"
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/gcc-8.5.0"
+
         SRC="$TMPDIR/gcc-8.5.0"
         cd "$SRC"
 
@@ -109,7 +113,7 @@ in
 
         # Patch SYSTEM_HEADER_DIR to avoid /usr/include
         mkdir -p "$TMPDIR/empty-headers"
-        make configure-gcc
+        make SHELL="${prev.bash}/bin/bash" configure-gcc
         ${prev.sed}/bin/sed -i \
           "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = $TMPDIR/empty-headers|" \
           gcc/Makefile
@@ -122,14 +126,14 @@ in
             "$out/${hostPlatform.config}/bin/$tool" 2>/dev/null || true
         done
 
-        make -j"$NIX_BUILD_CORES" all-gcc \
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" all-gcc \
           BOOT_CFLAGS="-O2"
 
-        make -j"$NIX_BUILD_CORES" all-target-libgcc \
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" all-target-libgcc \
           CFLAGS_FOR_TARGET="-O2"
 
-        make install-gcc
-        make install-target-libgcc
+        make SHELL="${prev.bash}/bin/bash" install-gcc
+        make SHELL="${prev.bash}/bin/bash" install-target-libgcc
 
         # GCC's install for cross builds doesn't always create $target-gcc
         test -f "$out/bin/gcc" && test ! -f "$out/bin/${hostPlatform.config}-gcc" && \

@@ -81,7 +81,7 @@ in {
         "--without-bash-malloc"
       ];
     buildScript = ''
-      make
+      make SHELL="$CONFIG_SHELL"
     '';
     postInstall = ''
       test -f "$out/bin/bash" && test ! -f "$out/bin/sh" && ln -sf bash "$out/bin/sh"

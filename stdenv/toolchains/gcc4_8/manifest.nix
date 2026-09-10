@@ -98,10 +98,10 @@ in {
       "$AR" cr lib/auto/IO/Compress/Compress.a
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES"
     '';
     installScript = ''
-      make install ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
     '';
     meta = gnuMeta "Practical Extraction and Report Language, version 5.16.3" "https://www.perl.org/" "Artistic-1.0-Perl OR GPL-1.0-or-later";
   };
@@ -215,10 +215,10 @@ in {
       sed -i '/gets is a security hole/d' lib/stdio.in.h 2>/dev/null || true
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" MAKEINFO=true
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" MAKEINFO=true
     '';
     installScript = ''
-      make install MAKEINFO=true
+      make SHELL="$CONFIG_SHELL" install MAKEINFO=true
     '';
     postInstall = ''
       mkdir -p "$out/bin"
@@ -278,6 +278,10 @@ in {
       touch doc/amhello-1.0.tar.gz 2>/dev/null || true
       find doc -name '*.info' -exec touch {} + 2>/dev/null || true
     '';
+    postInstall = ''
+      # This installed test driver bypasses Automake's configured interpreter.
+      sed -i '1c#!${perl}/bin/perl' "$out/share/automake-1.13/tap-driver.pl"
+    '';
     meta = gnuMeta "GNU Automake, version 1.13.4" "https://www.gnu.org/software/automake/" "GPL-2.0-or-later";
   };
 
@@ -311,10 +315,16 @@ in {
     postFreeze = ''
       find . \( -name '*.1' -o -name '*.info' \) -exec touch -t 200001010200.00 {} + 2>/dev/null || true
     '';
-    # This release does not declare the generated helper executables as
-    # prerequisites of every consumer that invokes them.
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      # Recursive make processes otherwise regenerate shared headers together.
+      make SHELL="$CONFIG_SHELL" -j1 builtins/builtext.h
+      test -s builtins/builtext.h && test -s builtins/builtins.c
+      # The generator restores old timestamps when output text is unchanged.
+      # Mark its verified outputs current before starting recursive consumers.
+      touch builtins/builtext.h builtins/builtins.c
+      make SHELL="$CONFIG_SHELL" -j1 version.h
+
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES"
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
@@ -344,11 +354,11 @@ in {
       touch -t 200001010200.00 man/*.1 man/*.x 2>/dev/null || true
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars} -k || true
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars} -k || true
       test -f src/ls || { echo "FATAL: coreutils binaries not built"; exit 1; }
     '';
     installScript = ''
-      make install-exec ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install-exec ${autotoolsVars}
       test -f "$out/bin/ls" || { echo "FATAL: coreutils not installed"; exit 1; }
     '';
     meta = gnuMeta "GNU core utilities (ls, cat, cp, mv, etc.), version 8.22" "https://www.gnu.org/software/coreutils/" "GPL-3.0-or-later";

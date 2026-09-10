@@ -56,6 +56,7 @@ in
     name = "gcc-16.2.0-stage2";
     src = gccSrc;
     bootstrap = true;
+    runtimeBinutils = binutils;
     pathDeps = [
       prev.coreutils
       binutils

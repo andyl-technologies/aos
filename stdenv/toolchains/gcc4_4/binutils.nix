@@ -53,6 +53,10 @@ in
         SRC="$TMPDIR/binutils-2.20.1"
         cd "$SRC"
         chmod -R u+w .
+
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
         find . -name configure -exec chmod +x {} + 2>/dev/null || true
         find . -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
         chmod +x move-if-change mkinstalldirs install-sh missing depcomp ylwrap 2>/dev/null || true
@@ -69,15 +73,15 @@ in
         # libiberty find headers even without CPPFLAGS) and appends NSS libs at
         # link time (bypassing libtool reordering)
         mkdir -p "$TMPDIR/ccwrap"
-        cp ${builtins.toFile "cc-wrapper" ''
-          #!/bin/sh
-          compile=
-          for arg; do case "$arg" in -c|-E|-S) compile=1 ;; esac; done
-          if [ -z "$compile" ]; then
-            exec REAL_GCC -isystem GLIBC_INCLUDE "$@" -L GLIBC_LIB -static -Wl,--start-group -Wl,--whole-archive NSS_FILES NSS_DNS NSS_RESOLV -Wl,--no-whole-archive -lc -Wl,--end-group
-          fi
-          exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
-        ''} "$TMPDIR/ccwrap/gcc"
+        cat > "$TMPDIR/ccwrap/gcc" <<'AOS_TOOL_WRAPPER'
+        #!${prev.bash}/bin/bash
+        compile=
+        for arg; do case "$arg" in -c|-E|-S) compile=1 ;; esac; done
+        if [ -z "$compile" ]; then
+          exec REAL_GCC -isystem GLIBC_INCLUDE "$@" -L GLIBC_LIB -static -Wl,--start-group -Wl,--whole-archive NSS_FILES NSS_DNS NSS_RESOLV -Wl,--no-whole-archive -lc -Wl,--end-group
+        fi
+        exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
+        AOS_TOOL_WRAPPER
         ${prev.sed}/bin/sed -i \
           -e "s|REAL_GCC|${prev.gcc}/bin/gcc|g" \
           -e "s|GLIBC_INCLUDE|${prev.glibc}/include|g" \
@@ -103,8 +107,8 @@ in
           --with-sysroot=/ \
           --program-transform-name=
 
-        make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO="${texinfo}/bin/makeinfo"
-        make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO="${texinfo}/bin/makeinfo"
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO="${texinfo}/bin/makeinfo"
+        make SHELL="${prev.bash}/bin/bash" install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO="${texinfo}/bin/makeinfo"
 
         echo "binutils 2.20.1 installed to $out"
       ''

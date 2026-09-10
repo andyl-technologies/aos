@@ -41,7 +41,6 @@ in {
     freezeAutotoolsTimestamps = false;
     configureScript = ''
       sed -i "s|'/bin/pwd'|'$PWD_CMD', '/bin/pwd'|" dist/PathTools/Cwd.pm
-      sed -i 's/getcwd()/getcwd() || "."/' dist/PathTools/Cwd.pm 2>/dev/null || true
 
       sed -i \
         -e "s|/usr/include/errno.h|$AOS_GLIBC/include/errno.h|g" \
@@ -67,10 +66,10 @@ in {
       export PWD_CMD
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES"
     '';
     installScript = ''
-      make install ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
     '';
     meta = gnuMeta "Practical Extraction and Report Language, version 5.26.3" "https://www.perl.org/" "Artistic-1.0-Perl OR GPL-1.0-or-later";
   };
@@ -94,11 +93,11 @@ in {
       find . \( -name '*.1' -o -name '*.info' \) -exec touch -t 200001010200.00 {} + 2>/dev/null || true
     '';
     buildScript = ''
-      make -k -j"$NIX_BUILD_CORES" ${autotoolsVars} || true
+      make SHELL="$CONFIG_SHELL" -k -j"$NIX_BUILD_CORES" ${autotoolsVars} || true
       test -f tp/texi2any || { echo "FATAL: texi2any not built"; exit 1; }
     '';
     installScript = ''
-      make install -k ${autotoolsVars} || true
+      make SHELL="$CONFIG_SHELL" install -k ${autotoolsVars} || true
       test -f "$out/bin/makeinfo" || { echo "FATAL: makeinfo not installed"; exit 1; }
     '';
     meta = gnuMeta "GNU documentation system, version 6.5" "https://www.gnu.org/software/texinfo/" "GPL-3.0-or-later";
@@ -278,11 +277,12 @@ in {
       sed -i '/^build_all:/s/ sharedmods / /' Makefile
     '';
     installScript = ''
-      make install SHAREDMODS=""
+      make SHELL="$CONFIG_SHELL" install SHAREDMODS=""
     '';
     postInstall = ''
       [ -f "$out/bin/python3.8" ] && [ ! -f "$out/bin/python3" ] && ln -sf python3.8 "$out/bin/python3"
       [ -f "$out/bin/python3" ] && [ ! -f "$out/bin/python" ] && ln -sf python3 "$out/bin/python"
+      "$out/bin/python3" -E -S ${../../runtime_python_scripts.py} "$out"
     '';
     meta = gnuMeta "Python 3.8.18 minimal interpreter for build scripts" "https://www.python.org/" "PSF-2.0";
   };
@@ -303,7 +303,7 @@ in {
     # This release does not declare the generated helper executables as
     # prerequisites of every consumer that invokes them.
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES"
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"

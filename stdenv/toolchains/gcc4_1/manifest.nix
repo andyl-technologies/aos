@@ -67,7 +67,7 @@
       staticNssWrapper = true;
       cflags = "-O2 -isystem ${compiler.glibc}/include";
       cppflags = "-isystem ${compiler.glibc}/include";
-      ldflags = "-L${compiler.glibc}/lib -static -Wl,--defsym=__res_iclose=0 -Wl,-u,dl_iterate_phdr";
+      ldflags = "-L${compiler.glibc}/lib -static -Wl,-u,dl_iterate_phdr";
     }
     // attrs
     // {
@@ -103,12 +103,12 @@
     buildScript =
       attrs.buildScript
       or ''
-        make -j"$NIX_BUILD_CORES" ${autotoolsVars}
+        make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars}
       '';
     installScript =
       attrs.installScript
       or ''
-        make install ${autotoolsVars}
+        make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
       '';
   in
     attrs
@@ -124,128 +124,10 @@
       inherit buildScript installScript;
     };
 in {
-  perl = phase35Static {
-    pname = "perl";
-    version = "5.10.1";
-    url = "https://www.cpan.org/src/5.0/perl-5.10.1.tar.bz2";
-    hash = "0wfch7jkcwmi5xmsrb7j18fn63hs7qvl958gzy6mfgxar6hj88dk";
-    freezeAutotoolsTimestamps = false;
-    cflags = "-O2 -I${prev.glibc}/include";
-    cppflags = "-I${prev.glibc}/include";
-    ldflags = "-L${prev.glibc}/lib";
-    configureScript = ''
-      rm -rf ext/IO-Compress ext/Errno
-      sed -i -e '/^ext\/IO-Compress/d' -e '/^ext\/Errno/d' MANIFEST
-
-      ./Configure \
-        -des \
-        -Dprefix="$out" \
-        -Dcc="$CC" \
-        -Dar="$AR" \
-        -Dnm="$NM" \
-        -Dranlib="$RANLIB" \
-        -Dsh="$AOS_BASH" \
-        -Dlocincpth="${prev.glibc}/include" \
-        -Dloclibpth="${prev.glibc}/lib" \
-        -Dglibpth="${prev.glibc}/lib" \
-        -Dusrinc="${prev.glibc}/include" \
-        -Dccflags="$CFLAGS" \
-        -Dcppflags="$CPPFLAGS" \
-        -Dldflags="$LDFLAGS" \
-        -Dlddlflags="-shared -L${prev.glibc}/lib" \
-        -Dlibs="-lm -lpthread -lcrypt" \
-        -Uuselargefiles \
-        -Dusethreads=n \
-        -Duseshrplib=n \
-        -Dd_setlocale=undef \
-        -Ui_db \
-        -Ui_gdbm \
-        -Ui_ndbm \
-        -Dd_dosuid=undef \
-        -Dd_suidsafe=undef \
-        -Dman1dir=none \
-        -Dman3dir=none
-
-      cat > lib/Errno.pm <<'ERREOF'
-      package Errno;
-      use strict;
-      require Exporter;
-      our @ISA = qw(Exporter);
-      our @EXPORT_OK = qw(EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF
-        ECHILD EAGAIN ENOMEM EACCES EFAULT ENOTBLK EBUSY EEXIST EXDEV ENODEV
-        ENOTDIR EISDIR EINVAL ENFILE EMFILE ENOTTY ETXTBSY EFBIG ENOSPC ESPIPE
-        EROFS EMLINK EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOLCK ENOSYS
-        ENOTEMPTY ELOOP EWOULDBLOCK ENOMSG EIDRM EOVERFLOW EILSEQ ENOTSOCK
-        EDESTADDRREQ EMSGSIZE EPROTOTYPE ENOPROTOOPT EPROTONOSUPPORT EOPNOTSUPP
-        EAFNOSUPPORT EADDRINUSE EADDRNOTAVAIL ENETDOWN ENETUNREACH ECONNABORTED
-        ECONNRESET ENOBUFS EISCONN ENOTCONN ETIMEDOUT ECONNREFUSED EHOSTUNREACH
-        EALREADY EINPROGRESS ESTALE EDQUOT);
-      our %EXPORT_TAGS = (POSIX => [qw(E2BIG EACCES EADDRINUSE EADDRNOTAVAIL
-        EAFNOSUPPORT EAGAIN EALREADY EBADF EBUSY ECHILD ECONNABORTED ECONNREFUSED
-        ECONNRESET EDEADLK EDESTADDRREQ EDOM EDQUOT EEXIST EFAULT EFBIG
-        EHOSTUNREACH EIDRM EILSEQ EINPROGRESS EINTR EINVAL EIO EISCONN EISDIR
-        ELOOP EMFILE EMLINK EMSGSIZE ENAMETOOLONG ENETDOWN ENETRESET ENETUNREACH
-        ENFILE ENOBUFS ENODEV ENOENT ENOEXEC ENOLCK ENOMEM ENOMSG ENOPROTOOPT
-        ENOSPC ENOSYS ENOTCONN ENOTDIR ENOTEMPTY ENOTSOCK ENOTTY ENXIO
-        EOPNOTSUPP EOVERFLOW EPERM EPIPE EPROTONOSUPPORT EPROTOTYPE ERANGE EROFS
-        ESRCH ESTALE ETIMEDOUT ETXTBSY EWOULDBLOCK EXDEV)]);
-      sub EPERM () {1} sub ENOENT () {2} sub ESRCH () {3} sub EINTR () {4}
-      sub EIO () {5} sub ENXIO () {6} sub E2BIG () {7} sub ENOEXEC () {8}
-      sub EBADF () {9} sub ECHILD () {10} sub EAGAIN () {11} sub ENOMEM () {12}
-      sub EACCES () {13} sub EFAULT () {14} sub ENOTBLK () {15} sub EBUSY () {16}
-      sub EEXIST () {17} sub EXDEV () {18} sub ENODEV () {19} sub ENOTDIR () {20}
-      sub EISDIR () {21} sub EINVAL () {22} sub ENFILE () {23} sub EMFILE () {24}
-      sub ENOTTY () {25} sub ETXTBSY () {26} sub EFBIG () {27} sub ENOSPC () {28}
-      sub ESPIPE () {29} sub EROFS () {30} sub EMLINK () {31} sub EPIPE () {32}
-      sub EDOM () {33} sub ERANGE () {34} sub EDEADLK () {35}
-      sub ENAMETOOLONG () {36} sub ENOLCK () {37} sub ENOSYS () {38}
-      sub ENOTEMPTY () {39} sub ELOOP () {40} sub EWOULDBLOCK () {11}
-      sub ENOMSG () {42} sub EIDRM () {43} sub EOVERFLOW () {75}
-      sub EILSEQ () {84} sub ENOTSOCK () {88} sub EDESTADDRREQ () {89}
-      sub EMSGSIZE () {90} sub EPROTOTYPE () {91} sub ENOPROTOOPT () {92}
-      sub EPROTONOSUPPORT () {93} sub EOPNOTSUPP () {95} sub EAFNOSUPPORT () {97}
-      sub EADDRINUSE () {98} sub EADDRNOTAVAIL () {99} sub ENETDOWN () {100}
-      sub ENETUNREACH () {101} sub ENETRESET () {102} sub ECONNABORTED () {103}
-      sub ECONNRESET () {104} sub ENOBUFS () {105} sub EISCONN () {106}
-      sub ENOTCONN () {107} sub ETIMEDOUT () {110} sub ECONNREFUSED () {111}
-      sub EHOSTUNREACH () {113} sub EALREADY () {114} sub EINPROGRESS () {115}
-      sub ESTALE () {116} sub EDQUOT () {122}
-      sub TIEHASH { bless [] }
-      sub FETCH { my ($self, $errname) = @_; my $v = eval "no strict; &$errname"; defined $v && $v == $! + 0 }
-      sub STORE { require Carp; Carp::confess("ERRNO hash is read only!") }
-      sub EXISTS { my ($self, $errname) = @_; eval { no strict; &$errname }; !$@ }
-      tie %!, __PACKAGE__;
-      our $VERSION = "1.11";
-      1;
-      ERREOF
-
-      sed -i "s|'/bin/pwd'|'${prev.coreutils}/bin/pwd', '/bin/pwd'|" lib/Cwd.pm
-    '';
-    buildScript = ''
-      # Perl 5.10's extension driver recreates shared source directories and
-      # cannot safely run more than one extension recipe at a time.
-      make -j"$NIX_BUILD_CORES" libperl.a
-      ./miniperl -Ilib -MAutoSplit -e \
-        'autosplit("ext/POSIX/POSIX.pm", "lib/auto", 0, 1, 0)'
-      test -f lib/auto/POSIX/autosplit.ix
-      make
-    '';
-    installScript = ''
-      make install.perl ${autotoolsVars}
-      test -f "$out/bin/perl" || { echo "FATAL: perl not installed"; exit 1; }
-      perl_arch="$("$out/bin/perl" -MConfig -e 'print $Config{archname}')"
-      test -f "$out/lib/5.10.1/$perl_arch/auto/POSIX/autosplit.ix" || {
-        echo "FATAL: perl POSIX autosplit index not installed"
-        exit 1
-      }
-      test -f "$out/lib/5.10.1/$perl_arch/auto/POSIX/load_imports.al" || {
-        echo "FATAL: perl POSIX autoload files not installed"
-        exit 1
-      }
-      "$out/bin/perl" -MPOSIX -e 'POSIX::load_imports()'
-    '';
+  perl = phase35Static (import ../lib/perl-static.nix {
+    inherit (prev) glibc coreutils;
     meta = gnuMeta "Practical Extraction and Report Language, version 5.10.1" "https://www.perl.org/" "Artistic-1.0-Perl OR GPL-1.0-or-later";
-  };
+  });
 
   texinfo = phase35Static {
     pname = "texinfo";
@@ -364,10 +246,10 @@ in {
             src/scan-code.c src/scan-gram.c src/scan-skel.c
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" MAKEINFO=true
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" MAKEINFO=true
     '';
     installScript = ''
-      make install MAKEINFO=true
+      make SHELL="$CONFIG_SHELL" install MAKEINFO=true
     '';
     postInstall = ''
       mkdir -p "$out/bin"
@@ -401,10 +283,10 @@ in {
       export PERL="${perl}/bin/perl"
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars}
     '';
     installScript = ''
-      make install ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
     '';
     meta = gnuMeta "GNU Autoconf, version 2.63" "https://www.gnu.org/software/autoconf/" "GPL-3.0-or-later";
   };
@@ -433,10 +315,10 @@ in {
       sed -i '/^SUBDIRS/s/ tests//; /^SUBDIRS/s/ doc//' Makefile
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars}
     '';
     installScript = ''
-      make install ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
     '';
     meta = gnuMeta "GNU Automake, version 1.11.1" "https://www.gnu.org/software/automake/" "GPL-2.0-or-later";
   };
@@ -460,7 +342,15 @@ in {
       tripletNoNls
       ++ ["--without-bash-malloc"];
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      # Recursive make processes otherwise regenerate shared headers together.
+      make SHELL="$CONFIG_SHELL" -j1 builtins/builtext.h
+      test -s builtins/builtext.h && test -s builtins/builtins.c
+      # The generator restores old timestamps when output text is unchanged.
+      # Mark its verified outputs current before starting recursive consumers.
+      touch builtins/builtext.h builtins/builtins.c
+      make SHELL="$CONFIG_SHELL" -j1 version.h
+
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES"
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
@@ -627,10 +517,10 @@ in {
     ];
     configureFlags = tripletNoNls;
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars} MAKEINFO=true
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars} MAKEINFO=true
     '';
     installScript = ''
-      make install ${autotoolsVars} MAKEINFO=true
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars} MAKEINFO=true
     '';
     postInstall = ''
       [ -f "$out/bin/gawk" ] && [ ! -f "$out/bin/awk" ] && ln -sf gawk "$out/bin/awk"
@@ -647,7 +537,7 @@ in {
       texinfo
       help2man
     ];
-    ldflags = "-L${glibc}/lib -static -Wl,-z,muldefs -Wl,--defsym=__res_iclose=0 -Wl,-u,dl_iterate_phdr";
+    ldflags = "-L${glibc}/lib -static -Wl,-z,muldefs -Wl,-u,dl_iterate_phdr";
     configureFlags = tripletNoNls;
     meta = gnuMeta "GNU find, xargs, and locate utilities, version 4.2.27" "https://www.gnu.org/software/findutils/" "GPL-2.0-or-later";
   });

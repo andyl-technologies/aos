@@ -27,9 +27,17 @@ in
         mkdir -p "$TMPDIR/linux-3.10.108"
         (cd ${src} && tar cf - .) | (cd "$TMPDIR/linux-3.10.108" && tar xf -)
         chmod -R u+w "$TMPDIR/linux-3.10.108"
+
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/linux-3.10.108"
         cd "$TMPDIR/linux-3.10.108"
 
-        make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+        # Header installation builds fixdep and unifdef for the build host.
+        # The preceding tier provides a static libc for these helper programs.
+        make SHELL="${prev.bash}/bin/bash" \
+          HOSTCC="${prev.gcc}/bin/gcc -static -isystem ${prev.glibc}/include -L${prev.glibc}/lib" \
+          ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
         echo "Linux 3.10.108 headers (${hostPlatform.linuxArch}) installed to $out"
       ''

@@ -10,8 +10,16 @@
   linuxHeaders,
   buildPlatform,
   hostPlatform,
+  perl ? null,
   ...
 }: let
+  # The construction sysroot precedes the target interpreter. Complete the
+  # public libc utilities once the cross tier has built its static Perl.
+  perlCommand =
+    if perl == null
+    then "true"
+    else "${perl}/bin/perl";
+
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.28.tar.xz";
     sha256 = "0lyg4znbrzixpbcwp4jkv7kv41dlk597xdizclgkc4fllz2gshzx";
@@ -50,8 +58,12 @@ in
         export PATH="${prev.coreutils}/bin:${crossGccStage1}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin:${prev.m4}/bin:${prev.bison}/bin:${prev.flex}/bin"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-        cp -r ${src} "$TMPDIR/glibc-2.28"
+        cp -r --preserve=timestamps ${src} "$TMPDIR/glibc-2.28"
         chmod -R u+w "$TMPDIR/glibc-2.28"
+
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/glibc-2.28"
 
         SRC="$TMPDIR/glibc-2.28"
 
@@ -75,7 +87,8 @@ in
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
 
-        BUILD_CC="${prev.gcc}/bin/gcc" \
+        ${import ../lib/static-build-compiler.nix {tools = prev;}}
+
         CC="${crossGccStage1}/bin/${hostPlatform.config}-gcc" \
         CXX="${crossGccStage1}/bin/${hostPlatform.config}-g++" \
         AR="${crossBinutils}/bin/${hostPlatform.config}-ar" \
@@ -98,9 +111,9 @@ in
           libc_cv_c_cleanup=yes
 
         # nscd may cause multiple-definition errors — tolerate.
-        make -j"$NIX_BUILD_CORES" || true
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" PERL=${perlCommand} || true
         test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
-        make install || true
+        make SHELL="${prev.bash}/bin/bash" install PERL=${perlCommand} || true
         test -f "$out/lib/libc.a" || { echo "FATAL: libc.a not installed"; exit 1; }
         test -f "$out/include/stdio.h" || { echo "FATAL: headers not installed"; exit 1; }
 

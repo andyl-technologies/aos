@@ -29,7 +29,15 @@ in
         cd linux-4.18
         chmod -R u+w .
 
-        make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
+        # Header installation builds fixdep and unifdef for the build host.
+        # The preceding tier provides a static libc for these helper programs.
+        make SHELL="${prev.bash}/bin/bash" \
+          HOSTCC="${prev.gcc}/bin/gcc -static -isystem ${prev.glibc}/include -L${prev.glibc}/lib" \
+          ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
         echo "Linux 4.18 headers (${hostPlatform.linuxArch}) installed to $out"
       ''

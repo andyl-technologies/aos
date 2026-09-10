@@ -1,0 +1,23 @@
+--- a/Configure
++++ b/Configure
+@@ -21652,7 +21652,7 @@
+ 		    known_extensions="$known_extensions $this_ext";
+ 		elif $contains "\.c$"  $$.tmp > /dev/null 2>&1; then
+ 		    known_extensions="$known_extensions $this_ext";
+-		elif $test "$this_ext" = "IO/Compress"; then
++		elif $test "$this_ext" = "IO/Compress" && $test "$usedl" = "$define"; then
+ 		    known_extensions="$known_extensions $this_ext";
+ 		elif $test -d $xxx; then
+ 		    nonxs_extensions="$nonxs_extensions $this_ext";
+--- a/ext/Errno/Errno_pm.PL
++++ b/ext/Errno/Errno_pm.PL
+@@ -151,8 +151,7 @@
+ 	     ) {
+ 	# Some Linuxes have weird errno.hs which generate
+ 	# no #file or #line directives
+-	my $linux_errno_h = -e '/usr/include/errno.h' ?
+-	    '/usr/include/errno.h' : '/usr/local/include/errno.h';
++	my $linux_errno_h = "$Config{usrinc}/errno.h";
+ 	$file{$linux_errno_h} = 1;
+     } elsif ($^O eq 'MacOS') {
+ 	# note that we are only getting the GUSI errno's here ...

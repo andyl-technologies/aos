@@ -47,7 +47,6 @@ in {
     '';
     configureScript = ''
       sed -i "s|'/bin/pwd'|'$PWD_CMD', '/bin/pwd'|" dist/PathTools/Cwd.pm
-      sed -i 's/getcwd()/getcwd() || "."/' dist/PathTools/Cwd.pm 2>/dev/null || true
 
       sed -i \
         -e "s|/usr/include/errno.h|$AOS_GLIBC/include/errno.h|g" \
@@ -78,10 +77,10 @@ in {
         -Ui_xlocale
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES"
     '';
     installScript = ''
-      make install ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
     '';
     meta = gnuMeta "Practical Extraction and Report Language, version 5.32.1" "https://www.perl.org/" "Artistic-1.0-Perl OR GPL-1.0-or-later";
   };
@@ -105,11 +104,11 @@ in {
       find . \( -name '*.1' -o -name '*.info' \) -exec touch -t 200001010200.00 {} + 2>/dev/null || true
     '';
     buildScript = ''
-      make -k -j"$NIX_BUILD_CORES" ${autotoolsVars} || true
+      make SHELL="$CONFIG_SHELL" -k -j"$NIX_BUILD_CORES" ${autotoolsVars} || true
       test -f tp/texi2any || { echo "FATAL: texi2any not built"; exit 1; }
     '';
     installScript = ''
-      make install -k ${autotoolsVars} || true
+      make SHELL="$CONFIG_SHELL" install -k ${autotoolsVars} || true
       test -f "$out/bin/makeinfo" || { echo "FATAL: makeinfo not installed"; exit 1; }
     '';
     meta = gnuMeta "GNU documentation system, version 6.7" "https://www.gnu.org/software/texinfo/" "GPL-3.0-or-later";
@@ -337,6 +336,7 @@ in {
       [ -f "$out/bin/python3" ] && [ ! -f "$out/bin/python" ] && ln -sf python3 "$out/bin/python"
       [ -f "$out/bin/python3.8-config" ] && [ ! -f "$out/bin/python3-config" ] && ln -sf python3.8-config "$out/bin/python3-config"
       [ -f "$out/bin/python3-config" ] && [ ! -f "$out/bin/python-config" ] && ln -sf python3-config "$out/bin/python-config"
+      "$out/bin/python3" -E -S ${../../runtime_python_scripts.py} "$out"
     '';
     meta = gnuMeta "Python 3.8.18 minimal interpreter for build scripts" "https://www.python.org/" "PSF-2.0";
   };
@@ -355,7 +355,7 @@ in {
         "--disable-nls"
       ];
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars}
     '';
     postConfigure = ''
       # bashline.c includes the generated builtin declarations, but Bash 5.1's

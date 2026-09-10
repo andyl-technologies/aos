@@ -46,6 +46,9 @@ buildStdenv.mkDerivation {
         mkdir source
         (cd $src && tar cf - .) | (cd source && tar xf -)
         chmod -R u+w source
+
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../runtime-scripts.sh} source
         sed -i 's|/bin/pwd|pwd|g' source/configure
       '';
     }
@@ -67,7 +70,7 @@ buildStdenv.mkDerivation {
         READELF=${binutils}/bin/readelf \
         STRIP=${binutils}/bin/strip \
         CFLAGS="-O2" \
-        ../source/configure \
+        "$CONFIG_SHELL" ../source/configure \
           --prefix="$out" \
           --build=${buildPlatform.config} \
           --host=${hostPlatform.config} \
@@ -87,13 +90,13 @@ buildStdenv.mkDerivation {
     {
       name = "build";
       script = ''
-        make -j"$NIX_BUILD_CORES"
+        make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES"
       '';
     }
     {
       name = "install";
       script = ''
-        make install
+        make SHELL="$CONFIG_SHELL" install
 
         mkdir -p "$dev" "$static/lib" "$bin/bin" "$bin/sbin" "$getent/bin"
         mv "$out/include" "$dev/include"

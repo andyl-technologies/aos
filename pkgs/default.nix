@@ -482,12 +482,9 @@
           stdenv.patch
           stdenv.bash
         ];
-        extraLibPaths =
-          [
-            resolvedBuildPackages.openssl
-            resolvedBuildPackages.zlib
-          ]
-          ++ (args.extraLibPaths or []);
+        # Packaged fetch tools resolve their own runtime libraries. Retain an
+        # explicit caller override without imposing one on every subprocess.
+        extraLibPaths = args.extraLibPaths or [];
       }
     );
 
@@ -506,12 +503,9 @@
           stdenv.gzip
           stdenv.bash
         ];
-        extraLibPaths =
-          [
-            resolvedBuildPackages.openssl
-            resolvedBuildPackages.zlib
-          ]
-          ++ (args.extraLibPaths or []);
+        # Packaged fetch tools resolve their own runtime libraries. Retain an
+        # explicit caller override without imposing one on every subprocess.
+        extraLibPaths = args.extraLibPaths or [];
       }
     );
 
@@ -550,12 +544,9 @@
           stdenv.findutils
           resolvedBuildPackages.git
         ];
-        extraLibPaths =
-          [
-            resolvedBuildPackages.openssl
-            resolvedBuildPackages.zlib
-          ]
-          ++ (args.extraLibPaths or []);
+        # Packaged fetch tools resolve their own runtime libraries. Retain an
+        # explicit caller override without imposing one on every subprocess.
+        extraLibPaths = args.extraLibPaths or [];
       }
     );
 
@@ -1170,6 +1161,10 @@
     bash = self.bash;
     zlib = self.zlib;
   };
+  linuxHostedGlibc = import ./toolchain/_linux-hosted-glibc.nix {
+    inherit mkDerivation stdenv buildPackages;
+    inherit (self) bash perl;
+  };
   linuxHostedGcc = import ./toolchain/_linux-hosted-gcc.nix {
     inherit mkDerivation stdenv buildPackages;
     bash = self.bash;
@@ -1580,7 +1575,11 @@
             license = "LGPL-2.1-or-later";
           }
           (
-            stdenv.glibc
+            (
+              if stdenv.isCross && stdenv.hostPlatform.isLinux
+              then linuxHostedGlibc
+              else stdenv.glibc
+            )
             // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
               dev = stdenv.glibc;
               static = stdenv.glibc;

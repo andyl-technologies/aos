@@ -7,6 +7,7 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
+  linuxHeadersInclude ? "${prev.linuxHeaders}/include",
 }: let
   gccSrc = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gcc/gcc-11.5.0/gcc-11.5.0.tar.xz";
@@ -76,7 +77,7 @@ in
       # Set up target sysroot so xgcc can find glibc, linux headers, and libs.
       mkdir -p "$TMPDIR/sysroot/usr/include"
       ln -sf ${prev.glibc}/include/* "$TMPDIR/sysroot/usr/include/"
-      for d in ${prev.linuxHeaders}/include/*; do
+      for d in ${linuxHeadersInclude}/*; do
         bn=$(basename "$d")
         rm -f "$TMPDIR/sysroot/usr/include/$bn"
         ln -sf "$d" "$TMPDIR/sysroot/usr/include/$bn"
@@ -132,7 +133,7 @@ in
       ln -sf ${prev.glibc}/lib/libpthread.a "$SPEC_DIR/libpthread.a" 2>/dev/null || true
 
       "$out/bin/gcc" -dumpspecs > "$SPEC_DIR/specs"
-      ${prev.sed}/bin/sed -i '/^\*cpp:$/{n; s|^|-idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders}/include |}' \
+      ${prev.sed}/bin/sed -i '/^\*cpp:$/{n; s|^|-idirafter ${prev.glibc}/include -idirafter ${linuxHeadersInclude} |}' \
         "$SPEC_DIR/specs" 2>/dev/null || true
       ${prev.sed}/bin/sed -i '/^\*link:$/{n; s|^|%{!shared:%{!nostdlib:-static}} |}' \
         "$SPEC_DIR/specs" 2>/dev/null || true

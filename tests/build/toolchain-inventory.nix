@@ -1,12 +1,14 @@
 ##! Inventories exported tools, preserving store context for sandbox inputs.
-{buildPlatform}: let
+{
+  buildPlatform,
+  hostPlatform ? buildPlatform,
+}: let
   bootstrap = import ../../stdenv/bootstrap {inherit buildPlatform;};
   tiers =
     {inherit bootstrap;}
     // import ../../stdenv/toolchains {
-      inherit bootstrap buildPlatform;
-      hostPlatform = buildPlatform;
-      targetPlatform = buildPlatform;
+      inherit bootstrap buildPlatform hostPlatform;
+      targetPlatform = hostPlatform;
       exportTiers = true;
     };
   outputs = attrs:

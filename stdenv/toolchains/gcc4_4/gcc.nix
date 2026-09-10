@@ -86,6 +86,12 @@ in
         -e 's|then sleep 1; else exit 1; fi;|then sleep 1; else sleep 1; fi;|' \
         gcc/Makefile.in
 
+      # Both header generation and installation test this directory when
+      # composing limits.h. Persist it across GCC's recursive make invocations.
+      ${prev.sed}/bin/sed -i \
+        's|^SYSTEM_HEADER_DIR =.*|SYSTEM_HEADER_DIR = ${prev.glibc}/include|' \
+        gcc/Makefile.in
+
       # This tier intentionally contains only the core C frontend and the g++
       # component. Enumerate cp directly so configure does not depend on glob
       # state inherited from an early bootstrap shell.
@@ -96,6 +102,11 @@ in
         echo "GCC 4.4.7 C++ frontend source is missing" >&2
         exit 1
       }
+
+      # libgcc's preprocessor probes do not inherit CFLAGS_FOR_TARGET. Provide
+      # the driver's target headers before configuring its runtime libraries.
+      mkdir -p "$out/${targetPlatform.config}"
+      ln -s "${prev.glibc}/include" "$out/${targetPlatform.config}/include"
 
       mkdir -p "$TMPDIR/ccwrap"
       cat > "$TMPDIR/ccwrap/gcc" <<'AOS_GCC_CC'
@@ -149,20 +160,6 @@ in
       ''LDFLAGS_FOR_TARGET="-L${prev.glibc}/lib -B${prev.glibc}/lib -static"''
     ];
     postInstall = ''
-      cp ${builtins.toFile "libgcc-extra.c" ''
-        /* dl_iterate_phdr stub: no shared objects in static builds */
-        int dl_iterate_phdr(int (*callback)(void *, unsigned int, void *),
-                            void *data) {
-          return 0;
-        }
-      ''} "$TMPDIR/libgcc_extra.c"
-      "$out/bin/gcc" -c -O2 -o "$TMPDIR/libgcc_extra.o" "$TMPDIR/libgcc_extra.c" \
-        -isystem ${prev.glibc}/include
-      LIBGCC_DIR="$out/lib/gcc/${targetPlatform.config}/4.4.7"
-      chmod u+w "$LIBGCC_DIR/libgcc.a"
-      ${prev.binutils}/bin/ar r "$LIBGCC_DIR/libgcc.a" "$TMPDIR/libgcc_extra.o"
-      ${prev.binutils}/bin/ranlib "$LIBGCC_DIR/libgcc.a"
-
       "${prev.binutils}/bin/ar" crs "$out/lib/gcc/${targetPlatform.config}/4.4.7/libgcc_eh.a"
 
       for f in "${prev.glibc}/lib/"*.o "${prev.glibc}/lib/"*.a; do

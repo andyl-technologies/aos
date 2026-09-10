@@ -8,6 +8,7 @@
   linuxHeaders,
   buildPlatform,
   hostPlatform,
+  runtimePerl ? null,
 }:
 import ../lib/mk-glibc.nix {
   inherit
@@ -17,6 +18,7 @@ import ../lib/mk-glibc.nix {
     linuxHeaders
     buildPlatform
     hostPlatform
+    runtimePerl
     ;
 } {
   version = "2.28";

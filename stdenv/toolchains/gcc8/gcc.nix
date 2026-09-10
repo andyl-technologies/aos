@@ -87,15 +87,16 @@ in
         }
       done
 
-      # CC wrapper: add -std=gnu99 because GCC 4.8.5 defaults to C89.
+      # GCC 4.8 defaults to C89. GMP also invokes CC_FOR_BUILD without CFLAGS
+      # or LDFLAGS, so the wrapper must select the preceding static-only libc.
       mkdir -p "$TMPDIR/ccwrap"
       cat > "$TMPDIR/ccwrap/gcc" <<AOS_GCC_CC
       #!${prev.bash}/bin/bash
-      exec ${prev.gcc}/bin/gcc -std=gnu99 "\$@"
+      exec ${prev.gcc}/bin/gcc -std=gnu99 -static "\$@"
       AOS_GCC_CC
       cat > "$TMPDIR/ccwrap/g++" <<AOS_GCC_CXX
       #!${prev.bash}/bin/bash
-      exec ${prev.gcc}/bin/g++ "\$@"
+      exec ${prev.gcc}/bin/g++ -static "\$@"
       AOS_GCC_CXX
       chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
       ln -sf gcc "$TMPDIR/ccwrap/cc"

@@ -32,6 +32,7 @@
   ...
 }: let
   system = buildPlatform.system;
+  lib = import ./lib.nix;
 
   sources = import ./sources.nix;
 
@@ -192,6 +193,8 @@ in
 
         # Replace Mes libc with glibc libc
         cp ${glibc}/lib/libc.a $GCCLIB_MOD/libc.a
+        ln -sf ${binutils}/bin/as $GCCLIB_MOD/as
+        ln -sf ${binutils}/bin/ld $GCCLIB_MOD/ld
 
         # ── Create CC wrapper for glibc ─────────────────────────────────────
         # Wrapper points to the modified gcc-lib dir with glibc objects.
@@ -232,8 +235,10 @@ in
         done
         export PATH="$TMPDIR/fakebin:$PATH"
 
-        # Touch all files to prevent autoconf regeneration
-        find $SRC -type f -exec touch {} + 2>/dev/null || true
+        # The bootstrap PATH has no find command. Freeze the checked-in
+        # generated parsers as well as configure inputs without silently
+        # ignoring a missing tool and then trying to run unavailable bison.
+        ${lib.freezeAutotoolsMtimes}
 
         # ── Seed config.cache ──────────────────────────────────────────────
         # Preload answers for tests that may not work in bootstrap environment
@@ -289,8 +294,6 @@ in
           --disable-multilib \
           --with-gnu-as \
           --with-gnu-ld \
-          --with-as=${binutils}/bin/as \
-          --with-ld=${binutils}/bin/ld \
           --cache-file=config.cache
 
         # ── Fix missing lang.* targets (C-only build) ─────────────────────
@@ -308,6 +311,15 @@ in
         fi
 
         # ── Build ──────────────────────────────────────────────────────────
+        # Mes-backed touch can report success without updating timestamps.
+        # Rewrite the shipped parser bytes so the kernel updates their mtimes;
+        # a clean rebuild must not need bison before it is bootstrapped.
+        for parser in "$SRC/gcc/cexp.c" "$SRC/gcc/c-parse.c"; do
+          test -f "$parser"
+          cat "$parser" > "$parser.freeze"
+          cat "$parser.freeze" > "$parser"
+          rm "$parser.freeze"
+        done
         echo "==> Building GCC 2.95.3"
         $MAKE \
           CC="gcc" \

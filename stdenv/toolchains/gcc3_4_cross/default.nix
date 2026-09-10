@@ -135,23 +135,10 @@
     gzip = scope.mkAutotoolsTool scope.manifest.gzip;
     patch = scope.mkAutotoolsTool scope.manifest.patch;
   };
-in {
-  inherit
-    (scope)
-    gcc
-    binutils
-    linuxHeaders
-    bash
-    coreutils
-    gnumake
-    sed
-    grep
-    gawk
-    findutils
-    diffutils
-    tar
-    gzip
-    patch
-    ;
-  glibc = scope.crossGlibc;
-}
+in
+  import ../lib/finalize-cross.nix {
+    bootstrapPerl = true;
+    privateTools = scope;
+    buildTools = prev;
+    directory = ./.;
+  }

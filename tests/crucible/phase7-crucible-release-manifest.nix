@@ -54,7 +54,7 @@
   rpcAbi = "crucible-rpc-abi-v${rpcAbiVersion}+${rpcProtocolBuild}";
   qemuPackageMetadataProbe = import ../../pkgs/emulation/qemu.nix {
     inherit lib;
-    inherit (pkgs) buildPackages stdenv libcap-ng libusb1 libgcrypt gnutls fuse3;
+    inherit (pkgs) bash buildPackages stdenv libcap-ng libusb1 libgcrypt gnutls fuse3;
     pname = "qemu-crucible";
     enablePlugins = true;
     applyCruciblePatches = true;

@@ -99,6 +99,11 @@ in
         -e 's|then sleep 1; else exit 1; fi;|then sleep 1; else sleep 1; fi;|' \
         gcc/Makefile.in
 
+      # Keep limits.h connected to libc during both build and installation.
+      ${prev.sed}/bin/sed -i \
+        's|^SYSTEM_HEADER_DIR =.*|SYSTEM_HEADER_DIR = ${prev.glibc}/include|' \
+        gcc/Makefile.in
+
       # Enumerate every shipped language descriptor directly because the early
       # bootstrap shell does not expand gcc/*/config-lang.in reliably. The
       # second configure scan needs disabled languages too so it can remove
@@ -114,9 +119,6 @@ in
       # without ENABLE_CHECKING so a remote bootstrap crash has a precise last
       # successful operation in the captured build log.
       ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.8.5-gengtype-stage-trace.patch}
-
-      # Disable split-stack support in libgcc: this glibc lacks NPTL pthread.h.
-      ${prev.sed}/bin/sed -i '/t-stack/d' libgcc/config.host
 
       cp ${builtins.toFile "sync-builtins.c" ''
         int __sync_bool_compare_and_swap_4(volatile int *ptr, int oldval, int newval) {
@@ -220,6 +222,7 @@ in
       mkdir -p "$out/${targetPlatform.config}/sys-include/gnu" "$out/${targetPlatform.config}/sys-include/linux"
       touch "$out/${targetPlatform.config}/sys-include/gnu/stubs-${stubsSuffix}.h"
       cp "$TMPDIR/header-overlay/linux/types.h" "$out/${targetPlatform.config}/sys-include/linux/types.h"
+      ln -s sys-include "$out/${targetPlatform.config}/include"
 
       mkdir -p "$out/${targetPlatform.config}/lib"
       for f in ${prev.glibc}/lib/*.o ${prev.glibc}/lib/*.a; do
@@ -281,11 +284,6 @@ in
     ];
     postInstall = ''
       cp ${builtins.toFile "libgcc-extra.c" ''
-        /* dl_iterate_phdr stub: no shared objects in static builds */
-        int dl_iterate_phdr(int (*callback)(void *, unsigned int, void *),
-                            void *data) {
-          return 0;
-        }
         int __sync_bool_compare_and_swap_4(volatile int *ptr, int oldval, int newval) {
           char result;
           __asm__ __volatile__("lock; cmpxchgl %3, %1\n\tsete %0"

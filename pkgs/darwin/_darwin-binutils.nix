@@ -46,6 +46,9 @@ in
           tar xf $src
           cd binutils-${version}
 
+          AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+            "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} .
+
           # Preserve the release-generated parsers and Autotools output.
           find . -type f \( -name '*.y' -o -name '*.l' -o -name Makefile.am -o -name configure.ac \) \
             -exec touch -t 200001010000.00 {} + 2>/dev/null || true
@@ -84,7 +87,7 @@ in
 
           CC_FOR_BUILD=${buildPackages.cc}/bin/cc \
           CXX_FOR_BUILD=${buildPackages.cc}/bin/c++ \
-          "$TMPDIR/binutils-${version}/configure" \
+          "$CONFIG_SHELL" "$TMPDIR/binutils-${version}/configure" \
             --prefix=$out \
             --build=${stdenv.buildPlatform.config} \
             --host=${stdenv.hostPlatform.config} \
@@ -108,7 +111,7 @@ in
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES \
+          make SHELL="$CONFIG_SHELL" -j$NIX_BUILD_CORES \
             CC_FOR_BUILD=${buildPackages.cc}/bin/cc \
             CXX_FOR_BUILD=${buildPackages.cc}/bin/c++
         '';
@@ -116,7 +119,7 @@ in
       {
         name = "install";
         script = ''
-          make install \
+          make SHELL="$CONFIG_SHELL" install \
             CC_FOR_BUILD=${buildPackages.cc}/bin/cc \
             CXX_FOR_BUILD=${buildPackages.cc}/bin/c++
 
@@ -127,16 +130,10 @@ in
           find "$out/lib" -name '*.la' -type f \
             -exec sed -i 's|-L/build/[^ ]* ||g' {} +
 
-          # Any installed helper scripts must execute with the target AOS bash,
-          # never with a path supplied by the eventual macOS host.
-          find "$out" -type f -perm -0100 | while read -r file; do
-            firstLine=$(sed -n '1p' "$file" 2>/dev/null || true)
-            case "$firstLine" in
-              '#!'*'/sh'|'#!'*'/bash')
-                sed -i "1c #!${bash}/bin/bash" "$file"
-                ;;
-            esac
-          done
+          # Installed helpers execute on the target, including shell defaults
+          # copied into their bodies by the build-machine configure scripts.
+          AOS_RUNTIME_SHELL="${bash}/bin/bash" AOS_BUILD_SHELL="$CONFIG_SHELL" \
+            "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} "$out"
         '';
       }
     ];

@@ -106,8 +106,16 @@ in
           --disable-nls \
           --disable-dependency-tracking
 
-        make
-        make install
+        # The release tarball includes its versioned manual and man page.
+        # Rebuilding sed makes that binary newer than the supplied man page;
+        # do not invoke help2man/Perl before those tools have been bootstrapped.
+        test -s doc/sed.1
+        test -s doc/sed.info
+        sed -i 's/^sed\.1:.*$/sed.1:/' doc/Makefile
+        printf '\nsed.info: ;\n' >> doc/Makefile
+
+        make SHELL="$CONFIG_SHELL"
+        make SHELL="$CONFIG_SHELL" install
 
         echo "GNU sed 4.0.9 built successfully"
       ''

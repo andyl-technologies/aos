@@ -52,6 +52,9 @@ in
           (cd ${sources.isl} && tar cf - .) | (cd source/isl && tar xf -)
           chmod -R u+w source/gmp source/mpfr source/mpc source/isl
 
+          AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+            "$CONFIG_SHELL" ${../runtime-scripts.sh} source
+
           # GCC's option generators rely on unset array elements behaving as
           # empty strings, while gawk 5.4 can preserve a numeric zero type.
           patch -p1 -d source < ${./gcc-16-gawk-5.4.patch}
@@ -100,7 +103,7 @@ in
           cd build
           CC=${buildStdenv.cc}/bin/cc \
           CXX=${buildStdenv.cc}/bin/c++ \
-          ../source/configure \
+          "$CONFIG_SHELL" ../source/configure \
             --prefix="$out" \
             --build=${buildPlatform.config} \
             --host=${buildPlatform.config} \
@@ -125,14 +128,14 @@ in
         name = "build";
         script = ''
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-          make -j"$NIX_BUILD_CORES" all-gcc
-          make -j"$NIX_BUILD_CORES" all-target-libgcc
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-gcc
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgcc
           ${
             if finalStage
             then ''
-              make -j"$NIX_BUILD_CORES" all-target-libstdc++-v3
-              make -j"$NIX_BUILD_CORES" all-target-libatomic
-              make -j"$NIX_BUILD_CORES" all-target-libgomp
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libstdc++-v3
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libatomic
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgomp
             ''
             else ""
           }
@@ -142,14 +145,14 @@ in
         name = "install";
         script = ''
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-          make install-gcc
-          make install-target-libgcc
+          make SHELL="$CONFIG_SHELL" install-gcc
+          make SHELL="$CONFIG_SHELL" install-target-libgcc
           ${
             if finalStage
             then ''
-              make install-target-libstdc++-v3
-              make install-target-libatomic
-              make install-target-libgomp
+              make SHELL="$CONFIG_SHELL" install-target-libstdc++-v3
+              make SHELL="$CONFIG_SHELL" install-target-libatomic
+              make SHELL="$CONFIG_SHELL" install-target-libgomp
             ''
             else ""
           }

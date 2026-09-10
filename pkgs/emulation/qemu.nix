@@ -1,4 +1,4 @@
-##! qemu — Minimal QEMU for KVM-accelerated virtual machines (headless)
+##! qemu — Headless virtual machines and Linux process emulation
 {
   lib,
   mkDerivation,
@@ -22,11 +22,13 @@
   libgcrypt,
   gnutls,
   fuse3,
+  bash,
   stdenv,
   buildPackages,
   pname ? "qemu",
   enablePlugins ? false,
   applyCruciblePatches ? false,
+  enableLinuxUser ? pname == "qemu" && stdenv.hostPlatform.isLinux,
   testOnlyNonDistributable ? false,
   testOnlyPostPatch ? null,
   series ? import ./qemu-patches/_series.nix,
@@ -141,9 +143,16 @@
     if enablePlugins
     then "--enable-plugins"
     else "--disable-plugins";
+  # The stock Linux package also executes foreign build tools. Keep Crucible's
+  # system-emulator target set and its inertness reference unchanged.
+  qemuTargetFlag =
+    if enableLinuxUser
+    then "--target-list=x86_64-softmmu,aarch64-softmmu,i386-linux-user,x86_64-linux-user,aarch64-linux-user,riscv64-linux-user"
+    else "--target-list=x86_64-softmmu,aarch64-softmmu";
+  qemuTargetList = lib.removePrefix "--target-list=" qemuTargetFlag;
   qemuConfigureFlags =
     [
-      "--target-list=x86_64-softmmu,aarch64-softmmu"
+      qemuTargetFlag
     ]
     ++ (
       if isDarwinCross
@@ -168,7 +177,11 @@
       "--enable-slirp"
       "--enable-virtfs"
       "--disable-bsd-user"
-      "--disable-linux-user"
+      (
+        if enableLinuxUser
+        then "--enable-linux-user"
+        else "--disable-linux-user"
+      )
       "--disable-docs"
       "--disable-download"
       "--disable-guest-agent"
@@ -236,7 +249,7 @@
     qemu_source_hash=${series.qemuSourceHash}
     qemu_nix_hash=${qemuNixHash}
     qemu_configure_flags_hash=${qemuConfigureFlagsHash}
-    qemu_configure_target_list=x86_64-softmmu,aarch64-softmmu
+    qemu_configure_target_list=${qemuTargetList}
     qemu_patch_count=${toString patchCount}
     qemu_patch_series_hash=${patchSeriesHash}
     qemu_patch_branch_ref=${series.patchBranchRef}
@@ -367,7 +380,7 @@ in
           glib.dev
           glib.tools
         ];
-      runtimeDeps = qemuRuntimeDeps;
+      runtimeDeps = qemuRuntimeDeps ++ lib.optional enableLinuxUser bash;
       propagatedDeps = [];
       # The Darwin install is finalized and signed below. Either generic
       # mutating pass would invalidate the resulting Mach-O code signatures.
@@ -528,6 +541,27 @@ in
               ln -s qemu-system-x86_64 "$out/bin/qemu-kvm"
             fi
 
+            ${lib.optionalString enableLinuxUser ''
+                # binfmt_misc's P flag inserts the original argv[0] after the
+                # executable path. Translate that contract to QEMU's -0 option.
+                for architecture in i386 x86_64 aarch64 riscv64; do
+                  test -x "$out/bin/qemu-$architecture"
+                  cat > "$out/bin/qemu-$architecture-binfmt-P" <<EOF
+              #!${bash}/bin/bash
+              set -eu
+              if [ "\$#" -lt 2 ]; then
+                echo "binfmt interpreter requires executable path and original argv[0]" >&2
+                exit 64
+              fi
+              program=\$1
+              original_argv0=\$2
+              shift 2
+              exec "$out/bin/qemu-$architecture" -0 "\$original_argv0" "\$program" "\$@"
+              EOF
+                  chmod 755 "$out/bin/qemu-$architecture-binfmt-P"
+                done
+            ''}
+
             mkdir -p "$out/share/aos/crucible"
             cat > "$out/share/aos/crucible/qemu-build-identity.env" <<'QEMU_BUILD_IDENTITY'
             qemu_package=${pname}
@@ -535,7 +569,7 @@ in
             qemu_source_hash=${series.qemuSourceHash}
             qemu_nix_hash=${qemuNixHash}
             qemu_configure_flags_hash=${qemuConfigureFlagsHash}
-            qemu_configure_target_list=x86_64-softmmu,aarch64-softmmu
+            qemu_configure_target_list=${qemuTargetList}
             qemu_patch_count=${toString patchCount}
             qemu_patch_series_hash=${patchSeriesHash}
             qemu_patch_branch_ref=${series.patchBranchRef}
@@ -725,10 +759,19 @@ in
             dependencies = [patchMicrotests];
           };
         }
-        else {};
+        else
+          lib.optionalAttrs enableLinuxUser {
+            linux-user = import ../../tests/build/qemu-linux-user.nix {
+              inherit pkgs;
+              qemu = self;
+            };
+          };
 
       meta = {
-        description = "qemu — machine emulator and virtualizer (minimal KVM build)";
+        description =
+          if enableLinuxUser
+          then "QEMU headless system emulators and Linux process emulation"
+          else "QEMU headless system emulators";
         homepage = "https://www.qemu.org";
         license = ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"];
       };

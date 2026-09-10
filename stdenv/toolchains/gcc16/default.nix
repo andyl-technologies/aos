@@ -207,42 +207,15 @@
   };
 
   scope = baseScope // manifestTools;
-in {
-  # Expose the unwrapped final gcc-16.2.0 (the let-binding above the scope,
-  # since scope wraps it via the cc-wrapper). Needed by
-  # pkgs.gccUnwrapped so the perl Config scrub can target the unwrapped
-  # path that Configure records.
-  inherit gccStage2;
-
-  inherit
-    (scope)
-    gcc
-    binutils
-    glibc
-    linuxHeaders
-    m4
-    flex
-    bison
-    perl
-    autoconf
-    automake
-    texinfo
-    help2man
-    gperf
-    python3
-    xz
-    bzip2
-    patchelf
-    bash
-    coreutils
-    gnumake
-    sed
-    grep
-    gawk
-    findutils
-    diffutils
-    tar
-    gzip
-    patch
-    ;
-}
+in
+  import ../lib/finalize-native.nix {
+    privateTools = scope // {inherit gccStage2;};
+    directory = ./.;
+    gccVersion = "16.2.0";
+    manifestNames = manifestToolNames;
+    extraToolNames = ["xz" "bzip2" "patchelf"];
+    compiler = gccStage2;
+    compilerSource = ./gcc-stage2.nix;
+    staticNoPie = true;
+    inherit buildPlatform hostPlatform targetPlatform;
+  }
