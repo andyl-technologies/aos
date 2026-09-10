@@ -46,6 +46,7 @@ use super::{
     QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
     validate_fresh_qemu_scenario_resources,
 };
+use crate::qemu_campaign_driver::QemuFreshSupplementalModeledDriver;
 use crate::{
     ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleExecutionModel, CrucibleExecutionModelError, CrucibleExecutionRunner,
@@ -55,7 +56,6 @@ use crate::{
     QemuFreshModeledDriverError, RepositoryAttemptAdmission,
     decode_crucible_configuration_artifact_with_selections,
 };
-use crate::qemu_campaign_driver::QemuFreshSupplementalModeledDriver;
 
 mod executor;
 use executor::{SynchronousCampaignExecutor, SynchronousCampaignExecutorError};
@@ -632,9 +632,7 @@ impl GuardedCampaignFindingOracleSource {
     ///
     /// Returns [`GuardedCampaignFindingOracleError`] for malformed,
     /// noncanonical, oversized, or unsupported bytes.
-    pub fn from_canonical_bytes(
-        bytes: &[u8],
-    ) -> Result<Self, GuardedCampaignFindingOracleError> {
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, GuardedCampaignFindingOracleError> {
         const HEADER_BYTES: usize = 8 + 32 + 4 + 8;
         if bytes.len() < HEADER_BYTES
             || bytes.get(..8) != Some(SUPPLEMENTAL_FINDING_SOURCE_MAGIC.as_slice())
@@ -1407,9 +1405,8 @@ where
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     if let Some(oracle) = request.supplemental_finding_oracle.as_deref() {
         let source_record = oracle.source();
-        let expected_scenario = ScenarioDefId::from_hash(CampaignHash::from_bytes(
-            request.scenario.id().bytes,
-        ));
+        let expected_scenario =
+            ScenarioDefId::from_hash(CampaignHash::from_bytes(request.scenario.id().bytes));
         if source_record.scenario() != expected_scenario {
             return Err(GuardedDefaultCampaignRunError::Codec(
                 CampaignCodecError::InvalidValue {
@@ -1420,11 +1417,7 @@ where
         let source = source_record.content_id();
         let source_bytes = source_record.canonical_bytes();
         store
-            .publish_executor_trace_leaf(
-                source,
-                SUPPLEMENTAL_FINDING_SOURCE_SCHEMA,
-                &source_bytes,
-            )
+            .publish_executor_trace_leaf(source, SUPPLEMENTAL_FINDING_SOURCE_SCHEMA, &source_bytes)
             .map_err(GuardedDefaultCampaignRunError::Repository)?;
     }
     let model = CrucibleExecutionModel::new(store.clone(), runner);
@@ -1738,10 +1731,14 @@ where
         .load_property_verdict_set(observation.properties())
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
     let Some(property) = properties.properties().get(evaluation.property()) else {
-        return Err(GuardedDefaultCampaignInvariantError::SupplementalFindingEvidenceMismatch.into());
+        return Err(
+            GuardedDefaultCampaignInvariantError::SupplementalFindingEvidenceMismatch.into(),
+        );
     };
     if property.verdict() != PropertyVerdict::Failed || !property.evidence().contains(&source) {
-        return Err(GuardedDefaultCampaignInvariantError::SupplementalFindingEvidenceMismatch.into());
+        return Err(
+            GuardedDefaultCampaignInvariantError::SupplementalFindingEvidenceMismatch.into(),
+        );
     }
     Ok(Some(GuardedCampaignSupplementalFinding {
         source: oracle.source().identity(),
@@ -2774,10 +2771,10 @@ fn capture_evidence_reaches_stop(
         }
         StopCondition::NextChoice
         | StopCondition::NextChoiceOrExecutionQuanta { .. }
+        | StopCondition::Observation(_)
         | StopCondition::NamedBoundary(_)
         | StopCondition::EventCount(_)
-        | StopCondition::Terminal
-        | StopCondition::Observation(_) => true,
+        | StopCondition::Terminal => true,
     }
 }
 
