@@ -17,6 +17,7 @@ use crate::{Error, Result};
 pub(crate) const SO_PASSPIDFD: libc::c_int = 76;
 pub(crate) const SCM_PIDFD: libc::c_int = 0x04;
 pub(crate) const SO_PEERPIDFD: libc::c_int = 77;
+pub(crate) const SO_COOKIE: libc::c_int = 57;
 
 const SEQPACKET_CONTROL_BYTES: usize = 512;
 
@@ -1241,6 +1242,29 @@ pub(crate) fn validate_connected_seqpacket(fd: BorrowedFd<'_>) -> Result<()> {
     require_connected_unix_peer(fd)
 }
 
+pub(crate) fn validate_connected_unix_stream(fd: BorrowedFd<'_>) -> Result<()> {
+    let socket_type = socket_integer_option(fd, libc::SO_TYPE, "getsockopt(SO_TYPE)")?;
+    if socket_type != libc::SOCK_STREAM {
+        return Err(Error::WrongDescriptorType {
+            expected: "Unix SOCK_STREAM socket",
+        });
+    }
+    let domain = socket_integer_option(fd, libc::SO_DOMAIN, "getsockopt(SO_DOMAIN)")?;
+    if domain != libc::AF_UNIX {
+        return Err(Error::WrongDescriptorType {
+            expected: "Unix SOCK_STREAM socket",
+        });
+    }
+    let accepts_connections =
+        socket_integer_option(fd, libc::SO_ACCEPTCONN, "getsockopt(SO_ACCEPTCONN)")?;
+    if accepts_connections != 0 {
+        return Err(Error::WrongDescriptorType {
+            expected: "connected Unix SOCK_STREAM socket, not a listener",
+        });
+    }
+    require_connected_unix_stream_peer(fd)
+}
+
 fn ensure_nonblocking(fd: BorrowedFd<'_>) -> Result<()> {
     // SAFETY: F_GETFL observes the borrowed descriptor and takes no pointer.
     let current = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
@@ -1293,6 +1317,26 @@ pub(crate) fn accept_record_subject_socket(fd: BorrowedFd<'_>) -> Result<OwnedFd
 }
 
 fn require_connected_unix_peer(fd: BorrowedFd<'_>) -> Result<()> {
+    require_connected_unix_peer_with_labels(
+        fd,
+        "getpeername(SOCK_SEQPACKET)",
+        "SOCK_SEQPACKET peer address",
+    )
+}
+
+fn require_connected_unix_stream_peer(fd: BorrowedFd<'_>) -> Result<()> {
+    require_connected_unix_peer_with_labels(
+        fd,
+        "getpeername(SOCK_STREAM)",
+        "SOCK_STREAM peer address",
+    )
+}
+
+fn require_connected_unix_peer_with_labels(
+    fd: BorrowedFd<'_>,
+    operation: &'static str,
+    object: &'static str,
+) -> Result<()> {
     // All-zero is valid for sockaddr_storage and lets the kernel fill the
     // peer address without relying on a pathname representation.
     // SAFETY: sockaddr_storage is a plain C output structure.
@@ -1307,16 +1351,40 @@ fn require_connected_unix_peer(fd: BorrowedFd<'_>) -> Result<()> {
             std::ptr::addr_of_mut!(length),
         )
     };
-    unit_result(result.into(), "getpeername(SOCK_SEQPACKET)")?;
+    unit_result(result.into(), operation)?;
     if usize::try_from(length).unwrap_or(0) < size_of::<libc::sa_family_t>()
         || i32::from(address.ss_family) != libc::AF_UNIX
     {
         return Err(Error::MalformedKernelResponse {
-            object: "SOCK_SEQPACKET peer address",
+            object,
             message: "getpeername returned a missing or non-Unix peer".to_string(),
         });
     }
     Ok(())
+}
+
+pub(crate) fn socket_cookie(fd: BorrowedFd<'_>) -> Result<u64> {
+    let mut cookie = 0_u64;
+    let mut length = size_of::<u64>() as libc::socklen_t;
+    // SAFETY: the output integer and length remain writable and live for the
+    // call, and the socket descriptor remains borrowed throughout.
+    let result = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            SO_COOKIE,
+            std::ptr::addr_of_mut!(cookie).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    unit_result(result.into(), "getsockopt(SO_COOKIE)")?;
+    if length as usize != size_of::<u64>() {
+        return Err(Error::MalformedKernelResponse {
+            object: "SO_COOKIE",
+            message: "kernel returned an unexpected cookie length".to_string(),
+        });
+    }
+    Ok(cookie)
 }
 
 fn socket_integer_option(fd: BorrowedFd<'_>, option: i32, operation: &'static str) -> Result<i32> {
@@ -1861,13 +1929,34 @@ pub(crate) fn is_cloexec(fd: BorrowedFd<'_>) -> Result<bool> {
 }
 
 #[cfg(test)]
+pub(crate) fn clear_cloexec_for_test(fd: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: F_GETFD and F_SETFD operate only on the borrowed descriptor.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+        return Err(Error::syscall("fcntl(F_GETFD)"));
+    }
+    // SAFETY: the scalar flag value preserves every bit except FD_CLOEXEC.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
+    unit_result(result.into(), "fcntl(F_SETFD)")
+}
+
+#[cfg(test)]
+pub(crate) fn enable_socket_passcred_for_test(fd: BorrowedFd<'_>) -> Result<()> {
+    set_socket_bool(fd, libc::SO_PASSCRED, "setsockopt(SO_PASSCRED)")
+}
+
+#[cfg(test)]
+pub(crate) fn socket_passcred_for_test(fd: BorrowedFd<'_>) -> Result<bool> {
+    Ok(socket_integer_option(fd, libc::SO_PASSCRED, "getsockopt(SO_PASSCRED)")? != 0)
+}
+
+#[cfg(test)]
 pub(crate) fn raw_fd_is_open(fd: RawFd) -> bool {
     // SAFETY: F_GETFD only observes the integer descriptor table entry.
     let result = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     result >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
 }
 
-#[cfg(test)]
 pub(crate) fn duplicate_at_least(fd: BorrowedFd<'_>, minimum: RawFd) -> Result<OwnedFd> {
     // SAFETY: F_DUPFD_CLOEXEC borrows the source and returns a fresh owned fd.
     let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, minimum) };
@@ -1946,6 +2035,7 @@ mod tests {
 
     #[test]
     fn vendored_socket_options_match_linux_6_18() {
+        assert_eq!(SO_COOKIE, 57);
         assert_eq!(SO_PASSPIDFD, 76);
         assert_eq!(SO_PEERPIDFD, 77);
         assert_eq!(SCM_PIDFD, 0x04);

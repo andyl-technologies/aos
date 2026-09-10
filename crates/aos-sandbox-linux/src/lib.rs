@@ -20,7 +20,8 @@
 //! - [`inventory`] lists mounts and reads stable mount metadata;
 //! - [`immutable_file`] pins descriptors and maps seal-proven immutable files;
 //! - [`netlink`] resolves descriptor-backed peer Network namespace IDs; and
-//! - [`seqpacket`] exchanges bounded records with kernel-pinned peer identity.
+//! - [`seqpacket`] exchanges bounded records with kernel-pinned peer identity;
+//! - [`unix_stream`] retains one connected stream and same-socket duplicates.
 
 #![cfg(target_os = "linux")]
 
@@ -36,6 +37,7 @@ pub mod pidfd;
 pub mod process;
 pub mod seqpacket;
 mod uapi;
+pub mod unix_stream;
 
 /// Errors returned by the Linux sandbox descriptor boundary.
 #[derive(Debug, thiserror::Error)]
