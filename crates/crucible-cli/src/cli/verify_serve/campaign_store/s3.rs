@@ -76,6 +76,7 @@ impl ResolvedS3RefBackend {
     pub(super) fn build(
         self,
         capabilities: &LoadedS3Capabilities,
+        observational: bool,
     ) -> Result<Arc<S3RefBackend>, CliError> {
         let strong = capabilities
             .strong
@@ -86,7 +87,11 @@ impl ResolvedS3RefBackend {
             })?;
         let capability = StoreS3RefCapability::new(self.endpoint, self.bucket, self.prefix, strong)
             .map_err(|error| campaign_store_error(format!("invalid S3 ref backend: {error}")))?;
-        Ok(Arc::new(S3RefBackend::new(capability)))
+        Ok(Arc::new(if observational {
+            S3RefBackend::new_observational(capability)
+        } else {
+            S3RefBackend::new(capability)
+        }))
     }
 }
 

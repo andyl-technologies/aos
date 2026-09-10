@@ -4238,6 +4238,203 @@ fn durable_write_back_survives_restart_and_exposes_exact_retention_roots() {
 }
 
 #[test]
+fn observational_write_back_preserves_and_exposes_pending_retention_roots() {
+    let temp = TempDir::new().expect("temporary directory");
+    let bytes = b"observational pending transfer";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    {
+        let graph = write_back_graph(temp.path(), 8, 1_024).expect("write-back graph");
+        put_bytes(&graph, id, bytes).expect("stage pending transfer");
+    }
+    let before = filesystem_content_snapshot(temp.path());
+
+    let (graph, admin) = StoreGraph::build_observational_with_admin_and_all_capabilities(
+        write_back_graph_config(temp.path(), 8, 1_024),
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &StoreGraphPhysicalQuotaBinders::new(),
+        &StoreGraphS3Clients::new(),
+    )
+    .expect("observational write-back graph");
+    assert_eq!(admin.physical().len(), 2);
+    let mut fence = graph
+        .acquire_write_back_retention_fence()
+        .expect("observational retention fence");
+    let mut roots = Vec::new();
+    let summary = fence
+        .visit_roots(&mut |root| {
+            roots.push(root);
+            Ok(())
+        })
+        .expect("observational pending roots");
+    assert_eq!(summary.roots(), 1);
+    assert_eq!(summary.logical_bytes(), bytes.len() as u64);
+    assert_eq!(roots[0].node(), "write-back");
+    assert_eq!(roots[0].id(), id);
+    assert_eq!(read_bytes(&graph, id, None).expect("staged read"), bytes);
+    drop(fence);
+    drop(graph);
+    drop(admin);
+
+    assert_eq!(filesystem_content_snapshot(temp.path()), before);
+}
+
+#[test]
+fn observational_write_back_rejects_torn_tail_without_repair() {
+    let temp = TempDir::new().expect("temporary directory");
+    let bytes = b"observational torn transfer";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    {
+        let graph = write_back_graph(temp.path(), 8, 1_024).expect("write-back graph");
+        put_bytes(&graph, id, bytes).expect("stage pending transfer");
+    }
+    let journal = temp.path().join("journal/transfers-v1.log");
+    let mut torn = fs::read(&journal).expect("read complete journal");
+    torn.extend_from_slice(&[0, 0]);
+    fs::write(&journal, &torn).expect("write torn journal tail");
+    let before = filesystem_content_snapshot(temp.path());
+
+    assert!(matches!(
+        StoreGraph::build_observational_with_all_capabilities(
+            write_back_graph_config(temp.path(), 8, 1_024),
+            &StoreGraphKeyring::new(),
+            &StoreGraphNamespaceAuthorizers::new(),
+            &StoreGraphObjectProfilers::new(),
+            &StoreGraphPhysicalQuotaBinders::new(),
+            &StoreGraphS3Clients::new(),
+        ),
+        Err(StoreError::Incompatible)
+    ));
+    assert_eq!(filesystem_content_snapshot(temp.path()), before);
+}
+
+#[test]
+fn observational_directory_admin_fails_closed_without_creating_inventory_state() {
+    let temp = TempDir::new().expect("temporary directory");
+    let objects = temp.path().join("objects");
+    fs::create_dir(&objects).expect("object root");
+    let node = node_id("directory");
+    let before = filesystem_content_snapshot(temp.path());
+    let (_graph, admin) = StoreGraph::build_observational_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root: node.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([(node, StoreNodeSpec::Directory { root: objects })]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &StoreGraphPhysicalQuotaBinders::new(),
+        &StoreGraphS3Clients::new(),
+    )
+    .expect("observational directory graph");
+    let physical = admin.physical();
+    assert!(physical[0].admin().acquire_inventory_fence().is_err());
+    assert_eq!(filesystem_content_snapshot(temp.path()), before);
+}
+
+#[test]
+fn observational_packed_admin_inventory_preserves_recovery_debris() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("packed");
+    let bytes = b"packed observational inventory";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    {
+        let packed =
+            PackedBlobBackend::open("packed", &root, 64 * 1024).expect("initialize packed backend");
+        put_bytes(&packed, id, bytes).expect("write packed object");
+    }
+    fs::write(
+        root.join("packs").join(format!("{}.pack", "0".repeat(64))),
+        b"unreferenced complete pack",
+    )
+    .expect("write unreferenced pack");
+    fs::write(root.join("packs/.pack.tmp-4242-1"), b"staging pack").expect("write staging pack");
+    let before = filesystem_content_snapshot(temp.path());
+    let node = node_id("packed");
+
+    let (_graph, admin) = StoreGraph::build_observational_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root: node.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([(
+                node,
+                StoreNodeSpec::Packed {
+                    root,
+                    target_pack_bytes: 64 * 1024,
+                },
+            )]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &StoreGraphPhysicalQuotaBinders::new(),
+        &StoreGraphS3Clients::new(),
+    )
+    .expect("observational packed graph");
+    let physical = admin.physical();
+    let mut fence = physical[0]
+        .admin()
+        .acquire_inventory_fence()
+        .expect("observational packed inventory fence");
+    let summary = fence
+        .visit_inventory(&mut |_record| Ok(()))
+        .expect("packed inventory");
+    assert_eq!(summary.objects(), 1);
+    drop(fence);
+    assert_eq!(filesystem_content_snapshot(temp.path()), before);
+}
+
+#[test]
+fn observational_ref_admin_fails_closed_without_creating_inventory_state() {
+    let temp = TempDir::new().expect("temporary directory");
+    let refs = temp.path().join("refs");
+    fs::create_dir(&refs).expect("ref root");
+    let backend = DirectoryRefBackend::new_observational(&refs);
+    let before = filesystem_content_snapshot(temp.path());
+
+    assert!(backend.acquire_ref_inventory_fence().is_err());
+    assert_eq!(filesystem_content_snapshot(temp.path()), before);
+}
+
+#[test]
+fn observational_ref_admin_inventories_existing_state_without_writes() {
+    let temp = TempDir::new().expect("temporary directory");
+    let refs = temp.path().join("refs");
+    let name = RefName::new("campaigns/observational").expect("ref name");
+    let target = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"observational ref");
+    let operational = DirectoryRefBackend::new(&refs);
+    drop(
+        operational
+            .acquire_publication_guard()
+            .expect("initialize publication lock"),
+    );
+    operational
+        .compare_exchange(&name, None, target)
+        .expect("initialize ref inventory");
+    let backend = DirectoryRefBackend::new_observational(&refs);
+    let before = filesystem_content_snapshot(temp.path());
+
+    let mut records = Vec::new();
+    let summary = backend
+        .acquire_ref_inventory_fence()
+        .expect("observational ref inventory fence")
+        .visit_refs(&mut |record| {
+            records.push((record.name().clone(), record.target()));
+            Ok(())
+        })
+        .expect("observational ref inventory");
+    assert_eq!(summary.refs(), 1);
+    assert_eq!(records, vec![(name.clone(), target)]);
+    assert!(matches!(
+        backend.compare_exchange(&name, Some(target), target),
+        Err(StoreError::Unsupported { .. })
+    ));
+    assert_eq!(filesystem_content_snapshot(temp.path()), before);
+}
+
+#[test]
 fn write_back_retention_fence_excludes_children_before_journal_publication() {
     let temp = TempDir::new().expect("temporary directory");
     let graph = write_back_graph(temp.path(), 8, 1_024).expect("write-back graph");
@@ -5253,10 +5450,22 @@ fn write_back_graph(
     maximum_pending_objects: u64,
     maximum_pending_bytes: u64,
 ) -> Result<StoreGraph, StoreError> {
+    StoreGraph::build(write_back_graph_config(
+        root,
+        maximum_pending_objects,
+        maximum_pending_bytes,
+    ))
+}
+
+fn write_back_graph_config(
+    root: &Path,
+    maximum_pending_objects: u64,
+    maximum_pending_bytes: u64,
+) -> StoreGraphConfig {
     let write_back = node_id("write-back");
     let staging = node_id("staging");
     let destination = node_id("destination");
-    StoreGraph::build(StoreGraphConfig {
+    StoreGraphConfig {
         root: write_back.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
         nodes: BTreeMap::from([
@@ -5283,7 +5492,36 @@ fn write_back_graph(
                 },
             ),
         ]),
-    })
+    }
+}
+
+fn filesystem_content_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn visit(root: &Path, path: &Path, snapshot: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+        for entry in fs::read_dir(path).expect("read snapshot directory") {
+            let entry = entry.expect("read snapshot entry");
+            let entry_path = entry.path();
+            let relative = entry_path
+                .strip_prefix(root)
+                .expect("snapshot entry under root")
+                .to_path_buf();
+            let file_type = entry.file_type().expect("snapshot entry type");
+            if file_type.is_dir() {
+                snapshot.insert(relative, None);
+                visit(root, &entry_path, snapshot);
+            } else if file_type.is_file() {
+                snapshot.insert(
+                    relative,
+                    Some(fs::read(&entry_path).expect("read snapshot file")),
+                );
+            } else {
+                panic!("unexpected snapshot entry: {}", entry_path.display());
+            }
+        }
+    }
+
+    let mut snapshot = BTreeMap::new();
+    visit(root, root, &mut snapshot);
+    snapshot
 }
 
 fn pack_file_count(root: &Path) -> usize {

@@ -7,12 +7,13 @@
 pub use crucible_cas::content_store::{
     BackendCapabilities, ContentId, DirectoryBlobBackend, DirectoryRefBackend,
     DurabilityRequirement, ImmutableBlobBackend, MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES,
-    MAX_STORE_GRAPH_VERIFY_PLACEMENTS, ObjectKind, RefName, S3RefBackend, SensitivityClass,
-    StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph, StoreGraphAdmin,
-    StoreGraphConfig, StoreGraphKeyring, StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers,
-    StoreGraphPhysicalQuotaBinders, StoreGraphS3Clients, StoreGraphVerificationLimits,
-    StoreGraphVerificationLimitsError, StoreNamespaceAuthorizer, StoreNamespaceId,
-    StoreNamespaceOperation, StoreNodeId, StoreNodeKind, StoreNodeSpec, StoreObjectProfilePolicyId,
-    StorePhysicalQuotaPolicyId, StoreS3EndpointId, StoreS3RefCapability,
+    MAX_STORE_GRAPH_VERIFY_PLACEMENTS, ObjectKind, RefName, RetentionRole, S3RefBackend,
+    SensitivityClass, StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph,
+    StoreGraphAdmin, StoreGraphConfig, StoreGraphKeyring, StoreGraphNamespaceAuthorizers,
+    StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders, StoreGraphS3Clients,
+    StoreGraphVerificationLimits, StoreGraphVerificationLimitsError, StoreNamespaceAuthorizer,
+    StoreNamespaceId, StoreNamespaceOperation, StoreNodeId, StoreNodeKind, StoreNodeSpec,
+    StoreObjectProfilePolicyId, StorePhysicalQuotaPolicyId, StoreS3EndpointId,
+    StoreS3RefCapability,
 };
 pub use crucible_s3_store::{AwsSdkS3Client, AwsSdkS3ClientConfig, AwsSdkS3StrongCasClient};

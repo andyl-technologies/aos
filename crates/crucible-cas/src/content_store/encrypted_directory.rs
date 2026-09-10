@@ -233,6 +233,7 @@ pub struct EncryptedDirectoryBlobBackend {
     key_id_binding: [u8; 32],
     key: Arc<StoreEncryptionKey>,
     encoding: EncryptedObjectEncoding,
+    observational: bool,
 }
 
 impl fmt::Debug for EncryptedDirectoryBlobBackend {
@@ -338,6 +339,29 @@ impl EncryptedDirectoryBlobBackend {
         )
     }
 
+    pub(super) fn open_observational(
+        name: impl Into<String>,
+        root: PathBuf,
+        maximum_logical_object_bytes: u64,
+        key_id: StoreEncryptionKeyId,
+        key: Arc<StoreEncryptionKey>,
+        compressed: bool,
+    ) -> Result<Self, StoreError> {
+        Self::open_with_encoding_and_mode(
+            name,
+            root,
+            maximum_logical_object_bytes,
+            key_id,
+            key,
+            if compressed {
+                EncryptedObjectEncoding::Zstandard
+            } else {
+                EncryptedObjectEncoding::Plaintext
+            },
+            true,
+        )
+    }
+
     fn open_with_encoding(
         name: impl Into<String>,
         root: PathBuf,
@@ -345,6 +369,26 @@ impl EncryptedDirectoryBlobBackend {
         key_id: StoreEncryptionKeyId,
         key: Arc<StoreEncryptionKey>,
         encoding: EncryptedObjectEncoding,
+    ) -> Result<Self, StoreError> {
+        Self::open_with_encoding_and_mode(
+            name,
+            root,
+            maximum_logical_object_bytes,
+            key_id,
+            key,
+            encoding,
+            false,
+        )
+    }
+
+    fn open_with_encoding_and_mode(
+        name: impl Into<String>,
+        root: PathBuf,
+        maximum_logical_object_bytes: u64,
+        key_id: StoreEncryptionKeyId,
+        key: Arc<StoreEncryptionKey>,
+        encoding: EncryptedObjectEncoding,
+        observational: bool,
     ) -> Result<Self, StoreError> {
         if maximum_logical_object_bytes == 0
             || maximum_logical_object_bytes > MAXIMUM_ENCRYPTED_LOGICAL_OBJECT_BYTES
@@ -355,12 +399,17 @@ impl EncryptedDirectoryBlobBackend {
         }
         let key_id_binding = key_id_binding(&key_id)?;
         Ok(Self {
-            directory: DirectoryBlobBackend::new(name, root),
+            directory: if observational {
+                DirectoryBlobBackend::new_observational(name, root)
+            } else {
+                DirectoryBlobBackend::new(name, root)
+            },
             maximum_logical_object_bytes,
             key_id,
             key_id_binding,
             key,
             encoding,
+            observational,
         })
     }
 
@@ -387,8 +436,12 @@ impl EncryptedDirectoryBlobBackend {
         id: ContentId,
         range: Option<ByteRange>,
     ) -> Result<BlobHandle, StoreError> {
-        let _inventory_lock = self.directory.acquire_inventory_lock()?;
-        self.validate_or_create_key_state_locked()?;
+        let _inventory_lock = if self.observational {
+            None
+        } else {
+            Some(self.directory.acquire_inventory_lock()?)
+        };
+        self.validate_key_state()?;
         self.read_handle_with_key_state(id, range)
     }
 
@@ -488,6 +541,23 @@ impl EncryptedDirectoryBlobBackend {
         }
         publish_result
     }
+
+    fn validate_key_state(&self) -> Result<(), StoreError> {
+        if !self.observational {
+            return self.validate_or_create_key_state_locked();
+        }
+        let path = self
+            .root()
+            .join(".inventory-admin")
+            .join(ENCRYPTION_KEY_STATE_FILE);
+        if read_key_state(&path, self.key_id_binding, self.key.bytes())? {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidComposition {
+                reason: "encrypted directory key state is absent during observational read",
+            })
+        }
+    }
 }
 
 impl ImmutableBlobBackend for EncryptedDirectoryBlobBackend {
@@ -509,8 +579,12 @@ impl ImmutableBlobBackend for EncryptedDirectoryBlobBackend {
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
-        let _inventory_lock = self.directory.acquire_inventory_lock()?;
-        self.validate_or_create_key_state_locked()?;
+        let _inventory_lock = if self.observational {
+            None
+        } else {
+            Some(self.directory.acquire_inventory_lock()?)
+        };
+        self.validate_key_state()?;
         self.contains_with_key_state(id)
     }
 
@@ -639,9 +713,15 @@ impl ImmutableBlobBackend for EncryptedDirectoryBlobBackend {
 
 impl BlobStoreAdmin for EncryptedDirectoryBlobBackend {
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
-        let lock = self.directory.acquire_inventory_lock()?;
-        self.validate_or_create_key_state_locked()?;
-        let state = self.directory.load_or_create_inventory_state()?;
+        let (lock, state) = if self.observational {
+            let lock = self.directory.acquire_existing_inventory_lock()?;
+            self.validate_key_state()?;
+            (lock, self.directory.load_existing_inventory_state()?)
+        } else {
+            let lock = self.directory.acquire_inventory_lock()?;
+            self.validate_or_create_key_state_locked()?;
+            (lock, self.directory.load_or_create_inventory_state()?)
+        };
         Ok(Box::new(EncryptedDirectoryInventoryFence {
             backend: self,
             _lock: lock,
