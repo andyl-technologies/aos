@@ -96,6 +96,16 @@ fn collector_enforces_object_and_byte_bounds() {
 }
 
 #[test]
+fn decoder_rejects_binary_header_that_disagrees_with_authenticated_material() {
+    let mut bytes = event_segment(7, "guest_marker", &guest_marker_material("guest-ready"));
+    bytes[60..68].copy_from_slice(&8_u64.to_le_bytes());
+
+    let error = segment::decode(&bytes, 1).expect_err("header mismatch must fail");
+
+    assert!(error.contains("differs from material 7"));
+}
+
+#[test]
 fn bounded_reader_rejects_symlinks_and_fifos_without_blocking() {
     let fixture = tempfile::tempdir().expect("create input fixture");
     let regular = fixture.path().join("regular");
@@ -207,6 +217,9 @@ fn replace_object(root: &Path, bytes: &[u8]) {
 }
 
 fn event_segment(sequence: u64, kind: &str, material: &str) -> Vec<u8> {
+    let material = format!(
+        "sequence={sequence}\nat_virtual_time_ticks=100\nat_icount_retired=99\nevent_payload.kind={kind}\n{material}"
+    );
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"CRUCIBLE-ELOGSEG");
     bytes.extend_from_slice(&1_u32.to_le_bytes());
@@ -222,7 +235,7 @@ fn event_segment(sequence: u64, kind: &str, material: &str) -> Vec<u8> {
     write_string(&mut bytes, kind);
     bytes.extend_from_slice(&0_u64.to_le_bytes());
     bytes.extend_from_slice(&segment::entry_content_hash(material.as_bytes()));
-    write_string(&mut bytes, material);
+    write_string(&mut bytes, &material);
     bytes
 }
 

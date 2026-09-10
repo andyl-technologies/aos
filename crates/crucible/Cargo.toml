@@ -58,6 +58,11 @@ path = "tests/gate_abi_conformance.rs"
 required-features = ["test-double"]
 
 [[test]]
+name = "native_event_collector_codec"
+path = "tests/native_event_collector_codec.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "gate_scheduler_liveness"
 path = "tests/gate_scheduler_liveness.rs"
 required-features = ["test-double"]
