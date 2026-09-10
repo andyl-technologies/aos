@@ -56,6 +56,7 @@ enum TestShape {
     CampaignStatistics,
     BranchPointModel,
     LazyFrontier,
+    ControlResponsiveness,
     CampaignComponentContract,
     AttemptIdempotence,
     CampaignMutationScaling,
@@ -82,6 +83,17 @@ struct CrateTestingOwnership {
     package: &'static str,
     gates: &'static [&'static str],
 }
+
+// Library-exact campaign gates are absent from the RFC-0010 integration-target
+// table. Keep them in the same layer, backend, and ownership checks without
+// claiming that the selector is an integration-test target.
+const CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS: &[GateTargetSpec] = &[GateTargetSpec {
+    gate: "gate:control-responsiveness",
+    package: "crucible-daemon",
+    test_target: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
+    required_features: &[],
+    placeholder: false,
+}];
 
 const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     GateTestingStandard {
@@ -171,6 +183,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         owner_packages: &["crucible-campaign"],
         layers: &[Layer::L3],
         shape: TestShape::LazyFrontier,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:control-responsiveness",
+        owner_packages: &["crucible-daemon"],
+        layers: &[Layer::L4],
+        shape: TestShape::ControlResponsiveness,
         backend: TestBackend::InProcess,
     },
     GateTestingStandard {
@@ -445,6 +464,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
         package: "crucible-daemon",
         gates: &[
             "gate:control-responsive",
+            "gate:control-responsiveness",
             "gate:campaign-component-contract",
         ],
     },
@@ -517,10 +537,56 @@ fn campaign_model_standard_requires_public_repository_recovery_proofs() -> Resul
 }
 
 #[test]
+fn control_responsiveness_standard_requires_daemon_proofs() -> Result<(), Box<dyn Error>> {
+    let target = CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS
+        .first()
+        .ok_or("control-responsiveness library target is missing")?;
+    let standard = standard_for_gate(target.gate)
+        .ok_or("control-responsiveness testing standard is missing")?;
+    let source = fs::read_to_string(
+        workspace_root().join("crates/crucible-daemon/src/executor_pool/tests.rs"),
+    )?;
+    assert!(source_shape_failures(target, standard, &source).is_empty());
+
+    for proof in [
+        "CampaignClient::new(RepositoryCampaignService::new(",
+        "CampaignControlAction::Pause(ActiveAttemptPolicy::Drain)",
+        ".get_campaign_status(",
+        ".pin_campaign(",
+        "const CONTROL_BOUND: Duration = Duration::from_millis(250);",
+        "assert_eq!(saturated.active(), 3);",
+        "assert_eq!(saturated.queued(), 1);",
+        "pool.request_shutdown();",
+        "Err(LocalExecutorPoolServiceError::ShuttingDown)",
+        "state.cancellations_observed, 2,",
+        ".operational_activity_snapshot();",
+        "assert!(activity.worker_in_flight);",
+        "assert!(activity.cancellation_requested);",
+        "assert_eq!(report.active(), 0);",
+        "assert_eq!(report.queued(), 0);",
+        "assert_eq!(report.executions(), 2,",
+        "assert_eq!(report.terminal_stops(), 3);",
+    ] {
+        let without_proof = source.replace(proof, "missing_control_responsiveness_proof");
+        assert!(
+            !source_shape_failures(target, standard, &without_proof).is_empty(),
+            "control-responsiveness standard accepted a gate missing {proof}",
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn gate_targets_follow_per_layer_testing_standards() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let source_overrides = gate_target_source_overrides(&root)?;
-    let mut failures = testing_standard_failures(gate_targets(), &source_overrides);
+    let testing_targets = gate_targets()
+        .iter()
+        .chain(CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS)
+        .copied()
+        .collect::<Vec<_>>();
+    let mut failures = testing_standard_failures(&testing_targets, &source_overrides);
     failures.extend(testing_standard_regression_failures());
 
     assert!(
