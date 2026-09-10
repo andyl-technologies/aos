@@ -244,7 +244,7 @@ impl CampaignRecordKind {
             Self::Proposal => 2,
             Self::BranchPath => 2,
             Self::Attempt => 8,
-            Self::AttemptAdmission => 2,
+            Self::AttemptAdmission => 3,
             Self::MeasurementSet => 2,
             Self::Observation => 12,
             Self::ObjectiveEvaluation | Self::RankingExplanation => 2,
@@ -762,7 +762,7 @@ impl ObjectEnvelope {
             || record_kind == CampaignRecordKind::Attempt
                 && matches!(envelope.schema_version(), 1..=4 | 7..=8)
             || record_kind == CampaignRecordKind::AttemptAdmission
-                && envelope.schema_version() == 1
+                && matches!(envelope.schema_version(), 1..=2)
             || record_kind == CampaignRecordKind::Observation
                 && matches!(envelope.schema_version(), 1..=11)
             || record_kind == CampaignRecordKind::PlannerBeamCandidate

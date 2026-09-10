@@ -749,10 +749,15 @@ pub struct AttemptAdmission {
     schema_version: u32,
     attempt: AttemptId,
     role: AttemptAdmissionRole,
+    retention_policy: Option<CampaignPolicyId>,
 }
 
 impl AttemptAdmission {
-    /// Builds an attempt admission record.
+    /// Builds a legacy attempt admission record without an explicit policy binding.
+    ///
+    /// This constructor preserves the exact version 1 and version 2 encodings
+    /// needed to validate historical campaign records. New admissions must use
+    /// [`Self::new_policy_bound`].
     #[must_use]
     pub const fn new(attempt: AttemptId, role: AttemptAdmissionRole) -> Self {
         let schema_version = match role {
@@ -767,6 +772,22 @@ impl AttemptAdmission {
             schema_version,
             attempt,
             role,
+            retention_policy: None,
+        }
+    }
+
+    /// Builds a version 3 attempt admission bound to its retention policy.
+    #[must_use]
+    pub const fn new_policy_bound(
+        attempt: AttemptId,
+        role: AttemptAdmissionRole,
+        retention_policy: CampaignPolicyId,
+    ) -> Self {
+        Self {
+            schema_version: ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION,
+            attempt,
+            role,
+            retention_policy: Some(retention_policy),
         }
     }
 
@@ -780,6 +801,28 @@ impl AttemptAdmission {
     #[must_use]
     pub const fn role(self) -> AttemptAdmissionRole {
         self.role
+    }
+
+    /// Returns the policy governing retention for this admission when derivable.
+    ///
+    /// Version 3 records carry the policy directly. Historical records can
+    /// recover it from policy-bearing request causes; proposal-backed version 1
+    /// records require repository resolution of the proposal.
+    #[must_use]
+    pub const fn retention_policy(self) -> Option<CampaignPolicyId> {
+        match self.retention_policy {
+            Some(policy) => Some(policy),
+            None => match self.role {
+                AttemptAdmissionRole::ExecutionBasis {
+                    cause:
+                        BranchRequestCause::ExhaustivePolicy(policy)
+                        | BranchRequestCause::ScenarioDefault(policy),
+                    ..
+                } => Some(policy),
+                AttemptAdmissionRole::ExecutionBasis { .. }
+                | AttemptAdmissionRole::AdditionalCause { .. } => None,
+            },
+        }
     }
 
     /// Returns strict canonical bytes.
@@ -835,6 +878,9 @@ impl AttemptAdmission {
                 children.push(("proposal".to_owned(), proposal.content_id()));
             }
         }
+        if let Some(policy) = self.retention_policy {
+            children.push(("retention-policy".to_owned(), policy.content_id()));
+        }
         children
     }
 
@@ -848,12 +894,19 @@ impl Canonical for AttemptAdmission {
         self.schema_version.encode(encoder);
         self.attempt.encode(encoder);
         self.role.encode(encoder);
+        if let Some(policy) = self.retention_policy {
+            policy.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
         let attempt = AttemptId::decode(decoder)?;
         let role = AttemptAdmissionRole::decode(decoder)?;
+        let retention_policy = match schema_version {
+            ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION => Some(CampaignPolicyId::decode(decoder)?),
+            _ => None,
+        };
         let scenario_default_basis = matches!(
             role,
             AttemptAdmissionRole::ExecutionBasis {
@@ -864,6 +917,7 @@ impl Canonical for AttemptAdmission {
         let compatible = match schema_version {
             RECORD_SCHEMA_VERSION => !scenario_default_basis,
             ATTEMPT_ADMISSION_SCHEMA_VERSION => scenario_default_basis,
+            ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION => retention_policy.is_some(),
             _ => false,
         };
         if !compatible {
@@ -875,6 +929,7 @@ impl Canonical for AttemptAdmission {
             schema_version,
             attempt,
             role,
+            retention_policy,
         })
     }
 }

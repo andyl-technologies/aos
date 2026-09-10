@@ -504,25 +504,7 @@ impl CampaignRepository {
         for (proposal, proposal_id) in proposals.iter().zip(proposal_ids.iter().copied()) {
             let attempt = self.derive_planner_issue_attempt(&attempt_basis, proposal, mode)?;
             let attempt_id = attempt.id()?;
-            let expected = self.expected_planner_issue_admission(
-                prior_accounting,
-                &accounting_upserts,
-                &prepared_admissions,
-                &selected_request,
-                proposal_id,
-                attempt_id,
-                request_attempts,
-                next_ordinal,
-            )?;
-            let admission_content = match mode {
-                IssueProjectionMode::Publish => {
-                    let content = self.put_attempt_admission(&expected)?;
-                    if content != expected.id()?.content_id() {
-                        return Err(integrity("planner-issue-admission-publication-mismatch"));
-                    }
-                    content
-                }
-                IssueProjectionMode::Preflight => expected.id()?.content_id(),
+            let stored_admission = match mode {
                 IssueProjectionMode::Validate {
                     target_accounting, ..
                 } => {
@@ -536,7 +518,38 @@ impl CampaignRepository {
                             ),
                         )?
                         .ok_or_else(|| integrity("planner-issue-admission-is-missing"))?;
-                    if self.decode_attempt_admission(content)? != expected {
+                    Some((content, self.decode_attempt_admission(content)?))
+                }
+                IssueProjectionMode::Preflight | IssueProjectionMode::Publish => None,
+            };
+            let expected = self.expected_planner_issue_admission(
+                prior_accounting,
+                &accounting_upserts,
+                &prepared_admissions,
+                &selected_request,
+                proposal_id,
+                attempt_id,
+                request_attempts,
+                next_ordinal,
+                proposal.policy(),
+                stored_admission.is_none_or(|(_, admission)| admission.schema_version() == 3),
+            )?;
+            let admission_content = match mode {
+                IssueProjectionMode::Publish => {
+                    let content = self.put_attempt_admission(&expected)?;
+                    if content != expected.id()?.content_id() {
+                        return Err(integrity("planner-issue-admission-publication-mismatch"));
+                    }
+                    content
+                }
+                IssueProjectionMode::Preflight => expected.id()?.content_id(),
+                IssueProjectionMode::Validate {
+                    target_accounting: _,
+                    target_exploration: _,
+                } => {
+                    let (content, admission) = stored_admission
+                        .ok_or_else(|| integrity("planner-issue-stored-admission-is-missing"))?;
+                    if admission != expected {
                         return Err(integrity("planner-issue-admission-owner-mismatch"));
                     }
                     content
@@ -938,6 +951,8 @@ impl CampaignRepository {
         attempt: AttemptId,
         request_attempts: u64,
         next_ordinal: Option<AdmissionOrdinal>,
+        retention_policy: CampaignPolicyId,
+        policy_bound: bool,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         if self
             .overlay_get(
@@ -960,14 +975,16 @@ impl CampaignRepository {
                 }
                 let admission_ordinal =
                     next_ordinal.ok_or_else(|| integrity("admission-ordinal-overflow"))?;
-                Ok(AttemptAdmission::new(
-                    attempt,
-                    AttemptAdmissionRole::ExecutionBasis {
-                        proposal: Some(proposal),
-                        cause: request.cause(),
-                        admission_ordinal,
-                    },
-                ))
+                let role = AttemptAdmissionRole::ExecutionBasis {
+                    proposal: Some(proposal),
+                    cause: request.cause(),
+                    admission_ordinal,
+                };
+                Ok(if policy_bound {
+                    AttemptAdmission::new_policy_bound(attempt, role, retention_policy)
+                } else {
+                    AttemptAdmission::new(attempt, role)
+                })
             }
             (Some(indexed_attempt), Some(indexed_basis))
                 if indexed_attempt == attempt.content_id() =>
@@ -981,10 +998,12 @@ impl CampaignRepository {
                 {
                     return Err(integrity("attempt-execution-basis-index-mismatch"));
                 }
-                Ok(AttemptAdmission::new(
-                    attempt,
-                    AttemptAdmissionRole::AdditionalCause { proposal },
-                ))
+                let role = AttemptAdmissionRole::AdditionalCause { proposal };
+                Ok(if policy_bound {
+                    AttemptAdmission::new_policy_bound(attempt, role, retention_policy)
+                } else {
+                    AttemptAdmission::new(attempt, role)
+                })
             }
             _ => Err(integrity("attempt-admission-index-shape")),
         }
