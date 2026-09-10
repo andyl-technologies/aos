@@ -94,7 +94,7 @@
   # addition to proving that independently named platform derivations converge.
   repeatIndex = oci.mkMultiPlatformIndex {
     pname = "aos-container-${name}-production-index-repeat";
-    images = builtins.reverseList repeatImages;
+    images = lib.reverseList repeatImages;
     abilityContract = staticAbilityContract;
     inherit referenceName;
     annotations = first.coordination.indexAnnotations;

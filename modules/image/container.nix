@@ -15,7 +15,7 @@
   containerSchema = import ../../lib/containers/schema.nix;
   oci = import ../../lib/build/oci {
     inherit lib;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+    inherit (pkgs.buildPackages) mkDerivation coreutils findutils gzip jq tar;
   };
   retainedSource = name: source:
     pkgs.writeTextFile {
@@ -108,6 +108,7 @@
     in
       import ../../lib/containers/build.nix {
         inherit lib pkgs container oci systemIdentity;
+        buildPkgs = pkgs.buildPackages;
         definitionAttribute = "systems.${systemName}.build.containers.${name}";
       })
     cfg.definitions;

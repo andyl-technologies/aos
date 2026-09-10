@@ -103,7 +103,7 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils findutils gzip jq tar checkedImage checkedAbilityContract checkedReferenceGraph checkedSourceGraph] ++ checkedLayers;
+    buildDeps = [coreutils findutils gzip jq tar];
 
     outputChecks.out = {};
     inherit evidenceSpec;

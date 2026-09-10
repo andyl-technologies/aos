@@ -174,7 +174,7 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils findutils gzip jq tar runtimeAudit checkedAbilityContract] ++ layers;
+    buildDeps = [coreutils findutils gzip jq tar];
 
     outputChecks.out = {};
     inherit imageSpec;

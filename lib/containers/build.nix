@@ -7,6 +7,7 @@
 {
   lib,
   pkgs,
+  buildPkgs,
   oci,
   container,
   systemIdentity,
@@ -48,13 +49,16 @@
     .result;
 
   auditRoots = uniqueByPath (builtins.concatMap (layer: layer.roots) container.layers);
+  # Audits and OCI assemblers execute on the coordinator. Target packages stay
+  # as data dependencies through exportReferencesGraph and store-path inputs.
   runtimeAudit = import ../build/runtime-closure-audit.nix {
-    inherit pkgs lib;
+    inherit lib;
+    pkgs = buildPkgs;
     name = "container-${container.name}";
     roots = auditRoots;
     inherit (container.budgets) maxClosureMiB maxDevelopmentPayloadMiB;
   };
-  bakedRootInventory = pkgs.writeTextFile {
+  bakedRootInventory = buildPkgs.writeTextFile {
     name = "aos-container-${container.name}-baked-roots";
     text =
       builtins.concatStringsSep "\n" (map builtins.toString container.packageRoots)
@@ -190,7 +194,7 @@
     inherit lib pkgs;
     defaultCommand = container.runtime.command;
   };
-  initSource = pkgs.writeTextFile {
+  initSource = buildPkgs.writeTextFile {
     name = "aos-container-${container.name}-init";
     text = initScript;
     destination = "/init";
@@ -243,6 +247,10 @@
 
   packageEvidence = import ./package-evidence.nix {
     inherit lib pkgs;
+    # Build-only fixtures are not public target roots and may be specific to
+    # the coordinator architecture. Evidence qualification still rejects any
+    # runtime path without one unique package and source identity.
+    packageNames = pkgs.platformSupport.publicationEligibleNames container.platform.aosSystem pkgs.allPackageNames;
     overrides = container.publication.evidenceOverrides;
   };
 
@@ -265,7 +273,8 @@
       rootPaths = auditRoots;
     };
     facadeLayer = import ./facade-layer.nix {
-      inherit lib pkgs oci referenceGraph;
+      inherit lib oci referenceGraph;
+      pkgs = buildPkgs;
       packageRoots = container.packageRoots;
       explicit = container.filesystem.facade;
       expectedCollisions = container.filesystem.allowedFacadeCollisions;
@@ -417,35 +426,25 @@
     platformBuild = repeat;
   };
   publicationInputs = import ./publication-inputs.nix {
-    inherit pkgs;
+    pkgs = buildPkgs;
     pname = "aos-container-${container.name}-${container.platform.architecture}-publication-inputs";
     index = primary.ociIndex;
     evidenceLayout = evidence;
   };
   publicationInputsRepeat = import ./publication-inputs.nix {
-    inherit pkgs;
+    pkgs = buildPkgs;
     pname = "aos-container-${container.name}-${container.platform.architecture}-publication-inputs-repeat";
     index = repeat.ociIndex;
     evidenceLayout = evidenceRepeat;
   };
-  reproducibility = pkgs.mkDerivation {
+  reproducibility = buildPkgs.mkDerivation {
     pname = "aos-container-${container.name}-${container.platform.architecture}-reproducibility";
     version = "1";
     src = null;
     buildDeps = [
-      pkgs.coreutils
-      pkgs.diffutils
-      pkgs.jq
-      primary.image
-      repeat.image
-      primary.dockerArchive
-      repeat.dockerArchive
-      primary.ociIndex
-      repeat.ociIndex
-      evidence
-      evidenceRepeat
-      publicationInputs
-      publicationInputsRepeat
+      buildPkgs.coreutils
+      buildPkgs.diffutils
+      buildPkgs.jq
     ];
     outputChecks.out = {};
     unsafeDiscardReferences.out = true;
@@ -514,11 +513,11 @@
       })
       container.layers;
   };
-  metadata = pkgs.mkDerivation {
+  metadata = buildPkgs.mkDerivation {
     pname = "aos-container-${container.name}-metadata";
     version = "1";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.jq];
+    buildDeps = [buildPkgs.coreutils buildPkgs.jq];
     outputChecks.out = {};
     inherit metadataSpec;
     unsafeDiscardReferences.out = true;
