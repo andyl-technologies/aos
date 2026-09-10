@@ -56,10 +56,27 @@ enum WorkspaceCatalogRowExpectationV1 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct WorkspaceAttemptBindingV1 {
+pub(crate) struct WorkspaceAttemptBindingV1 {
     attempt_id: [u8; 16],
     attempt_ordinal: u8,
     record_digest: ObjectDigest,
+}
+
+impl WorkspaceAttemptBindingV1 {
+    /// Returns the stable identity of the bound attempt record.
+    pub(crate) const fn attempt_id(self) -> [u8; 16] {
+        self.attempt_id
+    }
+
+    /// Returns the contiguous ordinal of the bound attempt.
+    pub(crate) const fn attempt_ordinal(self) -> u8 {
+        self.attempt_ordinal
+    }
+
+    /// Returns the digest of the exact authenticated materialized record.
+    pub(crate) const fn record_digest(self) -> ObjectDigest {
+        self.record_digest
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,7 +89,7 @@ enum WorkspaceProjectionDispositionV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct StorageWorkspaceProjectionEntryV1 {
+pub(crate) struct StorageWorkspaceProjectionEntryV1 {
     workspace_handle: [u8; 32],
     dataset_guid: u64,
     creation_operation_id: [u8; 16],
@@ -82,7 +99,7 @@ struct StorageWorkspaceProjectionEntryV1 {
 
 /// Binds complete managed-workspace accounting to one transaction snapshot.
 #[derive(Debug, Eq, PartialEq)]
-pub(super) struct StorageWorkspaceProjectionPlanV1 {
+pub(crate) struct StorageWorkspaceProjectionPlanV1 {
     transaction_sequence: u64,
     transaction_snapshot_digest: ObjectDigest,
     plan_digest: ObjectDigest,
@@ -92,7 +109,41 @@ pub(super) struct StorageWorkspaceProjectionPlanV1 {
     entries: Vec<StorageWorkspaceProjectionEntryV1>,
 }
 
+#[allow(
+    dead_code,
+    reason = "closed catalog-plan accessors await the physical-evidence runtime boundary"
+)]
 impl StorageWorkspaceProjectionPlanV1 {
+    /// Returns the authenticated Storage transaction-journal sequence.
+    pub(crate) const fn transaction_sequence(&self) -> u64 {
+        self.transaction_sequence
+    }
+
+    /// Returns the digest of the complete authenticated transaction snapshot.
+    pub(crate) const fn transaction_snapshot_digest(&self) -> ObjectDigest {
+        self.transaction_snapshot_digest
+    }
+
+    /// Returns the digest of this closed projection plan.
+    pub(crate) const fn plan_digest(&self) -> ObjectDigest {
+        self.plan_digest
+    }
+
+    /// Returns the authenticated physical-catalog head generation.
+    pub(crate) const fn physical_head_generation(&self) -> u64 {
+        self.physical_head_generation
+    }
+
+    /// Returns the authenticated physical-catalog head digest.
+    pub(crate) const fn physical_head_digest(&self) -> ObjectDigest {
+        self.physical_head_digest
+    }
+
+    /// Returns every managed workspace in bytewise handle order.
+    pub(crate) fn entries(&self) -> &[StorageWorkspaceProjectionEntryV1] {
+        &self.entries
+    }
+
     /// Returns the legacy ready-only view used by the current catalog adapter.
     ///
     /// Pending rows stay explicitly accounted for by this plan but remain
@@ -133,8 +184,78 @@ impl StorageWorkspaceProjectionPlanV1 {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "closed catalog-plan accessors await the physical-evidence runtime boundary"
+)]
+impl StorageWorkspaceProjectionEntryV1 {
+    /// Returns the opaque managed-workspace handle.
+    pub(crate) const fn workspace_handle(&self) -> [u8; 32] {
+        self.workspace_handle
+    }
+
+    /// Returns the immutable physical dataset GUID.
+    pub(crate) const fn dataset_guid(&self) -> u64 {
+        self.dataset_guid
+    }
+
+    /// Returns the operation that created this managed workspace.
+    pub(crate) const fn creation_operation_id(&self) -> [u8; 16] {
+        self.creation_operation_id
+    }
+
+    /// Returns a ready catalog projection, if physical observation is complete.
+    pub(crate) fn ready_projection(&self) -> Option<&StorageWorkspaceProjection> {
+        match &self.disposition {
+            WorkspaceProjectionDispositionV1::Ready(projection) => Some(projection),
+            WorkspaceProjectionDispositionV1::Pending { .. } => None,
+        }
+    }
+
+    /// Reports whether the durable workspace row must be absent.
+    pub(crate) const fn requires_absent_row(&self) -> bool {
+        matches!(
+            self.row_expectation,
+            WorkspaceCatalogRowExpectationV1::MustBeAbsent
+        )
+    }
+
+    /// Returns the exact historical Ensure allowed to remain active.
+    pub(crate) const fn retained_active_binding(&self) -> Option<WorkspaceAttemptBindingV1> {
+        match self.row_expectation {
+            WorkspaceCatalogRowExpectationV1::MayRetainExactActive(binding) => Some(binding),
+            _ => None,
+        }
+    }
+
+    /// Returns the exact Ensure that makes an active row convergable.
+    pub(crate) const fn converging_active_binding(&self) -> Option<WorkspaceAttemptBindingV1> {
+        match self.row_expectation {
+            WorkspaceCatalogRowExpectationV1::MustConvergeActive(binding) => Some(binding),
+            _ => None,
+        }
+    }
+
+    /// Returns the exact historical Ensure and removal for a retired row.
+    pub(crate) const fn converging_retired_bindings(
+        &self,
+    ) -> Option<(WorkspaceAttemptBindingV1, WorkspaceAttemptBindingV1)> {
+        match self.row_expectation {
+            WorkspaceCatalogRowExpectationV1::MustConvergeRetired {
+                historical_ensure,
+                removal,
+            } => Some((historical_ensure, removal)),
+            _ => None,
+        }
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "closed catalog-plan accessors await the physical-evidence runtime boundary"
+)]
 impl StorageTransactionStore {
-    pub(super) fn workspace_projection_plan(
+    pub(crate) fn workspace_projection_plan(
         &self,
     ) -> Result<StorageWorkspaceProjectionPlanV1, StorageStateError> {
         self.ensure_authority_readable()?;
@@ -197,6 +318,88 @@ impl StorageTransactionStore {
             expected_workspace_handles,
             entries,
         })
+    }
+
+    /// Reconstructs the committed creation represented by one plan entry.
+    pub(crate) fn workspace_projection_creation(
+        &self,
+        entry: &StorageWorkspaceProjectionEntryV1,
+    ) -> Result<CommittedStorageResultV1, StorageStateError> {
+        let creation = self.projected_committed_result(entry.creation_operation_id)?;
+        self.require_workspace_creation(entry.creation_operation_id, creation)?;
+        if creation.storage_handle() != Some(entry.workspace_handle)
+            || creation.object_guid() != Some(entry.dataset_guid)
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        Ok(creation)
+    }
+
+    /// Recovers the exact satisfied Ensure proof selected by a plan binding.
+    pub(crate) fn workspace_projection_ensure_pin(
+        &self,
+        entry: &StorageWorkspaceProjectionEntryV1,
+        binding: WorkspaceAttemptBindingV1,
+    ) -> Result<super::WorkspaceRootPinProofV1, StorageStateError> {
+        let attempt = self.workspace_projection_attempt(entry, binding)?;
+        self.satisfied_workspace_ensure_pin(
+            attempt,
+            entry.creation_operation_id,
+            entry.workspace_handle,
+        )
+    }
+
+    /// Returns every exact satisfied Ensure binding in authenticated order.
+    pub(crate) fn workspace_projection_satisfied_ensure_bindings(
+        &self,
+        entry: &StorageWorkspaceProjectionEntryV1,
+    ) -> Result<Vec<WorkspaceAttemptBindingV1>, StorageStateError> {
+        self.workspace_attempt_history(entry.creation_operation_id, entry.workspace_handle)?
+            .into_iter()
+            .filter(|attempt| {
+                attempt.action() == WorkspacePinActionV1::Ensure
+                    && attempt.phase() == WorkspacePinAttemptPhaseV1::Satisfied
+            })
+            .map(|attempt| self.attempt_binding(attempt))
+            .collect()
+    }
+
+    /// Requires one exact satisfied effect attempt selected by a plan binding.
+    pub(crate) fn require_workspace_projection_effect(
+        &self,
+        entry: &StorageWorkspaceProjectionEntryV1,
+        effect_operation_id: [u8; 16],
+        action: WorkspacePinActionV1,
+        binding: WorkspaceAttemptBindingV1,
+    ) -> Result<(), StorageStateError> {
+        let attempt = self.workspace_projection_attempt(entry, binding)?;
+        if attempt.effect_operation_id() != effect_operation_id
+            || attempt.action() != action
+            || attempt.phase() != WorkspacePinAttemptPhaseV1::Satisfied
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        Ok(())
+    }
+
+    fn workspace_projection_attempt(
+        &self,
+        entry: &StorageWorkspaceProjectionEntryV1,
+        binding: WorkspaceAttemptBindingV1,
+    ) -> Result<&WorkspacePinAttemptV1, StorageStateError> {
+        let attempt = self
+            .pin_attempts
+            .get(&binding.attempt_id)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let record = self.workspace_pin_attempt_record(attempt)?;
+        if attempt.attempt_ordinal() != binding.attempt_ordinal
+            || digest_bytes(&record)? != binding.record_digest
+            || attempt.creation_operation_id() != entry.creation_operation_id
+            || attempt.workspace_handle() != entry.workspace_handle
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        Ok(attempt)
     }
 
     fn plan_active_workspace(

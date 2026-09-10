@@ -37,7 +37,10 @@ use crate::pin_worker_runtime::{
 };
 use crate::state::{CatalogPreparationConsumption, StorageWorkspaceProjection};
 use crate::workspace_catalog::{
-    StorageWorkspaceCatalogActionV1, StorageWorkspacePublicationV1, StorageWorkspaceRetirementV1,
+    StorageWorkspaceCatalogActionV1, StorageWorkspaceCatalogActivePrefixV1,
+    StorageWorkspaceCatalogPlanV1, StorageWorkspaceCatalogRowPlanV1,
+    StorageWorkspaceCatalogRowPolicyV1, StorageWorkspacePublicationV1,
+    StorageWorkspaceRetirementV1,
 };
 use crate::workspace_pin::{
     BeginWorkspacePinAttemptV1, WorkspacePinActionV1, WorkspacePinAttemptPhaseV1,
@@ -2181,6 +2184,117 @@ impl StorageAdmissionCoordinator {
         StorageWorkspaceRetirementV1::from_committed(result, &catalog).map_err(Into::into)
     }
 
+    /// Composes a complete structural workspace-catalog plan from durable authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] when the B1 projection is inconsistent,
+    /// an exact selected pin-attempt record or portable authority link changed,
+    /// or the resulting row set violates the closed catalog-plan invariants.
+    #[allow(
+        dead_code,
+        reason = "structural plans await the physical-evidence runtime boundary"
+    )]
+    pub(crate) fn workspace_catalog_plan(
+        &self,
+    ) -> Result<StorageWorkspaceCatalogPlanV1, StorageBrokerError> {
+        let projection = self.transactions.workspace_projection_plan()?;
+        let mut rows = Vec::with_capacity(projection.entries().len());
+        for entry in projection.entries() {
+            let creation = self.transactions.workspace_projection_creation(entry)?;
+            let (identity_range_start, identity_range_size) = self
+                .transactions
+                .workspace_identity_range(entry.creation_operation_id())?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+
+            let active_prefixes = self
+                .transactions
+                .workspace_projection_satisfied_ensure_bindings(entry)?
+                .into_iter()
+                .map(|binding| {
+                    let pin_proof = self
+                        .transactions
+                        .workspace_projection_ensure_pin(entry, binding)?;
+                    let publication =
+                        self.workspace_publication_from_committed(creation, pin_proof)?;
+                    StorageWorkspaceCatalogActivePrefixV1::new(
+                        binding.attempt_id(),
+                        binding.attempt_ordinal(),
+                        binding.record_digest(),
+                        publication,
+                    )
+                    .map_err(Into::into)
+                })
+                .collect::<Result<Vec<_>, StorageBrokerError>>()?;
+
+            let policy = if entry.requires_absent_row() {
+                StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent
+            } else if let Some(binding) = entry.retained_active_binding() {
+                let pin_proof = self
+                    .transactions
+                    .workspace_projection_ensure_pin(entry, binding)?;
+                StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(
+                    self.workspace_publication_from_committed(creation, pin_proof)?,
+                )
+            } else if let Some(binding) = entry.converging_active_binding() {
+                let pin_proof = self
+                    .transactions
+                    .workspace_projection_ensure_pin(entry, binding)?;
+                StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(
+                    self.workspace_publication_from_committed(creation, pin_proof)?,
+                )
+            } else if let Some((historical_ensure, removal)) = entry.converging_retired_bindings() {
+                let Some(StorageWorkspaceProjection::Retired {
+                    creation: ready_creation,
+                    retirement,
+                }) = entry.ready_projection()
+                else {
+                    return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+                };
+                if *ready_creation != creation {
+                    return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+                }
+                let pin_proof = self
+                    .transactions
+                    .workspace_projection_ensure_pin(entry, historical_ensure)?;
+                self.transactions.require_workspace_projection_effect(
+                    entry,
+                    retirement.operation_id(),
+                    WorkspacePinActionV1::RemoveAndDestroy,
+                    removal,
+                )?;
+                let (catalog, _, _) = self.committed_context(*retirement)?;
+                let retirement =
+                    StorageWorkspaceRetirementV1::from_committed(*retirement, &catalog)?;
+                StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired {
+                    creation: self.workspace_publication_from_committed(creation, pin_proof)?,
+                    retirement,
+                }
+            } else {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            };
+            rows.push(StorageWorkspaceCatalogRowPlanV1::new(
+                entry.workspace_handle(),
+                entry.dataset_guid(),
+                entry.creation_operation_id(),
+                identity_range_start,
+                identity_range_size,
+                policy,
+                active_prefixes,
+            )?);
+        }
+
+        StorageWorkspaceCatalogPlanV1::new(
+            projection.transaction_sequence(),
+            projection.transaction_snapshot_digest(),
+            projection.plan_digest(),
+            projection.physical_head_generation(),
+            projection.physical_head_digest(),
+            rows,
+        )
+        .map_err(Into::into)
+    }
+
     pub(crate) fn workspace_projection(
         &self,
     ) -> Result<Vec<StorageWorkspaceCatalogActionV1>, StorageBrokerError> {
@@ -3837,6 +3951,148 @@ mod tests {
         };
 
         (coordinator, *dispatch, creation)
+    }
+
+    fn retain_satisfied_workspace_pin_repair(
+        broker: &mut StorageAdmissionCoordinator,
+        fixture: &Fixture,
+        creation: CommittedStorageResultV1,
+        initial_attempt: &WorkspacePinAttemptV1,
+        repaired_pin: crate::workspace_pin::WorkspaceRootPinProofV1,
+    ) {
+        let workspace_handle = creation.storage_handle().unwrap();
+        let repair_assignment_digest = assignment_manifest_at(&sandbox_spec(72), 6).digest();
+        let request_body = repair_request(80, 81, workspace_handle, 6, repair_assignment_digest);
+        let semantics = CanonicalStorageRepairSemanticsV1::decode(
+            &request_body,
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let artifacts = fixture.repair_artifacts(&request_body);
+        let prior_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let admission = broker
+            .authority
+            .admit_workspace_pin_repair(
+                &artifacts,
+                &semantics,
+                &request_body,
+                ProtocolVersion::new(1, 4),
+                &clock(),
+                Some(&prior_fence),
+            )
+            .unwrap();
+        let sealed = broker
+            .authority
+            .seal(
+                &[2; 16],
+                semantics.header().request_id(),
+                &semantics.operation_id(),
+                &admission,
+            )
+            .unwrap();
+        let operation_fence_digest =
+            ObjectDigest::from_bytes(Sha256::digest(&sealed.operation_fence).into());
+        let repair_attempt_id = derive_attempt_id(
+            &[52; 32],
+            semantics.operation_id(),
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+            initial_attempt.attempt_ordinal() + 1,
+        )
+        .unwrap();
+        let repair_attempt = WorkspacePinAttemptV1::new_ambiguous(
+            repair_attempt_id,
+            initial_attempt.attempt_ordinal() + 1,
+            WorkspacePinActionV1::Ensure,
+            semantics.operation_id(),
+            creation.operation_id(),
+            operation_fence_digest,
+            admission.fence.assignment().digest(),
+            initial_attempt.workspace_assignment_digest(),
+            creation.catalog(),
+            creation.result_digest(),
+            workspace_handle,
+            initial_attempt.host_boot_id(),
+            initial_attempt.host_mount_namespace_device(),
+            initial_attempt.host_mount_namespace_inode(),
+            *admission.effect.clock_provenance(),
+            admission.effect.effect_deadline_boottime_nanoseconds(),
+            initial_attempt.dataset_name().to_owned(),
+            initial_attempt.dataset_guid(),
+            initial_attempt.identity_range_start(),
+            initial_attempt.identity_range_size(),
+            None,
+        )
+        .unwrap();
+        let receipt = broker
+            .authority
+            .seal_pin_attempt_receipt(
+                &repair_attempt,
+                &admission.effect,
+                &admission.fence,
+                semantics.operation_id(),
+                *semantics.header().request_id(),
+            )
+            .unwrap();
+        let repair_attempt = repair_attempt.with_authority_receipt(receipt).unwrap();
+        let publication_record = broker
+            .transactions
+            .workspace_publication_intent_record(creation.operation_id())
+            .unwrap();
+        let initial_attempt_record = broker
+            .transactions
+            .workspace_pin_attempt_record(initial_attempt)
+            .unwrap();
+        let repair_intent = StorageWorkspacePinRepairIntentV1::new_ambiguous(
+            semantics.operation_id(),
+            &admission.effect,
+            sealed.effect.clone(),
+            admission.fence.assignment().digest(),
+            operation_fence_digest,
+            creation.operation_id(),
+            creation.catalog(),
+            creation.result_digest(),
+            ObjectDigest::from_bytes(Sha256::digest(publication_record).into()),
+            workspace_handle,
+            initial_attempt.attempt_id(),
+            initial_attempt.phase(),
+            ObjectDigest::from_bytes(Sha256::digest(&initial_attempt_record).into()),
+            repair_attempt.attempt_id(),
+            repair_attempt.attempt_ordinal(),
+        )
+        .unwrap();
+        broker
+            .transactions
+            .retain_workspace_pin_repair_for_test(
+                [2; 16],
+                repair_intent,
+                repair_attempt.clone(),
+                sealed.current_fence,
+                sealed.effect,
+                sealed.operation_fence,
+            )
+            .unwrap();
+
+        assert_eq!(
+            broker
+                .complete_workspace_pin_repair_attempt(
+                    &repair_attempt,
+                    &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                        name: initial_attempt.dataset_name().to_owned(),
+                        guid: initial_attempt.dataset_guid(),
+                    },
+                    &crate::workspace_pin::WorkspacePinObservationV1::Present(repaired_pin),
+                )
+                .unwrap(),
+            crate::workspace_pin::WorkspacePinRecoveryDispositionV1::CompletePublication,
+        );
     }
 
     struct CountingBackend {
@@ -6865,6 +7121,270 @@ mod tests {
                 StorageWorkspaceCatalogError::InvalidCandidate
             ))
         ));
+    }
+
+    #[test]
+    fn authenticated_workspace_history_composes_a_closed_pending_catalog_plan() {
+        let state_directory = TempDir::new().unwrap();
+        let workspace_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, dispatch, creation) =
+            workspace_pin_ensure_dispatch(&state_directory, &fixture);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let pending_plan = broker.workspace_catalog_plan().unwrap();
+        assert!(matches!(
+            pending_plan.rows()[0].policy(),
+            StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent
+        ));
+
+        let proof = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 11);
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                dispatch.attempt().attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(proof),
+            )
+            .unwrap();
+
+        let plan = broker.workspace_catalog_plan().unwrap();
+        assert!(plan.transaction_sequence() > 1);
+        assert_ne!(plan.transaction_snapshot_digest().as_bytes(), &[0; 32]);
+        assert_ne!(plan.plan_digest().as_bytes(), &[0; 32]);
+        assert_ne!(plan.physical_head().1.as_bytes(), &[0; 32]);
+        assert_eq!(plan.rows().len(), 1);
+        let row = &plan.rows()[0];
+        assert_eq!(row.workspace_handle(), workspace_handle);
+        assert_eq!(row.dataset_guid(), 11);
+        assert_eq!(row.creation_operation_id(), creation.operation_id());
+        assert_eq!(row.identity_range(), (65_536, 65_536));
+        assert!(matches!(
+            row.policy(),
+            StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(_)
+        ));
+
+        let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536 * 4).unwrap();
+        let pending = crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+            workspace_directory.path(),
+            identity_pool,
+        )
+        .unwrap();
+        let validated = pending.validate_plan(plan).unwrap();
+        assert!(!validated.is_initialized());
+        assert_eq!(validated.plan().rows().len(), 1);
+        assert_eq!(validated.snapshot().catalog_generation(), None);
+    }
+
+    #[test]
+    fn pending_catalog_accepts_only_authenticated_historical_pin_prefixes() {
+        let state_directory = TempDir::new().unwrap();
+        let workspace_directory = TempDir::new().unwrap();
+        let forged_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, dispatch, creation) =
+            workspace_pin_ensure_dispatch(&state_directory, &fixture);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let initial_pin = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 11);
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                dispatch.attempt().attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(initial_pin.clone()),
+            )
+            .unwrap();
+        let initial_attempt = broker
+            .transactions
+            .workspace_pin_attempts()
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.attempt_id() == dispatch.attempt().attempt_id())
+            .unwrap();
+        let initial_plan = broker.workspace_catalog_plan().unwrap();
+        let StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(initial_publication) =
+            initial_plan.rows()[0].policy()
+        else {
+            panic!("initial satisfied Ensure did not produce an active target")
+        };
+        let initial_publication = initial_publication.clone();
+
+        let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536 * 4).unwrap();
+        crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::write_active_record_for_test(
+            workspace_directory.path(),
+            identity_pool,
+            &initial_publication,
+            initial_pin.clone(),
+        )
+        .unwrap();
+
+        let repaired_pin = crate::workspace_pin::WorkspaceRootPinProofV1::new(
+            initial_pin.kernel_boot_id(),
+            initial_pin.mount_namespace_device(),
+            initial_pin.mount_namespace_inode(),
+            initial_pin.mount_id() + 10,
+            initial_pin.mount_root().to_owned(),
+            initial_pin.mount_point().to_owned(),
+            initial_pin.filesystem_type().to_owned(),
+            initial_pin.superblock_source().to_owned(),
+            initial_pin.dataset_guid(),
+            initial_pin.root_device() + 10,
+            initial_pin.root_inode() + 10,
+        )
+        .unwrap();
+        retain_satisfied_workspace_pin_repair(
+            &mut broker,
+            &fixture,
+            creation,
+            &initial_attempt,
+            repaired_pin,
+        );
+
+        let plan = broker.workspace_catalog_plan().unwrap();
+        assert_eq!(plan.rows().len(), 1);
+        assert_eq!(plan.rows()[0].active_prefixes().len(), 2);
+        let StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(repaired_publication) =
+            plan.rows()[0].policy()
+        else {
+            panic!("satisfied repair did not produce an active convergence target")
+        };
+        assert_eq!(
+            plan.rows()[0].active_prefixes()[0].publication(),
+            &initial_publication
+        );
+        assert_eq!(
+            plan.rows()[0].active_prefixes()[1].publication(),
+            repaired_publication
+        );
+        assert_ne!(repaired_publication, &initial_publication);
+        let transaction_binding = (
+            plan.transaction_sequence(),
+            plan.transaction_snapshot_digest(),
+            plan.plan_digest(),
+        );
+
+        let validated = crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+            workspace_directory.path(),
+            identity_pool,
+        )
+        .unwrap()
+        .validate_plan(plan)
+        .unwrap();
+        let catalog_snapshot = validated.snapshot();
+        drop(validated);
+        drop(broker);
+
+        let reopened = coordinator(&state_directory, &fixture);
+        reopened.authenticate_workspace_pin_attempts().unwrap();
+        let reopened_plan = reopened.workspace_catalog_plan().unwrap();
+        assert_eq!(
+            (
+                reopened_plan.transaction_sequence(),
+                reopened_plan.transaction_snapshot_digest(),
+                reopened_plan.plan_digest(),
+            ),
+            transaction_binding
+        );
+        let reopened_catalog =
+            crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                workspace_directory.path(),
+                identity_pool,
+            )
+            .unwrap()
+            .validate_plan(reopened_plan)
+            .unwrap();
+        assert_eq!(reopened_catalog.snapshot(), catalog_snapshot);
+        drop(reopened_catalog);
+
+        let forged_pin = crate::workspace_pin::WorkspaceRootPinProofV1::new(
+            initial_pin.kernel_boot_id(),
+            initial_pin.mount_namespace_device(),
+            initial_pin.mount_namespace_inode(),
+            initial_pin.mount_id() + 20,
+            initial_pin.mount_root().to_owned(),
+            initial_pin.mount_point().to_owned(),
+            initial_pin.filesystem_type().to_owned(),
+            initial_pin.superblock_source().to_owned(),
+            initial_pin.dataset_guid(),
+            initial_pin.root_device() + 20,
+            initial_pin.root_inode() + 20,
+        )
+        .unwrap();
+        crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::write_active_record_for_test(
+            forged_directory.path(),
+            identity_pool,
+            &initial_publication,
+            forged_pin,
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                forged_directory.path(),
+                identity_pool,
+            )
+            .unwrap()
+            .validate_plan(reopened.workspace_catalog_plan().unwrap()),
+            Err(StorageWorkspaceCatalogError::IdentityConflict)
+        ));
+    }
+
+    #[test]
+    fn removal_plan_uses_bound_historical_ensure_and_exact_retirement() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, dispatch, creation) = workspace_pin_remove_dispatch(&directory, &fixture);
+
+        let removing = broker.workspace_catalog_plan().unwrap();
+        assert_eq!(removing.rows().len(), 1);
+        assert!(matches!(
+            removing.rows()[0].policy(),
+            StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(_)
+        ));
+
+        let (attempt, prepared) = dispatch.into_parts();
+        let transaction =
+            ZfsTransaction::from_catalog(prepared.operation(), prepared.catalog()).unwrap();
+        let entry = prepared.entry();
+        let retirement = broker
+            .transactions
+            .commit_observed(
+                entry.operation_id(),
+                entry.mutation_digest(),
+                prepared.catalog(),
+                transaction.postcondition(),
+                None,
+                ObjectDigest::from_bytes([93; 32]),
+            )
+            .unwrap();
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                attempt.attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Absent,
+                &crate::workspace_pin::WorkspacePinObservationV1::Absent,
+            )
+            .unwrap();
+
+        let expected_retirement = broker.workspace_retirement(retirement).unwrap();
+        let retired = broker.workspace_catalog_plan().unwrap();
+        assert_eq!(retired.rows().len(), 1);
+        assert_eq!(
+            retired.rows()[0].workspace_handle(),
+            creation.storage_handle().unwrap()
+        );
+        let StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired {
+            retirement: planned,
+            ..
+        } = retired.rows()[0].policy()
+        else {
+            panic!("retired workspace did not produce a retirement row")
+        };
+        assert_eq!(planned, &expected_retirement);
     }
 
     #[test]

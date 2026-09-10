@@ -771,6 +771,20 @@ impl Journal {
             .map(|((_, key), value)| (key.as_slice(), value.as_slice()))
     }
 
+    /// Iterates every materialized record by namespace and bytewise key.
+    ///
+    /// The iterator is a stable snapshot only while this journal remains
+    /// immutably borrowed. Callers must copy values needed across a commit.
+    /// Like [`Self::get`], this diagnostic view does not establish current
+    /// authority after an ambiguous I/O failure. Consumers that own a closed
+    /// journal schema can use this complete ordering to reject foreign
+    /// namespaces instead of silently omitting them.
+    pub fn all_records(&self) -> impl Iterator<Item = (RecordNamespace, &[u8], &[u8])> {
+        self.state
+            .iter()
+            .map(|((namespace, key), value)| (*namespace, key.as_slice(), value.as_slice()))
+    }
+
     /// Reports whether replay produced no materialized record in any namespace.
     #[must_use]
     pub fn is_materialized_empty(&self) -> bool {
@@ -2127,6 +2141,66 @@ mod tests {
                 .records(RecordNamespace::PublisherIngress)
                 .collect::<Vec<_>>(),
             vec![(key.as_slice(), b"ingress-record".as_slice())],
+        );
+    }
+
+    #[test]
+    fn all_records_orders_namespaces_then_bytewise_keys() {
+        let directory = TestDirectory::new("all-records-order");
+        let (mut journal, _) =
+            Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        journal
+            .commit(&transaction(
+                1,
+                vec![
+                    JournalRecord::put(
+                        RecordNamespace::Effect,
+                        b"zeta".to_vec(),
+                        b"effect".to_vec(),
+                    ),
+                    JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        b"zeta".to_vec(),
+                        b"desired-zeta".to_vec(),
+                    ),
+                    JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        b"alpha".to_vec(),
+                        b"desired-alpha".to_vec(),
+                    ),
+                    JournalRecord::put(
+                        RecordNamespace::Operation,
+                        b"middle".to_vec(),
+                        b"operation".to_vec(),
+                    ),
+                ],
+            ))
+            .unwrap();
+
+        assert_eq!(
+            journal.all_records().collect::<Vec<_>>(),
+            vec![
+                (
+                    RecordNamespace::DesiredState,
+                    b"alpha".as_slice(),
+                    b"desired-alpha".as_slice(),
+                ),
+                (
+                    RecordNamespace::DesiredState,
+                    b"zeta".as_slice(),
+                    b"desired-zeta".as_slice(),
+                ),
+                (
+                    RecordNamespace::Operation,
+                    b"middle".as_slice(),
+                    b"operation".as_slice(),
+                ),
+                (
+                    RecordNamespace::Effect,
+                    b"zeta".as_slice(),
+                    b"effect".as_slice(),
+                ),
+            ],
         );
     }
 

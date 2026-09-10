@@ -16,6 +16,23 @@
 //! whose fixed handle-derived root pin still has the committed device/inode
 //! identity.
 
+#[allow(
+    dead_code,
+    reason = "pending typestate awaits the physical-evidence activation boundary"
+)]
+mod pending;
+
+#[allow(
+    unused_imports,
+    reason = "pending typestate is re-exported for the later runtime integration"
+)]
+pub(crate) use pending::{
+    PendingStorageWorkspaceCatalogV1, StorageWorkspaceCatalogActivePrefixV1,
+    StorageWorkspaceCatalogPlanV1, StorageWorkspaceCatalogRecoveryV1,
+    StorageWorkspaceCatalogRowPlanV1, StorageWorkspaceCatalogRowPolicyV1,
+    StorageWorkspaceCatalogSnapshotV1, ValidatedPendingStorageWorkspaceCatalogV1,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -1474,6 +1491,48 @@ impl WorkspaceRecordV1 {
             && self.dataset_guid == publication.dataset_guid
             && self.uid_range_start == publication.identity_range_start
             && self.uid_range_size == publication.identity_range_size
+    }
+
+    #[allow(
+        dead_code,
+        reason = "pending row validation awaits the physical-evidence activation boundary"
+    )]
+    fn matches_pending_plan(&self, row: &StorageWorkspaceCatalogRowPlanV1) -> bool {
+        let matches_active_prefix = row.active_prefixes().iter().any(|prefix| {
+            self.matches_creation(prefix.publication())
+                && self.pin_proof == prefix.publication().pin_proof
+        });
+        match row.policy() {
+            StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent => false,
+            StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(_)
+            | StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(_) => {
+                self.is_active() && matches_active_prefix
+            }
+            StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired { retirement, .. } => {
+                matches_active_prefix && (self.is_active() || self.matches_retirement(retirement))
+            }
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "pending row validation awaits the physical-evidence activation boundary"
+    )]
+    fn matches_retirement(&self, retirement: &StorageWorkspaceRetirementV1) -> bool {
+        matches!(
+            self.lifecycle,
+            WorkspaceLifecycleV1::Retired {
+                operation_id,
+                request_catalog,
+                result_catalog,
+                result_digest,
+            } if operation_id == retirement.operation_id
+                && request_catalog == CatalogBindingWire::from(retirement.request_catalog)
+                && result_catalog == CatalogBindingWire::from(retirement.result_catalog)
+                && result_digest == *retirement.result_digest.as_bytes()
+                && self.workspace_handle == retirement.workspace_handle
+                && self.dataset_guid == retirement.dataset_guid
+        )
     }
 
     fn inventory_record(
