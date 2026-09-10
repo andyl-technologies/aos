@@ -19,6 +19,7 @@ in
         pkgs.coreutils
         pkgs.garage
         pkgs.gawk
+        pkgs.grep
         pkgs.rust
         pkgs.sed
       ]
@@ -73,6 +74,20 @@ in
 
           # The fake service is the deterministic emulator for multipart,
           # pagination, versioned ref CAS, failure, and cleanup semantics.
+          s3_listing=$(cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-cas \
+            --lib content_store::s3 \
+            -- --list)
+          for expected_test in \
+            content_store::s3::tests::s3_blob_leaf_passes_the_shared_persistent_conformance_suite \
+            content_store::s3_ref::tests::s3_ref_leaf_passes_the_shared_persistent_conformance_suite
+          do
+            printf '%s\n' "$s3_listing" | grep -Fqx "$expected_test: test"
+          done
           cargo test \
             --frozen \
             --offline \
