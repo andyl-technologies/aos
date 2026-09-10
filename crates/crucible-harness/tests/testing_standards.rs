@@ -53,6 +53,9 @@ enum TestShape {
     CampaignContinuity,
     CampaignModel,
     CampaignStatistics,
+    BranchPointModel,
+    LazyFrontier,
+    CampaignComponentContract,
     AttemptIdempotence,
     CampaignMutationScaling,
     CampaignStoreEquivalence,
@@ -153,6 +156,27 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         owner_packages: &["crucible-campaign"],
         layers: &[Layer::L3],
         shape: TestShape::CampaignStatistics,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:branch-point-model",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::BranchPointModel,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:lazy-frontier",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::LazyFrontier,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-component-contract",
+        owner_packages: &["crucible-daemon"],
+        layers: &[Layer::L4],
+        shape: TestShape::CampaignComponentContract,
         backend: TestBackend::InProcess,
     },
     GateTestingStandard {
@@ -391,6 +415,8 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
         gates: &[
             "gate:campaign-model",
             "gate:campaign-statistics",
+            "gate:branch-point-model",
+            "gate:lazy-frontier",
             "gate:typed-choice",
         ],
     },
@@ -408,7 +434,10 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     },
     CrateTestingOwnership {
         package: "crucible-daemon",
-        gates: &["gate:control-responsive"],
+        gates: &[
+            "gate:control-responsive",
+            "gate:campaign-component-contract",
+        ],
     },
     CrateTestingOwnership {
         package: "crucible-cli",

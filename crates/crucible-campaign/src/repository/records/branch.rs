@@ -415,10 +415,19 @@ impl CampaignRepository {
             {
                 return Ok(());
             }
-            _ if policy.mode() == CampaignMode::Statistical => {
-                return Err(integrity("statistical-policy-requires-statistical-request"));
+            CandidateSource::StatisticalSmc(_) => {
+                return if policy.mode() == CampaignMode::Statistical {
+                    Err(integrity("statistical-policy-requires-statistical-request"))
+                } else {
+                    Ok(())
+                };
             }
-            _ => return Ok(()),
+            // Interventions remain useful campaign history. Only typed
+            // statistical sources participate in the pinned sampling design.
+            CandidateSource::Finite(_)
+            | CandidateSource::ModeledFinite(_)
+            | CandidateSource::ModeledGenerated(_)
+            | CandidateSource::Generated(_) => return Ok(()),
         };
         if policy.mode() != CampaignMode::Statistical {
             return Err(integrity("statistical-request-requires-statistical-policy"));
