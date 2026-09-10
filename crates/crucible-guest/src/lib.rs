@@ -205,6 +205,25 @@ impl GuestCommand {
         }
     }
 
+    /// Attaches structured details to an assertion command.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuestEmitterError::Usage`] when this command is not an
+    /// assertion marker.
+    pub fn with_assertion_details(
+        mut self,
+        details: Vec<WhiteboxMarkerDetail>,
+    ) -> Result<Self, GuestEmitterError> {
+        let WhiteboxMarkerPayload::Assertion(assertion) = &mut self.payload else {
+            return Err(GuestEmitterError::Usage {
+                message: "structured assertion details require an assertion command".to_owned(),
+            });
+        };
+        assertion.details = details;
+        Ok(self)
+    }
+
     /// Builds a semantic coverage marker.
     #[must_use]
     pub fn coverage(point: impl Into<String>) -> Self {

@@ -193,9 +193,9 @@ pub async fn run(
     // Sysroot-lock check for upgraded packages.
     if !matches!(ignore_lock, IgnoreSysrootLock::All) {
         if let Some((sysroot_refs, sys_name, sys_version)) =
-            sysroot_lock::get_sysroot_references(config)
+            sysroot_lock::get_sysroot_references(config)?
         {
-            let lookup = sysroot_lock::build_registry_lookup(config);
+            let lookup = sysroot_lock::build_registry_lookup(config)?;
             for (_reg_name, closure_metas) in &upgrade_closures {
                 let pkg_refs: Vec<String> = closure_metas
                     .iter()
@@ -744,7 +744,7 @@ fn upgrade_candidate_json(candidate: &UpgradeCandidate) -> serde_json::Value {
 /// Load registries from the config's cache directory.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
+    RegistrySet::load_for_package_operations(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Prompt for confirmation. Returns `Err(UserCancelled)` on "n".

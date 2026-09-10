@@ -24,6 +24,7 @@
   symbols ? [],
   loader ? null,
   inspector,
+  graphFixture ? (pkgs.buildPackages or pkgs).aos.testSupport,
 }: let
   buildPkgs = pkgs.buildPackages or pkgs;
   localKeyPattern = "[A-Za-z0-9._-]+";
@@ -161,6 +162,7 @@ in
         buildPkgs.nix
         buildPkgs.sed
         buildPkgs.strace
+        graphFixture
         inspector
       ];
       dontStrip = true;
@@ -303,7 +305,12 @@ in
             }
 
             provider_content=$(jq -er .provider.artifact.content "$out/evidence.json")
+            ${graphFixture}/bin/aos-release-fleet-fixture \
+              artifact-consumption-bundle \
+              "$out/evidence.json" \
+              "$out/inspection-bundle.json"
             ${inspector}/bin/aos ability artifact-consumption "$out/evidence.json" \
+              --bundle "$out/inspection-bundle.json" \
               --consumer ${lib.escapeShellArg "${builtins.toString consumer}${consumerPath}"} \
               --provider-content "$provider_content" \
               --format json > "$out/explanation.json"
@@ -313,6 +320,22 @@ in
               '.evidence_schema == "aos.artifact-consumption.evidence/v1"
                and (.consumer.artifact.store_path + .consumer.path) == $consumer
                and .provider.artifact.content == $provider_content
+               and .ability_graph.consumer == .consumer.artifact
+               and .ability_graph.provider == .provider.artifact
+               and .ability_graph.mechanism == .mechanism
+               and (.ability_graph.edge | test("^sha256:[0-9a-f]{64}$"))
+               and (.ability_graph.bundle | test("^sha256:[0-9a-f]{64}$"))
+               and (.ability_graph.binding_plan | test("^sha256:[0-9a-f]{64}$"))
+               and (.ability_graph.effect_plan | test("^sha256:[0-9a-f]{64}$"))
+               and (if .mechanism == "build-tool-execution"
+                    then .ability_graph.phase == "build"
+                      and .ability_graph.retention == "forbidden"
+                    elif .mechanism == "elf-startup-linkage"
+                    then .ability_graph.phase == "runtime-startup"
+                      and .ability_graph.retention == "required"
+                    else .ability_graph.phase == "runtime-operation"
+                      and .ability_graph.retention == "required"
+                    end)
                and (if .mechanism == "elf-startup-linkage"
                     then .provider_elf_compatible and .loader_elf_compatible
                       and .search_resolves_exact_provider

@@ -26,8 +26,9 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, BindingPlanDocument, DesiredStateDocument, EffectPlanDocument,
-    EnvironmentDocument, InterfaceDocument, PackageDocument, PlanId, RequiredFeature,
+    ABILITY_LIMITS_V1, ArtifactConsumptionEvidenceDocument, BindingPlanDocument,
+    DesiredStateDocument, EffectPlanDocument, EnvironmentDocument, InterfaceDocument,
+    PackageDocument, PlanId, RequiredFeature,
 };
 use aos_ability_validate::{BindingValidationInputs, CheckedEffectPlan, ValidationContext};
 use aos_contract::Sha256Digest;
@@ -58,6 +59,8 @@ pub struct InspectionBundle {
     packages: Vec<PackageDocument>,
     binding_document: BindingPlanDocument,
     effect_document: EffectPlanDocument,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    artifact_consumption_edges: Vec<ArtifactConsumptionEvidenceDocument>,
 }
 
 /// Carries a bundle whose complete graph has passed common semantic validation.
@@ -99,6 +102,15 @@ pub enum InspectionBundleError {
     /// A claimed binding or effect-plan identity differs after validation.
     #[error("inspection bundle plan identity is inconsistent")]
     PlanIdentityMismatch,
+    /// Realized artifact-consumption edges are invalid or noncanonical.
+    #[error("inspection bundle artifact-consumption edges are invalid")]
+    ArtifactConsumptionEdges,
+    /// A realized artifact-consumption edge failed semantic validation.
+    #[error("inspection bundle artifact-consumption edge failed validation: {0}")]
+    ArtifactConsumption(#[source] crate::artifact_consumption::ArtifactConsumptionEvidenceError),
+    /// A realized artifact-consumption edge names an artifact outside the checked plan.
+    #[error("inspection bundle artifact-consumption edge endpoint is absent from the checked plan")]
+    ArtifactConsumptionEdgeEndpoint,
 }
 
 impl InspectionBundle {
@@ -121,6 +133,7 @@ impl InspectionBundle {
             packages: binding.packages().to_vec(),
             binding_document: binding.document().clone(),
             effect_document: plan.document().clone(),
+            artifact_consumption_edges: Vec::new(),
         };
         bundle.canonical_bytes()?;
         Ok(bundle)
@@ -142,6 +155,27 @@ impl InspectionBundle {
     #[must_use]
     pub const fn effect_document(&self) -> &EffectPlanDocument {
         &self.effect_document
+    }
+
+    /// Attaches canonical realized artifact-consumption edges to this bundle.
+    ///
+    /// Each edge remains a complete evidence document so its exact file
+    /// endpoints, mechanism, contract, observation, and retention semantics
+    /// are committed by the bundle digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an edge fails semantic validation, edge identities
+    /// are duplicated, or the resulting bundle cannot be encoded within bounds.
+    pub fn with_artifact_consumption_edges(
+        mut self,
+        mut edges: Vec<ArtifactConsumptionEvidenceDocument>,
+    ) -> Result<Self, InspectionBundleError> {
+        edges.sort_by(|left, right| left.id.cmp(&right.id));
+        validate_artifact_consumption_edges(&edges)?;
+        self.artifact_consumption_edges = edges;
+        self.canonical_bytes()?;
+        Ok(self)
     }
 
     /// Encodes the bundle in canonical bounded JSON.
@@ -222,6 +256,7 @@ impl InspectionBundle {
         if expected_digest.is_some_and(|expected| expected != digest) {
             return Err(InspectionBundleError::CommitmentMismatch);
         }
+        validate_artifact_consumption_edges(&self.artifact_consumption_edges)?;
 
         // Version 1 has no optional feature semantics. A later inspector must
         // explicitly add support rather than trusting a bundle-authored list.
@@ -248,6 +283,7 @@ impl InspectionBundle {
         if plan.id() != self.effect_plan {
             return Err(InspectionBundleError::PlanIdentityMismatch);
         }
+        validate_artifact_consumption_edge_endpoints(&plan, &self.artifact_consumption_edges)?;
 
         Ok(CheckedInspectionBundle {
             bundle: self,
@@ -282,6 +318,42 @@ impl CheckedInspectionBundle {
     pub const fn plan(&self) -> &CheckedEffectPlan {
         &self.plan
     }
+
+    /// Returns semantically checked realized artifact-consumption edges.
+    #[must_use]
+    pub fn artifact_consumption_edges(&self) -> &[ArtifactConsumptionEvidenceDocument] {
+        &self.bundle.artifact_consumption_edges
+    }
+}
+
+fn validate_artifact_consumption_edges(
+    edges: &[ArtifactConsumptionEvidenceDocument],
+) -> Result<(), InspectionBundleError> {
+    if u64::try_from(edges.len()).unwrap_or(u64::MAX) > ABILITY_LIMITS_V1.max_collection_items
+        || !edges.windows(2).all(|pair| pair[0].id < pair[1].id)
+    {
+        return Err(InspectionBundleError::ArtifactConsumptionEdges);
+    }
+    for edge in edges {
+        crate::artifact_consumption::CheckedArtifactConsumptionEvidence::check(edge.clone())
+            .map_err(InspectionBundleError::ArtifactConsumption)?;
+    }
+    Ok(())
+}
+
+fn validate_artifact_consumption_edge_endpoints(
+    plan: &CheckedEffectPlan,
+    edges: &[ArtifactConsumptionEvidenceDocument],
+) -> Result<(), InspectionBundleError> {
+    let artifacts = &plan.document().artifacts;
+    for edge in edges {
+        if !artifacts.contains(&edge.consumer.artifact)
+            || !artifacts.contains(&edge.provider.artifact)
+        {
+            return Err(InspectionBundleError::ArtifactConsumptionEdgeEndpoint);
+        }
+    }
+    Ok(())
 }
 
 struct BoundedWriter {

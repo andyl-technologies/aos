@@ -79,7 +79,11 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
     // 2. Load registries and resolve the exact installed package entry for
     // its NAR hash. The latest registry candidate may differ after rollback.
     let enabled = config.enabled_registries();
-    let reg_set = RegistrySet::load(&config.cache_path(), &enabled, &native_platform())?;
+    let reg_set = RegistrySet::load_for_package_operations(
+        &config.cache_path(),
+        &enabled,
+        &native_platform(),
+    )?;
     let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
 
     // Prefer the signed store/ graph: a path may have multiple blessed NARs,
@@ -265,7 +269,11 @@ pub async fn run_source(
     printer: &Printer,
 ) -> Result<()> {
     let enabled = config.enabled_registries();
-    let reg_set = RegistrySet::load(&config.cache_path(), &enabled, &native_platform())?;
+    let reg_set = RegistrySet::load_for_package_operations(
+        &config.cache_path(),
+        &enabled,
+        &native_platform(),
+    )?;
 
     let mut installed_store_path = None;
     let (registry_name, source_drv, source_nar_hash, expected_hash) = if verify_source {

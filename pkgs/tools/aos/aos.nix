@@ -250,8 +250,8 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos --features release-fleet-fixture"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --features release-fleet-fixture ${applicationTestFlags}"
     ];
     inherit cargoEnv;
     buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
@@ -272,7 +272,7 @@ in
       apr.disallowedReferences = aprForbiddenRuntimeDeps;
     };
 
-    cargoFlags = "-p aos";
+    cargoFlags = "-p aos --features release-fleet-fixture";
 
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";

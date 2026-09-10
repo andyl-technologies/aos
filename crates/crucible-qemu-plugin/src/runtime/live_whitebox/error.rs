@@ -82,8 +82,10 @@ pub enum LiveWhiteboxError {
         /// Callback vCPU.
         vcpu_index: usize,
     },
-    /// The x86 payload or port register was absent.
-    #[error("required rax/rcx/rdx registers are unavailable for live white-box vCPU {vcpu_index}")]
+    /// The architecture-specific payload pointer or length register was absent.
+    #[error(
+        "required payload register pair (rax/rcx or eax/ecx on x86; x0/x1 on aarch64) is unavailable for live white-box vCPU {vcpu_index}"
+    )]
     RequiredRegistersUnavailable {
         /// Callback vCPU.
         vcpu_index: usize,

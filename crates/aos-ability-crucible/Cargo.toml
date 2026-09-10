@@ -1,0 +1,20 @@
+[package]
+name = "aos-ability-crucible"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+aos-ability-model = { workspace = true }
+aos-contract = { workspace = true }
+crucible-guest = { path = "../crucible-guest" }
+rustix = { workspace = true, features = ["net"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+crucible = { path = "../crucible", features = ["test-support"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

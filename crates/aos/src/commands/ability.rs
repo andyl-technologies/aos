@@ -122,12 +122,31 @@ fn artifact_consumption(args: &AbilityArtifactConsumptionArgs, printer: &Printer
         .map(Sha256Digest::parse)
         .transpose()
         .context("parsing --provider-content")?;
-    let explanation = checked
-        .query(&ArtifactConsumptionQuery::new(
-            args.consumer.clone(),
-            provider_content,
-        ))
-        .context("querying realized artifact-consumption evidence")?;
+    let query = ArtifactConsumptionQuery::new(args.consumer.clone(), provider_content);
+    let explanation = if let Some(bundle_path) = &args.bundle {
+        let bundle_bytes = read_bounded_file(
+            bundle_path,
+            INSPECTION_BUNDLE_MAX_BYTES as u64,
+            "ability inspection bundle",
+        )?;
+        let expected_digest = args
+            .expected_bundle_digest
+            .as_deref()
+            .map(Sha256Digest::parse)
+            .transpose()
+            .context("parsing --expected-bundle-digest")?;
+        let bundle = InspectionBundle::decode(&bundle_bytes)
+            .context("decoding artifact-consumption inspection bundle")?
+            .check(expected_digest)
+            .context("checking artifact-consumption inspection bundle")?;
+        checked
+            .query_with_bundle(&query, &bundle)
+            .context("joining realized artifact consumption to the checked ability graph")?
+    } else {
+        checked
+            .query(&query)
+            .context("querying realized artifact-consumption evidence")?
+    };
     let format = args.format.unwrap_or_else(|| {
         if printer.mode() == OutputMode::Json {
             ArtifactConsumptionRenderFormat::Json

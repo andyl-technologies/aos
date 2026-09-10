@@ -1344,6 +1344,7 @@
     );
   localMaintenanceRoots = [
     "ability-package-smoke"
+    "aos-ability-crucible"
     "aos"
     "aos-agent-rpc"
     "aos-boot-identity"

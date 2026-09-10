@@ -283,9 +283,9 @@ async fn run_inner(
     // Sysroot-lock check: verify package closures don't diverge from sysroot.
     if !matches!(ignore_lock, IgnoreSysrootLock::All) {
         if let Some((sysroot_refs, sys_name, sys_version)) =
-            sysroot_lock::get_sysroot_references(config)
+            sysroot_lock::get_sysroot_references(config)?
         {
-            let lookup = sysroot_lock::build_registry_lookup(config);
+            let lookup = sysroot_lock::build_registry_lookup(config)?;
             for closure in &closures {
                 let pkg_refs: Vec<String> = closure
                     .closure
@@ -751,7 +751,7 @@ fn install_package_json(registry: &str, meta: &PackageMeta, explicit: bool) -> s
 /// Load registries from the config's cache directory.
 pub(crate) fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
+    RegistrySet::load_for_package_operations(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Collect authenticated secondary artifacts needed by the resolved closure.

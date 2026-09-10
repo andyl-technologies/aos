@@ -4,6 +4,7 @@
 //! uses fixed private keys and must never be used outside an isolated test.
 
 mod ability_activation_fixture;
+mod artifact_consumption_fixture;
 mod initrd_contract_fixture;
 mod kubernetes_activation_fixture;
 
@@ -85,6 +86,9 @@ async fn main() -> Result<()> {
         Some("prepare") => prepare(&arguments[1..]),
         Some("ability-registry") => ability_registry(&arguments[1..]).await,
         Some("ability-activation") => ability_activation_fixture::generate(&arguments[1..]),
+        Some("artifact-consumption-bundle") => {
+            artifact_consumption_fixture::generate(&arguments[1..])
+        }
         Some("kubernetes-activation") => kubernetes_activation_fixture::generate(&arguments[1..]),
         Some("ability-authority-provision") => {
             ability_activation_fixture::provision_authority(&arguments[1..])

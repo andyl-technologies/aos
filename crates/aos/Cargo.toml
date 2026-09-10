@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+# This feature exposes validator test support only to the fleet-fixture source
+# and target. Nix enables it while building that target for `testSupport`.
+release-fleet-fixture = ["aos-ability-validate/test-support"]
+
 [[bin]]
 name = "aos"
 path = "src/main.rs"
@@ -23,6 +28,7 @@ path = "src/package_runtime.rs"
 [[bin]]
 name = "aos-release-fleet-fixture"
 path = "tests/support/release_fleet_fixture.rs"
+required-features = ["release-fleet-fixture"]
 
 [dependencies]
 rustix = { workspace = true, features = ["process"] }

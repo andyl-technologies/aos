@@ -10,6 +10,7 @@ members = [
     "aos-ability-plan",
     "aos-ability-runtime",
     "aos-ability-inspect",
+    "aos-ability-crucible",
     "aos-maintain",
     "aos-core",
     "aos-boot-identity",
@@ -211,6 +212,7 @@ aos-ability-validate = { path = "aos-ability-validate" }
 aos-ability-plan = { path = "aos-ability-plan" }
 aos-ability-runtime = { path = "aos-ability-runtime" }
 aos-ability-inspect = { path = "aos-ability-inspect" }
+aos-ability-crucible = { path = "aos-ability-crucible" }
 aos-maintain = { path = "aos-maintain" }
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }

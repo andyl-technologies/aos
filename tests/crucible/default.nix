@@ -908,6 +908,10 @@ in rec {
       attrPath = "checks.crucible.phase4.guestMarkerAssertions";
       taskIds = ["T-ASRT-6"];
     };
+    aosAbilityBaselineAdapter = import ./phase4-aos-ability-baseline-adapter.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.aosAbilityBaselineAdapter";
+    };
     offlineAssertionChecker = import ./phase4-offline-assertion-checker.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.offlineAssertionChecker";
