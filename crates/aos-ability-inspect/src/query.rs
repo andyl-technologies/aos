@@ -3,6 +3,11 @@
 //! Query documents are canonical portable JSON so a terminal, editor, or web
 //! frontend can request the same finite neighborhood:
 //!
+//! The optional `after` field is an exclusive cursor over canonical adjacent
+//! node identity order. It is valid only for a one-root query with
+//! `max_depth: 1` and room for at least one neighbor; decoders reject it in
+//! every other query shape.
+//!
 //! ```json
 //! {
 //!   "schema": "aos.ability.inspection-query/v1",
@@ -66,6 +71,8 @@ pub struct GraphQuery {
     required_features: Vec<RequiredFeature>,
     roots: Vec<NodeKey>,
     direction: Direction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after: Option<NodeKey>,
     max_depth: usize,
     max_nodes: usize,
 }
@@ -84,6 +91,8 @@ pub struct GraphSlice {
     projection: Option<ProjectionKind>,
     roots: Vec<NodeKey>,
     direction: Direction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after: Option<NodeKey>,
     max_depth: usize,
     max_nodes: usize,
     truncated: bool,
@@ -150,6 +159,12 @@ pub enum GraphQueryError {
     /// Roots are not in strict canonical typed-identity order.
     #[error("inspection graph query roots are not canonically ordered and unique")]
     NoncanonicalRoots,
+    /// A neighbor cursor was supplied without a single-root, one-hop shape or
+    /// room to retain at least one neighbor.
+    #[error(
+        "an inspection graph query neighbor cursor requires exactly one root, depth one, and a node budget of at least two"
+    )]
+    InvalidNeighborCursor,
     /// The query schema discriminator is unsupported.
     #[error("the inspection graph query has an unsupported schema discriminator")]
     UnsupportedSchema,
@@ -176,6 +191,7 @@ impl GraphQuery {
             required_features: Vec::new(),
             roots,
             direction: Direction::Outgoing,
+            after: None,
             max_depth,
             max_nodes,
         }
@@ -185,6 +201,17 @@ impl GraphQuery {
     #[must_use]
     pub const fn with_direction(mut self, direction: Direction) -> Self {
         self.direction = direction;
+        self
+    }
+
+    /// Continues a single-root, one-hop neighbor query after an exclusive key.
+    ///
+    /// The cursor applies to the canonical order of neighbors admitted by the
+    /// selected [`Direction`]. Validation rejects cursors on every other query
+    /// shape or a node budget smaller than two.
+    #[must_use]
+    pub fn with_after(mut self, after: NodeKey) -> Self {
+        self.after = Some(after);
         self
     }
 
@@ -245,6 +272,12 @@ impl GraphQuery {
         self.direction
     }
 
+    /// Returns the exclusive neighbor cursor for a paginated one-hop query.
+    #[must_use]
+    pub const fn after(&self) -> Option<&NodeKey> {
+        self.after.as_ref()
+    }
+
     /// Returns the maximum traversed edge distance from a root.
     #[must_use]
     pub const fn max_depth(&self) -> usize {
@@ -297,6 +330,11 @@ impl GraphQuery {
                 limit: self.max_nodes,
             });
         }
+        if self.after.is_some()
+            && (self.roots.len() != 1 || self.max_depth != 1 || self.max_nodes < 2)
+        {
+            return Err(GraphQueryError::InvalidNeighborCursor);
+        }
         Ok(())
     }
 }
@@ -330,6 +368,12 @@ impl GraphSlice {
     #[must_use]
     pub const fn projection(&self) -> Option<ProjectionKind> {
         self.projection
+    }
+
+    /// Returns the exclusive neighbor cursor used to produce this slice.
+    #[must_use]
+    pub const fn after(&self) -> Option<&NodeKey> {
+        self.after.as_ref()
     }
 
     /// Reports whether a reachable node was omitted by a query bound.
@@ -429,10 +473,15 @@ fn evaluate_query(
     let mut truncated = false;
 
     for depth in 0..=query.max_depth {
-        let candidates = neighbors(source.edges, &frontier, query.direction)
+        let mut candidates = neighbors(source.edges, &frontier, query.direction)
             .difference(&selected)
             .cloned()
             .collect::<BTreeSet<_>>();
+        if depth == 0
+            && let Some(after) = query.after()
+        {
+            candidates.retain(|candidate| candidate > after);
+        }
         if candidates.is_empty() {
             break;
         }
@@ -448,6 +497,9 @@ fn evaluate_query(
         frontier = candidates.into_iter().take(remaining).collect();
         selected.extend(frontier.iter().cloned());
         if frontier.is_empty() {
+            break;
+        }
+        if query.after.is_some() {
             break;
         }
     }
@@ -473,6 +525,7 @@ fn evaluate_query(
         projection: source.projection,
         roots: query.roots.clone(),
         direction: query.direction,
+        after: query.after.clone(),
         max_depth: query.max_depth,
         max_nodes: query.max_nodes,
         truncated,
@@ -533,6 +586,7 @@ fn query_limits() -> JsonLimits {
 
 #[cfg(test)]
 mod tests {
+    use aos_ability_model::{AbilityActivationMode, LocalKey};
     use aos_contract::Sha256Digest;
 
     use super::*;
@@ -545,6 +599,7 @@ mod tests {
             required_features: Vec::new(),
             roots: vec![root; INSPECTION_QUERY_MAX_ROOTS + 1],
             direction: Direction::Outgoing,
+            after: None,
             max_depth: 1,
             max_nodes: INSPECTION_QUERY_MAX_NODES,
         };
@@ -556,6 +611,148 @@ mod tests {
                 limit: INSPECTION_QUERY_MAX_ROOTS,
             }) if actual == INSPECTION_QUERY_MAX_ROOTS + 1
         ));
+    }
+
+    #[test]
+    fn neighbor_cursor_pages_one_direction_and_terminates_at_exact_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = package_key("cursor root");
+        let mut outgoing = (0..5)
+            .map(|index| package_key(&format!("outgoing {index}")))
+            .collect::<Vec<_>>();
+        let mut incoming = (0..3)
+            .map(|index| package_key(&format!("incoming {index}")))
+            .collect::<Vec<_>>();
+        outgoing.sort();
+        incoming.sort();
+
+        let mut keys = vec![root.clone()];
+        keys.extend(outgoing.iter().cloned());
+        keys.extend(incoming.iter().cloned());
+        let nodes = keys.iter().map(package_node).collect::<Vec<_>>();
+        let mut edges = outgoing
+            .iter()
+            .map(|neighbor| InspectionEdge {
+                from: root.clone(),
+                to: neighbor.clone(),
+                relation: crate::InspectionRelation::Retention,
+            })
+            .collect::<Vec<_>>();
+        edges.extend(incoming.iter().map(|neighbor| InspectionEdge {
+            from: neighbor.clone(),
+            to: root.clone(),
+            relation: crate::InspectionRelation::Retention,
+        }));
+        let plan = PlanId(Sha256Digest::of_bytes("cursor plan"));
+        let anchor = ViewAnchor::LocallyChecked;
+        let first_cursor = outgoing[1].clone();
+        let page = evaluate_query(
+            QuerySource {
+                anchor: &anchor,
+                plan,
+                binding_plan: plan,
+                executable: true,
+                projection: None,
+                nodes: &nodes,
+                edges: &edges,
+            },
+            &GraphQuery::new([root.clone()], 1, 3)
+                .with_direction(Direction::Outgoing)
+                .with_after(first_cursor.clone()),
+        )?;
+        assert_eq!(page.after(), Some(&first_cursor));
+        let page_keys = page
+            .nodes()
+            .iter()
+            .map(InspectionNode::key)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            page_keys,
+            BTreeSet::from([root.clone(), outgoing[2].clone(), outgoing[3].clone()])
+        );
+        assert!(page.is_truncated());
+
+        let exact = evaluate_query(
+            QuerySource {
+                anchor: &anchor,
+                plan,
+                binding_plan: plan,
+                executable: true,
+                projection: None,
+                nodes: &nodes,
+                edges: &edges,
+            },
+            &GraphQuery::new([root.clone()], 1, 3)
+                .with_direction(Direction::Outgoing)
+                .with_after(outgoing[2].clone()),
+        )?;
+        assert_eq!(exact.nodes().len(), 3);
+        assert!(!exact.is_truncated());
+
+        let incoming_page = evaluate_query(
+            QuerySource {
+                anchor: &anchor,
+                plan,
+                binding_plan: plan,
+                executable: true,
+                projection: None,
+                nodes: &nodes,
+                edges: &edges,
+            },
+            &GraphQuery::new([root.clone()], 1, 8)
+                .with_direction(Direction::Incoming)
+                .with_after(incoming[0].clone()),
+        )?;
+        let incoming_keys = incoming_page
+            .nodes()
+            .iter()
+            .map(InspectionNode::key)
+            .collect::<BTreeSet<_>>();
+        assert!(incoming[1..].iter().all(|key| incoming_keys.contains(key)));
+        assert!(outgoing.iter().all(|key| !incoming_keys.contains(key)));
+        Ok(())
+    }
+
+    #[test]
+    fn neighbor_cursor_rejects_unsupported_query_shapes() {
+        let root = package_key("cursor shape root");
+        let other = package_key("cursor shape other");
+
+        assert_eq!(
+            GraphQuery::new([root.clone()], 2, 8)
+                .with_after(other.clone())
+                .canonical_bytes(),
+            Err(GraphQueryError::InvalidNeighborCursor)
+        );
+        assert_eq!(
+            GraphQuery::new([root, other.clone()], 1, 8)
+                .with_after(other.clone())
+                .canonical_bytes(),
+            Err(GraphQueryError::InvalidNeighborCursor)
+        );
+        assert_eq!(
+            GraphQuery::new([other.clone()], 1, 1)
+                .with_after(other)
+                .canonical_bytes(),
+            Err(GraphQueryError::InvalidNeighborCursor)
+        );
+    }
+
+    fn package_key(seed: &str) -> NodeKey {
+        NodeKey::Package(Sha256Digest::of_bytes(seed))
+    }
+
+    fn package_node(key: &NodeKey) -> InspectionNode {
+        let NodeKey::Package(digest) = key else {
+            panic!("test package identity must remain package-typed");
+        };
+        InspectionNode::Package {
+            digest: *digest,
+            name: LocalKey::new("cursor-package")
+                .unwrap_or_else(|error| panic!("static package key is invalid: {error}")),
+            version: "1.0.0".to_string(),
+            activation_mode: AbilityActivationMode::StructuredEffects,
+        }
     }
 }
 

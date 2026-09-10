@@ -1,4 +1,4 @@
-//! Offline reconstruction and rendering of checked ability plans.
+//! Checked ability reconstruction, rendering, and loopback operator browsing.
 
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -31,23 +31,25 @@ use crate::cli::{
     AbilityRenderFormat, ArtifactConsumptionRenderFormat,
 };
 
-/// Runs one offline ability inspection command.
+mod browser;
+
+/// Runs one checked ability inspection or operator-browser command.
 ///
 /// # Errors
 ///
 /// Returns an error if the input cannot be read within its bound, its canonical
 /// bundle or external digest is invalid, semantic revalidation fails, or the
 /// checked view cannot be rendered.
-pub fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
+pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
     match command {
         AbilityCommand::Inspect(args) => inspect(args, printer),
         AbilityCommand::ArtifactConsumption(args) => artifact_consumption(args, printer),
         AbilityCommand::Diagnostic(args) => diagnostic(args, printer),
-        AbilityCommand::Operator(args) => operator(args, printer),
+        AbilityCommand::Operator(args) => operator(args, printer).await,
     }
 }
 
-fn operator(args: &AbilityOperatorArgs, printer: &Printer) -> Result<()> {
+async fn operator(args: &AbilityOperatorArgs, printer: &Printer) -> Result<()> {
     let query_bytes = read_bounded_file(
         &args.query,
         u64::try_from(OPERATOR_QUERY_MAX_BYTES)
@@ -86,6 +88,12 @@ fn operator(args: &AbilityOperatorArgs, printer: &Printer) -> Result<()> {
         .context("checking ability inspection bundle semantics")?;
     let view = InspectionView::from_bundle(&checked)
         .context("projecting checked ability inspection view")?;
+
+    if args.serve {
+        let listen = args.listen.unwrap_or_else(|| ([127, 0, 0, 1], 0).into());
+        return browser::serve(view, query, observation, listen, printer).await;
+    }
+
     let operator = OperatorView::from_view(&view, &query, observation.as_ref())
         .context("building bounded ability operator view")?;
     let bytes = operator.canonical_bytes()?;

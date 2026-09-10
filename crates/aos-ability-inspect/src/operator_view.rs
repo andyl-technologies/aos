@@ -717,6 +717,27 @@ pub struct OperatorGroup {
     pub members: Vec<NodeKey>,
 }
 
+/// Carries operator statuses and visual groups for one assembled graph slice.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperatorSliceMetadata {
+    statuses: Vec<OperatorNodeStatus>,
+    groups: Vec<OperatorGroup>,
+}
+
+impl OperatorSliceMetadata {
+    /// Returns explicit plan and observed state for every supplied node.
+    #[must_use]
+    pub fn statuses(&self) -> &[OperatorNodeStatus] {
+        &self.statuses
+    }
+
+    /// Returns environment, provider, and transaction groups for supplied nodes.
+    #[must_use]
+    pub fn groups(&self) -> &[OperatorGroup] {
+        &self.groups
+    }
+}
+
 /// Describes graph relationships omitted by the current bounded slice.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -727,7 +748,9 @@ pub struct ExpansionHint {
     pub hidden_incoming: usize,
     /// Counts hidden edges directed out of the boundary node.
     pub hidden_outgoing: usize,
-    /// Supplies the next bounded shared-model query for this boundary.
+    /// Supplies the next direction-specific bounded query for this boundary.
+    ///
+    /// Its optional exclusive cursor advances through canonical neighbor order.
     pub query: GraphQuery,
 }
 
@@ -788,6 +811,15 @@ pub enum OperatorViewError {
     /// A generation comparison names an environment absent from the desired graph.
     #[error("operator generation observation references an unknown desired environment")]
     UnknownGenerationEnvironment(Box<EnvironmentId>),
+    /// An assembled slice contains a node absent from the selected projection.
+    #[error("operator slice contains an unknown or altered projection node")]
+    UnknownSliceNode(Box<NodeKey>),
+    /// An assembled slice contains an edge absent from the selected projection.
+    #[error("operator slice contains an unknown projection edge")]
+    UnknownSliceEdge(Box<InspectionEdge>),
+    /// An assembled slice edge references a node outside that slice.
+    #[error("operator slice contains an edge with a hidden endpoint")]
+    DanglingSliceEdge(Box<InspectionEdge>),
     /// A failing-request focus lacks either a plan obligation or failure evidence.
     #[error("operator failing-request focus is not supported by retained failure evidence")]
     FocusedRequestNotFailed(Box<RequestId>),
@@ -825,26 +857,14 @@ impl OperatorView {
         validate_observation(view, observation)?;
         validate_focus(view, query.focus(), observation)?;
 
-        let observed_states = observation
-            .map(|value| {
-                value
-                    .nodes()
-                    .iter()
-                    .map(|node| (node.node.clone(), node.state))
-                    .collect::<BTreeMap<_, _>>()
-            })
-            .unwrap_or_default();
-        let statuses = slice
+        let metadata =
+            operator_slice_metadata(&projection, slice.nodes(), slice.edges(), observation)?;
+        let visible = slice
             .nodes()
             .iter()
-            .map(|node| OperatorNodeStatus {
-                node: node.key(),
-                plan_state: plan_state(node),
-                observed_state: observed_states.get(&node.key()).copied().map(Into::into),
-            })
-            .collect::<Vec<_>>();
-        let groups = operator_groups(&slice, observation);
-        let expansion = expansion_hints(&projection, &slice, query.graph().max_nodes());
+            .map(InspectionNode::key)
+            .collect::<BTreeSet<_>>();
+        let expansion = projection.continuation_hints(&visible, query.graph().max_nodes())?;
         let generations = observation
             .map(|value| value.generations().to_vec())
             .unwrap_or_default();
@@ -862,8 +882,8 @@ impl OperatorView {
             focus: query.focus().clone(),
             projection: query.projection(),
             slice,
-            statuses,
-            groups,
+            statuses: metadata.statuses,
+            groups: metadata.groups,
             expansion,
             observation,
             generations,
@@ -958,6 +978,146 @@ impl OperatorView {
     pub fn generations(&self) -> &[GenerationObservation] {
         &self.generations
     }
+}
+
+impl InspectionProjection {
+    /// Derives statuses and visual groups for an assembled slice of this projection.
+    ///
+    /// This supports clients that merge multiple bounded query results. Every
+    /// supplied node and edge must be an exact member of this projection, and
+    /// every edge endpoint must be present in `nodes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the observation identifies another plan, fails its
+    /// structural contract, or if a supplied node or edge is not an exact,
+    /// internally closed subset of this projection.
+    pub fn operator_slice_metadata(
+        &self,
+        nodes: &[InspectionNode],
+        edges: &[InspectionEdge],
+        observation: Option<&OperatorObservation>,
+    ) -> Result<OperatorSliceMetadata, OperatorViewError> {
+        if let Some(observation) = observation {
+            observation.validate_structure()?;
+            if observation.plan() != self.plan() {
+                return Err(OperatorViewError::PlanMismatch);
+            }
+        }
+        operator_slice_metadata(self, nodes, edges, observation)
+    }
+
+    /// Builds direction-specific continuation queries for visible boundaries.
+    ///
+    /// Each returned cursor follows the longest canonical adjacency prefix
+    /// already present in `visible`. Recomputing hints after a page is merged
+    /// therefore advances through every neighbor without skipping a gap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `query_node_limit` cannot form a valid shared graph
+    /// query under the version-1 limits.
+    pub fn continuation_hints(
+        &self,
+        visible: &BTreeSet<NodeKey>,
+        query_node_limit: usize,
+    ) -> Result<Vec<ExpansionHint>, GraphQueryError> {
+        let mut boundaries = BTreeMap::<NodeKey, BoundaryAdjacency>::new();
+        for edge in self.edges() {
+            if visible.contains(&edge.from) {
+                let outgoing = &mut boundaries.entry(edge.from.clone()).or_default().outgoing;
+                outgoing.neighbors.insert(edge.to.clone());
+                if !visible.contains(&edge.to) {
+                    outgoing.hidden_edges += 1;
+                }
+            }
+            if visible.contains(&edge.to) {
+                let incoming = &mut boundaries.entry(edge.to.clone()).or_default().incoming;
+                incoming.neighbors.insert(edge.from.clone());
+                if !visible.contains(&edge.from) {
+                    incoming.hidden_edges += 1;
+                }
+            }
+        }
+
+        let mut hints = Vec::new();
+        for (node, boundary) in boundaries {
+            if boundary.incoming.hidden_edges > 0 {
+                hints.push(continuation_hint(
+                    &node,
+                    Direction::Incoming,
+                    &boundary.incoming,
+                    visible,
+                    query_node_limit,
+                )?);
+            }
+            if boundary.outgoing.hidden_edges > 0 {
+                hints.push(continuation_hint(
+                    &node,
+                    Direction::Outgoing,
+                    &boundary.outgoing,
+                    visible,
+                    query_node_limit,
+                )?);
+            }
+        }
+        Ok(hints)
+    }
+}
+
+fn operator_slice_metadata(
+    projection: &InspectionProjection,
+    nodes: &[InspectionNode],
+    edges: &[InspectionEdge],
+    observation: Option<&OperatorObservation>,
+) -> Result<OperatorSliceMetadata, OperatorViewError> {
+    let projection_nodes = projection
+        .nodes()
+        .iter()
+        .map(|node| (node.key(), node))
+        .collect::<BTreeMap<_, _>>();
+    if let Some(node) = nodes
+        .iter()
+        .find(|node| projection_nodes.get(&node.key()).copied() != Some(*node))
+    {
+        return Err(OperatorViewError::UnknownSliceNode(Box::new(node.key())));
+    }
+
+    let visible = nodes
+        .iter()
+        .map(InspectionNode::key)
+        .collect::<BTreeSet<_>>();
+    let projection_edges = projection.edges().iter().collect::<BTreeSet<_>>();
+    if let Some(edge) = edges.iter().find(|edge| !projection_edges.contains(edge)) {
+        return Err(OperatorViewError::UnknownSliceEdge(Box::new(edge.clone())));
+    }
+    if let Some(edge) = edges
+        .iter()
+        .find(|edge| !visible.contains(&edge.from) || !visible.contains(&edge.to))
+    {
+        return Err(OperatorViewError::DanglingSliceEdge(Box::new(edge.clone())));
+    }
+
+    let observed_states = observation
+        .map(|value| {
+            value
+                .nodes()
+                .iter()
+                .map(|node| (node.node.clone(), node.state))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let statuses = nodes
+        .iter()
+        .map(|node| OperatorNodeStatus {
+            node: node.key(),
+            plan_state: plan_state(node),
+            observed_state: observed_states.get(&node.key()).copied().map(Into::into),
+        })
+        .collect();
+    let groups = operator_groups(nodes, edges, observation);
+
+    Ok(OperatorSliceMetadata { statuses, groups })
 }
 
 impl From<ObservedNodeState> for OperatorNodeState {
@@ -1106,16 +1266,15 @@ fn plan_state(node: &InspectionNode) -> OperatorNodeState {
 }
 
 fn operator_groups(
-    slice: &GraphSlice,
+    nodes: &[InspectionNode],
+    edges: &[InspectionEdge],
     observation: Option<&OperatorObservation>,
 ) -> Vec<OperatorGroup> {
-    let visible = slice
-        .nodes()
+    let visible = nodes
         .iter()
         .map(InspectionNode::key)
         .collect::<BTreeSet<_>>();
-    let binding_providers = slice
-        .nodes()
+    let binding_providers = nodes
         .iter()
         .filter_map(|node| match node {
             InspectionNode::Binding { id, provider, .. } => Some((id.clone(), provider.clone())),
@@ -1124,9 +1283,9 @@ fn operator_groups(
         .collect::<BTreeMap<_, _>>();
     let mut groups = BTreeMap::<OperatorGroupKey, BTreeSet<NodeKey>>::new();
 
-    for node in slice.nodes() {
+    for node in nodes {
         let key = node.key();
-        for provider in node_providers(node, slice.edges(), &binding_providers) {
+        for provider in node_providers(node, edges, &binding_providers) {
             groups
                 .entry(OperatorGroupKey::Environment(provider.environment.clone()))
                 .or_default()
@@ -1216,38 +1375,49 @@ fn node_providers(
     providers
 }
 
-fn expansion_hints(
-    projection: &InspectionProjection,
-    slice: &GraphSlice,
-    query_node_limit: usize,
-) -> Vec<ExpansionHint> {
-    let visible = slice
-        .nodes()
-        .iter()
-        .map(InspectionNode::key)
-        .collect::<BTreeSet<_>>();
-    let mut hidden = BTreeMap::<NodeKey, (usize, usize)>::new();
-    for edge in projection.edges() {
-        let from_visible = visible.contains(&edge.from);
-        let to_visible = visible.contains(&edge.to);
-        if from_visible && !to_visible {
-            hidden.entry(edge.from.clone()).or_default().1 += 1;
-        }
-        if to_visible && !from_visible {
-            hidden.entry(edge.to.clone()).or_default().0 += 1;
-        }
-    }
+#[derive(Default)]
+struct BoundaryAdjacency {
+    incoming: DirectionalAdjacency,
+    outgoing: DirectionalAdjacency,
+}
 
-    hidden
-        .into_iter()
-        .map(|(node, (hidden_incoming, hidden_outgoing))| ExpansionHint {
-            query: GraphQuery::new([node.clone()], 1, query_node_limit.max(2))
-                .with_direction(Direction::Both),
-            node,
-            hidden_incoming,
-            hidden_outgoing,
-        })
-        .collect()
+#[derive(Default)]
+struct DirectionalAdjacency {
+    neighbors: BTreeSet<NodeKey>,
+    hidden_edges: usize,
+}
+
+fn continuation_hint(
+    node: &NodeKey,
+    direction: Direction,
+    adjacency: &DirectionalAdjacency,
+    visible: &BTreeSet<NodeKey>,
+    query_node_limit: usize,
+) -> Result<ExpansionHint, GraphQueryError> {
+    let after = adjacency
+        .neighbors
+        .iter()
+        .take_while(|neighbor| visible.contains(*neighbor))
+        .last()
+        .cloned();
+    let mut query =
+        GraphQuery::new([node.clone()], 1, query_node_limit.max(2)).with_direction(direction);
+    if let Some(after) = after {
+        query = query.with_after(after);
+    }
+    query.canonical_bytes()?;
+
+    let (hidden_incoming, hidden_outgoing) = match direction {
+        Direction::Incoming => (adjacency.hidden_edges, 0),
+        Direction::Outgoing => (0, adjacency.hidden_edges),
+        Direction::Both => (0, 0),
+    };
+    Ok(ExpansionHint {
+        node: node.clone(),
+        hidden_incoming,
+        hidden_outgoing,
+        query,
+    })
 }
 
 fn operator_limits(max_bytes: usize) -> JsonLimits {
@@ -1446,22 +1616,31 @@ mod tests {
         assert!(!operator.expansion().is_empty());
         for hint in operator.expansion() {
             assert_eq!(hint.query.roots(), std::slice::from_ref(&hint.node));
-            assert_eq!(hint.query.direction(), Direction::Both);
             assert_eq!(hint.query.max_depth(), 1);
 
-            let hidden_incoming = projection
+            let actual_hidden_incoming = projection
                 .edges()
                 .iter()
                 .filter(|edge| edge.to == hint.node && !visible.contains(&edge.from))
                 .count();
-            let hidden_outgoing = projection
+            let actual_hidden_outgoing = projection
                 .edges()
                 .iter()
                 .filter(|edge| edge.from == hint.node && !visible.contains(&edge.to))
                 .count();
-            assert_eq!(hint.hidden_incoming, hidden_incoming);
-            assert_eq!(hint.hidden_outgoing, hidden_outgoing);
-            assert!(hidden_incoming + hidden_outgoing > 0);
+            match hint.query.direction() {
+                Direction::Incoming => {
+                    assert_eq!(hint.hidden_incoming, actual_hidden_incoming);
+                    assert!(hint.hidden_incoming > 0);
+                    assert_eq!(hint.hidden_outgoing, 0);
+                }
+                Direction::Outgoing => {
+                    assert_eq!(hint.hidden_incoming, 0);
+                    assert_eq!(hint.hidden_outgoing, actual_hidden_outgoing);
+                    assert!(hint.hidden_outgoing > 0);
+                }
+                Direction::Both => panic!("continuation queries must be direction-specific"),
+            }
 
             let canonical_query = hint.query.canonical_bytes()?;
             let continuation_query = GraphQuery::decode(&canonical_query)?;

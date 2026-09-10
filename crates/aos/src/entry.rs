@@ -223,7 +223,7 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     // Portable inspection revalidates captured pure inputs without Nix or a
     // live provider connection.
     if let Commands::Ability { command } = &cli.command {
-        return commands::ability::run(command, printer);
+        return commands::ability::run(command, printer).await;
     }
 
     // The server command doesn't need NixRunner, handle it before construction.
