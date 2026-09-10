@@ -1134,46 +1134,17 @@ impl Canonical for QueryCampaignFindingOccurrencesRequest {
     }
 }
 
-/// One complete owner-validated candidate occurrence.
+/// Bounded metadata for one owner-validated candidate occurrence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignFindingOccurrence {
     bundle: FindingCandidateBundle,
-    observation: Observation,
-    reproduction: ReproductionArtifact,
-    minimized: ReproductionArtifact,
 }
 
 impl CampaignFindingOccurrence {
-    /// Builds one bundle with all reproduction evidence needed for reconstruction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when a body does not match the bundle ID.
-    pub fn new(
-        bundle: FindingCandidateBundle,
-        observation: Observation,
-        reproduction: ReproductionArtifact,
-        minimized: ReproductionArtifact,
-    ) -> Result<Self, CampaignCodecError> {
-        if observation.id()? != bundle.observation()
-            || reproduction.id()? != bundle.reproduction()
-            || minimized.id()? != bundle.minimized()
-            || reproduction.finding_fingerprint() != bundle.signature().fingerprint()
-            || minimized.finding_fingerprint() != bundle.signature().fingerprint()
-            || minimized
-                .minimization()
-                .is_none_or(|evidence| evidence.original() != bundle.reproduction())
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "campaign finding occurrence bodies disagree with bundle",
-            });
-        }
-        Ok(Self {
-            bundle,
-            observation,
-            reproduction,
-            minimized,
-        })
+    /// Builds one bounded occurrence entry.
+    #[must_use]
+    pub const fn new(bundle: FindingCandidateBundle) -> Self {
+        Self { bundle }
     }
 
     /// Returns the authenticated candidate bundle.
@@ -1181,41 +1152,15 @@ impl CampaignFindingOccurrence {
     pub const fn bundle(&self) -> &FindingCandidateBundle {
         &self.bundle
     }
-
-    /// Returns the candidate observation.
-    #[must_use]
-    pub const fn observation(&self) -> &Observation {
-        &self.observation
-    }
-
-    /// Returns the candidate's original reproduction.
-    #[must_use]
-    pub const fn reproduction(&self) -> &ReproductionArtifact {
-        &self.reproduction
-    }
-
-    /// Returns the candidate's minimized reproduction and verifier trace.
-    #[must_use]
-    pub const fn minimized(&self) -> &ReproductionArtifact {
-        &self.minimized
-    }
 }
 
 impl Canonical for CampaignFindingOccurrence {
     fn encode(&self, encoder: &mut Encoder) {
         self.bundle.encode(encoder);
-        self.observation.encode(encoder);
-        self.reproduction.encode(encoder);
-        self.minimized.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Self::new(
-            FindingCandidateBundle::decode(decoder)?,
-            Observation::decode(decoder)?,
-            ReproductionArtifact::decode(decoder)?,
-            ReproductionArtifact::decode(decoder)?,
-        )
+        Ok(Self::new(FindingCandidateBundle::decode(decoder)?))
     }
 }
 
@@ -1427,6 +1372,424 @@ impl Canonical for QueryCampaignFindingOccurrencesResponse {
             "query-campaign-finding-occurrences-response-encoded-bytes",
         )?;
         Ok(response)
+    }
+}
+
+/// Dependency kind addressable through one retained candidate occurrence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CampaignFindingOccurrenceObjectKind {
+    /// The exact observation reported by the candidate.
+    Observation,
+    /// The candidate's original verified reproduction.
+    Reproduction,
+    /// The candidate's minimized reproduction and verifier trace.
+    MinimizedReproduction,
+}
+
+impl Canonical for CampaignFindingOccurrenceObjectKind {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u8(match self {
+            Self::Observation => 0,
+            Self::Reproduction => 1,
+            Self::MinimizedReproduction => 2,
+        });
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Observation),
+            1 => Ok(Self::Reproduction),
+            2 => Ok(Self::MinimizedReproduction),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "campaign-finding-occurrence-object-kind",
+                tag,
+            }),
+        }
+    }
+}
+
+/// One immutable body named by a retained candidate bundle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CampaignFindingOccurrenceObject {
+    /// The exact observation reported by the candidate.
+    Observation(Observation),
+    /// The candidate's original verified reproduction.
+    Reproduction(ReproductionArtifact),
+    /// The candidate's minimized reproduction and verifier trace.
+    MinimizedReproduction(ReproductionArtifact),
+}
+
+impl CampaignFindingOccurrenceObject {
+    /// Returns the closed dependency kind carried by this value.
+    #[must_use]
+    pub const fn kind(&self) -> CampaignFindingOccurrenceObjectKind {
+        match self {
+            Self::Observation(_) => CampaignFindingOccurrenceObjectKind::Observation,
+            Self::Reproduction(_) => CampaignFindingOccurrenceObjectKind::Reproduction,
+            Self::MinimizedReproduction(_) => {
+                CampaignFindingOccurrenceObjectKind::MinimizedReproduction
+            }
+        }
+    }
+}
+
+impl Canonical for CampaignFindingOccurrenceObject {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.kind().encode(encoder);
+        match self {
+            Self::Observation(value) => value.encode(encoder),
+            Self::Reproduction(value) | Self::MinimizedReproduction(value) => {
+                value.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match CampaignFindingOccurrenceObjectKind::decode(decoder)? {
+            CampaignFindingOccurrenceObjectKind::Observation => {
+                Observation::decode(decoder).map(Self::Observation)
+            }
+            CampaignFindingOccurrenceObjectKind::Reproduction => {
+                ReproductionArtifact::decode(decoder).map(Self::Reproduction)
+            }
+            CampaignFindingOccurrenceObjectKind::MinimizedReproduction => {
+                ReproductionArtifact::decode(decoder).map(Self::MinimizedReproduction)
+            }
+        }
+    }
+}
+
+/// Strict request for one dependency of a retained candidate occurrence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetCampaignFindingOccurrenceObjectRequest {
+    schema_version: u32,
+    principal: CampaignPrincipal,
+    campaign: CampaignName,
+    snapshot: CampaignSnapshotId,
+    finding: FindingId,
+    bundle: FindingCandidateBundleId,
+    kind: CampaignFindingOccurrenceObjectKind,
+}
+
+impl GetCampaignFindingOccurrenceObjectRequest {
+    /// Builds one snapshot-, finding-, and bundle-bound dependency request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the encoded request exceeds the
+    /// service message bound.
+    pub fn new(
+        principal: CampaignPrincipal,
+        campaign: CampaignName,
+        snapshot: CampaignSnapshotId,
+        finding: FindingId,
+        bundle: FindingCandidateBundleId,
+        kind: CampaignFindingOccurrenceObjectKind,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            principal,
+            campaign,
+            snapshot,
+            finding,
+            bundle,
+            kind,
+        };
+        ensure_message_size(
+            &request,
+            "get-campaign-finding-occurrence-object-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+
+    /// Returns the authenticated operational principal.
+    #[must_use]
+    pub const fn principal(&self) -> &CampaignPrincipal {
+        &self.principal
+    }
+
+    /// Returns the canonical campaign name.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the exact current snapshot that anchors the request.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact finding that owns the candidate occurrence.
+    #[must_use]
+    pub const fn finding(&self) -> FindingId {
+        self.finding
+    }
+
+    /// Returns the exact retained candidate bundle.
+    #[must_use]
+    pub const fn bundle(&self) -> FindingCandidateBundleId {
+        self.bundle
+    }
+
+    /// Returns the closed requested dependency kind.
+    #[must_use]
+    pub const fn kind(&self) -> CampaignFindingOccurrenceObjectKind {
+        self.kind
+    }
+
+    /// Returns the digest of every canonical request byte.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        service_request_digest("get-campaign-finding-occurrence-object", self)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded occurrence-dependency request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(
+            bytes,
+            "get-campaign-finding-occurrence-object-request-encoded-bytes",
+        )
+    }
+}
+
+impl Canonical for GetCampaignFindingOccurrenceObjectRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.principal.encode(encoder);
+        self.campaign.encode(encoder);
+        self.snapshot.encode(encoder);
+        self.finding.encode(encoder);
+        self.bundle.encode(encoder);
+        self.kind.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        Self::new(
+            CampaignPrincipal::decode(decoder)?,
+            CampaignName::decode(decoder)?,
+            CampaignSnapshotId::decode(decoder)?,
+            FindingId::decode(decoder)?,
+            FindingCandidateBundleId::decode(decoder)?,
+            CampaignFindingOccurrenceObjectKind::decode(decoder)?,
+        )
+    }
+}
+
+/// Request-bound occurrence dependency with finding and bundle membership proofs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetCampaignFindingOccurrenceObjectResponse {
+    schema_version: u32,
+    request_digest: CampaignHash,
+    snapshot_body: CampaignSnapshot,
+    finding: Finding,
+    bundle: FindingCandidateBundle,
+    object: CampaignFindingOccurrenceObject,
+    finding_proof: MerkleMapLookupProof,
+    occurrence_proof: MerkleMapLookupProof,
+}
+
+impl GetCampaignFindingOccurrenceObjectResponse {
+    /// Builds one authenticated occurrence-dependency response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when either proof, identity, dependency,
+    /// or the encoded-size contract is invalid.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        request: &GetCampaignFindingOccurrenceObjectRequest,
+        snapshot_body: CampaignSnapshot,
+        finding: Finding,
+        bundle: FindingCandidateBundle,
+        object: CampaignFindingOccurrenceObject,
+        finding_proof: MerkleMapLookupProof,
+        occurrence_proof: MerkleMapLookupProof,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: request.request_digest(),
+            snapshot_body,
+            finding,
+            bundle,
+            object,
+            finding_proof,
+            occurrence_proof,
+        };
+        response.validate_body_for(request)?;
+        ensure_message_size(
+            &response,
+            "get-campaign-finding-occurrence-object-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+
+    /// Returns the authenticated snapshot body.
+    #[must_use]
+    pub const fn snapshot_body(&self) -> &CampaignSnapshot {
+        &self.snapshot_body
+    }
+
+    /// Returns the complete authenticated finding body.
+    #[must_use]
+    pub const fn finding(&self) -> &Finding {
+        &self.finding
+    }
+
+    /// Returns the retained candidate bundle naming the dependency.
+    #[must_use]
+    pub const fn bundle(&self) -> &FindingCandidateBundle {
+        &self.bundle
+    }
+
+    /// Returns the exact authenticated occurrence dependency.
+    #[must_use]
+    pub const fn object(&self) -> &CampaignFindingOccurrenceObject {
+        &self.object
+    }
+
+    /// Validates the exact request and both levels of authenticated ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the response belongs to another
+    /// request or either membership proof, identity, or dependency disagrees.
+    pub fn validate_for(
+        &self,
+        request: &GetCampaignFindingOccurrenceObjectRequest,
+    ) -> Result<(), CampaignCodecError> {
+        validate_request_digest(self.request_digest, request.request_digest())?;
+        self.validate_body_for(request)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded occurrence-dependency response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input. Use [`Self::validate_for`] before use.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(
+            bytes,
+            "get-campaign-finding-occurrence-object-response-encoded-bytes",
+        )
+    }
+
+    fn validate_body_for(
+        &self,
+        request: &GetCampaignFindingOccurrenceObjectRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.snapshot_body.id()? != request.snapshot()
+            || self.finding.id()? != request.finding()
+            || self.bundle.id()? != request.bundle()
+            || self.object.kind() != request.kind()
+            || self.bundle.signature() != self.finding.signature()
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign finding occurrence object response basis mismatch",
+            });
+        }
+        let indexed_finding = MerkleMap::verify_lookup_proof(
+            self.snapshot_body.roots().findings,
+            crate::repository::finding_signature_key(self.finding.signature().cluster_key()),
+            &self.finding_proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign finding occurrence object finding proof is invalid",
+        })?;
+        let occurrence_root =
+            self.finding
+                .candidate_occurrences()
+                .ok_or(CampaignCodecError::InvalidValue {
+                    reason: "campaign finding has no authenticated candidate occurrence set",
+                })?;
+        let indexed_bundle = MerkleMap::verify_lookup_proof(
+            occurrence_root,
+            crate::repository::finding_candidate_occurrence_key(request.bundle()),
+            &self.occurrence_proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign finding occurrence object bundle proof is invalid",
+        })?;
+        if indexed_finding != Some(request.finding().content_id())
+            || indexed_bundle != Some(request.bundle().content_id())
+            || !finding_occurrence_object_matches(&self.bundle, &self.object)?
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign finding occurrence dependency is not authenticated",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Canonical for GetCampaignFindingOccurrenceObjectResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.snapshot_body.encode(encoder);
+        self.finding.encode(encoder);
+        self.bundle.encode(encoder);
+        self.object.encode(encoder);
+        self.finding_proof.encode(encoder);
+        self.occurrence_proof.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: CampaignHash::decode(decoder)?,
+            snapshot_body: CampaignSnapshot::decode(decoder)?,
+            finding: Finding::decode(decoder)?,
+            bundle: FindingCandidateBundle::decode(decoder)?,
+            object: CampaignFindingOccurrenceObject::decode(decoder)?,
+            finding_proof: MerkleMapLookupProof::decode(decoder)?,
+            occurrence_proof: MerkleMapLookupProof::decode(decoder)?,
+        };
+        ensure_message_size(
+            &response,
+            "get-campaign-finding-occurrence-object-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+}
+
+fn finding_occurrence_object_matches(
+    bundle: &FindingCandidateBundle,
+    object: &CampaignFindingOccurrenceObject,
+) -> Result<bool, CampaignCodecError> {
+    match object {
+        CampaignFindingOccurrenceObject::Observation(value) => {
+            Ok(value.id()? == bundle.observation())
+        }
+        CampaignFindingOccurrenceObject::Reproduction(value) => Ok(value.id()?
+            == bundle.reproduction()
+            && value.finding_fingerprint() == bundle.signature().fingerprint()),
+        CampaignFindingOccurrenceObject::MinimizedReproduction(value) => Ok(value.id()?
+            == bundle.minimized()
+            && value.finding_fingerprint() == bundle.signature().fingerprint()
+            && value
+                .minimization()
+                .is_some_and(|evidence| evidence.original() == bundle.reproduction())),
     }
 }
 

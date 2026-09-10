@@ -907,19 +907,7 @@ where
                 let bundle = self.repository.load_finding_candidate_bundle(
                     FindingCandidateBundleId::from_content_id(*object)?,
                 )?;
-                let observation = self.repository.load_observation(bundle.observation())?;
-                let reproduction = self
-                    .repository
-                    .load_reproduction_artifact(bundle.reproduction())?;
-                let minimized = self
-                    .repository
-                    .load_reproduction_artifact(bundle.minimized())?;
-                Ok(CampaignFindingOccurrence::new(
-                    bundle,
-                    observation,
-                    reproduction,
-                    minimized,
-                )?)
+                Ok(CampaignFindingOccurrence::new(bundle))
             })
             .collect::<Result<Vec<_>, CampaignRepositoryError>>()?;
         Ok(QueryCampaignFindingOccurrencesResponse::new(
@@ -928,6 +916,66 @@ where
             finding,
             entries,
             page.next_after(),
+            finding_proof,
+            occurrence_proof,
+        )?)
+    }
+
+    fn get_campaign_finding_occurrence_object(
+        &self,
+        request: &GetCampaignFindingOccurrenceObjectRequest,
+    ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::GetCampaignFindingOccurrenceObject,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let (finding, finding_proof) = self
+            .repository
+            .finding_with_proof(head.snapshot().roots().findings, request.finding())?;
+        let occurrence_root =
+            finding
+                .candidate_occurrences()
+                .ok_or(CampaignRepositoryError::InvalidRequest {
+                    reason: "campaign-finding-has-no-candidate-occurrence-index",
+                })?;
+        let (bundle, occurrence_proof) = self
+            .repository
+            .finding_candidate_bundle_with_proof(occurrence_root, request.bundle())?;
+        let object = match request.kind() {
+            CampaignFindingOccurrenceObjectKind::Observation => {
+                CampaignFindingOccurrenceObject::Observation(
+                    self.repository.load_observation(bundle.observation())?,
+                )
+            }
+            CampaignFindingOccurrenceObjectKind::Reproduction => {
+                CampaignFindingOccurrenceObject::Reproduction(
+                    self.repository
+                        .load_reproduction_artifact(bundle.reproduction())?,
+                )
+            }
+            CampaignFindingOccurrenceObjectKind::MinimizedReproduction => {
+                CampaignFindingOccurrenceObject::MinimizedReproduction(
+                    self.repository
+                        .load_reproduction_artifact(bundle.minimized())?,
+                )
+            }
+        };
+        Ok(GetCampaignFindingOccurrenceObjectResponse::new(
+            request,
+            head.snapshot().clone(),
+            finding,
+            bundle,
+            object,
             finding_proof,
             occurrence_proof,
         )?)

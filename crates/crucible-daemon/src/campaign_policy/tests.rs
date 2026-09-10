@@ -373,6 +373,14 @@ fn policy_operation_labels_cover_the_closed_service_vocabulary() {
             CampaignServiceOperation::QueryCampaignFindings,
         ),
         (
+            "query-campaign-finding-occurrences",
+            CampaignServiceOperation::QueryCampaignFindingOccurrences,
+        ),
+        (
+            "get-campaign-finding-occurrence-object",
+            CampaignServiceOperation::GetCampaignFindingOccurrenceObject,
+        ),
+        (
             "get-campaign-finding-object",
             CampaignServiceOperation::GetCampaignFindingObject,
         ),

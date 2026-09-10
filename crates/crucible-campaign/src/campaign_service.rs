@@ -44,10 +44,12 @@ pub use list::{
 pub use pin::{PinCampaignRequest, PinCampaignResponse};
 pub use query::{
     CampaignChoiceEntry, CampaignChoiceObject, CampaignChoiceObjectKind, CampaignFindingObject,
-    CampaignFindingObjectKind, CampaignFindingOccurrence, CampaignGraphEntry,
-    ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
+    CampaignFindingObjectKind, CampaignFindingOccurrence, CampaignFindingOccurrenceObject,
+    CampaignFindingOccurrenceObjectKind, CampaignGraphEntry, ExplainCampaignAttemptRequest,
+    ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
     GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
-    GetCampaignFindingObjectResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
+    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFrontierObjectRequest,
     GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
     MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
@@ -181,6 +183,8 @@ pub enum CampaignServiceOperation {
     QueryCampaignFindings,
     /// Read retained candidate bundles from one authenticated finding.
     QueryCampaignFindingOccurrences,
+    /// Read one exact dependency named by a retained candidate bundle.
+    GetCampaignFindingOccurrenceObject,
     /// Read one exact dependency named by an authenticated finding.
     GetCampaignFindingObject,
     /// Explain one exact attempt, execution basis, proposal, and completion.
@@ -505,6 +509,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this query's exact snapshot.
     pub fn validate_for_query_campaign_finding_occurrences(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact candidate-occurrence dependency read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this request's exact snapshot.
+    pub fn validate_for_get_campaign_finding_occurrence_object(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1849,6 +1866,18 @@ pub trait CampaignFindingOccurrenceService: CampaignService {
         &self,
         request: &QueryCampaignFindingOccurrencesRequest,
     ) -> Result<QueryCampaignFindingOccurrencesResponse, Self::Error>;
+
+    /// Returns one exact dependency named by a retained candidate bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, finding or bundle membership, repository access,
+    /// dependency validation, or response construction fails.
+    fn get_campaign_finding_occurrence_object(
+        &self,
+        request: &GetCampaignFindingOccurrenceObjectRequest,
+    ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error>;
 }
 
 /// Failure from the checked campaign-service client.
@@ -2233,6 +2262,35 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_query_campaign_finding_occurrences(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Reads one retained candidate dependency and validates both Merkle proofs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, finding, bundle, dependency kind, or body.
+    pub fn get_campaign_finding_occurrence_object(
+        &self,
+        request: &GetCampaignFindingOccurrenceObjectRequest,
+    ) -> Result<GetCampaignFindingOccurrenceObjectResponse, CampaignClientError>
+    where
+        S: CampaignFindingOccurrenceService,
+    {
+        let response = match self.service.get_campaign_finding_occurrence_object(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign_finding_occurrence_object(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
