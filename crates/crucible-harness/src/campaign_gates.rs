@@ -191,6 +191,37 @@ const HOT_FORK_ISOLATION_DAEMON_SELECTORS: &[LibraryExactSelector] = &[LibraryEx
     name: "qemu_hot_fork_world_factory::tests::two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world",
 }];
 
+const WORLD_FORK_ATOMICITY_SELECTORS: &[LibraryExactSelector] = &[
+    LibraryExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
+        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_clean_rejection_is_atomic_at_every_launch_index",
+    },
+    LibraryExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
+        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_ambiguous_launch_is_fail_closed_at_every_index",
+    },
+    LibraryExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
+        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_adoption_failure_retains_the_complete_world",
+    },
+    LibraryExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
+        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_aggregate_release_failure_blocks_source_restore",
+    },
+    LibraryExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
+        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_source_identity_drift_blocks_restore_after_complete_rollback",
+    },
+    LibraryExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
+        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::rollback_retains_every_unfinished_owner_on_termination_failure",
+    },
+    LibraryExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
+        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::rollback_deadline_covers_reap_private_release_and_cancellation_progress",
+    },
+];
+
 /// Canonical RFC-0020 campaign gate catalog.
 pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
@@ -408,7 +439,20 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         "checks.crucible.phase2.gates.typedChoice",
     ),
     unsupported("gate:typed-choice-product-checkpoint", "crucible-daemon"),
-    unsupported("gate:world-fork-atomicity", "crucible-daemon"),
+    component_automated(
+        "gate:world-fork-atomicity",
+        "crucible-daemon",
+        &[CampaignGateTarget {
+            package: "crucible-daemon",
+            kind: CampaignGateTargetKind::LibExact {
+                selectors: WORLD_FORK_ATOMICITY_SELECTORS,
+                nix_source: "tests/crucible/phase7-world-fork-atomicity.nix",
+                ignored: false,
+            },
+        }],
+        "checks.crucible.phase7.gates.worldForkAtomicity.rawGate",
+        &["native-real-qemu-matrix", "T-CAM-7.4"],
+    ),
 ];
 
 /// Returns every RFC-0020 gate in stable lexical order.

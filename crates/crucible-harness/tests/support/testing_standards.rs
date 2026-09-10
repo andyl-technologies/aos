@@ -227,7 +227,12 @@ pub(super) fn source_shape_failures(
         ));
     }
 
-    if standard.backend == TestBackend::SimDouble && !code.contains("SimDouble") {
+    // The atomic world gate's scripted QEMU transport is its model backend;
+    // other SimDouble gates name the core scheduler double directly.
+    if standard.backend == TestBackend::SimDouble
+        && standard.shape != TestShape::WorldForkAtomicity
+        && !code.contains("SimDouble")
+    {
         failures.push(format!(
             "{}:{} must exercise the SimDouble backend",
             target.package, target.test_target
@@ -337,6 +342,27 @@ pub(super) fn source_shape_failures(
             if !code.contains(required) {
                 failures.push(format!(
                     "{}:{} must prove bounded pause, status, pin, shutdown, admission closure, executing cancellation retention, queued draining, and final accounting under saturation",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::WorldForkAtomicity {
+        for required in [
+            "QemuProductionHotForkWorldLifecycleFactory",
+            "production_three_node_clean_rejection_is_atomic_at_every_launch_index",
+            "production_three_node_ambiguous_launch_is_fail_closed_at_every_index",
+            "production_three_node_adoption_failure_retains_the_complete_world",
+            "production_aggregate_release_failure_blocks_source_restore",
+            "production_source_identity_drift_blocks_restore_after_complete_rollback",
+            "rollback_retains_every_unfinished_owner_on_termination_failure",
+            "rollback_deadline_covers_reap_private_release_and_cancellation_progress",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove production three-node rollback, retry, fail-closed ownership, aggregate cleanup, and source reauthentication",
                     target.package, target.test_target,
                 ));
                 break;
