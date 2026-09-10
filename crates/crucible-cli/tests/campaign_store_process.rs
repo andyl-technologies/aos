@@ -32,7 +32,7 @@ use crucible_cas::content_store::{
     StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
     WriteBackRetentionAdmin,
 };
-use crucible_daemon::{DirectoryAssignmentLedger, DirectoryCampaignGcJournal};
+use crucible_daemon::DirectoryCampaignGcJournal;
 use serde_json::Value;
 use tempfile::{NamedTempFile, TempDir};
 
@@ -129,13 +129,6 @@ fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), 
     assert!(retained_placements > 0);
 
     service.stop()?;
-
-    // Model the empty retained state owned by the optional packaged executor.
-    // Offline GC authenticates this journal observationally and must not
-    // initialize it itself.
-    drop(DirectoryAssignmentLedger::open(
-        fixture.state.join("executor-ledger"),
-    )?);
 
     let orphan_bytes = b"authenticated campaign-store process-flight orphan";
     let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
@@ -352,6 +345,13 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
     assert!(fixture.read_cache()?.contains(scenario)?);
     service.stop()?;
 
+    // Authenticate every configured physical boundary and establish its
+    // inventory identity before observational GC, including the empty
+    // write-back destination.
+    let verified = fixture.base.verify_store()?;
+    assert_eq!(verified["authenticated"], true);
+    assert_eq!(verified["physical"].as_array().map(Vec::len), Some(4));
+
     let pending_before_gc = fixture.pending_write_back_roots()?;
     assert!(!pending_before_gc.is_empty());
     assert!(
@@ -496,8 +496,10 @@ fn public_offline_archive_transfer_reports_and_authenticates_sensitive_closure()
 
     let trace_bytes = b"sensitive offline archive trace";
     let trace = ContentId::for_bytes(ObjectKind::Trace, 1, trace_bytes);
-    DirectoryBlobBackend::new("archive-source-trace", &source.objects)
-        .put_if_absent(trace, &BlobHandle::from_bytes(trace_bytes.to_vec()))?;
+    {
+        let backend = PackedBlobBackend::open("primary", &source.objects, PRIMARY_PACK_BYTES)?;
+        backend.put_if_absent(trace, &BlobHandle::from_bytes(trace_bytes.to_vec()))?;
+    }
     let trace = trace.encode();
 
     // A symlink alias bypasses lexical source/destination comparison. The
@@ -579,8 +581,9 @@ target_pack_bytes = 65536
 [[nodes]]
 id = "primary"
 [nodes.spec]
-kind = "directory"
+kind = "packed"
 root = {:?}
+target_pack_bytes = {PRIMARY_PACK_BYTES}
 "#,
             source._temporary.path().join("refs"),
             source.objects,
