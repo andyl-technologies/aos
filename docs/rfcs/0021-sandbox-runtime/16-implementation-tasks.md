@@ -126,7 +126,8 @@ they gate any affected runtime backend.
   prove convergence (`SBX-CTRL-01`; `ec3a23d4f`).
 - [ ] **SBX-CTRL-03** Implement and package the unprivileged node controller,
   public client service, broker catalog publisher, assignment-plan compiler,
-  and production reconciler loop (`SBX-CTRL-02`, `SBX-BPROTO-04`).
+  and production reconciler loop (`SBX-CTRL-02`, `SBX-BPROTO-04`; production
+  observation/catalog tranche implemented, mutation authority still open).
 - [x] **SBX-SD-01** Extend `aos-systemd` with typed transient sandbox unit,
   cgroup, freeze/thaw, leader, and observation operations (`d1e40ea28`).
 - [x] **SBX-LINUX-01** Add safe, owned pidfd, namespace FD, `openat2`, mount FD,
@@ -7187,3 +7188,73 @@ access required by Linux 6.18's `PIDFD_GET_NET_NAMESPACE` path; brokers and
 lifecycle/effect workers retain empty ptrace capability and no general
 `process:ptrace` or `setns` grant. These are pending implementation and runtime
 proof, so `SBX-P0-10`, Network Apply, and end-to-end Host readiness remain open.
+
+### Production controller observation and catalog service (in progress)
+
+The first production `aos-sandboxd` tranche makes the existing unprivileged
+controller foundations reachable as one packaged, hardened systemd service.
+It opens the sole journal through the exact service-UID protected boundary,
+binds that state directory durably to the raw node credential, and rejects a
+different node or any unbound preexisting state without changing journal bytes.
+There is no inferred or automatic migration for a nonempty unbound journal;
+an operator must resolve its provenance out of band. An ambiguous exit after
+the first identity commit reopens idempotently with exactly one binding.
+Current runtime-assignment records must name the same node. Replay uses
+explicit production ceilings (256 MiB journal, 128 MiB materialized state,
+65,536 transactions, and 131,072 materialized records) within the service's
+512 MiB memory and 90-second startup envelope.
+
+Each cycle publishes a recovered pending Host catalog before acquiring newer
+evidence, but that publication alone never satisfies readiness. The controller
+then performs a genuinely read-only audit of the entire durable ledger;
+Accepted, Applying, and OwnershipPending operations stop the service before
+compiler, executor, reconciliation, or broker work, and the audit performs no
+executor timing query or journal write. Only an idle ledger proceeds to fresh
+Mount, destination-slot, Storage, and Network inventories over independent
+bounded sessions. Each pathname is only a channel selector: the clients still
+authenticate hello and response subjects against root UID/GID and the exact
+broker service cgroup. A fully validated fresh observation whose complete
+inventory semantics and controller-state digest match the retained snapshot
+reuses that snapshot without another transaction; request-ID, rollback,
+equivocation, boot, generation, and controller-state conflicts are still
+checked before deduplication. Focused 100,000-cycle regressions hold Mount,
+destination-slot, Storage, and Network journal transaction counts and file
+lengths constant across unchanged healthy observations. An integrated test runs
+10,002 cycles of all four snapshots through durable pending Host publication,
+reopens at that crash boundary, confirms the catalog, and proves its digest
+feedback creates exactly one successor Storage and Network snapshot before the
+whole controller reaches an eight-transaction fixed point. It reopens and
+continues again after 5,000 steady-state cycles without changing file bytes. A
+separate exact 16,384-row Storage ceiling test proves multi-megabyte unchanged
+snapshots also reuse one transaction. The Host broker remains in
+`system.slice`; the other brokers and controller remain in `aos-control.slice`.
+A complete mutually
+current projection is durably pending before Host I/O and must receive an
+authenticated exact Host confirmation before `READY=1` is emitted.
+
+A root-peer-credential-only Unix ConnectRPC diagnostic socket implements
+read-only `GetNodeCapabilities`. It reports the last complete observation and
+Host-catalog cycle using only node identity, an opaque resource-version digest,
+generation, timestamp, and an empty semantic capability list. It discloses no
+catalog row, resource identity, credential, or operation state. UID 0 is
+trusted here in its local-administrator role, not as a mutually trusted node
+service. All operation RPCs return `Unimplemented`; the production compiler
+rejects admission, the executor has no installed mutation authority, and no
+signing key or privileged Apply adapter is loaded. This local diagnostic
+endpoint is not the public client API or a coordinator transport. Transient
+broker absence, deadline expiry, interruption, or an explicitly retryable
+broker rejection leaves startup unready and retries. Nonretryable broker
+rejections, authenticated identity or receipt mismatch, malformed protocol or
+transport records, entropy failure, and protected journal, ledger,
+inventory-continuity, capacity, or projection corruption terminate the worker
+so systemd can restart it fail closed.
+
+Focused Rust tests cover pending-first ordering, readiness closure, executor-
+free ledger audit, node binding, production journal limits, broker cgroups,
+empty capability advertisement, and diagnostic peer authentication. A Nix
+contract pins the evaluated unit placement and hardening plus the source-level
+read-only boundary and offline package build. This increment has not been
+realized as a Nix build or VM and does not qualify any mutation path.
+`SBX-CTRL-03` remains open until the authenticated public/coordinator transport,
+assignment compiler, Guardian signer integration, and privileged broker Apply
+paths are implemented and qualified.

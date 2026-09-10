@@ -22,7 +22,7 @@ use sha2::{Digest as _, Sha256};
 use crate::publication::tests::{
     activation_claim, descriptor_free_activation_fixture, runtime_scope_activation_fixture,
 };
-use crate::runtime_authority::RuntimeAuthorityIntentV1;
+use crate::runtime_authority::{RuntimeAuthorityError, RuntimeAuthorityIntentV1};
 use crate::{
     EffectFailure, EffectObservation, EffectPlan, EffectReceipt, IdempotencyKey, JournalLimits,
     OperationPlan, Reconciler, SingleNodeEffectExecutor,
@@ -252,6 +252,24 @@ fn protected_reopen_derives_exact_current_request_and_verified_lease() {
     assert_eq!(recovered.binding, original_binding);
     assert_eq!(recovered.lease.generation(), 1);
     assert_eq!(recovered.validity.deadline(), 30_000_001_000);
+}
+
+#[test]
+fn controller_node_validation_checks_every_current_runtime_binding() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let selection = activate(&mut reconciler, 1, bind(None), false);
+    let store =
+        RuntimeAuthorityStore::load(reconciler.journal_mut(), RuntimeAuthorityLimits::default())
+            .unwrap();
+    let binding = store.current(selection.sandbox).unwrap().unwrap();
+    let expected_node = binding.manifest().manifest().node();
+
+    store.validate_current_node(expected_node).unwrap();
+    assert!(matches!(
+        store.validate_current_node(NodeId::from_bytes([0xfe; 16])),
+        Err(RuntimeAuthorityError::NodeMismatch)
+    ));
 }
 
 #[test]

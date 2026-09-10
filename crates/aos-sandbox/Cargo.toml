@@ -13,12 +13,16 @@ aos-proto.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-ownership-protocol.workspace = true
 aos-sandbox-protocol.workspace = true
-rustix = { workspace = true, features = ["event", "net", "process", "time"] }
+axum.workspace = true
 buffa.workspace = true
+connectrpc.workspace = true
+futures.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aos-sandbox-linux.workspace = true

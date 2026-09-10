@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
+use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, SandboxId};
 
 use crate::publication::{
     AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1, current_in_validated_namespace,
@@ -95,6 +95,9 @@ pub enum RuntimeAuthorityError {
     /// The namespace or one of its durable cross-links is malformed or incomplete.
     #[error("protected runtime-authority state is corrupt")]
     CorruptState,
+    /// A current assignment belongs to a different controller node.
+    #[error("current runtime authority belongs to another node")]
+    NodeMismatch,
     /// Protected journal validation or access failed.
     #[error("runtime-authority journal failed: {0}")]
     Journal(#[from] JournalError),
@@ -165,6 +168,20 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
             .map(|(key, _)| current_from_journal(self.journal, sandbox_from_current_key(key)?))
             .map(|binding| binding?.ok_or(RuntimeAuthorityError::CorruptState))
             .collect()
+    }
+
+    /// Validates that every current assignment belongs to the configured node.
+    pub(crate) fn validate_current_node(
+        &self,
+        expected_node: NodeId,
+    ) -> Result<(), RuntimeAuthorityError> {
+        for binding in self.current_bindings()? {
+            if binding.manifest().manifest().node() != expected_node {
+                return Err(RuntimeAuthorityError::NodeMismatch);
+            }
+        }
+
+        Ok(())
     }
 
     /// Checks an uninterrupted holder/assignment chain, not live execution authority.

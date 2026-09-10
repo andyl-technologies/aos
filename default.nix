@@ -1180,6 +1180,9 @@ in {
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
       sandbox-linux-uapi = import ./tests/build/sandbox-linux-uapi.nix {inherit pkgs;};
+      sandbox-controller-service = import ./tests/build/sandbox-controller-service.nix {
+        inherit pkgs lib;
+      };
       structured-attrs-scrub = import ./tests/build/structured-attrs-scrub.nix {inherit pkgs;};
       selinux-erofs-labels = import ./tests/build/selinux-erofs-labels.nix {
         inherit pkgs lib;
@@ -1212,7 +1215,7 @@ in {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-llvm linux-cross-runtime linux-cross-smoke package-platform-support package-root-image sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub systemd-verity vm-rootfs-adapter golden-image-budgets;
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-llvm linux-cross-runtime linux-cross-smoke package-platform-support package-root-image sandbox-controller-service sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub systemd-verity vm-rootfs-adapter golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1224,7 +1227,7 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub systemd-verity vm-rootfs-adapter]
+            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image sandbox-controller-service sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub systemd-verity vm-rootfs-adapter]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues golden-image-budgets;
           phases = [

@@ -787,8 +787,11 @@ dependencies = [
  "aos-sandbox-linux",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-protocol",
+ "axum",
  "buffa",
+ "connectrpc",
  "ed25519-dalek",
+ "futures",
  "rand 0.9.4",
  "rustix 1.1.4",
  "serde",
@@ -796,6 +799,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

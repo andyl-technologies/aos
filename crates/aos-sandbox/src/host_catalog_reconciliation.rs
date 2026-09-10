@@ -1009,6 +1009,8 @@ fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], HostCatalogReconci
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
     use aos_proto::aos::sandbox::local::v1::{
         AssignmentFence, Descriptor, InventoryDestinationSlotsResponse,
         InventoryMountResourcesResponse, InventoryNetworkResourcesResponse,
@@ -1233,6 +1235,105 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    fn cycle_request_id(cycle: u64, domain: u8) -> [u8; 16] {
+        let mut request_id = [domain; 16];
+        request_id[..8].copy_from_slice(&cycle.to_be_bytes());
+        request_id
+    }
+
+    fn record_empty_inventory_cycle(
+        journal: &mut Journal,
+        cycle: u64,
+    ) -> (
+        DurableStorageResourceInventorySnapshotV1,
+        DurableNetworkResourceInventorySnapshotV1,
+        crate::mount_attempt::DurableMountInventorySnapshotV1,
+        DurableDestinationSlotInventorySnapshotV1,
+    ) {
+        let storage = InventoryStorageResourcesResponse {
+            kernel_boot_id: vec![30; 16],
+            broker_instance_id: vec![31; 16],
+            journal_sequence: 7,
+            catalog_generation: 8,
+            ..Default::default()
+        };
+        let network = InventoryNetworkResourcesResponse {
+            kernel_boot_id: vec![30; 16],
+            broker_instance_id: vec![32; 16],
+            journal_sequence: 9,
+            catalog_generation: 10,
+            ..Default::default()
+        };
+        let mounts = InventoryMountResourcesResponse {
+            kernel_boot_id: vec![30; 16],
+            broker_instance_id: vec![33; 16],
+            journal_sequence: 11,
+            ..Default::default()
+        };
+        let destinations = InventoryDestinationSlotsResponse {
+            kernel_boot_id: vec![30; 16],
+            broker_instance_id: vec![34; 16],
+            journal_sequence: 12,
+            ..Default::default()
+        };
+
+        let mounts = crate::mount_attempt::record_snapshot_bytes_for_test(
+            journal,
+            cycle_request_id(cycle, 1),
+            mounts.encode_to_vec(),
+        )
+        .unwrap();
+        let destinations = crate::destination_slot_inventory::record_snapshot_bytes_for_test(
+            journal,
+            cycle_request_id(cycle, 2),
+            destinations.encode_to_vec(),
+        )
+        .unwrap();
+        let storage = crate::resource_inventory::record_storage_snapshot_bytes_for_test(
+            journal,
+            cycle_request_id(cycle, 3),
+            storage.encode_to_vec(),
+        )
+        .unwrap();
+        let network = crate::resource_inventory::record_network_snapshot_bytes_for_test(
+            journal,
+            cycle_request_id(cycle, 4),
+            network.encode_to_vec(),
+        )
+        .unwrap();
+
+        (storage, network, mounts, destinations)
+    }
+
+    fn assert_cycle_outcomes(
+        snapshots: &(
+            DurableStorageResourceInventorySnapshotV1,
+            DurableNetworkResourceInventorySnapshotV1,
+            crate::mount_attempt::DurableMountInventorySnapshotV1,
+            DurableDestinationSlotInventorySnapshotV1,
+        ),
+        resources: crate::ResourceInventorySnapshotOutcomeV1,
+        mount: crate::MountInventorySnapshotOutcomeV1,
+        destination: crate::DestinationSlotInventorySnapshotOutcomeV1,
+    ) {
+        assert_eq!(snapshots.0.outcome(), resources);
+        assert_eq!(snapshots.1.outcome(), resources);
+        assert_eq!(snapshots.2.outcome(), mount);
+        assert_eq!(snapshots.3.outcome(), destination);
+    }
+
+    fn prepare_cycle(
+        journal: &mut Journal,
+        snapshots: (
+            DurableStorageResourceInventorySnapshotV1,
+            DurableNetworkResourceInventorySnapshotV1,
+            crate::mount_attempt::DurableMountInventorySnapshotV1,
+            DurableDestinationSlotInventorySnapshotV1,
+        ),
+    ) -> HostCatalogReconciliationV1 {
+        prepare(journal, snapshots.0, snapshots.1, snapshots.2, snapshots.3).unwrap()
     }
 
     #[test]
@@ -1533,6 +1634,137 @@ mod tests {
             ),
             Err(HostCatalogReconciliationError::IncompleteResources)
         ));
+    }
+
+    #[test]
+    fn complete_controller_catalog_cycles_reach_a_bounded_reopen_stable_fixed_point() {
+        let directory = TempDir::new().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let limits = crate::JournalLimits {
+            maximum_transactions: 8,
+            ..crate::JournalLimits::default()
+        };
+        let owner = std::fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, report) =
+            Journal::open_protected_at_uid(directory.path(), "controller.journal", limits, owner)
+                .unwrap();
+        assert_eq!(report.committed_transactions, 0);
+
+        let first = record_empty_inventory_cycle(&mut journal, 1);
+        assert_cycle_outcomes(
+            &first,
+            crate::ResourceInventorySnapshotOutcomeV1::Recorded,
+            crate::MountInventorySnapshotOutcomeV1::Recorded,
+            crate::DestinationSlotInventorySnapshotOutcomeV1::Recorded,
+        );
+        let pending = match prepare_cycle(&mut journal, first) {
+            HostCatalogReconciliationV1::Publish(pending) => pending,
+            HostCatalogReconciliationV1::Current(_) => panic!("first catalog must be published"),
+        };
+        let expected_generation = pending.generation();
+        let expected_digest = pending.catalog_digest();
+        let expected_catalog = pending.canonical_catalog().to_vec();
+        drop(journal);
+
+        // Reopen at the durable-before-I/O boundary and complete the exact
+        // recovered publication, as production recovery does.
+        let (mut journal, report) =
+            Journal::open_protected_at_uid(directory.path(), "controller.journal", limits, owner)
+                .unwrap();
+        assert_eq!(report.committed_transactions, 5);
+        let recovered = recover_pending(&mut journal).unwrap().unwrap();
+        assert_eq!(recovered.generation(), expected_generation);
+        assert_eq!(recovered.catalog_digest(), expected_digest);
+        assert_eq!(recovered.canonical_catalog(), expected_catalog);
+        journal
+            .commit(&recovered.record.completion_transaction().unwrap())
+            .unwrap();
+        drop(journal);
+
+        // Host catalog state feeds the Storage/Network controller digest, so
+        // precisely one successor record per resource domain is expected.
+        let (mut journal, report) =
+            Journal::open_protected_at_uid(directory.path(), "controller.journal", limits, owner)
+                .unwrap();
+        assert_eq!(report.committed_transactions, 6);
+        let feedback = record_empty_inventory_cycle(&mut journal, 2);
+        assert_cycle_outcomes(
+            &feedback,
+            crate::ResourceInventorySnapshotOutcomeV1::Recorded,
+            crate::MountInventorySnapshotOutcomeV1::Replay,
+            crate::DestinationSlotInventorySnapshotOutcomeV1::Replay,
+        );
+        let current = match prepare_cycle(&mut journal, feedback) {
+            HostCatalogReconciliationV1::Current(current) => current,
+            HostCatalogReconciliationV1::Publish(_) => {
+                panic!("catalog feedback must not create a semantic successor")
+            }
+        };
+        assert_eq!(current.generation(), expected_generation);
+        assert_eq!(current.catalog_digest(), expected_digest);
+        let stable_length = std::fs::metadata(directory.path().join("controller.journal"))
+            .unwrap()
+            .len();
+
+        for cycle in 3..=5_002 {
+            let snapshots = record_empty_inventory_cycle(&mut journal, cycle);
+            assert_cycle_outcomes(
+                &snapshots,
+                crate::ResourceInventorySnapshotOutcomeV1::Replay,
+                crate::MountInventorySnapshotOutcomeV1::Replay,
+                crate::DestinationSlotInventorySnapshotOutcomeV1::Replay,
+            );
+            let current = match prepare_cycle(&mut journal, snapshots) {
+                HostCatalogReconciliationV1::Current(current) => current,
+                HostCatalogReconciliationV1::Publish(_) => {
+                    panic!("unchanged catalog must remain current")
+                }
+            };
+            assert_eq!(current.catalog_digest(), expected_digest);
+        }
+        assert_eq!(
+            std::fs::metadata(directory.path().join("controller.journal"))
+                .unwrap()
+                .len(),
+            stable_length
+        );
+        drop(journal);
+
+        let (mut journal, report) =
+            Journal::open_protected_at_uid(directory.path(), "controller.journal", limits, owner)
+                .unwrap();
+        assert_eq!(report.committed_transactions, 8);
+        assert_eq!(
+            std::fs::metadata(directory.path().join("controller.journal"))
+                .unwrap()
+                .len(),
+            stable_length
+        );
+        for cycle in 5_003..=10_002 {
+            let snapshots = record_empty_inventory_cycle(&mut journal, cycle);
+            assert_cycle_outcomes(
+                &snapshots,
+                crate::ResourceInventorySnapshotOutcomeV1::Replay,
+                crate::MountInventorySnapshotOutcomeV1::Replay,
+                crate::DestinationSlotInventorySnapshotOutcomeV1::Replay,
+            );
+            assert!(matches!(
+                prepare_cycle(&mut journal, snapshots),
+                HostCatalogReconciliationV1::Current(_)
+            ));
+        }
+        drop(journal);
+
+        let (_, report) =
+            Journal::open_protected_at_uid(directory.path(), "controller.journal", limits, owner)
+                .unwrap();
+        assert_eq!(report.committed_transactions, 8);
+        assert_eq!(
+            std::fs::metadata(directory.path().join("controller.journal"))
+                .unwrap()
+                .len(),
+            stable_length
+        );
     }
 
     #[test]

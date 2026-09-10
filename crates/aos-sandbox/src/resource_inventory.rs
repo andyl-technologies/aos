@@ -16,6 +16,7 @@
 //! still postdate the same current controller state.
 
 use std::os::fd::OwnedFd;
+use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerClientHello, BrokerErrorCode, BrokerMethod, InventoryNetworksRequest,
@@ -59,7 +60,7 @@ const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.resource-inventory.controll
 pub enum ResourceInventorySnapshotOutcomeV1 {
     /// The authenticated query and complete response became durable.
     Recorded,
-    /// The exact same query and response were already durable.
+    /// Existing durable evidence exactly matches this query or its semantics.
     Replay,
 }
 
@@ -79,6 +80,28 @@ pub struct StorageResourceInventoryClient {
 }
 
 impl StorageResourceInventoryClient {
+    /// Connects to Storage's configured filesystem socket before querying.
+    ///
+    /// The pathname selects only the channel. Every response remains bound to
+    /// the independently configured UID, GID, and retained service cgroup.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid or unavailable socket path, an inactive service
+    /// cgroup, or unavailable kernel credential and pidfd reporting.
+    pub fn connect(
+        path: &Path,
+        expected_storage: ResourceInventoryServiceIdentity,
+    ) -> Result<Self, ResourceInventoryError> {
+        Ok(Self {
+            inner: ResourceInventoryClient::connect(
+                path,
+                expected_storage,
+                InventoryDomain::Storage,
+            )?,
+        })
+    }
+
     /// Configures an exclusively owned Storage channel before querying.
     ///
     /// The hello and response writers are authenticated through kernel record
@@ -108,6 +131,28 @@ pub struct NetworkResourceInventoryClient {
 }
 
 impl NetworkResourceInventoryClient {
+    /// Connects to Network's configured filesystem socket before querying.
+    ///
+    /// The pathname selects only the channel. Every response remains bound to
+    /// the independently configured UID, GID, and retained service cgroup.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid or unavailable socket path, an inactive service
+    /// cgroup, or unavailable kernel credential and pidfd reporting.
+    pub fn connect(
+        path: &Path,
+        expected_network: ResourceInventoryServiceIdentity,
+    ) -> Result<Self, ResourceInventoryError> {
+        Ok(Self {
+            inner: ResourceInventoryClient::connect(
+                path,
+                expected_network,
+                InventoryDomain::Network,
+            )?,
+        })
+    }
+
     /// Configures an exclusively owned Network channel before querying.
     ///
     /// The hello and response writers are authenticated through kernel record
@@ -286,6 +331,20 @@ struct ResourceInventoryClient {
 }
 
 impl ResourceInventoryClient {
+    fn connect(
+        path: &Path,
+        expected_service: ResourceInventoryServiceIdentity,
+        domain: InventoryDomain,
+    ) -> Result<Self, ResourceInventoryError> {
+        expected_service.cgroup.validate_current()?;
+
+        Ok(Self {
+            socket: DescriptorSubjectSocket::connect(path)?,
+            expected_service,
+            domain,
+        })
+    }
+
     fn from_connected(
         fd: OwnedFd,
         expected_service: ResourceInventoryServiceIdentity,
@@ -660,6 +719,13 @@ struct SnapshotHistory {
     record: Option<(SnapshotRecord, ValidatedResourceInventory)>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SnapshotDecision {
+    Replay,
+    Unchanged,
+    Record,
+}
+
 impl SnapshotHistory {
     fn load(
         journal: &mut Journal,
@@ -687,15 +753,15 @@ impl SnapshotHistory {
         &self,
         candidate: &SnapshotRecord,
         inventory: &ValidatedResourceInventory,
-    ) -> Result<Option<ResourceInventorySnapshotOutcomeV1>, ResourceInventoryError> {
+    ) -> Result<SnapshotDecision, ResourceInventoryError> {
         if candidate.domain != inventory.domain() {
             return Err(ResourceInventoryError::CorruptState);
         }
         let Some((current, current_inventory)) = &self.record else {
-            return Ok(None);
+            return Ok(SnapshotDecision::Record);
         };
         if current == candidate {
-            return Ok(Some(ResourceInventorySnapshotOutcomeV1::Replay));
+            return Ok(SnapshotDecision::Replay);
         }
         if current.request_id == candidate.request_id
             || inventory.journal_sequence() < current_inventory.journal_sequence()
@@ -711,7 +777,13 @@ impl SnapshotHistory {
             return Err(ResourceInventoryError::Conflict);
         }
 
-        Ok(None)
+        if current.controller_state_digest == candidate.controller_state_digest
+            && current_inventory == inventory
+        {
+            return Ok(SnapshotDecision::Unchanged);
+        }
+
+        Ok(SnapshotDecision::Record)
     }
 }
 
@@ -768,11 +840,38 @@ fn record_snapshot(
         return Err(ResourceInventoryError::CorruptState);
     }
 
-    let outcome = match history.outcome(&record, &inventory)? {
-        Some(outcome) => outcome,
-        None => {
+    persist_snapshot(journal, history, record, inventory)
+}
+
+fn persist_snapshot(
+    journal: &mut Journal,
+    history: SnapshotHistory,
+    record: SnapshotRecord,
+    inventory: ValidatedResourceInventory,
+) -> Result<RecordedSnapshot, ResourceInventoryError> {
+    let domain = record.domain;
+    let (record, inventory, outcome) = match history.outcome(&record, &inventory)? {
+        SnapshotDecision::Replay => (
+            record,
+            inventory,
+            ResourceInventorySnapshotOutcomeV1::Replay,
+        ),
+        SnapshotDecision::Unchanged => {
+            let (current, current_inventory) =
+                history.record.ok_or(ResourceInventoryError::CorruptState)?;
+            (
+                current,
+                current_inventory,
+                ResourceInventorySnapshotOutcomeV1::Replay,
+            )
+        }
+        SnapshotDecision::Record => {
             journal.commit(&record.transaction()?)?;
-            ResourceInventorySnapshotOutcomeV1::Recorded
+            (
+                record,
+                inventory,
+                ResourceInventorySnapshotOutcomeV1::Recorded,
+            )
         }
     };
     let committed = SnapshotHistory::load(journal, domain)?;
@@ -785,6 +884,68 @@ fn record_snapshot(
         inventory,
         outcome,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn record_storage_snapshot_bytes_for_test(
+    journal: &mut Journal,
+    request_id: [u8; 16],
+    response_body: Vec<u8>,
+) -> Result<DurableStorageResourceInventorySnapshotV1, ResourceInventoryError> {
+    let recorded = record_snapshot_bytes_for_test(
+        journal,
+        InventoryDomain::Storage,
+        request_id,
+        response_body,
+    )?;
+    let ValidatedResourceInventory::Storage(inventory) = recorded.inventory else {
+        return Err(ResourceInventoryError::CorruptState);
+    };
+
+    Ok(DurableStorageResourceInventorySnapshotV1 {
+        record: recorded.record,
+        inventory,
+        outcome: recorded.outcome,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn record_network_snapshot_bytes_for_test(
+    journal: &mut Journal,
+    request_id: [u8; 16],
+    response_body: Vec<u8>,
+) -> Result<DurableNetworkResourceInventorySnapshotV1, ResourceInventoryError> {
+    let recorded = record_snapshot_bytes_for_test(
+        journal,
+        InventoryDomain::Network,
+        request_id,
+        response_body,
+    )?;
+    let ValidatedResourceInventory::Network(inventory) = recorded.inventory else {
+        return Err(ResourceInventoryError::CorruptState);
+    };
+
+    Ok(DurableNetworkResourceInventorySnapshotV1 {
+        record: recorded.record,
+        inventory,
+        outcome: recorded.outcome,
+    })
+}
+
+#[cfg(test)]
+fn record_snapshot_bytes_for_test(
+    journal: &mut Journal,
+    domain: InventoryDomain,
+    request_id: [u8; 16],
+    response_body: Vec<u8>,
+) -> Result<RecordedSnapshot, ResourceInventoryError> {
+    let controller_state = controller_state_digest(journal)?;
+    let request_body = domain.request_body(request_id, 1);
+    let (record, inventory) =
+        SnapshotRecord::from_query(domain, controller_state, request_body, response_body)?;
+    let history = SnapshotHistory::load(journal, domain)?;
+
+    persist_snapshot(journal, history, record, inventory)
 }
 
 struct RecordedSnapshot {
@@ -1057,6 +1218,7 @@ mod tests {
         InventoryStorageResourcesResponse, NetworkNamespaceInventoryRecord, NetworkState,
         StorageWorkspaceInventoryRecord,
     };
+    use aos_sandbox_protocol::MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS;
     use tempfile::TempDir;
 
     use super::*;
@@ -1153,16 +1315,70 @@ mod tests {
         .encode_to_vec()
     }
 
+    fn maximum_storage_response() -> Vec<u8> {
+        let workspaces = (0..MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS)
+            .map(|index| {
+                let identity = u64::try_from(index).unwrap() + 1;
+                let mut handle = [0; 32];
+                handle[24..].copy_from_slice(&identity.to_be_bytes());
+
+                StorageWorkspaceInventoryRecord {
+                    workspace_handle: handle.to_vec(),
+                    fence: Some(fence(21)).into(),
+                    root_image: Some(Descriptor {
+                        media_type: "application/vnd.aos.sandbox.view.v1+cbor".to_owned(),
+                        sha256: vec![41; 32],
+                        encoded_size: 4,
+                        ..Default::default()
+                    })
+                    .into(),
+                    resource_kernel_boot_id: vec![9; 16],
+                    root_device: identity,
+                    root_inode: identity + 20_000,
+                    dataset_guid: identity + 40_000,
+                    uid_range_start: u32::try_from(identity).unwrap() * 65_536,
+                    uid_range_size: 65_536,
+                    resource_digest: vec![42; 32],
+                    ..Default::default()
+                }
+            })
+            .collect();
+
+        InventoryStorageResourcesResponse {
+            kernel_boot_id: vec![9; 16],
+            broker_instance_id: vec![12; 16],
+            journal_sequence: 10,
+            catalog_generation: 11,
+            workspaces,
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
     fn record(
         domain: InventoryDomain,
         request_id: u8,
         controller_state_digest: [u8; 32],
         response_body: Vec<u8>,
     ) -> (SnapshotRecord, ValidatedResourceInventory) {
+        record_with_request_id(
+            domain,
+            [request_id; 16],
+            controller_state_digest,
+            response_body,
+        )
+    }
+
+    fn record_with_request_id(
+        domain: InventoryDomain,
+        request_id: [u8; 16],
+        controller_state_digest: [u8; 32],
+        response_body: Vec<u8>,
+    ) -> (SnapshotRecord, ValidatedResourceInventory) {
         SnapshotRecord::from_query(
             domain,
             controller_state_digest,
-            domain.request_body([request_id; 16], 2),
+            domain.request_body(request_id, 2),
             response_body,
         )
         .unwrap()
@@ -1268,7 +1484,10 @@ mod tests {
             state,
             network_response(1, 9, 13, 10, 11),
         );
-        assert_eq!(history.outcome(&restart, &restart_inventory).unwrap(), None);
+        assert_eq!(
+            history.outcome(&restart, &restart_inventory).unwrap(),
+            SnapshotDecision::Record
+        );
 
         let (cross_boot, cross_boot_inventory) = record(
             InventoryDomain::Network,
@@ -1280,6 +1499,146 @@ mod tests {
             history.outcome(&cross_boot, &cross_boot_inventory),
             Err(ResourceInventoryError::Conflict)
         ));
+    }
+
+    #[test]
+    fn unchanged_fresh_storage_and_network_have_constant_growth_across_long_uptime() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let limits = JournalLimits {
+            maximum_transactions: 2,
+            ..JournalLimits::default()
+        };
+        let mut journal = Journal::open_protected_at_uid(
+            directory.path(),
+            "controller.journal",
+            limits,
+            std::fs::metadata(directory.path()).unwrap().uid(),
+        )
+        .unwrap()
+        .0;
+        let state = controller_state_digest(&mut journal).unwrap();
+        let (storage, storage_inventory) = record(
+            InventoryDomain::Storage,
+            1,
+            state,
+            storage_response(1, 9, 12, 10, 11),
+        );
+        let storage_history =
+            SnapshotHistory::load(&mut journal, InventoryDomain::Storage).unwrap();
+        let storage =
+            persist_snapshot(&mut journal, storage_history, storage, storage_inventory).unwrap();
+        let (network, network_inventory) = record(
+            InventoryDomain::Network,
+            1,
+            state,
+            network_response(1, 9, 13, 10, 11),
+        );
+        let network_history =
+            SnapshotHistory::load(&mut journal, InventoryDomain::Network).unwrap();
+        let network =
+            persist_snapshot(&mut journal, network_history, network, network_inventory).unwrap();
+        let durable_length = std::fs::metadata(directory.path().join("controller.journal"))
+            .unwrap()
+            .len();
+
+        for cycle in 1_u64..=100_000 {
+            let mut request_id = [2; 16];
+            request_id[..8].copy_from_slice(&cycle.to_be_bytes());
+            for (domain, response, durable_request_id) in [
+                (
+                    InventoryDomain::Storage,
+                    storage_response(1, 9, 12, 10, 11),
+                    storage.record.request_id,
+                ),
+                (
+                    InventoryDomain::Network,
+                    network_response(1, 9, 13, 10, 11),
+                    network.record.request_id,
+                ),
+            ] {
+                let (candidate, inventory) =
+                    record_with_request_id(domain, request_id, state, response);
+                let history = SnapshotHistory::load(&mut journal, domain).unwrap();
+                let snapshot =
+                    persist_snapshot(&mut journal, history, candidate, inventory).unwrap();
+
+                assert_eq!(snapshot.outcome, ResourceInventorySnapshotOutcomeV1::Replay);
+                assert_eq!(snapshot.record.request_id, durable_request_id);
+            }
+        }
+
+        assert_eq!(
+            std::fs::metadata(directory.path().join("controller.journal"))
+                .unwrap()
+                .len(),
+            durable_length
+        );
+        drop(journal);
+        let (_, report) = Journal::open_protected_at_uid(
+            directory.path(),
+            "controller.journal",
+            limits,
+            std::fs::metadata(directory.path()).unwrap().uid(),
+        )
+        .unwrap();
+        assert_eq!(report.committed_transactions, 2);
+    }
+
+    #[test]
+    fn maximum_valid_storage_inventory_does_not_regrow_the_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let limits = JournalLimits {
+            maximum_transactions: 1,
+            ..JournalLimits::default()
+        };
+        let owner = std::fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) =
+            Journal::open_protected_at_uid(directory.path(), "controller.journal", limits, owner)
+                .unwrap();
+        let response = maximum_storage_response();
+        assert!(response.len() > 4 * 1024 * 1024);
+        let first = record_storage_snapshot_bytes_for_test(&mut journal, [1; 16], response.clone())
+            .unwrap();
+        assert_eq!(
+            first.inventory().workspaces().len(),
+            MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS
+        );
+        assert_eq!(
+            first.outcome(),
+            ResourceInventorySnapshotOutcomeV1::Recorded
+        );
+        let durable_request_id = first.request_id();
+        let durable_length = std::fs::metadata(directory.path().join("controller.journal"))
+            .unwrap()
+            .len();
+
+        for cycle in 2_u64..=17 {
+            let mut request_id = [43; 16];
+            request_id[..8].copy_from_slice(&cycle.to_be_bytes());
+            let snapshot =
+                record_storage_snapshot_bytes_for_test(&mut journal, request_id, response.clone())
+                    .unwrap();
+
+            assert_eq!(
+                snapshot.outcome(),
+                ResourceInventorySnapshotOutcomeV1::Replay
+            );
+            assert_eq!(snapshot.request_id(), durable_request_id);
+        }
+        assert_eq!(
+            std::fs::metadata(directory.path().join("controller.journal"))
+                .unwrap()
+                .len(),
+            durable_length
+        );
+        drop(journal);
+
+        let (_, report) =
+            Journal::open_protected_at_uid(directory.path(), "controller.journal", limits, owner)
+                .unwrap();
+        assert_eq!(report.committed_transactions, 1);
     }
 
     #[test]

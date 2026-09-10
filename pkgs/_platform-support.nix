@@ -460,6 +460,7 @@ let
     "aos-sandbox-network-observer"
     "aos-selinux-runtime-roots"
     "aos-sandbox-zfs-worker"
+    "aos-sandboxd"
     "aos-service-root"
     "aos-selinux-production-policy"
     "aos-storaged"

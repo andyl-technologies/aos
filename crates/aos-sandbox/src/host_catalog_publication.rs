@@ -16,9 +16,10 @@ mod transport;
 use std::fs::File;
 use std::io::Write as _;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
+use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerClientHello, BrokerDescriptorDisposition, BrokerMethod,
+    Audience, BrokerClientHello, BrokerDescriptorDisposition, BrokerErrorCode, BrokerMethod,
     PublishHostCatalogRequest, RequestHeader,
 };
 use aos_sandbox_core::{ObjectDigest, ProtocolId, ProtocolVersion};
@@ -117,6 +118,27 @@ pub struct HostCatalogPublicationClient {
 }
 
 impl HostCatalogPublicationClient {
+    /// Connects to Host's configured filesystem socket before publication.
+    ///
+    /// The pathname selects only the channel. The hello and response writers
+    /// must still match the configured UID, GID, and retained service cgroup.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid or unavailable socket path, an inactive service
+    /// cgroup, or unavailable kernel credential and pidfd reporting.
+    pub fn connect(
+        path: &Path,
+        expected_host: HostCatalogServiceIdentity,
+    ) -> Result<Self, HostCatalogPublicationError> {
+        expected_host.cgroup.validate_current()?;
+
+        Ok(Self {
+            socket: DescriptorSubjectSocket::connect(path)?,
+            expected_host,
+        })
+    }
+
     /// Configures an exclusively owned connected Host channel before any send.
     ///
     /// The caller selects the service UID, GID, and cgroup from trusted
@@ -244,7 +266,10 @@ impl HostCatalogPublicationClient {
             return Err(ProtocolValidationError::DescriptorTableMismatch.into());
         }
         if let Some(error) = envelope.error() {
-            return Err(ProtocolValidationError::BrokerRejected(error.code()).into());
+            return Err(HostCatalogPublicationError::BrokerRejected {
+                code: error.code(),
+                retryable: error.retryable(),
+            });
         }
         let receipt = decode_host_catalog_publication_response(envelope.body())?;
         validate_receipt(draft, receipt)?;
@@ -271,6 +296,14 @@ pub enum HostCatalogPublicationError {
     /// Host confirmed a different generation or byte commitment.
     #[error("Host catalog publication receipt differs from the proposed snapshot")]
     ReceiptMismatch,
+    /// Host rejected or could not complete the publication.
+    #[error("Host rejected catalog publication with {code:?} (retryable: {retryable})")]
+    BrokerRejected {
+        /// Closed broker error code.
+        code: BrokerErrorCode,
+        /// Whether the same publication may succeed on a later attempt.
+        retryable: bool,
+    },
     /// Negotiation, request binding, or Host response validation failed.
     #[error(transparent)]
     Protocol(#[from] ProtocolValidationError),

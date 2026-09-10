@@ -1209,6 +1209,7 @@
     "aos-sandbox-network-observer"
     "aos-selinux-runtime-roots"
     "aos-sandbox-zfs-worker"
+    "aos-sandboxd"
     "aos-hub"
     "aos-storaged"
     "aos-hub-cloudflare"

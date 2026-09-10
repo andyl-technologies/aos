@@ -9,6 +9,7 @@
 //! authority or retain a namespace descriptor.
 
 use std::os::fd::OwnedFd;
+use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerClientHello, BrokerMethod, DestinationSlotLifecycle,
@@ -56,7 +57,7 @@ const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-inventory.trans
 pub enum DestinationSlotInventorySnapshotOutcomeV1 {
     /// The authenticated query and complete response became durable.
     Recorded,
-    /// The exact same query and response were already durable.
+    /// Existing durable evidence exactly matches this query or its semantics.
     Replay,
 }
 
@@ -131,6 +132,27 @@ pub struct DestinationSlotInventoryClient {
 }
 
 impl DestinationSlotInventoryClient {
+    /// Connects to Mount's configured filesystem socket before querying slots.
+    ///
+    /// The pathname selects only the channel. The hello and response writers
+    /// must still match the configured UID, GID, and retained service cgroup.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid or unavailable socket path, an inactive service
+    /// cgroup, or unavailable kernel credential and pidfd reporting.
+    pub fn connect(
+        path: &Path,
+        expected_mount: MountServiceIdentity,
+    ) -> Result<Self, MountAttemptError> {
+        expected_mount.cgroup.validate_current()?;
+
+        Ok(Self {
+            socket: DescriptorSubjectSocket::connect(path)?,
+            expected_mount,
+        })
+    }
+
     /// Configures an exclusively owned connected Mount channel before querying.
     ///
     /// The hello and response writers are authenticated through kernel record
@@ -484,6 +506,13 @@ struct SnapshotHistory {
     record: Option<(SnapshotRecord, ValidatedDestinationSlotInventory)>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SnapshotDecision {
+    Replay,
+    Unchanged,
+    Record,
+}
+
 impl SnapshotHistory {
     fn load(journal: &mut Journal) -> Result<Self, MountAttemptError> {
         journal.ensure_healthy()?;
@@ -505,12 +534,12 @@ impl SnapshotHistory {
         &self,
         candidate: &SnapshotRecord,
         inventory: &ValidatedDestinationSlotInventory,
-    ) -> Result<Option<DestinationSlotInventorySnapshotOutcomeV1>, MountAttemptError> {
+    ) -> Result<SnapshotDecision, MountAttemptError> {
         let Some((current, current_inventory)) = &self.record else {
-            return Ok(None);
+            return Ok(SnapshotDecision::Record);
         };
         if current == candidate {
-            return Ok(Some(DestinationSlotInventorySnapshotOutcomeV1::Replay));
+            return Ok(SnapshotDecision::Replay);
         }
         if current.request_id == candidate.request_id
             || inventory.journal_sequence() < current_inventory.journal_sequence()
@@ -520,7 +549,13 @@ impl SnapshotHistory {
         {
             return Err(MountAttemptError::Conflict);
         }
-        Ok(None)
+        if current.controller_state_digest == candidate.controller_state_digest
+            && current_inventory == inventory
+        {
+            return Ok(SnapshotDecision::Unchanged);
+        }
+
+        Ok(SnapshotDecision::Record)
     }
 }
 
@@ -564,11 +599,37 @@ pub(crate) fn record_snapshot(
         return Err(MountAttemptError::CorruptState);
     }
 
-    let outcome = match history.outcome(&record, &inventory)? {
-        Some(outcome) => outcome,
-        None => {
+    persist_snapshot(journal, history, record, inventory)
+}
+
+fn persist_snapshot(
+    journal: &mut Journal,
+    history: SnapshotHistory,
+    record: SnapshotRecord,
+    inventory: ValidatedDestinationSlotInventory,
+) -> Result<DurableDestinationSlotInventorySnapshotV1, MountAttemptError> {
+    let (record, inventory, outcome) = match history.outcome(&record, &inventory)? {
+        SnapshotDecision::Replay => (
+            record,
+            inventory,
+            DestinationSlotInventorySnapshotOutcomeV1::Replay,
+        ),
+        SnapshotDecision::Unchanged => {
+            let (current, current_inventory) =
+                history.record.ok_or(MountAttemptError::CorruptState)?;
+            (
+                current,
+                current_inventory,
+                DestinationSlotInventorySnapshotOutcomeV1::Replay,
+            )
+        }
+        SnapshotDecision::Record => {
             journal.commit(&record.transaction()?)?;
-            DestinationSlotInventorySnapshotOutcomeV1::Recorded
+            (
+                record,
+                inventory,
+                DestinationSlotInventorySnapshotOutcomeV1::Recorded,
+            )
         }
     };
     let committed = SnapshotHistory::load(journal)?;
@@ -581,6 +642,34 @@ pub(crate) fn record_snapshot(
         inventory,
         outcome,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn record_snapshot_bytes_for_test(
+    journal: &mut Journal,
+    request_id: [u8; 16],
+    response_body: Vec<u8>,
+) -> Result<DurableDestinationSlotInventorySnapshotV1, MountAttemptError> {
+    let controller_state = mount_controller_state_digest(journal)?;
+    let request_body = InventoryDestinationSlotsRequest {
+        header: Some(RequestHeader {
+            protocol_major: CARRIER_VERSION.major().into(),
+            protocol_minor: CARRIER_VERSION.minor().into(),
+            request_id: request_id.to_vec(),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            deadline_boottime_nanoseconds: 1,
+            maximum_response_bytes: RESPONSE_BYTES,
+            ..Default::default()
+        })
+        .into(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let (record, inventory) =
+        SnapshotRecord::from_query(controller_state, request_body, response_body)?;
+    let history = SnapshotHistory::load(journal)?;
+
+    persist_snapshot(journal, history, record, inventory)
 }
 
 pub(crate) fn reconcile_current(
@@ -934,11 +1023,18 @@ mod tests {
     }
 
     fn query_for_version(request_byte: u8, protocol_version: ProtocolVersion) -> Vec<u8> {
+        query_with_id_for_version([request_byte; 16], protocol_version)
+    }
+
+    fn query_with_id_for_version(
+        request_id: [u8; 16],
+        protocol_version: ProtocolVersion,
+    ) -> Vec<u8> {
         InventoryDestinationSlotsRequest {
             header: Some(RequestHeader {
                 protocol_major: protocol_version.major().into(),
                 protocol_minor: protocol_version.minor().into(),
-                request_id: vec![request_byte; 16],
+                request_id: request_id.to_vec(),
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,
                 maximum_response_bytes: RESPONSE_BYTES,
@@ -1221,7 +1317,7 @@ mod tests {
             history
                 .outcome(&current, &current.validate().unwrap())
                 .unwrap(),
-            Some(DestinationSlotInventorySnapshotOutcomeV1::Replay)
+            SnapshotDecision::Replay
         );
 
         let (rollback, rollback_inventory) = snapshot(2, 4, 3, 4, Vec::new());
@@ -1257,8 +1353,69 @@ mod tests {
         let (successor, successor_inventory) = snapshot(2, 6, 5, 6, Vec::new());
         assert_eq!(
             history.outcome(&successor, &successor_inventory).unwrap(),
-            None
+            SnapshotDecision::Record
         );
+    }
+
+    #[test]
+    fn unchanged_fresh_inventory_has_constant_journal_growth_across_long_uptime() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let limits = JournalLimits {
+            maximum_transactions: 2,
+            ..JournalLimits::default()
+        };
+        let mut journal = Journal::open_protected_at_uid(
+            directory.path(),
+            "controller.journal",
+            limits,
+            std::fs::metadata(directory.path()).unwrap().uid(),
+        )
+        .unwrap()
+        .0;
+        let state = mount_controller_state_digest(&mut journal).unwrap();
+        let (first, inventory) =
+            SnapshotRecord::from_query(state, query(1), response(10, 3, 4, Vec::new())).unwrap();
+        let history = SnapshotHistory::load(&mut journal).unwrap();
+        let first = persist_snapshot(&mut journal, history, first, inventory).unwrap();
+        let durable_length = std::fs::metadata(directory.path().join("controller.journal"))
+            .unwrap()
+            .len();
+
+        for cycle in 1_u64..=100_000 {
+            let mut request_id = [2; 16];
+            request_id[..8].copy_from_slice(&cycle.to_be_bytes());
+            let (candidate, inventory) = SnapshotRecord::from_query(
+                state,
+                query_with_id_for_version(request_id, CARRIER_VERSION),
+                response(10, 3, 4, Vec::new()),
+            )
+            .unwrap();
+            let history = SnapshotHistory::load(&mut journal).unwrap();
+            let snapshot = persist_snapshot(&mut journal, history, candidate, inventory).unwrap();
+
+            assert_eq!(
+                snapshot.outcome(),
+                DestinationSlotInventorySnapshotOutcomeV1::Replay
+            );
+            assert_eq!(snapshot.request_id(), first.request_id());
+        }
+
+        assert_eq!(
+            std::fs::metadata(directory.path().join("controller.journal"))
+                .unwrap()
+                .len(),
+            durable_length
+        );
+        drop(journal);
+        let (_, report) = Journal::open_protected_at_uid(
+            directory.path(),
+            "controller.journal",
+            limits,
+            std::fs::metadata(directory.path()).unwrap().uid(),
+        )
+        .unwrap();
+        assert_eq!(report.committed_transactions, 1);
     }
 
     #[test]
@@ -1292,7 +1449,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             history.outcome(&upgraded, &upgraded_inventory).unwrap(),
-            None
+            SnapshotDecision::Record
         );
 
         let history = SnapshotHistory {
@@ -1303,7 +1460,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             history.outcome(&rebooted, &rebooted_inventory).unwrap(),
-            None
+            SnapshotDecision::Record
         );
 
         let downgrade_response = InventoryDestinationSlotsResponse {

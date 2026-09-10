@@ -26,6 +26,7 @@ in {
   config =
     lib.mkIf (
       brokers.hostBroker.enable
+      || brokers.controllerService.enable
       || brokers.mountBroker.enable
       || brokers.networkBroker.enable
       || brokers.storageBroker.enable

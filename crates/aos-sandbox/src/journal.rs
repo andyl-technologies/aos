@@ -154,6 +154,8 @@ pub enum RecordNamespace {
     HostExecution = 36,
     /// Monotone protected Storage resolver-policy generation and digest floor.
     StorageResolverPolicyFloor = 37,
+    /// Fixed node identity bound to one controller state directory.
+    ControllerIdentity = 38,
 }
 
 impl RecordNamespace {
@@ -196,6 +198,7 @@ impl RecordNamespace {
             35 => Ok(Self::StorageWorkspacePinRepairIntent),
             36 => Ok(Self::HostExecution),
             37 => Ok(Self::StorageResolverPolicyFloor),
+            38 => Ok(Self::ControllerIdentity),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -2065,13 +2068,14 @@ mod tests {
             RecordNamespace::StorageWorkspacePinRepairIntent,
             RecordNamespace::HostExecution,
             RecordNamespace::StorageResolverPolicyFloor,
+            RecordNamespace::ControllerIdentity,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 38, 255] {
+        for code in [0, 39, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

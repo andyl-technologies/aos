@@ -526,6 +526,38 @@ pub enum ReconcileOutcome {
     PermanentlyBlocked,
 }
 
+/// Identifies a durable operation state that still requires mutation authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnfinishedOperationStateV1 {
+    /// The operation is admitted but has not issued its first effect.
+    Accepted,
+    /// At least one exact effect intent is durably in flight.
+    Applying,
+    /// The operation is waiting for separately authorized ownership activation.
+    OwnershipPending,
+}
+
+/// Identifies one validated durable operation that is not terminal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedUnfinishedOperationV1 {
+    operation_id: OperationId,
+    state: UnfinishedOperationStateV1,
+}
+
+impl ValidatedUnfinishedOperationV1 {
+    /// Returns the durable operation identity.
+    #[must_use]
+    pub const fn operation_id(self) -> OperationId {
+        self.operation_id
+    }
+
+    /// Returns the validated nonterminal state.
+    #[must_use]
+    pub const fn state(self) -> UnfinishedOperationStateV1 {
+        self.state
+    }
+}
+
 /// Reports admission, ledger, journal, or executor-contract failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
@@ -1001,6 +1033,40 @@ where
         Ok(pending)
     }
 
+    /// Returns the first validated operation that still requires active work.
+    ///
+    /// The query performs no journal mutation and never invokes the executor.
+    /// It validates the complete recovered ledger, scans the journal-bounded
+    /// Operation namespace, and retains at most one result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError`] when journal health, an operation record, or
+    /// any cross-referenced durable ledger namespace fails validation.
+    pub fn validated_unfinished_operation(
+        &mut self,
+    ) -> Result<Option<ValidatedUnfinishedOperationV1>, ReconcilerError> {
+        self.ensure_ledger_validated_read_only()?;
+
+        let mut first = None;
+        for (key, value) in self.journal.records(RecordNamespace::Operation) {
+            let operation_id = decode_operation_key(key)?;
+            let operation = decode_operation(value)?;
+            let state = match operation.state {
+                OperationState::Accepted => UnfinishedOperationStateV1::Accepted,
+                OperationState::Applying => UnfinishedOperationStateV1::Applying,
+                OperationState::OwnershipPending => UnfinishedOperationStateV1::OwnershipPending,
+                OperationState::Succeeded | OperationState::PermanentlyBlocked => continue,
+            };
+            first.get_or_insert(ValidatedUnfinishedOperationV1 {
+                operation_id,
+                state,
+            });
+        }
+
+        Ok(first)
+    }
+
     /// Advances one operation by at most one durable transition or effect.
     ///
     /// # Errors
@@ -1164,7 +1230,10 @@ where
         Ok(Some((operation_id, outcome)))
     }
 
-    fn validate_all_ownership_gates(&mut self) -> Result<(), ReconcilerError> {
+    fn validate_all_ownership_gates(
+        &mut self,
+        validate_current_boot: bool,
+    ) -> Result<(), ReconcilerError> {
         let gated_operations = self
             .journal
             .records(RecordNamespace::OwnershipGate)
@@ -1178,7 +1247,11 @@ where
                     error
                 }
             })?;
-            self.load_and_validate_ownership_gate(operation_id, operation)?;
+            self.load_and_validate_ownership_gate_for(
+                operation_id,
+                operation,
+                validate_current_boot,
+            )?;
         }
 
         let operations = self
@@ -1188,12 +1261,27 @@ where
             .collect::<Result<Vec<_>, _>>()?;
         for operation_id in operations {
             let operation = self.load_operation(operation_id)?;
-            self.load_and_validate_ownership_gate(operation_id, operation)?;
+            self.load_and_validate_ownership_gate_for(
+                operation_id,
+                operation,
+                validate_current_boot,
+            )?;
         }
         Ok(())
     }
 
     fn ensure_ledger_validated(&mut self) -> Result<(), ReconcilerError> {
+        self.ensure_ledger_validated_for(true)
+    }
+
+    fn ensure_ledger_validated_read_only(&mut self) -> Result<(), ReconcilerError> {
+        self.ensure_ledger_validated_for(false)
+    }
+
+    fn ensure_ledger_validated_for(
+        &mut self,
+        validate_current_boot: bool,
+    ) -> Result<(), ReconcilerError> {
         // Cached structural validity says nothing about a later failed commit.
         // Check on every entry before replay or any executor/session interaction.
         self.journal.ensure_healthy()?;
@@ -1204,7 +1292,7 @@ where
             validate_publication_namespace(&self.journal).map_err(|_| {
                 ReconcilerError::CorruptLedger("authority publication namespace is corrupt")
             })?;
-            self.validate_all_ownership_gates()?;
+            self.validate_all_ownership_gates(validate_current_boot)?;
             validate_runtime_authority_operations(&self.journal)?;
             if self
                 .journal
@@ -1419,7 +1507,9 @@ where
                     "Host catalog reconciliation requires Linux validation",
                 ));
             }
-            self.ledger_validated = true;
+            // Executor-free validation must not satisfy the stronger cache
+            // used immediately before effect recovery and dispatch.
+            self.ledger_validated = validate_current_boot;
         }
         Ok(())
     }
@@ -1479,6 +1569,15 @@ where
         operation_id: OperationId,
         operation: OperationRecord,
     ) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
+        self.load_and_validate_ownership_gate_for(operation_id, operation, true)
+    }
+
+    fn load_and_validate_ownership_gate_for(
+        &mut self,
+        operation_id: OperationId,
+        operation: OperationRecord,
+        validate_current_boot: bool,
+    ) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
         let gate = self
             .journal
             .get(RecordNamespace::OwnershipGate, operation_id.as_bytes())
@@ -1495,6 +1594,7 @@ where
                     operation.effect_count,
                     None,
                     None,
+                    validate_current_boot,
                 )?;
                 Ok(None)
             };
@@ -1528,6 +1628,7 @@ where
                 } => Some(*publication_digest),
                 OwnershipGateStatusV1::Pending(_) => None,
             },
+            validate_current_boot,
         )?;
         match (&gate, operation.state) {
             (OwnershipGateStatusV1::Pending(_), OperationState::OwnershipPending) => Ok(Some(gate)),
@@ -1570,6 +1671,7 @@ where
         effect_count: u32,
         draft: Option<&AuthorityPublicationDraftV1>,
         activated_publication: Option<ObjectDigest>,
+        validate_current_boot: bool,
     ) -> Result<(), ReconcilerError> {
         for step in 0..effect_count {
             let bytes = self
@@ -1605,20 +1707,21 @@ where
                         ));
                     }
                     if let Some(dispatch) = &effect.dispatch {
-                        let current_host_boot_id =
-                            if matches!(&effect.state, EffectState::Applying { .. }) {
-                                Some(
-                                    self.executor
-                                        .authority_effect_timing(operation_id, step)
-                                        .ok_or(ReconcilerError::InvalidExecutorOutput(
-                                            "authority-bound effect execution is unsupported",
-                                        ))?
-                                        .clock()
-                                        .host_boot_id(),
-                                )
-                            } else {
-                                None
-                            };
+                        let current_host_boot_id = if validate_current_boot
+                            && matches!(&effect.state, EffectState::Applying { .. })
+                        {
+                            Some(
+                                self.executor
+                                    .authority_effect_timing(operation_id, step)
+                                    .ok_or(ReconcilerError::InvalidExecutorOutput(
+                                        "authority-bound effect execution is unsupported",
+                                    ))?
+                                    .clock()
+                                    .host_boot_id(),
+                            )
+                        } else {
+                            None
+                        };
                         validate_durable_effect_attempt(
                             &self.journal,
                             draft.manifest().manifest().sandbox(),
@@ -2409,6 +2512,7 @@ mod tests {
         failures: VecDeque<EffectFailure>,
         apply_calls: usize,
         observe_calls: usize,
+        timing_calls: usize,
         authority_pending: bool,
         authority_receipt_override: Option<ValidatedHostEffectReceiptV1>,
         guardian_plan_requests: Vec<GuardianPlanRequestV1>,
@@ -2448,6 +2552,7 @@ mod tests {
             _operation_id: OperationId,
             _step: u32,
         ) -> Option<AuthorityEffectAttemptTimingV1> {
+            self.timing_calls += 1;
             let provenance = RawClockProvenance::new_untrusted([0x91; 16]).unwrap();
             let clock = RawPairedClockSample::new_untrusted(
                 provenance,
@@ -3215,6 +3320,95 @@ mod tests {
             reconciler.accept(&plan).unwrap(),
             AcceptOutcome::Replay(plan.operation_id())
         );
+    }
+
+    #[test]
+    fn unfinished_operation_audit_preserves_accepted_journal_and_executor_state() {
+        let directory = TestDirectory::new();
+        let path = directory.journal();
+        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let plan = operation();
+        reconciler.accept(&plan).unwrap();
+        let before = fs::read(&path).unwrap();
+        let before_length = fs::metadata(&path).unwrap().len();
+
+        let unfinished = reconciler
+            .validated_unfinished_operation()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(unfinished.operation_id(), plan.operation_id());
+        assert_eq!(unfinished.state(), UnfinishedOperationStateV1::Accepted);
+        assert_eq!(fs::metadata(&path).unwrap().len(), before_length);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(reconciler.executor.timing_calls, 0);
+        assert_eq!(reconciler.executor.guardian_plan_requests.len(), 0);
+        assert_eq!(reconciler.executor.observe_calls, 0);
+        assert_eq!(reconciler.executor.apply_calls, 0);
+    }
+
+    #[test]
+    fn unfinished_operation_audit_preserves_authority_applying_journal_without_executor_calls() {
+        let directory = TestDirectory::new();
+        let path = directory.journal();
+        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        reconciler.accept(&plan).unwrap();
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate(plan.operation_id(), activation)
+            .unwrap();
+        assert_eq!(
+            reconciler.reconcile_once(plan.operation_id()).unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        reconciler.executor.timing_calls = 0;
+        reconciler.executor.guardian_plan_requests.clear();
+        reconciler.executor.observe_calls = 0;
+        reconciler.executor.apply_calls = 0;
+        reconciler.ledger_validated = false;
+        let before = fs::read(&path).unwrap();
+        let before_length = fs::metadata(&path).unwrap().len();
+
+        let unfinished = reconciler
+            .validated_unfinished_operation()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(unfinished.operation_id(), plan.operation_id());
+        assert_eq!(unfinished.state(), UnfinishedOperationStateV1::Applying);
+        assert_eq!(fs::metadata(&path).unwrap().len(), before_length);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(reconciler.executor.timing_calls, 0);
+        assert_eq!(reconciler.executor.guardian_plan_requests.len(), 0);
+        assert_eq!(reconciler.executor.observe_calls, 0);
+        assert_eq!(reconciler.executor.apply_calls, 0);
+    }
+
+    #[test]
+    fn unfinished_operation_audit_includes_ownership_pending() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let plan = gated_operation();
+        reconciler.accept(&plan).unwrap();
+
+        let unfinished = reconciler
+            .validated_unfinished_operation()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(unfinished.operation_id(), plan.operation_id());
+        assert_eq!(
+            unfinished.state(),
+            UnfinishedOperationStateV1::OwnershipPending
+        );
+        assert_eq!(reconciler.executor.timing_calls, 0);
+        assert_eq!(reconciler.executor.guardian_plan_requests.len(), 0);
+        assert_eq!(reconciler.executor.observe_calls, 0);
+        assert_eq!(reconciler.executor.apply_calls, 0);
     }
 
     #[test]

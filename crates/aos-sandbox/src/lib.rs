@@ -23,6 +23,8 @@ pub mod attachment_verification;
 pub mod authority;
 pub mod controller;
 #[cfg(target_os = "linux")]
+pub mod controller_service;
+#[cfg(target_os = "linux")]
 pub mod destination_slot_effect;
 #[cfg(target_os = "linux")]
 pub mod destination_slot_inventory;
@@ -166,7 +168,8 @@ pub use reconciler::{
     AuthorityEffectObservationV2, EffectDomain, EffectFailure, EffectObservation, EffectPlan,
     EffectReceipt, OperationPlan, OwnershipGateActivationOutcome, OwnershipGatePlanV1,
     OwnershipGateStatusV1, PreparedAuthorityEffectV2, ReconcileOutcome, Reconciler,
-    ReconcilerError, SingleNodeEffectExecutor, ValidatedHostEffectReceiptV1,
+    ReconcilerError, SingleNodeEffectExecutor, UnfinishedOperationStateV1,
+    ValidatedHostEffectReceiptV1, ValidatedUnfinishedOperationV1,
 };
 #[cfg(target_os = "linux")]
 pub use resource_inventory::{

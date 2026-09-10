@@ -20,6 +20,7 @@ use crate::{
     AcceptOutcome, OperationPlan, OwnershipAuthoritySessionClient, OwnershipAuthorityVerifier,
     OwnershipClockObservationError, OwnershipResumeError, OwnershipResumeOutcomeV1,
     ReconcileOutcome, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
+    ValidatedUnfinishedOperationV1,
 };
 
 #[cfg(target_os = "linux")]
@@ -1803,6 +1804,24 @@ where
             });
         }
         Ok(ControllerQuantumReport { steps, idle })
+    }
+
+    /// Returns one validated durable operation that still requires active work.
+    ///
+    /// This audit performs no admission, durable transition, or executor call.
+    /// It is suitable for a read-only controller activation that must refuse
+    /// readiness rather than attempt recovery without installed authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerServiceError::Reconciler`] when journal health or
+    /// any durable ledger relationship fails validation.
+    pub fn validated_unfinished_operation(
+        &mut self,
+    ) -> Result<Option<ValidatedUnfinishedOperationV1>, ControllerServiceError> {
+        self.reconciler
+            .validated_unfinished_operation()
+            .map_err(ControllerServiceError::Reconciler)
     }
 
     /// Explicitly resumes one operation held behind durable ownership.
