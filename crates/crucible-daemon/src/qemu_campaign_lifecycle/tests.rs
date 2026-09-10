@@ -3370,7 +3370,8 @@ fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
             panic!("materializable candidate must produce semantic evidence")
         };
         let actual = evidence
-            .property_verdicts()
+            .replay()
+            .properties()
             .properties()
             .get(assertion.name.as_str())
             .expect("candidate assertion verdict")
