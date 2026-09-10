@@ -400,6 +400,17 @@ fn packaged_executor_boundary_diagnostics_are_explicit_and_bounded() {
 }
 
 #[test]
+fn packaged_executor_determinism_finding_verification_is_explicit() {
+    let directory = tempfile::tempdir().expect("packaged executor directory");
+    let config = config(&directory, 1);
+    assert!(!config.verifies_determinism_findings());
+
+    let config = config.with_determinism_finding_verification();
+
+    assert!(config.verifies_determinism_findings());
+}
+
+#[test]
 fn packaged_hot_fork_config_preserves_launch_authentication_source() {
     let directory = tempfile::tempdir().expect("authentication source directory");
     let lifecycle = ProductionVmLifecycleConfig::new(

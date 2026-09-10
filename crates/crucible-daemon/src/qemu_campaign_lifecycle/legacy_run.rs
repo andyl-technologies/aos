@@ -48,13 +48,14 @@ use super::{
 };
 use crate::qemu_campaign_driver::QemuFreshSupplementalModeledDriver;
 use crate::{
+    AutomaticFindingExecutionRunner, AutomaticFindingExecutionRunnerError,
     ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleExecutionModel, CrucibleExecutionModelError, CrucibleExecutionRunner,
     CrucibleMeasurementError, CrucibleMeasurementReplayEvidence, ExactCheckpointStore,
     ExactCheckpointStoreError, ExecutionCancellation, ExecutorCapacityError,
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostResourceFactory,
     MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, QemuAttemptHostResourceFactory,
-    QemuFreshModeledDriverError, RepositoryAttemptAdmission,
+    QemuFreshModeledDriverError, RepositoryAttemptAdmission, SharedQemuAttemptHostResourceFactory,
     decode_crucible_configuration_artifact_with_selections,
 };
 
@@ -70,6 +71,14 @@ use exploration::{
 pub use exploration::{
     GuardedCampaignBranchAcceptance, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
+};
+
+mod finding_export;
+use finding_export::capture_final_finding_export;
+pub use finding_export::{
+    GuardedCampaignFindingExport, GuardedCampaignFindingObjectProof,
+    GuardedCampaignFindingOccurrenceObjectProof, GuardedCampaignFindingOccurrenceProof,
+    GuardedCampaignFindingProof, GuardedCampaignFindingQueryProof,
 };
 
 mod replay_closure;
@@ -109,10 +118,19 @@ type DefaultExecutorServiceError<E> =
 type DefaultSupervisorError<E> =
     CampaignSupervisorError<DefaultPlannerServiceError, DefaultExecutorServiceError<E>>;
 
-/// Concrete production-runner failure used by the guarded CLI campaign owner.
-pub type GuardedDefaultCampaignProductionRunnerError = QemuFreshExecutionRunnerError<
+type GuardedDefaultCampaignMainRunnerError = QemuFreshExecutionRunnerError<
     QemuObservedFreshAttemptLifecycleFactoryError<QemuAttemptProductionVmLifecycleError>,
     QemuFreshModeledDriverError,
+>;
+type GuardedDefaultCampaignReplayRunnerError = QemuFreshExecutionRunnerError<
+    QemuAttemptProductionVmLifecycleError,
+    QemuFreshModeledDriverError,
+>;
+
+/// Concrete production-runner failure used by the guarded CLI campaign owner.
+pub type GuardedDefaultCampaignProductionRunnerError = AutomaticFindingExecutionRunnerError<
+    GuardedDefaultCampaignMainRunnerError,
+    GuardedDefaultCampaignReplayRunnerError,
 >;
 
 /// Typed shared-owner failure while advancing one guarded campaign.
@@ -174,6 +192,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     initial_schedule: Schedule,
     initial_replay_closure: Option<GuardedCampaignReplayClosure>,
     discovery_stop: StopCondition,
+    verify_determinism_findings: bool,
     collect_watch_frames: bool,
     capture_reached_stop: Option<Arc<ExactCheckpointStore>>,
     resume_source: Option<GuardedDefaultCampaignResumeSource>,
@@ -205,6 +224,7 @@ impl GuardedDefaultCampaignRunRequest {
             initial_schedule: Schedule::empty(),
             initial_replay_closure: None,
             discovery_stop: StopCondition::NextChoice,
+            verify_determinism_findings: false,
             collect_watch_frames: false,
             capture_reached_stop: None,
             resume_source: None,
@@ -245,6 +265,26 @@ impl GuardedDefaultCampaignRunRequest {
     pub fn with_discovery_stop(mut self, stop: StopCondition) -> Self {
         self.discovery_stop = stop;
         self
+    }
+
+    /// Enables bounded paired replay when an ordinary attempt has no finding.
+    #[must_use]
+    pub const fn with_determinism_finding_verification(mut self) -> Self {
+        self.verify_determinism_findings = true;
+        self
+    }
+
+    /// Uses one caller-owned cancellation signal for execution and final export.
+    #[must_use]
+    pub fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
+    /// Returns whether ordinary attempts receive bounded paired replay.
+    #[must_use]
+    pub const fn verifies_determinism_findings(&self) -> bool {
+        self.verify_determinism_findings
     }
 
     /// Retains bounded authenticated campaign progress frames for CLI watch output.
@@ -829,30 +869,32 @@ impl GuardedCampaignSupplementalFinding {
 /// One deterministic property failure returned by a supplemental oracle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuardedCampaignFindingOracleEvaluation {
-    property: String,
-    fingerprint: CampaignHash,
+    finding: crucible::SearchAssertionFinding,
 }
 
 impl GuardedCampaignFindingOracleEvaluation {
-    /// Builds one scenario-property result and its stable failure fingerprint.
+    /// Retains one typed assertion finding returned by the immutable oracle.
     #[must_use]
-    pub fn new(property: String, fingerprint: CampaignHash) -> Self {
-        Self {
-            property,
-            fingerprint,
-        }
+    pub fn new(finding: crucible::SearchAssertionFinding) -> Self {
+        Self { finding }
     }
 
     /// Returns the scenario-declared property selected by the oracle.
     #[must_use]
     pub fn property(&self) -> &str {
-        &self.property
+        &self.finding.violation().assertion.name
     }
 
     /// Returns the stable failure fingerprint for the evaluated configuration.
     #[must_use]
-    pub const fn fingerprint(&self) -> CampaignHash {
-        self.fingerprint
+    pub fn fingerprint(&self) -> CampaignHash {
+        CampaignHash::from_bytes(self.finding.fingerprint().bytes)
+    }
+
+    /// Returns the actual typed assertion violation produced by the oracle.
+    #[must_use]
+    pub const fn violation(&self) -> &crucible::HostAssertionViolation {
+        self.finding.violation()
     }
 }
 
@@ -944,6 +986,7 @@ impl GuardedDefaultCampaignWatchFrame {
 pub struct GuardedDefaultCampaignRun {
     campaign: CampaignName,
     final_snapshot: CampaignSnapshotId,
+    finding_export: GuardedCampaignFindingExport,
     observations: Vec<GuardedDefaultCampaignObservation>,
     terminal: GuardedDefaultCampaignObservation,
     // crucible-lint: allow host-nondeterminism-state -- the owner exposes only the configuration decoded from the terminal authenticated campaign artifact.
@@ -1019,6 +1062,12 @@ impl GuardedDefaultCampaignRun {
     #[must_use]
     pub const fn final_snapshot(&self) -> CampaignSnapshotId {
         self.final_snapshot
+    }
+
+    /// Returns immutable, request-bound proof material for every final finding.
+    #[must_use]
+    pub const fn finding_export(&self) -> &GuardedCampaignFindingExport {
+        &self.finding_export
     }
 
     /// Returns every incorporated observation in acceptance order.
@@ -1166,6 +1215,15 @@ where
 /// Invalid state reached by the bounded scenario-default compatibility owner.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum GuardedDefaultCampaignInvariantError {
+    /// Final finding proof export was canceled before a transfer or return.
+    #[error("final finding proof export was canceled")]
+    FindingExportCanceled,
+    /// Final finding proof export exceeded its fixed operation or byte bound.
+    #[error("final finding proof export exceeded its fixed bound")]
+    FindingExportLimit,
+    /// Final finding proof export exceeded its finite wall-clock deadline.
+    #[error("final finding proof export exceeded its finite deadline")]
+    FindingExportDeadline,
     /// The campaign exceeded its fixed supervisor reconciliation bound.
     #[error("supervisor step count exceeded its fixed bound")]
     SupervisorStepLimit,
@@ -1275,17 +1333,46 @@ where
     validate_fresh_qemu_scenario_resources(&request.scenario, request.resources)
         .map_err(GuardedDefaultCampaignRunError::Resource)?;
 
-    let guarded_factory = QemuAttemptProductionVmLifecycleFactory::new(
+    let host = SharedQemuAttemptHostResourceFactory::new(host);
+    let production = QemuAttemptProductionVmLifecycleFactory::new(
+        request.lifecycle.clone(),
+        ComposedQemuAttemptResourceGuardFactory::new(host.clone()),
+    );
+    let (lifecycle_factory, execution_evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(production);
+    let supplemental_oracle = request.supplemental_finding_oracle.clone();
+    let main_driver = QemuFreshSupplementalModeledDriver::new(supplemental_oracle.clone());
+    let main = QemuFreshExecutionRunner::new(lifecycle_factory, main_driver);
+    let replay_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
         request.lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(host),
     );
-    let (lifecycle_factory, execution_evidence) =
-        QemuObservedFreshAttemptLifecycleFactory::with_evidence(guarded_factory);
-    let driver =
-        QemuFreshSupplementalModeledDriver::new(request.supplemental_finding_oracle.clone());
-    let runner = QemuFreshExecutionRunner::new(lifecycle_factory, driver);
+    let replay = QemuFreshExecutionRunner::new(
+        replay_lifecycles,
+        QemuFreshSupplementalModeledDriver::new(supplemental_oracle),
+    );
 
-    run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
+    let (repository, planner_authority) = default_run_repository(
+        Arc::new(MemoryBlobBackend::new(
+            "legacy-run-campaign",
+            DEFAULT_RUN_REPOSITORY_BYTES,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    )?;
+    let repository = Arc::new(repository);
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    let mut runner = AutomaticFindingExecutionRunner::new(store, main, replay);
+    if request.verify_determinism_findings {
+        runner = runner.with_determinism_finding_verification();
+    }
+
+    run_guarded_default_campaign_with_repository(
+        request,
+        runner,
+        execution_evidence,
+        repository,
+        planner_authority,
+    )
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1305,6 +1392,7 @@ where
     run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn run_guarded_default_campaign_with_validated_runner<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
@@ -1326,6 +1414,7 @@ where
     )
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn run_guarded_default_campaign_with_store<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
@@ -1339,6 +1428,27 @@ where
 {
     let (repository, planner_authority) = default_run_repository(blobs, refs)?;
     let repository = Arc::new(repository);
+
+    run_guarded_default_campaign_with_repository(
+        request,
+        runner,
+        execution_evidence,
+        repository,
+        planner_authority,
+    )
+}
+
+fn run_guarded_default_campaign_with_repository<R>(
+    request: GuardedDefaultCampaignRunRequest,
+    runner: R,
+    execution_evidence: QemuAttemptExecutionEvidence,
+    repository: Arc<CampaignRepository>,
+    planner_authority: PlannerAuthorityKey,
+) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<R::Error>>
+where
+    R: CrucibleExecutionRunner,
+    R::Error: Error + Send + Sync + 'static,
+{
     if let Some(closure) = &request.initial_replay_closure {
         closure
             .publish(&repository, &request.scenario, &request.initial_schedule)
@@ -1485,8 +1595,8 @@ where
         RepositoryAttemptAdmission::new(Arc::clone(&repository), executor_profile),
         daemon_epoch,
         request.resources,
-    )
-    .with_execution_cancellation(request.cancellation.clone());
+        request.cancellation.clone(),
+    );
     let capture_checkpoints = request.capture_reached_stop.as_ref().or_else(|| {
         request
             .resume_source
@@ -1568,10 +1678,18 @@ where
         request.resume_source.as_ref(),
         &mut supervisor,
     )?;
+    let finding_export = capture_final_finding_export(
+        &client,
+        &principal,
+        &campaign,
+        execution.final_snapshot,
+        &request.cancellation,
+    )?;
     materialize_result(
         &repository,
         campaign,
         execution,
+        finding_export,
         request.capture_reached_stop.as_deref(),
         request.resume_source.as_ref(),
     )
@@ -2603,6 +2721,7 @@ fn materialize_result<E>(
     repository: &Arc<CampaignRepository>,
     campaign: CampaignName,
     execution: DefaultRunExecution,
+    finding_export: GuardedCampaignFindingExport,
     checkpoints: Option<&ExactCheckpointStore>,
     resume_source: Option<&GuardedDefaultCampaignResumeSource>,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<E>>
@@ -2759,6 +2878,7 @@ where
     Ok(GuardedDefaultCampaignRun {
         campaign,
         final_snapshot: execution.final_snapshot,
+        finding_export,
         observations,
         terminal,
         terminal_configuration,
