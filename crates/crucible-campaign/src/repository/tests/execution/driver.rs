@@ -2,6 +2,103 @@
 
 use super::*;
 
+#[cfg(feature = "destructive-recovery-faults")]
+use std::{
+    fs::OpenOptions,
+    io::Write,
+    path::{Path, PathBuf},
+};
+
+#[cfg(feature = "destructive-recovery-faults")]
+use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
+
+#[cfg(feature = "destructive-recovery-faults")]
+const COORDINATOR_FAULT_CHILD_ENVIRONMENT: &str =
+    "CRUCIBLE_DESTRUCTIVE_RECOVERY_COORDINATOR_FAULT_CHILD";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const COORDINATOR_FAULT_ROOT_ENVIRONMENT: &str =
+    "CRUCIBLE_DESTRUCTIVE_RECOVERY_COORDINATOR_FAULT_ROOT";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const COORDINATOR_BEFORE_OBSERVATION_COMMIT_TRIGGER: &str =
+    "crucible.destructive-recovery.coordinator-before-observation-commit";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const COORDINATOR_FAULT_TEST_NAME: &str = "repository::tests::execution::driver::coordinator_fault_before_observation_commit_recovers_exactly_once";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_FAULT_EXIT_CODE: i32 = 86;
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DURABLE_EXECUTOR_COMPLETION_FILE: &str = "executor-completion";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DURABLE_EXECUTOR_REQUEST_JOURNAL: &str = "executor-request-journal";
+
+#[cfg(feature = "destructive-recovery-faults")]
+struct DurableCompletedExecutor {
+    root: PathBuf,
+    requests: Vec<SubmitAttemptRequest>,
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+impl ExecutorService for DurableCompletedExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.requests.push(request.clone());
+
+        let journal_path = self.root.join(DURABLE_EXECUTOR_REQUEST_JOURNAL);
+        let mut journal = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(journal_path)
+            .map_err(|_| "open durable executor request journal")?;
+        writeln!(journal, "{:?} {}", request.assignment(), request.attempt())
+            .map_err(|_| "encode durable executor request")?;
+        journal
+            .sync_all()
+            .map_err(|_| "sync durable executor request")?;
+
+        let observation = std::fs::read_to_string(self.root.join(DURABLE_EXECUTOR_COMPLETION_FILE))
+            .map_err(|_| "read durable executor completion")?;
+        let observation = ObservationId::parse(observation.trim())
+            .map_err(|_| "decode durable executor completion")?;
+        SubmitAttemptResponse::new(
+            request,
+            SubmitAttemptDisposition::AlreadyCompleted { observation },
+        )
+        .map_err(|_| "encode durable completed response")
+    }
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+impl ExecutorStatusService for DurableCompletedExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        _request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        Err("durable completion must resolve during submission")
+    }
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+impl ExecutorResumeService for DurableCompletedExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        _request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        Err("durable completion must not require resume")
+    }
+}
+
 #[test]
 fn claimable_attempt_pages_are_bounded_snapshot_bound_and_restart_rebuildable() {
     fn collect(
@@ -309,6 +406,181 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
         }
     }
     assert_eq!(restarted.reservation_count(), 0);
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+#[test]
+fn coordinator_fault_before_observation_commit_recovers_exactly_once() {
+    if std::env::var_os(COORDINATOR_FAULT_CHILD_ENVIRONMENT).is_some() {
+        run_coordinator_fault_child();
+        panic!("coordinator fault hook returned without terminating the process");
+    }
+
+    let temporary = tempfile::tempdir().expect("persistent coordinator fault fixture");
+    let repository = persistent_fault_repository(temporary.path());
+    let (repository, lineage, policy) = initialize_fixture(repository);
+    let (_, admitted, observation) = admitted_observation_fixture(
+        &repository,
+        &lineage,
+        &policy,
+        "coordinator-observation-commit-fault",
+    );
+    let observation_id = observation.id().expect("observation id");
+    repository
+        .put_observation(&observation)
+        .expect("persist executor observation body");
+    std::fs::write(
+        temporary.path().join(DURABLE_EXECUTOR_COMPLETION_FILE),
+        observation_id.to_text(),
+    )
+    .expect("persist executor completion fact");
+    let resume = command(
+        "coordinator-observation-commit-fault-resume",
+        admitted.new_snapshot,
+        CampaignControlAction::Resume,
+    );
+    let running = repository
+        .apply_control("coordinator-observation-commit-fault", &resume)
+        .expect("start persistent campaign");
+    drop(repository);
+
+    let child = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .arg("--exact")
+        .arg(COORDINATOR_FAULT_TEST_NAME)
+        .arg("--nocapture")
+        .env(COORDINATOR_FAULT_CHILD_ENVIRONMENT, "1")
+        .env(COORDINATOR_FAULT_ROOT_ENVIRONMENT, temporary.path())
+        .env(
+            DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
+            COORDINATOR_BEFORE_OBSERVATION_COMMIT_TRIGGER,
+        )
+        .output()
+        .expect("run coordinator fault child");
+    assert_eq!(
+        child.status.code(),
+        Some(DESTRUCTIVE_RECOVERY_FAULT_EXIT_CODE),
+        "fault child did not terminate at the publication boundary:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr),
+    );
+
+    let repository = Arc::new(persistent_fault_repository(temporary.path()));
+    let post_fault_head = repository
+        .head("coordinator-observation-commit-fault")
+        .expect("head after coordinator fault");
+    assert_eq!(post_fault_head.snapshot_id(), running.new_snapshot);
+    assert_eq!(
+        repository
+            .merkle
+            .get(
+                post_fault_head.snapshot().roots().observations,
+                map_key_content("observations.attempt", admitted.attempt.content_id()),
+            )
+            .expect("observation lookup after coordinator fault"),
+        None,
+    );
+    let claimable = repository
+        .project_claimable_attempts(
+            "coordinator-observation-commit-fault",
+            None,
+            MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS,
+        )
+        .expect("claimable attempt after coordinator fault");
+    assert!(claimable.attempts().contains(&admitted.attempt));
+
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let service = DurableCompletedExecutor {
+        root: temporary.path().to_path_buf(),
+        requests: Vec::new(),
+    };
+    let mut restarted = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        ExecutorClient::new(service),
+        DaemonEpoch::from_bytes([0xa4; 16]).expect("restart daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS,
+    )
+    .expect("restarted executor driver");
+    let incorporated = restarted
+        .step("coordinator-observation-commit-fault", WorkerSlotId::new(0))
+        .expect("resubmit and incorporate durable completion after coordinator restart");
+    let CampaignExecutorStepOutcome::Incorporated(incorporated) = incorporated else {
+        panic!("restarted coordinator did not incorporate the durable completion");
+    };
+    assert_eq!(
+        incorporated.observation_result().prior_snapshot,
+        running.new_snapshot
+    );
+    assert_eq!(
+        incorporated.observation_result().observation,
+        observation_id
+    );
+    assert_eq!(restarted.reservation_count(), 0);
+
+    let service = restarted.into_executor().into_inner();
+    assert_eq!(service.requests.len(), 1);
+    let journal = std::fs::read_to_string(temporary.path().join(DURABLE_EXECUTOR_REQUEST_JOURNAL))
+        .expect("read durable executor request journal");
+    let requests = journal.lines().collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].ends_with(&admitted.attempt.to_text()));
+    assert!(requests[1].ends_with(&admitted.attempt.to_text()));
+    assert_ne!(requests[0], requests[1]);
+    let replay = repository
+        .publish_observation(
+            "coordinator-observation-commit-fault",
+            running.new_snapshot,
+            &observation,
+        )
+        .expect("replay recovered observation");
+    assert!(replay.replayed);
+    assert_eq!(replay.new_snapshot, incorporated.final_snapshot());
+    assert_eq!(
+        repository
+            .head("coordinator-observation-commit-fault")
+            .expect("head after observation replay")
+            .snapshot_id(),
+        incorporated.final_snapshot(),
+    );
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn run_coordinator_fault_child() {
+    let root = std::env::var_os(COORDINATOR_FAULT_ROOT_ENVIRONMENT)
+        .map(std::path::PathBuf::from)
+        .expect("coordinator fault fixture root");
+    let repository = Arc::new(persistent_fault_repository(&root));
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let service = DurableCompletedExecutor {
+        root,
+        requests: Vec::new(),
+    };
+    let mut driver = CampaignExecutorDriver::new(
+        repository,
+        ExecutorClient::new(service),
+        DaemonEpoch::from_bytes([0xa2; 16]).expect("fault daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS,
+    )
+    .expect("faulting executor driver");
+    let _ = driver.step("coordinator-observation-commit-fault", WorkerSlotId::new(0));
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn persistent_fault_repository(root: &Path) -> CampaignRepository {
+    CampaignRepository::new(
+        Arc::new(DirectoryBlobBackend::new(
+            "coordinator-fault-fixture",
+            root.join("objects"),
+        )),
+        Arc::new(DirectoryRefBackend::new(root.join("authority"))),
+    )
 }
 
 #[test]

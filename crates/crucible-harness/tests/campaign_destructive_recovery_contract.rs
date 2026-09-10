@@ -115,6 +115,8 @@ struct InjectionContract {
     #[serde(default)]
     trigger: Option<String>,
     #[serde(default)]
+    fault_build_feature: Option<String>,
+    #[serde(default)]
     production_artifact_state: Option<String>,
     prior_state: String,
     symptom: String,
@@ -172,6 +174,16 @@ fn contract_validation_rejects_omitted_rows_and_production_fault_hooks() {
             .iter()
             .any(|failure| failure.contains("absent from production artifacts"))
     );
+
+    let missing_feature = CONTRACT_SOURCE.replacen(
+        "fault_build_feature = \"destructive-recovery-faults\"",
+        "fault_build_feature = \"\"",
+        1,
+    );
+    let failures = validation_failures(&missing_feature, NIX_SOURCE, &workspace_root());
+    assert!(failures.iter().any(|failure| {
+        failure.contains("implemented fault-build hook is not run through its declared feature")
+    }));
 }
 
 #[test]
@@ -258,7 +270,8 @@ fn contract_failures(contract: &Contract, nix_source: &str, root: &Path) -> Vec<
 
     validate_header(contract, &mut failures);
     validate_evidence_contract(contract, &mut failures);
-    validate_injections(contract, &mut failures);
+    validate_injections(contract, nix_source, &mut failures);
+    validate_fault_build_isolation(contract, root, &mut failures);
     validate_prerequisites(contract, nix_source, root, &mut failures);
 
     failures
@@ -400,7 +413,7 @@ fn validate_evidence_contract(contract: &Contract, failures: &mut Vec<String>) {
     }
 }
 
-fn validate_injections(contract: &Contract, failures: &mut Vec<String>) {
+fn validate_injections(contract: &Contract, nix_source: &str, failures: &mut Vec<String>) {
     let injection_ids = contract
         .injections
         .iter()
@@ -481,7 +494,10 @@ fn validate_injections(contract: &Contract, failures: &mut Vec<String>) {
                         injection.id
                     ));
                 }
-                if injection.trigger.is_some() || injection.production_artifact_state.is_some() {
+                if injection.trigger.is_some()
+                    || injection.fault_build_feature.is_some()
+                    || injection.production_artifact_state.is_some()
+                {
                     failures.push(format!(
                         "{} operator command unexpectedly declares a fault-build trigger",
                         injection.id
@@ -495,12 +511,6 @@ fn validate_injections(contract: &Contract, failures: &mut Vec<String>) {
                 }
             }
             "fault-build-trigger" => {
-                if injection.implementation_state != "fault-build-hook-required" {
-                    failures.push(format!(
-                        "{} must remain explicit as a required fault-build hook until implemented",
-                        injection.id
-                    ));
-                }
                 let Some(trigger) = injection.trigger.as_deref() else {
                     failures.push(format!(
                         "{} lacks a declared fault-build trigger",
@@ -521,6 +531,38 @@ fn validate_injections(contract: &Contract, failures: &mut Vec<String>) {
                         "{} fault-build hook must be absent from production artifacts",
                         injection.id
                     ));
+                }
+                match injection.implementation_state.as_str() {
+                    "fault-build-hook-required" => {
+                        if injection.fault_build_feature.is_some() {
+                            failures.push(format!(
+                                "{} declares a feature for an unimplemented fault-build hook",
+                                injection.id
+                            ));
+                        }
+                    }
+                    "fault-build-hook-available" => {
+                        let Some(feature) = injection.fault_build_feature.as_deref() else {
+                            failures.push(format!(
+                                "{} implemented fault-build hook has no feature",
+                                injection.id
+                            ));
+                            continue;
+                        };
+                        if feature != "destructive-recovery-faults"
+                            || !nix_source.contains("--features")
+                            || !nix_source.contains(feature)
+                        {
+                            failures.push(format!(
+                                "{} implemented fault-build hook is not run through its declared feature",
+                                injection.id
+                            ));
+                        }
+                    }
+                    state => failures.push(format!(
+                        "{} has unsupported fault-build implementation state {state}",
+                        injection.id
+                    )),
                 }
             }
             surface => failures.push(format!(
@@ -565,6 +607,116 @@ fn command_placeholders(action: &str) -> BTreeSet<&str> {
         .collect()
 }
 
+fn validate_fault_build_isolation(contract: &Contract, root: &Path, failures: &mut Vec<String>) {
+    if !contract
+        .injections
+        .iter()
+        .any(|injection| injection.implementation_state == "fault-build-hook-available")
+    {
+        return;
+    }
+
+    let expected_features = [
+        ("crates/crucible-campaign/Cargo.toml", Vec::<&str>::new()),
+        (
+            "crates/crucible-daemon/Cargo.toml",
+            vec!["crucible-campaign/destructive-recovery-faults"],
+        ),
+        (
+            "crates/crucible-cli/Cargo.toml",
+            vec!["crucible-daemon/destructive-recovery-faults"],
+        ),
+    ];
+    for (relative_path, expected_propagation) in expected_features {
+        let path = root.join(relative_path);
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                failures.push(format!(
+                    "fault-build manifest {} cannot be read: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let manifest = match source.parse::<toml::Value>() {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                failures.push(format!(
+                    "fault-build manifest {} does not parse: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let Some(features) = manifest.get("features").and_then(toml::Value::as_table) else {
+            failures.push(format!(
+                "fault-build manifest {} has no feature table",
+                path.display()
+            ));
+            continue;
+        };
+        let actual_propagation = features
+            .get("destructive-recovery-faults")
+            .and_then(toml::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+            });
+        if actual_propagation.as_deref() != Some(expected_propagation.as_slice()) {
+            failures.push(format!(
+                "fault-build manifest {} has invalid destructive-recovery feature propagation",
+                path.display()
+            ));
+        }
+        if default_feature_closure(features).contains("destructive-recovery-faults") {
+            failures.push(format!(
+                "fault-build manifest {} activates destructive recovery faults by default",
+                path.display()
+            ));
+        }
+    }
+
+    let package_path = root.join("pkgs/tools/crucible/crucible.nix");
+    match fs::read_to_string(&package_path) {
+        Ok(source)
+            if !source.contains("--all-features")
+                && !source.contains("destructive-recovery-faults") => {}
+        Ok(_) => failures.push(format!(
+            "production package {} can activate destructive recovery faults",
+            package_path.display()
+        )),
+        Err(error) => failures.push(format!(
+            "production package {} cannot be read: {error}",
+            package_path.display()
+        )),
+    }
+}
+
+fn default_feature_closure(features: &toml::map::Map<String, toml::Value>) -> BTreeSet<&str> {
+    let mut pending = features
+        .get("default")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_str)
+        .collect::<Vec<_>>();
+    let mut closure = BTreeSet::new();
+
+    while let Some(feature) = pending.pop() {
+        if !closure.insert(feature) {
+            continue;
+        }
+        if let Some(children) = features.get(feature).and_then(toml::Value::as_array) {
+            pending.extend(children.iter().filter_map(toml::Value::as_str));
+        }
+    }
+
+    closure
+}
+
 fn validate_prerequisites(
     contract: &Contract,
     nix_source: &str,
@@ -581,7 +733,7 @@ fn validate_prerequisites(
         }
         if !matches!(
             prerequisite.package.as_str(),
-            "crucible-cas" | "crucible-daemon"
+            "crucible-campaign" | "crucible-cas" | "crucible-daemon"
         ) {
             failures.push(format!(
                 "{} uses unexpected prerequisite package {}",

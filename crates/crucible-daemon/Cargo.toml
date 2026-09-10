@@ -7,6 +7,7 @@ publish = false
 
 [features]
 default = []
+destructive-recovery-faults = ["crucible-campaign/destructive-recovery-faults"]
 test-support = ["crucible-qemu/test-support"]
 
 [lints]
