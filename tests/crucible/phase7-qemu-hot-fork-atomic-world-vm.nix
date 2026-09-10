@@ -153,6 +153,7 @@ in
 
       printf '%s\n' \
         'PASS' \
+        'gate=gate:world-fork-atomicity' \
         'factory=production-whole-world' \
         'source=two-running-one-permanently-failed' \
         'io=block,ninep' \
