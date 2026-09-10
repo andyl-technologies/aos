@@ -359,7 +359,6 @@ impl PackedBlobBackend {
         let _lifecycle = self.lock_lifecycle(FlockOperation::LockExclusive)?;
         let _state = self.lock_state()?;
         let index = self.load_index()?;
-        let removed_before = self.cleanup_unreferenced_packs(&index)?;
         self.validate_index_packs(&index)?;
 
         if plan.configuration != self.configuration || plan.instance != index.instance {
@@ -373,6 +372,8 @@ impl PackedBlobBackend {
             if index.generation != expected_generation {
                 return Err(StoreError::Incompatible);
             }
+            self.cleanup_staging_packs()?;
+            let removed_before = self.cleanup_unreferenced_packs(&index)?;
             let after = self.accounting_for(&index)?;
             return Ok(PackedRepackReport {
                 plan: plan.id,
@@ -390,6 +391,8 @@ impl PackedBlobBackend {
         {
             return Err(StoreError::Incompatible);
         }
+        self.cleanup_staging_packs()?;
+        let removed_before = self.cleanup_unreferenced_packs(&index)?;
 
         let groups = self.repack_groups(&index)?;
         let mut candidates = Vec::with_capacity(groups.len());
@@ -1044,7 +1047,9 @@ impl BlobInventoryFence for PackedInventoryFence<'_> {
 
     fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
         let Some(removed) = self.index.entries.get(&id).copied() else {
-            self.backend.cleanup_unreferenced_packs(&self.index)?;
+            if self.backend.create_lock_files {
+                self.backend.cleanup_unreferenced_packs(&self.index)?;
+            }
             return Ok(PlannedDeleteDisposition::AlreadyAbsent);
         };
         let mut next = self.index.clone();
@@ -1297,7 +1302,13 @@ fn files_equal(left: &Path, right: &Path, maximum: u64) -> Result<bool, StoreErr
 }
 
 fn open_regular_file(path: &Path, operation: &'static str) -> Result<File, StoreError> {
-    let file = File::open(path).map_err(|source| io_error(operation, path, source))?;
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|source| io_error(operation, path, source.into()))?;
+    let file = File::from(descriptor);
     let metadata = file
         .metadata()
         .map_err(|source| io_error(operation, path, source))?;

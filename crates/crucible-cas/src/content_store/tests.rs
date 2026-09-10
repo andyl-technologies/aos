@@ -3536,6 +3536,78 @@ fn physical_quota_binds_exact_leaf_limits_and_survives_restart_and_admin() {
 }
 
 #[test]
+fn packed_repack_capability_preserves_its_physical_quota_guard() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let physical = node_id("physical-quota");
+    let packed = node_id("packed");
+    let policy =
+        StorePhysicalQuotaPolicyId::new("host/ext4/packed-repack").expect("physical quota policy");
+    let object_root = temporary.path().join("packed");
+    let config = StoreGraphConfig {
+        root: physical.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                physical,
+                StoreNodeSpec::PhysicalQuota {
+                    child: packed.clone(),
+                    policy: policy.clone(),
+                    project_id: 43,
+                    maximum_physical_bytes: 1024 * 1024,
+                    maximum_inodes: 64,
+                },
+            ),
+            (
+                packed.clone(),
+                StoreNodeSpec::Packed {
+                    root: object_root,
+                    target_pack_bytes: 64 * 1024,
+                },
+            ),
+        ]),
+    };
+    let binder = Arc::new(RecordingPhysicalQuotaBinder::new(true));
+    let mut binders = StoreGraphPhysicalQuotaBinders::new();
+    binders
+        .insert(policy, binder.clone())
+        .expect("physical quota capability");
+    let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
+        config,
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &binders,
+        &StoreGraphS3Clients::new(),
+    )
+    .expect("quota-bound packed graph");
+
+    let first_bytes = b"first quota-bound packed object";
+    let second_bytes = b"second quota-bound packed object";
+    let first = ContentId::for_bytes(ObjectKind::Trace, 1, first_bytes);
+    let second = ContentId::for_bytes(ObjectKind::Trace, 1, second_bytes);
+    put_bytes(&graph, first, first_bytes).expect("first packed put");
+    put_bytes(&graph, second, second_bytes).expect("second packed put");
+
+    let capabilities = admin.packed_repack();
+    assert_eq!(capabilities.len(), 1);
+    let repack = capabilities[0];
+    assert_eq!(repack.node(), &packed);
+    let plan = repack.plan_repack().expect("quota-bound repack plan");
+
+    binder.guard.set_allowed(false);
+    assert!(matches!(repack.accounting(), Err(StoreError::Quota)));
+    assert!(matches!(repack.plan_repack(), Err(StoreError::Quota)));
+    assert!(matches!(repack.apply_repack(&plan), Err(StoreError::Quota)));
+
+    binder.guard.set_allowed(true);
+    let report = repack
+        .apply_repack(&plan)
+        .expect("quota-bound repack apply");
+    assert_eq!(report.after().logical_objects(), 2);
+    assert_eq!(report.after().packs(), 1);
+}
+
+#[test]
 fn physical_quota_admission_rejects_invalid_shared_and_nonleaf_children() {
     let temp = TempDir::new().expect("temporary directory");
     let physical = node_id("physical-quota");
@@ -4331,6 +4403,42 @@ fn observational_directory_admin_fails_closed_without_creating_inventory_state()
     .expect("observational directory graph");
     let physical = admin.physical();
     assert!(physical[0].admin().acquire_inventory_fence().is_err());
+    assert_eq!(filesystem_content_snapshot(temp.path()), before);
+}
+
+#[test]
+fn observational_graph_rejects_logical_mutation_without_creating_inventory_state() {
+    let temp = TempDir::new().expect("temporary directory");
+    let objects = temp.path().join("objects");
+    fs::create_dir(&objects).expect("object root");
+    let node = node_id("directory");
+    let (graph, admin) = StoreGraph::build_observational_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root: node.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([(node, StoreNodeSpec::Directory { root: objects })]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &StoreGraphPhysicalQuotaBinders::new(),
+        &StoreGraphS3Clients::new(),
+    )
+    .expect("observational directory graph");
+    let before = filesystem_content_snapshot(temp.path());
+    let bytes = b"forbidden observational put";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+
+    assert!(matches!(
+        graph.put_if_absent(id, &BlobHandle::from_bytes(bytes.to_vec())),
+        Err(StoreError::Unsupported { .. })
+    ));
+    assert!(
+        admin.physical()[0]
+            .admin()
+            .acquire_inventory_fence()
+            .is_err()
+    );
     assert_eq!(filesystem_content_snapshot(temp.path()), before);
 }
 

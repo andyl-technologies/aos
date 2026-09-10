@@ -56,8 +56,8 @@ pub use encrypted_directory::{
 };
 pub use graph::{
     MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, StoreGraph,
-    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPhysicalAdmin,
-    StoreGraphPhysicalRetention, StoreGraphPhysicalVerification,
+    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPackedRepackAdmin,
+    StoreGraphPhysicalAdmin, StoreGraphPhysicalRetention, StoreGraphPhysicalVerification,
     StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError, StoreGraphVerificationLimit,
     StoreGraphVerificationLimits, StoreGraphVerificationLimitsError, StoreGraphVerificationReport,
     StoreNodeDescription, StoreNodeId, StoreNodeKind, StoreNodeMetrics,

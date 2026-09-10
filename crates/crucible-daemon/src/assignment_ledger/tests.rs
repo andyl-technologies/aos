@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use std::fs;
+use std::os::unix::fs::symlink;
 
 use crucible_campaign::{
     AttemptResourceLimits, AttemptStartMode, CampaignFactId, CampaignLineageId,
@@ -11,6 +12,39 @@ use crucible_campaign::{
 };
 
 use super::*;
+
+#[test]
+fn existing_ledger_open_never_initializes_missing_state() {
+    let temporary = tempfile::tempdir().expect("ledger parent");
+    let root = temporary.path().join("ledger");
+
+    assert!(DirectoryAssignmentLedger::open_existing(&root).is_err());
+    assert!(!root.exists());
+
+    drop(DirectoryAssignmentLedger::open(&root).expect("initialize ledger"));
+    let ledger = DirectoryAssignmentLedger::open_existing(&root).expect("open existing ledger");
+    assert_eq!(ledger.root(), root);
+    drop(ledger);
+
+    fs::rename(
+        root.join(RETENTION_STATE_FILE),
+        root.join("real-retention-state"),
+    )
+    .expect("move real retention state");
+    symlink("real-retention-state", root.join(RETENTION_STATE_FILE))
+        .expect("replace retention state with symlink");
+    assert!(DirectoryAssignmentLedger::open_existing(&root).is_err());
+    fs::remove_file(root.join(RETENTION_STATE_FILE)).expect("remove retention symlink");
+    fs::rename(
+        root.join("real-retention-state"),
+        root.join(RETENTION_STATE_FILE),
+    )
+    .expect("restore retention state");
+
+    fs::rename(root.join("writer.lock"), root.join("real.lock")).expect("move real lock");
+    symlink("real.lock", root.join("writer.lock")).expect("replace lock with symlink");
+    assert!(DirectoryAssignmentLedger::open_existing(&root).is_err());
+}
 
 #[test]
 fn writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
