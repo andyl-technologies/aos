@@ -207,6 +207,20 @@
   };
 
   scope = baseScope // manifestTools;
+
+  # Preserve completed construction tools while fixing the generator used by
+  # the public compiler. The public Gawk receives the same scalar-layout fix.
+  gawkOverrides = {
+    postUnpack = ''
+      patch -p1 < ${./patches/gawk-5.4.1-preserve-scalar-format.patch}
+    '';
+    postInstall =
+      baseScope.manifest.gawk.postInstall
+      + ''
+        "$out/bin/gawk" -f ${../../../tests/build/toolchain-awk.awk}
+      '';
+  };
+  compilerGawk = baseScope.mkAutotoolsTool (baseScope.manifest.gawk // gawkOverrides);
 in
   import ../lib/finalize-native.nix {
     privateTools = scope // {inherit gccStage2;};
@@ -216,6 +230,8 @@ in
     extraToolNames = ["xz" "bzip2" "patchelf"];
     compiler = gccStage2;
     compilerSource = ./gcc-stage2.nix;
+    compilerToolOverrides.gawk = compilerGawk;
+    manifestToolOverrides.gawk = gawkOverrides;
     staticNoPie = true;
     inherit buildPlatform hostPlatform targetPlatform;
   }
