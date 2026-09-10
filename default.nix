@@ -393,6 +393,47 @@
         identity = qualificationExecutorIdentity;
       }
     else null;
+  nativeAbilityScenarioIds = [
+    "ability-native-activation"
+    "ability-native-kubernetes"
+    "ability-native-recovery"
+  ];
+  qualificationRequirementChecks = scenarioId:
+    (builtins.head (
+      builtins.filter (
+        requirement: requirement.id == scenarioId
+      )
+      releaseQualification.requirements
+    ))
+    .checks;
+  mkNativeAbilityScenario = scenarioId: source: let
+    spec = import source {
+      inherit lib mkSystem pkgs;
+      qualificationImage = true;
+    };
+  in
+    testing.mkQualificationAbilityScenario {
+      name = "aos-qualification-${scenarioId}";
+      identity = qualificationExecutorIdentity;
+      inherit scenarioId;
+      checks = qualificationRequirementChecks scenarioId;
+      inherit (spec) testScript;
+      inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
+    };
+  nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+    ability-native-activation =
+      mkNativeAbilityScenario
+      "ability-native-activation"
+      ./tests/fleet/ability-native-activation.nix;
+    ability-native-kubernetes =
+      mkNativeAbilityScenario
+      "ability-native-kubernetes"
+      ./tests/fleet/ability-native-kubernetes.nix;
+    ability-native-recovery =
+      mkNativeAbilityScenario
+      "ability-native-recovery"
+      ./tests/fleet/ability-native-power-loss.nix;
+  };
   recoveryPackageScenario =
     if hostPlatform.isLinux
     then
@@ -428,7 +469,13 @@
       name = scenarioId;
       value = "${qualificationReportScenario}/bin/aos-qualification-${hostPlatform.system}-report";
     })
-    (builtins.filter (scenarioId: scenarioId != "package-function") qualificationScenarioIds));
+    (builtins.filter (
+        scenarioId:
+          scenarioId
+          != "package-function"
+          && !(builtins.elem scenarioId nativeAbilityScenarioIds)
+      )
+      qualificationScenarioIds));
   qualificationAutomatedScenarios =
     {
       # Package cases must execute the staged-byte lifecycle and reviewed
@@ -438,7 +485,11 @@
     // lib.optionalAttrs hostPlatform.isLinux {
       "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
       "claim-disk-${hostPlatform.system}-functional" = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
-    };
+    }
+    // lib.mapAttrs (
+      scenarioId: scenario: "${scenario}/bin/aos-qualification-${scenarioId}"
+    )
+    nativeAbilityScenarios;
   releaseQualificationExecutor = testing.mkQualificationExecutor {
     name = "aos-qualification-${hostPlatform.system}";
     platform = hostPlatform.system;

@@ -336,7 +336,7 @@ in
   ];
   assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
   assert builtins.all (id:
-    builtins.match ".*/aos-qualification-x86_64-linux-report" releaseExecutor.passthru.qualification.scenarios.${id}
+    builtins.match ".*/aos-qualification-${id}" releaseExecutor.passthru.qualification.scenarios.${id}
     != null) (builtins.attrNames abilityRequirements);
   assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;

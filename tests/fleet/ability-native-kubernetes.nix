@@ -3,9 +3,11 @@
   lib,
   mkSystem,
   pkgs,
+  qualificationImage ? false,
 }: let
   fixture = import ./_kubernetes-runtime-reference.nix {
     inherit lib mkSystem pkgs;
+    guestTools = qualificationImage;
   };
 in {
   name = "ability-native-kubernetes";
@@ -346,4 +348,11 @@ in {
       runtime.fail("systemctl is-active --quiet containerd.service")
       assert_no_independent_containerd_start()
     '';
-}
+  }
+  // lib.optionalAttrs qualificationImage {
+    qualification = {
+      candidateRuntimeCompanions = fixture.qualificationCandidateRuntimeCompanions;
+      extraClosures = fixture.extraClosures;
+      setupBody = fixture.qualificationSetupBody;
+    };
+  }

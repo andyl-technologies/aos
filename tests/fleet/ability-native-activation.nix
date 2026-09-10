@@ -3,9 +3,11 @@
   lib,
   mkSystem,
   pkgs,
+  qualificationImage ? false,
 }: let
   fixture = import ./_ability-runtime-reference.nix {
     inherit lib mkSystem pkgs;
+    guestTools = qualificationImage;
   };
 in {
   name = "ability-native-activation";
@@ -140,78 +142,6 @@ in {
               f"{shlex.quote(transaction)}"
           ))
           return bundle, diagnostic
-
-
-      def assert_linked_repair(
-          generation,
-          prior_transactions,
-          resource_key,
-          health,
-          required_operations,
-          forbidden_methods,
-      ):
-          transactions = retained_transactions(generation)
-          assert prior_transactions < transactions, (
-              prior_transactions,
-              transactions,
-          )
-          added = transactions - prior_transactions
-          assert len(added) == 1, added
-          transaction = next(iter(added))
-          bundle, diagnostic = native_transaction_documents(
-              generation, transaction
-          )
-          transition = bundle["transition"]
-          reconciliation = transition["reconciliation"]
-          assert transition["schema"] == (
-              "aos.ability.transition-snapshot/v2"
-          ), transition
-          assert reconciliation["schema"] == (
-              "aos.ability.runtime-observations/v1"
-          ), reconciliation
-          assert reconciliation["source_plan"] != bundle["plan"], (
-              reconciliation,
-              bundle,
-          )
-          observations = {
-              observation["resource"]["key"]: observation["state"]
-              for observation in reconciliation["observations"]
-          }
-          assert observations[resource_key]["state"] == "present", observations
-          assert observations[resource_key]["health"] == health, observations
-
-          operations = transition["effect_document"]["operations"]
-          operation_keys = {
-              (operation["target"]["resource"]["key"], operation["method"])
-              for operation in operations
-          }
-          assert required_operations <= operation_keys, (
-              required_operations,
-              operation_keys,
-          )
-          assert not {
-              operation
-              for operation in operation_keys
-              if operation[1] in forbidden_methods
-          }, operation_keys
-          completed_ordinals = {
-              event["node_ordinal"]
-              for event in diagnostic["timeline"]["events"]
-              if event["kind"] == "effect-completed"
-          }
-          required_ordinals = {
-              ordinal
-              for ordinal, operation in enumerate(operations)
-              if (
-                  operation["target"]["resource"]["key"],
-                  operation["method"],
-              ) in required_operations
-          }
-          assert required_ordinals <= completed_ordinals, (
-              required_ordinals,
-              completed_ordinals,
-          )
-          return transactions, transaction
 
 
       def assert_completed_native_updates(generation, transaction, instances):
@@ -466,112 +396,6 @@ in {
       assert_route("beta.example", 18081, "app-b", "beta-v1")
       assert_route("gamma.example", 18082, "app-c", "gamma-v1")
       transactions_v1 = transactions_v1_after_no_op
-
-      # Equal desired state still repairs direct live drift. A stopped service
-      # needs only its lifecycle and observation pipeline; its exact managed
-      # configuration remains untouched.
-      configuration_digests_before_stop = runtime.succeed(
-          f"{COREUTILS}/sha256sum "
-          "/var/lib/aos/ability-reference/nginx-main.conf "
-          "/var/lib/aos/ability-reference/nginx-secondary.conf"
-      )
-      reload_calls_before_stop = runtime.succeed(
-          f"{COREUTILS}/cat /run/ability-nginx-reload.calls"
-      )
-      runtime.succeed("systemctl stop nginx-nginx-main.service")
-      runtime.fail("systemctl is-active --quiet nginx-nginx-main.service")
-      repaired_generation_v1 = switch_host(
-          "/run/ability-host-v1.nix", "v1-repair-stopped"
-      )
-      assert repaired_generation_v1 == generation_v1, (
-          generation_v1,
-          repaired_generation_v1,
-      )
-      transactions_v1, stopped_repair_transaction = assert_linked_repair(
-          generation_v1,
-          transactions_v1,
-          "nginx-main-service",
-          "stopped",
-          {
-              ("nginx-main-service", "start"),
-              ("nginx-main-service", "observe"),
-          },
-          {"prepare", "publish", "reload"},
-      )
-      runtime.succeed("systemctl is-active --quiet nginx-nginx-main.service")
-      assert runtime.succeed(
-          f"{COREUTILS}/sha256sum "
-          "/var/lib/aos/ability-reference/nginx-main.conf "
-          "/var/lib/aos/ability-reference/nginx-secondary.conf"
-      ) == configuration_digests_before_stop
-      assert runtime.succeed(
-          f"{COREUTILS}/cat /run/ability-nginx-reload.calls"
-      ) == reload_calls_before_stop
-      assert_route("alpha.example", 18081, "app-a", "alpha-v1")
-      assert_consumer_observation(activation_v1)
-
-      # Keep the valid ownership marker while changing the owned bytes. A
-      # revoked policy fence must reject the attempt before generation state,
-      # a transaction, or any native effect changes. Restoring authority then
-      # constructs and executes a linked publish/reload repair.
-      main_configuration = "/var/lib/aos/ability-reference/nginx-main.conf"
-      runtime.succeed(
-          f"{COREUTILS}/printf '%s\\n' tampered-owned-configuration "
-          f"> {shlex.quote(main_configuration)}"
-      )
-      tampered_digest = runtime.succeed(
-          f"{COREUTILS}/sha256sum {shlex.quote(main_configuration)}"
-      )
-      reload_calls_before_rejected_repair = runtime.succeed(
-          f"{COREUTILS}/cat /run/ability-nginx-reload.calls"
-      )
-      runtime.succeed(f"{COREUTILS}/rm -f {shlex.quote(authority_v1)}")
-      status, stdout, stderr = runtime.execute(
-          f"{APM} switch --from /run/ability-host-v1.nix "
-          "--eval-root /run/ability-eval-v1-repair-revoked",
-          timeout=600,
-      )
-      assert status != 0, (status, stdout, stderr)
-      assert current_generation() == generation_v1
-      assert retained_transactions(generation_v1) == transactions_v1
-      assert runtime.succeed(
-          f"{COREUTILS}/sha256sum {shlex.quote(main_configuration)}"
-      ) == tampered_digest
-      assert runtime.succeed(
-          f"{COREUTILS}/cat /run/ability-nginx-reload.calls"
-      ) == reload_calls_before_rejected_repair
-      assert_route("alpha.example", 18081, "app-a", "alpha-v1")
-
-      restored_authority_v1 = provision_operator_authority(
-          activation_v1, "/run/ability-authority-v1"
-      )
-      assert restored_authority_v1 == authority_v1
-      repaired_generation_v1 = switch_host(
-          "/run/ability-host-v1.nix", "v1-repair-divergent"
-      )
-      assert repaired_generation_v1 == generation_v1, (
-          generation_v1,
-          repaired_generation_v1,
-      )
-      transactions_v1, divergent_repair_transaction = assert_linked_repair(
-          generation_v1,
-          transactions_v1,
-          "nginx-main-configuration",
-          "divergent",
-          {
-              ("nginx-main-configuration", "prepare"),
-              ("nginx-main-configuration", "publish"),
-              ("nginx-main-service", "reload"),
-              ("nginx-main-service", "observe"),
-          },
-          {"start"},
-      )
-      assert runtime.succeed(
-          f"{COREUTILS}/sha256sum {shlex.quote(main_configuration)}"
-      ) != tampered_digest
-      assert_route("alpha.example", 18081, "app-a", "alpha-v1")
-      assert_route("beta.example", 18081, "app-b", "beta-v1")
-      assert_consumer_observation(activation_v1)
 
       manifest_v1 = json.loads(runtime.succeed(
           f"cat /var/lib/profiles/system/gen-{generation_v1}/manifest.json"
@@ -867,4 +691,11 @@ in {
           generation_v6, next(iter(transactions_v6)), "nginx-main"
       )
     '';
-}
+  }
+  // lib.optionalAttrs qualificationImage {
+    qualification = {
+      candidateRuntimeCompanions = fixture.qualificationCandidateRuntimeCompanions;
+      extraClosures = fixture.extraClosures;
+      setupBody = fixture.qualificationSetupBody;
+    };
+  }

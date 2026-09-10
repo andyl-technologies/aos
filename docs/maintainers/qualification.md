@@ -470,21 +470,42 @@ release admission still requires fresh executor observations for the exact
 frozen release subjects and acceptance checks. The x86 fleet topology also
 does not claim direct aarch64 execution.
 
-The x86 release executor maps all three policy IDs to the generic retained-report
-scenario. Before admission, a campaign producer must write a new canonical
-report at the case-digest path under
-`/run/aos-release/qualification-reports/x86_64-linux`. The adapter binds that
-report to the executor request, whose case digest covers the finalized subject
-records, policy, plan, checks, and staging receipt. The repository does not yet
-ship a native ability campaign that produces these reports; catalog wiring and
-the report adapter make the cases schedulable, but do not by themselves execute
-or qualify a release.
+The x86 release executor maps all three policy IDs to native ability scenarios.
+Each scenario selects the exact finalized server QCOW2, slot-A UKI, metadata,
+unsigned assembly, and finalized-set objects from the downloaded release case.
+It verifies their byte identities and cross-bindings, extracts the UKI's initrd,
+and checks the embedded static ability contract before booting that QCOW2 with
+KVM, UEFI Secure Boot, and a software TPM. It then confirms through the guest's
+recorded running generation, booted UKI digest, kernel, root hash, and host
+static contract that execution stayed on those published subjects.
 
-The recovery gate checks the built initrd artifact and its static
-initrd-to-host handoff contract, then observes fresh host authority and resource
-incarnations after reboot. It does not claim a completed live journal-ownership
-handoff from an initrd ability executor; that remains a separate qualification
-surface when such an executor exists.
+The scenario also reconstructs the complete published NAR graph rooted at the
+release's `aos`, `apm`, `apr`, and `packageRuntime` outputs. It verifies every
+downloaded NAR and narinfo relationship in an initially empty private Nix store,
+exports that checked graph, imports it into the published guest, and compares
+the guest's registered NAR hashes and references with the downloaded records.
+The executor-owned reference-provider fixture remains separate from the release
+subjects. Before importing it, the scenario replaces its recorded executor
+runtime artifact with the candidate `packageRuntime` artifact, recomputes the
+provider and export identities, and exports the resulting candidate-bound
+companions from the private store. The retained environment identifies those
+fixture companions and records whether the candidate runtime differs from the
+executor fixture runtime.
+
+Before provisioning, every boot checks the image-owned initrd selection and
+the initrd-to-host checkpoint against the current boot ID, running image
+identity, and static-contract digest. The candidate package runtime then
+validates the retained host-receipt journal a second time; the scenario requires
+that this idempotent receipt leave the journal bytes unchanged. This proves the
+complete no-activation-required handoff. A future image that selects an initrd
+activation needs corresponding execution assertions.
+
+After provisioning through the published `apm`, the native fleet body drives
+the published `aos`, `apm`, `apr`, and package runtime paths in the guest. The
+recovery case also observes fresh host authority and resource incarnations
+after reboot. Each scenario writes a fresh canonical report in the private
+executor attempt. No precreated report under
+`/run/aos-release/qualification-reports` can satisfy these three staging cases.
 
 The runner reads a canonical v2 executor request on stdin. It verifies every
 anonymous HTTPS download's size and SHA-256, retains it under a hashed name,
@@ -598,8 +619,8 @@ platform closures at the paths passed to `qualify-run`. Before starting an
 executor, install each applicable report-backed scenario's single-link
 canonical report at
 `/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.
-The staging container lifecycle cases execute directly and do not read this
-report directory.
+The staging container and native ability lifecycle cases execute directly and
+do not read this report directory.
 The x86_64 Linux executor uses the fixed paths
 `/run/aos-release/qualification-reports/operator-recovery.json` and
 `production-recovery.json` for those two operator exercises. Each adapter

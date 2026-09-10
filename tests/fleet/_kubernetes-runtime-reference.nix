@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  guestTools ? false,
 }: let
   packageSet = import ../abilities/reference-kubernetes/package.nix {
     inherit lib;
@@ -44,54 +45,90 @@
     emptyAddonPayload
     // {
       revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON emptyAddonPayload)}";
+  };
+
+  runtimeModule = {
+    aos.packages.k3s-combined = {
+      package = pkgs.k3s-combined;
+      bundle = true;
+      preset = false;
     };
 
+    environment.etc = {
+      "aos/packages/k3s-combined/k3s.env".text = ''
+        K3S_ENABLED=true
+        K3S_NODE_NAME=ability-runtime
+        K3S_NODE_IP=192.168.50.10
+        K3S_FLANNEL_IFACE=eth0
+        K3S_KUBECONFIG_MODE=0600
+        K3S_DISABLE=traefik,servicelb,metrics-server
+      '';
+      "aos/packages/k3s-combined/addons.json".text = builtins.toJSON emptyAddons;
+      "tmpfiles.d/ability-kubernetes.conf".text = ''
+        d /var/cache/aos-ability-evaluator-fixture 0700 root root - -
+        d /run/credstore 0700 root root - -
+        d /run/credstore/k3s-combined 0700 root root - -
+      '';
+    };
+  };
   runtimeSystem = mkSystem [
     ../../systems/server-test.nix
-    {
-      aos.packages.k3s-combined = {
-        package = pkgs.k3s-combined;
-        bundle = true;
-        preset = false;
-      };
-
-      environment.etc = {
-        "aos/packages/k3s-combined/k3s.env".text = ''
-          K3S_ENABLED=true
-          K3S_NODE_NAME=ability-runtime
-          K3S_NODE_IP=192.168.50.10
-          K3S_FLANNEL_IFACE=eth0
-          K3S_KUBECONFIG_MODE=0600
-          K3S_DISABLE=traefik,servicelb,metrics-server
-        '';
-        "aos/packages/k3s-combined/addons.json".text = builtins.toJSON emptyAddons;
-        "tmpfiles.d/ability-kubernetes.conf".text = ''
-          d /var/cache/aos-ability-evaluator-fixture 0700 root root - -
-          d /run/credstore 0700 root root - -
-          d /run/credstore/k3s-combined 0700 root root - -
-        '';
-      };
-    }
+    runtimeModule
   ];
-in {
-  inherit orderedPackages packageRoots packageSet runtimeSystem;
-
-  extraClosures =
+  qualificationSetupBody = ''
+    aos.packages.k3s-combined = {
+      package = pkgs.k3s-combined;
+      bundle = true;
+      preset = false;
+    };
+    environment.etc."aos/packages/k3s-combined/k3s.env".text = ${builtins.toJSON runtimeModule.environment.etc."aos/packages/k3s-combined/k3s.env".text};
+    environment.etc."aos/packages/k3s-combined/addons.json".text = ${builtins.toJSON runtimeModule.environment.etc."aos/packages/k3s-combined/addons.json".text};
+    environment.etc."tmpfiles.d/ability-kubernetes.conf".text = ${builtins.toJSON runtimeModule.environment.etc."tmpfiles.d/ability-kubernetes.conf".text};
+  '';
+  qualificationExtraClosures =
     packageRoots
     ++ [
-      pkgs.aos
-      pkgs.aos.apm
-      pkgs.aos.apr
       pkgs.aos.testSupport
       pkgs.coreutils
       pkgs.gawk
       pkgs.git
+      pkgs.iproute2
       pkgs.jq
       pkgs.k3s-combined
       pkgs.kubectl
       pkgs.nix
       pkgs.util-linux
     ];
+  qualificationCandidateRuntimeCompanions = map (name: let
+    entry = builtins.head (builtins.filter (candidate: candidate.name == name) orderedPackages);
+  in {
+    inherit (entry) name;
+    primary = entry.package;
+    abilities = entry.package.abilities;
+    originalRuntime = pkgs.aos.packageRuntime;
+  }) ["ability-reference-systemd-bootstrap"];
+in {
+  inherit
+    orderedPackages
+    packageRoots
+    packageSet
+    qualificationExtraClosures
+    qualificationCandidateRuntimeCompanions
+    qualificationSetupBody
+    runtimeSystem
+    ;
+
+  extraClosures =
+    if guestTools
+    then qualificationExtraClosures
+    else
+      qualificationExtraClosures
+      ++ [
+        pkgs.aos
+        pkgs.aos.apm
+        pkgs.aos.apr
+        pkgs.k3s-combined
+      ];
 
   testPrelude =
     # python
@@ -102,8 +139,16 @@ in {
       import shlex
       import textwrap
 
-      APM = "${pkgs.aos.apm}/bin/apm"
-      APR = "${pkgs.aos.apr}/bin/apr"
+      APM = ${
+        if guestTools
+        then ''runtime.guest_tool("apm")''
+        else builtins.toJSON "${pkgs.aos.apm}/bin/apm"
+      }
+      APR = ${
+        if guestTools
+        then ''runtime.guest_tool("apr")''
+        else builtins.toJSON "${pkgs.aos.apr}/bin/apr"
+      }
       COREUTILS = "${pkgs.coreutils}/bin"
       FIXTURE = "${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture"
       GIT = "${pkgs.git}/bin/git"
@@ -113,12 +158,20 @@ in {
       NIX_INSTANTIATE = "${pkgs.nix}/bin/nix-instantiate"
       PRLIMIT = "${pkgs.util-linux}/bin/prlimit"
 
-      REFERENCE_PACKAGES = ${builtins.toJSON (map (entry: {
+      REFERENCE_PACKAGES = ${
+        if guestTools
+        then "runtime.candidate_handler_packages("
+        else ""
+      }${builtins.toJSON (map (entry: {
           inherit (entry) name;
           package = builtins.toString entry.package;
           abilities = builtins.toString entry.package.abilities;
         })
-        orderedPackages)}
+        orderedPackages)}${
+        if guestTools
+        then ")"
+        else ""
+      }
 
 
       def publish_kubernetes_packages():
