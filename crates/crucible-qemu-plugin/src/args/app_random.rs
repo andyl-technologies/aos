@@ -15,6 +15,10 @@ pub const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
 pub const PLUGIN_ARG_APP_RANDOM_BRANCH_SEED: &str = "app_random_branch_seed";
 /// Optional number of node-local prefix requests served before re-seeding.
 pub const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER: &str = "app_random_branch_after";
+/// Optional ordered fork seeds for requests after multiple exact prefixes.
+pub const PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS: &str = "app_random_branch_seeds";
+/// Optional ordered node-local prefix counts paired with multiple fork seeds.
+pub const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS: &str = "app_random_branch_afters";
 /// Optional node-local draw count already consumed before process launch.
 pub const PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET: &str = "app_random_draw_offset";
 /// Optional hex-name/per-stream cursor map for process continuation.
@@ -26,8 +30,7 @@ pub struct PluginAppRandomConfig {
     root_seed: u64,
     draw_cap: u64,
     node_name: String,
-    branch_seed: Option<u64>,
-    branch_after_draws: Option<u64>,
+    branch_reseeds: Vec<(u64, u64)>,
     draw_offset: u64,
     stream_positions: BTreeMap<String, u64>,
 }
@@ -39,8 +42,7 @@ impl PluginAppRandomConfig {
             root_seed,
             draw_cap,
             node_name: node_name.to_owned(),
-            branch_seed: None,
-            branch_after_draws: None,
+            branch_reseeds: Vec::new(),
             draw_offset: 0,
             stream_positions: BTreeMap::new(),
         }
@@ -64,16 +66,28 @@ impl PluginAppRandomConfig {
         &self.node_name
     }
 
-    /// Returns the optional decision-RNG root for the forked future.
+    /// Returns the decision-RNG root when exactly one re-seed is configured.
     #[must_use]
     pub const fn branch_seed(&self) -> Option<u64> {
-        self.branch_seed
+        match self.branch_reseeds.as_slice() {
+            [(seed, _)] => Some(*seed),
+            _ => None,
+        }
     }
 
-    /// Returns the node-local prefix draw count before the forked future.
+    /// Returns the draw boundary when exactly one re-seed is configured.
     #[must_use]
     pub const fn branch_after_draws(&self) -> Option<u64> {
-        self.branch_after_draws
+        match self.branch_reseeds.as_slice() {
+            [(_, after)] => Some(*after),
+            _ => None,
+        }
+    }
+
+    /// Returns ordered decision-RNG roots and node-local draw boundaries.
+    #[must_use]
+    pub fn branch_reseeds(&self) -> &[(u64, u64)] {
+        &self.branch_reseeds
     }
 
     /// Returns the node-local draws consumed before process launch.
@@ -82,7 +96,7 @@ impl PluginAppRandomConfig {
         self.draw_offset
     }
 
-    /// Returns per-stream cursors consumed before process launch.
+    /// Returns active-seed stream cursors, distinct from the global draw offset.
     #[must_use]
     pub const fn stream_positions(&self) -> &BTreeMap<String, u64> {
         &self.stream_positions
@@ -102,6 +116,22 @@ pub enum AppRandomArgsParseError {
         "live app-random branching requires both `app_random_branch_seed` and `app_random_branch_after`"
     )]
     IncompleteBranch,
+    /// Multi-generation branch seed and boundary lists have different lengths.
+    #[error("live app-random branch sequence has {seeds} seeds and {afters} draw boundaries")]
+    BranchSequenceLengthMismatch {
+        /// Number of supplied seeds.
+        seeds: usize,
+        /// Number of supplied boundaries.
+        afters: usize,
+    },
+    /// Multi-generation branch boundaries move backward.
+    #[error("live app-random branch boundary {next} follows later boundary {previous}")]
+    BranchSequenceOrder {
+        /// Previous node-local draw boundary.
+        previous: u64,
+        /// Regressing node-local draw boundary.
+        next: u64,
+    },
     /// Inputs were supplied while white-box mode was disabled.
     #[error("live app-random arguments are forbidden while white-box mode is off")]
     WhiteboxDisabled,
@@ -135,9 +165,9 @@ pub enum AppRandomArgsParseError {
         /// Rejected encoded cursor map.
         value: String,
     },
-    /// Node-local stream positions do not match the declared continuation count.
+    /// Active-seed stream positions exceed the declared global continuation count.
     #[error(
-        "live app-random stream positions total {position_draws} does not match draw offset {draw_offset}"
+        "live app-random stream positions total {position_draws} exceeds draw offset {draw_offset}"
     )]
     PositionsMismatchOffset {
         /// Sum of node-local per-stream positions.
@@ -164,6 +194,8 @@ pub(super) fn parse(
     let node = parsed.value(PLUGIN_ARG_APP_RANDOM_NODE);
     let branch_seed = parsed.value(PLUGIN_ARG_APP_RANDOM_BRANCH_SEED);
     let branch_after = parsed.value(PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER);
+    let branch_seeds = parsed.value(PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS);
+    let branch_afters = parsed.value(PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS);
     let draw_offset_arg = parsed.value(PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET);
     let positions_arg = parsed.value(PLUGIN_ARG_APP_RANDOM_POSITIONS);
     let draw_offset = draw_offset_arg
@@ -174,17 +206,18 @@ pub(super) fn parse(
         .map(parse_stream_positions)
         .transpose()?
         .unwrap_or_default();
-    let branch = match (branch_seed, branch_after) {
-        (None, None) => (None, None),
-        (Some(seed), Some(after)) => (
-            Some(parse_u64(PLUGIN_ARG_APP_RANDOM_BRANCH_SEED, seed)?),
-            Some(parse_u64(PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER, after)?),
-        ),
+    let branches = match (branch_seed, branch_after, branch_seeds, branch_afters) {
+        (None, None, None, None) => Vec::new(),
+        (Some(seed), Some(after), None, None) => vec![(
+            parse_u64(PLUGIN_ARG_APP_RANDOM_BRANCH_SEED, seed)?,
+            parse_u64(PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER, after)?,
+        )],
+        (None, None, Some(seeds), Some(afters)) => parse_branch_reseeds(seeds, afters)?,
         _ => return Err(AppRandomArgsParseError::IncompleteBranch.into()),
     };
     match (seed, cap, node) {
         (None, None, None)
-            if branch == (None, None) && draw_offset_arg.is_none() && positions_arg.is_none() =>
+            if branches.is_empty() && draw_offset_arg.is_none() && positions_arg.is_none() =>
         {
             Ok(None)
         }
@@ -193,10 +226,17 @@ pub(super) fn parse(
         }
         (Some(seed), Some(cap), Some(node_name)) => {
             let draw_cap = parse_u64(PLUGIN_ARG_APP_RANDOM_CAP, cap)?;
-            if branch.1.is_some_and(|after| after > draw_cap) {
+            if let Some((_, branch_after)) = branches.iter().find(|(_, after)| *after > draw_cap) {
                 return Err(AppRandomArgsParseError::BranchAfterExceedsCap {
-                    branch_after: branch.1.unwrap_or_default(),
+                    branch_after: *branch_after,
                     draw_cap,
+                }
+                .into());
+            }
+            if let Some(pair) = branches.windows(2).find(|pair| pair[0].1 > pair[1].1) {
+                return Err(AppRandomArgsParseError::BranchSequenceOrder {
+                    previous: pair[0].1,
+                    next: pair[1].1,
                 }
                 .into());
             }
@@ -214,18 +254,17 @@ pub(super) fn parse(
                     position_draws: u64::MAX,
                     draw_offset,
                 })?;
-            if position_draws != draw_offset {
+            if position_draws > draw_offset {
                 return Err(AppRandomArgsParseError::PositionsMismatchOffset {
                     position_draws,
                     draw_offset,
                 }
                 .into());
             }
-            if let Some(branch_after) = branch.1
-                && branch_after < draw_offset
+            if let Some((_, branch_after)) = branches.iter().find(|(_, after)| *after < draw_offset)
             {
                 return Err(AppRandomArgsParseError::BranchBeforeOffset {
-                    branch_after,
+                    branch_after: *branch_after,
                     draw_offset,
                 }
                 .into());
@@ -234,8 +273,7 @@ pub(super) fn parse(
                 root_seed: parse_u64(PLUGIN_ARG_APP_RANDOM_SEED, seed)?,
                 draw_cap,
                 node_name: node_name.to_owned(),
-                branch_seed: branch.0,
-                branch_after_draws: branch.1,
+                branch_reseeds: branches,
                 draw_offset,
                 stream_positions,
             }))
@@ -252,9 +290,33 @@ pub(super) fn is_key(key: &str) -> bool {
             | PLUGIN_ARG_APP_RANDOM_NODE
             | PLUGIN_ARG_APP_RANDOM_BRANCH_SEED
             | PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER
+            | PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS
+            | PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS
             | PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET
             | PLUGIN_ARG_APP_RANDOM_POSITIONS
     )
+}
+
+fn parse_branch_reseeds(
+    seeds: &str,
+    afters: &str,
+) -> Result<Vec<(u64, u64)>, PluginArgsParseError> {
+    let seeds = seeds
+        .split(';')
+        .map(|seed| parse_u64(PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS, seed))
+        .collect::<Result<Vec<_>, _>>()?;
+    let afters = afters
+        .split(';')
+        .map(|after| parse_u64(PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS, after))
+        .collect::<Result<Vec<_>, _>>()?;
+    if seeds.is_empty() || seeds.len() != afters.len() {
+        return Err(AppRandomArgsParseError::BranchSequenceLengthMismatch {
+            seeds: seeds.len(),
+            afters: afters.len(),
+        }
+        .into());
+    }
+    Ok(seeds.into_iter().zip(afters).collect())
 }
 
 fn parse_stream_positions(value: &str) -> Result<BTreeMap<String, u64>, PluginArgsParseError> {
@@ -375,6 +437,41 @@ mod tests {
     }
 
     #[test]
+    fn ordered_branch_sequence_parses_and_malformed_sequences_fail_closed() {
+        let args = PluginArgs::parse(
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=9,app_random_node=node-a,app_random_branch_seeds=29;47,app_random_branch_afters=1;4",
+        )
+        .unwrap_or_else(|error| panic!("app-random branch sequence should parse: {error}"));
+        let config = args
+            .app_random()
+            .unwrap_or_else(|| panic!("app-random config should be present"));
+        assert_eq!(config.branch_reseeds(), &[(29, 1), (47, 4)]);
+
+        assert_eq!(
+            PluginArgs::parse(
+                "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=9,app_random_node=node-a,app_random_branch_seeds=29;47,app_random_branch_afters=1",
+            ),
+            Err(PluginArgsParseError::AppRandom(
+                AppRandomArgsParseError::BranchSequenceLengthMismatch {
+                    seeds: 2,
+                    afters: 1,
+                }
+            ))
+        );
+        assert_eq!(
+            PluginArgs::parse(
+                "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=9,app_random_node=node-a,app_random_branch_seeds=29;47,app_random_branch_afters=4;1",
+            ),
+            Err(PluginArgsParseError::AppRandom(
+                AppRandomArgsParseError::BranchSequenceOrder {
+                    previous: 4,
+                    next: 1,
+                }
+            ))
+        );
+    }
+
+    #[test]
     fn partial_or_disabled_group_is_rejected() {
         assert_eq!(
             PluginArgs::parse(
@@ -410,11 +507,11 @@ mod tests {
         );
         assert!(matches!(
             PluginArgs::parse(
-                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=4,app_random_node=node-a,app_random_draw_offset=2,app_random_positions=616c706861:1"
+                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=4,app_random_node=node-a,app_random_draw_offset=2,app_random_positions=616c706861:3"
             ),
             Err(PluginArgsParseError::AppRandom(
                 AppRandomArgsParseError::PositionsMismatchOffset {
-                    position_draws: 1,
+                    position_draws: 3,
                     draw_offset: 2
                 }
             ))

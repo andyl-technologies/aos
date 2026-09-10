@@ -94,6 +94,7 @@ impl ProductionVmLifecycleConfig {
             debug: None,
             logical_replay_boundary: None,
             branch: None,
+            continuation_branches: Vec::new(),
             signal_fault_replay: None,
             branch_network_choices: Vec::new(),
             app_random_branch_selections: BTreeMap::new(),
@@ -373,6 +374,44 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
+    /// Appends a decision-stream re-seed to an ordered cold-replay branch plan.
+    ///
+    /// Each branch is applied at its exact configuration and frontier. The
+    /// sequence allows a cold replay to reconstruct multiple controlled
+    /// continuation generations without collapsing an earlier seed transition.
+    #[must_use]
+    pub fn append_branch_reseed(
+        mut self,
+        base: Configuration,
+        frontier: VirtualTime,
+        seed: Seed,
+    ) -> Self {
+        self.continuation_branches.push(ProductionVmBranchConfig {
+            base,
+            frontier,
+            decisions: Vec::new(),
+            seed: Some(seed),
+        });
+        self
+    }
+
+    /// Appends an override boundary to an ordered cold-replay branch plan.
+    #[must_use]
+    pub fn append_branch_prefix_overrides(
+        mut self,
+        base: Configuration,
+        frontier: VirtualTime,
+        decisions: Vec<Decision>,
+    ) -> Self {
+        self.continuation_branches.push(ProductionVmBranchConfig {
+            base,
+            frontier,
+            decisions,
+            seed: None,
+        });
+        self
+    }
+
     /// Returns this configuration with exact promoted signal-fault replay.
     ///
     /// The plan must already have been reconstructed from repository-
@@ -393,6 +432,16 @@ impl ProductionVmLifecycleConfig {
     #[must_use]
     pub fn with_branch_network_choices(mut self, choices: Vec<crucible::OverrideDecision>) -> Self {
         self.branch_network_choices = choices;
+        self
+    }
+
+    /// Returns this configuration with additional exact World-network choices.
+    #[must_use]
+    pub fn append_branch_network_choices(
+        mut self,
+        choices: impl IntoIterator<Item = crucible::OverrideDecision>,
+    ) -> Self {
+        self.branch_network_choices.extend(choices);
         self
     }
 

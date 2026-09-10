@@ -431,6 +431,27 @@ fn hot_fork_capture_rejects_unresolved_lifecycle_ownership() {
 }
 
 #[test]
+fn hot_fork_capture_rejects_an_unfinished_checkpoint_transaction() {
+    let (_source, mut lifecycle) = permanently_failed_loop();
+    let configuration = lifecycle.inner.loop_impl().configuration().id();
+    lifecycle.checkpoint_targets.insert(
+        configuration,
+        quantum_loop::ExactCheckpointPublicationState::Preparing,
+    );
+
+    let error = lifecycle
+        .capture_hot_fork_world_continuation()
+        .err()
+        .unwrap_or_else(|| panic!("unfinished checkpoint ownership should fail closed"));
+
+    assert!(
+        error
+            .to_string()
+            .contains("mutable debug or checkpoint ownership")
+    );
+}
+
+#[test]
 fn hot_fork_continuation_rejects_a_cross_node_generation_map() {
     let (_source, mut continuation) = permanently_failed_continuation();
     let first = continuation

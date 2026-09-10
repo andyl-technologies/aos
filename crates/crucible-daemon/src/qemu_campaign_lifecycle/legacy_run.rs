@@ -1434,7 +1434,9 @@ where
                         continuation_start,
                         origin.path(),
                         source.final_stop.clone(),
-                        control.input().clone(),
+                        control
+                            .input(source_observation)
+                            .map_err(GuardedDefaultCampaignRunError::Codec)?,
                     ),
                     None => {
                         Attempt::new(continuation_start, origin.path(), source.final_stop.clone())

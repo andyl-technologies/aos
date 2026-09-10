@@ -45,7 +45,7 @@ crucible.campaign.configuration-artifact	1	crucible-campaign::artifact	configura
 crucible.campaign.branch-request	9	crucible-campaign::exploration	campaign-fact	gate:branch-point-model,gate:content-address
 crucible.campaign.proposal	2	crucible-campaign::exploration	campaign-fact	gate:lazy-frontier,gate:content-address
 crucible.campaign.branch-path	2	crucible-campaign::exploration	campaign-fact	gate:campaign-replay,gate:content-address
-crucible.campaign.attempt	6	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
+crucible.campaign.attempt	8	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.attempt-admission	2	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.planner-step	4	crucible-campaign::exploration	campaign-fact	gate:campaign-component-contract,gate:content-address
 crucible.campaign.planner-step-proposal	1	crucible-campaign::exploration	component-message	gate:campaign-component-contract

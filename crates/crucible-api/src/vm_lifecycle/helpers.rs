@@ -107,7 +107,7 @@ pub(super) const fn production_whitebox_switch(
 
 pub(super) fn production_app_random_launch_config(
     scenario: &ScenarioDef,
-    branch: Option<&ProductionVmBranchConfig>,
+    branches: &[ProductionVmBranchConfig],
     node: &NodeId,
 ) -> ProductionAppRandomConfig {
     let mut config = ProductionAppRandomConfig::from_seed(
@@ -115,11 +115,16 @@ pub(super) fn production_app_random_launch_config(
         scenario.app_random_draw_cap(),
         node.name.clone(),
     );
-    if let Some(branch) = branch
-        && let Some(seed) = branch.seed
-    {
-        let prefix_draws = app_random_request_count(&branch.base, node);
-        config = config.with_branch_seed(seed, prefix_draws);
+    let reseeds = branches
+        .iter()
+        .filter_map(|branch| {
+            branch
+                .seed
+                .map(|seed| (seed, app_random_request_count(&branch.base, node)))
+        })
+        .collect::<Vec<_>>();
+    if !reseeds.is_empty() {
+        config = config.with_branch_seed_sequence(reseeds);
     }
     config
 }
@@ -127,13 +132,13 @@ pub(super) fn production_app_random_launch_config(
 pub(super) fn production_app_random_checkpoint_config(
     scheduler: &SingleSchedulerCheckpoint,
     scenario: &ScenarioDef,
-    branch: Option<&ProductionVmBranchConfig>,
+    branches: &[ProductionVmBranchConfig],
     node: &NodeId,
 ) -> Result<ProductionAppRandomConfig, SchedulerError> {
-    let branch = if scheduler.branch_frontier_cap().is_some() {
-        branch
+    let branches = if scheduler.branch_frontier_cap().is_some() {
+        branches
     } else {
-        None
+        &[]
     };
     let configuration = scheduler.configuration_for(scenario).map_err(|error| {
         SchedulerError::BoundaryViolation {
@@ -153,26 +158,23 @@ pub(super) fn production_app_random_checkpoint_config(
         .filter(|(stream, _position)| streams.contains(stream))
         .map(|(stream, position)| (stream.name.clone(), position.draws))
         .collect::<BTreeMap<_, _>>();
-    let draw_offset = positions.values().try_fold(0_u64, |sum, draws| {
-        sum.checked_add(*draws)
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "app-random continuation cursor overflow for `{}`",
-                    node.name
-                ),
-            })
-    })?;
+    let draw_offset = app_random_request_count(&configuration, node);
     let mut config = ProductionAppRandomConfig::from_seed(
         scheduler.future_decision_seed(),
         scenario.app_random_draw_cap(),
         node.name.clone(),
     )
     .with_continuation(draw_offset, positions);
-    if let Some(branch) = branch
-        && let Some(seed) = branch.seed
-    {
-        let prefix_draws = app_random_request_count(&branch.base, node);
-        config = config.with_branch_seed(seed, prefix_draws);
+    let reseeds = branches
+        .iter()
+        .filter_map(|branch| {
+            branch
+                .seed
+                .map(|seed| (seed, app_random_request_count(&branch.base, node)))
+        })
+        .collect::<Vec<_>>();
+    if !reseeds.is_empty() {
+        config = config.with_branch_seed_sequence(reseeds);
     }
     Ok(config)
 }
@@ -701,7 +703,7 @@ mod tests {
             panic!("scheduler should checkpoint");
         };
         let Ok(resumed) =
-            production_app_random_checkpoint_config(&checkpoint, &scenario, None, &node)
+            production_app_random_checkpoint_config(&checkpoint, &scenario, &[], &node)
         else {
             panic!("typed app-random cursor should restore");
         };
@@ -746,8 +748,107 @@ mod tests {
             decisions: Vec::new(),
             seed: Some(Seed::from_u64(0x00b1_2ac4)),
         };
-        let relaunched = production_app_random_launch_config(&scenario, Some(&branch), &node);
+        let relaunched =
+            production_app_random_launch_config(&scenario, std::slice::from_ref(&branch), &node);
         assert_eq!(relaunched.branch_after_draws, Some(1));
+    }
+
+    #[test]
+    fn app_random_restart_between_reseeds_keeps_global_boundary_and_active_seed_cursors() {
+        let Ok(initial_shift) = Shift::new(0) else {
+            panic!("zero shift should be valid");
+        };
+        let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
+            "crucible.test.production-app-random-reseed-restart",
+            "scenario=typed-app-random-reseed-restart",
+            Seed::from_u64(11),
+            8,
+        );
+        let runtime = SchedulerLivenessScenario::from_canonical_material(
+            "typed-app-random-reseed-restart-runtime",
+            initial_shift,
+            8,
+            SimInstant { nanos: 8 },
+            Vec::new(),
+            Vec::new(),
+        )
+        .with_scenario_def(scenario.clone());
+        let Ok(mut scheduler) = SingleScheduler::new(runtime) else {
+            panic!("scheduler should build");
+        };
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        let stream = crucible::RngStreamId::from_name("app-random/node:6:node-a/stream:4:test");
+
+        let mut scenario_rng = scenario
+            .seed()
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let first = scenario_rng.next_u64();
+        let Ok(_) = QuantumLoop::append_backend_causal_decisions(
+            &mut scheduler,
+            vec![Decision::AppRandom(crucible::AppRandomDecision {
+                node: node.clone(),
+                stream: stream.clone(),
+                request_id: 1,
+                width: 8,
+                value: first & 0xff,
+            })],
+        ) else {
+            panic!("scenario-seed app-random decision should normalize");
+        };
+
+        let active_seed = Seed::from_u64(29);
+        let Ok(()) = scheduler.reseed_future_decisions(active_seed) else {
+            panic!("first continuation seed should apply");
+        };
+        let mut active_rng = active_seed
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let second = active_rng.next_u64();
+        let Ok(_) = QuantumLoop::append_backend_causal_decisions(
+            &mut scheduler,
+            vec![Decision::AppRandom(crucible::AppRandomDecision {
+                node: node.clone(),
+                stream: stream.clone(),
+                request_id: 2,
+                width: 8,
+                value: second & 0xff,
+            })],
+        ) else {
+            panic!("active-seed app-random decision should normalize");
+        };
+
+        let remaining = ProductionVmBranchConfig {
+            base: scheduler.configuration().clone(),
+            frontier: scheduler.frontier(),
+            decisions: Vec::new(),
+            seed: Some(Seed::from_u64(47)),
+        };
+        let Ok(()) = scheduler.set_branch_frontier_cap(remaining.frontier) else {
+            panic!("remaining controlled generation should cap the scheduler");
+        };
+        let Ok(checkpoint) = scheduler.checkpoint() else {
+            panic!("scheduler should checkpoint between controlled generations");
+        };
+        let resumed = production_app_random_checkpoint_config(
+            &checkpoint,
+            &scenario,
+            std::slice::from_ref(&remaining),
+            &node,
+        )
+        .unwrap_or_else(|error| {
+            panic!("app-random replacement configuration should reconstruct: {error}")
+        });
+
+        assert_eq!(
+            resumed.decision_rng_root_seed,
+            active_seed.decision_rng_root_seed()
+        );
+        assert_eq!(resumed.draw_offset, 2);
+        assert_eq!(resumed.stream_positions.get(&stream.name), Some(&1));
+        assert_eq!(resumed.branch_after_draws, Some(2));
     }
 
     #[test]

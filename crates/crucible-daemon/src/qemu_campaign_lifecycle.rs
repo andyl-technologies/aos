@@ -34,6 +34,7 @@ use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuVmRealizationError};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
+use crate::crucible_execution::CrucibleAttemptOrigin;
 use crate::guest_selectable::{
     GuestSelectableBoundaryDiagnosticStage, GuestSelectableError, GuestSelectableReplayAttemptRole,
     GuestSelectableReplayCorrelation, GuestSelectableReplayMismatch,
@@ -115,7 +116,7 @@ pub use resource_admission::{
 pub struct QemuAttemptProductionVmLifecycleFactory<R> {
     config: ProductionVmLifecycleConfig,
     resources: R,
-    continuation: Option<OwnedQemuAttemptContinuation>,
+    continuations: Vec<OwnedQemuAttemptContinuation>,
 }
 
 /// Owned continuation state retained between admission and lifecycle startup.
@@ -601,6 +602,22 @@ pub trait QemuFreshAttemptLifecycleFactory {
         continuation.is_none()
     }
 
+    /// Selects every controlled continuation needed by one cold replay.
+    ///
+    /// The sequence is ordered from the oldest source boundary through the
+    /// current attempt. Factories supporting only one generation retain their
+    /// existing behavior through the default implementation.
+    fn configure_attempt_continuations(
+        &mut self,
+        continuations: &[QemuAttemptContinuation<'_>],
+    ) -> bool {
+        match continuations {
+            [] => self.configure_attempt_continuation(None),
+            [continuation] => self.configure_attempt_continuation(Some(*continuation)),
+            _ => false,
+        }
+    }
+
     /// Starts one scenario-genesis lifecycle under the admitted attempt context.
     ///
     /// # Errors
@@ -763,10 +780,13 @@ where
             QemuFreshExecutionRunnerError<F::Error, crate::QemuFreshModeledDriverError>,
         >,
     > {
-        let continuation = validated_attempt_continuation(input).map_err(|()| {
+        let continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
-        if !self.lifecycles.configure_attempt_continuation(continuation) {
+        if !self
+            .lifecycles
+            .configure_attempt_continuations(&continuations)
+        {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
             ));
@@ -1452,7 +1472,7 @@ impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
         Self {
             config,
             resources,
-            continuation: None,
+            continuations: Vec::new(),
         }
     }
 
@@ -1712,14 +1732,20 @@ where
     type Lifecycle = ProductionVmLifecycleLoop;
     type Error = QemuAttemptProductionVmLifecycleError;
 
-    fn configure_attempt_continuation(
+    fn configure_attempt_continuations(
         &mut self,
-        continuation: Option<QemuAttemptContinuation<'_>>,
+        continuations: &[QemuAttemptContinuation<'_>],
     ) -> bool {
-        self.continuation = continuation.map(|continuation| OwnedQemuAttemptContinuation {
-            input: continuation.input().clone(),
-            source: continuation.source().clone(),
-        });
+        self.continuations.clear();
+        self.continuations
+            .extend(
+                continuations
+                    .iter()
+                    .map(|continuation| OwnedQemuAttemptContinuation {
+                        input: continuation.input().clone(),
+                        source: continuation.source().clone(),
+                    }),
+            );
         true
     }
 
@@ -1738,23 +1764,23 @@ where
             Some(signal_fault_replay),
         )
         .map_err(AttemptWorkerFailure::Terminal)?;
-        let config = production_lifecycle_config_for_continuation(
-            config,
-            source,
-            self.continuation.as_ref(),
-        )
-        .map_err(AttemptWorkerFailure::Terminal)?;
+        let config =
+            production_lifecycle_config_for_continuations(config, source, &self.continuations)
+                .map_err(AttemptWorkerFailure::Terminal)?;
         self.begin_fresh_with_config(scenario, source, context, config)
             .map_err(classify_production_lifecycle_failure)
     }
 }
 
-pub(super) fn production_lifecycle_config_for_continuation(
-    config: ProductionVmLifecycleConfig,
+fn production_lifecycle_config_for_continuations(
+    mut config: ProductionVmLifecycleConfig,
     source: &ScenarioDefForm,
-    continuation: Option<&OwnedQemuAttemptContinuation>,
+    continuations: &[OwnedQemuAttemptContinuation],
 ) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
-    production_continuation_plan(source, continuation).map(|plan| plan.apply(config))
+    for continuation in continuations {
+        config = production_continuation_plan(source, Some(continuation))?.apply(config);
+    }
+    Ok(config)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1780,14 +1806,14 @@ impl ProductionContinuationPlan {
                 base,
                 frontier,
                 seed,
-            } => config.with_branch_reseed(base, frontier, seed),
+            } => config.append_branch_reseed(base, frontier, seed),
             Self::NetworkOverrides {
                 base,
                 frontier,
                 overrides,
             } => config
-                .with_branch_prefix_overrides(base, frontier, Vec::new())
-                .with_branch_network_choices(overrides),
+                .append_branch_prefix_overrides(base, frontier, Vec::new())
+                .append_branch_network_choices(overrides),
         }
     }
 }
@@ -1894,10 +1920,13 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
-        let continuation = validated_attempt_continuation(input).map_err(|()| {
+        let continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
-        if !self.lifecycles.configure_attempt_continuation(continuation) {
+        if !self
+            .lifecycles
+            .configure_attempt_continuations(&continuations)
+        {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
             ));
@@ -2082,28 +2111,62 @@ where
     }
 }
 
-fn validated_attempt_continuation(
+fn validated_attempt_continuations(
     input: &CrucibleAttemptExecution,
-) -> Result<Option<QemuAttemptContinuation<'_>>, ()> {
-    let Some(continuation_input) = input.attempt().continuation_input() else {
-        return Ok(None);
+) -> Result<Vec<QemuAttemptContinuation<'_>>, ()> {
+    let Some((origins, terminal_input)) = input.continuation_replay_basis() else {
+        return input
+            .attempt()
+            .continuation_input()
+            .is_none()
+            .then(Vec::new)
+            .ok_or(());
     };
-    let CrucibleResolvedAttemptStart::AfterAttempt { origins, .. } = input.start() else {
-        return Err(());
+    let mut continuations = Vec::new();
+    let mut source = None;
+    for origin in origins.iter() {
+        if let Some(continuation_input) = origin.attempt().continuation_input() {
+            continuations.push(validated_attempt_continuation(
+                continuation_input,
+                source.ok_or(())?,
+            )?);
+        }
+        source = Some(origin);
+    }
+    if let Some(continuation_input) = terminal_input {
+        continuations.push(validated_attempt_continuation(
+            continuation_input,
+            source.ok_or(())?,
+        )?);
+    }
+    Ok(continuations)
+}
+
+fn validated_attempt_continuation<'a>(
+    continuation_input: &'a AttemptContinuationInput,
+    source: &'a CrucibleAttemptOrigin,
+) -> Result<QemuAttemptContinuation<'a>, ()> {
+    let source_frontier_ticks = match (source.attempt().stop(), source.source_stop()) {
+        (
+            StopCondition::VirtualTimeNanoseconds(requested),
+            Some(crucible_campaign::StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(
+                reached,
+            ))),
+        ) if requested == reached => *reached,
+        (
+            StopCondition::Observation(condition),
+            Some(crucible_campaign::StopOutcome::ObservationReached(proof)),
+        ) if proof.condition() == condition => proof.boundary().frontier_nanoseconds(),
+        _ => return Err(()),
     };
-    let source = origins.last();
-    let StopCondition::VirtualTimeNanoseconds(source_frontier_ticks) = source.attempt().stop()
-    else {
-        return Err(());
-    };
-    if *source_frontier_ticks != continuation_input.source_frontier_ticks() {
+    if source_frontier_ticks != continuation_input.source_frontier_ticks() {
         return Err(());
     }
 
-    Ok(Some(QemuAttemptContinuation {
+    Ok(QemuAttemptContinuation {
         input: continuation_input,
         source: source.reached(),
-    }))
+    })
 }
 
 impl<F, D> QemuAttemptStartVerifier for QemuFreshExecutionRunner<F, D>
@@ -2116,7 +2179,7 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<QemuAttemptStartReplayProof, AttemptWorkerFailure<Self::Error>> {
-        if !self.lifecycles.configure_attempt_continuation(None) {
+        if !self.lifecycles.configure_attempt_continuations(&[]) {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
             ));
@@ -2188,7 +2251,13 @@ where
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>> {
-        if !self.lifecycles.configure_attempt_continuation(None) {
+        let continuations = validated_attempt_continuations(input).map_err(|()| {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
+        })?;
+        if !self
+            .lifecycles
+            .configure_attempt_continuations(&continuations)
+        {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
             ));
