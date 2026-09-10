@@ -83,4 +83,7 @@ in
       ''
     ];
   }
-  // {meta = compiler.meta or {};}
+  // {
+    meta = compiler.meta or {};
+    passthru.constructionCompiler = compiler;
+  }

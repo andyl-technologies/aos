@@ -8,7 +8,14 @@
   hostPlatform,
   targetPlatform,
   linuxHeadersInclude ? "${prev.linuxHeaders}/include",
+  buildCxxRuntime ? null,
+  installRuntimeLibraryLink ? false,
 }: let
+  buildRuntimeFlags =
+    if buildCxxRuntime == null
+    then ""
+    else " -L${buildCxxRuntime}/lib";
+
   gccSrc = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gcc/gcc-11.5.0/gcc-11.5.0.tar.xz";
     sha256 = "1gd9gix3jgbmav964rrp8c8h2dp1mkszwyawvxgik6cw4r2hx9s3";
@@ -95,7 +102,7 @@ in
       ''CXX="${prev.gcc}/bin/g++"''
       ''CFLAGS="-O2 -static"''
       ''CXXFLAGS="-O2 -static"''
-      ''LDFLAGS="-L${prev.glibc}/lib -static"''
+      ''LDFLAGS="-L${prev.glibc}/lib -static${buildRuntimeFlags}"''
     ];
     configureFlags = [
       "--enable-languages=c,c++"
@@ -130,32 +137,44 @@ in
         ]
         else []
       );
-    postInstall = ''
-      # Symlink binutils tools so gcc can find as/ld.
-      mkdir -p "$out/${targetPlatform.config}/bin"
-      for tool in as ld ar ranlib nm objcopy objdump strip; do
-        ln -sf ${prev.binutils}/bin/$tool "$out/${targetPlatform.config}/bin/$tool" 2>/dev/null || true
-        ln -sf ${prev.binutils}/bin/$tool "$out/bin/$tool" 2>/dev/null || true
-      done
+    postInstall =
+      ''
+        # Symlink binutils tools so gcc can find as/ld.
+        mkdir -p "$out/${targetPlatform.config}/bin"
+        for tool in as ld ar ranlib nm objcopy objdump strip; do
+          ln -sf ${prev.binutils}/bin/$tool "$out/${targetPlatform.config}/bin/$tool" 2>/dev/null || true
+          ln -sf ${prev.binutils}/bin/$tool "$out/bin/$tool" 2>/dev/null || true
+        done
 
-      # Set up so gcc finds glibc startfiles and libraries.
-      SPEC_DIR="$out/lib/gcc/${targetPlatform.config}/11.5.0"
-      for f in ${prev.glibc}/lib/crt*.o; do
-        bn="$(basename "$f")"
-        ln -sf "$f" "$SPEC_DIR/$bn" 2>/dev/null || true
-      done
-      ln -sf ${prev.glibc}/lib/libc.a "$SPEC_DIR/libc.a" 2>/dev/null || true
-      ln -sf ${prev.glibc}/lib/libm.a "$SPEC_DIR/libm.a" 2>/dev/null || true
-      ln -sf ${prev.glibc}/lib/libpthread.a "$SPEC_DIR/libpthread.a" 2>/dev/null || true
+        # Set up so gcc finds glibc startfiles and libraries.
+        SPEC_DIR="$out/lib/gcc/${targetPlatform.config}/11.5.0"
+        for f in ${prev.glibc}/lib/crt*.o; do
+          bn="$(basename "$f")"
+          ln -sf "$f" "$SPEC_DIR/$bn" 2>/dev/null || true
+        done
+        ln -sf ${prev.glibc}/lib/libc.a "$SPEC_DIR/libc.a" 2>/dev/null || true
+        ln -sf ${prev.glibc}/lib/libm.a "$SPEC_DIR/libm.a" 2>/dev/null || true
+        ln -sf ${prev.glibc}/lib/libpthread.a "$SPEC_DIR/libpthread.a" 2>/dev/null || true
 
-      "$out/bin/gcc" -dumpspecs > "$SPEC_DIR/specs"
-      ${prev.sed}/bin/sed -i '/^\*cpp:$/{n; s|^|-idirafter ${prev.glibc}/include -idirafter ${linuxHeadersInclude} |}' \
-        "$SPEC_DIR/specs" 2>/dev/null || true
-      ${prev.sed}/bin/sed -i '/^\*link:$/{n; s|^|%{!shared:%{!nostdlib:-static}} |}' \
-        "$SPEC_DIR/specs" 2>/dev/null || true
-      ${prev.sed}/bin/sed -i '/^\*link_gcc_c_sequence:$/{n; s|.*|%{!shared:%{!nostdlib:--start-group}} %G %L %{!shared:%{!nostdlib:--end-group}}|}' \
-        "$SPEC_DIR/specs" 2>/dev/null || true
-    '';
+        "$out/bin/gcc" -dumpspecs > "$SPEC_DIR/specs"
+        ${prev.sed}/bin/sed -i '/^\*cpp:$/{n; s|^|-idirafter ${prev.glibc}/include -idirafter ${linuxHeadersInclude} |}' \
+          "$SPEC_DIR/specs" 2>/dev/null || true
+        ${prev.sed}/bin/sed -i '/^\*link:$/{n; s|^|%{!shared:%{!nostdlib:-static}} |}' \
+          "$SPEC_DIR/specs" 2>/dev/null || true
+        ${prev.sed}/bin/sed -i '/^\*link_gcc_c_sequence:$/{n; s|.*|%{!shared:%{!nostdlib:--start-group}} %G %L %{!shared:%{!nostdlib:--end-group}}|}' \
+          "$SPEC_DIR/specs" 2>/dev/null || true
+      ''
+      + (
+        if installRuntimeLibraryLink
+        then ''
+          # RISC-V's native search path includes the target directory, but not
+          # the generic lib directory where this build installs its C++ archives.
+          if [ ! -e "$out/${targetPlatform.config}/lib" ]; then
+            ln -s ../lib "$out/${targetPlatform.config}/lib"
+          fi
+        ''
+        else ""
+      );
     finalMessage = "GCC 11.5.0 installed to $out";
     meta = {
       build = {
