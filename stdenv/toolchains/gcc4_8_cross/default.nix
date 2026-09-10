@@ -197,38 +197,35 @@
     gzip = scope.mkAutotoolsTool scope.manifest.gzip;
     patch = scope.mkAutotoolsTool scope.manifest.patch;
   };
-in {
-  inherit
-    (scope)
-    gcc
-    binutils
-    linuxHeaders
-    bash
-    coreutils
-    gnumake
-    sed
-    grep
-    gawk
-    findutils
-    diffutils
-    tar
-    gzip
-    patch
-    ;
-  glibc = scope.crossGlibc;
-
-  # Autotools pass-throughs from prev (x86_64 — used on the build machine)
-  m4 = prev.m4;
-  flex = prev.flex;
-  bison = prev.bison;
-  perl = prev.perl;
-  autoconf = prev.autoconf;
-  automake = prev.automake;
-  texinfo = prev.texinfo;
-  help2man = prev.help2man;
-  gperf = prev.gperf;
-
-  # Compression pass-throughs
-  xz = prev.xz;
-  bzip2 = prev.bzip2;
-}
+in
+  (import ../lib/finalize-cross.nix {
+    bootstrapPerl = true;
+    # Complete libc with the finished cross compiler and build-host generators.
+    libcBuildPerl = prev.perl;
+    libcBuildOverrides = {crossGccStage1 = scope.crossGccStage2;};
+    # Static NSS backends are already included in this libc.a.
+    perlNssLibraries = "";
+    privateTools = scope;
+    buildTools = prev;
+    directory = ./.;
+  })
+  // {
+    # These helpers execute on the build machine while the next native tier
+    # constructs its own helpers. They are not target runtime exports.
+    buildTools = {
+      inherit
+        (prev)
+        m4
+        flex
+        bison
+        perl
+        autoconf
+        automake
+        texinfo
+        help2man
+        gperf
+        xz
+        bzip2
+        ;
+    };
+  }

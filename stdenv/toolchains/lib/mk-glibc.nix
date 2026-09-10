@@ -10,6 +10,7 @@
   linuxHeaders,
   buildPlatform,
   hostPlatform,
+  runtimePerl ? null,
 }: spec: let
   optionalString = cond: value:
     if cond
@@ -41,9 +42,16 @@
     prev.bash
     prev.patch
   ];
-  path = concat ":" (map (dep: "${dep}/bin") (basePathDeps ++ (spec.extraPathDeps or [])));
+  runtimePathDeps =
+    if runtimePerl == null
+    then []
+    else [runtimePerl];
+  path = concat ":" (map (dep: "${dep}/bin") (basePathDeps ++ (spec.extraPathDeps or []) ++ runtimePathDeps));
 
-  autotoolsVars = "AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true";
+  # Manual installation requires a real Info output after source timestamps
+  # change. Use the preceding tier's Texinfo to regenerate it hermetically.
+  makeInfo = "${prev.texinfo}/bin/makeinfo";
+  autotoolsVars = "AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=${makeInfo}";
   configureBuild = spec.configureBuild or buildPlatform.config;
   configureHost = spec.configureHost or hostPlatform.config;
   withHeaders = spec.withHeaders or "${linuxHeaders}/include";
@@ -52,6 +60,7 @@
       ''--prefix="$out"''
       "--build=${configureBuild}"
       "--host=${configureHost}"
+      "--with-binutils=${binutils}/bin"
       ''--with-headers="${withHeaders}"''
     ]
     ++ (spec.configureFlags or [])
@@ -65,13 +74,16 @@
   useCxx = spec.useCxx or false;
   cc = spec.cc or "${gcc}/bin/gcc";
   cxx = spec.cxx or "${gcc}/bin/g++";
+  # Older configure scripts restore CC from their cache after checking the
+  # --with-binutils override. Pin the original command as well so compilation
+  # cannot silently return to the compiler's construction-stage assembler.
   configureEnv =
     [
-      ''CC="${cc}"''
+      ''CC="${cc} -B${binutils}/bin/"''
     ]
     ++ (
       if useCxx
-      then [''CXX="${cxx}"'']
+      then [''CXX="${cxx} -B${binutils}/bin/"'']
       else []
     )
     ++ [
@@ -106,7 +118,7 @@ in
       "-c"
       ''
         set -eu
-        export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+        export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO="${makeInfo}"
         export PATH="${path}"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
         export SHELL="$CONFIG_SHELL"
@@ -115,6 +127,10 @@ in
         mkdir ${sourceDir} && (cd ${src} && ${prev.tar}/bin/tar cf - .) | (cd ${sourceDir} && ${prev.tar}/bin/tar xf -)
         cd ${sourceDir}
         chmod -R u+w .
+
+        # Upstream helpers can be executed directly by configure or make.
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} .
 
         ${spec.postUnpack or ""}
 

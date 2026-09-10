@@ -136,33 +136,12 @@
   };
 
   scope = baseScope // manifestTools;
-in {
-  inherit
-    (scope)
-    gcc
-    binutils
-    glibc
-    linuxHeaders
-    m4
-    flex
-    bison
-    perl
-    autoconf
-    automake
-    texinfo
-    help2man
-    gperf
-    python3
-    bash
-    coreutils
-    gnumake
-    sed
-    grep
-    gawk
-    findutils
-    diffutils
-    tar
-    gzip
-    patch
-    ;
-}
+in
+  import ../lib/finalize-native.nix {
+    privateTools = scope;
+    directory = ./.;
+    gccVersion = "8.5.0";
+    manifestNames = manifestToolNames;
+    extraToolNames = [];
+    inherit buildPlatform hostPlatform targetPlatform;
+  }

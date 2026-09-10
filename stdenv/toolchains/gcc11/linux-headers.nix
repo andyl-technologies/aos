@@ -27,7 +27,7 @@ in
               # Linux 5.3+ uses rsync for headers_install. Provide a minimal replacement.
               mkdir -p "$TMPDIR/fakebin"
               cat > "$TMPDIR/fakebin/rsync" << 'RSYNC_EOF'
-        #!/bin/sh
+        #!${prev.bash}/bin/bash
         # Minimal rsync replacement for kernel headers_install.
         # Handles: rsync -mrl --include='*.h' --exclude='*' src/ dst/
         shift_flags() { while [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) break ;; esac; done; echo "$@"; }
@@ -52,7 +52,11 @@ in
               cd linux-5.14
               chmod -R u+w .
 
-              make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+              # Pin source helpers that configure or make can execute directly.
+              AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+                "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
+              make SHELL="${prev.bash}/bin/bash" ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
               echo "Linux 5.14 headers installed to $out"
       ''

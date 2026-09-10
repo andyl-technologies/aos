@@ -21,6 +21,7 @@
   sourceDir = spec.sourceDir or "gcc-${version}";
   name = spec.name or "gcc-${version}";
   bootstrap = spec.bootstrap or false;
+  runtimeBinutils = spec.runtimeBinutils or prev.binutils;
 
   basePathDeps = [
     prev.coreutils
@@ -93,12 +94,12 @@
     then "bootstrap"
     else "";
   defaultBuildCommands = ''
-    make -j"$NIX_BUILD_CORES" ${bootstrapTarget} ${makeFlags} ${autotoolsVars}
+    make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" ${bootstrapTarget} ${makeFlags} ${autotoolsVars}
   '';
 
   installFlags = concat " " (spec.installFlags or []);
   defaultInstallCommands = ''
-    make install ${installFlags} ${autotoolsVars}
+    make SHELL="${prev.bash}/bin/bash" install ${installFlags} ${autotoolsVars}
   '';
 
   aliasCommands = optionalString (spec.createCcAliases or true) ''
@@ -129,6 +130,10 @@ in
 
         ${unpackInTreeDeps}
 
+        # Upstream helpers can be executed directly by configure or make.
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} .
+
         ${spec.postUnpack or ""}
         ${freezeAutotoolsScript}
 
@@ -151,6 +156,16 @@ in
         ${aliasCommands}
 
         ${spec.postInstall or ""}
+
+        # Pin every exported driver, including target-prefixed aliases, to
+        # the selected binutils. The final pass supplies this tier's binutils;
+        # the construction pass intentionally supplies its predecessor.
+        mkdir -p "$out/${targetPlatform.config}/bin"
+        for tool in as ld ar nm ranlib strip objcopy objdump; do
+          if [ -x "${runtimeBinutils}/bin/$tool" ]; then
+            ln -sf "${runtimeBinutils}/bin/$tool" "$out/${targetPlatform.config}/bin/$tool"
+          fi
+        done
 
         echo "${finalMessage}"
       ''

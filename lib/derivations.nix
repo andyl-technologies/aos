@@ -970,9 +970,9 @@
               else "";
 
             # Environment variables for the build
-            # Only native build dependencies contribute executables and loader
-            # libraries. Host runtime dependencies may contain Darwin binaries
-            # or Mach-O libraries that a Linux builder cannot load.
+            # Only native build dependencies contribute executables. Each tool
+            # resolves its own runtime libraries through its recorded loader and
+            # RPATH; a global loader path would mix incompatible library tiers.
             PATH = makePath nativeBuildClosure;
 
             # Configuration flags
@@ -989,7 +989,6 @@
             C_INCLUDE_PATH = makeIncPath allBuildDeps;
             CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
             LIBRARY_PATH = makeLibPath allBuildDeps;
-            LD_LIBRARY_PATH = makeLibPath nativeBuildClosure;
 
             # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
             # shared libraries at runtime without LD_LIBRARY_PATH.

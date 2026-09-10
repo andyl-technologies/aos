@@ -9,6 +9,7 @@
   linuxHeaders,
   buildPlatform,
   hostPlatform,
+  runtimePerl ? null,
 }: let
   # Control-flow Enforcement Technology is x86-only in glibc 2.39. Plain
   # --enable-cet (not permissive): a CET-enabled AOS process loading a
@@ -26,6 +27,7 @@ in
       linuxHeaders
       buildPlatform
       hostPlatform
+      runtimePerl
       ;
   } {
     version = "2.39";
@@ -69,11 +71,11 @@ in
       mkdir -p "$TMPDIR/ccwrap"
       cat > "$TMPDIR/ccwrap/gcc" <<AOS_GLIBC_CC
       #!${prev.bash}/bin/bash
-      exec ${gcc}/bin/gcc -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} "\$@"
+      exec ${gcc}/bin/gcc -idirafter ${prev.glibc.dev or prev.glibc}/include -idirafter ${prev.linuxHeaders} "\$@"
       AOS_GLIBC_CC
       cat > "$TMPDIR/ccwrap/g++" <<AOS_GLIBC_CXX
       #!${prev.bash}/bin/bash
-      exec ${gcc}/bin/g++ -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} "\$@"
+      exec ${gcc}/bin/g++ -idirafter ${prev.glibc.dev or prev.glibc}/include -idirafter ${prev.linuxHeaders} "\$@"
       AOS_GLIBC_CXX
       chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
     '';

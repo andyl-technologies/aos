@@ -43,6 +43,13 @@
     if isDarwin
     then stdenv.cc
     else gccUnwrapped;
+  # Linux cross compilation uses the construction libc. Its public utilities are
+  # completed with target Perl later, so recording that public package here
+  # would introduce an interpreter/libc dependency cycle.
+  recordedLibc =
+    if stdenv.isCross && stdenv.hostPlatform.isLinux
+    then stdenv.glibc
+    else glibc;
   perlCrossVersion = "1.6.4";
   perlCrossSrc = fetchurl {
     urls = [
@@ -301,9 +308,9 @@ in
               "${recordedCc}" \
               "${recordedGcc}" \
               "${recordedGccUnwrapped}" \
-              "${glibc}" \
-              "${glibc.dev}" \
-              "${glibc.static}" \
+              "${recordedLibc}" \
+              "${recordedLibc.dev}" \
+              "${recordedLibc.static}" \
             ; do
               if [ -n "$pattern" ]; then
                 sed -i "s|$pattern|/no-such-path|g" \

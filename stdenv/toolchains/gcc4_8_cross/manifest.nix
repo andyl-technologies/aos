@@ -103,6 +103,8 @@ in {
       ++ [
         "--without-bash-malloc"
         "bash_cv_func_sigsetjmp=present"
+        # glibc's allocating getcwd works across sandbox bind mounts.
+        "bash_cv_getcwd_malloc=yes"
       ];
     preConfigure = ''
       mkdir -p "$TMPDIR/fakebin"
@@ -117,10 +119,17 @@ in {
       #endif' execute_cmd.c
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars}
+      # Recursive consumers must not rebuild shared generators concurrently.
+      make SHELL="$CONFIG_SHELL" -j1 builtins/builtext.h ${autotoolsVars}
+      test -s builtins/builtext.h && test -s builtins/builtins.c
+      # mkbuiltins restores old timestamps when generated text is unchanged.
+      touch builtins/builtext.h builtins/builtins.c
+      make SHELL="$CONFIG_SHELL" -j1 version.h ${autotoolsVars}
+
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars}
     '';
     installScript = ''
-      make install ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
     '';
     postInstall = ''
       test -x "$out/bin/bash" || { echo "FATAL: bash not installed"; exit 1; }
@@ -155,11 +164,11 @@ in {
       touch src/fs.h .version .tarball-version man/*.1 man/*.x 2>/dev/null || true
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars} -k || true
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars} -k || true
       test -f src/ls || { echo "FATAL: coreutils binaries not built"; exit 1; }
     '';
     installScript = ''
-      make install-exec ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install-exec ${autotoolsVars}
     '';
     postInstall = ''
       for tool in cat chmod cp env false head ln ls mkdir mv printf rm rmdir sleep sort tail tr true wc; do

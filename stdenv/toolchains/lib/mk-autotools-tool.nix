@@ -88,18 +88,27 @@
   installFlags = concat " " installFlagsList;
 
   configureEnv = spec.configureEnv or "";
-  preConfigure = spec.preConfigure or "";
+  preConfigure =
+    optionalString (spec.pname == "perl" && !staticNssWrapper) ''
+      # Config is a runtime build interface. Retain its compiler wrapper
+      # in Perl's export, including the tier's header and linker flags.
+      mkdir -p "$out/libexec"
+      cp "$CC" "$out/libexec/cc"
+      chmod +x "$out/libexec/cc"
+      export CC="$out/libexec/cc"
+    ''
+    + (spec.preConfigure or "");
   postConfigure = spec.postConfigure or "";
   buildScript =
     spec.buildScript
     or ''
-      make -j"$NIX_BUILD_CORES" ${makeFlags} ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${makeFlags} ${autotoolsVars}
     '';
   postBuild = spec.postBuild or "";
   installScript =
     spec.installScript
     or ''
-      make install ${installFlags} ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${installFlags} ${autotoolsVars}
     '';
   postInstall = spec.postInstall or "";
   postUnpack = spec.postUnpack or "";
@@ -179,6 +188,14 @@
       ''
         sourceDir="$PWD"
         ${commonCompilerEnv}
+
+        # Configure and make can execute source helpers by their shebang.
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} .
+
+        ${optionalString (builtins.elem spec.pname ["make" "gnumake"]) ''
+          "$CONFIG_SHELL" ${../../pin-make-shell.sh} "${spec.runtimeShell or tierStdenv.shell}"
+        ''}
         ${preConfigure}
       ''
       + (
@@ -186,7 +203,7 @@
         then spec.configureScript
         else if configureInSource
         then ''
-          ./configure \
+          "$CONFIG_SHELL" ./configure \
             --prefix="$out" \
             ${configureFlags}
         ''
@@ -194,7 +211,7 @@
           mkdir -p "$TMPDIR/build"
           cd "$TMPDIR/build"
 
-          "$sourceDir/configure" \
+          "$CONFIG_SHELL" "$sourceDir/configure" \
             --prefix="$out" \
             ${configureFlags}
         ''

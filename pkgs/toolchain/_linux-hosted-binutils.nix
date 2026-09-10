@@ -51,6 +51,9 @@ in
           tar xf $src
           cd binutils-${version}
 
+          AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+            "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} .
+
           # Preserve the release-generated parsers and Autotools output.
           find . -type f \( -name '*.y' -o -name '*.l' -o -name Makefile.am -o -name configure.ac \) \
             -exec touch -t 200001010000.00 {} + 2>/dev/null || true
@@ -66,7 +69,7 @@ in
           mkdir "$TMPDIR/binutils-build"
           cd "$TMPDIR/binutils-build"
 
-          "$TMPDIR/binutils-${version}/configure" \
+          "$CONFIG_SHELL" "$TMPDIR/binutils-${version}/configure" \
             --prefix="$out" \
             --build=${stdenv.buildPlatform.config} \
             --host=${stdenv.hostPlatform.config} \
@@ -89,13 +92,13 @@ in
       {
         name = "build";
         script = ''
-          make -j"$NIX_BUILD_CORES" MAKEINFO=true
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" MAKEINFO=true
         '';
       }
       {
         name = "install";
         script = ''
-          make install MAKEINFO=true
+          make SHELL="$CONFIG_SHELL" install MAKEINFO=true
 
           for tool in ar as ld nm objcopy objdump ranlib readelf size strings strip; do
             test -x "$out/bin/$tool"
@@ -109,19 +112,10 @@ in
             fi
           done
 
-          # Installed helper scripts execute on the target with AOS bash.
-          find "$out" -type f -perm -0100 | while read -r file; do
-            if ! head -c 2 "$file" | grep -Fq '#!'; then
-              continue
-            fi
-
-            IFS= read -r firstLine < "$file" || true
-            case "$firstLine" in
-              '#!'*'/sh'|'#!'*'/bash')
-                sed -i "1c #!${bash}/bin/bash" "$file"
-                ;;
-            esac
-          done
+          # Installed helpers execute on the target, including shell defaults
+          # copied into their bodies by the build-machine configure scripts.
+          AOS_RUNTIME_SHELL="${bash}/bin/bash" AOS_BUILD_SHELL="$CONFIG_SHELL" \
+            "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} "$out"
         '';
       }
     ];

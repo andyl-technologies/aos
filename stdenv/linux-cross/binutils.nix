@@ -32,6 +32,9 @@ buildStdenv.mkDerivation {
         mkdir source
         (cd $src && tar cf - .) | (cd source && tar xf -)
         chmod -R u+w source
+
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../runtime-scripts.sh} source
       '';
     }
     {
@@ -39,7 +42,7 @@ buildStdenv.mkDerivation {
       script = ''
         mkdir build
         cd build
-        ../source/configure \
+        "$CONFIG_SHELL" ../source/configure \
           --prefix="$out" \
           --build=${buildPlatform.config} \
           --host=${buildPlatform.config} \
@@ -60,13 +63,13 @@ buildStdenv.mkDerivation {
     {
       name = "build";
       script = ''
-        make -j"$NIX_BUILD_CORES" MAKEINFO=true
+        make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" MAKEINFO=true
       '';
     }
     {
       name = "install";
       script = ''
-        make install MAKEINFO=true
+        make SHELL="$CONFIG_SHELL" install MAKEINFO=true
 
         for tool in ar as ld nm objcopy objdump ranlib readelf size strings strip; do
           prefixed="$out/bin/${hostPlatform.config}-$tool"

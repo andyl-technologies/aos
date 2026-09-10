@@ -29,7 +29,11 @@ in
         cd linux-4.18
         chmod -R u+w .
 
-        make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
+        make SHELL="${prev.bash}/bin/bash" ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
         echo "Linux 4.18 headers installed to $out"
       ''

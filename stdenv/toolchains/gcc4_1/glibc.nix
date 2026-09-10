@@ -10,7 +10,13 @@
   linuxHeaders,
   buildPlatform,
   hostPlatform,
+  runtimePerl ? null,
 }: let
+  perlCommand =
+    if runtimePerl == null
+    then "true"
+    else "${runtimePerl}/bin/perl";
+
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.5.tar.bz2";
     sha256 = "0khysawcx2glspp1nq2j02sszqjc06hjrpiirbw1qr2a73q5jg1w";
@@ -33,9 +39,13 @@ in
               export CONFIG_SHELL="${prev.bash}/bin/bash"
 
               cd "$TMPDIR"
-              cp -r ${src} glibc-2.5
+              cp -r --preserve=timestamps ${src} glibc-2.5
               cd glibc-2.5
               chmod -R u+w .
+
+              # Pin source helpers that configure or make can execute directly.
+              AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+                "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
 
               # Avoid the x86_64 fixed vsyscall page so this tier's Bash and
               # other static tools run on kernels without legacy emulation.
@@ -70,7 +80,7 @@ in
               # that adds -static only when linking (not for -c/-S/-E compilation).
               mkdir -p "$TMPDIR/fakebin"
               cat > "$TMPDIR/fakebin/gcc-wrap" << 'WRAPPER'
-        #!/bin/sh
+        #!${prev.bash}/bin/bash
         linking=yes
         for arg; do
           case "$arg" in
@@ -86,12 +96,13 @@ in
               rewrite_with_prev_sed "$TMPDIR/fakebin/gcc-wrap" "s|REAL_GCC|${gcc}/bin/gcc|g"
               chmod +x "$TMPDIR/fakebin/gcc-wrap"
 
-              CC="$TMPDIR/fakebin/gcc-wrap" \
+              CC="$TMPDIR/fakebin/gcc-wrap -B${binutils}/bin/" \
               AR="${binutils}/bin/ar" \
               RANLIB="${binutils}/bin/ranlib" \
               CFLAGS="-O2" \
-              "$TMPDIR/glibc-2.5/configure" \
+              "${prev.bash}/bin/bash" "$TMPDIR/glibc-2.5/configure" \
                 --prefix="$out" \
+                --with-binutils=${binutils}/bin \
                 --build=${hostPlatform.config} \
                 --host=${hostPlatform.config} \
                 --with-headers="${linuxHeaders}/include" \
@@ -106,16 +117,16 @@ in
                 libc_cv_forced_unwind=yes \
                 libc_cv_c_cleanup=yes
 
-              # PERL=true: configure sets PERL=no without perl in PATH, causing
-              # locale/Makefile to run "no gen-translit.pl ..." which fails.
-              make -j"$NIX_BUILD_CORES" PERL=true || true
+              # Construction libc can precede Perl. Public libc supplies a real
+              # interpreter for generated locale data and installed utilities.
+              make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" PERL=${perlCommand} || true
               test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
               # -k: keep going past locale subdirectory failure.  libc.a, headers,
               # and crt files are all installed before locale runs.
               # -k installs headers and subdirectory artifacts but the locale
               # failure prevents the top-level libc.a/crt install and stubs
               # generation.  Install those manually from the build directory.
-              make -k install PERL=true || true
+              make SHELL="${prev.bash}/bin/bash" -k install PERL=${perlCommand} || true
               mkdir -p "$out/lib"
               cp libc.a "$out/lib/"
               cp csu/crt1.o csu/crti.o csu/crtn.o "$out/lib/"

@@ -89,7 +89,8 @@ in
       ''CC="${prev.gcc}/bin/gcc"''
       ''CXX="${prev.gcc}/bin/g++"''
       ''CFLAGS="-O2 -static -isystem ${prev.glibc}/include"''
-      ''CXXFLAGS="-O2 -static -isystem ${prev.glibc}/include"''
+      # libstdc++ wrapper headers use include_next to reach the C headers.
+      ''CXXFLAGS="-O2 -static -idirafter ${prev.glibc}/include"''
       ''LDFLAGS="-L${prev.glibc}/lib -static"''
     ];
     configureFlags = [
@@ -108,7 +109,7 @@ in
       "--program-transform-name="
     ];
     buildCommands = ''
-      make -j"$NIX_BUILD_CORES" all-gcc \
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-gcc \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
         BOOT_CFLAGS="-O2 -static" \
         CFLAGS_FOR_TARGET="-O2" \
@@ -129,28 +130,28 @@ in
       #endif
       LIMITS_EOF
 
-      make -j"$NIX_BUILD_CORES" all-target-libgcc \
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgcc \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
         CFLAGS_FOR_TARGET="-O2 -fPIC" \
         LDFLAGS_FOR_TARGET="-static"
-      make -j"$NIX_BUILD_CORES" all-target-libstdc++-v3 \
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libstdc++-v3 \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
         CFLAGS_FOR_TARGET="-O2 -fPIC" \
         CXXFLAGS_FOR_TARGET="-O2 -fPIC" \
         LDFLAGS_FOR_TARGET="-static"
-      make -j"$NIX_BUILD_CORES" all-target-libatomic \
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libatomic \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
         CFLAGS_FOR_TARGET="-O2 -fPIC" \
         LDFLAGS_FOR_TARGET="-static"
     '';
     installCommands = ''
-      make install-gcc \
+      make SHELL="$CONFIG_SHELL" install-gcc \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-      make install-target-libgcc \
+      make SHELL="$CONFIG_SHELL" install-target-libgcc \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-      make install-target-libstdc++-v3 \
+      make SHELL="$CONFIG_SHELL" install-target-libstdc++-v3 \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-      make install-target-libatomic \
+      make SHELL="$CONFIG_SHELL" install-target-libatomic \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
     '';
     postInstall = ''

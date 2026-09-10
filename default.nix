@@ -1372,6 +1372,12 @@ in {
       toolchain-boundaries = import ./tests/build/toolchain-boundaries.nix {
         pkgs = buildPackages;
         inherit buildPlatform;
+        # Linux qualification includes its architecture-transition tiers.
+        # Darwin uses the native build ladder and a separate hosted toolchain.
+        hostPlatform =
+          if hostPlatform.isLinux
+          then hostPlatform
+          else buildPlatform;
       };
       native-sandbox-boundary = import ./tests/build/native-sandbox-boundary.nix {
         pkgs = buildPackages;

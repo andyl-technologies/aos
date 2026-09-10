@@ -106,7 +106,7 @@
   gcc8 = import ./gcc8 {
     prev =
       if needsCross1
-      then gcc4_8_cross
+      then gcc4_8_cross // gcc4_8_cross.buildTools
       else gcc4_8;
     buildPlatform = cross1Platform;
     hostPlatform = cross1Platform;
@@ -125,7 +125,7 @@
   gcc11 = import ./gcc11 {
     prev =
       if needsCross2
-      then gcc8_cross
+      then gcc8_cross // gcc8_cross.buildTools
       else gcc8;
     buildPlatform = cross2Platform;
     hostPlatform = cross2Platform;
@@ -140,8 +140,8 @@
     targetPlatform = mkBuildable targetPlatform;
   };
   # ── latest: change this when adding a new GCC tier ──────────────
-  # Points to the newest tier directory. The final compiler bootstrap happens
-  # inside the tier; the rest of the tier is not rebuilt with itself.
+  # Points to the newest tier directory. Each tier completes its construction
+  # tools before rebuilding the public exports against its own runtime inputs.
 in
   if exportTiers
   then

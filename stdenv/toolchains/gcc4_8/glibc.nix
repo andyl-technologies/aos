@@ -10,7 +10,13 @@
   linuxHeaders,
   buildPlatform,
   hostPlatform,
+  runtimePerl ? null,
 }: let
+  perlCommand =
+    if runtimePerl == null
+    then "true"
+    else "${runtimePerl}/bin/perl";
+
   fetchSrc = {
     name,
     url,
@@ -54,13 +60,18 @@ in
       "-c"
       ''
         set -eu
-        export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+        export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+        export MAKEINFO="${prev.texinfo}/bin/makeinfo"
         export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.patch}/bin"
 
         cd "$TMPDIR"
         tar xjf ${glibc-src}
         cd glibc-2.17
         chmod -R u+w .
+
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
 
         # Remove libidn add-on — not needed for bootstrap, and its
         # configure fragment fails when AUTOCONF=true regenerates it
@@ -78,6 +89,10 @@ in
         # Replace /bin/pwd with pwd (Nix sandbox has no /bin/)
         ${prev.sed}/bin/sed -i 's|/bin/pwd|pwd|g' configure
 
+        # The original minimum-version check predates Make 4 and rejects it.
+        ${prev.sed}/bin/sed -i \
+          's/3\.79\* | 3\.\[89\]\*/3.79* | 3.[89]* | [4-9].*/' configure
+
         # The preceding bootstrap shell does not expand this configure-time
         # wildcard reliably.  Enumerate the only native preconfigure fragment
         # this x86_64 tier needs so glibc selects x86_64/64 and, through its
@@ -92,15 +107,18 @@ in
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
 
-        CC="${gcc}/bin/gcc" \
+        # Build generators run against the preceding static libc, independently
+        # of the target libc under construction and its internal link flags.
+        BUILD_CC="${prev.gcc}/bin/gcc -static" \
+        CC="${gcc}/bin/gcc -B${binutils}/bin/" \
         AR="${binutils}/bin/ar" \
         RANLIB="${binutils}/bin/ranlib" \
         BISON="${prev.bison}/bin/bison" \
         INSTALL_INFO="${prev.texinfo}/bin/install-info" \
-        CFLAGS="-O2 -isystem ${prev.glibc}/include" \
-        CPPFLAGS="-isystem ${prev.glibc}/include" \
-        "$TMPDIR/glibc-2.17/configure" \
+        CFLAGS="-O2" \
+        "${prev.bash}/bin/bash" "$TMPDIR/glibc-2.17/configure" \
           --prefix="$out" \
+          --with-binutils=${binutils}/bin \
           --build=${hostPlatform.config} \
           --host=${hostPlatform.config} \
           --with-headers="${linuxHeaders}/include" \
@@ -115,18 +133,14 @@ in
           libc_cv_forced_unwind=yes \
           libc_cv_c_cleanup=yes
 
-        # nscd links its own res_hconf.o against libc.a which also has
-        # res_hconf.o, causing multiple-definition errors. Tolerate the failure.
-        make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true || true
-        test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" \
+          PERL=${perlCommand} MAKEINFO="$MAKEINFO" \
+          AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
 
-        # -k: keep going past errors.  The manual subdirectory's install
-        # fails because MAKEINFO=true generates no .info output.  Without
-        # -k, make stops there and never installs nptl (libpthread), nss,
-        # resolv, and other late subdirectories.
-        # PERL=true: prevents "no libm-err-tab.pl" error in manual build
-        # (configure set PERL=no since Perl isn't available).
-        make -k install PERL=true AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true || true
+        # Public libc supplies Perl for generated data and installed utilities.
+        make SHELL="${prev.bash}/bin/bash" install \
+          PERL=${perlCommand} MAKEINFO="$MAKEINFO" \
+          AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
         test -f "$out/lib/libc.a" || { echo "FATAL: libc.a not installed"; exit 1; }
         test -f "$out/include/stdio.h" || { echo "FATAL: headers not installed"; exit 1; }
 

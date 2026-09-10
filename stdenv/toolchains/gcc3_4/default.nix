@@ -192,21 +192,10 @@
 
   this = baseThis // phase4Tools // phase5Tools;
 in
-  # Export complete toolchain with unversioned names
-  {
-    gcc = this.gcc; # GCC 3.4.6
-    binutils = this.binutils; # binutils 2.15
-    glibc = this.glibc; # glibc 2.3.4
-    linuxHeaders = this.linuxHeaders; # linux 2.6.9 headers
-    bash = this.bash; # bash 3.0
-    coreutils = this.coreutils; # coreutils 5.2.1
-    gnumake = this.gnumake; # make 3.80
-    sed = this.sed; # sed 4.1.2
-    grep = this.grep; # grep 2.5.1
-    gawk = this.gawk; # gawk 3.1.3
-    findutils = this.findutils; # findutils 4.1.20
-    diffutils = this.diffutils; # diffutils 2.8.1
-    tar = this.tar; # tar 1.14
-    gzip = this.gzip; # gzip 1.3.5
-    patch = this.patch; # patch 2.5.4
+  import ../lib/finalize-native.nix {
+    privateTools = this;
+    directory = ./.;
+    gccVersion = "3.4.6";
+    manifestNames = phase4ToolNames ++ phase5ToolNames;
+    inherit buildPlatform hostPlatform targetPlatform;
   }

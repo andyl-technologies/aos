@@ -60,6 +60,10 @@ in
               cp -r ${mpcSrc} "$TMPDIR/gcc-8.5.0/mpc"
               chmod -R u+w "$TMPDIR/gcc-8.5.0/mpc"
 
+              # Pin source helpers that configure or make can execute directly.
+              AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+                "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/gcc-8.5.0"
+
               SRC="$TMPDIR/gcc-8.5.0"
               cd "$SRC"
 
@@ -99,9 +103,19 @@ in
               mkdir -p "$TMPDIR/build"
               cd "$TMPDIR/build"
 
+              # C++ wrapper headers must precede libc for include_next.
+              ${import ../lib/static-build-compiler.nix {
+          tools = prev;
+          systemHeaderFlag = "-idirafter";
+        }}
+
+              # GCC 8 overrides CFLAGS for build libraries but lets target
+              # CXXFLAGS leak into libcpp, selecting headers for the wrong ABI.
+              sed -i \
+                's/^EXTRA_BUILD_FLAGS = /EXTRA_BUILD_FLAGS = CXXFLAGS="$(CXXFLAGS_FOR_BUILD)" /' \
+                "$SRC/Makefile.in"
+
               # Canadian cross: build=x86_64, host=target, target=target
-              CC_FOR_BUILD="${prev.gcc}/bin/gcc" \
-              CXX_FOR_BUILD="${prev.gcc}/bin/g++" \
               CC="${crossGccStage2}/bin/${hostPlatform.config}-gcc" \
               CXX="${crossGccStage2}/bin/${hostPlatform.config}-g++" \
               AR="${crossBinutils}/bin/${hostPlatform.config}-ar" \
@@ -125,20 +139,20 @@ in
                 --program-transform-name=
 
               # Patch SYSTEM_HEADER_DIR
-              make configure-gcc
+              make SHELL="${prev.bash}/bin/bash" configure-gcc
               ${prev.sed}/bin/sed -i \
                 "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${crossGlibc}/include|" \
                 gcc/Makefile
 
               # Canadian cross: xgcc is target-arch and can't run on x86_64 build machine,
               # so build only gcc (not target libraries like libgcc).
-              make -j"$NIX_BUILD_CORES" all-gcc \
+              make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" all-gcc \
                 BOOT_CFLAGS="-O2" \
                 CFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
                 CXXFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
                 LDFLAGS_FOR_TARGET="-L${crossGlibc}/lib -static"
 
-              make install-gcc
+              make SHELL="${prev.bash}/bin/bash" install-gcc
 
               test -f "$out/bin/gcc" && test ! -f "$out/bin/cc" && ln -sf gcc "$out/bin/cc"
               test -f "$out/bin/g++" && test ! -f "$out/bin/c++" && ln -sf g++ "$out/bin/c++"
@@ -151,12 +165,23 @@ in
         #endif
         SYSLIM
 
-              # Copy libgcc.a from cross-compiler (can't build it in Canadian cross —
-              # xgcc is target-arch, can't run on x86_64 build machine)
+              # Retain the matching target runtime from the construction
+              # compiler. These objects and C++ headers are part of the export.
               GCCLIB="$out/lib/gcc/${targetPlatform.config}/8.5.0"
               mkdir -p "$GCCLIB"
-              cp "${crossGccStage2}/lib/gcc/${hostPlatform.config}/8.5.0/libgcc.a" "$GCCLIB/" 2>/dev/null || true
-              "${crossBinutils}/bin/${hostPlatform.config}-ar" crs "$GCCLIB/libgcc_eh.a"
+              for runtime in libgcc.a libgcc_eh.a crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o; do
+                cp "${crossGccStage2}/lib/gcc/${hostPlatform.config}/8.5.0/$runtime" "$GCCLIB/"
+              done
+              mkdir -p "$out/include/c++" "$out/lib"
+              cp -R "${crossGccStage2}/include/c++/8.5.0" "$out/include/c++/"
+              for library in libstdc++.a libsupc++.a; do
+                runtime_library="$("${crossGccStage2}/bin/${hostPlatform.config}-g++" -print-file-name="$library")"
+                case "$runtime_library" in
+                  "${crossGccStage2}/"*) ;;
+                  *) echo "FATAL: $library is outside the cross compiler output"; exit 1 ;;
+                esac
+                cp "$runtime_library" "$out/lib/"
+              done
 
               # Symlink binutils tools so native gcc can find as/ld
               mkdir -p "$out/${targetPlatform.config}/bin"

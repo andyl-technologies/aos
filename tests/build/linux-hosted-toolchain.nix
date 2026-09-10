@@ -68,6 +68,7 @@
         targetPackages.coreutils
         targetPackages.grep
         targetPackages.util-linux
+        targetPackages.glibc.bin
       ]
       ++ (
         if llvm == null
@@ -97,6 +98,13 @@
 
       test "$(gcc -dumpmachine)" = aarch64-unknown-linux-gnu
       test "$(ld --version | head -n 1)" = "GNU ld (GNU Binutils) 2.41"
+      for driver in gcc g++ cc c++; do
+        for program in as ld; do
+          selected=$("$driver" -print-prog-name="$program")
+          expected="${targetPackages.binutils}/bin/$program"
+          test "$(readlink -f "$selected")" = "$(readlink -f "$expected")"
+        done
+      done
 
       cat > hosted.c <<'SOURCE'
       #include <stdio.h>
@@ -128,6 +136,26 @@
       SOURCE
       c++ hosted.cc -o hosted-cxx
       test "$(./hosted-cxx)" = "hosted C++ result: 42"
+
+      for script in ldd sotruss xtrace; do
+        test "$(head -n 1 ${targetPackages.glibc.bin}/bin/$script)" = '#!${targetPackages.bash}/bin/bash'
+        ${targetPackages.glibc.bin}/bin/$script --help > /tmp/libc-$script-help.txt
+        test -s /tmp/libc-$script-help.txt
+      done
+      test "$(head -n 1 ${targetPackages.glibc.bin}/bin/mtrace)" = '#!${targetPackages.perl}/bin/perl'
+      ${targetPackages.glibc.bin}/bin/mtrace --help > /tmp/libc-mtrace-help.txt
+      test -s /tmp/libc-mtrace-help.txt
+      printf '+ 0x1234 0x10\n- 0x1234\n' > /tmp/allocations.trace
+      ${targetPackages.glibc.bin}/bin/mtrace /tmp/allocations.trace > /tmp/mtrace-balanced.txt
+      grep -Fq 'No memory leaks.' /tmp/mtrace-balanced.txt
+      printf '+ 0x1234 0x10\n' > /tmp/allocations.trace
+      mtrace_status=0
+      ${targetPackages.glibc.bin}/bin/mtrace /tmp/allocations.trace > /tmp/mtrace-leak.txt || mtrace_status=$?
+      test "$mtrace_status" -eq 1
+      grep -Fq 'Memory not freed:' /tmp/mtrace-leak.txt
+
+      ${targetPackages.glibc.bin}/bin/ldd ./hosted-c > /tmp/hosted-c-libraries.txt
+      grep -Fq libc.so.6 /tmp/hosted-c-libraries.txt
 
       readelf -h hosted-c > hosted.header
       readelf -W -l hosted-c > hosted.segments
@@ -164,45 +192,48 @@
     '';
   };
 in
-  pkgs.mkDerivation {
-    pname = testName;
-    version = "0";
-    src = null;
-    buildDeps = [
-      pkgs.qemu
-      pkgs.coreutils
-      pkgs.grep
-    ];
-    phases = [
-      {
-        name = "run";
-        script = ''
-          cp ${rootfs}/root.img root.img
-          chmod u+w root.img
+  # Explicit output selection must publish the same completed utility output
+  # as the package attribute, not an earlier construction-stage bin output.
+  assert targetPackages.glibc.bin.drvPath == targetPackages.glibc.drvPath;
+    pkgs.mkDerivation {
+      pname = testName;
+      version = "0";
+      src = null;
+      buildDeps = [
+        pkgs.qemu
+        pkgs.coreutils
+        pkgs.grep
+      ];
+      phases = [
+        {
+          name = "run";
+          script = ''
+            cp ${rootfs}/root.img root.img
+            chmod u+w root.img
 
-          qemu_status=0
-          timeout 600 qemu-system-aarch64 \
-            -machine virt \
-            -cpu cortex-a72 \
-            -accel tcg \
-            -smp 4 \
-            -m 2048 \
-            -kernel ${targetKernel}/boot/vmlinuz-* \
-            -drive file=root.img,format=raw,if=virtio \
-            -append 'root=/dev/vda rw rootwait init=/init console=ttyAMA0 sysrq_always_enabled=1 panic=1' \
-            -nographic \
-            -no-reboot \
-            -monitor none \
-            > serial.log 2>&1 || qemu_status=$?
+            qemu_status=0
+            timeout 600 qemu-system-aarch64 \
+              -machine virt \
+              -cpu cortex-a72 \
+              -accel tcg \
+              -smp 4 \
+              -m 2048 \
+              -kernel ${targetKernel}/boot/vmlinuz-* \
+              -drive file=root.img,format=raw,if=virtio \
+              -append 'root=/dev/vda rw rootwait init=/init console=ttyAMA0 sysrq_always_enabled=1 panic=1' \
+              -nographic \
+              -no-reboot \
+              -monitor none \
+              > serial.log 2>&1 || qemu_status=$?
 
-          tr -d '\r' < serial.log
-          if ! grep -Fq AOS_HOSTED_TOOLCHAIN_VM_PASS serial.log; then
-            echo "hosted toolchain guest failed before its completion marker (QEMU status $qemu_status)" >&2
-            exit 1
-          fi
-          mkdir -p "$out"
-          cp serial.log "$out/"
-        '';
-      }
-    ];
-  }
+            tr -d '\r' < serial.log
+            if ! grep -Fq AOS_HOSTED_TOOLCHAIN_VM_PASS serial.log; then
+              echo "hosted toolchain guest failed before its completion marker (QEMU status $qemu_status)" >&2
+              exit 1
+            fi
+            mkdir -p "$out"
+            cp serial.log "$out/"
+          '';
+        }
+      ];
+    }

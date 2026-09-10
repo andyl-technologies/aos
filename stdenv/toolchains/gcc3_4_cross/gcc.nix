@@ -38,8 +38,18 @@ in
               export PATH="${prev.coreutils}/bin:${crossGccStage2}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin"
               export CONFIG_SHELL="${prev.bash}/bin/bash"
 
+              # GCC 3.4's recursive configure rule exports CC_FOR_BUILD but
+              # omits its flags. Keep static linking in the inherited environment
+              # so the nested build-machine probe uses the i686 libc correctly.
+              export CFLAGS_FOR_BUILD="-O2 -static -DSSIZE_MAX=0x7fffffff"
+              export LDFLAGS_FOR_BUILD="-static"
+
               cp -r ${src} "$TMPDIR/src"
               chmod -R u+w "$TMPDIR/src"
+
+              # Pin source helpers that configure or make can execute directly.
+              AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+                "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/src"
 
               # Pre-generated yacc/lex files must be newer than sources
               touch "$TMPDIR/src/gcc/gengtype-yacc.c" \
@@ -74,10 +84,8 @@ in
               AR="${crossBinutils}/bin/${hostPlatform.config}-ar" \
               RANLIB="${crossBinutils}/bin/${hostPlatform.config}-ranlib" \
               CFLAGS="-O2 -static -isystem ${crossGlibc}/include" \
-              CFLAGS_FOR_BUILD="-O2 -static -DSSIZE_MAX=0x7fffffff" \
               LDFLAGS="-L${crossGlibc}/lib -static" \
-              LDFLAGS_FOR_BUILD="-static" \
-              "$TMPDIR/src/configure" \
+              "${prev.bash}/bin/bash" "$TMPDIR/src/configure" \
                 --prefix="$out" \
                 --build=${buildPlatform.config} \
                 --host=${hostPlatform.config} \
@@ -89,7 +97,7 @@ in
                 --program-transform-name=
 
               # Patch SYSTEM_HEADER_DIR
-              make configure-gcc
+              make SHELL="${prev.bash}/bin/bash" configure-gcc
               sed -i \
                 "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${crossGlibc}/include|" \
                 gcc/Makefile
@@ -105,12 +113,12 @@ in
 
               # Canadian cross: xgcc is x86_64 and can't run on i686 build machine,
               # so build only gcc (not target libraries like libgcc).
-              make -j"$NIX_BUILD_CORES" all-gcc \
+              make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" all-gcc \
                 BOOT_CFLAGS="-O2 -static" \
                 CFLAGS_FOR_TARGET="-O2 -I${crossGlibc}/include" \
                 LDFLAGS_FOR_TARGET="-L${crossGlibc}/lib -static"
 
-              make install-gcc
+              make SHELL="${prev.bash}/bin/bash" install-gcc
 
               test -f "$out/bin/gcc" && test ! -f "$out/bin/cc" && ln -sf gcc "$out/bin/cc"
 
