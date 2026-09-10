@@ -33,7 +33,8 @@ use super::s3::{
     validate_configuration as validate_s3_configuration,
 };
 use super::write_back::{
-    StoreGraphWriteBackFence, WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackStore,
+    ObservationalWriteBackStore, StoreGraphWriteBackFence, WriteBackRetentionAdmin,
+    WriteBackRetentionFence, WriteBackStore,
 };
 use super::*;
 
@@ -608,8 +609,10 @@ pub struct StoreGraph {
     description: Vec<StoreNodeDescription>,
     metrics: BTreeMap<StoreNodeId, Arc<MetricsState>>,
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
+    write_back_journals: BTreeMap<StoreNodeId, Arc<super::write_back::WriteBackJournal>>,
     namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
     profile_validation: bool,
+    observational: bool,
 }
 
 impl StoreGraph {
@@ -870,6 +873,86 @@ impl StoreGraph {
         physical_quotas: &StoreGraphPhysicalQuotaBinders,
         s3_clients: &StoreGraphS3Clients,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
+        Self::build_with_mode_and_all_capabilities(
+            config,
+            keys,
+            authorizers,
+            profilers,
+            physical_quotas,
+            s3_clients,
+            GraphBuildMode::Operational,
+        )
+    }
+
+    /// Validates and opens a graph for stopped-owner observational reads.
+    ///
+    /// The exact authored configuration and every external authorization,
+    /// profile, quota, and transport capability remain admitted. Persistent
+    /// leaves and stateful wrappers open only existing state, while tier and
+    /// read-through cache promotion is disabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when graph admission, an external capability, or
+    /// existing persistent state cannot be authenticated without recovery.
+    pub fn build_observational_with_all_capabilities(
+        config: StoreGraphConfig,
+        keys: &StoreGraphKeyring,
+        authorizers: &StoreGraphNamespaceAuthorizers,
+        profilers: &StoreGraphObjectProfilers,
+        physical_quotas: &StoreGraphPhysicalQuotaBinders,
+        s3_clients: &StoreGraphS3Clients,
+    ) -> Result<Self, StoreError> {
+        let (graph, _admin) = Self::build_observational_with_admin_and_all_capabilities(
+            config,
+            keys,
+            authorizers,
+            profilers,
+            physical_quotas,
+            s3_clients,
+        )?;
+        Ok(graph)
+    }
+
+    /// Opens an observational graph and retains authenticated maintenance boundaries.
+    ///
+    /// This has the same no-create, no-repair, and no-promotion behavior as
+    /// [`Self::build_observational_with_all_capabilities`]. The separately
+    /// returned administration value permits a caller to review a maintenance
+    /// plan against the exact existing physical generations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when graph admission, an external capability, or
+    /// existing persistent state cannot be authenticated without recovery.
+    pub fn build_observational_with_admin_and_all_capabilities(
+        config: StoreGraphConfig,
+        keys: &StoreGraphKeyring,
+        authorizers: &StoreGraphNamespaceAuthorizers,
+        profilers: &StoreGraphObjectProfilers,
+        physical_quotas: &StoreGraphPhysicalQuotaBinders,
+        s3_clients: &StoreGraphS3Clients,
+    ) -> Result<(Self, StoreGraphAdmin), StoreError> {
+        Self::build_with_mode_and_all_capabilities(
+            config,
+            keys,
+            authorizers,
+            profilers,
+            physical_quotas,
+            s3_clients,
+            GraphBuildMode::Observational,
+        )
+    }
+
+    fn build_with_mode_and_all_capabilities(
+        config: StoreGraphConfig,
+        keys: &StoreGraphKeyring,
+        authorizers: &StoreGraphNamespaceAuthorizers,
+        profilers: &StoreGraphObjectProfilers,
+        physical_quotas: &StoreGraphPhysicalQuotaBinders,
+        s3_clients: &StoreGraphS3Clients,
+        mode: GraphBuildMode,
+    ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
         let physical_retention = derive_physical_retention(&config)?;
@@ -901,6 +984,7 @@ impl StoreGraph {
             &config.root,
             &config.nodes,
             &capabilities,
+            mode,
             &mut state,
         )?;
         validate_capability_edges(&config.nodes, &state.built)?;
@@ -944,8 +1028,10 @@ impl StoreGraph {
                 description,
                 metrics: state.metrics,
                 write_back: state.write_back,
+                write_back_journals: state.write_back_journals,
                 namespace_authorizer,
                 profile_validation,
+                observational: mode == GraphBuildMode::Observational,
             },
             StoreGraphAdmin {
                 configuration,
@@ -1070,9 +1156,9 @@ impl WriteBackRetentionAdmin for StoreGraph {
         &self,
     ) -> Result<Box<dyn WriteBackRetentionFence + '_>, StoreError> {
         let journals = self
-            .write_back
+            .write_back_journals
             .iter()
-            .map(|(id, store)| (id.as_str().to_owned(), store.journal()))
+            .map(|(id, journal)| (id.as_str().to_owned(), Arc::clone(journal)))
             .collect();
         Ok(Box::new(StoreGraphWriteBackFence::acquire(
             &journals,
@@ -1103,6 +1189,11 @@ impl ImmutableBlobBackend for StoreGraph {
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         self.require_admitted(id)?;
+        if self.observational {
+            return Err(StoreError::Unsupported {
+                capability: "observational graph mutation",
+            });
+        }
         self.root.put_if_absent(id, source)
     }
 }
@@ -1627,6 +1718,13 @@ struct GraphBuildState {
     s3_multipart_cleanup: BTreeMap<StoreNodeId, Arc<S3MultipartCleanupAdmin>>,
     metrics: BTreeMap<StoreNodeId, Arc<MetricsState>>,
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
+    write_back_journals: BTreeMap<StoreNodeId, Arc<super::write_back::WriteBackJournal>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphBuildMode {
+    Operational,
+    Observational,
 }
 
 struct GraphBuildCapabilities<'a> {
@@ -1642,6 +1740,7 @@ fn instantiate(
     id: &StoreNodeId,
     nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
     capabilities: &GraphBuildCapabilities<'_>,
+    mode: GraphBuildMode,
     state: &mut GraphBuildState,
 ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
     if let Some(backend) = state.built.get(id) {
@@ -1657,7 +1756,12 @@ fn instantiate(
             leaf
         }
         StoreNodeSpec::Directory { root } => {
-            let leaf = Arc::new(DirectoryBlobBackend::new(id.as_str(), root.clone()));
+            let leaf = Arc::new(match mode {
+                GraphBuildMode::Operational => DirectoryBlobBackend::new(id.as_str(), root.clone()),
+                GraphBuildMode::Observational => {
+                    DirectoryBlobBackend::new_observational(id.as_str(), root.clone())
+                }
+            });
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -1665,11 +1769,18 @@ fn instantiate(
             root,
             maximum_logical_object_bytes,
         } => {
-            let leaf = Arc::new(CompressedDirectoryBlobBackend::new(
-                id.as_str(),
-                root.clone(),
-                *maximum_logical_object_bytes,
-            )?);
+            let leaf = Arc::new(match mode {
+                GraphBuildMode::Operational => CompressedDirectoryBlobBackend::new(
+                    id.as_str(),
+                    root.clone(),
+                    *maximum_logical_object_bytes,
+                )?,
+                GraphBuildMode::Observational => CompressedDirectoryBlobBackend::new_observational(
+                    id.as_str(),
+                    root.clone(),
+                    *maximum_logical_object_bytes,
+                )?,
+            });
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -1679,13 +1790,23 @@ fn instantiate(
             key_id,
         } => {
             let key = capabilities.keys.resolve(key_id)?;
-            let leaf = Arc::new(EncryptedDirectoryBlobBackend::open(
-                id.as_str(),
-                root.clone(),
-                *maximum_logical_object_bytes,
-                key_id.clone(),
-                key,
-            )?);
+            let leaf = Arc::new(match mode {
+                GraphBuildMode::Operational => EncryptedDirectoryBlobBackend::open(
+                    id.as_str(),
+                    root.clone(),
+                    *maximum_logical_object_bytes,
+                    key_id.clone(),
+                    key,
+                )?,
+                GraphBuildMode::Observational => EncryptedDirectoryBlobBackend::open_observational(
+                    id.as_str(),
+                    root.clone(),
+                    *maximum_logical_object_bytes,
+                    key_id.clone(),
+                    key,
+                    false,
+                )?,
+            });
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -1695,13 +1816,23 @@ fn instantiate(
             key_id,
         } => {
             let key = capabilities.keys.resolve(key_id)?;
-            let leaf = Arc::new(EncryptedDirectoryBlobBackend::open_compressed(
-                id.as_str(),
-                root.clone(),
-                *maximum_logical_object_bytes,
-                key_id.clone(),
-                key,
-            )?);
+            let leaf = Arc::new(match mode {
+                GraphBuildMode::Operational => EncryptedDirectoryBlobBackend::open_compressed(
+                    id.as_str(),
+                    root.clone(),
+                    *maximum_logical_object_bytes,
+                    key_id.clone(),
+                    key,
+                )?,
+                GraphBuildMode::Observational => EncryptedDirectoryBlobBackend::open_observational(
+                    id.as_str(),
+                    root.clone(),
+                    *maximum_logical_object_bytes,
+                    key_id.clone(),
+                    key,
+                    true,
+                )?,
+            });
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -1709,11 +1840,18 @@ fn instantiate(
             root,
             target_pack_bytes,
         } => {
-            let leaf = Arc::new(PackedBlobBackend::open(
-                id.as_str(),
-                root.clone(),
-                *target_pack_bytes,
-            )?);
+            let leaf = Arc::new(match mode {
+                GraphBuildMode::Operational => {
+                    PackedBlobBackend::open(id.as_str(), root.clone(), *target_pack_bytes)?
+                }
+                GraphBuildMode::Observational => {
+                    PackedBlobBackend::open_existing_preserving_recovery_debris(
+                        id.as_str(),
+                        root.clone(),
+                        *target_pack_bytes,
+                    )?
+                }
+            });
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -1725,9 +1863,10 @@ fn instantiate(
             multipart_part_bytes,
         } => {
             let client = capabilities.s3_clients.resolve(endpoint)?;
-            let leaf = Arc::new(
-                match capabilities.s3_clients.resolve_administration(endpoint) {
-                    Some(administration) => S3BlobBackend::new_with_admin(
+            let administration = capabilities.s3_clients.resolve_administration(endpoint);
+            let leaf = Arc::new(match (mode, administration) {
+                (GraphBuildMode::Operational, Some(administration)) => {
+                    S3BlobBackend::new_with_admin(
                         id.as_str(),
                         endpoint.clone(),
                         bucket.clone(),
@@ -1736,8 +1875,19 @@ fn instantiate(
                         *multipart_part_bytes,
                         client,
                         administration,
-                    ),
-                    None => S3BlobBackend::new(
+                    )?
+                }
+                (GraphBuildMode::Operational, None) => S3BlobBackend::new(
+                    id.as_str(),
+                    endpoint.clone(),
+                    bucket.clone(),
+                    prefix.clone(),
+                    *maximum_logical_object_bytes,
+                    *multipart_part_bytes,
+                    client,
+                )?,
+                (GraphBuildMode::Observational, Some(administration)) => {
+                    S3BlobBackend::new_observational_with_admin(
                         id.as_str(),
                         endpoint.clone(),
                         bucket.clone(),
@@ -1745,9 +1895,19 @@ fn instantiate(
                         *maximum_logical_object_bytes,
                         *multipart_part_bytes,
                         client,
-                    ),
-                }?,
-            );
+                        administration,
+                    )?
+                }
+                (GraphBuildMode::Observational, None) => S3BlobBackend::new_observational(
+                    id.as_str(),
+                    endpoint.clone(),
+                    bucket.clone(),
+                    prefix.clone(),
+                    *maximum_logical_object_bytes,
+                    *multipart_part_bytes,
+                    client,
+                )?,
+            });
             if leaf.capabilities().planned_delete {
                 state.physical.insert(id.clone(), leaf.clone());
             }
@@ -1758,7 +1918,7 @@ fn instantiate(
         }
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, capabilities, state)?,
+            instantiate(configuration, child, nodes, capabilities, mode, state)?,
         )),
         StoreNodeSpec::Routed { routes } => {
             let routes = routes
@@ -1766,7 +1926,7 @@ fn instantiate(
                 .map(|(kind, child)| {
                     Ok((
                         *kind,
-                        instantiate(configuration, child, nodes, capabilities, state)?,
+                        instantiate(configuration, child, nodes, capabilities, mode, state)?,
                     ))
                 })
                 .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
@@ -1779,24 +1939,29 @@ fn instantiate(
         } => {
             let tiers = tiers
                 .iter()
-                .map(|child| instantiate(configuration, child, nodes, capabilities, state))
+                .map(|child| instantiate(configuration, child, nodes, capabilities, mode, state))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(TieredStore::new(
                 id.as_str(),
                 tiers,
                 *write_tier,
-                *promote_reads,
+                *promote_reads && mode == GraphBuildMode::Operational,
             )?)
         }
-        StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(
-            id.as_str(),
-            instantiate(configuration, cache, nodes, capabilities, state)?,
-            instantiate(configuration, source, nodes, capabilities, state)?,
-        )),
+        StoreNodeSpec::ReadThrough { cache, source } => {
+            let cache = instantiate(configuration, cache, nodes, capabilities, mode, state)?;
+            let source = instantiate(configuration, source, nodes, capabilities, mode, state)?;
+            Arc::new(match mode {
+                GraphBuildMode::Operational => ReadThroughStore::new(id.as_str(), cache, source),
+                GraphBuildMode::Observational => {
+                    ReadThroughStore::new_observational(id.as_str(), cache, source)
+                }
+            })
+        }
         StoreNodeSpec::WriteThrough { children } => {
             let children = children
                 .iter()
-                .map(|child| instantiate(configuration, child, nodes, capabilities, state))
+                .map(|child| instantiate(configuration, child, nodes, capabilities, mode, state))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(WriteThroughStore::new(id.as_str(), children)?)
         }
@@ -1807,27 +1972,51 @@ fn instantiate(
             maximum_pending_objects,
             maximum_pending_bytes,
         } => {
-            let store = Arc::new(WriteBackStore::new(
-                id.as_str(),
-                instantiate(configuration, staging, nodes, capabilities, state)?,
-                instantiate(configuration, destination, nodes, capabilities, state)?,
-                journal_root.clone(),
-                *maximum_pending_objects,
-                *maximum_pending_bytes,
-            )?);
-            state.write_back.insert(id.clone(), Arc::clone(&store));
-            store
+            let staging = instantiate(configuration, staging, nodes, capabilities, mode, state)?;
+            let destination =
+                instantiate(configuration, destination, nodes, capabilities, mode, state)?;
+            match mode {
+                GraphBuildMode::Operational => {
+                    let store = Arc::new(WriteBackStore::new(
+                        id.as_str(),
+                        staging,
+                        destination,
+                        journal_root.clone(),
+                        *maximum_pending_objects,
+                        *maximum_pending_bytes,
+                    )?);
+                    state
+                        .write_back_journals
+                        .insert(id.clone(), store.journal());
+                    state.write_back.insert(id.clone(), Arc::clone(&store));
+                    store
+                }
+                GraphBuildMode::Observational => {
+                    let store = Arc::new(ObservationalWriteBackStore::open(
+                        id.as_str(),
+                        staging,
+                        destination,
+                        journal_root.clone(),
+                        *maximum_pending_objects,
+                        *maximum_pending_bytes,
+                    )?);
+                    state
+                        .write_back_journals
+                        .insert(id.clone(), store.journal());
+                    store
+                }
+            }
         }
         StoreNodeSpec::DurabilityPolicy {
             child,
             requirements,
         } => Arc::new(DurabilityPolicyStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, capabilities, state)?,
+            instantiate(configuration, child, nodes, capabilities, mode, state)?,
             requirements.clone(),
         )),
         StoreNodeSpec::Metrics { child } => {
-            let child = instantiate(configuration, child, nodes, capabilities, state)?;
+            let child = instantiate(configuration, child, nodes, capabilities, mode, state)?;
             let (backend, metrics_state) = MetricsStore::new(id.as_str(), child);
             state.metrics.insert(id.clone(), metrics_state);
             Arc::new(backend)
@@ -1838,19 +2027,31 @@ fn instantiate(
             maximum_objects,
             maximum_logical_bytes,
         } => {
-            let child_backend = instantiate(configuration, child, nodes, capabilities, state)?;
+            let child_backend =
+                instantiate(configuration, child, nodes, capabilities, mode, state)?;
             let child_admin = state.physical.remove(child).ok_or_else(|| {
                 invalid_graph(id.as_str(), GraphViolation::InvalidLogicalQuotaChild)
             })?;
-            let store = Arc::new(LogicalQuotaStore::open(
-                id.as_str(),
-                state_root.clone(),
-                *maximum_objects,
-                *maximum_logical_bytes,
-                configuration,
-                child_backend,
-                child_admin,
-            )?);
+            let store = Arc::new(match mode {
+                GraphBuildMode::Operational => LogicalQuotaStore::open(
+                    id.as_str(),
+                    state_root.clone(),
+                    *maximum_objects,
+                    *maximum_logical_bytes,
+                    configuration,
+                    child_backend,
+                    child_admin,
+                )?,
+                GraphBuildMode::Observational => LogicalQuotaStore::open_observational(
+                    id.as_str(),
+                    state_root.clone(),
+                    *maximum_objects,
+                    *maximum_logical_bytes,
+                    configuration,
+                    child_backend,
+                    child_admin,
+                )?,
+            });
             state.physical.insert(id.clone(), store.clone());
             store
         }
@@ -1873,7 +2074,8 @@ fn instantiate(
                 *maximum_physical_bytes,
                 *maximum_inodes,
             )?;
-            let child_backend = instantiate(configuration, child, nodes, capabilities, state)?;
+            let child_backend =
+                instantiate(configuration, child, nodes, capabilities, mode, state)?;
             let child_admin = state.physical.remove(child).ok_or_else(|| {
                 invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaChild)
             })?;
@@ -1888,12 +2090,12 @@ fn instantiate(
         }
         StoreNodeSpec::Namespaced { child, namespace } => Arc::new(NamespacedStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, capabilities, state)?,
+            instantiate(configuration, child, nodes, capabilities, mode, state)?,
             capabilities.authorizers.resolve(namespace)?,
         )),
         StoreNodeSpec::ProfileValidated { child, policy } => Arc::new(ProfileValidatedStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, capabilities, state)?,
+            instantiate(configuration, child, nodes, capabilities, mode, state)?,
             capabilities.profilers.resolve(policy)?,
         )),
     };

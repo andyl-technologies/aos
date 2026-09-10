@@ -316,6 +316,7 @@ pub struct ReadThroughStore {
     name: String,
     cache: Arc<dyn ImmutableBlobBackend>,
     source: Arc<dyn ImmutableBlobBackend>,
+    promote_reads: bool,
 }
 
 impl ReadThroughStore {
@@ -330,6 +331,25 @@ impl ReadThroughStore {
             name: name.into(),
             cache,
             source,
+            promote_reads: true,
+        }
+    }
+
+    /// Builds a read-through view that never populates the cache.
+    ///
+    /// Source and cache reads keep their ordinary authentication and failure
+    /// semantics. A source hit is returned directly when the cache misses.
+    #[must_use]
+    pub fn new_observational(
+        name: impl Into<String>,
+        cache: Arc<dyn ImmutableBlobBackend>,
+        source: Arc<dyn ImmutableBlobBackend>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            cache,
+            source,
+            promote_reads: false,
         }
     }
 
@@ -341,7 +361,9 @@ impl ReadThroughStore {
                 // Promotion is an operational cache optimization. A cache
                 // outage or quota limit cannot make an authenticated source
                 // object unavailable to the logical caller.
-                let _promotion = self.cache.put_if_absent(id, &blob);
+                if self.promote_reads {
+                    let _promotion = self.cache.put_if_absent(id, &blob);
+                }
                 Ok(blob)
             }
             Err(error) => Err(error),

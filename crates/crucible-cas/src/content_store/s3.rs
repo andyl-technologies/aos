@@ -542,6 +542,7 @@ pub struct S3BlobBackend {
     client: Arc<dyn StoreS3Client>,
     lifecycle: Arc<S3BlobLifecycle>,
     administration: Option<S3BlobAdministration>,
+    observational: bool,
 }
 
 /// Separate bounded authority for reclaiming unfinished multipart uploads.
@@ -553,6 +554,7 @@ pub struct S3MultipartCleanupAdmin {
     bucket: String,
     object_prefix: String,
     client: Arc<dyn StoreS3Client>,
+    observational: bool,
 }
 
 impl S3MultipartCleanupAdmin {
@@ -571,6 +573,11 @@ impl S3MultipartCleanupAdmin {
         after: Option<&StoreS3MultipartListCursor>,
         maximum_items: u16,
     ) -> Result<StoreS3MultipartCleanupPage, StoreError> {
+        if self.observational {
+            return Err(StoreError::Unsupported {
+                capability: "observational S3 multipart cleanup",
+            });
+        }
         if after.is_some_and(|cursor| !self.owns_object_key(cursor.key_marker())) {
             return Err(StoreError::Incompatible);
         }
@@ -680,7 +687,31 @@ impl S3BlobBackend {
             client,
             lifecycle,
             administration,
+            observational: false,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_observational(
+        name: impl Into<String>,
+        endpoint: StoreS3EndpointId,
+        bucket: impl Into<String>,
+        prefix: impl Into<String>,
+        maximum_logical_object_bytes: u64,
+        multipart_part_bytes: u64,
+        client: Arc<dyn StoreS3Client>,
+    ) -> Result<Self, StoreError> {
+        let mut backend = Self::new(
+            name,
+            endpoint,
+            bucket,
+            prefix,
+            maximum_logical_object_bytes,
+            multipart_part_bytes,
+            client,
+        )?;
+        backend.observational = true;
+        Ok(backend)
     }
 
     /// Returns the exact non-secret endpoint policy.
@@ -694,6 +725,7 @@ impl S3BlobBackend {
             bucket: self.bucket.clone(),
             object_prefix: self.object_prefix(),
             client: self.client.clone(),
+            observational: self.observational,
         }
     }
 
@@ -915,6 +947,11 @@ impl ImmutableBlobBackend for S3BlobBackend {
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        if self.observational {
+            return Err(StoreError::Unsupported {
+                capability: "observational blob mutation",
+            });
+        }
         let _publication = self.acquire_admin_publication_guard()?;
         let logical_length = source.logical_length();
         if logical_length > self.maximum_logical_object_bytes {
@@ -1711,6 +1748,110 @@ mod tests {
             .expect("restored inventory");
         assert_ne!(restored.generation(), initial.generation());
         assert_eq!(restored.objects(), 2);
+    }
+
+    #[test]
+    fn observational_inventory_requires_existing_state_without_remote_writes() {
+        let endpoint = StoreS3EndpointId::new("minio/blob-observational-empty").expect("endpoint");
+        let ordinary = Arc::new(FakeS3Client::new(endpoint.clone()));
+        let administration = Arc::new(FakeBlobAdminClient::new(ordinary.clone()));
+        let backend = S3BlobBackend::new_observational_with_admin(
+            "archive-observational-empty",
+            endpoint,
+            "campaign-archive",
+            "tenant-observational-empty",
+            12 * 1024 * 1024,
+            5 * 1024 * 1024,
+            ordinary.clone(),
+            administration.clone(),
+        )
+        .expect("observational S3 backend");
+
+        assert!(matches!(
+            backend.acquire_inventory_fence(),
+            Err(StoreError::Incompatible)
+        ));
+        assert!(ordinary.objects.lock().expect("object lock").is_empty());
+        assert!(ordinary.uploads.lock().expect("upload lock").is_empty());
+        assert!(administration.state.lock().expect("state lock").is_empty());
+        assert_eq!(administration.next_version.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn observational_inventory_and_ordinary_mutation_paths_preserve_remote_state() {
+        let endpoint =
+            StoreS3EndpointId::new("minio/blob-observational-existing").expect("endpoint");
+        let ordinary = Arc::new(FakeS3Client::new(endpoint.clone()));
+        let administration = Arc::new(FakeBlobAdminClient::new(ordinary.clone()));
+        let operational = administrative_backend(ordinary.clone(), administration.clone());
+        let bytes = b"observational retained object".to_vec();
+        let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, &bytes);
+        operational
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes))
+            .expect("initialize object and inventory state");
+        let unfinished_id = ContentId::for_bytes(ObjectKind::Trace, 1, b"unfinished");
+        ordinary
+            .begin_multipart("campaign-archive", &operational.key(unfinished_id))
+            .expect("initialize unfinished upload");
+        drop(operational);
+
+        let before_objects = ordinary.objects.lock().expect("object lock").clone();
+        let before_state = administration.state.lock().expect("state lock").clone();
+        let before_version = administration.next_version.load(Ordering::SeqCst);
+        let before_next_upload = ordinary.next_upload.load(Ordering::SeqCst);
+        let before_upload_parts = ordinary.upload_parts.load(Ordering::SeqCst);
+        let before_aborts = ordinary.aborts.load(Ordering::SeqCst);
+        let backend = S3BlobBackend::new_observational_with_admin(
+            "archive-admin",
+            endpoint,
+            "campaign-archive",
+            "tenant-admin",
+            12 * 1024 * 1024,
+            5 * 1024 * 1024,
+            ordinary.clone(),
+            administration.clone(),
+        )
+        .expect("observational S3 backend");
+
+        let mut fence = backend
+            .acquire_inventory_fence()
+            .expect("observational inventory fence");
+        let summary = fence
+            .visit_inventory(&mut |_record| Ok(()))
+            .expect("observational inventory");
+        assert_eq!(summary.objects(), 1);
+        drop(fence);
+        assert!(matches!(
+            backend.put_if_absent(id, &BlobHandle::from_bytes(b"replacement".to_vec())),
+            Err(StoreError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.multipart_cleanup_admin().cleanup_page(None, 10),
+            Err(StoreError::Unsupported { .. })
+        ));
+
+        assert_eq!(
+            *ordinary.objects.lock().expect("object lock"),
+            before_objects
+        );
+        assert_eq!(
+            *administration.state.lock().expect("state lock"),
+            before_state
+        );
+        assert_eq!(
+            administration.next_version.load(Ordering::SeqCst),
+            before_version
+        );
+        assert_eq!(
+            ordinary.next_upload.load(Ordering::SeqCst),
+            before_next_upload
+        );
+        assert_eq!(
+            ordinary.upload_parts.load(Ordering::SeqCst),
+            before_upload_parts
+        );
+        assert_eq!(ordinary.aborts.load(Ordering::SeqCst), before_aborts);
+        assert_eq!(ordinary.uploads.lock().expect("upload lock").len(), 1);
     }
 
     #[test]

@@ -54,6 +54,42 @@ use super::*;
 const STORE_LIMIT: u64 = 1024 * 1024;
 
 #[test]
+fn optional_exact_pin_reader_treats_only_a_missing_root_as_empty() {
+    let directory = tempfile::tempdir().expect("selection parent");
+    let root = directory.path().join("optional-catalog");
+    let mut absent = DirectoryExactPinMaterializationReader::open_optional_existing(&root)
+        .expect("missing optional catalog");
+    assert!(!absent.is_present());
+    let campaign = CampaignName::new("optional-reader").expect("campaign name");
+    let configuration = ConfigurationId::from_hash(CampaignHash::derive(
+        "crucible.test.optional-exact-pin-reader",
+        b"configuration",
+    ));
+    assert!(
+        absent
+            .acquire_exact_pin_retention_fence()
+            .expect("absent catalog fence")
+            .selection(&campaign, configuration)
+            .expect("absent selection")
+            .is_none()
+    );
+    drop(absent);
+    assert!(!root.exists());
+
+    std::fs::write(&root, b"not a catalog").expect("write malformed catalog root");
+    assert!(DirectoryExactPinMaterializationReader::open_optional_existing(&root).is_err());
+    std::fs::remove_file(&root).expect("remove malformed catalog root");
+    std::fs::create_dir(&root).expect("create incomplete catalog root");
+    assert!(DirectoryExactPinMaterializationReader::open_optional_existing(&root).is_err());
+    assert!(
+        std::fs::read_dir(&root)
+            .expect("read incomplete catalog")
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
 fn exact_pin_owner_drop_releases_a_duplicated_writer_descriptor() {
     let directory = tempfile::tempdir().expect("selection directory");
     let store =

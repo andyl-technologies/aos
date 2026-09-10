@@ -419,13 +419,26 @@ impl StoreS3RefCapability {
 /// Authoritative S3 mutable refs behind an explicit strong-CAS capability.
 pub struct S3RefBackend {
     capability: StoreS3RefCapability,
+    observational: bool,
 }
 
 impl S3RefBackend {
     /// Constructs one backend from an already admitted strong-CAS capability.
     #[must_use]
     pub const fn new(capability: StoreS3RefCapability) -> Self {
-        Self { capability }
+        Self {
+            capability,
+            observational: false,
+        }
+    }
+
+    /// Constructs a stopped-owner view that never initializes remote admin state.
+    #[must_use]
+    pub const fn new_observational(capability: StoreS3RefCapability) -> Self {
+        Self {
+            capability,
+            observational: true,
+        }
     }
 
     fn object_prefix(&self) -> String {
@@ -691,6 +704,11 @@ impl MutableRefBackend for S3RefBackend {
         expected: Option<ContentId>,
         next: ContentId,
     ) -> Result<RefCasOutcome, StoreError> {
+        if self.observational {
+            return Err(StoreError::Unsupported {
+                capability: "observational ref mutation",
+            });
+        }
         let _state = self.lock_state("replace-S3-ref-state")?;
         let key = self.key(name);
         let current = self.read_current(name)?;
@@ -742,7 +760,12 @@ impl RefStoreAdmin for S3RefBackend {
                     operation: "acquire-S3-ref-inventory-publication-fence",
                 })?;
         let state = self.lock_state("acquire-S3-ref-inventory-state-fence")?;
-        let inventory = self.load_or_create_inventory_state()?;
+        let inventory = if self.observational {
+            self.load_inventory_state()?
+                .ok_or(StoreError::Incompatible)?
+        } else {
+            self.load_or_create_inventory_state()?
+        };
         Ok(Box::new(S3RefInventoryFence {
             backend: self,
             _publication: publication,
@@ -1367,6 +1390,56 @@ mod tests {
             .visit_refs(&mut |_record| Ok(()))
             .expect("restored inventory");
         assert_ne!(restored.generation(), initial.generation());
+    }
+
+    #[test]
+    fn observational_inventory_requires_existing_state_without_remote_writes() {
+        let client = Arc::new(FakeStrongCasClient::new(endpoint()));
+        let capability = StoreS3RefCapability::new(
+            client.endpoint.clone(),
+            "campaign-refs",
+            "tenant-observational-empty",
+            client.clone(),
+        )
+        .expect("observational ref capability");
+        let refs = S3RefBackend::new_observational(capability);
+
+        assert!(refs.acquire_ref_inventory_fence().is_err());
+        assert!(client.objects.lock().expect("object lock").is_empty());
+        assert_eq!(client.next_version.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn observational_inventory_reads_existing_state_without_remote_writes() {
+        let client = Arc::new(FakeStrongCasClient::new(endpoint()));
+        let name = RefName::new("campaigns/observational").expect("ref name");
+        let target = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"observational");
+        backend(client.clone())
+            .compare_exchange(&name, None, target)
+            .expect("initialize ref inventory");
+        let before_objects = client.objects.lock().expect("object lock").clone();
+        let before_version = client.next_version.load(Ordering::SeqCst);
+        let capability = StoreS3RefCapability::new(
+            client.endpoint.clone(),
+            "campaign-refs",
+            "tenant-a",
+            client.clone(),
+        )
+        .expect("observational ref capability");
+        let refs = S3RefBackend::new_observational(capability);
+
+        let summary = refs
+            .acquire_ref_inventory_fence()
+            .expect("observational inventory fence")
+            .visit_refs(&mut |_record| Ok(()))
+            .expect("observational ref inventory");
+        assert_eq!(summary.refs(), 1);
+        assert!(matches!(
+            refs.compare_exchange(&name, Some(target), target),
+            Err(StoreError::Unsupported { .. })
+        ));
+        assert_eq!(*client.objects.lock().expect("object lock"), before_objects);
+        assert_eq!(client.next_version.load(Ordering::SeqCst), before_version);
     }
 
     #[test]

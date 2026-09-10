@@ -244,7 +244,13 @@ enum ResolvedRefBackend {
 struct LoadedCampaignRepositoryStore {
     graph: Arc<StoreGraph>,
     refs: LoadedRefBackend,
-    maintenance: StoreGraphAdmin,
+    maintenance: Option<StoreGraphAdmin>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CampaignStoreLoadMode {
+    Operational,
+    Observational,
 }
 
 pub(super) struct VerifiedCampaignStoreInventory {
@@ -263,24 +269,68 @@ pub(super) struct VerifiedCampaignStorePhysicalInventory {
 
 impl LoadedCampaignRepositoryStore {
     fn into_store(self) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
+        let maintenance = self
+            .maintenance
+            .ok_or_else(|| campaign_store_error("operational store maintenance is unavailable"))?;
         let result = match self.refs {
             LoadedRefBackend::Directory(refs) => {
                 crucible_daemon::CampaignLocalRepositoryStore::new_with_maintenance(
                     self.graph,
                     refs,
-                    self.maintenance,
+                    maintenance,
                 )
             }
             LoadedRefBackend::S3(refs) => {
                 crucible_daemon::CampaignLocalRepositoryStore::new_with_maintenance(
                     self.graph,
                     refs,
-                    self.maintenance,
+                    maintenance,
                 )
             }
         };
         result.map_err(|error| {
             campaign_store_error(format!("repository-store admission failed: {error}"))
+        })
+    }
+
+    fn into_store_and_graph(
+        self,
+    ) -> Result<
+        (
+            crucible_daemon::CampaignLocalRepositoryStore,
+            Arc<StoreGraph>,
+        ),
+        CliError,
+    > {
+        let graph = Arc::clone(&self.graph);
+        self.into_store().map(|store| (store, graph))
+    }
+
+    fn into_archive_planning_store(
+        self,
+    ) -> Result<
+        (
+            crucible_daemon::CampaignArchivePlanningStore,
+            Arc<StoreGraph>,
+        ),
+        CliError,
+    > {
+        if self.maintenance.is_some() {
+            return Err(campaign_store_error(
+                "archive planning store unexpectedly retained maintenance authority",
+            ));
+        }
+        let graph = Arc::clone(&self.graph);
+        let result = match self.refs {
+            LoadedRefBackend::Directory(refs) => {
+                crucible_daemon::CampaignArchivePlanningStore::new(self.graph, refs)
+            }
+            LoadedRefBackend::S3(refs) => {
+                crucible_daemon::CampaignArchivePlanningStore::new(self.graph, refs)
+            }
+        };
+        result.map(|store| (store, graph)).map_err(|error| {
+            campaign_store_error(format!("planning-store admission failed: {error}"))
         })
     }
 }
@@ -289,6 +339,31 @@ pub(super) fn load_campaign_repository_store(
     deployment_path: &Path,
 ) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
     load_campaign_repository_graph(deployment_path)?.into_store()
+}
+
+pub(super) fn load_campaign_repository_store_and_graph(
+    deployment_path: &Path,
+) -> Result<
+    (
+        crucible_daemon::CampaignLocalRepositoryStore,
+        Arc<StoreGraph>,
+    ),
+    CliError,
+> {
+    load_campaign_repository_graph(deployment_path)?.into_store_and_graph()
+}
+
+pub(super) fn load_campaign_archive_planning_store(
+    deployment_path: &Path,
+) -> Result<
+    (
+        crucible_daemon::CampaignArchivePlanningStore,
+        Arc<StoreGraph>,
+    ),
+    CliError,
+> {
+    load_campaign_repository_graph_with_mode(deployment_path, CampaignStoreLoadMode::Observational)?
+        .into_archive_planning_store()
 }
 
 pub(super) fn load_campaign_store_graph(
@@ -308,8 +383,11 @@ fn verify_loaded_campaign_store_inventory(
     loaded: LoadedCampaignRepositoryStore,
     limits: StoreGraphVerificationLimits,
 ) -> Result<VerifiedCampaignStoreInventory, CliError> {
-    let verified = loaded
+    let maintenance = loaded
         .maintenance
+        .as_ref()
+        .ok_or_else(|| campaign_store_error("physical store maintenance is unavailable"))?;
+    let verified = maintenance
         .verify_physical_inventory(limits)
         .map_err(|error| {
             campaign_store_error(format!("physical store verification failed: {error}"))
@@ -335,6 +413,13 @@ fn verify_loaded_campaign_store_inventory(
 
 fn load_campaign_repository_graph(
     deployment_path: &Path,
+) -> Result<LoadedCampaignRepositoryStore, CliError> {
+    load_campaign_repository_graph_with_mode(deployment_path, CampaignStoreLoadMode::Operational)
+}
+
+fn load_campaign_repository_graph_with_mode(
+    deployment_path: &Path,
+    mode: CampaignStoreLoadMode,
 ) -> Result<LoadedCampaignRepositoryStore, CliError> {
     let bytes = read_secure_file(
         deployment_path,
@@ -551,24 +636,46 @@ fn load_campaign_repository_graph(
 
     let root = StoreNodeId::new(deployment.root)
         .map_err(|error| campaign_store_error(format!("invalid root node ID: {error}")))?;
-    let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
-        StoreGraphConfig {
-            root,
-            admitted_kinds,
-            nodes,
-        },
-        &keys,
-        &authorizers,
-        &profilers,
-        &physical_quotas,
-        &s3_capabilities.graph,
-    )
-    .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?;
-    let refs = match ref_backend {
-        ResolvedRefBackend::Directory(path) => {
-            LoadedRefBackend::Directory(Arc::new(DirectoryRefBackend::new(path)))
+    let config = StoreGraphConfig {
+        root,
+        admitted_kinds,
+        nodes,
+    };
+    let (graph, maintenance) = match mode {
+        CampaignStoreLoadMode::Operational => {
+            let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
+                config,
+                &keys,
+                &authorizers,
+                &profilers,
+                &physical_quotas,
+                &s3_capabilities.graph,
+            )
+            .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?;
+            (graph, Some(maintenance))
         }
-        ResolvedRefBackend::S3(refs) => LoadedRefBackend::S3(refs.build(&s3_capabilities)?),
+        CampaignStoreLoadMode::Observational => (
+            StoreGraph::build_observational_with_all_capabilities(
+                config,
+                &keys,
+                &authorizers,
+                &profilers,
+                &physical_quotas,
+                &s3_capabilities.graph,
+            )
+            .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?,
+            None,
+        ),
+    };
+    let refs = match ref_backend {
+        ResolvedRefBackend::Directory(path) => LoadedRefBackend::Directory(Arc::new(match mode {
+            CampaignStoreLoadMode::Operational => DirectoryRefBackend::new(path),
+            CampaignStoreLoadMode::Observational => DirectoryRefBackend::new_observational(path),
+        })),
+        ResolvedRefBackend::S3(refs) => LoadedRefBackend::S3(refs.build(
+            &s3_capabilities,
+            mode == CampaignStoreLoadMode::Observational,
+        )?),
     };
     Ok(LoadedCampaignRepositoryStore {
         graph: Arc::new(graph),
@@ -1111,8 +1218,12 @@ path = "/definitely/missing/campaign-store-key.bin"
                 .iter()
                 .any(|node| { node.kind == StoreNodeKind::S3 && node.capabilities.durable })
         );
-        assert_eq!(loaded.maintenance.physical().len(), 1);
-        assert_eq!(loaded.maintenance.s3_multipart_cleanup().len(), 1);
+        let maintenance = loaded
+            .maintenance
+            .as_ref()
+            .expect("operational store retains maintenance");
+        assert_eq!(maintenance.physical().len(), 1);
+        assert_eq!(maintenance.s3_multipart_cleanup().len(), 1);
         assert!(matches!(&loaded.refs, LoadedRefBackend::S3(_)));
         loaded.into_store().expect("bind maintained S3 store");
     }

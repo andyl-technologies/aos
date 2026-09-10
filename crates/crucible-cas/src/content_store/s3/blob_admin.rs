@@ -274,6 +274,31 @@ impl S3BlobBackend {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_observational_with_admin(
+        name: impl Into<String>,
+        endpoint: StoreS3EndpointId,
+        bucket: impl Into<String>,
+        prefix: impl Into<String>,
+        maximum_logical_object_bytes: u64,
+        multipart_part_bytes: u64,
+        client: Arc<dyn StoreS3Client>,
+        admin_client: Arc<dyn StoreS3BlobAdminClient>,
+    ) -> Result<Self, StoreError> {
+        let mut backend = Self::new_with_admin(
+            name,
+            endpoint,
+            bucket,
+            prefix,
+            maximum_logical_object_bytes,
+            multipart_part_bytes,
+            client,
+            admin_client,
+        )?;
+        backend.observational = true;
+        Ok(backend)
+    }
+
     pub(super) fn acquire_admin_publication_guard(
         &self,
     ) -> Result<Option<RwLockReadGuard<'_, ()>>, StoreError> {
@@ -328,7 +353,13 @@ impl BlobStoreAdmin for S3BlobBackend {
             .map_err(|_| StoreError::Poisoned {
                 operation: "acquire-S3-blob-inventory-state-fence",
             })?;
-        let inventory = administration.load_or_create_state(self)?;
+        let inventory = if self.observational {
+            administration
+                .load_state(self)?
+                .ok_or(StoreError::Incompatible)?
+        } else {
+            administration.load_or_create_state(self)?
+        };
         Ok(Box::new(S3BlobInventoryFence {
             backend: self,
             administration,

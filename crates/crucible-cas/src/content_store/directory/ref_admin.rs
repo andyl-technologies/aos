@@ -85,6 +85,74 @@ impl DirectoryRefBackend {
         Ok(file)
     }
 
+    fn acquire_existing_ref_admin_lock(
+        &self,
+        name: &str,
+        operation: FlockOperation,
+    ) -> Result<File, StoreError> {
+        let path = self.ref_inventory_admin_directory().join(name);
+        let descriptor = rustix::fs::open(
+            &path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|source| StoreError::Io {
+            operation: "open-existing-ref-admin-lock",
+            path: path.clone(),
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        let file = File::from(descriptor);
+        if !file
+            .metadata()
+            .map_err(|source| StoreError::Io {
+                operation: "inspect-existing-ref-admin-lock",
+                path: path.clone(),
+                source,
+            })?
+            .is_file()
+        {
+            return Err(StoreError::InvalidComposition {
+                reason: "existing ref admin lock is not a regular file",
+            });
+        }
+        flock(&file, operation).map_err(|source| StoreError::Io {
+            operation: "lock-existing-ref-admin",
+            path,
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        Ok(file)
+    }
+
+    pub(super) fn acquire_existing_ref_inventory_lock(
+        &self,
+        operation: FlockOperation,
+    ) -> Result<File, StoreError> {
+        self.acquire_existing_ref_admin_lock(REF_INVENTORY_LOCK_FILE, operation)
+    }
+
+    pub(super) fn acquire_existing_ref_publication_lock(
+        &self,
+        operation: FlockOperation,
+    ) -> Result<File, StoreError> {
+        self.acquire_existing_ref_admin_lock(REF_PUBLICATION_LOCK_FILE, operation)
+    }
+
+    fn load_existing_ref_inventory_state(&self) -> Result<DirectoryRefInventoryState, StoreError> {
+        let path = self
+            .ref_inventory_admin_directory()
+            .join(REF_INVENTORY_STATE_FILE);
+        File::open(&path)
+            .map_err(|source| StoreError::Io {
+                operation: "read-existing-ref-inventory-state",
+                path: path.clone(),
+                source,
+            })
+            .and_then(|file| read_ref_inventory_state(file, &path))
+    }
+
     pub(super) fn load_or_create_ref_inventory_state(
         &self,
     ) -> Result<DirectoryRefInventoryState, StoreError> {
@@ -121,9 +189,19 @@ impl DirectoryRefBackend {
 
 impl RefStoreAdmin for DirectoryRefBackend {
     fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError> {
-        let publication = self.acquire_ref_publication_lock(FlockOperation::LockExclusive)?;
-        let lock = self.acquire_ref_inventory_lock(FlockOperation::LockExclusive)?;
-        let state = self.load_or_create_ref_inventory_state()?;
+        let (publication, lock, state) = if self.observational() {
+            (
+                self.acquire_existing_ref_publication_lock(FlockOperation::LockExclusive)?,
+                self.acquire_existing_ref_inventory_lock(FlockOperation::LockExclusive)?,
+                self.load_existing_ref_inventory_state()?,
+            )
+        } else {
+            (
+                self.acquire_ref_publication_lock(FlockOperation::LockExclusive)?,
+                self.acquire_ref_inventory_lock(FlockOperation::LockExclusive)?,
+                self.load_or_create_ref_inventory_state()?,
+            )
+        };
         Ok(Box::new(DirectoryRefInventoryFence {
             backend: self,
             _publication: publication,

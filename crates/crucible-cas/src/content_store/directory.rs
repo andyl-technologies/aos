@@ -66,6 +66,7 @@ const MAX_REF_RECORD_BYTES: u64 = 256;
 pub struct DirectoryBlobBackend {
     name: String,
     root: PathBuf,
+    observational: bool,
 }
 
 impl DirectoryBlobBackend {
@@ -75,6 +76,17 @@ impl DirectoryBlobBackend {
         Self {
             name: name.into(),
             root: root.into(),
+            observational: false,
+        }
+    }
+
+    /// Opens an existing directory backend for mutation-free observation.
+    #[must_use]
+    pub(crate) fn new_observational(name: impl Into<String>, root: impl Into<PathBuf>) -> Self {
+        Self {
+            name: name.into(),
+            root: root.into(),
+            observational: true,
         }
     }
 
@@ -82,6 +94,10 @@ impl DirectoryBlobBackend {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(super) const fn observational(&self) -> bool {
+        self.observational
     }
 
     pub(super) fn object_path(&self, id: ContentId) -> PathBuf {
@@ -166,6 +182,43 @@ impl DirectoryBlobBackend {
         Ok(file)
     }
 
+    pub(super) fn acquire_existing_inventory_lock(&self) -> Result<File, StoreError> {
+        let path = self.inventory_admin_directory().join(INVENTORY_LOCK_FILE);
+        let descriptor = rustix::fs::open(
+            &path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|source| StoreError::Io {
+            operation: "open-existing-inventory-lock",
+            path: path.clone(),
+            source: io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        let file = File::from(descriptor);
+        if !file
+            .metadata()
+            .map_err(|source| StoreError::Io {
+                operation: "inspect-existing-inventory-lock",
+                path: path.clone(),
+                source,
+            })?
+            .is_file()
+        {
+            return Err(StoreError::InvalidComposition {
+                reason: "existing inventory lock is not a regular file",
+            });
+        }
+        flock(&file, FlockOperation::LockExclusive).map_err(|source| StoreError::Io {
+            operation: "lock-existing-inventory",
+            path,
+            source: io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        Ok(file)
+    }
+
     pub(super) fn load_or_create_inventory_state(
         &self,
     ) -> Result<DirectoryInventoryState, StoreError> {
@@ -187,6 +240,19 @@ impl DirectoryBlobBackend {
                 source,
             }),
         }
+    }
+
+    pub(super) fn load_existing_inventory_state(
+        &self,
+    ) -> Result<DirectoryInventoryState, StoreError> {
+        let path = self.inventory_admin_directory().join(INVENTORY_STATE_FILE);
+        File::open(&path)
+            .map_err(|source| StoreError::Io {
+                operation: "read-existing-inventory-state",
+                path: path.clone(),
+                source,
+            })
+            .and_then(|file| read_inventory_state(file, &path))
     }
 
     pub(super) fn advance_inventory_state(
@@ -361,8 +427,17 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
 
 impl BlobStoreAdmin for DirectoryBlobBackend {
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
-        let lock = self.acquire_inventory_lock()?;
-        let state = self.load_or_create_inventory_state()?;
+        let (lock, state) = if self.observational {
+            (
+                self.acquire_existing_inventory_lock()?,
+                self.load_existing_inventory_state()?,
+            )
+        } else {
+            (
+                self.acquire_inventory_lock()?,
+                self.load_or_create_inventory_state()?,
+            )
+        };
         Ok(Box::new(DirectoryBlobInventoryFence {
             backend: self,
             _lock: lock,
@@ -856,19 +931,39 @@ fn invalid_object_data() -> io::Error {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DirectoryRefBackend {
     root: PathBuf,
+    observational: bool,
 }
 
 impl DirectoryRefBackend {
     /// Creates a ref backend rooted at `root`.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            observational: false,
+        }
+    }
+
+    /// Creates a stopped-owner ref view whose reads never create lock state.
+    ///
+    /// The caller must hold an external lifetime lock excluding every writer
+    /// for the complete lifetime of this backend.
+    #[must_use]
+    pub fn new_observational(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            observational: true,
+        }
     }
 
     /// Returns the authoritative ref root.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(super) const fn observational(&self) -> bool {
+        self.observational
     }
 
     fn ref_path(&self, name: &RefName) -> PathBuf {
@@ -987,11 +1082,18 @@ impl MutableRefBackend for DirectoryRefBackend {
     }
 
     fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
-        let lock = self.acquire_ref_publication_lock(FlockOperation::LockShared)?;
+        let lock = if self.observational {
+            self.acquire_existing_ref_publication_lock(FlockOperation::LockShared)?
+        } else {
+            self.acquire_ref_publication_lock(FlockOperation::LockShared)?
+        };
         Ok(Box::new(DirectoryRefPublicationGuard { _lock: lock }))
     }
 
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
+        if self.observational {
+            return self.read_unlocked(name);
+        }
         let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockShared)?;
         let _lock = self.acquire_lock(name, FlockOperation::LockShared)?;
         self.read_unlocked(name)
@@ -1003,7 +1105,11 @@ impl MutableRefBackend for DirectoryRefBackend {
         after: Option<&RefName>,
         limit: usize,
     ) -> Result<RefScanPage, StoreError> {
-        let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockShared)?;
+        let _inventory_lock = if self.observational {
+            self.acquire_existing_ref_inventory_lock(FlockOperation::LockShared)?
+        } else {
+            self.acquire_ref_inventory_lock(FlockOperation::LockShared)?
+        };
         ref_admin::scan_ref_namespace(self, namespace, after, limit)
     }
 
@@ -1013,6 +1119,11 @@ impl MutableRefBackend for DirectoryRefBackend {
         expected: Option<ContentId>,
         next: ContentId,
     ) -> Result<RefCasOutcome, StoreError> {
+        if self.observational {
+            return Err(StoreError::Unsupported {
+                capability: "observational ref mutation",
+            });
+        }
         let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockExclusive)?;
         let mut inventory_state = self.load_or_create_ref_inventory_state()?;
         let _lock = self.acquire_lock(name, FlockOperation::LockExclusive)?;

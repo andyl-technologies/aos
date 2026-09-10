@@ -119,6 +119,38 @@ pub struct CampaignLocalRepositoryStore {
     maintenance: Option<CampaignLocalRepositoryMaintenance>,
 }
 
+/// Consumed observational store capability for offline archive planning.
+pub struct CampaignArchivePlanningStore {
+    blobs: Arc<dyn ImmutableBlobBackend>,
+    refs: Arc<dyn MutableRefBackend>,
+}
+
+impl CampaignArchivePlanningStore {
+    /// Binds an observational graph and stopped-owner ref view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::InvalidRepositoryStore`] when the
+    /// authenticated graph or ref backend lacks the durable repository shape.
+    pub fn new<R>(graph: Arc<StoreGraph>, refs: Arc<R>) -> Result<Self, CampaignLocalServiceError>
+    where
+        R: MutableRefBackend + 'static,
+    {
+        let blobs: Arc<dyn ImmutableBlobBackend> = graph;
+        let refs: Arc<dyn MutableRefBackend> = refs;
+        let capabilities = blobs.capabilities();
+        if !capabilities.durable || !capabilities.conditional_create || !refs.capabilities().durable
+        {
+            return Err(CampaignLocalServiceError::InvalidRepositoryStore);
+        }
+        Ok(Self { blobs, refs })
+    }
+
+    fn into_parts(self) -> (Arc<dyn ImmutableBlobBackend>, Arc<dyn MutableRefBackend>) {
+        (self.blobs, self.refs)
+    }
+}
+
 /// Separately retained maintenance authority for one composed repository.
 ///
 /// The authority remains private to the managed daemon lifecycle. Ordinary
@@ -419,6 +451,104 @@ impl CampaignLocalServiceConfig {
         self.prepare_repository(store, state, policy, component_authorities)
     }
 
+    /// Authenticates and acquires a preexisting deployment store for mutation.
+    ///
+    /// Unlike [`Self::prepare_with_store`], this path never creates or replaces
+    /// the state lock or deployment identity. Repository operational journals
+    /// are opened after existing owner state is authenticated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when deployment authentication,
+    /// existing owner state, or repository preparation fails.
+    pub fn prepare_existing_with_store(
+        &self,
+        store: CampaignLocalRepositoryStore,
+    ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+        self.acquire_existing_owner()?.upgrade_with_store(store)
+    }
+
+    /// Authenticates and exclusively acquires one preexisting stopped deployment.
+    ///
+    /// This path opens only preexisting owner state. It does not create, clean,
+    /// or recover repository paths, retention catalogs, transfer journals, or
+    /// identity files. The returned opaque capability retains the owner lease
+    /// so callers can authenticate observational inputs before upgrading to an
+    /// operational store without a drop-and-reacquire gap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when deployment authentication,
+    /// existing-state ownership, or repository construction fails.
+    pub fn acquire_existing_owner(
+        &self,
+    ) -> Result<PreparedCampaignStoppedOwner, CampaignLocalServiceError> {
+        let (policy, component_authorities) = self.authenticate_deployment()?;
+        let state = CampaignStateOwner::open_existing(
+            &self.state_directory,
+            self.endpoint.owner_user_id(),
+            self.endpoint.owner_group_id(),
+        )?;
+        let transfer_identity = state.transfer_identity().to_owned();
+
+        Ok(PreparedCampaignStoppedOwner {
+            config: self.clone(),
+            policy,
+            state,
+            component_authorities,
+            transfer_identity,
+        })
+    }
+
+    /// Authenticates one stopped deployment for mutation-free archive planning.
+    ///
+    /// This convenience path acquires a generic stopped owner and binds the
+    /// supplied observational repository graph to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when deployment authentication,
+    /// existing-state ownership, or repository construction fails.
+    pub fn prepare_archive_planning_with_store(
+        &self,
+        store: CampaignArchivePlanningStore,
+    ) -> Result<PreparedCampaignArchivePlanner, CampaignLocalServiceError> {
+        self.acquire_existing_owner()?
+            .prepare_archive_planning_with_store(store)
+    }
+
+    fn prepare_archive_planner(
+        &self,
+        store: CampaignArchivePlanningStore,
+        policy: Arc<UnixPeerCampaignPolicy>,
+        state: CampaignStateOwner,
+        component_authorities: CampaignComponentAuthorities,
+        transfer_identity: String,
+    ) -> Result<PreparedCampaignArchivePlanner, CampaignLocalServiceError> {
+        let (blobs, refs) = store.into_parts();
+        let repository = match component_authorities.as_ref() {
+            Some((planner, debugger)) => Arc::new(
+                CampaignRepository::with_component_authorities(
+                    blobs,
+                    refs,
+                    planner.clone(),
+                    debugger.clone(),
+                )
+                .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?,
+            ),
+            None => Arc::new(CampaignRepository::new(blobs, refs)),
+        };
+
+        Ok(PreparedCampaignArchivePlanner {
+            repository,
+            config: self.clone(),
+            policy,
+            state,
+            component_authorities,
+            transfer_identity,
+        })
+    }
+
     /// Authenticates and opens one service over an externally supplied store.
     ///
     /// This is equivalent to [`Self::prepare_with_store`] followed by
@@ -541,6 +671,230 @@ pub struct PreparedCampaignLocalService {
     transfer_identity: String,
 }
 
+/// Exclusive capability for one authenticated, preexisting stopped deployment.
+///
+/// The capability is intentionally opaque. Holding it keeps the state-owner
+/// lease continuously while callers authenticate mutation-free inputs and
+/// choose the operational capability to construct.
+pub struct PreparedCampaignStoppedOwner {
+    config: CampaignLocalServiceConfig,
+    policy: Arc<UnixPeerCampaignPolicy>,
+    state: CampaignStateOwner,
+    component_authorities: CampaignComponentAuthorities,
+    transfer_identity: String,
+}
+
+impl PreparedCampaignStoppedOwner {
+    /// Binds an observational repository graph for offline archive operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when the repository does not
+    /// satisfy the authenticated campaign profile.
+    pub fn prepare_archive_planning_with_store(
+        self,
+        store: CampaignArchivePlanningStore,
+    ) -> Result<PreparedCampaignArchivePlanner, CampaignLocalServiceError> {
+        let Self {
+            config,
+            policy,
+            state,
+            component_authorities,
+            transfer_identity,
+        } = self;
+        config.prepare_archive_planner(
+            store,
+            policy,
+            state,
+            component_authorities,
+            transfer_identity,
+        )
+    }
+
+    /// Upgrades this continuously held owner lease to an operational service.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when operational repository or
+    /// journal preparation fails.
+    pub fn upgrade_with_store(
+        self,
+        store: CampaignLocalRepositoryStore,
+    ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+        let Self {
+            config,
+            policy,
+            state,
+            component_authorities,
+            transfer_identity: _,
+        } = self;
+        config.prepare_repository(store, state, policy, component_authorities)
+    }
+}
+
+/// Existing-state capability for offline archive planning and review.
+pub struct PreparedCampaignArchivePlanner {
+    repository: Arc<CampaignRepository>,
+    config: CampaignLocalServiceConfig,
+    policy: Arc<UnixPeerCampaignPolicy>,
+    state: CampaignStateOwner,
+    component_authorities: CampaignComponentAuthorities,
+    transfer_identity: String,
+}
+
+impl PreparedCampaignArchivePlanner {
+    /// Releases the observational repository while retaining stopped ownership.
+    ///
+    /// The returned capability keeps the deployment owner lease continuously,
+    /// allowing an operational graph with exclusive leaf locks to be opened
+    /// after the observational graph has been dropped.
+    #[must_use]
+    pub fn into_stopped_owner(self) -> PreparedCampaignStoppedOwner {
+        let Self {
+            repository,
+            config,
+            policy,
+            state,
+            component_authorities,
+            transfer_identity,
+        } = self;
+        drop(repository);
+
+        PreparedCampaignStoppedOwner {
+            config,
+            policy,
+            state,
+            component_authorities,
+            transfer_identity,
+        }
+    }
+
+    /// Inspects and authenticates one published archive ref and closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when the archive ref is absent or
+    /// its manifest, policy, selected closure, or checkpoint links fail
+    /// authentication.
+    pub fn inspect_campaign_archive_ref(
+        &self,
+        archive_name: &str,
+    ) -> Result<crucible_campaign::CampaignArchiveInspection, CampaignRepositoryError> {
+        self.repository.inspect_campaign_archive_ref(archive_name)
+    }
+
+    /// Upgrades this continuously held stopped-owner lease for transfer.
+    ///
+    /// The caller may construct the operational store after plan review while
+    /// this value keeps the deployment identity and refs excluded from another
+    /// cooperating owner. Consuming the planner opens operational journals
+    /// without releasing that lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when operational repository or
+    /// journal preparation fails.
+    pub fn upgrade_with_store(
+        self,
+        store: CampaignLocalRepositoryStore,
+    ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+        let Self {
+            repository: _,
+            config,
+            policy,
+            state,
+            component_authorities,
+            transfer_identity: _,
+        } = self;
+        config.prepare_repository(store, state, policy, component_authorities)
+    }
+
+    /// Builds one archive plan using a read-only exact-pin catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CampaignArchiveTransferError`] when the source campaign,
+    /// snapshot closure, exact-pin catalog, or checkpoint selections fail
+    /// authentication.
+    pub fn plan_campaign_archive_with_exact_pins(
+        &self,
+        campaign: CampaignName,
+        snapshot: crucible_campaign::CampaignSnapshotId,
+        policy: crucible_campaign::CampaignArchivePolicy,
+        retained_roots: impl IntoIterator<Item = crucible_cas::content_store::ContentId>,
+        checkpoints: &crate::ExactCheckpointStore,
+        exact_pins: &mut dyn crate::ExactPinRetentionAdmin,
+    ) -> Result<crucible_campaign::CampaignArchivePlan, crate::CampaignArchiveTransferError> {
+        let mut resolver = crate::ExactPinCampaignArchiveCheckpointResolver::new(
+            self.repository.as_ref(),
+            checkpoints,
+            campaign,
+            exact_pins,
+        )?;
+        self.repository
+            .plan_campaign_archive(snapshot, policy, retained_roots, Some(&mut resolver))
+            .map_err(Into::into)
+    }
+
+    /// Validates destination ref intent and any existing campaign-head binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CampaignArchiveTransferError`] when the requested refs
+    /// are invalid or an existing destination campaign names another snapshot.
+    pub fn validate_archive_destination(
+        &self,
+        plan: &crucible_campaign::CampaignArchivePlan,
+        archive_name: &str,
+        campaign_name: Option<&str>,
+    ) -> Result<(), crate::CampaignArchiveTransferError> {
+        self.repository
+            .validate_campaign_archive_publication_intent(
+                archive_name,
+                campaign_name,
+                plan.manifest().policy(),
+            )?;
+        if let Some(campaign_name) = campaign_name {
+            match self.repository.head(campaign_name) {
+                Ok(current) if current.snapshot_id() == plan.manifest().source_snapshot() => {}
+                Ok(current) => {
+                    return Err(
+                        crate::CampaignArchiveTransferError::DestinationCampaignConflict {
+                            current: current.snapshot_id(),
+                            imported: plan.manifest().source_snapshot(),
+                        },
+                    );
+                }
+                Err(CampaignRepositoryError::NotFound) => {}
+                Err(source) => return Err(source.into()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Derives the operation identity bound to this destination deployment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CampaignTransferJournalError`] when a destination name
+    /// or stable identity input violates the bounded operation contract.
+    pub fn archive_transfer_operation_id(
+        &self,
+        plan: &crucible_campaign::CampaignArchivePlan,
+        archive_name: &str,
+        campaign_name: Option<&str>,
+        durability: crucible_cas::content_store::DurabilityRequirement,
+    ) -> Result<crate::CampaignTransferOperationId, crate::CampaignTransferJournalError> {
+        crate::CampaignTransferOperationId::for_archive(
+            plan.manifest_id(),
+            &self.transfer_identity,
+            archive_name,
+            campaign_name,
+            durability,
+        )
+    }
+}
+
 /// Borrowed destructive-maintenance authority for one stopped local service.
 ///
 /// The authority is available only before endpoint binding and while the
@@ -643,6 +997,28 @@ impl CampaignLocalStoreGcAuthority<'_> {
 }
 
 impl PreparedCampaignLocalService {
+    /// Derives an archive-transfer operation bound to this deployment identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CampaignTransferJournalError`] when a destination name
+    /// or stable identity input violates the bounded operation contract.
+    pub fn archive_transfer_operation_id(
+        &self,
+        plan: &crucible_campaign::CampaignArchivePlan,
+        archive_name: &str,
+        campaign_name: Option<&str>,
+        durability: crucible_cas::content_store::DurabilityRequirement,
+    ) -> Result<crate::CampaignTransferOperationId, crate::CampaignTransferJournalError> {
+        crate::CampaignTransferOperationId::for_archive(
+            plan.manifest_id(),
+            &self.transfer_identity,
+            archive_name,
+            campaign_name,
+            durability,
+        )
+    }
+
     /// Builds one authenticated archive plan under this repository owner.
     ///
     /// # Errors
@@ -1553,6 +1929,66 @@ impl CampaignStateOwner {
         })
     }
 
+    fn open_existing(
+        path: &Path,
+        user_id: u32,
+        group_id: u32,
+    ) -> Result<Self, CampaignLocalServiceError> {
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|source| io_error("stat-state-directory", path, source))?;
+        validate_secure_directory(&metadata, user_id, group_id)
+            .map_err(|()| CampaignLocalServiceError::InvalidStateDirectory)?;
+        let root = File::open(path)
+            .map_err(|source| io_error("open-existing-state-directory", path, source))?;
+        require_same_file(&root, &metadata, path, "existing-state-directory")?;
+
+        let lock_path = path.join(STATE_LOCK_FILE);
+        let lock: File = rustix::fs::open(
+            &lock_path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|source| {
+            io_error(
+                "open-existing-state-lock",
+                &lock_path,
+                io::Error::from_raw_os_error(source.raw_os_error()),
+            )
+        })?
+        .into();
+        let lock_metadata = lock
+            .metadata()
+            .map_err(|source| io_error("stat-existing-state-lock", &lock_path, source))?;
+        if !lock_metadata.is_file()
+            || lock_metadata.uid() != user_id
+            || lock_metadata.gid() != group_id
+            || lock_metadata.mode() & 0o777 != 0o600
+        {
+            return Err(CampaignLocalServiceError::InvalidStateLock);
+        }
+        flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
+            if source == rustix::io::Errno::WOULDBLOCK {
+                CampaignLocalServiceError::StateInUse
+            } else {
+                io_error(
+                    "lock-existing-state-directory",
+                    &lock_path,
+                    io::Error::from_raw_os_error(source.raw_os_error()),
+                )
+            }
+        })?;
+        revalidate_state_path(&root, &metadata, path, user_id, group_id)?;
+
+        let transfer_identity = load_state_identity(path, user_id, group_id)?;
+        revalidate_state_path(&root, &metadata, path, user_id, group_id)?;
+
+        Ok(Self {
+            _root: root,
+            lock,
+            transfer_identity,
+        })
+    }
+
     fn transfer_identity(&self) -> &str {
         &self.transfer_identity
     }
@@ -1639,9 +2075,40 @@ fn load_or_create_state_identity(
         }
     };
 
+    decode_state_identity(&file, &path, user_id, group_id)
+}
+
+fn load_state_identity(
+    root: &Path,
+    user_id: u32,
+    group_id: u32,
+) -> Result<String, CampaignLocalServiceError> {
+    let path = root.join(STATE_IDENTITY_FILE);
+    let file: File = rustix::fs::open(
+        &path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|source| {
+        io_error(
+            "open-existing-state-identity",
+            &path,
+            io::Error::from_raw_os_error(source.raw_os_error()),
+        )
+    })?
+    .into();
+    decode_state_identity(&file, &path, user_id, group_id)
+}
+
+fn decode_state_identity(
+    file: &File,
+    path: &Path,
+    user_id: u32,
+    group_id: u32,
+) -> Result<String, CampaignLocalServiceError> {
     let metadata = file
         .metadata()
-        .map_err(|source| io_error("stat-state-identity", &path, source))?;
+        .map_err(|source| io_error("stat-state-identity", path, source))?;
     if !metadata.is_file()
         || metadata.uid() != user_id
         || metadata.gid() != group_id
@@ -1651,9 +2118,10 @@ fn load_or_create_state_identity(
         return Err(CampaignLocalServiceError::InvalidStateIdentity);
     }
     let mut bytes = [0_u8; STATE_IDENTITY_BYTES];
-    (&file)
+    let mut reader = file;
+    reader
         .read_exact(&mut bytes)
-        .map_err(|source| io_error("read-state-identity", &path, source))?;
+        .map_err(|source| io_error("read-state-identity", path, source))?;
     if &bytes[..STATE_IDENTITY_MAGIC.len()] != STATE_IDENTITY_MAGIC {
         return Err(CampaignLocalServiceError::InvalidStateIdentity);
     }
