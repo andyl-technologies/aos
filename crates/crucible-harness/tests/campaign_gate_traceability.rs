@@ -174,8 +174,12 @@ fn registered_library_exact_targets_match_sources_and_nix() {
     let mut failures = Vec::new();
 
     for gate in campaign_gates() {
-        let CampaignGateContract::Automated { targets, nix_attr } = gate.contract else {
-            continue;
+        let (targets, nix_attr) = match gate.contract {
+            CampaignGateContract::Automated { targets, nix_attr }
+            | CampaignGateContract::ComponentAutomated {
+                targets, nix_attr, ..
+            } => (targets, nix_attr),
+            CampaignGateContract::Manual { .. } | CampaignGateContract::Unsupported => continue,
         };
         for target in targets {
             let CampaignGateTargetKind::LibExact {
@@ -203,6 +207,72 @@ fn registered_library_exact_targets_match_sources_and_nix() {
         "RFC-0020 library exact targets drifted:\n{}",
         failures.join("\n")
     );
+}
+
+#[test]
+fn component_automated_contract_validates_evidence_without_completing_gate()
+-> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let gate = find_campaign_gate("gate:hot-fork-isolation")
+        .ok_or("hot-fork-isolation gate is missing")?;
+    let CampaignGateContract::ComponentAutomated {
+        targets,
+        nix_attr,
+        remaining_scope,
+    } = gate.contract
+    else {
+        return Err("hot-fork-isolation must remain component-automated".into());
+    };
+
+    assert!(!remaining_scope.is_empty());
+    let wired_default = format!("\"{nix_attr}\" = component_evidence;");
+    let failures = contract_failures(&root, &wired_default, gate);
+    assert_eq!(
+        failures,
+        [format!(
+            "{}: component automation does not complete the RFC contract; remaining scope: {}",
+            gate.name,
+            remaining_scope.join(",")
+        )]
+    );
+
+    let unwired_failures = contract_failures(&root, "", gate);
+    assert!(
+        unwired_failures
+            .iter()
+            .any(|failure| failure.contains("evaluated Nix target")
+                && failure.contains("not registered"))
+    );
+    assert!(
+        unwired_failures
+            .iter()
+            .any(|failure| failure.contains("does not complete the RFC contract"))
+    );
+
+    let first_selector = targets
+        .iter()
+        .find_map(|target| match target.kind {
+            CampaignGateTargetKind::LibExact { selectors, .. } => selectors.first(),
+            CampaignGateTargetKind::Integration { .. } => None,
+        })
+        .ok_or("hot-fork-isolation component selector is missing")?;
+    let selector_source = fs::read_to_string(root.join(first_selector.source))?;
+    let function_name = first_selector
+        .name
+        .rsplit("::")
+        .next()
+        .ok_or("hot-fork-isolation selector has no function name")?;
+    let drifted_source = selector_source.replace(
+        &format!("fn {function_name}("),
+        "fn removed_hot_fork_isolation_selector(",
+    );
+    assert!(
+        library_selector_source_failures(gate.name, first_selector, &drifted_source, false)
+            .iter()
+            .any(|failure| failure.contains("is absent"))
+    );
+
+    Ok(())
 }
 
 #[test]
@@ -284,7 +354,8 @@ fn validate_evaluated_nix_targets(failures: &mut BTreeSet<String>) {
     let cataloged = campaign_gates()
         .iter()
         .filter_map(|gate| match gate.contract {
-            CampaignGateContract::Automated { nix_attr, .. } => Some(nix_attr),
+            CampaignGateContract::Automated { nix_attr, .. }
+            | CampaignGateContract::ComponentAutomated { nix_attr, .. } => Some(nix_attr),
             CampaignGateContract::Manual { .. } | CampaignGateContract::Unsupported => None,
         })
         .collect::<BTreeSet<_>>();
@@ -305,6 +376,26 @@ fn contract_failures(root: &Path, default_nix: &str, gate: &CampaignGateSpec) ->
     match gate.contract {
         CampaignGateContract::Automated { targets, nix_attr } => {
             automated_contract_failures(root, default_nix, gate.name, targets, nix_attr)
+        }
+        CampaignGateContract::ComponentAutomated {
+            targets,
+            nix_attr,
+            remaining_scope,
+        } => {
+            let mut failures =
+                automated_contract_failures(root, default_nix, gate.name, targets, nix_attr);
+            if remaining_scope.is_empty() {
+                failures.push(format!(
+                    "{}: component automation must name remaining scope",
+                    gate.name
+                ));
+            }
+            failures.push(format!(
+                "{}: component automation does not complete the RFC contract; remaining scope: {}",
+                gate.name,
+                remaining_scope.join(",")
+            ));
+            failures
         }
         CampaignGateContract::Manual {
             artifact_contract,
