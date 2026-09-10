@@ -1,0 +1,36 @@
+--- a/test-suite/tests/ports.test
++++ b/test-suite/tests/ports.test
+@@ -37,7 +37,8 @@
+   (newline))
+ 
+ (define (test-file)
+-  (data-file-name "ports-test.tmp"))
++  (data-file-name
++   (string-append "ports-test-" (number->string (getpid)) ".tmp")))
+ 
+ (define (skip-on-darwin)
+   (when (string-ci=? "darwin" (utsname:sysname (uname)))
+--- a/test-suite/tests/rdelim.test
++++ b/test-suite/tests/rdelim.test
+@@ -255,7 +255,8 @@
+ (with-test-prefix "for-line-in-file"
+ 
+   (define (test-file)
+-    (data-file-name "ports-test.tmp"))
++    (data-file-name
++     (string-append "rdelim-test-" (number->string (getpid)) ".tmp")))
+ 
+   (let ((lst '())
+         (lines '())
+--- a/test-suite/tests/r6rs-ports.test
++++ b/test-suite/tests/r6rs-ports.test
+@@ -38,7 +38,8 @@
+                        body0 body ...)))))))
+ 
+ (define (test-file)
+-  (data-file-name "r6rs-ports-test.tmp"))
++  (data-file-name
++   (string-append "r6rs-ports-test-" (number->string (getpid)) ".tmp")))
+ 
+ ;; A input/output port that swallows all output, and produces just
+ ;; spaces on input.  Reading and writing beyond `failure-position'
