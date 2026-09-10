@@ -421,3 +421,7 @@ impl RpcStreamingEventReceiver {
             .is_none_or(|delivered| sequence > delivered)
     }
 }
+
+#[cfg(test)]
+#[path = "streaming_receiver_tests.rs"]
+mod streaming_receiver_tests;
