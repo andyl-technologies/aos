@@ -18,9 +18,12 @@
 //! current-boot inventory. [`service`] exposes that catalog through an
 //! authenticated Network 1.2 one-shot session, while [`activation`] validates
 //! its systemd record-subject listener. [`broker`] composes effect state without
-//! exposing Apply or performing netlink, nftables, or BPF work. The privileged
-//! kernel helper, postcondition observer, and authenticated mutation dispatch
-//! remain explicit Apply-readiness prerequisites.
+//! exposing Apply or directly performing netlink, nftables, or BPF work.
+//! [`worker_runtime`] and [`kernel_mutator`] provide the fixed one-shot
+//! preparation effect path; [`namespace_observer`] and [`preparation_runtime`]
+//! provide observation, durable commit, and publication. Public Apply remains
+//! unadvertised pending production service/controller composition, protected
+//! retention authorization, lifecycle effects, and P0-06/MAC/VM qualification.
 
 pub mod activation;
 pub mod allocation;
@@ -58,7 +61,7 @@ pub mod state;
 mod systemd_socket_instance;
 #[allow(
     dead_code,
-    reason = "the authenticated worker wire contract is staged before runtime dispatch"
+    reason = "private wire helpers support the fixed one-shot worker runtime"
 )]
 mod worker_process;
 pub mod worker_protocol;

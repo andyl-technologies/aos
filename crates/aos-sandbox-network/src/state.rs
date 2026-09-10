@@ -157,8 +157,8 @@ impl CommittedNetworkResultV1 {
 
 /// Carries a mechanically transaction-bound namespace observation.
 ///
-/// This value does not itself inspect Linux. A future privileged helper must
-/// construct it from a freshly type-checked namespace descriptor and complete
+/// This value does not itself inspect Linux. The preparation finalizer
+/// constructs it from a freshly type-checked namespace descriptor and complete
 /// policy postcondition after crossing the durable Ambiguous boundary.
 pub struct VerifiedNetworkResultV1 {
     request_id: [u8; 16],
@@ -307,8 +307,8 @@ impl NetworkRecoveryEntry {
 /// Carries a complete bounded snapshot of durable operation history.
 ///
 /// This is not current kernel inventory, proof that a resource exists, or
-/// broker readiness evidence. A future observer must reconcile every entry
-/// against kernel state before publishing authoritative network inventory.
+/// broker readiness evidence. Ambiguous preparations must be reconciled by
+/// retained-descriptor observation before authoritative inventory publication.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkRecoverySnapshotV1 {
     sequence: u64,

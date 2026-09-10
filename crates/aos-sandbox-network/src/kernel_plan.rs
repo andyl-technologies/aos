@@ -3,13 +3,13 @@
 //! The protected preparation catalog resolves portable policy into a complete
 //! namespace allocation and packet-policy program. This module compiles those
 //! typed values plus one exact assignment into an architecture-neutral byte
-//! artifact for a future privileged kernel worker.
+//! artifact for the fixed privileged preparation worker.
 //!
 //! The artifact deliberately carries no file-descriptor integers, paths,
 //! netlink messages, BPF commands, or loader-selected programs. It records that
-//! namespace publication requires a separately retained descriptor capability;
-//! the process protocol and custody mechanism for that capability remain a
-//! later design decision.
+//! namespace publication requires a separately retained descriptor capability.
+//! The authenticated process protocol transfers descriptors separately, and
+//! systemd-backed custody retains the resulting namespace.
 //!
 //! ```text
 //! header = magic[8] | version:u16be | action:u8 | publication:u8 | size:u32be

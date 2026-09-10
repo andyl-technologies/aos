@@ -8,9 +8,9 @@
 //! request; caller-selected interface names, commands, or descriptor numbers
 //! never cross this boundary.
 //!
-//! Version one admits only the preparation effect. Observation and exact-owner
-//! cleanup use separate future message kinds so decoding this format can never
-//! accidentally authorize either operation.
+//! Version one admits only the preparation effect. Observation uses a separate
+//! retained-descriptor API, while existing-resource actions use the distinct
+//! lifecycle protocol, so decoding this format can authorize neither.
 //!
 //! ```text
 //! AOSNWR01 | version:u16 | kind:u8 | reserved:u8 | total:u32
@@ -390,7 +390,7 @@ pub struct AuthenticatedNetworkPrepareWorkerDispatchV1 {
 impl AuthenticatedNetworkPrepareWorkerDispatchV1 {
     /// Rechecks current authority and effect time immediately before mutation.
     ///
-    /// The returned non-clone authorization is the input to the future kernel
+    /// The returned non-clone authorization is the input to the fixed kernel
     /// mutator. This check must happen before namespace, policy, or link state
     /// is created; the initial policy installed by that mutator is default-drop.
     ///
@@ -460,7 +460,7 @@ impl NetworkMutationAuthorizationV1 {
     /// Rechecks current authority and effect time immediately before activation.
     ///
     /// The returned borrowed token prevents an activation API from accepting a
-    /// raw plan. The future mutator must retain default-drop while constructing
+    /// raw plan. The fixed mutator must retain default-drop while constructing
     /// the namespace and may expose the first link only after this second gate.
     ///
     /// # Errors

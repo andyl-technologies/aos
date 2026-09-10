@@ -2,12 +2,13 @@
 //!
 //! The coordinator validates portable PREPARE semantics, requires an opaque
 //! protected-catalog token, verifies signed Network authority, and atomically
-//! journals linked operation records. An admitted operation must cross the
-//! durable Ambiguous boundary before a future helper attempts an effect, and a
-//! complete typed observation commits the resulting physical namespace. The
-//! fixed kernel helper does not exist yet, so Apply remains unadvertised and
-//! existing-resource actions are categorically rejected. Authoritative
-//! inventory is independently available through the read-only service.
+//! journals linked operation records. An admitted preparation must cross the
+//! durable Ambiguous boundary before the fixed one-shot worker attempts its
+//! effect, and the preparation finalizer commits only after two matching typed
+//! observations. This coordinator rejects existing-resource actions; the
+//! separate lifecycle coordinator admits them but does not execute their
+//! effects. Public Apply remains unadvertised, while authoritative inventory is
+//! independently available through the read-only service.
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::RecordNamespace;
@@ -996,9 +997,10 @@ fn validate_catalog(
             if endpoint_ids
                 .iter()
                 .eq(catalog.endpoints().iter().map(|item| item.id())) => {}
-        // Existing-resource admission stays closed until a typed current
-        // per-handle lifecycle index can prove Prepare -> observed creation ->
-        // arm/disarm/destroy CAS without permitting resurrection.
+        // The preparation coordinator rejects existing-resource operations.
+        // NetworkLifecycleAdmissionCoordinator validates those operations
+        // against current-resource and durable lifecycle state, but does not
+        // execute their effects.
         NetworkOperation::ArmLease { .. }
         | NetworkOperation::RenewLease { .. }
         | NetworkOperation::Disarm { .. }
@@ -1010,7 +1012,9 @@ fn validate_catalog(
 
 /// Returns the closed method set safe for the current network service.
 ///
-/// Apply remains absent until tc-BPF/netlink helpers and P0-06 readiness exist.
+/// Apply remains absent pending production broker/service/controller
+/// composition, protected retention authorization, lifecycle effect execution
+/// and teardown, and P0-06/MAC/VM qualification.
 /// Inventory is read-only and is advertised only because service startup opens
 /// and validates the complete protected namespace catalog and fixed pin root.
 #[must_use]
