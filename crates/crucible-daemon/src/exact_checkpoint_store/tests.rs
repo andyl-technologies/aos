@@ -40,6 +40,20 @@ use crate::{
 
 const STORE_LIMIT: u64 = 1024 * 1024;
 
+#[cfg(feature = "destructive-recovery-faults")]
+const ENOSPC_CHILD_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_ENOSPC_CHILD";
+#[cfg(feature = "destructive-recovery-faults")]
+const ENOSPC_ROOT_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_ENOSPC_ROOT";
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+#[cfg(feature = "destructive-recovery-faults")]
+const EXACT_CAPTURE_ENOSPC_TRIGGER: &str = "crucible.destructive-recovery.exact-capture-enospc";
+#[cfg(feature = "destructive-recovery-faults")]
+const ENOSPC_TEST_NAME: &str =
+    "exact_checkpoint_store::tests::exact_capture_enospc_restart_retries_root_last_publication";
+#[cfg(feature = "destructive-recovery-faults")]
+const ENOSPC_CHILD_EXIT_CODE: i32 = 87;
+
 struct TestDurableBackend {
     memory: MemoryBlobBackend,
 }
@@ -902,6 +916,146 @@ fn directory_publication_is_reloadable_after_store_restart() {
     assert_eq!(loaded.snapshot(), &snapshot);
     assert_eq!(loaded.scheduler(), Some(&scheduler));
     assert_eq!(restored, vmstate_bytes);
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+#[test]
+fn exact_capture_enospc_restart_retries_root_last_publication() {
+    if std::env::var_os(ENOSPC_CHILD_ENVIRONMENT).is_some() {
+        run_exact_capture_enospc_child();
+        panic!("ENOSPC child returned without recording the injected failure");
+    }
+
+    let directory = tempfile::tempdir().expect("persistent ENOSPC fixture");
+    let child = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .arg("--exact")
+        .arg(ENOSPC_TEST_NAME)
+        .arg("--nocapture")
+        .env(ENOSPC_CHILD_ENVIRONMENT, "1")
+        .env(ENOSPC_ROOT_ENVIRONMENT, directory.path())
+        .env(
+            DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
+            EXACT_CAPTURE_ENOSPC_TRIGGER,
+        )
+        .output()
+        .expect("run exact capture ENOSPC child");
+    assert_eq!(
+        child.status.code(),
+        Some(ENOSPC_CHILD_EXIT_CODE),
+        "ENOSPC child did not preserve the expected partial publication:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr),
+    );
+
+    let (backend, store, prepared, snapshot, scheduler, vmstate_bytes) =
+        exact_capture_enospc_fixture(directory.path());
+    assert!(
+        backend
+            .contains(prepared.metadata_id)
+            .expect("persisted metadata child")
+    );
+    assert!(
+        backend
+            .contains(prepared.scheduler_id.expect("scheduler child"))
+            .expect("persisted scheduler child")
+    );
+    assert!(
+        !backend
+            .contains(prepared.vmstate_id)
+            .expect("absent VMState")
+    );
+    assert!(
+        !backend
+            .contains(prepared.root.content_id())
+            .expect("absent exact root")
+    );
+
+    let publication = store
+        .publish(&prepared)
+        .expect("retry exact capture after ENOSPC recovery");
+    assert_eq!(publication.root(), prepared.root());
+    let loaded = store
+        .load(publication.root())
+        .expect("load exact capture after ENOSPC recovery");
+    let mut restored = Vec::new();
+    loaded
+        .copy_vmstate_to(&mut restored)
+        .expect("authenticate recovered VMState");
+    assert_eq!(loaded.snapshot(), &snapshot);
+    assert_eq!(loaded.scheduler(), Some(&scheduler));
+    assert_eq!(restored, vmstate_bytes);
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn run_exact_capture_enospc_child() {
+    let root = std::env::var_os(ENOSPC_ROOT_ENVIRONMENT)
+        .map(std::path::PathBuf::from)
+        .expect("ENOSPC fixture root");
+    let (backend, store, prepared, _, _, _) = exact_capture_enospc_fixture(&root);
+    let error = store
+        .publish(&prepared)
+        .expect_err("inject exact capture ENOSPC");
+    assert!(error.is_retryable());
+    let ExactCheckpointStoreError::Store(StoreError::Io { source, .. }) = error else {
+        panic!("exact capture ENOSPC did not return a store I/O error");
+    };
+    assert_eq!(
+        source.raw_os_error(),
+        Some(rustix::io::Errno::NOSPC.raw_os_error())
+    );
+    assert!(
+        backend
+            .contains(prepared.metadata_id)
+            .expect("metadata after ENOSPC")
+    );
+    assert!(
+        backend
+            .contains(prepared.scheduler_id.expect("scheduler after ENOSPC"))
+            .expect("scheduler after ENOSPC")
+    );
+    assert!(
+        !backend
+            .contains(prepared.vmstate_id)
+            .expect("VMState absent")
+    );
+    assert!(
+        !backend
+            .contains(prepared.root.content_id())
+            .expect("root absent")
+    );
+
+    std::process::exit(ENOSPC_CHILD_EXIT_CODE);
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn exact_capture_enospc_fixture(
+    root: &std::path::Path,
+) -> (
+    Arc<DirectoryBlobBackend>,
+    ExactCheckpointStore,
+    PreparedExactCheckpoint,
+    QemuVmSnapshot,
+    SingleSchedulerCheckpoint,
+    Vec<u8>,
+) {
+    let object_root = root.join("objects");
+    let (snapshot, scheduler) = snapshot_with_scheduler("exact-capture-enospc");
+    let vmstate_bytes = vec![0xec; 64 * 1024];
+    let backend = Arc::new(DirectoryBlobBackend::new(
+        "exact-capture-enospc-fixture",
+        object_root,
+    ));
+    let store =
+        ExactCheckpointStore::new(backend.clone(), STORE_LIMIT).expect("admit ENOSPC store");
+    let prepared = store
+        .prepare_capture(CapturedExactCheckpoint::new_with_scheduler(
+            snapshot.clone(),
+            scheduler.clone(),
+            BlobHandle::from_bytes(vmstate_bytes.clone()),
+        ))
+        .expect("prepare ENOSPC exact capture");
+
+    (backend, store, prepared, snapshot, scheduler, vmstate_bytes)
 }
 
 #[test]
