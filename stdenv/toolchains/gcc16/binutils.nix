@@ -8,7 +8,16 @@
   gcc,
   buildPlatform,
   hostPlatform,
+  sourceScriptFilter ? (
+    if hostPlatform.constraints.cpu == "x86_64"
+    then null
+    else prev.perl
+  ),
 }: let
+  scriptFilter = import ../lib/source-script-filter.nix {
+    filter = sourceScriptFilter;
+  };
+
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/binutils/binutils-2.41.tar.xz";
     sha256 = "0shr30dgkifjzlgqgsf0f0nmb8ffbqrkh93w54bnz4sk4v0s7lgi";
@@ -32,8 +41,8 @@ in
         chmod -R u+w .
 
         # Pin source helpers that configure or make can execute directly.
-        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
-          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+        ${scriptFilter.setup}AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} ${scriptFilter.root}${scriptFilter.cleanup}
 
         # Touch pre-generated flex/bison/yacc files so they appear newer than sources
         find . -type f \( -name '*.l' -o -name '*.y' \) -exec touch {} + 2>/dev/null || true

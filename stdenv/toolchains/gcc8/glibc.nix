@@ -9,6 +9,7 @@
   buildPlatform,
   hostPlatform,
   runtimePerl ? null,
+  sourceScriptFilter ? null,
 }:
 import ../lib/mk-glibc.nix {
   inherit
@@ -21,6 +22,7 @@ import ../lib/mk-glibc.nix {
     runtimePerl
     ;
 } {
+  inherit sourceScriptFilter;
   version = "2.28";
   url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.28.tar.xz";
   sha256 = "0lyg4znbrzixpbcwp4jkv7kv41dlk597xdizclgkc4fllz2gshzx";
