@@ -2106,6 +2106,36 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
     assert!(!factory.sources().available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
     assert!(lifecycle.start_materialization().is_ok());
+    let first_directories = observations
+        .prepared_run_directories
+        .lock()
+        .expect("first branch directory registry")
+        .clone();
+    let first_children = observations
+        .retained_child_processes
+        .lock()
+        .expect("first branch child registry")
+        .clone();
+    assert_eq!(first_directories.len(), 2);
+    assert_eq!(first_children.len(), 2);
+    assert_eq!(
+        first_directories.iter().collect::<BTreeSet<_>>().len(),
+        first_directories.len()
+    );
+    assert_eq!(
+        first_children
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len(),
+        first_children.len()
+    );
+    assert!(first_directories.iter().all(|directory| directory.is_dir()));
+    assert!(first_children.iter().all(|process| {
+        linux_process_identity(*process)
+            .expect("inspect first branch child")
+            .is_some()
+    }));
     QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).expect("shutdown adopted world");
     assert!(!factory.sources().available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
@@ -2131,6 +2161,46 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
         QemuHotForkWorldLifecycleStart::Declined => panic!("reprepared source world declined"),
     };
     assert!(second_lifecycle.start_materialization().is_ok());
+    let all_directories = observations
+        .prepared_run_directories
+        .lock()
+        .expect("branch directory registry")
+        .clone();
+    let all_children = observations
+        .retained_child_processes
+        .lock()
+        .expect("branch child registry")
+        .clone();
+    assert_eq!(all_directories.len(), 4);
+    assert_eq!(all_children.len(), 4);
+    assert_eq!(
+        all_directories.iter().collect::<BTreeSet<_>>().len(),
+        all_directories.len()
+    );
+    assert_eq!(
+        all_children.iter().copied().collect::<BTreeSet<_>>().len(),
+        all_children.len()
+    );
+    assert!(
+        all_directories[2..]
+            .iter()
+            .all(|directory| directory.is_dir())
+    );
+    assert!(all_children[2..].iter().all(|process| {
+        linux_process_identity(*process)
+            .expect("inspect second branch child")
+            .is_some()
+    }));
+    assert!(
+        first_directories
+            .iter()
+            .all(|directory| !directory.exists())
+    );
+    assert!(first_children.iter().all(|process| {
+        linux_process_identity(*process)
+            .expect("inspect reconciled first branch child")
+            .is_none()
+    }));
     QemuFreshAttemptLifecycleOwner::shutdown(&mut second_lifecycle)
         .expect("shutdown second adopted world");
     reconcile_canceled_world(&mut second_lifecycle);
@@ -2139,6 +2209,12 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
     assert!(factory.sources().available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 2);
     assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
+    assert!(all_directories.iter().all(|directory| !directory.exists()));
+    assert!(all_children.iter().all(|process| {
+        linux_process_identity(*process)
+            .expect("inspect reconciled branch child")
+            .is_none()
+    }));
 }
 
 #[test]

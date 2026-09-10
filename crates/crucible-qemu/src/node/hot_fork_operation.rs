@@ -152,6 +152,12 @@ impl QemuHotForkHostContinuation {
         self.endpoint.wake_as_fd()
     }
 
+    /// Returns the authenticated plugin control-socket and wake-event identities.
+    #[must_use]
+    pub const fn plugin_endpoint_identity(&self) -> crate::QmpHotForkPluginEndpointIdentity {
+        self.endpoint.identity()
+    }
+
     /// Borrows the private plugin control channel.
     #[must_use]
     pub fn plugin_control_mut(&mut self) -> &mut dyn QemuPluginIpcControlChannel {
