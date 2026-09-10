@@ -171,6 +171,7 @@ mod tests {
                 artifact: artifact.clone(),
                 search: Vec::new(),
             }],
+            package_ability_references: Vec::new(),
             releases: vec![ReleaseRow {
                 semver: "1.0.0".into(),
                 tag_oid: "a".repeat(64),

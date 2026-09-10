@@ -19,8 +19,17 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+mod ability_nar;
+mod ability_reference;
 mod nar;
 
+pub use ability_nar::{
+    AbilityCompanionDocuments, MAX_ABILITY_COMPANION_NAR_BYTES, decode_ability_companion_nar,
+};
+pub use ability_reference::{
+    ABILITY_REFERENCE_SCHEMA, AbilityExportReference, AbilityHandlerReference,
+    MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference, ability_reference_supported_features,
+};
 pub use nar::decode_single_file_nar;
 
 /// Returns the stable HTML anchor for a documentation search kind and key.

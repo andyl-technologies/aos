@@ -110,15 +110,17 @@ mod tests {
     use aos_hub_core::value::Value;
 
     #[test]
-    fn worker_sql_accepts_production_baseline() {
-        assert_eq!(MIGRATIONS.len(), 1);
-        for statement in split_statements(MIGRATIONS[0]) {
-            let (translated, parameters) =
-                prepare(Dialect::Sqlite, &statement, &[]).expect("Worker SQLite translation");
-            let (positional, bound) = numbered_to_positional(&translated, &parameters);
-            assert_eq!(positional, translated);
-            assert!(bound.is_empty());
-            assert!(parameters.is_empty());
+    fn worker_sql_accepts_every_production_migration() {
+        assert!(!MIGRATIONS.is_empty(), "production schema has no migrations");
+        for migration in MIGRATIONS {
+            for statement in split_statements(migration) {
+                let (translated, parameters) = prepare(Dialect::Sqlite, &statement, &[])
+                    .expect("Worker SQLite translation");
+                let (positional, bound) = numbered_to_positional(&translated, &parameters);
+                assert_eq!(positional, translated);
+                assert!(bound.is_empty());
+                assert!(parameters.is_empty());
+            }
         }
     }
 

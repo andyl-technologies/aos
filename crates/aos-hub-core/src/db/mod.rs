@@ -535,6 +535,8 @@ mod oci_admin;
 pub use oci_admin::*;
 mod oci_gc;
 pub use oci_gc::*;
+mod package_ability_reference_reads;
+pub use package_ability_reference_reads::*;
 mod package_documentation_reads;
 mod placement_policy;
 mod publication_admission;
@@ -590,7 +592,10 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// The first entry is the immutable first stable production baseline. Databases
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
-pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+pub const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("migration_002_package_ability_references.sql"),
+];
 
 /// Identifies the production migration lineage independently of its version.
 ///
@@ -1745,6 +1750,23 @@ pub struct IndexedPackageDocumentation {
     pub search: Vec<aos_doc_model::SearchDocument>,
     /// Structural option paths and compact types for the release-wide tree.
     pub options: Vec<IndexedDocumentationOption>,
+}
+
+/// Canonical public ability reference derived from a verified signed companion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedPackageAbilityReference {
+    /// Package name bound inside the ability manifest.
+    pub package_name: String,
+    /// Package version bound inside the ability manifest.
+    pub package_version: String,
+    /// Platform whose signed registry entry selected the companion.
+    pub platform: String,
+    /// SHA-256 of the exact canonical package manifest.
+    pub manifest_sha256: String,
+    /// Domain-separated semantic package identity.
+    pub package_digest: String,
+    /// Canonical `aos.package-ability-reference/v1` bytes.
+    pub canonical_json: Vec<u8>,
 }
 
 /// One option's structural navigation metadata, derived from verified bytes.
@@ -3052,6 +3074,8 @@ pub struct IndexSnapshot {
     pub packages: Vec<aos_registry_surface::manifest::PackageToml>,
     /// Verified canonical documentation locators and search projections.
     pub package_documentation: Vec<IndexedPackageDocumentation>,
+    /// Canonical ability references derived from verified signed companions.
+    pub package_ability_references: Vec<IndexedPackageAbilityReference>,
     /// Verified releases.
     pub releases: Vec<ReleaseRow>,
     /// Complete immutable artifact snapshots for verified releases.
@@ -4183,6 +4207,11 @@ impl Database {
             ));
         }
         stmts.push(Statement::new(
+            "DELETE FROM package_ability_reference_catalogs
+             WHERE registry_id = ?1 AND indexed_commit = ?2",
+            vals![registry_id, snapshot.commit].to_vec(),
+        ));
+        stmts.push(Statement::new(
             "DELETE FROM registry_image_roots WHERE registry_id = ?1",
             vals![registry_id].to_vec(),
         ));
@@ -4376,6 +4405,35 @@ impl Database {
               format, store_path, nar_hash, nar_size, document_sha256, document_size,
               semantic_schema_sha256, system_module_nar_hash)",
             &documentation_rows,
+            "",
+        )?;
+        let ability_reference_rows = snapshot
+            .package_ability_references
+            .iter()
+            .map(|reference| {
+                vals![
+                    registry_id,
+                    snapshot.commit,
+                    reference.package_name,
+                    reference.package_version,
+                    reference.platform,
+                    reference.manifest_sha256,
+                    reference.package_digest,
+                    reference.canonical_json,
+                ]
+            })
+            .collect::<Vec<_>>();
+        stmts.push(Statement::new(
+            "INSERT INTO package_ability_reference_catalogs (registry_id, indexed_commit)
+             VALUES (?1, ?2)",
+            vals![registry_id, snapshot.commit].to_vec(),
+        ));
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO package_ability_references
+             (registry_id, indexed_commit, package_name, package_version, platform,
+              manifest_sha256, package_digest, canonical_json)",
+            &ability_reference_rows,
             "",
         )?;
         extend_multirow_insert(
@@ -5267,6 +5325,10 @@ impl Database {
             ),
             Statement::new(
                 "DELETE FROM channels WHERE registry_id = ?1",
+                vals![registry_id].to_vec(),
+            ),
+            Statement::new(
+                "DELETE FROM package_ability_reference_catalogs WHERE registry_id = ?1",
                 vals![registry_id].to_vec(),
             ),
             Statement::new(
@@ -26473,6 +26535,20 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
             })
         })
         .collect::<Vec<_>>();
+    let package_ability_references = snapshot
+        .package_ability_references
+        .iter()
+        .map(|reference| {
+            serde_json::json!({
+                "package_name": reference.package_name,
+                "package_version": reference.package_version,
+                "platform": reference.platform,
+                "manifest_sha256": reference.manifest_sha256,
+                "package_digest": reference.package_digest,
+                "canonical_json_sha256": hex::encode(sha2::Sha256::digest(&reference.canonical_json)),
+            })
+        })
+        .collect::<Vec<_>>();
     let document = serde_json::json!({
         "commit": snapshot.commit,
         "name": snapshot.name,
@@ -26483,6 +26559,7 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
         "roster": snapshot.roster,
         "packages": format!("{:?}", snapshot.packages),
         "package_documentation": package_documentation,
+        "package_ability_references": package_ability_references,
         "releases": releases,
         "release_artifacts": release_artifacts,
         "release_images": release_images,
@@ -27147,11 +27224,7 @@ source_nar_hash = ""
 
     #[test]
     fn fresh_schema_is_final_and_foreign_key_clean() {
-        assert_eq!(
-            MIGRATIONS.len(),
-            1,
-            "first production checkpoint has one baseline"
-        );
+        assert!(!MIGRATIONS.is_empty(), "production schema has no migrations");
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch("PRAGMA foreign_keys = ON;")
@@ -27174,7 +27247,7 @@ source_nar_hash = ""
             .unwrap();
         assert_eq!(violations, 0, "fresh baseline violates a foreign key");
 
-        let schema = MIGRATIONS[0];
+        let schema = MIGRATIONS.join("\n");
         for forbidden in [
             "credential_ref",
             "CREATE TABLE frontends",
@@ -27624,6 +27697,7 @@ source_nar_hash = ""
             roster: vec![("alice".into(), "demo:Ed25519:AA".into(), "active".into())],
             packages: vec![package],
             package_documentation: vec![documentation.clone()],
+            package_ability_references: Vec::new(),
             releases: vec![ReleaseRow {
                 semver: "1.0.0".into(),
                 tag_oid: "a".repeat(64),
@@ -27749,8 +27823,7 @@ source_nar_hash = ""
         );
         assert!(current_artifacts.iter().any(|artifact| {
             artifact.artifact_kind == "output"
-                && artifact.store_path
-                    == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
+                && artifact.store_path == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
         }));
         assert!(
             current_artifacts
@@ -33520,6 +33593,7 @@ source_nar_hash = ""
             roster: Vec::new(),
             packages: Vec::new(),
             package_documentation: Vec::new(),
+            package_ability_references: Vec::new(),
             releases: Vec::new(),
             release_artifact_snapshots: Vec::new(),
             release_images: Vec::new(),

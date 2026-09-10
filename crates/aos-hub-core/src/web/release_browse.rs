@@ -142,6 +142,16 @@ impl ReleaseContext {
         self.selected.as_deref()
     }
 
+    /// Returns the authenticated source commit for the selected exact release.
+    #[must_use]
+    pub fn selected_commit(&self) -> Option<&str> {
+        let selected = self.selected.as_deref()?;
+        self.releases
+            .iter()
+            .find(|release| release.semver == selected)
+            .map(|release| release.commit_oid.as_str())
+    }
+
     /// Returns whether the user explicitly selected all releases.
     #[must_use]
     pub fn is_all(&self) -> bool {
@@ -640,6 +650,7 @@ mod tests {
         ];
         let selected = ReleaseContext::select(releases.clone(), None, None, false).unwrap();
         assert_eq!(selected.selected(), Some("1.10.0"));
+        assert_eq!(selected.selected_commit(), Some("maintenance-branch"));
         assert_eq!(
             selected
                 .releases()

@@ -1092,6 +1092,19 @@ fn package_documentation_identity(
     }
 }
 
+fn package_ability_reference_identity(
+    locator: &crate::db::PackageAbilityReferenceLocator,
+) -> pb::PackageAbilityReferenceIdentity {
+    pb::PackageAbilityReferenceIdentity {
+        registry_commit: locator.indexed_commit.clone(),
+        package: locator.package_name.clone(),
+        version: locator.package_version.clone(),
+        platform: locator.platform.clone(),
+        manifest_sha256: locator.manifest_sha256.clone(),
+        package_digest: locator.package_digest.clone(),
+    }
+}
+
 fn package_option_view(
     identity: &pb::PackageDocumentationIdentity,
     option: &aos_doc_model::OptionDocument,
@@ -11518,6 +11531,91 @@ impl RpcService {
             identity: Some(identity),
             canonical_json,
             etag: artifact.document_sha256,
+        })
+    }
+
+    /// Returns one canonical public ability reference derived during indexing.
+    ///
+    /// The response keeps the release contract's manifest and semantic package
+    /// identities separate from package-authored documentation identity.
+    /// Empty version/platform selectors use the same deterministic package
+    /// selection rules as documentation reads. A release selector additionally
+    /// requires the indexed reference commit to equal that release's commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns registry visibility failures, not-found for an absent ability
+    /// companion, and internal errors for corrupted indexed reference bytes.
+    pub async fn get_package_ability_reference(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetPackageAbilityReferenceRequest,
+    ) -> Result<pb::GetPackageAbilityReferenceResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        let release_commit = if req.release.is_empty() {
+            None
+        } else {
+            Some(
+                self.db
+                    .list_releases(registry.id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .into_iter()
+                    .find(|release| {
+                        release.semver == req.release || release.commit_oid == req.release
+                    })
+                    .map(|release| release.commit_oid)
+                    .ok_or_else(|| RpcError::not_found("release"))?,
+            )
+        };
+        let locator = match release_commit.as_deref() {
+            Some(commit) => {
+                self.db
+                    .resolve_package_ability_reference_at_commit(
+                        registry.id,
+                        commit,
+                        &req.package,
+                        &req.version,
+                        &req.platform,
+                    )
+                    .await
+            }
+            None => {
+                self.db
+                    .resolve_package_ability_reference(
+                        registry.id,
+                        &req.package,
+                        &req.version,
+                        &req.platform,
+                    )
+                    .await
+            }
+        }
+        .map_err(RpcError::internal)?
+        .ok_or_else(|| RpcError::not_found("package ability reference"))?;
+        let supported_features =
+            aos_doc_model::ability_reference_supported_features().map_err(RpcError::internal)?;
+        let reference = aos_doc_model::PackageAbilityReference::from_canonical_json(
+            &locator.canonical_json,
+            &supported_features,
+        )
+        .map_err(RpcError::internal)?;
+        if reference.package.as_str() != locator.package_name
+            || reference.version != locator.package_version
+            || reference.manifest_sha256.to_string() != locator.manifest_sha256
+            || reference.package_digest.to_string() != locator.package_digest
+        {
+            return Err(RpcError::internal(anyhow::anyhow!(
+                "indexed package ability reference identity mismatch"
+            )));
+        }
+        let canonical_json = reference.canonical_json().map_err(RpcError::internal)?;
+        let etag = hex::encode(Sha256::digest(&canonical_json));
+        Ok(pb::GetPackageAbilityReferenceResponse {
+            identity: Some(package_ability_reference_identity(&locator)),
+            canonical_json,
+            etag,
         })
     }
 
@@ -36708,6 +36806,35 @@ mod cache_upload_tests {
         .with_container_rollout(crate::container_rollout::ContainerRollout::all_enabled())
         .with_identity_domain_verifier(Arc::new(PublishedIdentityDomain));
         (service, db, lease, format!("Bearer {token}"))
+    }
+
+    #[tokio::test]
+    async fn package_ability_reference_authorizes_before_lookup() {
+        let (service, db, _lease, underprivileged_auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("ability-auth", "Ability auth").await.unwrap();
+        db.create_managed_registry(org_id, "", "packages", "private", &[], true)
+            .await
+            .unwrap();
+        let request = pb::GetPackageAbilityReferenceRequest {
+            registry: "ability-auth/packages".into(),
+            package: "missing".into(),
+            version: String::new(),
+            platform: String::new(),
+            release: String::new(),
+        };
+
+        assert!(matches!(
+            service
+                .get_package_ability_reference(None, request.clone())
+                .await,
+            Err(RpcError::Unauthenticated(_))
+        ));
+        assert!(matches!(
+            service
+                .get_package_ability_reference(Some(&underprivileged_auth), request)
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
     }
 
     #[tokio::test]

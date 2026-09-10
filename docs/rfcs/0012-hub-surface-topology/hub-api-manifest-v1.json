@@ -1872,6 +1872,13 @@
          "service" : "DocumentationService"
       },
       {
+         "method" : "GetPackageAbilityReference",
+         "path" : "aos.hub.v1.DocumentationService/GetPackageAbilityReference",
+         "request" : "GetPackageAbilityReferenceRequest",
+         "response" : "GetPackageAbilityReferenceResponse",
+         "service" : "DocumentationService"
+      },
+      {
          "method" : "SearchPackageDocumentation",
          "path" : "aos.hub.v1.DocumentationService/SearchPackageDocumentation",
          "request" : "SearchPackageDocumentationRequest",
@@ -2978,7 +2985,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 334,
+   "rpc_count" : 335,
    "services" : [
       "RegistryService",
       "OrganizationService",

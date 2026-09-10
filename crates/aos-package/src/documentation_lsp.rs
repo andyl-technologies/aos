@@ -10,7 +10,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
 
 use anyhow::{Context, Result, bail};
-use aos_doc_model::{DOCUMENT_JSON_SCHEMA, OptionDocument, PackageDocumentation, PathSegment};
+use aos_ability_model::LocalKey;
+use aos_doc_model::{
+    AbilityExportReference, DOCUMENT_JSON_SCHEMA, OptionDocument, PackageAbilityReference,
+    PackageDocumentation, PathSegment,
+};
 use serde_json::{Value, json};
 
 use crate::documentation::LoadedDocumentation;
@@ -18,7 +22,7 @@ use crate::documentation::LoadedDocumentation;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 struct Server {
-    documents: Vec<PackageDocumentation>,
+    documents: Vec<LoadedDocumentation>,
     open_files: BTreeMap<String, String>,
     shutdown: bool,
 }
@@ -32,7 +36,7 @@ struct Server {
 /// JSON-RPC error response without terminating the server.
 pub(crate) fn run(loaded: Vec<LoadedDocumentation>) -> Result<()> {
     let mut server = Server {
-        documents: loaded.into_iter().map(|loaded| loaded.document).collect(),
+        documents: loaded,
         open_files: BTreeMap::new(),
         shutdown: false,
     };
@@ -76,7 +80,8 @@ impl Server {
                         "workspaceSymbolProvider": true,
                         "experimental": {
                             "packageDocumentationSchema": "aos/packageDocumentation/schema",
-                            "packageDocumentationOptions": "aos/packageDocumentation/options"
+                            "packageDocumentationOptions": "aos/packageDocumentation/options",
+                            "packageAbilityReferences": "aos/packageDocumentation/abilities"
                         }
                     },
                     "serverInfo": { "name": "apm-docs", "version": env!("CARGO_PKG_VERSION") }
@@ -183,6 +188,9 @@ impl Server {
             "aos/packageDocumentation/options" => {
                 respond(output, id, self.option_hints(&params))?;
             }
+            "aos/packageDocumentation/abilities" => {
+                respond(output, id, self.ability_hints(&params))?;
+            }
             _ if id.is_some() => respond_error(output, id, -32601, "method not found")?,
             _ => {}
         }
@@ -201,16 +209,31 @@ impl Server {
     fn options(&self) -> impl Iterator<Item = (&PackageDocumentation, &OptionDocument)> {
         self.documents.iter().flat_map(|document| {
             document
+                .document
                 .options
                 .iter()
-                .map(move |option| (document, option))
+                .map(move |option| (&document.document, option))
+        })
+    }
+
+    fn abilities(
+        &self,
+    ) -> impl Iterator<Item = (&PackageAbilityReference, &AbilityExportReference)> {
+        self.documents.iter().flat_map(|document| {
+            document.ability_reference.iter().flat_map(|reference| {
+                reference
+                    .exports
+                    .iter()
+                    .map(move |export| (reference, export))
+            })
         })
     }
 
     fn completions(&self, text: &str, line: usize, character: usize) -> Value {
         let prefix = word_at_position(text, line, character, true).unwrap_or_default();
         let mut seen = BTreeSet::new();
-        let items = self
+        let mut seen_abilities = BTreeSet::new();
+        let mut items = self
             .options()
             .filter(|(_, option)| option.display_path.starts_with(&prefix))
             .filter(|(_, option)| seen.insert(option.display_path.clone()))
@@ -234,6 +257,47 @@ impl Server {
                 })
             })
             .collect::<Vec<_>>();
+        items.extend(
+            self.abilities()
+                .filter(|(_, export)| {
+                    export.name.as_str().starts_with(&prefix)
+                        || export.interface.interface.name.as_str().starts_with(&prefix)
+                })
+                .filter(|(reference, export)| {
+                    seen_abilities.insert((
+                        reference.package.to_string(),
+                        reference.version.clone(),
+                        export.name.to_string(),
+                        export.interface.interface.name.to_string(),
+                        export.interface.interface.abi,
+                        export
+                            .interface
+                            .interface_key()
+                            .map(|key| key.descriptor.to_string())
+                            .unwrap_or_default(),
+                    ))
+                })
+                .take(256_usize.saturating_sub(items.len()))
+                .map(|(reference, export)| {
+                    json!({
+                        "label": export.interface.interface.name.as_str(),
+                        "kind": 8,
+                        "detail": format!("ability ABI {} — {} {}", export.interface.interface.abi, reference.package.as_str(), reference.version),
+                        "documentation": {
+                            "kind": "markdown",
+                            "value": ability_markdown(reference, export)
+                        },
+                        "filterText": format!("{} {}", export.name.as_str(), export.interface.interface.name.as_str()),
+                        "insertText": export.interface.interface.name.as_str(),
+                        "data": {
+                            "package": reference.package.as_str(),
+                            "version": reference.version,
+                            "manifestSha256": reference.manifest_sha256,
+                            "packageDigest": reference.package_digest
+                        }
+                    })
+                }),
+        );
         json!({ "isIncomplete": false, "items": items })
     }
 
@@ -248,6 +312,27 @@ impl Server {
                         "value": option_markdown(document, option)
                     }
                 })
+            })
+            .or_else(|| {
+                let matches = self
+                    .abilities()
+                    .filter(|(_, export)| {
+                        export.name.as_str() == word
+                            || export.interface.interface.name.as_str() == word
+                    })
+                    .take(257)
+                    .collect::<Vec<_>>();
+                let markdown = match matches.as_slice() {
+                    [] => return None,
+                    [(reference, export)] => ability_markdown(reference, export),
+                    _ => ability_ambiguity_markdown(&matches[..matches.len().min(256)]),
+                };
+                Some(json!({
+                    "contents": {
+                        "kind": "markdown",
+                        "value": markdown
+                    }
+                }))
             })
     }
 
@@ -416,6 +501,46 @@ impl Server {
                 .collect(),
         )
     }
+
+    fn ability_hints(&self, params: &Value) -> Value {
+        let package = params.get("package").and_then(Value::as_str);
+        let prefix = params
+            .get("prefix")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        Value::Array(
+            self.abilities()
+                .filter(|(reference, _)| {
+                    package.is_none_or(|name| reference.package.as_str() == name)
+                })
+                .filter(|(_, export)| {
+                    export.name.as_str().starts_with(prefix)
+                        || export.interface.interface.name.as_str().starts_with(prefix)
+                })
+                .take(256)
+                .map(|(reference, export)| {
+                    json!({
+                        "package": reference.package.as_str(),
+                        "version": reference.version,
+                        "export": export.name.as_str(),
+                        "interface": export.interface.interface.name.as_str(),
+                        "abi": export.interface.interface.abi,
+                        "descriptor": export.interface.interface_key().ok().map(|key| key.descriptor),
+                        "methods": export.interface.interface.methods.keys().map(LocalKey::as_str).collect::<Vec<_>>(),
+                        "guarantees": export.interface.interface.guarantees,
+                        "manifestSha256": reference.manifest_sha256,
+                        "packageDigest": reference.package_digest,
+                        "limitations": [
+                            "static-authenticated-reference-only",
+                            "conditional-requirements-not-evaluated",
+                            "authorization-not-evaluated",
+                            "runtime-availability-not-observed"
+                        ]
+                    })
+                })
+                .collect(),
+        )
+    }
 }
 
 fn option_markdown(document: &PackageDocumentation, option: &OptionDocument) -> String {
@@ -426,14 +551,77 @@ fn option_markdown(document: &PackageDocumentation, option: &OptionDocument) -> 
         .map(|row| row.summary)
         .unwrap_or_default();
     let mut text = format!(
-        "`{}` · `{}`\n\n{}",
-        option.display_path, option.type_signature, summary
+        "{} · {}\n\n{}",
+        markdown_code_span(&option.display_path),
+        markdown_code_span(&option.type_signature),
+        summary
     );
     text.push_str(&format!(
-        "\n\nPackage: `{}` `{}` · semantic schema `{}`",
-        document.package.name, document.package.version, document.identity.semantic_schema_sha256
+        "\n\nPackage: {} {} · semantic schema {}",
+        markdown_code_span(&document.package.name),
+        markdown_code_span(&document.package.version),
+        markdown_code_span(&document.identity.semantic_schema_sha256)
     ));
     text
+}
+
+fn ability_markdown(
+    reference: &PackageAbilityReference,
+    export: &AbilityExportReference,
+) -> String {
+    let interface = &export.interface.interface;
+    let methods = interface
+        .methods
+        .keys()
+        .map(|method| markdown_code_span(method.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{} · ability ABI {}\n\nExport {} from package {} {}. Methods: {}.\n\nAuthenticated package contract: {}. Static reference only; authorization and runtime availability require deployment/runtime evidence.",
+        markdown_code_span(interface.name.as_str()),
+        interface.abi,
+        markdown_code_span(export.name.as_str()),
+        markdown_code_span(reference.package.as_str()),
+        markdown_code_span(&reference.version),
+        if methods.is_empty() { "none" } else { &methods },
+        markdown_code_span(&reference.package_digest.to_string()),
+    )
+}
+
+fn ability_ambiguity_markdown(
+    matches: &[(&PackageAbilityReference, &AbilityExportReference)],
+) -> String {
+    let mut markdown = String::from(
+        "Multiple authenticated ability contracts match this name. Select a package, version, export, ABI, and descriptor:\n",
+    );
+    for (reference, export) in matches {
+        let interface = &export.interface.interface;
+        let descriptor = export
+            .interface
+            .interface_key()
+            .map(|key| key.descriptor.to_string())
+            .unwrap_or_else(|_| "invalid descriptor".to_string());
+        markdown.push_str(&format!(
+            "\n- package {} {}, export {}, ABI {}, descriptor {}",
+            markdown_code_span(reference.package.as_str()),
+            markdown_code_span(&reference.version),
+            markdown_code_span(export.name.as_str()),
+            interface.abi,
+            markdown_code_span(&descriptor),
+        ));
+    }
+    markdown
+}
+
+fn markdown_code_span(value: &str) -> String {
+    let normalized = value.replace(['\r', '\n'], " ");
+    let longest_run = normalized
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let delimiter = "`".repeat(longest_run.saturating_add(1));
+    format!("{delimiter} {normalized} {delimiter}")
 }
 
 fn option_matches(option: &OptionDocument, candidate: &str) -> bool {
@@ -620,9 +808,11 @@ fn write_message(output: &mut impl Write, value: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_ability_model::{AbilityActivationMode, LocalKey, RequiredFeature};
+    use aos_contract::Sha256Digest;
     use aos_doc_model::{
-        DocumentationIdentity, DocumentedPackage, InlineSpan, OptionOwner, OptionType, ProseBlock,
-        RuntimeSurface, SourceLocator, Visibility,
+        AbilityExportReference, DocumentationIdentity, DocumentedPackage, InlineSpan, OptionOwner,
+        OptionType, PackageAbilityReference, ProseBlock, RuntimeSurface, SourceLocator, Visibility,
     };
 
     fn document() -> PackageDocumentation {
@@ -694,10 +884,38 @@ mod tests {
         document
     }
 
+    fn loaded_document() -> LoadedDocumentation {
+        let interface = aos_ability_model::builtin::systemd_manager_interface()
+            .expect("build systemd interface");
+        LoadedDocumentation {
+            document: document(),
+            ability_reference: Some(PackageAbilityReference {
+                schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
+                required_features: vec![
+                    RequiredFeature::new("abilities-v1").expect("valid feature name"),
+                ],
+                package: LocalKey::new("nginx").expect("valid package name"),
+                version: "1".to_string(),
+                manifest_sha256: Sha256Digest::of_bytes("manifest"),
+                package_digest: Sha256Digest::of_bytes("package"),
+                activation_mode: AbilityActivationMode::ContractsOnly,
+                exports: vec![AbilityExportReference {
+                    name: LocalKey::new("service-manager").expect("valid export name"),
+                    interface,
+                    aggregation: None,
+                    implementation: Sha256Digest::of_bytes("implementation"),
+                }],
+                requirements: Vec::new(),
+                handlers: Vec::new(),
+                ownership: Vec::new(),
+            }),
+        }
+    }
+
     #[test]
     fn wildcard_options_complete_hover_and_diagnose_without_evaluating_nix() {
         let server = Server {
-            documents: vec![document()],
+            documents: vec![loaded_document()],
             open_files: BTreeMap::new(),
             shutdown: false,
         };
@@ -739,6 +957,64 @@ mod tests {
         );
         let actions = server.code_actions(&json!({ "context": { "diagnostics": invalid } }));
         assert_eq!(actions.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn authenticated_ability_reference_completes_hovers_and_reports_limits() {
+        let server = Server {
+            documents: vec![loaded_document()],
+            open_files: BTreeMap::new(),
+            shutdown: false,
+        };
+
+        let completion = server.completions("aos.systemd", 0, 11);
+        assert_eq!(completion["items"][0]["label"], "aos.systemd-manager");
+        assert!(server.hover("service-manager", 0, 4).is_some_and(|hover| {
+            hover["contents"]["value"]
+                .as_str()
+                .is_some_and(|text| text.contains("Static reference only"))
+        }));
+        let hints = server.ability_hints(&json!({ "package": "nginx", "prefix": "service" }));
+        assert_eq!(hints[0]["export"], "service-manager");
+        assert_eq!(hints[0]["methods"].as_array().map(Vec::len), Some(5));
+        assert!(hints[0]["limitations"].as_array().is_some_and(|limits| {
+            limits
+                .iter()
+                .any(|limit| limit == "authorization-not-evaluated")
+        }));
+    }
+
+    #[test]
+    fn ability_candidates_preserve_ambiguity_escape_versions_and_bound_hints() {
+        let first = loaded_document();
+        let mut second = loaded_document();
+        second.document.package.name = "web-proxy".to_string();
+        let second_reference = second.ability_reference.as_mut().unwrap();
+        second_reference.package = LocalKey::new("web-proxy").unwrap();
+        second_reference.version = "2`\n[link](https://example.invalid)".to_string();
+        let server = Server {
+            documents: vec![first.clone(), second],
+            open_files: BTreeMap::new(),
+            shutdown: false,
+        };
+
+        let completions = server.completions("aos.systemd", 0, 11);
+        let items = completions["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_ne!(items[0]["data"]["package"], items[1]["data"]["package"]);
+
+        let hover = server.hover("aos.systemd-manager", 0, 4).unwrap();
+        let markdown = hover["contents"]["value"].as_str().unwrap();
+        assert!(markdown.contains("Multiple authenticated ability contracts match"));
+        assert!(markdown.contains("`` 2` [link](https://example.invalid) ``"));
+
+        let bounded = Server {
+            documents: vec![first; 300],
+            open_files: BTreeMap::new(),
+            shutdown: false,
+        }
+        .ability_hints(&json!({ "prefix": "service" }));
+        assert_eq!(bounded.as_array().map(Vec::len), Some(256));
     }
 
     #[test]

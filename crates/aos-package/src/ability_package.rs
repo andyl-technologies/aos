@@ -613,7 +613,7 @@ pub(crate) fn seal_test_retention_manifest(
     })
 }
 
-fn verify_artifact_catalog(
+pub(crate) fn verify_artifact_catalog(
     artifacts: &[ArtifactReference],
     retention: &[AbilityArtifactRetentionMeta],
 ) -> Result<()> {
