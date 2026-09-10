@@ -11,11 +11,10 @@ use crucible::{
     SignalFaultSelectable, step,
 };
 use crucible_campaign::{
-    Attempt, AttemptContinuationInput, AttemptResourceLimits, BranchPath, CampaignExecutorStore,
-    CampaignLineage, ChoiceSource, ExecutorRejection, ResolvedSelection, StopOutcome,
+    Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, BranchPath,
+    CampaignCodecError, CampaignExecutorStore, CampaignLineage, ChoiceSource,
+    ConfigurationArtifactId, ExecutorRejection, ResolvedSelection, StopOutcome,
 };
-#[cfg(test)]
-use crucible_campaign::{AttemptStart, CampaignCodecError, ConfigurationArtifactId};
 
 use crate::executor_worker::ResolvedAttemptOrigins;
 use crate::{
@@ -484,8 +483,11 @@ pub struct CrucibleAttemptExecution {
 }
 
 impl CrucibleAttemptExecution {
-    /// Reconstructs a private fresh replay while retaining controlled source boundaries.
-    #[cfg(test)]
+    /// Reconstructs a private fresh replay from a self-contained finding candidate.
+    ///
+    /// The candidate retains the complete scenario and schedule. Its attempt
+    /// reuses the original semantic path, stop, and controlled continuation
+    /// boundaries without carrying physical checkpoint authority.
     pub(crate) fn for_finding_replay(
         &self,
         scenario: ScenarioDefForm,
@@ -579,7 +581,6 @@ impl CrucibleAttemptExecution {
     }
 
     /// Preserves controlled source boundaries while a private replay uses a fresh start.
-    #[cfg(test)]
     pub(crate) fn with_replay_continuation_basis_from(mut self, source: &Self) -> Self {
         self.replay_continuation_basis = source
             .continuation_replay_basis()
