@@ -68,7 +68,10 @@ in
         # visible to both GLib itself and downstream consumers.
         if stdenv.hostPlatform.isDarwin
         then [gettext]
-        else []
+        # gio-2.0.pc exposes util-linux's mount.pc as a private requirement.
+        # pkg-config validates it even for dynamic consumers, so propagate the
+        # metadata provider with GLib's development interface.
+        else [util-linux]
       );
     # The installed generators retain their Python interpreter in the tools
     # output. Keep that reference during the generic runtime scrub. The image
