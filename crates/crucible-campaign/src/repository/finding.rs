@@ -169,12 +169,14 @@ impl CampaignRepository {
             selected_minimized,
             pins,
             selected_candidate_bundle,
+            prior_candidate_occurrences,
+            candidate_occurrence_upserts,
+            candidate_occurrences,
+            candidate_occurrence_count,
+            latest_candidate_bundle,
         ) = if let Some(existing) = existing {
             if existing.signature() != &signature {
                 return Err(integrity("finding-signature-key-collision"));
-            }
-            if candidate_bundle.is_some() && existing.reproduction() != reproduction {
-                return Err(CampaignRepositoryError::AlreadyExists);
             }
             let occurrence_key = finding_occurrence_key(observation);
             let already_present = self.merkle.get(existing.occurrences(), occurrence_key)?
@@ -191,20 +193,57 @@ impl CampaignRepository {
                     .checked_add(1)
                     .ok_or_else(|| integrity("finding-occurrence-count"))?
             };
-            let selected_minimized = match (existing.minimized(), minimized) {
-                (Some(left), Some(right)) if left != right => {
+            let selected_minimized = match (existing.minimized(), minimized, candidate_bundle) {
+                (Some(left), Some(right), None) if left != right => {
                     return Err(CampaignRepositoryError::AlreadyExists);
                 }
-                (Some(value), _) | (None, Some(value)) => Some(value),
-                (None, None) => None,
+                (Some(value), _, _) | (None, Some(value), _) => Some(value),
+                (None, None, _) => None,
             };
             let pins = existing.exact_pin_retention().union(&exact_pins)?;
             let selected_candidate_bundle = match (existing.candidate_bundle(), candidate_bundle) {
-                (Some(left), Some(right)) if left != right => {
-                    return Err(CampaignRepositoryError::AlreadyExists);
-                }
                 (Some(value), _) | (None, Some(value)) => Some(value),
                 (None, None) => None,
+            };
+            let prior_candidate_occurrences = existing
+                .candidate_occurrences()
+                .unwrap_or(MerkleMap::empty_content_id()?);
+            let mut candidate_occurrence_upserts = BTreeMap::new();
+            if existing.candidate_occurrences().is_none() {
+                if let Some(first_bundle) = existing.candidate_bundle() {
+                    candidate_occurrence_upserts.insert(
+                        finding_candidate_occurrence_key(first_bundle),
+                        first_bundle.content_id(),
+                    );
+                }
+            }
+            let candidate_already_present = if let Some(bundle) = candidate_bundle {
+                let key = finding_candidate_occurrence_key(bundle);
+                let present = self.merkle.get(prior_candidate_occurrences, key)?
+                    == Some(bundle.content_id())
+                    || candidate_occurrence_upserts.get(&key) == Some(&bundle.content_id());
+                candidate_occurrence_upserts.insert(key, bundle.content_id());
+                present
+            } else {
+                true
+            };
+            let candidate_occurrences = selected_candidate_bundle
+                .map(|_| {
+                    self.merkle.root_after_upserts(
+                        prior_candidate_occurrences,
+                        &candidate_occurrence_upserts,
+                    )
+                })
+                .transpose()?;
+            let candidate_occurrence_count = existing
+                .candidate_occurrence_count()
+                .checked_add(u32::from(
+                    candidate_bundle.is_some() && !candidate_already_present,
+                ))
+                .ok_or_else(|| integrity("finding-candidate-occurrence-count"))?;
+            let latest_candidate_bundle = match candidate_bundle {
+                Some(bundle) if !candidate_already_present => Some(bundle),
+                _ => existing.latest_candidate_bundle(),
             };
             (
                 existing.observation(),
@@ -221,6 +260,11 @@ impl CampaignRepository {
                 selected_minimized,
                 pins,
                 selected_candidate_bundle,
+                prior_candidate_occurrences,
+                candidate_occurrence_upserts,
+                candidate_occurrences,
+                candidate_occurrence_count,
+                latest_candidate_bundle,
             )
         } else {
             let prior_occurrences = MerkleMap::empty_content_id()?;
@@ -231,6 +275,23 @@ impl CampaignRepository {
                     observation.content_id(),
                 )]),
             )?;
+            let prior_candidate_occurrences = MerkleMap::empty_content_id()?;
+            let candidate_occurrence_upserts = candidate_bundle
+                .map(|bundle| {
+                    BTreeMap::from([(
+                        finding_candidate_occurrence_key(bundle),
+                        bundle.content_id(),
+                    )])
+                })
+                .unwrap_or_default();
+            let candidate_occurrences = candidate_bundle
+                .map(|_| {
+                    self.merkle.root_after_upserts(
+                        prior_candidate_occurrences,
+                        &candidate_occurrence_upserts,
+                    )
+                })
+                .transpose()?;
             (
                 observation,
                 observation,
@@ -242,13 +303,28 @@ impl CampaignRepository {
                 minimized,
                 exact_pins,
                 candidate_bundle,
+                prior_candidate_occurrences,
+                candidate_occurrence_upserts,
+                candidate_occurrences,
+                u32::from(candidate_bundle.is_some()),
+                candidate_bundle,
             )
         };
 
         let occurrence_set =
             FindingOccurrenceSet::new(occurrences, occurrence_count, latest_occurrence)?;
-        let finding = if let Some(candidate_bundle) = selected_candidate_bundle {
-            Finding::new_with_candidate_bundle(
+        let finding = if let (
+            Some(candidate_bundle),
+            Some(candidate_occurrences),
+            Some(latest_candidate_bundle),
+            Some(selected_minimized),
+        ) = (
+            selected_candidate_bundle,
+            candidate_occurrences,
+            latest_candidate_bundle,
+            selected_minimized,
+        ) {
+            Finding::new_with_candidate_occurrences(
                 signature,
                 representative,
                 original_reproduction,
@@ -257,6 +333,11 @@ impl CampaignRepository {
                 selected_minimized,
                 pins,
                 candidate_bundle,
+                FindingCandidateOccurrenceSet::new(
+                    candidate_occurrences,
+                    candidate_occurrence_count,
+                    latest_candidate_bundle,
+                )?,
             )?
         } else {
             Finding::new_with_retention(
@@ -290,7 +371,10 @@ impl CampaignRepository {
             finding
                 .content_children()
                 .into_iter()
-                .filter_map(|(role, id)| (role != "occurrences").then_some(id)),
+                .filter_map(|(role, id)| {
+                    (!matches!(role.as_str(), "occurrences" | "candidate-occurrences"))
+                        .then_some(id)
+                }),
             &anchors,
             &mut ChoiceValidationCache::default(),
         )?;
@@ -305,6 +389,18 @@ impl CampaignRepository {
             .content_id();
         if published_occurrences != occurrences {
             return Err(integrity("finding-occurrence-root-publication-mismatch"));
+        }
+        let mut published_candidate_occurrences = prior_candidate_occurrences;
+        for (key, bundle) in &candidate_occurrence_upserts {
+            published_candidate_occurrences = self
+                .merkle
+                .insert(published_candidate_occurrences, *key, *bundle)?
+                .content_id();
+        }
+        if candidate_occurrences.is_some_and(|root| root != published_candidate_occurrences) {
+            return Err(integrity(
+                "finding-candidate-occurrence-root-publication-mismatch",
+            ));
         }
 
         if self.put_finding(&finding)? != finding_id.content_id() {
@@ -389,13 +485,15 @@ impl CampaignRepository {
             {
                 return Err(integrity("finding-candidate-minimized-basis-mismatch"));
             }
-            let minimization = minimized_value
-                .minimization()
-                .ok_or_else(|| integrity("finding-candidate-minimized-has-no-retained-trace"))?;
-            if minimization.original() != reproduction_id {
-                return Err(integrity(
-                    "finding-candidate-minimization-original-mismatch",
-                ));
+            if minimized_value.schema_version() >= 2 {
+                let minimization = minimized_value.minimization().ok_or_else(|| {
+                    integrity("finding-candidate-minimized-has-no-retained-trace")
+                })?;
+                if minimization.original() != reproduction_id {
+                    return Err(integrity(
+                        "finding-candidate-minimization-original-mismatch",
+                    ));
+                }
             }
         }
         match signature.target() {
@@ -459,8 +557,9 @@ impl CampaignRepository {
         if let Some(candidate_bundle) = finding.candidate_bundle() {
             let bundle = self.load_finding_candidate_bundle(candidate_bundle)?;
             if bundle.signature() != finding.signature()
-                || bundle.reproduction() != finding.reproduction()
-                || Some(bundle.minimized()) != finding.minimized()
+                || finding.schema_version() == 3
+                    && (bundle.reproduction() != finding.reproduction()
+                        || Some(bundle.minimized()) != finding.minimized())
                 || !exact_pins_contain(finding.exact_pin_retention(), bundle.exact_pins())
                 || self.merkle.get(
                     finding.occurrences(),
@@ -502,12 +601,74 @@ impl CampaignRepository {
                 .occurrence_count()
                 .checked_add(u32::from(!latest_was_present))
                 .ok_or_else(|| integrity("finding-occurrence-count"))?;
+            let previous_candidate_root = previous
+                .candidate_occurrences()
+                .unwrap_or(MerkleMap::empty_content_id()?);
+            let mut candidate_upserts = BTreeMap::new();
+            if previous.candidate_occurrences().is_none() {
+                if let Some(bundle) = previous.candidate_bundle() {
+                    candidate_upserts.insert(
+                        finding_candidate_occurrence_key(bundle),
+                        bundle.content_id(),
+                    );
+                }
+            }
+            let candidate_was_present = if let Some(bundle) = finding.latest_candidate_bundle() {
+                let key = finding_candidate_occurrence_key(bundle);
+                let present = self.merkle.get(previous_candidate_root, key)?
+                    == Some(bundle.content_id())
+                    || candidate_upserts.get(&key) == Some(&bundle.content_id());
+                candidate_upserts.insert(key, bundle.content_id());
+                present
+            } else {
+                true
+            };
+            let expected_candidate_root = previous
+                .candidate_bundle()
+                .or(finding.candidate_bundle())
+                .map(|_| {
+                    self.merkle
+                        .root_after_upserts(previous_candidate_root, &candidate_upserts)
+                })
+                .transpose()?;
+            let expected_candidate_count = previous
+                .candidate_occurrence_count()
+                .checked_add(u32::from(
+                    finding.latest_candidate_bundle().is_some() && !candidate_was_present,
+                ))
+                .ok_or_else(|| integrity("finding-candidate-occurrence-count"))?;
+            if !candidate_was_present {
+                let bundle = self.load_finding_candidate_bundle(
+                    finding
+                        .latest_candidate_bundle()
+                        .ok_or_else(|| integrity("finding-latest-candidate-bundle"))?,
+                )?;
+                let observation = self.decode_observation(bundle.observation().content_id())?;
+                if bundle.signature() != finding.signature()
+                    || self.merkle.get(
+                        finding.occurrences(),
+                        finding_occurrence_key(bundle.observation()),
+                    )? != Some(bundle.observation().content_id())
+                    || self.merkle.get(
+                        prior.observations,
+                        map_key_content("observations.attempt", observation.attempt().content_id()),
+                    )? != Some(bundle.observation().content_id())
+                {
+                    return Err(integrity("finding-transition-candidate-occurrence-basis"));
+                }
+            }
             if previous.signature() != finding.signature()
                 || previous.observation() != finding.observation()
                 || previous.reproduction() != finding.reproduction()
                 || previous.first_seen_snapshot() != finding.first_seen_snapshot()
                 || finding.occurrences() != expected_occurrences
                 || finding.occurrence_count() != expected_count
+                || finding.schema_version() >= 4
+                    && (finding.candidate_occurrences() != expected_candidate_root
+                        || finding.candidate_occurrence_count() != expected_candidate_count
+                        || candidate_was_present
+                            && finding.latest_candidate_bundle()
+                                != previous.latest_candidate_bundle())
                 || !previous.exact_pins().is_subset(finding.exact_pins())
                 || matches!(
                     (previous.minimized(), finding.minimized()),
@@ -535,10 +696,27 @@ impl CampaignRepository {
                     finding.latest_occurrence().content_id(),
                 )]),
             )?;
+            let expected_candidate_occurrences = finding
+                .candidate_bundle()
+                .map(|bundle| {
+                    self.merkle.root_after_upserts(
+                        MerkleMap::empty_content_id()?,
+                        &BTreeMap::from([(
+                            finding_candidate_occurrence_key(bundle),
+                            bundle.content_id(),
+                        )]),
+                    )
+                })
+                .transpose()?;
             if finding.first_seen_snapshot().content_id() != parent.envelope.content_id()
                 || finding.observation() != finding.latest_occurrence()
                 || finding.occurrences() != expected_occurrences
                 || finding.occurrence_count() != 1
+                || finding.schema_version() >= 4
+                    && (finding.candidate_occurrences() != expected_candidate_occurrences
+                        || finding.candidate_occurrence_count()
+                            != u32::from(finding.candidate_bundle().is_some())
+                        || finding.latest_candidate_bundle() != finding.candidate_bundle())
             {
                 return Err(integrity("finding-transition-first-publication-basis"));
             }
@@ -569,6 +747,10 @@ pub(crate) fn finding_signature_key(signature: CampaignHash) -> CampaignHash {
 
 pub(super) fn finding_occurrence_key(observation: ObservationId) -> CampaignHash {
     map_key_content("findings.occurrence", observation.content_id())
+}
+
+pub(crate) fn finding_candidate_occurrence_key(bundle: FindingCandidateBundleId) -> CampaignHash {
+    map_key_content("findings.candidate-occurrence", bundle.content_id())
 }
 
 fn exact_pins_contain(retained: &FindingExactPins, requested: &FindingExactPins) -> bool {

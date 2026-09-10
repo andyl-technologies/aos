@@ -154,6 +154,24 @@ impl CampaignRepository {
         Ok((value, proof))
     }
 
+    pub(crate) fn scan_finding_candidate_occurrences_page(
+        &self,
+        root: ContentId,
+        after: Option<CampaignHash>,
+        limit: usize,
+    ) -> Result<(MerkleMapPage, MerkleMapPageProof), CampaignRepositoryError> {
+        self.merkle
+            .scan_with_proof(root, after, limit)
+            .map_err(|error| match error {
+                CampaignStoreError::InvalidMerkle {
+                    reason: "page-cursor-not-in-root",
+                } => CampaignRepositoryError::InvalidRequest {
+                    reason: "campaign-finding-occurrence-query-cursor-is-not-in-index",
+                },
+                error => error.into(),
+            })
+    }
+
     pub(crate) fn attempt_with_proof(
         &self,
         root: ContentId,
