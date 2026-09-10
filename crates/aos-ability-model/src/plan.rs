@@ -248,6 +248,42 @@ pub enum KubernetesObjectAction {
     Delete,
 }
 
+/// Selects allocation, observation, or release of a runtime network endpoint.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetworkEndpointAction {
+    /// Materializes one runtime endpoint without exposing it during pure evaluation.
+    Materialize,
+    /// Observes the currently owned endpoint without changing it.
+    Observe,
+    /// Releases the endpoint after all declared consumers detach.
+    Release,
+}
+
+/// Selects acquisition, observation, or release of provider-owned host storage.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostStorageAction {
+    /// Ensures the scoped storage exists with its declared ownership and mode.
+    Ensure,
+    /// Observes the currently attached storage without mutating its contents.
+    Observe,
+    /// Detaches the current consumer while retaining persistent contents.
+    Release,
+}
+
+/// Selects mutation or observation of host network enforcement.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetworkPolicyAction {
+    /// Applies policy for one exact materialized endpoint.
+    Apply,
+    /// Observes whether the exact policy revision is active.
+    Observe,
+    /// Removes policy after dependent readiness and service use have ended.
+    Remove,
+}
+
 /// Identifies the initial semantic operation families.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
@@ -265,6 +301,21 @@ pub enum OperationFamily {
     KubernetesObject {
         /// Selects apply, observation, or deletion semantics.
         action: KubernetesObjectAction,
+    },
+    /// Materializes, observes, or releases one runtime network endpoint.
+    NetworkEndpoint {
+        /// Selects materialization, observation, or release semantics.
+        action: NetworkEndpointAction,
+    },
+    /// Ensures, observes, or detaches one provider-owned host-storage resource.
+    HostStorage {
+        /// Selects storage acquisition, observation, or release semantics.
+        action: HostStorageAction,
+    },
+    /// Applies, observes, or removes host network enforcement.
+    HostNetworkPolicy {
+        /// Selects policy mutation or observation semantics.
+        action: NetworkPolicyAction,
     },
     /// Validates a candidate in its intended identity and resource views.
     ValidateCandidate,

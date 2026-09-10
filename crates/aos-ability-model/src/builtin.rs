@@ -17,6 +17,10 @@ use crate::{
     ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
 };
 
+mod resource;
+
+pub use resource::*;
+
 /// Names the native systemd manager interface.
 pub const SYSTEMD_MANAGER_INTERFACE_NAME: &str = "aos.systemd-manager";
 

@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use aos_ability_model::{
     AbilityValue, AccessMode, ArtifactReference, AuthorityGrant, AuthorityRole, Binding,
-    CredentialAction, InterfaceDocument, InterfaceKey, KubernetesObjectAction, MethodReference,
-    Operation, OperationFamily, ResourceId, ResourceLifetime, ResourceReference, ValueSchema,
-    compare_resource_ids,
+    CredentialAction, HostStorageAction, InterfaceDocument, InterfaceKey, KubernetesObjectAction,
+    MethodReference, NetworkEndpointAction, NetworkPolicyAction, Operation, OperationFamily,
+    ResourceId, ResourceLifetime, ResourceReference, ValueSchema, compare_resource_ids,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -151,7 +151,16 @@ pub(crate) const fn required_target_access(family: &OperationFamily) -> AccessMo
             action: CredentialAction::Acquire,
         }
         | OperationFamily::ValidateCandidate
-        | OperationFamily::ObserveReadiness => AccessMode::Read,
+        | OperationFamily::ObserveReadiness
+        | OperationFamily::NetworkEndpoint {
+            action: NetworkEndpointAction::Observe,
+        }
+        | OperationFamily::HostStorage {
+            action: HostStorageAction::Observe,
+        }
+        | OperationFamily::HostNetworkPolicy {
+            action: NetworkPolicyAction::Observe,
+        } => AccessMode::Read,
         OperationFamily::KubernetesObject {
             action: KubernetesObjectAction::Observe,
         } => AccessMode::Read,
@@ -165,6 +174,15 @@ pub(crate) const fn required_target_access(family: &OperationFamily) -> AccessMo
         | OperationFamily::ServiceLifecycle { .. }
         | OperationFamily::KubernetesObject {
             action: KubernetesObjectAction::Apply | KubernetesObjectAction::Delete,
+        }
+        | OperationFamily::NetworkEndpoint {
+            action: NetworkEndpointAction::Materialize | NetworkEndpointAction::Release,
+        }
+        | OperationFamily::HostStorage {
+            action: HostStorageAction::Ensure | HostStorageAction::Release,
+        }
+        | OperationFamily::HostNetworkPolicy {
+            action: NetworkPolicyAction::Apply | NetworkPolicyAction::Remove,
         }
         | OperationFamily::ReleaseResource => AccessMode::ExclusiveWrite,
     }
@@ -308,4 +326,52 @@ pub(crate) fn grant_permits(
                 && operation
                     .is_none_or(|operation| permission.operations.binary_search(operation).is_ok())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_resource_observation_is_read_only() {
+        for family in [
+            OperationFamily::NetworkEndpoint {
+                action: NetworkEndpointAction::Observe,
+            },
+            OperationFamily::HostStorage {
+                action: HostStorageAction::Observe,
+            },
+            OperationFamily::HostNetworkPolicy {
+                action: NetworkPolicyAction::Observe,
+            },
+        ] {
+            assert_eq!(required_target_access(&family), AccessMode::Read);
+        }
+    }
+
+    #[test]
+    fn native_resource_mutation_requires_exclusive_access() {
+        for family in [
+            OperationFamily::NetworkEndpoint {
+                action: NetworkEndpointAction::Materialize,
+            },
+            OperationFamily::NetworkEndpoint {
+                action: NetworkEndpointAction::Release,
+            },
+            OperationFamily::HostStorage {
+                action: HostStorageAction::Ensure,
+            },
+            OperationFamily::HostStorage {
+                action: HostStorageAction::Release,
+            },
+            OperationFamily::HostNetworkPolicy {
+                action: NetworkPolicyAction::Apply,
+            },
+            OperationFamily::HostNetworkPolicy {
+                action: NetworkPolicyAction::Remove,
+            },
+        ] {
+            assert_eq!(required_target_access(&family), AccessMode::ExclusiveWrite);
+        }
+    }
 }

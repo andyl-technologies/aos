@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
 use anyhow::{Context, Result};
+use aos_ability_model::builtin::{credential_delivery_effects_interface, credential_view_schema};
 use aos_ability_model::document::{
     Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
     ProviderState,
@@ -531,19 +532,29 @@ impl Deployment<'_> {
             contributions,
             resources: resources.clone(),
         };
+        let mut provider_resources = resources
+            .into_iter()
+            .map(|mut permission| {
+                if permission.resource.provider == provider {
+                    permission.access = AccessMode::ExclusiveWrite;
+                }
+                permission
+            })
+            .collect::<Vec<_>>();
+        if interface.name.as_str() == "aos.credential-delivery" {
+            provider_resources.push(ResourcePermission {
+                resource: nginx_resource(&request.id.consumer),
+                access: AccessMode::Read,
+                operations: Vec::new(),
+            });
+        }
+        provider_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
+
         let provider_grant = AuthorityGrant {
             principal: provider.clone(),
             methods: Vec::new(),
             contributions: Vec::new(),
-            resources: resources
-                .into_iter()
-                .map(|mut permission| {
-                    if permission.resource.provider == provider {
-                        permission.access = AccessMode::ExclusiveWrite;
-                    }
-                    permission
-                })
-                .collect(),
+            resources: provider_resources,
         };
 
         BindingCandidate {
@@ -813,8 +824,14 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
             ))
             .collect::<Vec<_>>(),
         [
-            ("nginx-one-credential-view", vec!["deliver", "release"]),
-            ("nginx-two-credential-view", vec!["deliver", "release"]),
+            (
+                "nginx-one-credential-view",
+                vec!["acquire", "deliver", "release"]
+            ),
+            (
+                "nginx-two-credential-view",
+                vec!["acquire", "deliver", "release"]
+            ),
         ]
     );
     let nginx_two_validation = isolated_effect
@@ -825,7 +842,12 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
                 && operation.target.resource.provider == nginx_two
         })
         .unwrap();
-    assert_required_operation_edge(isolated_effect, credential_delivery, nginx_two_validation);
+    assert_operation_edge(
+        isolated_effect,
+        credential_delivery,
+        nginx_two_validation,
+        DependencyKind::Data,
+    );
 
     let isolated_state = isolated_composed.outcome.desired_state;
     let first = rendered_configuration(&isolated_state, &nginx_one);
@@ -937,10 +959,11 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
                 && operation.target.resource.key.as_str() == "nginx-two-service"
         })
         .unwrap();
-    assert_required_operation_edge(
+    assert_operation_edge(
         tls_removed_effect,
         nginx_two_observation,
         credential_release,
+        DependencyKind::RequiredSuccess,
     );
 
     tls_removed.fixture.observe_applied_state(&isolated_state);
@@ -991,7 +1014,12 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
             ) && operation.target.resource.key.as_str() == "nginx-two-service"
         })
         .unwrap();
-    assert_required_operation_edge(tls_disabled_effect, nginx_two_stop, credential_release);
+    assert_operation_edge(
+        tls_disabled_effect,
+        nginx_two_stop,
+        credential_release,
+        DependencyKind::RequiredSuccess,
+    );
 
     tls_disabled.fixture.observe_applied_state(&disabled_state);
     let mut transitioning = Deployment {
@@ -1764,10 +1792,11 @@ fn assert_recovery_method(operation: &Operation, method: &str) {
     assert_eq!(recovery.method.as_str(), method);
 }
 
-fn assert_required_operation_edge(
+fn assert_operation_edge(
     effect: &EffectPlanDocument,
     predecessor: &Operation,
     successor: &Operation,
+    kind: DependencyKind,
 ) {
     assert!(effect.edges.iter().any(|edge| {
         edge.from
@@ -1778,7 +1807,7 @@ fn assert_required_operation_edge(
                 == PlanNodeKey::Operation {
                     key: successor.key.clone(),
                 }
-            && edge.kind == DependencyKind::RequiredSuccess
+            && edge.kind == kind
     }));
 }
 
@@ -1805,10 +1834,12 @@ fn teardown_authority(
             let caller_resources = withdrawn_resource_permissions(
                 &source.caller_grant.resources,
                 retained.map(|binding| binding.caller_grant.resources.as_slice()),
+                &source.provider,
             );
             let provider_resources = withdrawn_resource_permissions(
                 &source.provider_grant.resources,
                 retained.map(|binding| binding.provider_grant.resources.as_slice()),
+                &source.provider,
             );
             if retained.is_some() && caller_resources.is_empty() && provider_resources.is_empty() {
                 return None;
@@ -1924,13 +1955,19 @@ fn teardown_authority(
 fn withdrawn_resource_permissions(
     source: &[ResourcePermission],
     retained: Option<&[ResourcePermission]>,
+    provider: &InstanceId,
 ) -> Vec<ResourcePermission> {
     let Some(retained) = retained else {
-        return source.to_vec();
+        return source
+            .iter()
+            .filter(|permission| permission.resource.provider == *provider)
+            .cloned()
+            .collect();
     };
 
     source
         .iter()
+        .filter(|permission| permission.resource.provider == *provider)
         .filter_map(|permission| {
             let retained = retained
                 .iter()
@@ -2088,6 +2125,19 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         ]),
         optional_fields: Vec::new(),
     };
+    let nginx_validation_request = ValueSchema::Record {
+        fields: BTreeMap::from([
+            (key("candidate"), ValueSchema::Boolean),
+            (
+                key("credential_views"),
+                ValueSchema::List {
+                    element: Box::new(credential_view_schema().unwrap()),
+                    max_items: 1024,
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    };
     let mut documents = vec![
         interface_document(
             "aos.nginx",
@@ -2178,11 +2228,7 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                 ValueVisibility::Protected,
             )],
         ),
-        interface_document(
-            "aos.credential-delivery-effects",
-            ValueSchema::Boolean,
-            Vec::new(),
-        ),
+        credential_delivery_effects_interface().unwrap(),
         interface_document(
             "aos.systemd-service",
             ValueSchema::Record {
@@ -2224,6 +2270,13 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         .unwrap()
         .interface
         .configuration = Some(consumer_probe);
+    let nginx_validation = documents
+        .iter_mut()
+        .find(|document| document.interface.name.as_str() == "aos.nginx-validation")
+        .unwrap();
+    for method in nginx_validation.interface.methods.values_mut() {
+        method.parameters = nginx_validation_request.clone();
+    }
     documents.sort_by(|left, right| left.interface.name.cmp(&right.interface.name));
     documents
 }
@@ -2298,13 +2351,27 @@ fn interface_document(
 fn reference_method_is_recoverable(method: &str) -> bool {
     matches!(
         method,
-        "deliver" | "observe" | "prepare" | "publish" | "record" | "release" | "stop" | "validate"
+        "acquire"
+            | "deliver"
+            | "observe"
+            | "prepare"
+            | "publish"
+            | "record"
+            | "release"
+            | "stop"
+            | "validate"
     )
 }
 
 fn reference_method_families(name: &str) -> Vec<(&'static str, OperationFamily)> {
     match name {
         "aos.credential-delivery-effects" => vec![
+            (
+                "acquire",
+                OperationFamily::Credential {
+                    action: CredentialAction::Acquire,
+                },
+            ),
             (
                 "deliver",
                 OperationFamily::Credential {
@@ -2412,7 +2479,7 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.credential-delivery-effects"].descriptor,
-        digest_from_hex("a458175ca774c3fbe85172d79ec25255c560eed80846c42bf554767ea46ac222")
+        digest_from_hex("bc251c0837c1d453a6c5840d9146d9e27a95ad82032d9b4c60baf40d293cf1eb")
     );
     assert_eq!(
         interfaces["aos.systemd-service"].descriptor,
@@ -2420,7 +2487,7 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.nginx-validation"].descriptor,
-        digest_from_hex("5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372")
+        digest_from_hex("c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6")
     );
     assert_eq!(
         interfaces["aos.managed-configuration-effects"].descriptor,
@@ -2563,7 +2630,7 @@ fn lower_authority(suffix: &str) -> (&'static str, Vec<&'static str>, &'static s
             vec!["prepare", "publish", "read", "release"],
             "configuration",
         ),
-        "credential" => ("credentials", vec!["deliver"], "credential-view"),
+        "credential" => ("credentials", vec!["acquire", "deliver"], "credential-view"),
         "service" => ("services", vec!["observe", "reload", "start"], "service"),
         _ => panic!("unknown lower-interface suffix"),
     }
