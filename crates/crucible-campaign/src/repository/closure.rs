@@ -1714,6 +1714,10 @@ impl CampaignRepository {
                     let bundle = self.decode_finding_candidate_bundle(id)?;
                     self.validate_finding_candidate_bundle(&bundle)?;
                 }
+                crate::CampaignRecordKind::FindingTriageReplayEvidence => {
+                    let evidence = self.decode_finding_triage_replay_evidence(id)?;
+                    self.validate_finding_triage_replay_evidence(&evidence)?;
+                }
                 crate::CampaignRecordKind::BranchRequest => {
                     let request = self.decode_branch_request(id)?;
                     self.validate_branch_request_references_shallow(&request)?;

@@ -969,6 +969,54 @@ where
                         .load_reproduction_artifact(bundle.minimized())?,
                 )
             }
+            CampaignFindingOccurrenceObjectKind::MinimizationOriginalTriageEvidence => {
+                let evidence =
+                    bundle
+                        .triage_evidence()
+                        .ok_or(CampaignRepositoryError::InvalidRequest {
+                            reason: "campaign-finding-candidate-has-no-triage-evidence",
+                        })?;
+                CampaignFindingOccurrenceObject::MinimizationOriginalTriageEvidence(
+                    self.repository
+                        .load_finding_triage_replay_evidence(evidence.minimization_original())?,
+                )
+            }
+            CampaignFindingOccurrenceObjectKind::MinimizationSelectedTriageEvidence => {
+                let evidence =
+                    bundle
+                        .triage_evidence()
+                        .ok_or(CampaignRepositoryError::InvalidRequest {
+                            reason: "campaign-finding-candidate-has-no-triage-evidence",
+                        })?;
+                CampaignFindingOccurrenceObject::MinimizationSelectedTriageEvidence(
+                    self.repository
+                        .load_finding_triage_replay_evidence(evidence.minimization_selected())?,
+                )
+            }
+            CampaignFindingOccurrenceObjectKind::VerificationOriginalTriageEvidence => {
+                let evidence =
+                    bundle
+                        .triage_evidence()
+                        .ok_or(CampaignRepositoryError::InvalidRequest {
+                            reason: "campaign-finding-candidate-has-no-triage-evidence",
+                        })?;
+                CampaignFindingOccurrenceObject::VerificationOriginalTriageEvidence(
+                    self.repository
+                        .load_finding_triage_replay_evidence(evidence.verification_original())?,
+                )
+            }
+            CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence => {
+                let evidence =
+                    bundle
+                        .triage_evidence()
+                        .ok_or(CampaignRepositoryError::InvalidRequest {
+                            reason: "campaign-finding-candidate-has-no-triage-evidence",
+                        })?;
+                CampaignFindingOccurrenceObject::VerificationSelectedTriageEvidence(
+                    self.repository
+                        .load_finding_triage_replay_evidence(evidence.verification_selected())?,
+                )
+            }
         };
         Ok(GetCampaignFindingOccurrenceObjectResponse::new(
             request,

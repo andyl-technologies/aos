@@ -209,13 +209,13 @@ impl CampaignRepository {
                 .candidate_occurrences()
                 .unwrap_or(MerkleMap::empty_content_id()?);
             let mut candidate_occurrence_upserts = BTreeMap::new();
-            if existing.candidate_occurrences().is_none() {
-                if let Some(first_bundle) = existing.candidate_bundle() {
-                    candidate_occurrence_upserts.insert(
-                        finding_candidate_occurrence_key(first_bundle),
-                        first_bundle.content_id(),
-                    );
-                }
+            if existing.candidate_occurrences().is_none()
+                && let Some(first_bundle) = existing.candidate_bundle()
+            {
+                candidate_occurrence_upserts.insert(
+                    finding_candidate_occurrence_key(first_bundle),
+                    first_bundle.content_id(),
+                );
             }
             let candidate_already_present = if let Some(bundle) = candidate_bundle {
                 let key = finding_candidate_occurrence_key(bundle);
@@ -603,13 +603,13 @@ impl CampaignRepository {
                 .candidate_occurrences()
                 .unwrap_or(MerkleMap::empty_content_id()?);
             let mut candidate_upserts = BTreeMap::new();
-            if previous.candidate_occurrences().is_none() {
-                if let Some(bundle) = previous.candidate_bundle() {
-                    candidate_upserts.insert(
-                        finding_candidate_occurrence_key(bundle),
-                        bundle.content_id(),
-                    );
-                }
+            if previous.candidate_occurrences().is_none()
+                && let Some(bundle) = previous.candidate_bundle()
+            {
+                candidate_upserts.insert(
+                    finding_candidate_occurrence_key(bundle),
+                    bundle.content_id(),
+                );
             }
             let candidate_was_present = if let Some(bundle) = finding.latest_candidate_bundle() {
                 let key = finding_candidate_occurrence_key(bundle);

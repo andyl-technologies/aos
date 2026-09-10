@@ -89,6 +89,7 @@ pub use example_corpus::{
     verify_partition_recovery_default_runs,
 };
 pub use local_backend::{SimBackend, SimBackendState};
+pub use model::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION;
 pub use model::{
     ADAPTIVE_UCB_SCORE_ONE_MICRO, APPLICATION_TRAFFIC_ORIGINATES_IN_GUEST, AdaptiveCampaignConfig,
     AdaptiveCampaignRun, AdaptiveCampaignSelection, AdaptiveStrategyArm, AdaptiveStrategyConfig,
