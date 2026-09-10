@@ -20,7 +20,9 @@
 //! cost-model perf-bench gate substrate, [`phase_plan`] records the ordered gate
 //! occurrences, [`replay_oracle`] compares replay hashes, [`reproduction`] owns
 //! the versioned reproduction artifact format, [`segment_replay`] coordinates
-//! checkpoint-parallel replay, and [`spec_index`] owns the crate-to-RFC map.
+//! checkpoint-parallel replay, [`native_event_segment`] decodes retained
+//! production event segments for bounded diagnostics, and [`spec_index`] owns
+//! the crate-to-RFC map.
 //! The package also contains an unshipped native event collector binary for
 //! bounded, read-only inspection of preserved production run-state trees.
 
@@ -35,6 +37,7 @@ pub mod divergence;
 pub mod e2e;
 pub mod fingerprint;
 pub mod gate_targets;
+pub mod native_event_segment;
 pub mod perf;
 pub mod phase_plan;
 pub mod replay_oracle;
