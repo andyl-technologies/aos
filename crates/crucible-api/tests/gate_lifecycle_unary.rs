@@ -14,9 +14,9 @@ use crucible_api::{
     DebugControllerAcquisition, DestroySessionRequest, HelloRequest, InProcessLifecycleClient,
     LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, LifecycleServerMode, ListScenariosResponse, QuiescentLifecycleLoop,
-    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ResumeReplayClosure, ResumeSessionRequest,
-    RpcControlClient, RpcEndpoint, ScenarioCatalogEntry, SendRequest,
-    serve_lifecycle_http2_with_debug_policy_until_shutdown,
+    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ResumeReplayClosure,
+    ResumeReplayClosureValidationError, ResumeSessionRequest, RpcControlClient, RpcEndpoint,
+    ScenarioCatalogEntry, SendRequest, serve_lifecycle_http2_with_debug_policy_until_shutdown,
 };
 use crucible_session::{
     DebugCapability, DebugClientId, DebugCoordinatorError, DebugRole, LiveStateKind, OutcomeKind,
@@ -623,10 +623,10 @@ async fn typed_resume_rejects_unknown_closure_version_before_allocation() {
         if closure.schema_version() == 1 {
             Ok(())
         } else {
-            Err(format!(
+            Err(ResumeReplayClosureValidationError::new(format!(
                 "unsupported campaign replay closure schema version {}",
                 closure.schema_version()
-            ))
+            )))
         }
     });
     let mut request = selected_resume_request(131);

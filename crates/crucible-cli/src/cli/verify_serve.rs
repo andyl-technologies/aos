@@ -1093,14 +1093,14 @@ fn validate_remote_resume_replay_closure(
     checkpoint: &crucible::Checkpoint,
     // crucible-lint: allow host-nondeterminism-state -- the API envelope remains untrusted transport input until the daemon validates every bound identity.
     envelope: &crucible_api::ResumeReplayClosure,
-) -> Result<(), String> {
+) -> Result<(), crucible_api::ResumeReplayClosureValidationError> {
     crucible_daemon::qemu_campaign_lifecycle::validate_remote_resume_replay_closure(
         scenario,
         configuration,
         checkpoint,
         envelope,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| crucible_api::ResumeReplayClosureValidationError::new(error.to_string()))
 }
 
 #[cfg(any(test, feature = "test-double"))]

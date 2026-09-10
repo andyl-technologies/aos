@@ -171,7 +171,9 @@ pub(super) fn lifecycle_control_plane() -> TestLifecyclePlane {
         if closure.schema_version() == 7 && closure.payload() == b"rpc-replay-closure" {
             Ok(())
         } else {
-            Err(String::from("test replay closure did not authenticate"))
+            Err(ResumeReplayClosureValidationError::new(
+                "test replay closure did not authenticate",
+            ))
         }
     })
 }

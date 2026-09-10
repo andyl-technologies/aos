@@ -1046,6 +1046,34 @@ pub type LifecycleResumeLoopFactory<L> = Box<
         + Sync,
 >;
 
+/// Reports a replay-closure rejection at the lifecycle component boundary.
+///
+/// The API boundary owns the stable diagnostic carried by this error. Validators
+/// convert model-specific errors when crossing the boundary so those error types
+/// remain outside this crate's public contract. Callers identify the rejection by
+/// this type and do not need to parse its diagnostic text.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("{message}")]
+pub struct ResumeReplayClosureValidationError {
+    message: String,
+}
+
+impl ResumeReplayClosureValidationError {
+    /// Creates a replay-closure rejection with stable diagnostic text.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// Returns the stable replay-closure validation diagnostic.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 /// Callback that authenticates campaign replay evidence for one exact resume source.
 pub type ResumeReplayClosureValidator = Box<
     dyn Fn(
@@ -1053,7 +1081,7 @@ pub type ResumeReplayClosureValidator = Box<
             &Configuration,
             &Checkpoint,
             &ResumeReplayClosure,
-        ) -> Result<(), String>
+        ) -> Result<(), ResumeReplayClosureValidationError>
         + Send
         + Sync,
 >;
@@ -1114,7 +1142,7 @@ where
             &Configuration,
             &Checkpoint,
             &ResumeReplayClosure,
-        ) -> Result<(), String>
+        ) -> Result<(), ResumeReplayClosureValidationError>
         + Send
         + Sync
         + 'static,
@@ -1346,7 +1374,9 @@ where
                 &request.checkpoint,
                 closure,
             )
-            .map_err(|message| LifecycleApiError::ResumeReplayClosure { message })?;
+            .map_err(|error| LifecycleApiError::ResumeReplayClosure {
+                message: error.message,
+            })?;
         }
 
         let mut graph = graph_with_baked_genesis(&scenario)?;
