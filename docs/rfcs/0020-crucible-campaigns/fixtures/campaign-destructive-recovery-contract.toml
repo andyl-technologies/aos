@@ -239,9 +239,10 @@ id = "fail-vm-during-atomic-world-fork"
 title = "Fail one VM during atomic world fork"
 failure_class = "world-fork-atomicity"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-required"
+implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.world-fork-one-vm-failure"
+fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.world-fork-one-vm-failure {fault_build_command}"
 prior_state = "The source world, its template identity, and all target resource reservations are authenticated before checkout."
@@ -251,7 +252,7 @@ recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket
 observables = ["source world identity", "target generations", "published child world count", "quarantine state", "template availability"]
 post_recovery_invariant = "No partial world is visible; the template is either explicitly reusable or explicitly invalidated."
 backend_scope = "constrained-host-and-each-targeted-backend"
-prerequisites = ["partial-world-quarantine", "world-resource-preflight"]
+prerequisites = ["world-fork-one-vm-failure", "partial-world-quarantine", "world-resource-preflight"]
 
 [[injections]]
 id = "alias-child-ring-or-overlay"
@@ -436,6 +437,12 @@ id = "unindexed-pack-cleanup"
 package = "crucible-cas"
 source = "crates/crucible-cas/src/content_store/tests.rs"
 selector = "content_store::tests::packed_backend_rejects_corruption_and_cleans_unindexed_complete_packs"
+
+[[prerequisite_tests]]
+id = "world-fork-one-vm-failure"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs"
+selector = "qemu_hot_fork_world_factory::tests::world_fork_one_vm_failure_quarantines_partial_world"
 
 [[prerequisite_tests]]
 id = "partial-world-quarantine"
