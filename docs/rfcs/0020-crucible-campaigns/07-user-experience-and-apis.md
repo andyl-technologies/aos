@@ -612,7 +612,10 @@ crucible store status STORE
 crucible store ensure CONTENT_ID --in STORE
 crucible store verify STORE
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL plan
+crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL cancel
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL apply
+crucible store repack --store STORE --node PACKED_NODE --plan PLAN_FILE plan
+crucible store repack --store STORE --node PACKED_NODE --plan PLAN_FILE apply
 ```
 
 Campaign commands name configured logical stores and durability policies, never
@@ -620,8 +623,13 @@ drivers, buckets, endpoints, or local paths. A deployment may bind `archive` to
 a directory, S3-compatible backend, or composed store graph. Export and import
 display logical and physical byte counts by metadata, reproduction artifact,
 exact RAM, disk, log, and trace classes. Sensitive closure warnings occur before
-transfer. Store GC is always plan then apply; the plan names its logical roots,
-physical inventory basis, and policy version and becomes stale if they move.
+transfer. Store GC begins with a plan that names its logical roots, physical
+inventory basis, and policy version and becomes stale if they move. The operator
+then applies or cancels that exact plan.
+Cancellation durably retires a planned journal before apply begins; retrying
+cancellation is idempotent, and later collection requires a fresh journal.
+Packed repack persists and then applies the packed leaf's canonical
+generation-bound plan, retaining any enclosing physical-quota guard.
 `store status` authenticates the strict deployment and reports its exact graph
 configuration ID, root, admitted kinds, node kinds, and non-secret capability
 profile without reading object bytes. `store ensure` parses one canonical

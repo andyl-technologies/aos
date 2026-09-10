@@ -2834,6 +2834,47 @@ fn external_journal_reopens_exact_plan_and_durable_phase() {
 }
 
 #[test]
+fn external_journal_cancellation_is_durable_idempotent_and_terminal() {
+    let prepared = journal_plan_fixture(0x43);
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let root = temp.path().join("cancelled-gc-journal");
+
+    let (mut journal, disposition) =
+        DirectoryCampaignGcJournal::create(&root, &prepared).expect("create cancellable journal");
+    assert_eq!(disposition, CampaignGcJournalCreateDisposition::Created);
+    assert_eq!(
+        journal.cancel().expect("cancel planned journal"),
+        CampaignGcJournalTransition::Advanced
+    );
+    assert_eq!(
+        journal.cancel().expect("repeat journal cancellation"),
+        CampaignGcJournalTransition::Existing
+    );
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Cancelled);
+    assert!(matches!(
+        journal.begin_apply(),
+        Err(CampaignGcJournalError::InvalidTransition)
+    ));
+    assert!(matches!(
+        journal.mark_complete(),
+        Err(CampaignGcJournalError::InvalidTransition)
+    ));
+    drop(journal);
+
+    let mut reopened = DirectoryCampaignGcJournal::open(&root).expect("reopen cancelled journal");
+    assert_eq!(reopened.phase(), CampaignGcJournalPhase::Cancelled);
+    assert_eq!(
+        reopened.cancel().expect("repeat reopened cancellation"),
+        CampaignGcJournalTransition::Existing
+    );
+    drop(reopened);
+    let (existing, disposition) =
+        DirectoryCampaignGcJournal::create(&root, &prepared).expect("reopen exact cancelled plan");
+    assert_eq!(disposition, CampaignGcJournalCreateDisposition::Existing);
+    assert_eq!(existing.phase(), CampaignGcJournalPhase::Cancelled);
+}
+
+#[test]
 fn external_journal_rejects_mismatched_plan_and_candidate_versions() {
     let prepared = journal_plan_fixture(0x49);
     let v2_candidates = CampaignGcCandidateManifest::new_policy_aware(
@@ -2918,6 +2959,40 @@ fn apply_revalidates_every_basis_then_deletes_and_completes() {
     .expect("replay completed apply");
     assert_eq!(replay.status(), CampaignGcApplyStatus::AlreadyComplete);
     assert_eq!(replay.candidates(), report.candidates());
+}
+
+#[test]
+fn cancelled_apply_fails_before_basis_checks_and_preserves_every_candidate() {
+    let mut fixture = apply_fixture(2);
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let root = temp.path().join("cancelled-apply-journal");
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(&root, &fixture.prepared)
+        .expect("create cancelled apply journal");
+    journal.cancel().expect("cancel apply journal");
+    drop(journal);
+
+    let mut reopened = DirectoryCampaignGcJournal::open(&root).expect("reopen cancelled apply");
+    let physical = CampaignGcPhysicalStore::new("apply-primary", fixture.blobs.as_ref())
+        .expect("apply physical store");
+    let wrong_graph = CampaignHash::derive("cancelled-apply-wrong-graph", b"wrong");
+
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut reopened,
+            CampaignGcApplySources::new(
+                &fixture.repository,
+                fixture.refs.as_ref(),
+                &mut fixture.ledger,
+                None,
+                None,
+            ),
+            wrong_graph,
+            &[physical],
+        ),
+        Err(CampaignGcApplyError::CancelledJournal)
+    ));
+    assert_eq!(reopened.phase(), CampaignGcJournalPhase::Cancelled);
+    assert_eq!(fixture.blobs.object_count().expect("object count"), 2);
 }
 
 #[test]

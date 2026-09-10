@@ -315,14 +315,20 @@ where
         retention,
     } = sources;
     let exact_pins = retention.exact_pins;
-    if journal.phase() == CampaignGcJournalPhase::Complete {
-        return Ok(apply_report(
-            journal,
-            CampaignGcApplyStatus::AlreadyComplete,
-        ));
-    }
-    if journal.phase() == CampaignGcJournalPhase::Applying {
-        return Err(CampaignGcApplyError::InterruptedJournal);
+    match journal.phase() {
+        CampaignGcJournalPhase::Complete => {
+            return Ok(apply_report(
+                journal,
+                CampaignGcApplyStatus::AlreadyComplete,
+            ));
+        }
+        CampaignGcJournalPhase::Applying => {
+            return Err(CampaignGcApplyError::InterruptedJournal);
+        }
+        CampaignGcJournalPhase::Cancelled => {
+            return Err(CampaignGcApplyError::CancelledJournal);
+        }
+        CampaignGcJournalPhase::Planned => {}
     }
     if journal.plan().store_graph() != store_graph {
         return Err(CampaignGcApplyError::StoreGraphChanged);
@@ -898,6 +904,9 @@ pub enum CampaignGcApplyError<E>
 where
     E: StdError + 'static,
 {
+    /// The operator cancelled this plan before deletion began.
+    #[error("campaign GC journal records a cancelled plan; create a fresh plan")]
+    CancelledJournal,
     /// A prior apply may have deleted candidates; this plan cannot be resumed.
     #[error("campaign GC journal records an interrupted apply; create a fresh plan")]
     InterruptedJournal,

@@ -11,6 +11,11 @@
 //! <journal>/state-v1
 //! ```
 //!
+//! The v1 state phase tag is extensible: tags 1 through 3 retain their original
+//! encodings, while tag 4 records an operator cancellation. Older decoders
+//! reject that tag as invalid state and therefore cannot apply a cancelled
+//! plan.
+//!
 //! State replacement is write-fsync-rename-directory-fsync. Opening a journal
 //! reacquires its exclusive process lock and re-fsyncs both the journal and its
 //! parent before treating a visible transition as durable. The containing
@@ -52,6 +57,8 @@ pub enum CampaignGcJournalPhase {
     Applying,
     /// Every candidate deletion completed while all planned fences remained held.
     Complete,
+    /// The operator cancelled the plan before deletion began.
+    Cancelled,
 }
 
 impl CampaignGcJournalPhase {
@@ -60,6 +67,7 @@ impl CampaignGcJournalPhase {
             Self::Planned => 1,
             Self::Applying => 2,
             Self::Complete => 3,
+            Self::Cancelled => 4,
         }
     }
 
@@ -68,6 +76,7 @@ impl CampaignGcJournalPhase {
             1 => Ok(Self::Planned),
             2 => Ok(Self::Applying),
             3 => Ok(Self::Complete),
+            4 => Ok(Self::Cancelled),
             _ => Err(CampaignGcJournalError::InvalidState),
         }
     }
@@ -237,7 +246,8 @@ impl DirectoryCampaignGcJournal {
     /// # Errors
     ///
     /// Returns [`CampaignGcJournalError::InvalidTransition`] if the journal is
-    /// already complete, or an I/O error if state replacement is indeterminate.
+    /// complete or cancelled, or an I/O error if state replacement is
+    /// indeterminate.
     pub fn begin_apply(&mut self) -> Result<CampaignGcJournalTransition, CampaignGcJournalError> {
         match self.phase {
             CampaignGcJournalPhase::Planned => {
@@ -245,7 +255,31 @@ impl DirectoryCampaignGcJournal {
                 Ok(CampaignGcJournalTransition::Advanced)
             }
             CampaignGcJournalPhase::Applying => Ok(CampaignGcJournalTransition::Existing),
-            CampaignGcJournalPhase::Complete => Err(CampaignGcJournalError::InvalidTransition),
+            CampaignGcJournalPhase::Complete | CampaignGcJournalPhase::Cancelled => {
+                Err(CampaignGcJournalError::InvalidTransition)
+            }
+        }
+    }
+
+    /// Durably cancels a plan before candidate deletion begins.
+    ///
+    /// Cancellation is monotonic and idempotent. A cancelled journal remains
+    /// durable evidence and can never return to [`CampaignGcJournalPhase::Planned`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignGcJournalError::InvalidTransition`] if apply has begun
+    /// or completed, or an I/O error if state replacement is indeterminate.
+    pub fn cancel(&mut self) -> Result<CampaignGcJournalTransition, CampaignGcJournalError> {
+        match self.phase {
+            CampaignGcJournalPhase::Planned => {
+                self.replace_phase(CampaignGcJournalPhase::Cancelled)?;
+                Ok(CampaignGcJournalTransition::Advanced)
+            }
+            CampaignGcJournalPhase::Cancelled => Ok(CampaignGcJournalTransition::Existing),
+            CampaignGcJournalPhase::Applying | CampaignGcJournalPhase::Complete => {
+                Err(CampaignGcJournalError::InvalidTransition)
+            }
         }
     }
 
@@ -263,6 +297,7 @@ impl DirectoryCampaignGcJournal {
                 Ok(CampaignGcJournalTransition::Advanced)
             }
             CampaignGcJournalPhase::Complete => Ok(CampaignGcJournalTransition::Existing),
+            CampaignGcJournalPhase::Cancelled => Err(CampaignGcJournalError::InvalidTransition),
         }
     }
 
@@ -568,5 +603,41 @@ fn io_error(operation: &'static str, path: &Path, source: io::Error) -> Campaign
 impl CampaignGcPlanId {
     const fn from_hash(hash: CampaignHash) -> Self {
         Self(hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn journal_v1_phase_tags_preserve_existing_encodings_and_extend_fail_closed() {
+        let plan = CampaignGcPlanId::from_hash(CampaignHash::from_bytes([0x5a; 32]));
+        let phase_index = JOURNAL_STATE_MAGIC.len() + 32;
+
+        for (phase, tag) in [
+            (CampaignGcJournalPhase::Planned, 1),
+            (CampaignGcJournalPhase::Applying, 2),
+            (CampaignGcJournalPhase::Complete, 3),
+            (CampaignGcJournalPhase::Cancelled, 4),
+        ] {
+            let encoded = encode_state(plan, phase);
+            assert_eq!(encoded.len(), JOURNAL_STATE_BYTES);
+            assert_eq!(encoded[phase_index], tag);
+            assert!(matches!(
+                decode_state(&encoded),
+                Ok((decoded_plan, decoded_phase))
+                    if decoded_plan == plan && decoded_phase == phase
+            ));
+        }
+
+        let mut unknown = encode_state(plan, CampaignGcJournalPhase::Cancelled);
+        unknown[phase_index] = 5;
+        let checksum = CampaignHash::derive(JOURNAL_STATE_HASH_DOMAIN, &unknown[..phase_index + 1]);
+        unknown[phase_index + 1..].copy_from_slice(&checksum.as_bytes());
+        assert!(matches!(
+            decode_state(&unknown),
+            Err(CampaignGcJournalError::InvalidState)
+        ));
     }
 }

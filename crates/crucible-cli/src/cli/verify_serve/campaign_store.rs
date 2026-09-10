@@ -250,7 +250,8 @@ struct LoadedCampaignRepositoryStore {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CampaignStoreLoadMode {
     Operational,
-    Observational,
+    ArchiveObservational,
+    MaintenanceObservational,
 }
 
 pub(super) struct VerifiedCampaignStoreInventory {
@@ -362,14 +363,52 @@ pub(super) fn load_campaign_archive_planning_store(
     ),
     CliError,
 > {
-    load_campaign_repository_graph_with_mode(deployment_path, CampaignStoreLoadMode::Observational)?
-        .into_archive_planning_store()
+    load_campaign_repository_graph_with_mode(
+        deployment_path,
+        CampaignStoreLoadMode::ArchiveObservational,
+    )?
+    .into_archive_planning_store()
+}
+
+/// Loads a repository and maintenance authority without creating or repairing state.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the deployment or any existing persistent store
+/// state cannot be authenticated observationally.
+pub(super) fn load_campaign_repository_store_observational(
+    deployment_path: &Path,
+) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
+    load_campaign_repository_graph_with_mode(
+        deployment_path,
+        CampaignStoreLoadMode::MaintenanceObservational,
+    )?
+    .into_store()
 }
 
 pub(super) fn load_campaign_store_graph(
     deployment_path: &Path,
 ) -> Result<Arc<StoreGraph>, CliError> {
     Ok(load_campaign_repository_graph(deployment_path)?.graph)
+}
+
+/// Loads a graph maintenance boundary without creating or repairing store state.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the deployment or any existing persistent store
+/// state cannot be authenticated observationally.
+pub(super) fn load_campaign_store_maintenance_observational(
+    deployment_path: &Path,
+) -> Result<(Arc<StoreGraph>, StoreGraphAdmin), CliError> {
+    let loaded = load_campaign_repository_graph_with_mode(
+        deployment_path,
+        CampaignStoreLoadMode::MaintenanceObservational,
+    )?;
+    let maintenance = loaded
+        .maintenance
+        .ok_or_else(|| campaign_store_error("observational store maintenance is unavailable"))?;
+    Ok((loaded.graph, maintenance))
 }
 
 pub(super) fn verify_campaign_store_inventory(
@@ -654,7 +693,7 @@ fn load_campaign_repository_graph_with_mode(
             .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?;
             (graph, Some(maintenance))
         }
-        CampaignStoreLoadMode::Observational => (
+        CampaignStoreLoadMode::ArchiveObservational => (
             StoreGraph::build_observational_with_all_capabilities(
                 config,
                 &keys,
@@ -666,16 +705,34 @@ fn load_campaign_repository_graph_with_mode(
             .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?,
             None,
         ),
+        CampaignStoreLoadMode::MaintenanceObservational => {
+            let (graph, maintenance) =
+                StoreGraph::build_observational_with_admin_and_all_capabilities(
+                    config,
+                    &keys,
+                    &authorizers,
+                    &profilers,
+                    &physical_quotas,
+                    &s3_capabilities.graph,
+                )
+                .map_err(|error| {
+                    campaign_store_error(format!("graph admission failed: {error}"))
+                })?;
+            (graph, Some(maintenance))
+        }
     };
+    let observational = mode != CampaignStoreLoadMode::Operational;
     let refs = match ref_backend {
         ResolvedRefBackend::Directory(path) => LoadedRefBackend::Directory(Arc::new(match mode {
             CampaignStoreLoadMode::Operational => DirectoryRefBackend::new(path),
-            CampaignStoreLoadMode::Observational => DirectoryRefBackend::new_observational(path),
+            CampaignStoreLoadMode::ArchiveObservational
+            | CampaignStoreLoadMode::MaintenanceObservational => {
+                DirectoryRefBackend::new_observational(path)
+            }
         })),
-        ResolvedRefBackend::S3(refs) => LoadedRefBackend::S3(refs.build(
-            &s3_capabilities,
-            mode == CampaignStoreLoadMode::Observational,
-        )?),
+        ResolvedRefBackend::S3(refs) => {
+            LoadedRefBackend::S3(refs.build(&s3_capabilities, observational)?)
+        }
     };
     Ok(LoadedCampaignRepositoryStore {
         graph: Arc::new(graph),
