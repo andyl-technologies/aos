@@ -68,6 +68,7 @@ where
             next_epoch: 1,
             loop_factory: Box::new(loop_factory),
             resume_loop_factory: None,
+            resume_replay_closure_validator: None,
             white_box_policy_provider: Box::new(|_| BTreeMap::new()),
             mailbox_capacity: LIFECYCLE_SESSION_MAILBOX_CAPACITY,
             startup_max_actor_yields: LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS,

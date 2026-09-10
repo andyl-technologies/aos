@@ -191,6 +191,68 @@ pub(super) fn resume_request(seed: u64) -> ResumeSessionRequest {
     ResumeSessionRequest::new(scenario, schedule, checkpoint, Seed::from_u64(seed))
 }
 
+pub(super) fn selected_resume_request(seed: u64) -> ResumeSessionRequest {
+    use crucible::SelectionDecision;
+    use crucible::campaign::{
+        BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+        ChoiceOpportunity, ChoiceSource, ChoiceValue, ScenarioDefId, SelectableDeclaration,
+        Selection, SelectionOrigin,
+    };
+    use std::collections::BTreeSet;
+
+    let mut scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    if scenario.seed() != Seed::from_u64(seed) {
+        scenario = scenario_with_seed(&scenario, Seed::from_u64(seed));
+    }
+    let scenario_def = scenario.scenario_def();
+    let domain = ChoiceDomain::Boolean(
+        BooleanDomain::new(1)
+            .unwrap_or_else(|error| panic!("boolean test domain should build: {error}")),
+    );
+    let declaration = SelectableDeclaration::new(
+        "product.test.resume-selection",
+        ChoiceSource::Scheduler {
+            producer: String::from("lifecycle-test"),
+        },
+        domain.clone(),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::new())
+            .unwrap_or_else(|error| panic!("empty class context should build: {error}")),
+        BTreeSet::new(),
+        true,
+    )
+    .unwrap_or_else(|error| panic!("test selectable should build: {error}"));
+    let opportunity = ChoiceOpportunity::new(
+        ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario_def.id().bytes)),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("lifecycle-test", b"scheduler"),
+            producer: CampaignHash::derive("lifecycle-test", b"producer"),
+        },
+        "resume-selection",
+        None,
+    )
+    .unwrap_or_else(|error| panic!("test opportunity should build: {error}"));
+    let selection = Selection::new(
+        &opportunity,
+        &domain,
+        ChoiceValue::Boolean(false),
+        SelectionOrigin::Default,
+    )
+    .unwrap_or_else(|error| panic!("test selection should build: {error}"));
+    let schedule =
+        Schedule::empty().appended(Decision::Selection(SelectionDecision::new(&selection)));
+    let configuration = Configuration {
+        def: scenario_def,
+        schedule: schedule.clone(),
+    };
+    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 });
+    ResumeSessionRequest::new(scenario, schedule, checkpoint, Seed::from_u64(seed))
+}
+
 pub(super) fn scenario_with_seed(scenario: &ScenarioDefForm, seed: Seed) -> ScenarioDefForm {
     ScenarioDefForm::from_components_with_app_random_draw_cap(
         scenario.world(),

@@ -8,6 +8,43 @@ use super::{ExactSnapshotHandle as Snapshot, *};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt as _;
 
+#[derive(Clone)]
+struct RecordingColdRestoreLauncher {
+    launches: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    finishes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ProductionVmNodeLauncher for RecordingColdRestoreLauncher {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn launch(
+        &mut self,
+        _request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        self.launches
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(loop_factory_error(
+            "all-failed cold restore attempted to launch QEMU",
+        ))
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        Ok(Box::new(self.clone()))
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        self.finishes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 fn wire_string(value: &str) -> decode::FallibleString {
     decode::FallibleString::new(String::from(value))
 }
@@ -777,6 +814,142 @@ fn failed_node_authority_round_trips_through_the_v8_closure() {
 
     assert_eq!(restored.failed_host_io.get(&node), Some(&expected));
     assert!(restored.targets.is_empty());
+}
+
+#[test]
+fn all_failed_v8_closure_cold_restores_without_launching_qemu() {
+    let root = tempfile::tempdir().expect("create all-failed cold-restore store");
+    let (source, mut checkpoint, node, _) = build_one_node_raw_checkpoint(root.path(), None);
+    checkpoint.targets.remove(&node);
+    checkpoint.node_generations.insert(node.clone(), 41);
+    checkpoint
+        .node_service_states
+        .insert(node.clone(), ProductionNodeServiceState::PermanentlyFailed);
+    let expected_failed = ProductionFailedNodeState::new(
+        &node,
+        QemuHostIoCheckpoint::without_devices(ContentHash::from_bytes(
+            b"cold-restored failed-node host binding",
+        )),
+        FingerprintSample {
+            node: node.clone(),
+            at: VirtualTime { ticks: 0 },
+            fingerprint: ExecutionFingerprint {
+                hash: ContentHash::from_bytes(b"cold-restored failed-node fingerprint"),
+            },
+        },
+    )
+    .expect("construct cold-restored failed-node authority");
+    checkpoint
+        .failed_host_io
+        .insert(node.clone(), expected_failed.clone());
+    let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
+        &source.scenario_def().id().to_hex(),
+        Shift::new(0).expect("build zero shift"),
+        4,
+        SimInstant { nanos: 4 },
+        0,
+        source.world(),
+    )
+    .with_scenario_def(source.scenario_def());
+    let mut scheduler =
+        SingleScheduler::new(runtime_scenario).expect("build all-failed continuation scheduler");
+    scheduler
+        .attach_world_network_links(source.world())
+        .expect("attach all-failed World network");
+    checkpoint
+        .scheduler
+        .restore_into(&mut scheduler)
+        .expect("restore all-failed scheduler continuation");
+    let fault_runtime = ProductionFaultRuntime::new(
+        source.plan().fault_signals().clone(),
+        None,
+        SignalBoundarySnapshot::default(),
+        source.scenario_def().id(),
+        super::super::fault_implementation::test_host_manifests(),
+        &ProductionNodeSet::new(),
+    )
+    .expect("build all-failed fault runtime");
+    let interceptor = ProductionFaultNetworkInterceptor::with_shared_runtime(
+        std::sync::Arc::new(std::sync::Mutex::new(fault_runtime)),
+        std::sync::Arc::new(std::sync::Mutex::new(
+            ProductionFaultEvaluationCursor::default(),
+        )),
+        std::sync::Arc::new(std::sync::Mutex::new(
+            super::super::storage_faults::ProductionFaultObservationJournal::default(),
+        )),
+        source.plan().fault_signals().resource_limits(),
+        source.world().fault_topology().clone(),
+        source.world().links().to_vec(),
+    );
+    let fault_checkpoint = interceptor
+        .checkpoint(
+            &scheduler,
+            VirtualTime::default(),
+            &[],
+            &mut ProductionNodeSet::new(),
+        )
+        .expect("checkpoint all-failed fault and network continuation");
+    let expected_fault_identity = fault_checkpoint.id();
+    checkpoint.fault_checkpoint = Some(fault_checkpoint);
+
+    let prepared = prepare_exact_checkpoint_set(
+        root.path(),
+        source.scenario_def().id(),
+        source.plan().fault_signals().resource_limits(),
+        &mut checkpoint,
+    )
+    .expect("prepare all-failed exact closure");
+    let closure = prepared.identity();
+    prepared
+        .publish()
+        .expect("publish all-failed exact closure");
+
+    let assets = root.path().join("cold-restore-assets");
+    fs::create_dir(&assets).expect("create cold-restore asset directory");
+    let qemu = assets.join("qemu");
+    let plugin = assets.join("plugin");
+    let kernel = assets.join("kernel");
+    let root_image = assets.join("root");
+    for path in [&qemu, &plugin, &kernel, &root_image] {
+        fs::write(path, path.as_os_str().as_encoded_bytes())
+            .expect("write cold-restore asset fixture");
+    }
+    let config = ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image, root.path());
+    let launches = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let finishes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let launcher = RecordingColdRestoreLauncher {
+        launches: std::sync::Arc::clone(&launches),
+        finishes: std::sync::Arc::clone(&finishes),
+    };
+    let scenario = source.scenario_def();
+
+    let mut restored = build_production_vm_lifecycle_loop_from_exact_closure_with_launcher(
+        &scenario, &source, &config, closure, launcher,
+    )
+    .expect("cold restore all-failed production lifecycle");
+
+    assert_eq!(launches.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(restored.failed_host_io.get(&node), Some(&expected_failed));
+    assert_eq!(restored.node_generations.get(&node), Some(&41));
+    assert_eq!(
+        restored.node_service_states.get(&node),
+        Some(&ProductionNodeServiceState::PermanentlyFailed)
+    );
+    assert!(restored.inner.backend().is_empty());
+    let committed_frontier = restored.inner.committed_frontier();
+    let restored_fault_identity = {
+        let (scheduler, backend, interceptor, pending_outputs) =
+            restored.inner.network_transaction_parts_mut();
+        interceptor
+            .checkpoint(scheduler, committed_frontier, pending_outputs, backend)
+            .expect("recapture cold-restored fault and network continuation")
+            .id()
+    };
+    assert_eq!(restored_fault_identity, expected_fault_identity);
+
+    restored.shutdown().expect("shutdown all-failed lifecycle");
+    assert_eq!(launches.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(finishes.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[test]
