@@ -635,8 +635,9 @@ content_object_id!(
 content_object_id!(
     FindingTriageReplayEvidenceId,
     ObjectKind::Finding,
+    [1, 2],
     "crucible.campaign.finding-triage-replay-evidence",
-    "Identifies one exact replay and its independently observed finding signature."
+    "Identifies one exact replay and its independently observed finding signature; version 1 remains decodable for inline-history compatibility."
 );
 content_object_id!(
     FindingReplayCaptureEvidenceId,
