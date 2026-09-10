@@ -4,6 +4,7 @@
 //! uses fixed private keys and must never be used outside an isolated test.
 
 mod ability_activation_fixture;
+mod initrd_contract_fixture;
 
 use std::env;
 use std::fs::{self, File};
@@ -85,6 +86,10 @@ async fn main() -> Result<()> {
         Some("ability-activation") => ability_activation_fixture::generate(&arguments[1..]),
         Some("ability-authority-provision") => {
             ability_activation_fixture::provision_authority(&arguments[1..])
+        }
+        Some("initrd-contract") => initrd_contract_fixture::verify(&arguments[1..]),
+        Some("image-assembly-contract") => {
+            initrd_contract_fixture::verify_assembly(&arguments[1..])
         }
         Some("sign-exchange-v1") => signer_exchange(),
         Some("completion") => completion(&arguments[1..]),

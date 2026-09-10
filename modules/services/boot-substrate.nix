@@ -57,6 +57,51 @@
     then "true"
     else "false";
 
+  # This is a read-only description of the handoff the units below already
+  # implement. The initrd builder validates these units and target links before
+  # it publishes the artifact contract; this value does not schedule work.
+  bootSubstrateContract = {
+    completionTarget = "initrd-fs.target";
+    requiredUnits = [
+      "aos-config-seed.service"
+      "aos-credential-recovery.service"
+      "aos-machine-id.service"
+      "aos-seed-profiles.service"
+      "etc-overlay-setup.service"
+      "mount-var.service"
+      "nix-overlay-setup.service"
+      "run-etc-setup.service"
+    ];
+    preservedMounts = [
+      {
+        initrdPath = "/run";
+        hostPath = "/run";
+      }
+      {
+        initrdPath = "/sysroot/etc";
+        hostPath = "/etc";
+      }
+      {
+        initrdPath = "/sysroot/nix";
+        hostPath = "/nix";
+      }
+      {
+        initrdPath = "/sysroot/var";
+        hostPath = "/var";
+      }
+    ];
+    durableStateRoots = [
+      {
+        initrdPath = "/sysroot/var/lib/profiles/image";
+        hostPath = "/var/lib/profiles/image";
+      }
+      {
+        initrdPath = "/sysroot/var/lib/profiles/system";
+        hostPath = "/var/lib/profiles/system";
+      }
+    ];
+  };
+
   # The neutral boot-infrastructure units are always emitted and ordered
   # against `disksUnit` and `filesUnit`.
   neutralBootServices = {
@@ -172,7 +217,7 @@
     # a child of the previous image until first-boot re-evaluation commits.
     "etc-overlay-setup" = {
       description = "Set Up /etc Overlay Filesystem";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         "initrd-fs.target"
         "initrd-switch-root.target"
@@ -283,7 +328,7 @@
     # bridge keeps the live AOS profile closure reachable.
     "nix-overlay-setup" = {
       description = "Set Up /nix Overlay Filesystem";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         "initrd-fs.target"
         "initrd-switch-root.target"
@@ -330,7 +375,7 @@
     # (toplevel ships the initrd). Spec v12 §6.1.1, §6.1.
     "aos-seed-profiles" = {
       description = "Seed apm system-profile state on first boot";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         filesUnit
         "run-etc-setup.service"
@@ -890,7 +935,7 @@
     # upper) into stage-2 still reachable at /run/etc/... by path.
     "run-etc-setup" = {
       description = "Mount /run/etc tmpfs";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         filesUnit
         "etc-overlay-setup.service"
@@ -918,7 +963,7 @@
     # regenerating the ID every reboot. Spec v12 §6.1.5.
     "aos-machine-id" = {
       description = "Seed /var/etc/machine-id on first boot";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         "etc-overlay-setup.service"
         "initrd-fs.target"
@@ -955,7 +1000,43 @@
     };
   };
 in {
+  options.system.build.bootSubstrateContract = lib.mkOption {
+    type = lib.types.submodule {
+      config._module.strict = true;
+      options = {
+        completionTarget = lib.mkOption {type = lib.types.str;};
+        requiredUnits = lib.mkOption {type = lib.types.listOf lib.types.str;};
+        preservedMounts = lib.mkOption {
+          type = lib.types.listOf (lib.types.submodule {
+            config._module.strict = true;
+            options = {
+              initrdPath = lib.mkOption {type = lib.types.str;};
+              hostPath = lib.mkOption {type = lib.types.str;};
+            };
+          });
+        };
+        durableStateRoots = lib.mkOption {
+          type = lib.types.listOf (lib.types.submodule {
+            config._module.strict = true;
+            options = {
+              initrdPath = lib.mkOption {type = lib.types.str;};
+              hostPath = lib.mkOption {type = lib.types.str;};
+            };
+          });
+        };
+      };
+    };
+    readOnly = true;
+    internal = true;
+    description = ''
+      Exact mount and durable-state handoff already implemented by the neutral
+      initrd units. The initrd assembly contract consumes this read-only value.
+    '';
+  };
+
   config = {
+    system.build.bootSubstrateContract = bootSubstrateContract;
+
     # Initrd services. The cpio assembler in modules/base/initrd-builder.nix
     # picks these up via `system.build.systemdInitrdUnits`.
     boot.initrd.systemd.services = neutralBootServices;

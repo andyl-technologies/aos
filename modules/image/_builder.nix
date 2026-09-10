@@ -469,6 +469,8 @@
           cp ${rootfs}/root.verity "$out/inputs/root.verity"
           cp ${rootfs}/root.roothash "$out/inputs/root.roothash"
           cp ${system.config.system.build.initrd}/initrd.img "$out/inputs/initrd.img"
+          cp ${system.config.system.build.initrd}/initrd-stage-contract.json \
+            "$out/inputs/initrd-stage-contract.json"
           ${lib.optionalString recoveryEnabled ''
             cp ${recoveryInitrdA}/initrd.img "$out/inputs/recovery-initrd-a.img"
             cp ${recoveryInitrdB}/initrd.img "$out/inputs/recovery-initrd-b.img"
@@ -519,7 +521,7 @@
           }
 
           ${pkgs.jq}/bin/jq -cS -n \
-            --arg schema aos.image.assembly-recipe/v2 \
+            --arg schema aos.image.assembly-recipe/v3 \
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg lib.system} \
             --arg variant ${lib.escapeShellArg name} \

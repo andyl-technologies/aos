@@ -220,7 +220,10 @@ pub async fn prepare_filesystems(
         .await?;
     }
 
-    let capabilities = if assembly.schema_version == crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2 {
+    let capabilities = if matches!(
+        assembly.schema_version.as_str(),
+        crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2 | crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V3
+    ) {
         let config = input.join("kernel.config");
         capture_copy(
             assembly_root,

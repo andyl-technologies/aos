@@ -1,7 +1,8 @@
 //! Closed unsigned-image assembly manifest.
 //!
-//! Current v2 assemblies include the resolved kernel configuration as a
-//! captured input. Archived v1 assemblies retain their original file contract.
+//! Current v3 assemblies include the resolved kernel configuration and exact
+//! initrd contract as captured inputs. Historical v1 and v2 assemblies retain
+//! their original file contracts without acquiring the v3 guarantees.
 //!
 //! ```json
 //! {"schema_version":"aos.image.unsigned-assembly/v1",
@@ -12,17 +13,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use aos_release::artifact::{BundlePath, require_identifier, require_store_path};
+use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::platform::Platform;
 use serde::{Deserialize, Serialize};
+
+use crate::initrd_contract::InitrdStageContractV1;
 
 /// Schema for deterministic public-only image inputs.
 pub const UNSIGNED_IMAGE_ASSEMBLY_V1: &str = "aos.image.unsigned-assembly/v1";
 
 /// Assembly schema requiring the resolved kernel configuration for qualification.
 pub const UNSIGNED_IMAGE_ASSEMBLY_V2: &str = "aos.image.unsigned-assembly/v2";
+
+/// Assembly schema requiring an exact checked initrd stage contract.
+pub const UNSIGNED_IMAGE_ASSEMBLY_V3: &str = "aos.image.unsigned-assembly/v3";
 
 /// Required deterministic input or public trust artifact.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -34,6 +41,8 @@ pub enum AssemblyFileKind {
     KernelConfig,
     /// Unsigned normal initrd input.
     Initrd,
+    /// Canonical stage and handoff contract for the normal initrd.
+    InitrdContract,
     /// Unsigned immutable root filesystem input.
     RootFilesystem,
     /// Deterministic dm-verity hash tree for the unsigned root.
@@ -126,6 +135,11 @@ pub struct UnsignedImageAssemblyV1 {
     pub layout: ImageLayoutV1,
     /// Fail-closed maximum artifact sizes.
     pub budgets: ImageBudgetsV1,
+    /// Checked stage and handoff facts for the unsigned initrd input required
+    /// by v3 assemblies. Finalized rebuilt archive bytes have their own output
+    /// artifact identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd_contract: Option<InitrdStageContractV1>,
     /// Sorted exact assembly files.
     pub files: Vec<AssemblyFileV1>,
     /// Sorted exact AOS-built tools.
@@ -277,7 +291,7 @@ impl UnsignedImageAssemblyV1 {
     pub fn validate(&self) -> Result<()> {
         if !matches!(
             self.schema_version.as_str(),
-            UNSIGNED_IMAGE_ASSEMBLY_V1 | UNSIGNED_IMAGE_ASSEMBLY_V2
+            UNSIGNED_IMAGE_ASSEMBLY_V1 | UNSIGNED_IMAGE_ASSEMBLY_V2 | UNSIGNED_IMAGE_ASSEMBLY_V3
         ) || !self.platform.supports_images()
         {
             bail!("unsigned image assembly requires a supported schema and a Linux platform");
@@ -358,17 +372,16 @@ impl UnsignedImageAssemblyV1 {
                 bail!("unsigned image assembly lacks required {required:?} input");
             }
         }
-        if kinds.contains(&AssemblyFileKind::KernelConfig)
-            != (self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V2)
-        {
-            bail!("resolved kernel configuration requires the v2 assembly schema");
+        let has_resolved_kernel_config = self.schema_version != UNSIGNED_IMAGE_ASSEMBLY_V1;
+        if kinds.contains(&AssemblyFileKind::KernelConfig) != has_resolved_kernel_config {
+            bail!("resolved kernel configuration requires a v2 or v3 assembly schema");
         }
+        self.validate_initrd_contract(&kinds)?;
         for tool in &self.tools {
             require_identifier(&tool.id, "assembly tool id")?;
-            require_store_path(&tool.executable, false)?;
-            if !tool.executable.contains("/bin/") && !tool.executable.contains("/lib/") {
-                bail!("assembly tool must identify an executable below a store output");
-            }
+            require_store_executable_path(&tool.executable).with_context(|| {
+                format!("assembly tool {} executable {}", tool.id, tool.executable)
+            })?;
             if !(tool.owner_nar_hash.starts_with("sha256:")
                 || tool.owner_nar_hash.starts_with("sha256-"))
             {
@@ -391,6 +404,46 @@ impl UnsignedImageAssemblyV1 {
             }
         }
         self.validate_input_budgets()?;
+        Ok(())
+    }
+
+    fn validate_initrd_contract(&self, kinds: &BTreeSet<AssemblyFileKind>) -> Result<()> {
+        let requires_contract = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3;
+        if kinds.contains(&AssemblyFileKind::InitrdContract) != requires_contract
+            || self.initrd_contract.is_some() != requires_contract
+        {
+            bail!("initrd stage contract requires the v3 assembly schema");
+        }
+        let Some(contract) = &self.initrd_contract else {
+            return Ok(());
+        };
+        contract.validate()?;
+        if contract.platform != self.platform || contract.kernel_release != self.kernel_release {
+            bail!("initrd stage contract target or kernel differs from its image assembly");
+        }
+
+        let initrd = self
+            .files
+            .iter()
+            .find(|file| file.kind == AssemblyFileKind::Initrd)
+            .ok_or_else(|| anyhow::anyhow!("v3 assembly lacks its normal initrd"))?;
+        if contract.artifact.size_bytes != initrd.size_bytes
+            || contract.artifact.sha256 != initrd.sha256
+        {
+            bail!("initrd stage contract does not bind the captured initrd bytes");
+        }
+
+        let contract_file = self
+            .files
+            .iter()
+            .find(|file| file.kind == AssemblyFileKind::InitrdContract)
+            .ok_or_else(|| anyhow::anyhow!("v3 assembly lacks its initrd contract file"))?;
+        let contract_bytes = canonical::to_vec(contract)?;
+        if contract_file.size_bytes != u64::try_from(contract_bytes.len())?
+            || contract_file.sha256 != Sha256Digest::of_bytes(&contract_bytes)
+        {
+            bail!("captured initrd contract file differs from the assembly contract");
+        }
         Ok(())
     }
 
@@ -514,4 +567,75 @@ fn require_guid(value: &str) -> Result<()> {
         bail!("image layout contains a malformed GUID");
     }
     Ok(())
+}
+
+fn require_store_executable_path(value: &str) -> Result<()> {
+    let Some(store_relative) = value.strip_prefix("/nix/store/") else {
+        bail!("executable path must begin with /nix/store/");
+    };
+    let Some((owner, executable_relative)) = store_relative.split_once('/') else {
+        bail!("executable path must name a file below its store output");
+    };
+    require_store_path(&format!("/nix/store/{owner}"), false)?;
+
+    if executable_relative.is_empty()
+        || executable_relative.len() > 4096
+        || executable_relative.ends_with('/')
+        || executable_relative.contains("//")
+        || executable_relative.contains('\\')
+        || executable_relative.chars().any(char::is_control)
+        || executable_relative
+            .split('/')
+            .any(|component| matches!(component, "" | "." | ".."))
+    {
+        bail!("executable path below its store output must be normalized");
+    }
+
+    let mut components = executable_relative.split('/');
+    let directory = components.next();
+    if !matches!(directory, Some("bin" | "sbin" | "lib")) || components.next().is_none() {
+        bail!("executable path must be below bin, sbin, or lib in its store output");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_store_executable_path;
+
+    const STORE_HASH: &str = "00000000000000000000000000000000";
+
+    #[test]
+    fn accepts_actual_assembly_tool_store_layouts() {
+        for executable in [
+            format!("/nix/store/{STORE_HASH}-cryptsetup/sbin/veritysetup"),
+            format!("/nix/store/{STORE_HASH}-util-linux/sbin/sfdisk"),
+            format!("/nix/store/{STORE_HASH}-dosfstools/sbin/mkfs.vfat"),
+            format!("/nix/store/{STORE_HASH}-systemd/lib/systemd/systemd-measure"),
+            format!("/nix/store/{STORE_HASH}-systemd/bin/ukify"),
+        ] {
+            assert!(
+                require_store_executable_path(&executable).is_ok(),
+                "rejected producer executable {executable}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unanchored_and_malformed_assembly_tool_paths() {
+        for executable in [
+            format!("/tmp/{STORE_HASH}-dosfstools/sbin/mkfs.vfat"),
+            format!("/nix/store/short-dosfstools/sbin/mkfs.vfat"),
+            format!("/nix/store/{STORE_HASH}-dosfstools"),
+            format!("/nix/store/{STORE_HASH}-dosfstools/sbin"),
+            format!("/nix/store/{STORE_HASH}-dosfstools/share/bin/mkfs.vfat"),
+            format!("/nix/store/{STORE_HASH}-dosfstools/sbin/../bin/mkfs.vfat"),
+            format!("/nix/store/{STORE_HASH}-dosfstools/sbin//mkfs.vfat"),
+        ] {
+            assert!(
+                require_store_executable_path(&executable).is_err(),
+                "accepted malformed executable {executable}"
+            );
+        }
+    }
 }

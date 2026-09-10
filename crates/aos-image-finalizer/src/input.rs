@@ -324,6 +324,7 @@ mod tests {
                 uki_mib: 160,
                 download_mib: 640,
             },
+            initrd_contract: None,
             files: vec![AssemblyFileV1 {
                 id: "kernel".to_owned(),
                 kind: AssemblyFileKind::Kernel,
