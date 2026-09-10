@@ -55,7 +55,9 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
     # Corresponding source must remain byte-for-byte identical to its fixed
-    # source inputs; reference rewriting would mutate source text.
+    # source inputs. Stripping would mutate vendored static archives, while
+    # reference rewriting would mutate source text.
+    dontStrip = true;
     dontNukeRefs = true;
 
     phases = [
