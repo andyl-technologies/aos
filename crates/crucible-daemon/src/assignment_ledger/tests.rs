@@ -66,6 +66,7 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
         execution: execution(0x51),
         observation: observation(0x71),
         finding_candidate: Some(finding_candidate(0x72)),
+        finding_replay_captures: None,
     };
 
     {
@@ -681,6 +682,7 @@ fn memory_retention_inventory_is_generation_bound_and_single_pass() {
         execution: execution(0x61),
         observation: observation(0x81),
         finding_candidate: Some(finding_candidate(0x91)),
+        finding_replay_captures: None,
     };
     let second = request(0x22, 0x42, 1);
     let second_key = AttemptExecutionKey::new(second.lineage(), second.attempt());
@@ -775,11 +777,17 @@ fn memory_retention_inventory_is_generation_bound_and_single_pass() {
     assert_eq!(summary.observation_roots(), 1);
     assert_eq!(summary.checkpoint_roots(), 1);
     assert_eq!(summary.finding_candidate_roots(), 1);
-    assert!(roots.contains(&AssignmentRetentionRoot::Observation(observation(0x81))));
+    assert!(
+        roots.contains(&AssignmentRetentionRoot::PublishingObservation(
+            observation(0x81)
+        ))
+    );
     assert!(roots.contains(&AssignmentRetentionRoot::ExactCheckpoint(checkpoint(0x82))));
-    assert!(roots.contains(&AssignmentRetentionRoot::FindingCandidate(
-        finding_candidate(0x91)
-    )));
+    assert!(
+        roots.contains(&AssignmentRetentionRoot::PublishingFindingCandidate(
+            finding_candidate(0x91)
+        ))
+    );
 
     let failure = {
         let mut fence = ledger
@@ -807,6 +815,7 @@ fn directory_retention_generation_survives_restart_and_distinguishes_aba() {
         execution: execution(0x63),
         observation: observation(0x83),
         finding_candidate: None,
+        finding_replay_captures: None,
     };
     let running = AttemptRuntimeState::Running {
         execution_basis: request.execution_basis_digest(),
@@ -886,6 +895,7 @@ fn directory_retention_inventory_rejects_misplaced_attempt_records() {
         execution: execution(0x64),
         observation: observation(0x84),
         finding_candidate: None,
+        finding_replay_captures: None,
     };
     let mut ledger =
         DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
@@ -970,6 +980,7 @@ fn directory_ledger_reads_legacy_v2_publishing_state() {
         execution: execution(0x56),
         observation: observation(0x76),
         finding_candidate: None,
+        finding_replay_captures: None,
     };
     let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
@@ -1167,6 +1178,7 @@ fn directory_ledger_reads_legacy_v7_publishing_state_without_finding_candidate()
         execution: execution(0x5e),
         observation: observation(0x7e),
         finding_candidate: None,
+        finding_replay_captures: None,
     };
     let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
@@ -1408,6 +1420,46 @@ fn directory_ledger_reads_v11_scoped_savepoint_capture_basis() {
         AttemptExecutionScope::SavepointCapture {
             request: capture_fact,
         }
+    );
+}
+
+#[test]
+fn directory_ledger_reads_v12_publishing_state_without_replay_captures() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let request = request(0x71, 0x72, 1);
+    let key = AttemptExecutionKey::for_request(&request);
+    let state = AttemptRuntimeState::Publishing {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x73),
+        observation: observation(0x74),
+        finding_candidate: Some(finding_candidate(0x75)),
+        finding_replay_captures: None,
+    };
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+
+    let mut payload = Vec::with_capacity(512);
+    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V12);
+    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
+    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
+    push_bytes(&mut payload, &request.execution_scope().canonical_bytes());
+    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    payload.push(3);
+    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
+    payload.extend_from_slice(&execution(0x73).as_bytes());
+    push_bytes(&mut payload, observation(0x74).to_text().as_bytes());
+    encode_optional_finding_candidate(&mut payload, Some(finding_candidate(0x75)));
+    let path = ledger.attempt_path(key);
+    fs::create_dir_all(path.parent().expect("attempt-state parent"))
+        .expect("create v12 attempt-state parent");
+    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V12))
+        .expect("write v12 attempt state");
+
+    assert_eq!(
+        ledger.load_attempt(key).expect("load v12 publishing state"),
+        Some(state)
     );
 }
 

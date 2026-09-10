@@ -1535,6 +1535,57 @@ impl PreparedAttemptResult {
         self.finding_candidate
     }
 
+    /// Returns portable replay capture roots already bound into the candidate.
+    #[must_use]
+    pub fn finding_replay_captures(&self) -> Option<crucible_campaign::FindingReplayCaptureSet> {
+        self.result()
+            .finding()
+            .and_then(|finding| finding.bundle().replay_captures())
+    }
+
+    /// Encodes transient production captures before any repository write.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a complete capture no longer authenticates or
+    /// exceeds its scenario-derived encoding bound.
+    pub(crate) fn production_replay_capture_inputs(
+        &self,
+    ) -> Result<
+        Option<[crate::FindingReplayCaptureInput; 4]>,
+        crate::FindingProductionReplayCaptureError,
+    > {
+        self.result().production_replay_capture_inputs()
+    }
+
+    /// Rebuilds a volatile prepared finding around durable capture roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedSemanticResultCodecError`] when this token already
+    /// owns a journal or the rebuilt finding candidate is inconsistent.
+    pub(crate) fn bind_production_replay_captures(
+        &mut self,
+        captures: crucible_campaign::FindingReplayCaptureSet,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        let PreparedAttemptResultOwner::Volatile(current) = &self.result else {
+            return Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "finding replay captures attached after journaling",
+            });
+        };
+        let finding = current.prepare_bound_production_replay_finding(captures)?;
+        let finding_candidate = Some(finding.id()?);
+
+        let PreparedAttemptResultOwner::Volatile(result) = &mut self.result else {
+            return Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "finding replay capture owner changed during binding",
+            });
+        };
+        result.commit_bound_production_replay_finding(finding);
+        self.finding_candidate = finding_candidate;
+        Ok(())
+    }
+
     /// Returns the exact prepared semantic closure.
     #[must_use]
     pub const fn result(&self) -> &PreparedSemanticAttemptResult {
@@ -1606,6 +1657,12 @@ pub enum AttemptResultRecoveryFailure {
     /// Recovered semantic content failed repository or scenario authentication.
     #[error(transparent)]
     Preparation(#[from] AttemptResultPreparationFailure),
+    /// Portable capture manifests or chunks were absent or inconsistent.
+    #[error(transparent)]
+    CaptureStore(#[from] crate::FindingReplayCaptureStoreError),
+    /// Reassembled production replay bytes failed canonical authentication.
+    #[error(transparent)]
+    ProductionReplay(#[from] crate::FindingProductionReplayCaptureError),
 }
 
 /// Candidate whose immutable objects were published outside the supervisor actor.
@@ -1798,6 +1855,12 @@ impl StagedAttemptResult {
     #[must_use]
     pub const fn queued(&self) -> &QueuedAttempt {
         self.prepared.queued()
+    }
+
+    /// Returns the prepared token after an early publication-root transition.
+    #[must_use]
+    pub(crate) fn into_prepared(self) -> PreparedAttemptResult {
+        self.prepared
     }
 
     pub(crate) fn remove_journal(&self) -> Result<(), PreparedResultJournalError> {
@@ -2373,6 +2436,36 @@ pub fn recover_prepared_attempt_result(
             source: source.into(),
         });
     }
+    if let Some(captures) = journal
+        .result()
+        .finding()
+        .and_then(|finding| finding.bundle().replay_captures())
+    {
+        let guard = match store.acquire_finding_replay_publication_guard() {
+            Ok(guard) => guard,
+            Err(source) => {
+                return Err(AttemptResultRecoveryError {
+                    queued: Box::new(queued),
+                    source: crate::FindingReplayCaptureStoreError::from(source).into(),
+                });
+            }
+        };
+        let loaded = match crate::FindingReplayCaptureStore::load_set(&guard, captures) {
+            Ok(loaded) => loaded,
+            Err(source) => {
+                return Err(AttemptResultRecoveryError {
+                    queued: Box::new(queued),
+                    source: source.into(),
+                });
+            }
+        };
+        if let Err(source) = validate_recovered_finding_replay_captures(journal.result(), &loaded) {
+            return Err(AttemptResultRecoveryError {
+                queued: Box::new(queued),
+                source,
+            });
+        }
+    }
 
     Ok(PreparedAttemptRecoveryOutcome::Prepared(Box::new(
         PreparedAttemptResult {
@@ -2382,6 +2475,40 @@ pub fn recover_prepared_attempt_result(
             finding_candidate,
         },
     )))
+}
+
+fn validate_recovered_finding_replay_captures(
+    result: &PreparedSemanticAttemptResult,
+    loaded: &[crate::LoadedFindingReplayCapture; 4],
+) -> Result<(), AttemptResultRecoveryFailure> {
+    let finding = result.finding().ok_or({
+        AttemptResultPreparationFailure::Result(PreparedSemanticResultCodecError::Inconsistent {
+            component: "finding replay captures without finding",
+        })
+    })?;
+    let limits = finding
+        .production_replay_capture_limits()
+        .map_err(AttemptResultPreparationFailure::Result)?;
+    let bindings = finding
+        .production_replay_capture_bindings()
+        .map_err(CampaignRepositoryError::Codec)
+        .map_err(AttemptResultPreparationFailure::Repository)?;
+
+    for (capture, (reproduction, observed_signature)) in loaded.iter().zip(bindings) {
+        let crate::LoadedFindingReplayCapture::Complete {
+            bytes,
+            content_hash,
+        } = capture
+        else {
+            continue;
+        };
+        let capture = crate::FindingProductionReplayCapture::from_canonical_bytes(bytes, limits)?;
+        if capture.content_hash(limits)? != *content_hash {
+            return Err(crate::FindingProductionReplayCaptureError::CaptureBinding.into());
+        }
+        capture.validate_binding(reproduction, observed_signature)?;
+    }
+    Ok(())
 }
 
 /// Retries no-write preparation of an already-captured exact checkpoint.
@@ -2671,13 +2798,27 @@ where
     V: AttemptAdmissionValidator,
 {
     let observation = prepared.observation();
-    let stage_result = match prepared.finding_candidate() {
-        Some(finding_candidate) => supervisor.stage_observation_and_finding_candidate_publication(
-            prepared.queued(),
-            observation,
-            finding_candidate,
-        ),
-        None => supervisor.stage_observation_publication(prepared.queued(), observation),
+    let stage_result = match (
+        prepared.finding_candidate(),
+        prepared.finding_replay_captures(),
+    ) {
+        (Some(finding_candidate), Some(captures)) => supervisor
+            .stage_observation_finding_and_replay_capture_publication(
+                prepared.queued(),
+                observation,
+                finding_candidate,
+                captures,
+            ),
+        (Some(finding_candidate), None) => supervisor
+            .stage_observation_and_finding_candidate_publication(
+                prepared.queued(),
+                observation,
+                finding_candidate,
+            ),
+        (None, Some(_)) => Err(LocalExecutorError::LedgerInvariant {
+            reason: "finding replay captures have no finding candidate",
+        }),
+        (None, None) => supervisor.stage_observation_publication(prepared.queued(), observation),
     };
     let stage = match stage_result {
         Ok(stage) => stage,
@@ -2728,6 +2869,24 @@ pub fn publish_prepared_attempt_result(
     store: &CampaignExecutorStore,
     staged: Box<StagedAttemptResult>,
 ) -> Result<PublishedAttemptResult, AttemptResultPublicationError> {
+    let _gc_exclusion = if staged
+        .prepared
+        .result()
+        .finding()
+        .is_some_and(|finding| finding.bundle().replay_captures().is_some())
+    {
+        match store.acquire_finding_replay_publication_guard() {
+            Ok(guard) => Some(guard),
+            Err(source) => {
+                return Err(AttemptResultPublicationError {
+                    staged,
+                    source: source.into(),
+                });
+            }
+        }
+    } else {
+        None
+    };
     if let Err(source) = publish_prepared_semantic_attempt_result(store, staged.prepared.result()) {
         return Err(AttemptResultPublicationError { staged, source });
     }

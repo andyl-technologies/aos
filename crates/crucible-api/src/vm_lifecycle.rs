@@ -58,7 +58,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod assets;
-use assets::*;
+use assets::{
+    ProductionVmGuestAssets, production_kernel_cmdline_prefix, validate_guest_asset_references,
+};
+pub use assets::{ProductionVmPortableReplayAssetPaths, ProductionVmPortableReplayGuestAssetPaths};
 mod checkpoint_store;
 use checkpoint_store::load_exact_checkpoint_set;
 #[cfg(feature = "test-support")]
@@ -83,7 +86,10 @@ pub use checkpoint_store::{
     retire_production_exact_checkpoint_catalog,
 };
 mod checkpoint_dependencies;
-pub use checkpoint_dependencies::collect_signal_artifact_objects;
+pub use checkpoint_dependencies::{
+    collect_signal_artifact_objects, collect_signal_artifact_objects_bounded,
+    collect_signal_artifact_objects_with_budget,
+};
 mod fault_implementation;
 pub use fault_implementation::{
     network_effect_implementation_registry, storage_effect_implementation_registry,

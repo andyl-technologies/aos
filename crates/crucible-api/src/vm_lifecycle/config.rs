@@ -27,6 +27,42 @@ impl ProductionVmLifecycleConfig {
         self.completion_timeout
     }
 
+    /// Returns the terminal instruction ceiling for each QEMU process.
+    #[must_use]
+    pub const fn run_ceiling_icount(&self) -> u64 {
+        self.run_ceiling_icount
+    }
+
+    /// Returns the production lifecycle quantum budget.
+    #[must_use]
+    pub const fn quantum_budget(&self) -> u64 {
+        self.quantum_budget
+    }
+
+    /// Returns the configured fixed scheduler rendezvous interval.
+    #[must_use]
+    pub const fn rendezvous_interval_icount(&self) -> Option<u64> {
+        self.rendezvous_interval_icount
+    }
+
+    /// Returns the observation-only coverage switch.
+    #[must_use]
+    pub const fn coverage(&self) -> ProductionPluginSwitch {
+        self.coverage
+    }
+
+    /// Returns the authoritative signal artifact store, when configured.
+    #[must_use]
+    pub fn signal_artifacts(&self) -> Option<&dyn DagStore> {
+        self.signal_artifacts.as_deref()
+    }
+
+    /// Returns the authoritative World artifact store, when configured.
+    #[must_use]
+    pub fn world_artifacts(&self) -> Option<&dyn DagStore> {
+        self.world_artifacts.as_deref()
+    }
+
     /// Returns this configuration with a distinct durable recovery root.
     ///
     /// Fixed worker pools use stable per-worker children so concurrent runs of

@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
-    BlobHandle, ContentId, ImmutableBlobBackend, MutableRefBackend, ObjectKind, RefCasOutcome,
-    RefName, RefPublicationGuard, StoreError,
+    BlobHandle, ContentId, ImmutableBlobBackend, MutableRefBackend, ObjectKind, PutReceipt,
+    RefCasOutcome, RefName, RefPublicationGuard, StoreError,
 };
 use thiserror::Error;
 
@@ -770,11 +770,51 @@ pub struct CampaignExecutorStore {
     repository: Arc<CampaignRepository>,
 }
 
+/// GC-excluded immutable-object access for one executor publication handoff.
+///
+/// This capability admits only version-one finding replay capture chunks and
+/// manifests. It does not expose the repository backend or mutable campaign
+/// refs, and its lifetime keeps destructive ref inventory excluded.
+pub struct CampaignExecutorPublicationGuard<'a> {
+    repository: &'a CampaignRepository,
+    _gc_exclusion: CampaignRepositoryGcExclusionGuard<'a>,
+}
+
 impl CampaignExecutorStore {
     /// Creates a narrow executor capability over one campaign repository.
     #[must_use]
     pub const fn new(repository: Arc<CampaignRepository>) -> Self {
         Self { repository }
+    }
+
+    /// Acquires GC-excluded access for a finding replay capture handoff.
+    ///
+    /// The caller holds the returned guard across immutable chunk and manifest
+    /// writes and the later operational-ledger Publishing transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when GC exclusion cannot be acquired or the immutable
+    /// backend lacks durable streaming read, put, or conditional-create support.
+    pub fn acquire_finding_replay_publication_guard(
+        &self,
+    ) -> Result<CampaignExecutorPublicationGuard<'_>, CampaignRepositoryError> {
+        let capabilities = self.repository.blobs.capabilities();
+        for (available, capability) in [
+            (capabilities.durable, "durable"),
+            (capabilities.streaming_read, "streaming-read"),
+            (capabilities.streaming_put, "streaming-put"),
+            (capabilities.conditional_create, "conditional-create"),
+        ] {
+            if !available {
+                return Err(StoreError::Unsupported { capability }.into());
+            }
+        }
+        let gc_exclusion = self.repository.acquire_gc_exclusion_guard()?;
+        Ok(CampaignExecutorPublicationGuard {
+            repository: &self.repository,
+            _gc_exclusion: gc_exclusion,
+        })
     }
 
     /// Reauthenticates an operational execution scope during durable recovery.
@@ -1334,6 +1374,48 @@ impl CampaignExecutorStore {
         self.repository
             .publish_finding_triage_replay_evidence(evidence)
     }
+}
+
+impl CampaignExecutorPublicationGuard<'_> {
+    /// Reads one capture chunk or manifest while GC remains excluded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for another kind/schema or when the backend cannot
+    /// return an authenticated handle.
+    pub fn read_finding_replay_capture_object(
+        &self,
+        id: ContentId,
+    ) -> Result<BlobHandle, CampaignRepositoryError> {
+        validate_finding_replay_capture_object_id(id)?;
+        self.repository.blobs.read(id, None).map_err(Into::into)
+    }
+
+    /// Idempotently writes one capture chunk or manifest while GC remains excluded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for another kind/schema or when durable placement fails.
+    pub fn put_finding_replay_capture_object(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, CampaignRepositoryError> {
+        validate_finding_replay_capture_object_id(id)?;
+        self.repository
+            .blobs
+            .put_if_absent(id, source)
+            .map_err(Into::into)
+    }
+}
+
+fn validate_finding_replay_capture_object_id(id: ContentId) -> Result<(), CampaignRepositoryError> {
+    if id.schema_version() != 1
+        || !matches!(id.kind(), ObjectKind::ExactManifest | ObjectKind::Trace)
+    {
+        return Err(integrity("finding-replay-capture-object-kind"));
+    }
+    Ok(())
 }
 
 impl ResolvedSelection {
