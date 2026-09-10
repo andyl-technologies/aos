@@ -254,6 +254,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         placeholder: false,
     },
     GateTargetSpec {
+        gate: "gate:campaign-continuity-v2",
+        package: "crucible-campaign",
+        test_target: "gate_campaign_continuity_v2",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
         gate: "gate:scheduler-liveness",
         package: "crucible",
         test_target: "gate_scheduler_liveness",
