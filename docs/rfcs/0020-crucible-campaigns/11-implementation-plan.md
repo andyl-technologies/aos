@@ -1664,7 +1664,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,
-`gate:campaign-statistics`, `gate:component-contract`,
+`gate:campaign-statistics`, `gate:campaign-component-contract`,
 `gate:control-responsiveness`, `gate:campaign-mutation-scaling`,
 `gate:harness-lint`.
 
