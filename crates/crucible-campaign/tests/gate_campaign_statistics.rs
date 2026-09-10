@@ -15,17 +15,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crucible_campaign::{
     Attempt, AttemptStart, BooleanDomain, BranchPath, BranchPathSegment, BranchRequest,
-    BudgetGrant, CampaignCodecError, CampaignCommandId, CampaignControlAction, CampaignHash,
-    CampaignLineage, CampaignMode, CampaignPlannerDriver, CampaignPlannerStepOutcome,
-    CampaignPolicy, CampaignRepository, CampaignRepositoryError, CampaignSeed,
-    CanonicalFrontierPlanner, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-    ChoiceOpportunity, ChoiceSource, ChoiceValue, ControlRequest, CoverageProjection,
+    BudgetGrant, CampaignCodecError, CampaignCommandId, CampaignControlAction,
+    CampaignEstimateLabel, CampaignHash, CampaignLineage, CampaignMode, CampaignName,
+    CampaignPlannerDriver, CampaignPlannerStepOutcome, CampaignPolicy, CampaignPrincipal,
+    CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError, CampaignSeed,
+    CampaignServiceOperation, CanonicalFrontierPlanner, ChoiceClassContext, ChoiceCoordinate,
+    ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ControlRequest, CoverageProjection,
     DebuggerAuthorityKey, ExplorerPolicy, FairnessPolicy, MeasurementSet, Observation,
     PlannerAuthorityKey, PlannerDisposition, PlannerExecutionSupervisor,
     PlannerProposalDisposition, PlannerRequest, PlanningBudget, PropertyVerdictSet, Proposal,
-    PurePlannerEngine, RetentionPolicy, ScenarioDefId, SelectableDeclaration, Selection,
-    SelectionOrigin, StatisticalDistribution, StatisticalDrawPlan, StatisticalSamplingDesign,
-    StopCondition, StopOutcome, SupervisedPlannerExecution,
+    PurePlannerEngine, QueryCampaignReportRequest, RepositoryCampaignService, RetentionPolicy,
+    ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, StatisticalDistribution,
+    StatisticalDrawPlan, StatisticalSamplingDesign, StopCondition, StopOutcome,
+    SupervisedPlannerExecution,
 };
 use crucible_cas::content_store::{
     ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, MutableRefBackend,
@@ -35,6 +37,24 @@ use crucible_cas::content_store::{
 struct GatePlannerSupervisor {
     issued_requests: Arc<Mutex<Vec<BranchRequest>>>,
     issued_proposals: Arc<Mutex<Vec<Proposal>>>,
+}
+
+#[derive(Clone, Copy)]
+struct AllowReportQueries;
+
+impl CampaignPrincipalAuthorizer for AllowReportQueries {
+    fn authorize(
+        &self,
+        principal: &CampaignPrincipal,
+        operation: CampaignServiceOperation,
+        campaign: &CampaignName,
+        _request_digest: CampaignHash,
+    ) -> Result<(), crucible_campaign::CampaignAuthorizationError> {
+        assert_eq!(principal.as_str(), "statistics-gate-operator");
+        assert_eq!(operation, CampaignServiceOperation::QueryCampaignReport);
+        assert_eq!(campaign.as_str(), "campaign-statistics-gate");
+        Ok(())
+    }
 }
 
 fn lock_recorder<T>(recorder: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -184,6 +204,27 @@ fn finite_static_statistical_report_preserves_exact_p_q_after_restart() -> Resul
 
     let campaign = "campaign-statistics-gate";
     let created = repository.create(campaign, &lineage, &policy, &BTreeMap::new())?;
+    let partial_request = QueryCampaignReportRequest::new(
+        CampaignPrincipal::new("statistics-gate-operator")?,
+        CampaignName::new(campaign)?,
+        created.snapshot_id(),
+        None,
+        1,
+    )?;
+    let partial = crucible_campaign::CampaignClient::new(RepositoryCampaignService::new(
+        &repository,
+        AllowReportQueries,
+    ))
+    .query_campaign_report(&partial_request)?;
+    assert_eq!(
+        partial.summary().estimate().label(),
+        CampaignEstimateLabel::NoEstimate
+    );
+    assert_eq!(partial.summary().estimate().endpoints(), 0);
+    assert!(partial.endpoints().is_empty());
+    assert_eq!(partial.summary().outcomes().explored(), 0);
+    assert_eq!(partial.summary().semantic().admitted_attempts(), 0);
+
     let funded = repository.apply_control(
         campaign,
         &ControlRequest {
@@ -326,6 +367,33 @@ fn finite_static_statistical_report_preserves_exact_p_q_after_restart() -> Resul
         BTreeSet::from([request.opportunity()]),
     )?;
     let observed = repository.publish_observation(campaign, admitted.new_snapshot, &observation)?;
+
+    let report_request = QueryCampaignReportRequest::new(
+        CampaignPrincipal::new("statistics-gate-operator")?,
+        CampaignName::new(campaign)?,
+        observed.new_snapshot,
+        None,
+        1,
+    )?;
+    let public_report = crucible_campaign::CampaignClient::new(RepositoryCampaignService::new(
+        repository.as_ref(),
+        AllowReportQueries,
+    ))
+    .query_campaign_report(&report_request)?;
+    assert_eq!(
+        public_report.summary().estimate().label(),
+        CampaignEstimateLabel::StatisticallyWeighted
+    );
+    assert_eq!(public_report.summary().outcomes().explored(), 1);
+    assert_eq!(public_report.summary().outcomes().requested_stops(), 1);
+    assert_eq!(public_report.summary().execution_bases().policy(), 1);
+    assert_eq!(public_report.summary().execution_bases().operator(), 0);
+    assert_eq!(public_report.endpoints().len(), 1);
+    assert_eq!(
+        public_report.endpoints()[0].observation(),
+        observation.id()?
+    );
+    assert!(public_report.summary().planner().latest().is_some());
 
     let report = repository.project_statistical_estimate(campaign, observed.new_snapshot)?;
     assert_eq!(report.endpoints().len(), 1);

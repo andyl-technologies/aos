@@ -53,7 +53,9 @@
 //!       46 (QueryCampaignFindingOccurrencesRequestV1) |
 //!       47 (QueryCampaignFindingOccurrencesResponseV1) |
 //!       48 (GetCampaignFindingOccurrenceObjectRequestV1) |
-//!       49 (GetCampaignFindingOccurrenceObjectResponseV1)
+//!       49 (GetCampaignFindingOccurrenceObjectResponseV1) |
+//!       50 (QueryCampaignReportRequestV1) |
+//!       51 (QueryCampaignReportResponseV1)
 //! magic = "CRUCCS20"
 //! ```
 //!
@@ -97,9 +99,9 @@ use crucible_campaign::{
     QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
     QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
     QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
-    RepositoryCampaignService, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
-    SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse, WatchCampaignRequest,
-    WatchCampaignResponse,
+    QueryCampaignReportRequest, QueryCampaignReportResponse, RepositoryCampaignService,
+    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest,
+    SubmitCampaignDiscoveryResponse, WatchCampaignRequest, WatchCampaignResponse,
 };
 
 use crate::{
@@ -158,6 +160,8 @@ const QUERY_CAMPAIGN_FINDING_OCCURRENCES_REQUEST_KIND: u8 = 46;
 const QUERY_CAMPAIGN_FINDING_OCCURRENCES_RESPONSE_KIND: u8 = 47;
 const GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_REQUEST_KIND: u8 = 48;
 const GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_RESPONSE_KIND: u8 = 49;
+const QUERY_CAMPAIGN_REPORT_REQUEST_KIND: u8 = 50;
+const QUERY_CAMPAIGN_REPORT_RESPONSE_KIND: u8 = 51;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 4_096;
@@ -427,6 +431,24 @@ impl CampaignService for LoopbackCampaignService {
                 Ok(response)
             },
             |failure| failure.validate_for_get_campaign_status(request.snapshot()),
+        )
+    }
+
+    fn query_campaign_report(
+        &self,
+        request: &QueryCampaignReportRequest,
+    ) -> Result<QueryCampaignReportResponse, Self::Error> {
+        self.exchange(
+            QUERY_CAMPAIGN_REPORT_REQUEST_KIND,
+            QUERY_CAMPAIGN_REPORT_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = QueryCampaignReportResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| failure.validate_for_query_campaign_report(request.snapshot()),
         )
     }
 
@@ -1434,6 +1456,39 @@ where
                 Err(error) => {
                     let failure = error.campaign_service_failure();
                     if let Err(error) = failure.validate_for_get_campaign_status(request.snapshot())
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        QUERY_CAMPAIGN_REPORT_REQUEST_KIND => {
+            let request = QueryCampaignReportRequest::from_canonical_bytes(&body)?;
+            match service.query_campaign_report(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        QUERY_CAMPAIGN_REPORT_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) =
+                        failure.validate_for_query_campaign_report(request.snapshot())
                     {
                         return reject_invalid_service_response(
                             stream,

@@ -358,6 +358,13 @@ impl CampaignService for WrongGetService {
         unreachable!("test service only handles GetCampaign")
     }
 
+    fn query_campaign_report(
+        &self,
+        _request: &QueryCampaignReportRequest,
+    ) -> Result<QueryCampaignReportResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
     fn get_campaign_snapshot(
         &self,
         _request: &GetCampaignSnapshotRequest,
@@ -536,6 +543,13 @@ impl CampaignService for FixedFailureService {
         Err(self.0)
     }
 
+    fn query_campaign_report(
+        &self,
+        _request: &QueryCampaignReportRequest,
+    ) -> Result<QueryCampaignReportResponse, Self::Error> {
+        Err(self.0)
+    }
+
     fn get_campaign_snapshot(
         &self,
         _request: &GetCampaignSnapshotRequest,
@@ -684,6 +698,13 @@ impl CampaignService for WrongApplyService {
         &self,
         _request: &GetCampaignStatusRequest,
     ) -> Result<GetCampaignStatusResponse, Self::Error> {
+        unreachable!("test service only handles ApplyCampaignCommand")
+    }
+
+    fn query_campaign_report(
+        &self,
+        _request: &QueryCampaignReportRequest,
+    ) -> Result<QueryCampaignReportResponse, Self::Error> {
         unreachable!("test service only handles ApplyCampaignCommand")
     }
 

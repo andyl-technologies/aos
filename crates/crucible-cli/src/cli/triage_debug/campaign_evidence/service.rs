@@ -326,6 +326,7 @@ impl crucible_campaign::CampaignService for ImportedCampaignFindingService {
         derive_campaign(crucible_campaign::DeriveCampaignRequest) -> crucible_campaign::DeriveCampaignResponse;
         get_campaign(crucible_campaign::GetCampaignRequest) -> crucible_campaign::GetCampaignResponse;
         get_campaign_status(crucible_campaign::GetCampaignStatusRequest) -> crucible_campaign::GetCampaignStatusResponse;
+        query_campaign_report(crucible_campaign::QueryCampaignReportRequest) -> crucible_campaign::QueryCampaignReportResponse;
         get_campaign_snapshot(crucible_campaign::GetCampaignSnapshotRequest) -> crucible_campaign::GetCampaignSnapshotResponse;
         watch_campaign(crucible_campaign::WatchCampaignRequest) -> crucible_campaign::WatchCampaignResponse;
         query_campaign_graph(crucible_campaign::QueryCampaignGraphRequest) -> crucible_campaign::QueryCampaignGraphResponse;

@@ -405,6 +405,10 @@ fn policy_operation_labels_cover_the_closed_service_vocabulary() {
             CampaignServiceOperation::QueryCampaignFrontier,
         ),
         (
+            "query-campaign-report",
+            CampaignServiceOperation::QueryCampaignReport,
+        ),
+        (
             "get-campaign-frontier-object",
             CampaignServiceOperation::GetCampaignFrontierObject,
         ),

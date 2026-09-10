@@ -244,6 +244,7 @@ impl CampaignLocalServiceMode {
                 | CampaignServiceOperation::GetCampaignGraphObject
                 | CampaignServiceOperation::QueryCampaignChoices
                 | CampaignServiceOperation::QueryCampaignFrontier
+                | CampaignServiceOperation::QueryCampaignReport
                 | CampaignServiceOperation::GetCampaignFrontierObject
                 | CampaignServiceOperation::GetCampaignChoiceObject => true,
             },

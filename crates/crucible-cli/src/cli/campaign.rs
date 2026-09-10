@@ -25,6 +25,8 @@ mod object;
 mod policy;
 #[path = "campaign/ranking.rs"]
 mod ranking;
+#[path = "campaign/report.rs"]
+mod report;
 #[path = "campaign/scenario.rs"]
 mod scenario;
 #[path = "campaign/schedule.rs"]
@@ -52,6 +54,7 @@ use policy::{compile_campaign_policy, render_campaign_policy_compilation};
 use ranking::{
     query_campaign_rankings, render_campaign_rankings, validate_campaign_rankings_command,
 };
+use report::{query_campaign_report, render_campaign_report, validate_campaign_report_command};
 use scenario::{compile_campaign_scenario, render_campaign_scenario_compilation};
 use schedule::{compile_campaign_schedule, render_campaign_schedule_compilation};
 use snapshot::{
@@ -558,6 +561,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_head(&client, principal, &args.command)?;
             render_campaign_head(&report, cli.output_format())?
         }
+        CampaignCommand::Report(_) => {
+            let report = query_campaign_report(&client, principal, &args.command)?;
+            render_campaign_report(&report, cli.output_format())?
+        }
         CampaignCommand::Snapshot(_) | CampaignCommand::Compare(_) => {
             let report = query_campaign_snapshot(&client, principal, &args.command)?;
             render_campaign_snapshot(&report, cli.output_format())?
@@ -737,6 +744,10 @@ fn prepare_campaign_command(
         CampaignCommand::Branch(branch) => prepare_campaign_branch(branch, principal).map(Some),
         CampaignCommand::Status(status) => {
             campaign_name(&status.name)?;
+            Ok(None)
+        }
+        CampaignCommand::Report(_) => {
+            validate_campaign_report_command(command)?;
             Ok(None)
         }
         CampaignCommand::Watch(watch) => {
@@ -2379,6 +2390,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Derive(_)
         | CampaignCommand::Branch(_)
         | CampaignCommand::Status(_)
+        | CampaignCommand::Report(_)
         | CampaignCommand::Watch(_)
         | CampaignCommand::Snapshot(_)
         | CampaignCommand::Compare(_)

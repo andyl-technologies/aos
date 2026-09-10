@@ -127,6 +127,38 @@ impl CampaignService for FixedCampaignService {
         .expect("status response"))
     }
 
+    fn query_campaign_report(
+        &self,
+        request: &crucible_campaign::QueryCampaignReportRequest,
+    ) -> Result<crucible_campaign::QueryCampaignReportResponse, Self::Error> {
+        let semantic =
+            CampaignSemanticStatus::new(CampaignContinuationStatus::default(), 0, 0, 0, 0)
+                .expect("empty semantic status");
+        let summary = crucible_campaign::CampaignReportSummary::new(
+            CampaignState::Running,
+            CampaignMode::Strict,
+            semantic,
+            crucible_campaign::CampaignOutcomeCounts::new(0, 0, 0, 0, 0).expect("empty outcomes"),
+            crucible_campaign::CampaignExecutionBasisCounts::new(0, 0, 0, 0),
+            crucible_campaign::CampaignPlannerEvidence::new(0, None)
+                .expect("empty planner evidence"),
+            crucible_campaign::CampaignEstimateSummary::new(
+                crucible_campaign::CampaignEstimateLabel::Descriptive,
+                0,
+                None,
+            )
+            .expect("descriptive estimate"),
+        )
+        .expect("empty report summary");
+        Ok(crucible_campaign::QueryCampaignReportResponse::new(
+            request,
+            fixed_query_snapshot().0,
+            summary,
+            Vec::new(),
+        )
+        .expect("report response"))
+    }
+
     fn get_campaign_snapshot(
         &self,
         request: &GetCampaignSnapshotRequest,
@@ -567,6 +599,17 @@ fn direct_and_loopback_campaign_services_are_identical() {
         None,
         2,
     );
+    let report = QueryCampaignReportRequest::new(
+        CampaignPrincipal::new("operator:alice").expect("principal"),
+        CampaignName::new("network-recovery").expect("campaign"),
+        fixed_query_snapshot()
+            .0
+            .id()
+            .expect("fixed query snapshot id"),
+        None,
+        2,
+    )
+    .expect("report request");
     let frontier_object = frontier_object_request(
         "network-recovery",
         fixed_query_snapshot()
@@ -610,6 +653,9 @@ fn direct_and_loopback_campaign_services_are_identical() {
     let expected_frontier = direct
         .query_campaign_frontier(&frontier)
         .expect("direct frontier query");
+    let expected_report = direct
+        .query_campaign_report(&report)
+        .expect("direct campaign report");
     let expected_frontier_object = direct
         .get_campaign_frontier_object(&frontier_object)
         .expect("direct frontier object");
@@ -627,7 +673,7 @@ fn direct_and_loopback_campaign_services_are_identical() {
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
-        for _ in 0..17 {
+        for _ in 0..18 {
             serve_loopback_campaign_once(&mut server_stream, &FixedCampaignService)
                 .expect("serve campaign request");
         }
@@ -692,6 +738,12 @@ fn direct_and_loopback_campaign_services_are_identical() {
             .query_campaign_frontier(&frontier)
             .expect("loopback frontier"),
         expected_frontier
+    );
+    assert_eq!(
+        client
+            .query_campaign_report(&report)
+            .expect("loopback campaign report"),
+        expected_report
     );
     assert_eq!(
         client
@@ -955,6 +1007,13 @@ impl CampaignService for WrongGetService {
         &self,
         _request: &GetCampaignStatusRequest,
     ) -> Result<GetCampaignStatusResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
+    fn query_campaign_report(
+        &self,
+        _request: &crucible_campaign::QueryCampaignReportRequest,
+    ) -> Result<crucible_campaign::QueryCampaignReportResponse, Self::Error> {
         unreachable!("test service only handles GetCampaign")
     }
 
