@@ -1,4 +1,4 @@
-//! Shared semantic conformance routines for persistent store leaves.
+//! Shared semantic conformance routines for store leaves.
 //!
 //! This module is available only to this crate's tests or with the
 //! `test-support` feature. The routines intentionally perform mutations and
@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use super::*;
 
-/// Exercises the complete persistent immutable-leaf semantic contract.
+/// Exercises the complete declared immutable-leaf semantic contract.
 ///
 /// The supplied backend namespace must initially contain no committed logical
 /// objects and must be exclusively owned by this invocation.
@@ -26,6 +26,25 @@ pub fn assert_blob_leaf_conformance<B>(backend: &B)
 where
     B: ImmutableBlobBackend + BlobStoreAdmin,
 {
+    assert_blob_leaf_conformance_with_durability(backend, true);
+}
+
+/// Exercises the complete immutable-leaf contract with explicit durability.
+///
+/// The expected durability is supplied independently of the backend's
+/// self-reported capabilities so the fixture detects both an incorrect
+/// capability declaration and an incorrect placement receipt.
+///
+/// # Panics
+///
+/// Panics when the backend violates its expected durability or any shared
+/// authenticated I/O, replay, inventory, deletion, retained-object isolation,
+/// or ABA-generation semantic.
+pub fn assert_blob_leaf_conformance_with_durability<B>(backend: &B, expected_durable: bool)
+where
+    B: ImmutableBlobBackend + BlobStoreAdmin,
+{
+    assert_eq!(backend.capabilities().durable, expected_durable);
     let initial = inventory(backend);
     assert_eq!(initial.summary.objects(), 0);
     assert_eq!(initial.summary.logical_bytes(), 0);
@@ -56,7 +75,7 @@ where
         .put_if_absent(id, &BlobHandle::from_bytes(bytes.clone()))
         .expect("conforming put");
     assert_eq!(receipt.id, id);
-    assert!(receipt.is_durable());
+    assert_eq!(receipt.is_durable(), expected_durable);
     assert!(backend.contains(id).expect("conforming presence"));
     assert_eq!(
         backend
