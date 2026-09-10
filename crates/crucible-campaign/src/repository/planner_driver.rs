@@ -258,6 +258,8 @@ impl<S> CampaignPlannerDriver<S> {
                 || CanonicalPuctPlanner::supports_descriptor(request.engine())
                     .map_err(CampaignRepositoryError::from)?
                 || CanonicalBeamPlanner::supports_descriptor(request.engine())
+                    .map_err(CampaignRepositoryError::from)?
+                || CanonicalSearchPlanner::supports_descriptor(request.engine())
                     .map_err(CampaignRepositoryError::from)?)
         {
             // A complete scan may have passed blocked pages before an empty

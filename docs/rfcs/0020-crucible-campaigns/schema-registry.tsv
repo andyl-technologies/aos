@@ -158,6 +158,7 @@ crucible.campaign.continuation-projection	1	crucible-campaign::exploration	proje
 crucible.campaign.planner-candidate-guidance	2	crucible-campaign::object	projection	gate:campaign-component-contract,gate:lazy-frontier,gate:content-address
 crucible.campaign.planner-candidate-budget	2	crucible-campaign::object	projection	gate:campaign-component-contract,gate:lazy-frontier,gate:content-address
 crucible.campaign.planner-beam-candidate	2	crucible-campaign::object	projection	gate:campaign-component-contract,gate:lazy-frontier,gate:content-address
+crucible.campaign.planner-search-candidate	1	crucible-campaign::object	projection	gate:campaign-component-contract,gate:lazy-frontier,gate:content-address
 crucible.campaign.planner-scan-index	1	crucible-campaign::repository::planner_scan_index	merkle-node	gate:campaign-component-contract,gate:lazy-frontier,gate:content-address
 crucible.campaign.expansion-credit	1	crucible-campaign::exploration	campaign-fact	gate:lazy-frontier,gate:campaign-replay,gate:content-address
 crucible.campaign.measurement-set	2	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address

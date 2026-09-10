@@ -334,6 +334,18 @@ impl CampaignRepository {
                     return Err(integrity("planner-Beam-candidate-publication-id-mismatch"));
                 }
             }
+            if let Some(search) = input.search {
+                let content = self.put_envelope(ObjectEnvelope::for_record(
+                    crate::CampaignRecordKind::PlannerSearchCandidate,
+                    crate::object::content_children(search.content_children())?,
+                    search.canonical_bytes(),
+                )?)?;
+                if content != search.id()?.content_id() {
+                    return Err(integrity(
+                        "planner-search-candidate-publication-id-mismatch",
+                    ));
+                }
+            }
         }
         for object_id in request.input_bundle().object_ids() {
             let Some(object) = request.input_bundle().object(object_id)? else {
@@ -343,10 +355,11 @@ impl CampaignRepository {
                 object.record_kind(),
                 crate::CampaignRecordKind::SurvivorSelection
                     | crate::CampaignRecordKind::RankingExplanation
+                    | crate::CampaignRecordKind::BranchPath
             ) {
                 let content = self.put_envelope(object)?;
                 if content != object_id {
-                    return Err(integrity("planner-Beam-evidence-publication-id-mismatch"));
+                    return Err(integrity("planner-derived-input-publication-id-mismatch"));
                 }
             }
         }
@@ -621,40 +634,8 @@ impl CampaignRepository {
                     )?,
                 )?;
                 if use_search_order {
-                    let branch_request = self.read_branch_request(offer.request().content_id())?;
-                    let domain = self.read_choice_domain(offer.domain().content_id())?;
-                    let edge = crate::Selection::campaign_edge_id(
-                        offer.branch_point(),
-                        domain.semantic_id(),
-                        offer.value(),
-                    );
-                    let lineage = self.read_lineage(snapshot.snapshot.lineage().content_id())?;
-                    let parent_path =
-                        self.planner_issue_parent_path(&snapshot, &lineage, &branch_request)?;
-                    let mut segments = parent_path
-                        .segments()
-                        .ok_or_else(|| integrity("planner-search-parent-path-is-legacy"))?
-                        .to_vec();
-                    segments.push(crate::BranchPathSegment::new(offer.branch_point(), edge));
-                    let path = crate::BranchPath::new(segments)?;
-                    let depth = u64::try_from(path.edges().len()).map_err(|_| {
-                        CampaignRepositoryError::Codec(CampaignCodecError::LimitExceeded {
-                            limit: "planner-search-candidate-depth",
-                        })
-                    })?;
-                    let candidate = crate::PlannerSearchCandidate::new(
-                        snapshot.snapshot.planning_view().id()?,
-                        snapshot.snapshot.active_policy(),
-                        position,
-                        offer.domain(),
-                        domain.semantic_id(),
-                        offer.value().clone(),
-                        offer.ordinal(),
-                        edge,
-                        parent_path.id()?,
-                        path.id()?,
-                        depth,
-                    )?;
+                    let (candidate, parent_path, path) =
+                        self.planner_search_candidate(&snapshot, &offer)?;
                     push_retained_planner_input(
                         &mut retained,
                         &mut retained_bytes,
@@ -668,7 +649,7 @@ impl CampaignRepository {
                     push_retained_planner_input(
                         &mut retained,
                         &mut retained_bytes,
-                        self.read_envelope(offer.domain().content_id())?,
+                        self.read_envelope(candidate.domain().content_id())?,
                     )?;
                     push_retained_planner_input(
                         &mut retained,

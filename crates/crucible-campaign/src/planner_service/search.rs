@@ -40,9 +40,7 @@ impl CanonicalSearchStrategy {
             Self::BreadthFirst => {
                 BTreeMap::from([("strategy".to_owned(), "breadth-first".to_owned())])
             }
-            Self::DepthFirst => {
-                BTreeMap::from([("strategy".to_owned(), "depth-first".to_owned())])
-            }
+            Self::DepthFirst => BTreeMap::from([("strategy".to_owned(), "depth-first".to_owned())]),
             Self::Priority { seed } => BTreeMap::from([
                 ("strategy".to_owned(), "priority".to_owned()),
                 ("seed".to_owned(), encode_hex(seed)),
@@ -136,6 +134,36 @@ impl CanonicalSearchPlanner {
         Ok(engine == &Self::descriptor()?)
     }
 
+    pub(crate) fn from_request(
+        request: &PlannerRequest,
+    ) -> Result<Option<Self>, CampaignCodecError> {
+        if !Self::supports_descriptor(request.engine())? {
+            return Ok(None);
+        }
+
+        let arguments = request.policy_artifact().arguments();
+        let strategy = match arguments.get("strategy").map(String::as_str) {
+            Some("breadth-first") if arguments.len() == 1 => CanonicalSearchStrategy::BreadthFirst,
+            Some("depth-first") if arguments.len() == 1 => CanonicalSearchStrategy::DepthFirst,
+            Some("priority") if arguments.len() == 2 => {
+                let seed = arguments
+                    .get("seed")
+                    .ok_or(CampaignCodecError::InvalidValue {
+                        reason: "canonical search priority artifact omits its seed",
+                    })?;
+                CanonicalSearchStrategy::Priority {
+                    seed: decode_hex_seed(seed)?,
+                }
+            }
+            _ => {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "canonical search planner artifact arguments are invalid",
+                });
+            }
+        };
+        Ok(Some(Self::new(strategy)))
+    }
+
     pub(crate) fn initial_state_for_engine(
         engine: &PlannerEngine,
     ) -> Result<PlannerState, CampaignCodecError> {
@@ -223,7 +251,10 @@ impl PurePlannerEngine for CanonicalSearchPlanner {
             || request.policy_artifact() != expected_basis.artifact()
             || request.invocation().engine() != expected_engine
             || request.planner_state().engine() != expected_engine
-            || !matches!(request.policy().explorer(), crate::ExplorerPolicy::Exhaustive { .. })
+            || !matches!(
+                request.policy().explorer(),
+                crate::ExplorerPolicy::Exhaustive { .. }
+            )
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "canonical search planner engine or strategy basis mismatch",
@@ -268,11 +299,12 @@ impl PurePlannerEngine for CanonicalSearchPlanner {
             let (Some(offer), Some(search)) = (input.offer, input.search) else {
                 continue;
             };
-            offered_on_page = offered_on_page.checked_add(1).ok_or(
-                CampaignCodecError::LimitExceeded {
-                    limit: "canonical-search-planner-eligible-count",
-                },
-            )?;
+            offered_on_page =
+                offered_on_page
+                    .checked_add(1)
+                    .ok_or(CampaignCodecError::LimitExceeded {
+                        limit: "canonical-search-planner-eligible-count",
+                    })?;
             let candidate = CarriedSearchCandidate::from_offer(position, &offer, &search);
             if best
                 .as_ref()
@@ -332,10 +364,8 @@ impl PurePlannerEngine for CanonicalSearchPlanner {
         let explanation = GuidanceEvidence::new(BTreeMap::from([
             (
                 "offered-on-page".to_owned(),
-                i64::try_from(offered_on_page).map_err(|_| {
-                    CampaignCodecError::LimitExceeded {
-                        limit: "canonical-search-planner-evidence",
-                    }
+                i64::try_from(offered_on_page).map_err(|_| CampaignCodecError::LimitExceeded {
+                    limit: "canonical-search-planner-evidence",
                 })?,
             ),
             ("selected".to_owned(), i64::from(next_best.is_some())),
@@ -500,6 +530,31 @@ fn encode_hex(bytes: [u8; 32]) -> String {
     encoded
 }
 
+fn decode_hex_seed(encoded: &str) -> Result<[u8; 32], CampaignCodecError> {
+    if encoded.len() != 64 || !encoded.is_ascii() {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "canonical search priority seed is not 32-byte hexadecimal",
+        });
+    }
+    let mut seed = [0_u8; 32];
+    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+        let high = decode_hex_nibble(pair[0])?;
+        let low = decode_hex_nibble(pair[1])?;
+        seed[index] = (high << 4) | low;
+    }
+    Ok(seed)
+}
+
+fn decode_hex_nibble(byte: u8) -> Result<u8, CampaignCodecError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err(CampaignCodecError::InvalidValue {
+            reason: "canonical search priority seed contains non-lowercase hexadecimal",
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,8 +615,7 @@ mod tests {
         let same_depth_left = candidate(b"same-depth-left", 2);
         let same_depth_right = candidate(b"same-depth-right", 2);
         assert_eq!(
-            CanonicalSearchStrategy::BreadthFirst
-                .compare(&same_depth_left, &same_depth_right),
+            CanonicalSearchStrategy::BreadthFirst.compare(&same_depth_left, &same_depth_right),
             same_depth_left.path.cmp(&same_depth_right.path)
         );
     }
@@ -632,7 +686,9 @@ mod tests {
             1,
         );
         let mut planner = CanonicalSearchPlanner::new(strategy);
-        let first_output = planner.plan(&first_request).expect("plan first search page");
+        let first_output = planner
+            .plan(&first_request)
+            .expect("plan first search page");
         let PlannerProposalDisposition::ContinueScan { cursor } =
             first_output.proposal().disposition()
         else {
@@ -876,7 +932,15 @@ mod tests {
                 &[label],
             )
         };
-        CampaignPlanningView::new(root(1), root(2), root(3), root(4), root(5), root(6), root(7))
-            .expect("planning view")
+        CampaignPlanningView::new(
+            root(1),
+            root(2),
+            root(3),
+            root(4),
+            root(5),
+            root(6),
+            root(7),
+        )
+        .expect("planning view")
     }
 }

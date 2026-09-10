@@ -55,8 +55,7 @@ pub const CANONICAL_FRONTIER_BUDGET_CAPABILITY: &str = "canonical-frontier-budge
 pub const CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY: &str =
     "canonical-frontier-request-budget-v1";
 /// Planner-engine capability for owner-built graph-search depth and tie order.
-pub const CANONICAL_FRONTIER_SEARCH_ORDER_CAPABILITY: &str =
-    "canonical-frontier-search-order-v1";
+pub const CANONICAL_FRONTIER_SEARCH_ORDER_CAPABILITY: &str = "canonical-frontier-search-order-v1";
 /// Maximum bundle-object count accepted by the initial coordinator store.
 pub const MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS: usize =
     MAX_PLANNING_BUNDLE_OBJECTS - RETAINED_PLANNER_REQUEST_FIXED_CHILDREN;
@@ -392,8 +391,7 @@ impl PlannerSearchCandidate {
     ) -> Result<(), CampaignCodecError> {
         if self.input_view != request.invocation().input_view()
             || self.policy != request.invocation().policy()
-            || self.position
-                != PlanningScanPosition::new(offer.branch_point(), offer.request())
+            || self.position != PlanningScanPosition::new(offer.branch_point(), offer.request())
             || self.domain != offer.domain()
             || &self.value != offer.value()
             || self.ordinal != offer.ordinal()
@@ -934,11 +932,11 @@ impl CampaignPlanningBundle {
                         reason: "planner search-order candidate value is outside its authenticated domain",
                     });
                 }
-                let parent_path_envelope = self.object(candidate.parent_path().content_id())?.ok_or(
-                    CampaignCodecError::InvalidValue {
+                let parent_path_envelope = self
+                    .object(candidate.parent_path().content_id())?
+                    .ok_or(CampaignCodecError::InvalidValue {
                         reason: "planner search-order candidate omits its parent branch path",
-                    },
-                )?;
+                    })?;
                 if parent_path_envelope.record_kind() != crate::CampaignRecordKind::BranchPath {
                     return Err(CampaignCodecError::InvalidValue {
                         reason: "planner search-order candidate parent path has the wrong record kind",

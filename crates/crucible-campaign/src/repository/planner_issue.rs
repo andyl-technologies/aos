@@ -68,6 +68,46 @@ impl IssueGeneratorValidation {
 }
 
 impl CampaignRepository {
+    pub(super) fn planner_search_candidate(
+        &self,
+        snapshot: &LoadedSnapshot,
+        offer: &Proposal,
+    ) -> Result<(crate::PlannerSearchCandidate, BranchPath, BranchPath), CampaignRepositoryError>
+    {
+        let request = self.read_branch_request(offer.request().content_id())?;
+        let domain = self.read_choice_domain(offer.domain().content_id())?;
+        let lineage = self.read_lineage(snapshot.snapshot.lineage().content_id())?;
+        let parent_path = self.planner_issue_parent_path(snapshot, &lineage, &request)?;
+        let edge =
+            Selection::campaign_edge_id(offer.branch_point(), domain.semantic_id(), offer.value());
+        let mut segments = parent_path
+            .segments()
+            .ok_or_else(|| integrity("planner-search-parent-path-is-legacy"))?
+            .to_vec();
+        segments.push(crate::BranchPathSegment::new(offer.branch_point(), edge));
+        let path = BranchPath::new(segments)?;
+        let depth = u64::try_from(path.edges().len()).map_err(|_| {
+            CampaignRepositoryError::Codec(CampaignCodecError::LimitExceeded {
+                limit: "planner-search-candidate-depth",
+            })
+        })?;
+        let candidate = crate::PlannerSearchCandidate::new(
+            snapshot.snapshot.planning_view().id()?,
+            snapshot.snapshot.active_policy(),
+            PlanningScanPosition::new(offer.branch_point(), offer.request()),
+            offer.domain(),
+            domain.semantic_id(),
+            offer.value().clone(),
+            offer.ordinal(),
+            edge,
+            parent_path.id()?,
+            path.id()?,
+            depth,
+        )?;
+
+        Ok((candidate, parent_path, path))
+    }
+
     /// Projects one offer without publishing its selection, path, or attempt.
     pub(super) fn planner_candidate_budget(
         &self,
