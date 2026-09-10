@@ -21,6 +21,12 @@ impl ProductionVmLifecycleConfig {
         &self.run_state_root
     }
 
+    /// Returns the wall-clock ceiling for one QEMU lifecycle operation.
+    #[must_use]
+    pub const fn completion_timeout(&self) -> Duration {
+        self.completion_timeout
+    }
+
     /// Returns this configuration with a distinct durable recovery root.
     ///
     /// Fixed worker pools use stable per-worker children so concurrent runs of
@@ -501,6 +507,20 @@ impl ProductionVmLifecycleConfig {
         self.quantum_budget
             .saturating_add(node_count)
             .saturating_add(1)
+    }
+}
+
+impl ProductionVmLifecycleLoop {
+    /// Retains an external resource owner until this lifecycle is dropped.
+    ///
+    /// Prepared resume paths use this to keep request-local checkpoint and run
+    /// state directories alive through every restored process generation. The
+    /// owner is declared after process and run-directory fields so it is
+    /// released only after those resources have begun teardown.
+    #[must_use]
+    pub fn with_retained_resource_owner(mut self, owner: impl Send + 'static) -> Self {
+        self.retained_resource_owners.push(Box::new(owner));
+        self
     }
 }
 

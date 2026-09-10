@@ -156,6 +156,7 @@ pub(super) struct SynchronousCampaignExecutor<M> {
     admission: RepositoryAttemptAdmission,
     daemon_epoch: DaemonEpoch,
     resources: AttemptResourceLimits,
+    cancellation: ExecutionCancellation,
     assignments: BTreeMap<AssignmentId, CampaignHash>,
     completed: BTreeMap<AttemptExecutionKey, ObservationId>,
     checkpoint_capture: Option<SynchronousCheckpointCapture>,
@@ -236,10 +237,19 @@ impl<M> SynchronousCampaignExecutor<M> {
             admission,
             daemon_epoch,
             resources,
+            cancellation: ExecutionCancellation::default(),
             assignments: BTreeMap::new(),
             completed: BTreeMap::new(),
             checkpoint_capture: None,
         }
+    }
+
+    pub(super) fn with_execution_cancellation(
+        mut self,
+        cancellation: ExecutionCancellation,
+    ) -> Self {
+        self.cancellation = cancellation;
+        self
     }
 
     pub(super) fn with_checkpoint_capture(
@@ -458,7 +468,7 @@ where
         let context = AttemptExecutionContext::new(
             request.resources(),
             request.retention(),
-            ExecutionCancellation::default(),
+            self.cancellation.clone(),
             ExecutionCheckpointRequest::default(),
         );
         let product = match self.worker.model_mut().execute(&input, &context) {

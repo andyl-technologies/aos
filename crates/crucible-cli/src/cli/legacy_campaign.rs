@@ -1656,6 +1656,178 @@ mod tests {
         })
     }
 
+    fn capture_only_remote_observation_factory(
+        plan: ResumeInvocationPlan,
+        evidence: ResumeHandleEvidence,
+        calls: Arc<AtomicUsize>,
+        selection_applications: Arc<AtomicUsize>,
+        continuation_applications: Arc<AtomicUsize>,
+    ) -> impl Fn(
+        &crucible_api::ResumeSessionRequest,
+        &crucible::Configuration,
+        &crucible_api::ResumeObservationPreparationContext,
+    ) -> Result<ResumeRecordingLifecycleLoop, crucible_api::LifecycleApiError>
+    + Send
+    + Sync
+    + 'static {
+        move |request, configuration, context| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let source = request.observation_source.as_ref().ok_or_else(|| {
+                crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: String::from("test remote resume lost its observation source"),
+                }
+            })?;
+            let proof =
+                ObservationStopProof::from_canonical_bytes(source.proof()).map_err(|error| {
+                    crucible_api::LifecycleApiError::ResumeObservationSource {
+                        message: format!("decode test remote observation proof: {error}"),
+                    }
+                })?;
+            let replay_evidence =
+                crucible_daemon::CrucibleMeasurementReplayEvidence::from_canonical_bytes(
+                    source.evidence(),
+                )
+                .map_err(|error| {
+                    crucible_api::LifecycleApiError::ResumeObservationSource {
+                        message: format!("decode test remote observation evidence: {error}"),
+                    }
+                })?;
+            replay_evidence
+                .verify_observation_stop_proof(&proof)
+                .map_err(
+                    |error| crucible_api::LifecycleApiError::ResumeObservationSource {
+                        message: format!("validate test remote observation source: {error}"),
+                    },
+                )?;
+            let closure = request
+                .replay_closure
+                .as_ref()
+                .ok_or_else(
+                    || crucible_api::LifecycleApiError::ResumeObservationSource {
+                        message: String::from("test remote resume lost its replay closure"),
+                    },
+                )
+                .and_then(|closure| {
+                    GuardedCampaignReplayClosure::from_canonical_bytes(closure.payload()).map_err(
+                        |error| crucible_api::LifecycleApiError::ResumeObservationSource {
+                            message: format!("decode test remote replay closure: {error}"),
+                        },
+                    )
+                })?;
+            if configuration.id() != request.checkpoint.configuration {
+                return Err(crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: String::from(
+                        "test remote configuration differs from its logical checkpoint",
+                    ),
+                });
+            }
+            if context.cancellation().is_canceled() {
+                return Err(crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: String::from("test remote observation preparation was canceled"),
+                });
+            }
+
+            let resources = AttemptResourceLimits::new(1, 256 * 1024 * 1024, 1024 * 1024, 16)
+                .expect("remote observation fixture resources");
+            let checkpoint_directory = TempDir::new().map_err(|error| {
+                crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: format!("create test remote checkpoint directory: {error}"),
+                }
+            })?;
+            let exact_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+                "remote-observation-capture-only-test",
+                checkpoint_directory.path().to_path_buf(),
+            ));
+            let checkpoints = Arc::new(
+                ExactCheckpointStore::new(exact_backend, resources.maximum_disk_bytes()).map_err(
+                    |error| crucible_api::LifecycleApiError::ResumeObservationSource {
+                        message: format!("open test remote checkpoint store: {error}"),
+                    },
+                )?,
+            );
+            let host = LinuxQemuAttemptHostConfig::new(
+                "/sys/fs/cgroup/crucible-remote-observation-test",
+                "/tmp/crucible-remote-observation-test",
+                "remote-observation-test",
+                1,
+                1,
+                65_528,
+                65_528,
+                16,
+                1_024,
+                Duration::from_secs(1),
+            )
+            .map_err(|error| {
+                crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: format!("configure test remote host: {error}"),
+                }
+            })?;
+            let campaign_request = GuardedDefaultCampaignRunRequest::new(
+                request.scenario.clone(),
+                request.seed,
+                "remote-observation-test-engine",
+                "remote-observation-test-qemu",
+                ProductionVmLifecycleConfig::new(
+                    "qemu",
+                    "plugin",
+                    "kernel",
+                    "root",
+                    checkpoint_directory.path().join("run-state"),
+                ),
+                host,
+                resources,
+            )
+            .with_observation_resume_source_capture_only(
+                request.schedule.clone(),
+                closure,
+                request.checkpoint.clone(),
+                GuardedDefaultCampaignObservationSource::new(proof, replay_evidence),
+                checkpoints,
+            );
+            let (campaign, trace) =
+                run_guarded_default_campaign_test_fixture_with_trace(campaign_request).map_err(
+                    |error| crucible_api::LifecycleApiError::ResumeObservationSource {
+                        message: format!("authenticate test remote source campaign: {error}"),
+                    },
+                )?;
+            let resume = campaign.resume().ok_or_else(|| {
+                crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: String::from("test remote source campaign lost its resume proof"),
+                }
+            })?;
+            if resume.source_savepoint().is_none()
+                || resume.ready().is_some()
+                || resume.selection().is_some()
+                || resume.continuation().is_some()
+            {
+                return Err(crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: String::from(
+                        "test remote source campaign crossed its capture-only boundary",
+                    ),
+                });
+            }
+            let applications = trace.selection_applications().map_err(|error| {
+                crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: format!("read test remote reply trace: {error}"),
+                }
+            })?;
+            selection_applications.store(applications.len(), Ordering::SeqCst);
+            continuation_applications.store(
+                applications
+                    .iter()
+                    .filter(|(generation, _)| *generation >= 2)
+                    .count(),
+                Ordering::SeqCst,
+            );
+
+            resume_recording_loop_for_plan(&plan, &evidence).map_err(|error| {
+                crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: format!("construct test restored lifecycle: {error}"),
+                }
+            })
+        }
+    }
+
     #[test]
     fn campaign_resume_route_accepts_only_standard_selection_free_workflows() {
         let temporary = TempDir::new().expect("resume route workspace");
@@ -3189,6 +3361,93 @@ mod tests {
             campaign_resume_workflow_report(&replay_plan, &handle_evidence, &replay.campaign)
                 .expect("v6 source observation is reproduced before continuation");
 
+            let mut remote_plan = handle_resume_plan.clone();
+            remote_plan.max_virtual_time = None;
+            remote_plan.max_virtual_time_ticks = None;
+            remote_plan.terminal_condition = match source_proof.condition() {
+                ObservationCondition::SchedulerQuiescent => RunTerminalCondition::Quiescence,
+                ObservationCondition::AssertionViolationTransition(_)
+                | ObservationCondition::AnyAssertionViolationTransition => {
+                    RunTerminalCondition::Property
+                }
+                ObservationCondition::SchedulerQuiescentOrExecutionQuanta { .. } => {
+                    RunTerminalCondition::Quiescence
+                }
+            };
+            let ordinary_starts = Arc::new(AtomicUsize::new(0));
+            let counted_ordinary = Arc::clone(&ordinary_starts);
+            let observation_calls = Arc::new(AtomicUsize::new(0));
+            let selection_applications = Arc::new(AtomicUsize::new(0));
+            let continuation_applications = Arc::new(AtomicUsize::new(0));
+            let control_plane = LifecycleControlPlane::new(
+                "typed-observation-remote-resume",
+                Vec::new(),
+                move |_scenario: &crucible::ScenarioDef, _seed| {
+                    counted_ordinary.fetch_add(1, Ordering::SeqCst);
+                    ResumeRecordingLifecycleLoop::new(VirtualTime {
+                        ticks: source_frontier,
+                    })
+                },
+            )
+            .with_resume_replay_closure_validator(
+                |scenario, configuration, checkpoint, envelope| {
+                    crucible_daemon::qemu_campaign_lifecycle::validate_remote_resume_replay_closure(
+                        scenario,
+                        configuration,
+                        checkpoint,
+                        envelope,
+                    )
+                    .map_err(|error| {
+                        crucible_api::ResumeReplayClosureValidationError::new(error.to_string())
+                    })
+                },
+            )
+            .with_resume_observation_loop_factory(
+                capture_only_remote_observation_factory(
+                    remote_plan.clone(),
+                    handle_evidence.clone(),
+                    Arc::clone(&observation_calls),
+                    Arc::clone(&selection_applications),
+                    Arc::clone(&continuation_applications),
+                ),
+            );
+            let client = InProcessLifecycleClient::new(control_plane);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("observation remote resume test runtime");
+            let remote_report = runtime
+                .block_on(
+                    run_remote_control_client_resume_from_evidence_with_driver_async(
+                        &client,
+                        &remote_plan,
+                        handle_evidence.clone(),
+                        ResumeInteractiveCommandDriver::Preparsed(&[]),
+                        false,
+                    ),
+                )
+                .expect("cold remote session path should authenticate and restore v6 evidence");
+            assert_eq!(remote_report.source_checkpoint, checkpoint);
+            assert_eq!(runtime.block_on(client.session_count()), 0);
+            assert_eq!(ordinary_starts.load(Ordering::SeqCst), 0);
+            assert_eq!(observation_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(selection_applications.load(Ordering::SeqCst), 2);
+            assert_eq!(continuation_applications.load(Ordering::SeqCst), 0);
+            match source_proof.condition() {
+                ObservationCondition::SchedulerQuiescent
+                | ObservationCondition::SchedulerQuiescentOrExecutionQuanta { .. } => {
+                    assert_eq!(remote_report.run.status, BackendCommandStatus::Passed);
+                    assert_eq!(remote_report.run.outcome, Some(OutcomeKind::Passed));
+                    assert_eq!(remote_report.run.final_state, "quiescent");
+                }
+                ObservationCondition::AssertionViolationTransition(_)
+                | ObservationCondition::AnyAssertionViolationTransition => {
+                    assert_eq!(remote_report.run.status, BackendCommandStatus::Failed);
+                    assert_eq!(remote_report.run.outcome, Some(OutcomeKind::Failed));
+                    assert_eq!(remote_report.run.final_state, "property-failed");
+                }
+            }
+
             let handle = std::fs::read_to_string(&output).expect("read v6 handle for tampering");
             for (mutation, forged) in recomputed_observation_proof_forgeries(
                 source_proof,
@@ -3264,6 +3523,26 @@ mod tests {
                     .contains("legacy resume source observation differs"),
                 "{error}"
             );
+            let remote_error = runtime
+                .block_on(
+                    run_remote_control_client_resume_from_evidence_with_driver_async(
+                        &client,
+                        &remote_plan,
+                        forged_evidence,
+                        ResumeInteractiveCommandDriver::Preparsed(&[]),
+                        false,
+                    ),
+                )
+                .expect_err("cold remote source replay must reject a coherent forged pair");
+            assert!(
+                remote_error
+                    .to_string()
+                    .contains("legacy resume source observation differs"),
+                "{remote_error}"
+            );
+            assert_eq!(runtime.block_on(client.session_count()), 0);
+            assert_eq!(ordinary_starts.load(Ordering::SeqCst), 0);
+            assert_eq!(observation_calls.load(Ordering::SeqCst), 2);
         }
 
         let fork_frontier = handle_evidence

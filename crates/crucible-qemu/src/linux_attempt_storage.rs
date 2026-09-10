@@ -30,7 +30,7 @@ use rustix::fs::{
     mkdirat, open, openat, statat, unlinkat,
 };
 use rustix::io::fcntl_dupfd_cloexec;
-use rustix::process::{Gid, Uid, geteuid};
+use rustix::process::{Gid, Uid, getegid, geteuid};
 use thiserror::Error;
 
 use crate::spawn::{QemuChildCredentials, validate_guarded_launch_requirements};
@@ -53,6 +53,7 @@ const MAX_QUOTACTL_PROJECT_ID: u32 = 0x7fff_ffff;
 const MAX_ATTEMPT_ARTIFACT_INODES: u64 = 65_536;
 const ROOT_SCAN_BUFFER_BYTES: usize = 4096;
 const GENERATION_NAME_PREFIX: &str = "generation-";
+const SUPERVISOR_METADATA_DIRECTORY: &str = "supervisor-metadata";
 
 /// Validated configuration for one daemon-incarnation attempt-storage root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -362,6 +363,96 @@ impl LinuxQemuAttemptStorageOwner {
             .ok_or_else(|| LinuxQemuAttemptStorageError::MissingAuthority {
                 path: self.path.clone(),
             })
+    }
+
+    /// Seals the aggregate attempt root and creates private supervisor metadata.
+    ///
+    /// The child keeps search access so guarded generation directories remain
+    /// usable, but it cannot create, rename, or remove request metadata beside
+    /// them. The returned private metadata directory shares the project quota
+    /// but is inaccessible to the child identity.
+    pub(crate) fn seal_supervisor_workspace(
+        &mut self,
+    ) -> Result<PathBuf, LinuxQemuAttemptStorageError> {
+        self.pin_directory()?;
+        self.verify_named_directory()?;
+
+        let directory = self.directory()?;
+        fchown(directory, Some(geteuid()), Some(getegid())).map_err(|source| {
+            io_error("assign observation workspace ownership", &self.path, source)
+        })?;
+        fchmod(directory, Mode::from_bits_truncate(0o711))
+            .map_err(|source| io_error("set observation workspace mode", &self.path, source))?;
+        fsync(directory)
+            .map_err(|source| io_error("synchronize observation workspace", &self.path, source))?;
+
+        let metadata = fstat(directory)
+            .map_err(|source| io_error("inspect observation workspace", &self.path, source))?;
+        if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
+            || metadata.st_uid != geteuid().as_raw()
+            || metadata.st_gid != getegid().as_raw()
+            || metadata.st_mode & 0o777 != 0o711
+        {
+            return Err(LinuxQemuAttemptStorageError::DirectoryPolicy {
+                path: self.path.clone(),
+            });
+        }
+
+        let metadata_path = self.path.join(SUPERVISOR_METADATA_DIRECTORY);
+        mkdirat(
+            directory,
+            SUPERVISOR_METADATA_DIRECTORY,
+            Mode::from_bits_truncate(0o700),
+        )
+        .map_err(|source| {
+            io_error(
+                "create observation workspace metadata directory",
+                &metadata_path,
+                source,
+            )
+        })?;
+        let metadata = open_directory_at(directory, SUPERVISOR_METADATA_DIRECTORY, &metadata_path)?;
+        fchown(&metadata, Some(geteuid()), Some(getegid())).map_err(|source| {
+            io_error(
+                "assign observation workspace metadata ownership",
+                &metadata_path,
+                source,
+            )
+        })?;
+        fchmod(&metadata, Mode::from_bits_truncate(0o700)).map_err(|source| {
+            io_error(
+                "set observation workspace metadata mode",
+                &metadata_path,
+                source,
+            )
+        })?;
+        fsync(&metadata).map_err(|source| {
+            io_error(
+                "synchronize observation workspace metadata",
+                &metadata_path,
+                source,
+            )
+        })?;
+        let metadata_stat = fstat(&metadata).map_err(|source| {
+            io_error(
+                "inspect observation workspace metadata",
+                &metadata_path,
+                source,
+            )
+        })?;
+        if FileType::from_raw_mode(metadata_stat.st_mode) != FileType::Directory
+            || metadata_stat.st_uid != geteuid().as_raw()
+            || metadata_stat.st_gid != getegid().as_raw()
+            || metadata_stat.st_mode & 0o777 != 0o700
+        {
+            return Err(LinuxQemuAttemptStorageError::DirectoryPolicy {
+                path: metadata_path,
+            });
+        }
+        fsync(directory)
+            .map_err(|source| io_error("synchronize observation workspace", &self.path, source))?;
+
+        Ok(metadata_path)
     }
 
     /// Provisions and lends one descriptor-pinned generation run directory.

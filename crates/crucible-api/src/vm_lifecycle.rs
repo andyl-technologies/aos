@@ -758,6 +758,7 @@ pub struct ProductionVmLifecycleLoop {
     debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
     node_launcher: Box<dyn ProductionVmNodeLauncher>,
     _run_directory: ProductionRunDirectory,
+    retained_resource_owners: Vec<Box<dyn Send>>,
 }
 
 /// Exact scheduler/evidence boundary exposed after production checkpoint restore.

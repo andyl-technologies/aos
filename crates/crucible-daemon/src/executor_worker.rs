@@ -733,7 +733,6 @@ impl AttemptExecutionContext {
 
     /// Attaches the exact durable root from which this execution must resume.
     #[must_use]
-    #[cfg(test)]
     pub(crate) const fn with_resume_checkpoint(
         mut self,
         checkpoint: Option<ExactCheckpointId>,
