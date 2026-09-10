@@ -1,0 +1,14 @@
+The scalar and variable layouts share a union. Clearing vname while resetting
+a new scalar array element overwrites stfmt in builds without MPFR, changing
+an uninitialized element's string value from the empty string to "0".
+
+--- a/eval.c
++++ b/eval.c
+@@ -1939,7 +1939,6 @@ elem_new_reset(NODE *n)
+ 		n->elemnew_vname = NULL;
+ 	}
+ 	n->elemnew_parent = NULL;
+-	n->vname = NULL;
+ }
+ 
+ /* elem_new_to_scalar --- convert Node_elem_new to untyped scalar */

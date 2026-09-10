@@ -7,6 +7,8 @@
   manifestNames,
   extraToolNames ? [],
   compilerSource ? directory + "/gcc.nix",
+  compilerToolOverrides ? {},
+  manifestToolOverrides ? {},
   staticNoPie ? false,
   buildPlatform,
   hostPlatform,
@@ -108,7 +110,7 @@
 
   manifestTools = builtins.listToAttrs (map (name: {
     inherit name;
-    value = compileTool manifest.${name};
+    value = compileTool (manifest.${name} // (manifestToolOverrides.${name} or {}));
   }) (builtins.filter (name: !(builtins.elem name ["bash" "coreutils"])) manifestNames));
   extraTools = builtins.listToAttrs (map (name: {
       inherit name;
@@ -140,7 +142,7 @@
       binutils = finish (call compilerBuildScope (directory + "/binutils.nix") {});
       gcc = finish (call (compilerBuildScope
         // {
-          prev = compilerBuildTools // {binutils = exports.binutils;};
+          prev = compilerBuildTools // {binutils = exports.binutils;} // compilerToolOverrides;
           binutils = exports.binutils;
           gccStage1 = compilerForLibc;
         })
