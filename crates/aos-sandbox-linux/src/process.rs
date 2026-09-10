@@ -9,7 +9,7 @@
 
 use std::ffi::{CString, OsString};
 use std::num::NonZeroU32;
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
 use std::time::Duration;
@@ -22,6 +22,7 @@ const MAXIMUM_EXECUTABLE_BYTES: usize = 4096;
 const MAXIMUM_ARGUMENTS: usize = 64;
 const MAXIMUM_ARGUMENT_BYTES: usize = 64 * 1024;
 const DUPLICATE_FD_MINIMUM: libc::c_int = 64;
+const MAXIMUM_INHERITED_DESCRIPTORS: usize = 4;
 
 /// Permanently disables core dumps for the calling process.
 ///
@@ -49,6 +50,21 @@ pub struct FixedProcessRequest<'a> {
     pub maximum_stdout_bytes: usize,
     /// Maximum captured standard-error bytes.
     pub maximum_stderr_bytes: usize,
+}
+
+/// Adds explicit standard input and bounded descriptor roles to one invocation.
+#[derive(Clone, Copy, Debug)]
+pub struct FixedProcessDescriptorRequest<'a> {
+    /// Common fixed executable, argument, deadline, and output policy.
+    pub process: FixedProcessRequest<'a>,
+    /// Optional standard input; `/dev/null` is used when absent.
+    ///
+    /// The caller owns this descriptor's producer and content. This API does
+    /// not impose an input byte limit; the overall child supervision timeout
+    /// bounds how long the child may wait or read before cancellation begins.
+    pub stdin: Option<BorrowedFd<'a>>,
+    /// Descriptors mapped contiguously to child FDs 3 through 6.
+    pub inherited: &'a [BorrowedFd<'a>],
 }
 
 /// Reports the normally completed fixed child.
@@ -100,12 +116,40 @@ pub enum FixedProcessOutcome {
 /// or wait failures.
 pub fn run_fixed_process(request: FixedProcessRequest<'_>) -> Result<FixedProcessOutcome> {
     validate_exclusive_reaping_owner()?;
-    run_fixed_process_owned(request)
+    run_fixed_process_owned(request, None, &[])
 }
 
-fn run_fixed_process_owned(request: FixedProcessRequest<'_>) -> Result<FixedProcessOutcome> {
+/// Runs one fixed executable with explicit standard input and bounded roles.
+///
+/// `inherited[0]` appears only as child FD 3, `inherited[1]` as FD 4, and so
+/// on. All descriptors above the final mapped role are closed in the child.
+/// The same single-thread, child-reaping, timeout, output, and process-group
+/// guarantees as [`run_fixed_process`] apply.
+///
+/// # Errors
+///
+/// Returns an error under the conditions documented by [`run_fixed_process`],
+/// or when more than four inherited descriptor roles are requested.
+pub fn run_fixed_process_with_descriptors(
+    request: FixedProcessDescriptorRequest<'_>,
+) -> Result<FixedProcessOutcome> {
+    if request.inherited.len() > MAXIMUM_INHERITED_DESCRIPTORS {
+        return Err(Error::invalid(
+            "fixed process inherited descriptors",
+            "exceeds the four-descriptor ceiling",
+        ));
+    }
+    validate_exclusive_reaping_owner()?;
+    run_fixed_process_owned(request.process, request.stdin, request.inherited)
+}
+
+fn run_fixed_process_owned(
+    request: FixedProcessRequest<'_>,
+    stdin: Option<BorrowedFd<'_>>,
+    inherited: &[BorrowedFd<'_>],
+) -> Result<FixedProcessOutcome> {
     let invocation = PreparedInvocation::new(request)?;
-    let spawned = invocation.spawn()?;
+    let spawned = invocation.spawn(stdin, inherited)?;
     supervise(spawned, request)
 }
 
@@ -157,7 +201,11 @@ impl PreparedInvocation {
         })
     }
 
-    fn spawn(&self) -> Result<SpawnedProcess> {
+    fn spawn(
+        &self,
+        stdin: Option<BorrowedFd<'_>>,
+        inherited: &[BorrowedFd<'_>],
+    ) -> Result<SpawnedProcess> {
         let null = rustix::fs::open(
             "/dev/null",
             rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
@@ -168,16 +216,30 @@ impl PreparedInvocation {
             .map_err(|error| kernel_error("pipe(fixed stdout)", error))?;
         let (stderr_read, stderr_write) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)
             .map_err(|error| kernel_error("pipe(fixed stderr)", error))?;
-        let null = duplicate_high(null)?;
-        let stdout_write = duplicate_high(stdout_write)?;
-        let stderr_write = duplicate_high(stderr_write)?;
+        let null = duplicate_high(null.as_fd())?;
+        let stdout_write = duplicate_high(stdout_write.as_fd())?;
+        let stderr_write = duplicate_high(stderr_write.as_fd())?;
+        let supplied_stdin = stdin.map(duplicate_high).transpose()?;
+        let inherited = inherited
+            .iter()
+            .copied()
+            .map(duplicate_high)
+            .collect::<Result<Vec<_>>>()?;
+        let stdin = supplied_stdin
+            .as_ref()
+            .map_or_else(|| null.as_fd(), |descriptor| descriptor.as_fd());
+        let inherited = inherited
+            .iter()
+            .map(|descriptor| descriptor.as_fd())
+            .collect::<Vec<_>>();
 
         let pid = uapi::posix_spawn_fixed(
             &self.executable,
             &self.arguments,
-            null.as_fd(),
+            stdin,
             stdout_write.as_fd(),
             stderr_write.as_fd(),
+            &inherited,
         )?;
         // Own cancellation immediately: pidfd and output setup can still fail.
         let mut guard = ChildGuard::new(pid);
@@ -486,8 +548,8 @@ fn validate_request(request: FixedProcessRequest<'_>) -> Result<()> {
     Ok(())
 }
 
-fn duplicate_high(descriptor: OwnedFd) -> Result<OwnedFd> {
-    rustix::io::fcntl_dupfd_cloexec(&descriptor, DUPLICATE_FD_MINIMUM)
+fn duplicate_high(descriptor: BorrowedFd<'_>) -> Result<OwnedFd> {
+    rustix::io::fcntl_dupfd_cloexec(descriptor, DUPLICATE_FD_MINIMUM)
         .map_err(|error| kernel_error("duplicate fixed process descriptor", error))
 }
 
@@ -507,6 +569,8 @@ fn monotonic_now() -> Duration {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::os::fd::{AsRawFd as _, BorrowedFd};
+
     use super::*;
 
     fn test_process(test: &str, timeout: Duration, maximum: usize) -> FixedProcessOutcome {
@@ -515,13 +579,17 @@ mod tests {
             .into_iter()
             .map(OsString::from)
             .collect::<Vec<_>>();
-        run_fixed_process_owned(FixedProcessRequest {
-            executable: &executable,
-            arguments: &arguments,
-            timeout,
-            maximum_stdout_bytes: maximum,
-            maximum_stderr_bytes: maximum,
-        })
+        run_fixed_process_owned(
+            FixedProcessRequest {
+                executable: &executable,
+                arguments: &arguments,
+                timeout,
+                maximum_stdout_bytes: maximum,
+                maximum_stderr_bytes: maximum,
+            },
+            None,
+            &[],
+        )
         .unwrap()
     }
 
@@ -581,18 +649,70 @@ mod tests {
 
     #[test]
     fn missing_executable_preserves_spawn_error() {
-        let error = run_fixed_process_owned(FixedProcessRequest {
-            executable: Path::new("/definitely/absent/aos-test-program"),
-            arguments: &[],
-            timeout: Duration::from_secs(1),
-            maximum_stdout_bytes: 1,
-            maximum_stderr_bytes: 1,
-        })
+        let error = run_fixed_process_owned(
+            FixedProcessRequest {
+                executable: Path::new("/definitely/absent/aos-test-program"),
+                arguments: &[],
+                timeout: Duration::from_secs(1),
+                maximum_stdout_bytes: 1,
+                maximum_stderr_bytes: 1,
+            },
+            None,
+            &[],
+        )
         .unwrap_err();
         assert!(matches!(
             error,
             Error::Syscall { source, .. } if source.raw_os_error() == Some(libc::ENOENT)
         ));
+    }
+
+    #[test]
+    fn descriptor_role_ceiling_is_checked_before_spawning() {
+        let descriptor = rustix::fs::open(
+            "/dev/null",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let inherited = [descriptor.as_fd(); MAXIMUM_INHERITED_DESCRIPTORS + 1];
+        let error = run_fixed_process_with_descriptors(FixedProcessDescriptorRequest {
+            process: FixedProcessRequest {
+                executable: Path::new("/definitely/absent/aos-test-program"),
+                arguments: &[],
+                timeout: Duration::from_secs(1),
+                maximum_stdout_bytes: 1,
+                maximum_stderr_bytes: 1,
+            },
+            stdin: None,
+            inherited: &inherited,
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::InvalidInput {
+                field: "fixed process inherited descriptors",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn descriptor_roles_are_alias_safe_ordered_and_exclusive() {
+        let executable = std::env::current_exe().unwrap();
+        let status = std::process::Command::new(executable)
+            .args([
+                "--ignored",
+                "--exact",
+                "process::tests::isolated_descriptor_mapping_case",
+                "--nocapture",
+            ])
+            .env("AOS_FIXED_PROCESS_DESCRIPTOR_CASE", "outer")
+            .status()
+            .unwrap();
+
+        assert!(status.success(), "isolated descriptor mapping case failed");
     }
 
     #[test]
@@ -679,6 +799,122 @@ mod tests {
                 message,
             } if message.contains("default SIGCHLD")
         ));
+    }
+
+    #[test]
+    #[ignore = "launched alone by the descriptor mapping test"]
+    fn isolated_descriptor_mapping_case() {
+        if std::env::var_os("AOS_FIXED_PROCESS_DESCRIPTOR_CASE").as_deref()
+            != Some(std::ffi::OsStr::new("outer"))
+        {
+            return;
+        }
+
+        let source_a = pipe_containing(b'a');
+        let source_b = pipe_containing(b'b');
+        let source_c = pipe_containing(b'c');
+        let source_a = duplicate_high(source_a.as_fd()).unwrap();
+        let source_b = duplicate_high(source_b.as_fd()).unwrap();
+        let source_c = duplicate_high(source_c.as_fd()).unwrap();
+
+        // Deliberately put caller sources in targets that earlier mappings
+        // overwrite. Repeating FD 4 also proves each logical role is retained.
+        for (source, target) in [
+            (source_a.as_raw_fd(), 0),
+            (source_b.as_raw_fd(), 3),
+            (source_c.as_raw_fd(), 4),
+            (source_a.as_raw_fd(), 7),
+        ] {
+            // SAFETY: each source is live, each fixed target is nonnegative,
+            // and this test runs in a disposable isolated process.
+            assert_eq!(unsafe { libc::dup2(source, target) }, target);
+        }
+        // SAFETY: F_GETFD takes no pointer, and FD 7 was established above.
+        assert_eq!(unsafe { libc::fcntl(7, libc::F_GETFD) }, 0);
+        // SAFETY: the dup2 calls above established these descriptors, which
+        // remain live through the synchronous invocation.
+        let stdin = unsafe { BorrowedFd::borrow_raw(3) };
+        let inherited = unsafe {
+            [
+                BorrowedFd::borrow_raw(4),
+                BorrowedFd::borrow_raw(0),
+                BorrowedFd::borrow_raw(3),
+                BorrowedFd::borrow_raw(4),
+            ]
+        };
+        let executable = std::env::current_exe().unwrap();
+        let arguments = [
+            "--ignored".into(),
+            "--exact".into(),
+            "process::tests::descriptor_mapping_child_case".into(),
+            "--nocapture".into(),
+        ];
+        let outcome = run_fixed_process_owned(
+            FixedProcessRequest {
+                executable: &executable,
+                arguments: &arguments,
+                timeout: Duration::from_secs(2),
+                maximum_stdout_bytes: 4096,
+                maximum_stderr_bytes: 4096,
+            },
+            Some(stdin),
+            &inherited,
+        )
+        .unwrap();
+
+        let FixedProcessOutcome::Completed(output) = outcome else {
+            panic!("descriptor child did not complete")
+        };
+        assert_eq!(output.exit_code, Some(0), "{:?}", output.stderr);
+        assert_eq!(output.signal, None);
+    }
+
+    #[test]
+    #[ignore = "launched only as the fixed descriptor child"]
+    fn descriptor_mapping_child_case() {
+        assert!(same_object(0, 5));
+        assert!(same_object(3, 6));
+        assert_eq!(read_all(0), b"b");
+        assert_eq!(read_all(3), b"c");
+        assert_eq!(read_all(4), b"a");
+
+        // SAFETY: F_GETFD takes no pointer and accepts any integer descriptor;
+        // probing the deliberately closed role is the purpose of this call.
+        assert_eq!(unsafe { libc::fcntl(7, libc::F_GETFD) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+    }
+
+    fn pipe_containing(byte: u8) -> OwnedFd {
+        let (read, write) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        assert_eq!(rustix::io::write(&write, &[byte]).unwrap(), 1);
+        drop(write);
+        read
+    }
+
+    fn read_all(raw_fd: i32) -> Vec<u8> {
+        // SAFETY: the descriptor child calls this only for its fixed live roles.
+        let descriptor = unsafe { BorrowedFd::borrow_raw(raw_fd) };
+        let mut output = Vec::new();
+        let mut buffer = [0_u8; 16];
+        loop {
+            match rustix::io::read(descriptor, &mut buffer).unwrap() {
+                0 => return output,
+                count => output.extend_from_slice(&buffer[..count]),
+            }
+        }
+    }
+
+    fn same_object(left: i32, right: i32) -> bool {
+        // SAFETY: the descriptor child calls this only for its fixed live roles.
+        let left = unsafe { BorrowedFd::borrow_raw(left) };
+        // SAFETY: the descriptor child calls this only for its fixed live roles.
+        let right = unsafe { BorrowedFd::borrow_raw(right) };
+        let left = rustix::fs::fstat(left).unwrap();
+        let right = rustix::fs::fstat(right).unwrap();
+        left.st_dev == right.st_dev && left.st_ino == right.st_ino
     }
 
     #[test]

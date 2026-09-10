@@ -327,6 +327,7 @@ pub(crate) fn posix_spawn_fixed(
     stdin: BorrowedFd<'_>,
     stdout: BorrowedFd<'_>,
     stderr: BorrowedFd<'_>,
+    inherited: &[BorrowedFd<'_>],
 ) -> Result<rustix::process::Pid> {
     let mut action_storage = MaybeUninit::<libc::posix_spawn_file_actions_t>::uninit();
     // SAFETY: the pointer names writable uninitialized action storage.
@@ -336,7 +337,7 @@ pub(crate) fn posix_spawn_fixed(
     )?;
     // SAFETY: successful initialization above produced the value.
     let mut actions = unsafe { action_storage.assume_init() };
-    if let Err(error) = configure_fixed_actions(&mut actions, stdin, stdout, stderr) {
+    if let Err(error) = configure_fixed_actions(&mut actions, stdin, stdout, stderr, inherited) {
         destroy_fixed_actions(&mut actions);
         return Err(error);
     }
@@ -399,6 +400,7 @@ fn configure_fixed_actions(
     stdin: BorrowedFd<'_>,
     stdout: BorrowedFd<'_>,
     stderr: BorrowedFd<'_>,
+    inherited: &[BorrowedFd<'_>],
 ) -> Result<()> {
     for (source, target) in [(stdin, 0), (stdout, 1), (stderr, 2)] {
         // SAFETY: actions is initialized and sources remain borrowed until spawn.
@@ -407,9 +409,20 @@ fn configure_fixed_actions(
             "map fixed process standard descriptor",
         )?;
     }
+    for (index, source) in inherited.iter().enumerate() {
+        let target = libc::c_int::try_from(index + 3)
+            .map_err(|_| Error::invalid("fixed process descriptor", "target overflowed"))?;
+        // SAFETY: actions is initialized and sources remain borrowed until spawn.
+        check_posix(
+            unsafe { libc::posix_spawn_file_actions_adddup2(actions, source.as_raw_fd(), target) },
+            "map inherited fixed process descriptor",
+        )?;
+    }
+    let close_from = libc::c_int::try_from(inherited.len() + 3)
+        .map_err(|_| Error::invalid("fixed process descriptor", "close range overflowed"))?;
     // SAFETY: actions is initialized. AOS glibc supplies this GNU extension.
     check_posix(
-        unsafe { libc::posix_spawn_file_actions_addclosefrom_np(actions, 3) },
+        unsafe { libc::posix_spawn_file_actions_addclosefrom_np(actions, close_from) },
         "close inherited fixed process descriptors",
     )
 }
