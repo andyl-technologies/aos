@@ -403,6 +403,8 @@ struct CampaignArchiveArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignArchiveCommand {
+    /// Plan and review one transfer without changing either deployment.
+    Plan(CampaignArchivePlanArgs),
     /// Transfer one exact snapshot between stopped deployment owners.
     Transfer(CampaignArchiveTransferArgs),
     /// Authenticate one named archive in a stopped deployment.
@@ -419,7 +421,7 @@ enum CampaignArchiveMode {
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
-struct CampaignArchiveTransferArgs {
+struct CampaignArchivePlanArgs {
     /// Exact durable source campaign state directory.
     #[arg(long, value_name = "path")]
     source_state: PathBuf,
@@ -465,6 +467,29 @@ struct CampaignArchiveTransferArgs {
     /// Maximum authenticated bytes admitted for one exact checkpoint closure.
     #[arg(long, default_value_t = 1_073_741_824, value_name = "bytes")]
     maximum_checkpoint_bytes: u64,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignArchiveTransferArgs {
+    #[command(flatten)]
+    plan: CampaignArchivePlanArgs,
+    /// Exact operation identity returned by `campaign archive plan`.
+    #[arg(long, value_name = "operation-id")]
+    reviewed_operation: String,
+}
+
+impl std::ops::Deref for CampaignArchiveTransferArgs {
+    type Target = CampaignArchivePlanArgs;
+
+    fn deref(&self) -> &Self::Target {
+        &self.plan
+    }
+}
+
+impl std::ops::DerefMut for CampaignArchiveTransferArgs {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.plan
+    }
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

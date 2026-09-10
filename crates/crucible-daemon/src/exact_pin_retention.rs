@@ -505,6 +505,28 @@ pub struct DirectoryExactPinMaterializationStore {
     writer_lock: File,
 }
 
+/// Existing-state read authority over one stable exact-pin selection inventory.
+///
+/// This owner acquires the same lifetime lock as the writable store, but opens
+/// only preexisting paths and exposes only [`ExactPinRetentionAdmin`]. It is
+/// intended for offline planning that must not create or repair journal state.
+pub struct DirectoryExactPinMaterializationReader {
+    state: DirectoryExactPinReaderState,
+}
+
+enum DirectoryExactPinReaderState {
+    Authenticated { root: PathBuf, lock: File },
+    Absent,
+}
+
+impl Drop for DirectoryExactPinMaterializationReader {
+    fn drop(&mut self) {
+        if let DirectoryExactPinReaderState::Authenticated { lock, .. } = &self.state {
+            let _ = flock(lock, FlockOperation::Unlock);
+        }
+    }
+}
+
 impl Drop for DirectoryExactPinMaterializationStore {
     fn drop(&mut self) {
         // A fork can retain this open-file description until exec closes it.
@@ -936,6 +958,106 @@ impl DirectoryExactPinMaterializationStore {
     }
 }
 
+impl DirectoryExactPinMaterializationReader {
+    /// Opens a preexisting journal without creating or synchronizing any path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactPinRetentionError`] when the root, records directory, or
+    /// writer lock is absent or malformed, the lock is already owned, or the
+    /// bounded record namespace is invalid.
+    pub fn open_existing(root: impl Into<PathBuf>) -> Result<Self, ExactPinRetentionError> {
+        let root = root.into();
+        require_directory(&root, "selection-root-is-not-directory")?;
+        require_directory(
+            &root.join(RECORDS_DIRECTORY),
+            "selection-records-is-not-directory",
+        )?;
+
+        let lock_path = root.join(WRITER_LOCK);
+        let descriptor = rustix::fs::open(
+            &lock_path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|source| {
+            io_error(
+                "open-existing-selection-writer-lock",
+                &lock_path,
+                std::io::Error::from_raw_os_error(source.raw_os_error()),
+            )
+        })?;
+        let lock = File::from(descriptor);
+        if !lock
+            .metadata()
+            .map_err(|source| io_error("stat-existing-selection-writer-lock", &lock_path, source))?
+            .is_file()
+        {
+            return Err(corrupt("selection-writer-lock-is-not-file"));
+        }
+        flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
+            io_error(
+                "lock-existing-selection-writer",
+                &lock_path,
+                std::io::Error::from_raw_os_error(source.raw_os_error()),
+            )
+        })?;
+        count_selection_records(&root.join(RECORDS_DIRECTORY))?;
+
+        Ok(Self {
+            state: DirectoryExactPinReaderState::Authenticated { root, lock },
+        })
+    }
+
+    /// Opens an authenticated catalog or represents an absent optional catalog.
+    ///
+    /// Only a missing root is treated as an empty catalog. A present root that
+    /// is inaccessible, malformed, concurrently owned, or contains invalid
+    /// records fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactPinRetentionError`] when a present catalog cannot be
+    /// authenticated without creating, repairing, or synchronizing any path.
+    pub fn open_optional_existing(
+        root: impl Into<PathBuf>,
+    ) -> Result<Self, ExactPinRetentionError> {
+        let root = root.into();
+        match fs::symlink_metadata(&root) {
+            Ok(_) => Self::open_existing(root),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                state: DirectoryExactPinReaderState::Absent,
+            }),
+            Err(source) => Err(io_error("stat-optional-selection-directory", &root, source)),
+        }
+    }
+
+    /// Reports whether an existing catalog was authenticated.
+    #[must_use]
+    pub const fn is_present(&self) -> bool {
+        matches!(
+            &self.state,
+            DirectoryExactPinReaderState::Authenticated { .. }
+        )
+    }
+
+    fn selection_path(
+        &self,
+        campaign: &CampaignName,
+        configuration: ConfigurationId,
+    ) -> Option<PathBuf> {
+        match &self.state {
+            DirectoryExactPinReaderState::Authenticated { root, .. } => {
+                Some(selection_path(root, campaign, configuration))
+            }
+            DirectoryExactPinReaderState::Absent => None,
+        }
+    }
+}
+
 impl ExactPinRetentionAdmin for DirectoryExactPinMaterializationStore {
     fn acquire_exact_pin_retention_fence(
         &mut self,
@@ -944,8 +1066,20 @@ impl ExactPinRetentionAdmin for DirectoryExactPinMaterializationStore {
     }
 }
 
+impl ExactPinRetentionAdmin for DirectoryExactPinMaterializationReader {
+    fn acquire_exact_pin_retention_fence(
+        &mut self,
+    ) -> Result<Box<dyn ExactPinRetentionFence + '_>, ExactPinRetentionError> {
+        Ok(Box::new(DirectoryExactPinReaderFence { reader: self }))
+    }
+}
+
 struct DirectoryExactPinRetentionFence<'a> {
     store: &'a DirectoryExactPinMaterializationStore,
+}
+
+struct DirectoryExactPinReaderFence<'a> {
+    reader: &'a DirectoryExactPinMaterializationReader,
 }
 
 impl ExactPinRetentionFence for DirectoryExactPinRetentionFence<'_> {
@@ -955,6 +1089,19 @@ impl ExactPinRetentionFence for DirectoryExactPinRetentionFence<'_> {
         configuration: ConfigurationId,
     ) -> Result<Option<ExactPinMaterializationSelection>, ExactPinRetentionError> {
         let path = self.store.selection_path(campaign, configuration);
+        read_selection(&path, campaign, configuration)
+    }
+}
+
+impl ExactPinRetentionFence for DirectoryExactPinReaderFence<'_> {
+    fn selection(
+        &mut self,
+        campaign: &CampaignName,
+        configuration: ConfigurationId,
+    ) -> Result<Option<ExactPinMaterializationSelection>, ExactPinRetentionError> {
+        let Some(path) = self.reader.selection_path(campaign, configuration) else {
+            return Ok(None);
+        };
         read_selection(&path, campaign, configuration)
     }
 }
@@ -1318,6 +1465,15 @@ fn create_directory_durable(
     sync_directory(path, operation)?;
     if let Some(parent) = path.parent() {
         sync_directory(parent, operation)?;
+    }
+    Ok(())
+}
+
+fn require_directory(path: &Path, reason: &'static str) -> Result<(), ExactPinRetentionError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|source| io_error("stat-existing-selection-directory", path, source))?;
+    if !metadata.file_type().is_dir() {
+        return Err(corrupt(reason));
     }
     Ok(())
 }

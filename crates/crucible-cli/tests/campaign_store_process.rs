@@ -23,11 +23,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crucible_campaign::{
-    CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler, CampaignPolicy,
+    CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignLineage, CampaignObjectProfiler, CampaignPolicy,
 };
 use crucible_cas::content_store::{
     BlobHandle, CompressedDirectoryBlobBackend, ContentId, DirectoryBlobBackend,
-    ImmutableBlobBackend, ObjectKind, StoreGraph, StoreGraphKeyring,
+    ImmutableBlobBackend, ObjectKind, PackedBlobBackend, StoreGraph, StoreGraphKeyring,
     StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
     StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
     WriteBackRetentionAdmin,
@@ -399,6 +399,9 @@ fn public_offline_archive_transfer_reports_and_authenticates_sensitive_closure()
     let manifest = json_path(&generated, "manifest")?;
     let lineage = json_path(&generated, "lineage")?;
     let policy = json_path(&generated, "policy")?;
+    let genesis = CampaignLineage::from_canonical_bytes(&fs::read(&lineage)?)?
+        .genesis()
+        .to_string();
     let mut service = source.start_service(Some(&manifest))?;
     run_json(
         connected_campaign(&source)
@@ -410,6 +413,16 @@ fn public_offline_archive_transfer_reports_and_authenticates_sensitive_closure()
     )?;
     let snapshot = json_string(&campaign_status(&source)?, "snapshot")?;
     service.stop()?;
+    let mut destination_service = destination.start_service(Some(&manifest))?;
+    run_json(
+        connected_campaign(&destination)
+            .args(["create", "destination-seed", "--lineage"])
+            .arg(&lineage)
+            .arg("--policy")
+            .arg(&policy),
+        "initialize archive destination campaign state",
+    )?;
+    destination_service.stop()?;
 
     let trace_bytes = b"sensitive offline archive trace";
     let trace = ContentId::for_bytes(ObjectKind::Trace, 1, trace_bytes);
@@ -443,7 +456,8 @@ fn public_offline_archive_transfer_reports_and_authenticates_sensitive_closure()
         .arg(&source.peer_policy)
         .arg("--destination-store")
         .arg(&source.store)
-        .args(["--archive", "aliased-owner"]);
+        .args(["--archive", "aliased-owner"])
+        .args(["--reviewed-operation", &"0".repeat(64)]);
     let aliased = output_with_timeout(aliased, Duration::from_secs(5))?;
     assert!(!aliased.status.success());
     let aliased_error = String::from_utf8_lossy(&aliased.stderr);
@@ -453,35 +467,144 @@ fn public_offline_archive_transfer_reports_and_authenticates_sensitive_closure()
         "unexpected aliased-owner failure: {aliased_error}",
     );
 
-    let mut transfer = command(&[
-        "--format",
-        "jsonl",
-        "campaign",
-        "archive",
+    let packed_cache = secure_directory(source._temporary.path(), "archive-packed-cache")?;
+    drop(PackedBlobBackend::open(
+        "archive-cache",
+        &packed_cache,
+        64 * 1024,
+    )?);
+    fs::write(
+        packed_cache
+            .join("packs")
+            .join(format!("{}.pack", "0".repeat(64))),
+        b"unreferenced immutable pack",
+    )?;
+    fs::write(
+        packed_cache.join("packs").join(".pack.tmp-4242-1"),
+        b"interrupted packed staging data",
+    )?;
+    fs::write(
+        &source.store,
+        format!(
+            r#"schema = "crucible.campaign-repository-store"
+version = 1
+root = "read-through"
+admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
+ref_directory = {:?}
+
+[[nodes]]
+id = "read-through"
+[nodes.spec]
+kind = "read-through"
+cache = "archive-cache"
+source = "primary"
+
+[[nodes]]
+id = "archive-cache"
+[nodes.spec]
+kind = "packed"
+root = {packed_cache:?}
+target_pack_bytes = 65536
+
+[[nodes]]
+id = "primary"
+[nodes.spec]
+kind = "directory"
+root = {:?}
+"#,
+            source._temporary.path().join("refs"),
+            source.objects,
+        ),
+    )?;
+    fs::set_permissions(&source.store, fs::Permissions::from_mode(0o600))?;
+
+    let before_source = snapshot_filesystem(source._temporary.path())?;
+    let before_destination = snapshot_filesystem(destination._temporary.path())?;
+    let mut reviewed_operation = None;
+    for mode in ["metadata", "findings", "debug", "executable", "mirror"] {
+        let archive = if mode == "mirror" {
+            "offline-copy".to_owned()
+        } else {
+            format!("review-{mode}")
+        };
+        let mut plan = archive_command(&source, &destination, "plan", mode, &snapshot, &archive);
+        if mode == "mirror" {
+            plan.args(["--retain", &trace]);
+        }
+        let report = run_json(&mut plan, &format!("plan {mode} offline archive"))?;
+        assert_eq!(report["schema"], "crucible.cli.campaign-archive-plan.v2");
+        assert_eq!(report["phase"], "plan");
+        assert_eq!(report["policy"], mode);
+        assert!(report["exact_checkpoint_requirements"].is_array());
+        assert!(report["omitted_acceleration"].is_object());
+        assert_eq!(
+            report["omitted_acceleration"]["exact_pin_catalog"],
+            "absent"
+        );
+        let operation = json_string(&report, "operation")?;
+        assert_eq!(operation.len(), 64);
+        if mode == "mirror" {
+            assert!(
+                report["sensitive_classes"]
+                    .as_array()
+                    .is_some_and(|classes| classes.iter().any(|class| class == "trace"))
+            );
+            reviewed_operation = Some(operation);
+        }
+    }
+    assert_eq!(
+        snapshot_filesystem(source._temporary.path())?,
+        before_source,
+        "archive plans changed the source filesystem",
+    );
+    assert_eq!(
+        snapshot_filesystem(destination._temporary.path())?,
+        before_destination,
+        "archive plans changed the destination filesystem",
+    );
+
+    let mut rejected = archive_command(
+        &source,
+        &destination,
         "transfer",
-        "--source-state",
-    ]);
+        "mirror",
+        &snapshot,
+        "offline-copy",
+    );
+    rejected
+        .args(["--retain", &trace])
+        .args(["--reviewed-operation", &"f".repeat(64)]);
+    let rejected = rejected.output()?;
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("does not match current plan"));
+    assert_eq!(
+        snapshot_filesystem(source._temporary.path())?,
+        before_source
+    );
+    assert_eq!(
+        snapshot_filesystem(destination._temporary.path())?,
+        before_destination,
+    );
+
+    let reviewed_operation = reviewed_operation.ok_or("mirror plan omitted operation")?;
+    let mut transfer = archive_command(
+        &source,
+        &destination,
+        "transfer",
+        "mirror",
+        &snapshot,
+        "offline-copy",
+    );
     let output = transfer
-        .arg(&source.state)
-        .arg("--source-policy")
-        .arg(&source.peer_policy)
-        .arg("--source-store")
-        .arg(&source.store)
-        .args(["--source-campaign", CAMPAIGN, "--snapshot", &snapshot])
-        .args(["--mode", "mirror", "--retain", &trace])
-        .arg("--destination-state")
-        .arg(&destination.state)
-        .arg("--destination-policy")
-        .arg(&destination.peer_policy)
-        .arg("--destination-store")
-        .arg(&destination.store)
-        .args(["--archive", "offline-copy"])
+        .args(["--retain", &trace])
+        .args(["--reviewed-operation", &reviewed_operation])
         .output()?;
     require_success(&output, "transfer offline archive")?;
     let preflight: Value = serde_json::from_slice(&output.stderr)?;
     let completion: Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(preflight["schema"], "crucible.cli.campaign-archive-plan.v1");
-    assert_eq!(preflight["phase"], "pre-transfer");
+    assert_eq!(preflight["schema"], "crucible.cli.campaign-archive-plan.v2");
+    assert_eq!(preflight["phase"], "validated-transfer");
+    assert_eq!(preflight["operation"], reviewed_operation);
     assert!(
         preflight["sensitive_classes"]
             .as_array()
@@ -498,8 +621,10 @@ fn public_offline_archive_transfer_reports_and_authenticates_sensitive_closure()
         "crucible.cli.campaign-archive-transfer.v1"
     );
     assert_eq!(completion["phase"], "complete");
+    assert_eq!(completion["operation"], reviewed_operation);
     assert_eq!(completion["authenticated"], true);
 
+    let before_inspection = snapshot_filesystem(destination._temporary.path())?;
     let inspected = run_json(
         command(&[
             "--format", "jsonl", "campaign", "archive", "inspect", "--state",
@@ -523,8 +648,148 @@ fn public_offline_archive_transfer_reports_and_authenticates_sensitive_closure()
             .as_array()
             .is_some_and(|classes| classes.iter().any(|class| class == "trace"))
     );
+    assert_eq!(
+        snapshot_filesystem(destination._temporary.path())?,
+        before_inspection,
+        "archive inspection changed the destination filesystem",
+    );
+
+    let mut source_service = source.start_service(None)?;
+    let pin_command = "a".repeat(64);
+    run_json(
+        connected_campaign(&source).args([
+            "pin",
+            CAMPAIGN,
+            "--expected",
+            &snapshot,
+            "--command",
+            &pin_command,
+            &genesis,
+            "--tier",
+            "exact",
+            "--reason",
+            "exercise missing archive materialization",
+        ]),
+        "pin source campaign without exact materialization",
+    )?;
+    let pinned_snapshot = json_string(&campaign_status(&source)?, "snapshot")?;
+    source_service.stop()?;
+    assert!(
+        !source.state.join("exact-pin-materializations").exists(),
+        "pinning without materialization unexpectedly created the exact-pin catalog",
+    );
+    let before_missing_exact_source = snapshot_filesystem(source._temporary.path())?;
+    let before_missing_exact_destination = snapshot_filesystem(destination._temporary.path())?;
+
+    for mode in ["executable", "mirror"] {
+        let rejected_exact = archive_command(
+            &source,
+            &destination,
+            "plan",
+            mode,
+            &pinned_snapshot,
+            &format!("missing-exact-materialization-{mode}"),
+        )
+        .output()?;
+        assert!(!rejected_exact.status.success());
+        assert!(
+            String::from_utf8_lossy(&rejected_exact.stderr)
+                .contains("campaign-archive-exact-pin-materialization-missing")
+        );
+    }
+    assert_eq!(
+        snapshot_filesystem(source._temporary.path())?,
+        before_missing_exact_source,
+        "rejected exact archive plan changed the source filesystem",
+    );
+    assert_eq!(
+        snapshot_filesystem(destination._temporary.path())?,
+        before_missing_exact_destination,
+        "rejected exact archive plan changed the destination filesystem",
+    );
 
     Ok(())
+}
+
+fn archive_command(
+    source: &FlightFixture,
+    destination: &FlightFixture,
+    action: &str,
+    mode: &str,
+    snapshot: &str,
+    archive: &str,
+) -> Command {
+    let mut command = command(&[
+        "--format",
+        "jsonl",
+        "campaign",
+        "archive",
+        action,
+        "--source-state",
+    ]);
+    command
+        .arg(&source.state)
+        .arg("--source-policy")
+        .arg(&source.peer_policy)
+        .arg("--source-store")
+        .arg(&source.store)
+        .args(["--source-campaign", CAMPAIGN, "--snapshot", snapshot])
+        .args(["--mode", mode])
+        .arg("--destination-state")
+        .arg(&destination.state)
+        .arg("--destination-policy")
+        .arg(&destination.peer_policy)
+        .arg("--destination-store")
+        .arg(&destination.store)
+        .args(["--archive", archive]);
+    command
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FilesystemSnapshotEntry {
+    Directory,
+    File(Vec<u8>),
+    Symlink(PathBuf),
+}
+
+fn snapshot_filesystem(
+    root: &Path,
+) -> Result<BTreeMap<PathBuf, FilesystemSnapshotEntry>, Box<dyn Error>> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        snapshot: &mut BTreeMap<PathBuf, FilesystemSnapshotEntry>,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let relative = path.strip_prefix(root)?.to_path_buf();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                snapshot.insert(relative, FilesystemSnapshotEntry::Directory);
+                visit(root, &path, snapshot)?;
+            } else if file_type.is_file() {
+                snapshot.insert(relative, FilesystemSnapshotEntry::File(fs::read(&path)?));
+            } else if file_type.is_symlink() {
+                snapshot.insert(
+                    relative,
+                    FilesystemSnapshotEntry::Symlink(fs::read_link(&path)?),
+                );
+            } else {
+                return Err(format!(
+                    "unexpected filesystem entry in snapshot: {}",
+                    path.display()
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    let mut snapshot = BTreeMap::new();
+    visit(root, root, &mut snapshot)?;
+    Ok(snapshot)
 }
 
 struct FlightFixture {
@@ -852,6 +1117,11 @@ campaign = "*"
 [[grants]]
 principal = "{PRINCIPAL}"
 operation = "apply-campaign-command"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
+operation = "pin-campaign"
 campaign = "*"
 
 [[grants]]

@@ -49,6 +49,7 @@ pub(super) struct LogicalQuotaStore {
     binding: [u8; 32],
     child: Arc<dyn ImmutableBlobBackend>,
     child_admin: Arc<dyn BlobStoreAdmin>,
+    observational: bool,
 }
 
 impl LogicalQuotaStore {
@@ -80,9 +81,45 @@ impl LogicalQuotaStore {
             binding,
             child,
             child_admin,
+            observational: false,
         };
         let _lock = store.acquire_state_lock()?;
         store.load_or_recover_state(true)?;
+        Ok(store)
+    }
+
+    /// Opens and authenticates existing quota state without repair or writes.
+    pub(super) fn open_observational(
+        name: impl Into<String>,
+        state_root: PathBuf,
+        maximum_objects: u64,
+        maximum_logical_bytes: u64,
+        configuration: StoreGraphConfigurationId,
+        child: Arc<dyn ImmutableBlobBackend>,
+        child_admin: Arc<dyn BlobStoreAdmin>,
+    ) -> Result<Self, StoreError> {
+        if maximum_objects == 0
+            || maximum_objects > MAXIMUM_LOGICAL_QUOTA_OBJECTS
+            || maximum_logical_bytes == 0
+        {
+            return Err(StoreError::InvalidComposition {
+                reason: "logical quota requires nonzero object and byte limits",
+            });
+        }
+        let name = name.into();
+        let binding = quota_binding(&name, configuration, maximum_objects, maximum_logical_bytes)?;
+        let store = Self {
+            name,
+            state_root,
+            maximum_objects,
+            maximum_logical_bytes,
+            binding,
+            child,
+            child_admin,
+            observational: true,
+        };
+        let _lock = store.acquire_existing_state_lock()?;
+        store.load_existing_state()?;
         Ok(store)
     }
 
@@ -106,6 +143,67 @@ impl LogicalQuotaStore {
             source: std::io::Error::from_raw_os_error(source.raw_os_error()),
         })?;
         Ok(file)
+    }
+
+    fn acquire_existing_state_lock(&self) -> Result<File, StoreError> {
+        let path = self.state_root.join(QUOTA_LOCK_FILE);
+        let descriptor = open(
+            &path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|source| StoreError::Io {
+            operation: "open-existing-logical-quota-lock",
+            path: path.clone(),
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        let file = File::from(descriptor);
+        if !file
+            .metadata()
+            .map_err(|source| StoreError::Io {
+                operation: "stat-existing-logical-quota-lock",
+                path: path.clone(),
+                source,
+            })?
+            .is_file()
+        {
+            return Err(StoreError::InvalidComposition {
+                reason: "logical quota lock is not a regular file",
+            });
+        }
+        flock(&file, FlockOperation::LockExclusive).map_err(|source| StoreError::Io {
+            operation: "lock-existing-logical-quota",
+            path,
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        Ok(file)
+    }
+
+    fn load_existing_state(&self) -> Result<QuotaState, StoreError> {
+        let path = self.state_root.join(QUOTA_STATE_FILE);
+        let descriptor = open(
+            &path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| StoreError::Io {
+            operation: "open-existing-logical-quota-state",
+            path: path.clone(),
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        let state = read_quota_state(File::from(descriptor), &path)?;
+        if state.binding != self.binding {
+            return Err(StoreError::InvalidComposition {
+                reason: "logical quota state belongs to another graph configuration",
+            });
+        }
+        self.validate_usage(state.objects, state.logical_bytes)?;
+        if state.dirty {
+            return Err(StoreError::InvalidComposition {
+                reason: "logical quota state requires operational recovery",
+            });
+        }
+        Ok(state)
     }
 
     fn load_or_recover_state(&self, reconcile_clean: bool) -> Result<QuotaState, StoreError> {
@@ -303,8 +401,17 @@ impl ImmutableBlobBackend for LogicalQuotaStore {
 
 impl BlobStoreAdmin for LogicalQuotaStore {
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
-        let lock = self.acquire_state_lock()?;
-        let state = self.load_or_recover_state(false)?;
+        let (lock, state) = if self.observational {
+            (
+                self.acquire_existing_state_lock()?,
+                self.load_existing_state()?,
+            )
+        } else {
+            (
+                self.acquire_state_lock()?,
+                self.load_or_recover_state(false)?,
+            )
+        };
         let child = self.child_admin.acquire_inventory_fence()?;
         Ok(Box::new(LogicalQuotaInventoryFence {
             store: self,

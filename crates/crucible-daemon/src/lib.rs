@@ -196,10 +196,11 @@ pub use campaign_attachment::{
     prepare_canonical_campaign_runtime_endpoint,
 };
 pub use campaign_bootstrap::{
-    CampaignLocalRepositoryStore, CampaignLocalService, CampaignLocalServiceConfig,
-    CampaignLocalServiceError, CampaignLocalServiceMode, CampaignLocalStoreGcAuthority,
-    CampaignRuntimeAttachmentHandle, CampaignStoreMaintenanceConfig,
-    CampaignStoreMaintenanceConfigError, PreparedCampaignLocalService,
+    CampaignArchivePlanningStore, CampaignLocalRepositoryStore, CampaignLocalService,
+    CampaignLocalServiceConfig, CampaignLocalServiceError, CampaignLocalServiceMode,
+    CampaignLocalStoreGcAuthority, CampaignRuntimeAttachmentHandle, CampaignStoreMaintenanceConfig,
+    CampaignStoreMaintenanceConfigError, PreparedCampaignArchivePlanner,
+    PreparedCampaignLocalService, PreparedCampaignStoppedOwner,
 };
 pub use campaign_endpoint::{
     CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, ExecutorLoopbackEndpointConfig,
@@ -359,13 +360,14 @@ pub use exact_checkpoint_store::{
     QEMU_VMSTATE_SCHEMA_VERSION,
 };
 pub use exact_pin_retention::{
-    DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_DIRECTORY,
-    EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA, EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION,
-    ExactPinMaterializationSelection, ExactPinReplayPromotion, ExactPinReplayTarget,
-    ExactPinReplayValidator, ExactPinRetentionAdmin, ExactPinRetentionError,
-    ExactPinRetentionFence, ExactPinSelectionClearDisposition, ExactPinSelectionDisposition,
-    FindingExactPinBoundaries, MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS,
-    MAX_FINDING_EXACT_PIN_CANDIDATES, select_finding_exact_pins,
+    DirectoryExactPinMaterializationReader, DirectoryExactPinMaterializationStore,
+    EXACT_PIN_MATERIALIZATION_DIRECTORY, EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA,
+    EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION, ExactPinMaterializationSelection,
+    ExactPinReplayPromotion, ExactPinReplayTarget, ExactPinReplayValidator, ExactPinRetentionAdmin,
+    ExactPinRetentionError, ExactPinRetentionFence, ExactPinSelectionClearDisposition,
+    ExactPinSelectionDisposition, FindingExactPinBoundaries,
+    MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS, MAX_FINDING_EXACT_PIN_CANDIDATES,
+    select_finding_exact_pins,
 };
 pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{
