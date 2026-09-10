@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rustix::fs::{FlockOperation, flock};
+use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
 mod format;
 
@@ -36,9 +36,7 @@ use format::{
     write_pack_header,
 };
 
-use super::admin::{
-    InventoryCounter, persistent_inventory_generation, physical_storage_identity,
-};
+use super::admin::{InventoryCounter, persistent_inventory_generation, physical_storage_identity};
 use super::directory::create_dir_all_durable;
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
@@ -225,6 +223,7 @@ pub struct PackedBlobBackend {
     admin: PathBuf,
     target_pack_bytes: u64,
     configuration: [u8; 32],
+    create_lock_files: bool,
 }
 
 impl PackedBlobBackend {
@@ -243,6 +242,45 @@ impl PackedBlobBackend {
         root: impl Into<PathBuf>,
         target_pack_bytes: u64,
     ) -> Result<Self, StoreError> {
+        let backend = Self::configured(name, root, target_pack_bytes, true)?;
+        create_dir_all_durable(&backend.packs)?;
+        create_dir_all_durable(&backend.admin)?;
+        backend.initialize()?;
+        Ok(backend)
+    }
+
+    /// Opens an existing packed backend without initialization or recovery cleanup.
+    ///
+    /// The packed root, its pack and administration directories, the current
+    /// index, and both lock files must already exist. Unreferenced complete packs
+    /// and owned staging files remain untouched so a separately authenticated
+    /// maintenance plan can fail closed without changing recovery evidence.
+    /// Later operations through this value never recreate a removed lock file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid bounds, absent or non-directory roots,
+    /// absent lock or index state, an incompatible index, or a corrupt
+    /// referenced pack.
+    pub fn open_existing_preserving_recovery_debris(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        target_pack_bytes: u64,
+    ) -> Result<Self, StoreError> {
+        let backend = Self::configured(name, root, target_pack_bytes, false)?;
+        require_existing_directory(&backend.root)?;
+        require_existing_directory(&backend.packs)?;
+        require_existing_directory(&backend.admin)?;
+        backend.authenticate_existing()?;
+        Ok(backend)
+    }
+
+    fn configured(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        target_pack_bytes: u64,
+        create_lock_files: bool,
+    ) -> Result<Self, StoreError> {
         if !(MIN_TARGET_PACK_BYTES..=MAX_PACK_BYTES).contains(&target_pack_bytes) {
             return Err(StoreError::InvalidComposition {
                 reason: "packed target size is outside the admitted bounds",
@@ -252,19 +290,16 @@ impl PackedBlobBackend {
         let root = root.into();
         let packs = root.join(PACK_DIRECTORY);
         let admin = root.join(ADMIN_DIRECTORY);
-        create_dir_all_durable(&packs)?;
-        create_dir_all_durable(&admin)?;
         let configuration = configuration_binding(&name, &root, target_pack_bytes);
-        let backend = Self {
+        Ok(Self {
             name,
             root,
             packs,
             admin,
             target_pack_bytes,
             configuration,
-        };
-        backend.initialize()?;
-        Ok(backend)
+            create_lock_files,
+        })
     }
 
     /// Returns generation-bound logical and referenced-physical accounting.
@@ -444,6 +479,13 @@ impl PackedBlobBackend {
         self.admin.join(INDEX_FILE)
     }
 
+    fn authenticate_existing(&self) -> Result<(), StoreError> {
+        let _lifecycle = self.lock_lifecycle(FlockOperation::LockShared)?;
+        let _state = self.lock_state()?;
+        let index = self.load_index()?;
+        self.validate_index_packs(&index)
+    }
+
     fn lock_lifecycle(&self, operation: FlockOperation) -> Result<File, StoreError> {
         self.lock_file(LIFECYCLE_LOCK_FILE, operation)
     }
@@ -454,14 +496,21 @@ impl PackedBlobBackend {
 
     fn lock_file(&self, name: &str, operation: FlockOperation) -> Result<File, StoreError> {
         let path = self.admin.join(name);
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|source| io_error("open packed lock", &path, source))?;
+        let mut flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+        if self.create_lock_files {
+            flags |= OFlags::CREATE;
+        }
+        let descriptor = open(&path, flags, Mode::RUSR | Mode::WUSR)
+            .map_err(|source| io_error("open packed lock", &path, source.into()))?;
+        let file = File::from(descriptor);
+        let metadata = file
+            .metadata()
+            .map_err(|source| io_error("inspect packed lock", &path, source))?;
+        if !metadata.file_type().is_file() {
+            return Err(StoreError::InvalidComposition {
+                reason: "packed lock path is not a regular file",
+            });
+        }
         flock(&file, operation)
             .map_err(|source| io_error("lock packed backend", &path, source.into()))?;
         Ok(file)
@@ -471,7 +520,9 @@ impl PackedBlobBackend {
         let path = self.index_path();
         let bytes = read_bounded_file(&path, MAX_INDEX_BYTES, "read packed index")?;
         let index = decode_index(&bytes, self.configuration)?;
-        sync_directory(&self.admin)?;
+        if self.create_lock_files {
+            sync_directory(&self.admin)?;
+        }
         Ok(index)
     }
 
@@ -952,7 +1003,9 @@ impl BlobStoreAdmin for PackedBlobBackend {
         let state_lock = self.lock_state()?;
         let index = self.load_index()?;
         self.validate_index_packs(&index)?;
-        self.cleanup_unreferenced_packs(&index)?;
+        if self.create_lock_files {
+            self.cleanup_unreferenced_packs(&index)?;
+        }
         Ok(Box::new(PackedInventoryFence {
             backend: self,
             _lifecycle: lifecycle,
@@ -979,10 +1032,8 @@ impl BlobInventoryFence for PackedInventoryFence<'_> {
             self.index.instance,
             self.index.generation,
         )?;
-        let mut inventory = InventoryCounter::new(
-            physical_storage_identity(self.index.instance),
-            generation,
-        );
+        let mut inventory =
+            InventoryCounter::new(physical_storage_identity(self.index.instance), generation);
         for (id, entry) in &self.index.entries {
             let record = BlobInventoryRecord::new(*id, entry.length);
             visitor(record)?;
@@ -1256,6 +1307,17 @@ fn open_regular_file(path: &Path, operation: &'static str) -> Result<File, Store
         });
     }
     Ok(file)
+}
+
+fn require_existing_directory(path: &Path) -> Result<(), StoreError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|source| io_error("inspect packed directory", path, source))?;
+    if !metadata.file_type().is_dir() {
+        return Err(StoreError::InvalidComposition {
+            reason: "packed existing path is not a directory",
+        });
+    }
+    Ok(())
 }
 
 fn remove_temporary(path: &Path, required: bool) -> Result<(), StoreError> {
