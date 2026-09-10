@@ -48,7 +48,8 @@ fn initial_discovery_import_recomputes_stop_ordinal_and_lifecycle() {
         ),
         (&attempt, wrong_ordinal),
     ] {
-        let forged = forged_discovery_successor(&repository, &parent, &path, candidate, basis);
+        let forged =
+            forged_discovery_successor(&repository, &parent, &path, candidate, basis, false);
         repository
             .validate_complete_head(forged)
             .expect_err("forged discovery must fail cold validation");
@@ -60,6 +61,14 @@ fn initial_discovery_import_recomputes_stop_ordinal_and_lifecycle() {
             head.snapshot_id()
         );
     }
+
+    let legacy = AttemptAdmission::new(admission.attempt(), admission.role());
+    assert_eq!(legacy.schema_version(), 1);
+    let legacy_successor =
+        forged_discovery_successor(&repository, &parent, &path, &attempt, legacy, true);
+    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    cold.validate_complete_head(legacy_successor)
+        .expect("historical v1 discovery remains valid after restart/import");
 
     repository
         .apply_control(
@@ -75,7 +84,8 @@ fn initial_discovery_import_recomputes_stop_ordinal_and_lifecycle() {
     let parent = repository
         .read_snapshot(paused.content_id())
         .expect("paused parent");
-    let forged = forged_discovery_successor(&repository, &parent, &path, &attempt, admission);
+    let forged =
+        forged_discovery_successor(&repository, &parent, &path, &attempt, admission, false);
     repository
         .validate_complete_head(forged)
         .expect_err("paused parent cannot admit discovery on import");
@@ -87,6 +97,7 @@ fn forged_discovery_successor(
     path: &BranchPath,
     attempt: &Attempt,
     admission: AttemptAdmission,
+    budgeted: bool,
 ) -> ContentId {
     repository.put_branch_path(path).expect("path");
     repository.put_attempt(attempt).expect("attempt");
@@ -109,14 +120,28 @@ fn forged_discovery_successor(
             admission.id().expect("admission id"),
         ))
         .expect("fact");
-    let next = CampaignSnapshot::successor(
-        parent.snapshot.id().expect("parent id"),
-        parent.snapshot.lineage(),
-        parent.snapshot.active_policy(),
-        roots,
-        CampaignFactId::from_content_id(fact).expect("fact id"),
-    )
-    .expect("successor");
+    let parent_id = parent.snapshot.id().expect("parent id");
+    let fact_id = CampaignFactId::from_content_id(fact).expect("fact id");
+    let next = if budgeted {
+        repository
+            .budgeted_successor(
+                parent_id,
+                parent.snapshot.lineage(),
+                parent.snapshot.active_policy(),
+                roots,
+                fact_id,
+            )
+            .expect("budgeted successor")
+    } else {
+        CampaignSnapshot::successor(
+            parent_id,
+            parent.snapshot.lineage(),
+            parent.snapshot.active_policy(),
+            roots,
+            fact_id,
+        )
+        .expect("successor")
+    };
     repository
         .put_snapshot(&next)
         .expect("unreferenced forged snapshot")

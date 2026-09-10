@@ -1185,8 +1185,12 @@ impl CampaignRepository {
                 return self.validate_initial_discovery_successor(parent, child, admission_record);
             }
         };
-        let expected =
-            self.expected_proposal_admission(parent, proposal, admission_record.attempt())?;
+        let expected = self.expected_stored_proposal_admission(
+            parent,
+            proposal,
+            admission_record.attempt(),
+            admission_record,
+        )?;
         if admission_record != expected || expected.id()? != admission {
             return Err(integrity("attempt-admission-owner-recomputation-mismatch"));
         }

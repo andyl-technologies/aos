@@ -3130,6 +3130,54 @@ fn scenario_default_records_have_frozen_versioned_vectors() {
     let mut future_without_new_cause = historical_admission.canonical_bytes();
     future_without_new_cause[..4].copy_from_slice(&2_u32.to_be_bytes());
     assert!(AttemptAdmission::from_canonical_bytes(&future_without_new_cause).is_err());
+
+    let attempt = admission.attempt();
+    let proposal = stored_id!(
+        ProposalId,
+        ObjectKind::CampaignFact,
+        "policy-bound-admission-proposal"
+    );
+    let causes = [
+        BranchRequestCause::Planner(stored_id!(
+            PlannerInvocationId,
+            ObjectKind::Policy,
+            2,
+            "policy-bound-admission-planner"
+        )),
+        BranchRequestCause::Operator(CampaignCommandId::from_hash(hash(
+            "policy-bound-admission-operator",
+        ))),
+        BranchRequestCause::Debugger(DebugSessionId::from_hash(hash(
+            "policy-bound-admission-debugger",
+        ))),
+        BranchRequestCause::ExhaustivePolicy(policy),
+        BranchRequestCause::ScenarioDefault(policy),
+    ];
+    for cause in causes {
+        let bound = AttemptAdmission::new_policy_bound(
+            attempt,
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: Some(proposal),
+                cause,
+                admission_ordinal: AdmissionOrdinal::new(7),
+            },
+            policy,
+        );
+        assert_eq!(bound.schema_version(), 3);
+        assert_eq!(bound.retention_policy(), Some(policy));
+        assert_eq!(
+            AttemptAdmission::from_canonical_bytes(&bound.canonical_bytes())
+                .expect("policy-bound admission"),
+            bound
+        );
+        let child_names = bound
+            .content_children()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<BTreeSet<_>>();
+        assert!(child_names.contains("retention-policy"));
+        assert!(!child_names.contains("source-snapshot"));
+    }
 }
 
 struct ParityModel {

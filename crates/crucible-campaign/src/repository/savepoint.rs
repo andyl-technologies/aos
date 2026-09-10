@@ -327,13 +327,14 @@ impl CampaignRepository {
         }
         let admission = match indexed_basis {
             Some(content) => self.read_attempt_admission(content)?,
-            None => AttemptAdmission::new(
+            None => AttemptAdmission::new_policy_bound(
                 continuation_id,
                 AttemptAdmissionRole::ExecutionBasis {
                     proposal: None,
                     cause: BranchRequestCause::Operator(selection.command),
                     admission_ordinal: self.next_admission_ordinal(roots.accounting)?,
                 },
+                current.snapshot.active_policy(),
             ),
         };
         let admission_id = admission.id()?;
@@ -1186,16 +1187,25 @@ impl CampaignRepository {
         )]);
         match (indexed_basis, indexed_source) {
             (None, None) => {
-                let admission = AttemptAdmission::new(
+                let expected_admission = AttemptAdmission::new_policy_bound(
                     selection.continuation,
                     AttemptAdmissionRole::ExecutionBasis {
                         proposal: None,
                         cause: BranchRequestCause::Operator(selection.command),
                         admission_ordinal: self.next_admission_ordinal(prior.accounting)?,
                     },
+                    parent.snapshot.active_policy(),
                 );
-                let admission_content = admission.id()?.content_id();
-                self.read_attempt_admission_cached(admission_content, cache)?;
+                let admission_content = self
+                    .merkle
+                    .get(next.accounting, basis_key)?
+                    .ok_or_else(|| integrity("savepoint-continuation-admission-is-missing"))?;
+                let admission = self.read_attempt_admission_cached(admission_content, cache)?;
+                let legacy =
+                    AttemptAdmission::new(expected_admission.attempt(), expected_admission.role());
+                if admission != expected_admission && admission != legacy {
+                    return Err(integrity("savepoint-continuation-admission-owner-mismatch"));
+                }
                 upserts.extend(attempt_admission_upserts(admission_content, admission)?);
                 upserts.insert(source_key, transition_content);
             }

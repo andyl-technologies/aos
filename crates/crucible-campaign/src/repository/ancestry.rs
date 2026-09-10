@@ -142,13 +142,20 @@ impl CampaignRepository {
             .snapshot
             .parent()
             .ok_or_else(|| integrity("discovery-result-has-no-parent"))?;
-        let (_, attempt, admission) = self
+        let (_, attempt, _) = self
             .discovery_request_basis(&self.read_snapshot(prior_snapshot.content_id())?, request)?;
+        let admission_content = self
+            .merkle
+            .get(
+                loaded.snapshot.roots().accounting,
+                attempt_execution_basis_key(attempt.id()?),
+            )?
+            .ok_or_else(|| integrity("discovery-result-admission-is-missing"))?;
         Ok(CampaignDiscoveryResult {
             prior_snapshot,
             new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
             attempt: attempt.id()?,
-            admission: admission.id()?,
+            admission: AttemptAdmissionId::from_content_id(admission_content)?,
             replayed,
         })
     }
