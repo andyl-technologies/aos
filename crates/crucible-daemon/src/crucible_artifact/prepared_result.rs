@@ -8,6 +8,19 @@
 //! measurement-ownership, or finding-closure invariants.
 //!
 //! ```text
+//! v3-magic
+//! observation-child, measurements, properties, coverage
+//! discovered-choice-count, discovered-choice records
+//! produced-selection-count, selection records, observation
+//! measurement-replay-evidence-count, measurement-replay-evidence records
+//! terminal-fingerprint-count, terminal-fingerprint records
+//! finding-present
+//! [discovery-path, minimization-seed, scenario, original configuration,
+//!  original reproduction, minimized configuration, minimized reproduction,
+//!  deduplicated replay record tables, two replay-index passes, finding bundle]
+//! ```
+//!
+//! ```text
 //! v2-magic
 //! observation-child, measurements, properties, coverage
 //! discovered-choice-count, discovered-choice records
@@ -36,8 +49,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible::{
-    AssertionPhase, ObservableEventPayload, ScenarioDefForm, SchedulerEventLogEntry,
-    SchedulerEventLogPayload,
+    AssertionPhase, ContentHash, ExecutionFingerprint, FingerprintSample, NodeId,
+    ObservableEventPayload, ScenarioDefForm, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    VirtualTime,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity,
@@ -61,6 +75,7 @@ use crate::{
 
 const PREPARED_RESULT_MAGIC_V1: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v1\0";
 const PREPARED_RESULT_MAGIC_V2: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v2\0";
+const PREPARED_RESULT_MAGIC_V3: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v3\0";
 pub(super) const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
@@ -73,6 +88,7 @@ pub const MAX_PREPARED_SEMANTIC_RESULT_BYTES: usize = 1024 * 1024 * 1024;
 pub struct PreparedSemanticAttemptResult {
     observation: ObservationCandidate,
     measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+    terminal_fingerprints: Option<Vec<FingerprintSample>>,
     finding: Option<PreparedCrucibleFindingCandidate>,
 }
 
@@ -121,8 +137,32 @@ impl PreparedSemanticAttemptResult {
         Ok(Self {
             observation,
             measurement_replay_evidence,
+            terminal_fingerprints: None,
             finding,
         })
+    }
+
+    /// Attaches the complete terminal fingerprint set captured after execution.
+    ///
+    /// Samples are retained in node-name order. The caller must separately use
+    /// [`Self::verify_terminal_fingerprints`] with the authenticated scenario
+    /// before publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedSemanticResultCodecError`] when the samples exceed the
+    /// QEMU world bound, contain duplicate or out-of-order nodes, or terminal
+    /// evidence was already attached.
+    pub fn with_terminal_fingerprints(
+        mut self,
+        terminal_fingerprints: Vec<FingerprintSample>,
+    ) -> Result<Self, PreparedSemanticResultCodecError> {
+        if self.terminal_fingerprints.is_some() {
+            return Err(inconsistent("duplicate terminal fingerprint attachment"));
+        }
+        validate_terminal_fingerprints(&terminal_fingerprints)?;
+        self.terminal_fingerprints = Some(terminal_fingerprints);
+        Ok(self)
     }
 
     /// Returns the complete canonical observation candidate.
@@ -135,6 +175,12 @@ impl PreparedSemanticAttemptResult {
     #[must_use]
     pub fn measurement_replay_evidence(&self) -> &[CrucibleMeasurementReplayEvidence] {
         &self.measurement_replay_evidence
+    }
+
+    /// Returns the complete terminal fingerprint set from completed terminal capture.
+    #[must_use]
+    pub fn terminal_fingerprints(&self) -> Option<&[FingerprintSample]> {
+        self.terminal_fingerprints.as_deref()
     }
 
     /// Returns the prepared finding closure, when execution found one.
@@ -198,11 +244,16 @@ impl PreparedSemanticAttemptResult {
             }
         }
 
-        Self::new_with_measurement_replay_evidence(
+        let terminal_fingerprints = self.terminal_fingerprints;
+        let result = Self::new_with_measurement_replay_evidence(
             self.observation,
             evidence.into_values().collect(),
             Some(finding),
-        )
+        )?;
+        match terminal_fingerprints {
+            Some(terminal_fingerprints) => result.with_terminal_fingerprints(terminal_fingerprints),
+            None => Ok(result),
+        }
     }
 
     /// Replays every retained measurement leaf against the authenticated scenario.
@@ -307,6 +358,38 @@ impl PreparedSemanticAttemptResult {
         Ok(())
     }
 
+    /// Verifies terminal samples against the authenticated scenario world.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedSemanticResultCodecError`] when the retained samples
+    /// are not the exact canonical VM-node set of `scenario`.
+    pub fn verify_terminal_fingerprints(
+        &self,
+        scenario: &ScenarioDefForm,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        let Some(terminal_fingerprints) = &self.terminal_fingerprints else {
+            return Ok(());
+        };
+        validate_terminal_fingerprints(terminal_fingerprints)?;
+
+        let mut expected_nodes = scenario
+            .world()
+            .vm_nodes()
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        expected_nodes.sort_by(|left, right| left.name.cmp(&right.name));
+        let retained_nodes = terminal_fingerprints
+            .iter()
+            .map(|sample| sample.node.clone())
+            .collect::<Vec<_>>();
+        if retained_nodes != expected_nodes {
+            return Err(inconsistent("terminal fingerprint world nodes"));
+        }
+        Ok(())
+    }
+
     /// Returns strict, bounded journal payload bytes.
     ///
     /// # Errors
@@ -328,11 +411,22 @@ impl PreparedSemanticAttemptResult {
         maximum_bytes: usize,
     ) -> Result<Vec<u8>, PreparedSemanticResultCodecError> {
         validate_pair(&self.observation, self.finding.as_ref())?;
+        if let Some(terminal_fingerprints) = &self.terminal_fingerprints {
+            validate_terminal_fingerprints(terminal_fingerprints)?;
+        }
 
         let mut encoder = Encoder::new(maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES));
-        encoder.raw(PREPARED_RESULT_MAGIC_V2)?;
+        let version = if self.terminal_fingerprints.is_some() {
+            PreparedSemanticResultVersion::V3
+        } else {
+            PreparedSemanticResultVersion::V2
+        };
+        encoder.raw(version.magic())?;
         encode_observation(&mut encoder, &self.observation)?;
         encode_measurement_evidence(&mut encoder, &self.measurement_replay_evidence)?;
+        if let Some(terminal_fingerprints) = &self.terminal_fingerprints {
+            encode_terminal_fingerprints(&mut encoder, terminal_fingerprints)?;
+        }
         match &self.finding {
             Some(finding) => {
                 encoder.byte(1)?;
@@ -387,7 +481,13 @@ impl PreparedSemanticAttemptResult {
         let observation = decode_observation(&mut decoder)?;
         let measurement_replay_evidence = match version {
             PreparedSemanticResultVersion::V1 => Vec::new(),
-            PreparedSemanticResultVersion::V2 => decode_measurement_evidence(&mut decoder)?,
+            PreparedSemanticResultVersion::V2 | PreparedSemanticResultVersion::V3 => {
+                decode_measurement_evidence(&mut decoder)?
+            }
+        };
+        let terminal_fingerprints = match version {
+            PreparedSemanticResultVersion::V1 | PreparedSemanticResultVersion::V2 => None,
+            PreparedSemanticResultVersion::V3 => Some(decode_terminal_fingerprints(&mut decoder)?),
         };
         let finding = match decoder.byte()? {
             0 => None,
@@ -401,11 +501,19 @@ impl PreparedSemanticAttemptResult {
             measurement_replay_evidence,
             finding,
         )?;
+        let value = match terminal_fingerprints {
+            Some(terminal_fingerprints) => {
+                value.with_terminal_fingerprints(terminal_fingerprints)?
+            }
+            None => value,
+        };
         let canonical = match version {
             PreparedSemanticResultVersion::V1 => {
                 value.canonical_v1_bytes_with_limit(maximum_bytes)?
             }
-            PreparedSemanticResultVersion::V2 => value.canonical_bytes_with_limit(maximum_bytes)?,
+            PreparedSemanticResultVersion::V2 | PreparedSemanticResultVersion::V3 => {
+                value.canonical_bytes_with_limit(maximum_bytes)?
+            }
         };
         if canonical != bytes {
             return Err(PreparedSemanticResultCodecError::NonCanonical);
@@ -420,11 +528,13 @@ impl PreparedSemanticAttemptResult {
     ) -> (
         ObservationCandidate,
         Vec<CrucibleMeasurementReplayEvidence>,
+        Option<Vec<FingerprintSample>>,
         Option<PreparedCrucibleFindingCandidate>,
     ) {
         (
             self.observation,
             self.measurement_replay_evidence,
+            self.terminal_fingerprints,
             self.finding,
         )
     }
@@ -443,6 +553,9 @@ impl PreparedSemanticAttemptResult {
             return Err(PreparedSemanticResultCodecError::Inconsistent {
                 component: "v1 measurement replay evidence",
             });
+        }
+        if self.terminal_fingerprints.is_some() {
+            return Err(inconsistent("v1 terminal fingerprint evidence"));
         }
         validate_pair(&self.observation, self.finding.as_ref())?;
 
@@ -469,6 +582,8 @@ pub(crate) enum PreparedSemanticResultVersion {
     V1,
     /// Closure with exact raw measurement replay-leaf ownership.
     V2,
+    /// Closure with exact raw measurement and terminal-fingerprint evidence.
+    V3,
 }
 
 impl PreparedSemanticResultVersion {
@@ -478,6 +593,8 @@ impl PreparedSemanticResultVersion {
             Some(Self::V1)
         } else if bytes.starts_with(PREPARED_RESULT_MAGIC_V2) {
             Some(Self::V2)
+        } else if bytes.starts_with(PREPARED_RESULT_MAGIC_V3) {
+            Some(Self::V3)
         } else {
             None
         }
@@ -487,6 +604,7 @@ impl PreparedSemanticResultVersion {
         match self {
             Self::V1 => PREPARED_RESULT_MAGIC_V1,
             Self::V2 => PREPARED_RESULT_MAGIC_V2,
+            Self::V3 => PREPARED_RESULT_MAGIC_V3,
         }
     }
 }
@@ -610,6 +728,26 @@ fn validate_measurement_evidence_order(
             return Err(inconsistent("measurement replay evidence order"));
         }
         previous = Some(id);
+    }
+    Ok(())
+}
+
+fn validate_terminal_fingerprints(
+    terminal_fingerprints: &[FingerprintSample],
+) -> Result<(), PreparedSemanticResultCodecError> {
+    if terminal_fingerprints.len() > crate::MAX_QEMU_ATTEMPT_GENERATION_NODES {
+        return Err(PreparedSemanticResultCodecError::LimitExceeded);
+    }
+
+    let mut previous = None;
+    for sample in terminal_fingerprints {
+        if sample.node.name.is_empty() {
+            return Err(inconsistent("terminal fingerprint node name"));
+        }
+        if previous.is_some_and(|previous| previous >= sample.node.name.as_str()) {
+            return Err(inconsistent("terminal fingerprint node order"));
+        }
+        previous = Some(sample.node.name.as_str());
     }
     Ok(())
 }
@@ -1004,6 +1142,53 @@ fn decode_measurement_evidence(
         )?);
     }
     Ok(evidence)
+}
+
+fn encode_terminal_fingerprints(
+    encoder: &mut Encoder,
+    terminal_fingerprints: &[FingerprintSample],
+) -> Result<(), PreparedSemanticResultCodecError> {
+    validate_terminal_fingerprints(terminal_fingerprints)?;
+    encoder.count(terminal_fingerprints.len())?;
+    for sample in terminal_fingerprints {
+        encoder.record(sample.node.name.as_bytes())?;
+        encoder.raw(&sample.at.ticks.to_be_bytes())?;
+        encoder.raw(&sample.fingerprint.hash.bytes)?;
+    }
+    Ok(())
+}
+
+fn decode_terminal_fingerprints(
+    decoder: &mut Decoder<'_>,
+) -> Result<Vec<FingerprintSample>, PreparedSemanticResultCodecError> {
+    let count = decoder.count_bounded(crate::MAX_QEMU_ATTEMPT_GENERATION_NODES)?;
+    decoder.preflight_collection(count, size_of::<u32>() + size_of::<u64>() + 32)?;
+
+    let mut terminal_fingerprints = Vec::with_capacity(count);
+    for _ in 0..count {
+        let node = std::str::from_utf8(decoder.record()?)
+            .map_err(|_| inconsistent("terminal fingerprint node name"))?
+            .to_owned();
+        let ticks = u64::from_be_bytes(
+            decoder
+                .take(size_of::<u64>())?
+                .try_into()
+                .map_err(|_| PreparedSemanticResultCodecError::Truncated)?,
+        );
+        let hash = decoder
+            .take(32)?
+            .try_into()
+            .map_err(|_| PreparedSemanticResultCodecError::Truncated)?;
+        terminal_fingerprints.push(FingerprintSample {
+            node: NodeId { name: node },
+            at: VirtualTime { ticks },
+            fingerprint: ExecutionFingerprint {
+                hash: ContentHash { bytes: hash },
+            },
+        });
+    }
+    validate_terminal_fingerprints(&terminal_fingerprints)?;
+    Ok(terminal_fingerprints)
 }
 
 #[cfg(test)]

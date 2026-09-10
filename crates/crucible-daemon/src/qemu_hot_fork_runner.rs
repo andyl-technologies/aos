@@ -510,6 +510,12 @@ where
     pub fn has_pending_reconciliation(&self) -> bool {
         self.pending.is_some()
     }
+
+    fn quarantine_pending_execution(&mut self) {
+        if let Some(lifecycle) = self.pending.take() {
+            self.factory.quarantine(lifecycle);
+        }
+    }
 }
 
 impl<F, D> Drop for QemuHotForkExecutionRunner<F, D>
@@ -517,9 +523,7 @@ where
     F: QemuHotForkAttemptLifecycleFactory,
 {
     fn drop(&mut self) {
-        if let Some(lifecycle) = self.pending.take() {
-            self.factory.quarantine(lifecycle);
-        }
+        self.quarantine_pending_execution();
     }
 }
 
@@ -708,6 +712,10 @@ where
                 )))
             }
         }
+    }
+
+    fn quarantine_pending_execution(&mut self) {
+        QemuHotForkExecutionRunner::quarantine_pending_execution(self);
     }
 }
 

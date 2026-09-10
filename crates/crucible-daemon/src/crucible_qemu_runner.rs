@@ -14,11 +14,11 @@ use crucible_qemu::{
 };
 
 use crate::{
-    AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
-    CapturedExactCheckpoint, CrucibleAttemptExecution, CrucibleExecutionOutcome,
-    CrucibleExecutionRunner, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
-    ExecutionCancellation, QemuAttemptStartReplayProof, QemuExactCheckpointRealization,
-    QemuSavepointReplayProof,
+    AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionProduct,
+    AttemptExecutionReconciliationStep, AttemptWorkerFailure, CapturedExactCheckpoint,
+    CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
+    CrucibleMaterializationTier, CrucibleResolvedAttemptStart, ExecutionCancellation,
+    QemuAttemptStartReplayProof, QemuExactCheckpointRealization, QemuSavepointReplayProof,
 };
 
 /// Cancellation-aware checkpoint reads used by one campaign realization.
@@ -227,6 +227,13 @@ pub struct QemuExactThinExecutionRunner<S, F> {
 pub struct QemuAttemptExecutionRouter<F, R> {
     fresh: F,
     resume: R,
+    pending: Option<QemuAttemptExecutionPendingRoute>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QemuAttemptExecutionPendingRoute {
+    Fresh,
+    Resume,
 }
 
 /// Independent cold-replay authority for a selected continuation origin.
@@ -320,7 +327,11 @@ impl<F, R> QemuAttemptExecutionRouter<F, R> {
     /// Creates an exact-origin execution router.
     #[must_use]
     pub const fn new(fresh: F, resume: R) -> Self {
-        Self { fresh, resume }
+        Self {
+            fresh,
+            resume,
+            pending: None,
+        }
     }
 
     /// Returns the runner used for executions without a durable resume root.
@@ -357,12 +368,18 @@ impl<F, R> QemuAttemptExecutionRouter<F, R> {
 /// Failure from one exact-origin branch of [`QemuAttemptExecutionRouter`].
 #[derive(Debug, thiserror::Error)]
 pub enum QemuAttemptExecutionRouterError<F, R> {
+    /// A previous successful route still owns post-publication authority.
+    #[error("QEMU execution router still awaits prior semantic reconciliation")]
+    PriorReconciliationPending,
     /// The fresh execution path failed.
     #[error("fresh campaign QEMU execution failed")]
     Fresh(#[source] F),
     /// The exact durable-resume path failed.
     #[error("resumed campaign QEMU execution failed")]
     Resume(#[source] R),
+    /// Reconciliation arrived before a routed execution succeeded.
+    #[error("QEMU execution router has no pending reconciliation")]
+    NoPendingReconciliation,
 }
 
 impl<F, R> CrucibleExecutionRunner for QemuAttemptExecutionRouter<F, R>
@@ -377,10 +394,19 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        if self.pending.is_some() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuAttemptExecutionRouterError::PriorReconciliationPending,
+            ));
+        }
+
         if context.resume_checkpoint().is_none() {
-            self.fresh
+            let outcome = self
+                .fresh
                 .execute(input, context)
-                .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))?;
+            self.pending = Some(QemuAttemptExecutionPendingRoute::Fresh);
+            Ok(outcome)
         } else if input.attempt().continuation_input().is_some() {
             if matches!(
                 input.start(),
@@ -391,9 +417,12 @@ where
                     .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))?;
             }
             let cold_context = context.for_absent_selected_source();
-            self.fresh
+            let outcome = self
+                .fresh
                 .execute(input, &cold_context)
-                .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))?;
+            self.pending = Some(QemuAttemptExecutionPendingRoute::Fresh);
+            Ok(outcome)
         } else if matches!(
             input.start(),
             CrucibleResolvedAttemptStart::AfterAttempt { .. }
@@ -404,30 +433,90 @@ where
                 .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))?
             else {
                 let cold_context = context.for_absent_selected_source();
-                return self
+                let outcome = self
                     .fresh
                     .execute(input, &cold_context)
-                    .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh));
+                    .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))?;
+                self.pending = Some(QemuAttemptExecutionPendingRoute::Fresh);
+                return Ok(outcome);
             };
             let proof = self
                 .fresh
                 .verify_selected_origin(input, context, &target)
                 .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))?;
-            self.resume
+            let outcome = self
+                .resume
                 .execute_verified_selected_origin(input, context, proof)
-                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))?;
+            self.pending = Some(QemuAttemptExecutionPendingRoute::Resume);
+            Ok(outcome)
         } else if matches!(input.attempt().stop(), StopCondition::EventCount(_)) {
             let proof = self
                 .fresh
                 .verify_attempt_start(input, context)
                 .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))?;
-            self.resume
+            let outcome = self
+                .resume
                 .execute_verified_attempt_start(input, context, proof)
-                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))?;
+            self.pending = Some(QemuAttemptExecutionPendingRoute::Resume);
+            Ok(outcome)
         } else {
-            self.resume
+            let outcome = self
+                .resume
                 .execute(input, context)
-                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))?;
+            self.pending = Some(QemuAttemptExecutionPendingRoute::Resume);
+            Ok(outcome)
+        }
+    }
+
+    fn reconcile_execution(
+        &mut self,
+        disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        let route = self.pending.ok_or_else(|| {
+            AttemptWorkerFailure::Terminal(QemuAttemptExecutionRouterError::NoPendingReconciliation)
+        })?;
+        let reconciled = match route {
+            QemuAttemptExecutionPendingRoute::Fresh => self
+                .fresh
+                .reconcile_execution(disposition)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh)),
+            QemuAttemptExecutionPendingRoute::Resume => self
+                .resume
+                .reconcile_execution(disposition)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume)),
+        };
+        match reconciled {
+            Ok(AttemptExecutionReconciliationStep::Complete) => {
+                self.pending = None;
+                Ok(AttemptExecutionReconciliationStep::Complete)
+            }
+            Ok(AttemptExecutionReconciliationStep::Progressed) => {
+                Ok(AttemptExecutionReconciliationStep::Progressed)
+            }
+            Err(failure @ AttemptWorkerFailure::Retryable(_)) => Err(failure),
+            Err(
+                failure @ (AttemptWorkerFailure::Canceled(_) | AttemptWorkerFailure::Terminal(_)),
+            ) => {
+                self.pending = None;
+                Err(failure)
+            }
+        }
+    }
+
+    fn quarantine_pending_execution(&mut self) {
+        let Some(route) = self.pending.take() else {
+            return;
+        };
+        match route {
+            QemuAttemptExecutionPendingRoute::Fresh => {
+                self.fresh.quarantine_pending_execution();
+            }
+            QemuAttemptExecutionPendingRoute::Resume => {
+                self.resume.quarantine_pending_execution();
+            }
         }
     }
 }
