@@ -81,13 +81,31 @@ pkgs.mkDerivation {
           ' ${primaryIndex}/layout/index.json >/dev/null \
           || fail "production root descriptor annotations diverge from the signed index"
 
+        ability_contract_digest=$(sha256sum ${primaryIndex}/static-ability-contract.json | cut -d ' ' -f 1)
+        jq -e '
+          .schema == "aos.container.static-abilities/v1"
+          and .runtime_grants == []
+          and [.platforms[].platform] == [
+            {architecture: "amd64", os: "linux"},
+            {architecture: "arm64", os: "linux"}
+          ]
+        ' ${primaryIndex}/static-ability-contract.json >/dev/null \
+          || fail "production static ability contract is not the canonical two-platform contract"
+        jq -e \
+          --arg digest "sha256:$ability_contract_digest" '
+            .annotations."dev.andyl.aos.ability-contract.digest" == $digest
+          ' ${primaryIndex}/image-index.json >/dev/null \
+          || fail "production index does not bind its static ability contract"
+
         jq -e \
           --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
           --slurpfile index ${primaryIndex}/image-index.json '
-            .schema == "aos.container.signature-input/v1"
+            .schema == "aos.container.signature-input/v2"
             and .oci.index == $descriptor[0]
             and .oci.platformManifests == $index[0].manifests
             and (.oci.platformManifests | length) == 2
+            and .evidence.abilities.artifactType
+              == "application/vnd.aos.container.static-abilities.v1+json"
             and .qualification.readyForVerifiedPublication == true
           ' ${evidence}/signature-input.json >/dev/null \
           || fail "signature input does not bind the coordinated production index"
@@ -98,6 +116,8 @@ pkgs.mkDerivation {
             and .qualified == true
             and .unsignedRelease.oci == $input[0].oci
             and .requiredOutput.finalSidecarPath == "containers/v1/index.json"
+            and .requiredOutput.finalSidecarMediaType
+              == "application/vnd.aos.container-release.v2+json"
             and .constraints.privateMaterialPermittedInNixBuild == false
             and .constraints.exactInputBytesRequired == true
           ' ${evidence}/signing-request.json >/dev/null \

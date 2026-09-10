@@ -104,6 +104,9 @@
   shellEntrypoint = tryDefinition {
     aos.containers.definitions.aos.runtime.entrypoint = lib.mkForce ["aos --help"];
   };
+  imageDefaultRuntimeGrant = tryDefinition {
+    aos.containers.definitions.aos.abilities.runtimeGrants = ["host-manager"];
+  };
   overrideSource = pkgs.writeTextFile {
     name = "container-evidence-override-test-source";
     text = "source\n";
@@ -222,6 +225,7 @@ in
   assert !traversalDirectory.success;
   assert !unsafeRepository.success;
   assert !shellEntrypoint.success;
+  assert !imageDefaultRuntimeGrant.success;
   assert !mismatchedEvidenceOverrideOutput.success;
   assert !invalidTestingRegistry.success;
   assert !invalidTestingChannel.success;

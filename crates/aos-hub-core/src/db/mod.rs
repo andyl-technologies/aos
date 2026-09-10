@@ -1666,6 +1666,8 @@ pub enum ContainerReleaseDescriptorRole {
     PlatformManifest,
     /// Nix runtime-closure evidence manifest.
     NixClosure,
+    /// Static ability-contract evidence manifest.
+    Abilities,
     /// SPDX software-bill-of-materials evidence manifest.
     Sbom,
     /// Corresponding-source evidence manifest.
@@ -1684,6 +1686,7 @@ impl ContainerReleaseDescriptorRole {
             Self::Index => "index",
             Self::PlatformManifest => "platform_manifest",
             Self::NixClosure => "nix_closure",
+            Self::Abilities => "abilities",
             Self::Sbom => "sbom",
             Self::Source => "source",
             Self::License => "license",
@@ -26095,7 +26098,13 @@ fn oci_release_root_statements(
         anyhow::ensure!(
             matches!(
                 evidence.kind.as_str(),
-                "closure" | "sbom" | "source" | "license" | "provenance" | "signature"
+                "closure"
+                    | "abilities"
+                    | "sbom"
+                    | "source"
+                    | "license"
+                    | "provenance"
+                    | "signature"
             ),
             "signed container evidence kind is invalid"
         );
@@ -26324,6 +26333,7 @@ fn validate_container_release_descriptor_snapshot(
             ),
             ContainerReleaseDescriptorRole::PlatformManifest
             | ContainerReleaseDescriptorRole::NixClosure
+            | ContainerReleaseDescriptorRole::Abilities
             | ContainerReleaseDescriptorRole::Sbom
             | ContainerReleaseDescriptorRole::Source
             | ContainerReleaseDescriptorRole::License
@@ -26360,6 +26370,14 @@ fn validate_container_release_descriptor_snapshot(
             "signed container descriptor snapshot has an incomplete evidence set"
         );
     }
+    anyhow::ensure!(
+        roles
+            .get(&ContainerReleaseDescriptorRole::Abilities)
+            .copied()
+            .unwrap_or_default()
+            <= 1,
+        "signed container descriptor snapshot repeats static ability evidence"
+    );
     Ok(())
 }
 
@@ -28270,6 +28288,7 @@ source_nar_hash = ""
         let required_roles = [
             ContainerReleaseDescriptorRole::PlatformManifest,
             ContainerReleaseDescriptorRole::NixClosure,
+            ContainerReleaseDescriptorRole::Abilities,
             ContainerReleaseDescriptorRole::Sbom,
             ContainerReleaseDescriptorRole::Source,
             ContainerReleaseDescriptorRole::License,

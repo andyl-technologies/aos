@@ -1594,6 +1594,7 @@ async fn signed_container_admin_projection(
 fn container_evidence_kind(role: ContainerReleaseDescriptorRole) -> &'static str {
     match role {
         ContainerReleaseDescriptorRole::NixClosure => "closure",
+        ContainerReleaseDescriptorRole::Abilities => "abilities",
         ContainerReleaseDescriptorRole::Sbom => "sbom",
         ContainerReleaseDescriptorRole::Source => "source",
         ContainerReleaseDescriptorRole::License => "license",
@@ -1719,8 +1720,8 @@ fn descriptor_identity_matches(left: &Descriptor, right: &Descriptor) -> bool {
 
 fn container_evidence_descriptors(
     release: &ContainerRelease,
-) -> [(&'static str, ContainerReleaseDescriptorRole, &Descriptor); 6] {
-    [
+) -> Vec<(&'static str, ContainerReleaseDescriptorRole, &Descriptor)> {
+    let mut descriptors = vec![
         (
             "Nix closure",
             ContainerReleaseDescriptorRole::NixClosure,
@@ -1751,7 +1752,15 @@ fn container_evidence_descriptors(
             ContainerReleaseDescriptorRole::Signature,
             &release.evidence.signature,
         ),
-    ]
+    ];
+    if let Some(abilities) = &release.evidence.abilities {
+        descriptors.push((
+            "abilities",
+            ContainerReleaseDescriptorRole::Abilities,
+            abilities,
+        ));
+    }
+    descriptors
 }
 
 fn release_snapshot_artifacts(
@@ -3513,6 +3522,7 @@ mod tests {
             closure: evidence(MediaType::AosNixClosure, "closure"),
         };
         let release_evidence = ContainerReleaseEvidence {
+            abilities: Some(evidence(MediaType::AosContainerStaticAbilities, "abilities")),
             sbom: evidence(MediaType::SpdxJson, "sbom"),
             source: evidence(MediaType::AosSourceClosure, "source"),
             license: evidence(MediaType::AosLicenseReport, "license"),
@@ -3525,6 +3535,7 @@ mod tests {
             oci: oci.clone(),
             nix: nix.clone(),
             evidence: ContainerSignatureInputEvidence {
+                abilities: release_evidence.abilities.clone(),
                 sbom: release_evidence.sbom.clone(),
                 source: release_evidence.source.clone(),
                 license: release_evidence.license.clone(),
@@ -3534,7 +3545,7 @@ mod tests {
         };
         let release = ContainerRelease {
             schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
-            media_type: MediaType::AosContainerRelease,
+            media_type: MediaType::AosContainerReleaseV2,
             identity,
             oci,
             nix,

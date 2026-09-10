@@ -15,11 +15,15 @@
   common,
 }: {
   images,
+  abilityContract,
   annotations ? {},
   referenceName ? null,
   pname ? "aos-oci-multi-platform-image",
 }: let
   imagePaths = map builtins.toString images;
+  imageAbilityContractPaths =
+    lib.sort builtins.lessThan
+    (map (image: builtins.toString image.passthru.checkedAbilityContract) images);
   validateAnnotations = values: let
     checked =
       if builtins.isAttrs values
@@ -46,6 +50,12 @@
     then common.fail "annotations exceeds the 64 KiB aggregate limit"
     else checked;
   checkedAnnotations = validateAnnotations annotations;
+  abilityAnnotationNames = [
+    "dev.andyl.aos.ability-contract.digest"
+    "dev.andyl.aos.ability-contract.media-type"
+    "dev.andyl.aos.ability-contract.schema"
+  ];
+  authoredAbilityAnnotations = builtins.filter (name: checkedAnnotations ? ${name}) abilityAnnotationNames;
   referenceAnnotations =
     if referenceName == null
     then {}
@@ -64,6 +74,10 @@
       common.fail
       "annotations org.opencontainers.image.ref.name conflicts with referenceName"
     else checkedAnnotations // referenceAnnotations;
+  checkedAbilityContract =
+    if builtins.isAttrs abilityContract && (abilityContract.passthru.ociStaticAbilityContract or false)
+    then abilityContract
+    else common.fail "abilityContract must be produced by mkStaticAbilityContract";
   validated =
     if !builtins.isList images
     then common.fail "images must be a list"
@@ -75,7 +89,18 @@
     then common.fail "images contains the same derivation more than once"
     else if !lib.all (image: builtins.isAttrs image && (image.passthru.ociImage or false)) images
     then common.fail "every input must be produced by mkImageLayout"
-    else builtins.deepSeq coordinatedAnnotations true;
+    else if authoredAbilityAnnotations != []
+    then common.fail "static ability contract annotations are builder-owned"
+    else if
+      !(
+        (builtins.length images
+          == 1
+          && builtins.toString checkedAbilityContract == builtins.head imageAbilityContractPaths)
+        || (lib.sort builtins.lessThan checkedAbilityContract.passthru.inputContractPaths
+          == imageAbilityContractPaths)
+      )
+    then common.fail "abilityContract must be the exact aggregate of the input image contracts"
+    else builtins.deepSeq [coordinatedAnnotations checkedAbilityContract] true;
   indexSpec = {
     annotations = coordinatedAnnotations;
     descriptorAnnotations = coordinatedAnnotations;
@@ -90,7 +115,7 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils findutils gzip jq tar] ++ images;
+    buildDeps = [coreutils findutils gzip jq tar checkedAbilityContract] ++ images;
 
     outputChecks.out = {};
     inherit indexSpec;
@@ -113,12 +138,39 @@ in
 
           mkdir -p "$out/layout/blobs/sha256"
           jq '.indexSpec' "$NIX_ATTRS_JSON_FILE" > index-spec.input.json
+          test -f ${checkedAbilityContract}/contract.json
+          test -f ${checkedAbilityContract}/descriptor.json
+          contract_digest=$(jq -r .digest ${checkedAbilityContract}/descriptor.json)
+          contract_media_type=$(jq -r .mediaType ${checkedAbilityContract}/descriptor.json)
+          contract_size=$(jq -r .size ${checkedAbilityContract}/descriptor.json)
+          contract_hex=''${contract_digest#sha256:}
+          test "$(sha256sum ${checkedAbilityContract}/contract.json | cut -d ' ' -f 1)" = "$contract_hex"
+          test "$(stat -c %s ${checkedAbilityContract}/contract.json)" -eq "$contract_size"
+          jq -e '.schema == "aos.container.static-abilities/v1" and .runtime_grants == []' \
+            ${checkedAbilityContract}/contract.json >/dev/null
+          jq -S \
+            --arg digest "$contract_digest" \
+            --arg mediaType "$contract_media_type" '
+              .annotations += {
+                "dev.andyl.aos.ability-contract.digest": $digest,
+                "dev.andyl.aos.ability-contract.media-type": $mediaType,
+                "dev.andyl.aos.ability-contract.schema": "aos.container.static-abilities/v1"
+              }
+              | .descriptorAnnotations = .annotations
+            ' index-spec.input.json > index-spec.with-contract.json
+          mv index-spec.with-contract.json index-spec.input.json
+          cp --reflink=auto ${checkedAbilityContract}/contract.json "$out/static-ability-contract.json"
+          cp --reflink=auto ${checkedAbilityContract}/descriptor.json "$out/static-ability-contract.descriptor.json"
           : > manifests.jsonl
+          : > child-contract-platforms.jsonl
 
           add_image() {
             image_path="$1"
             test -d "$image_path/layout/blobs/sha256"
             test -f "$image_path/manifest-descriptor.json"
+            test -f "$image_path/manifest.json"
+            test -f "$image_path/static-ability-contract.json"
+            test -f "$image_path/static-ability-contract.descriptor.json"
             jq -e '
               type == "object"
               and .mediaType == ${builtins.toJSON common.manifestMediaType}
@@ -131,12 +183,30 @@ in
             manifest_digest=$(jq -r .digest "$image_path/manifest-descriptor.json")
             manifest_hex=''${manifest_digest#sha256:}
             manifest_size=$(jq -r .size "$image_path/manifest-descriptor.json")
-            actual_hex=$(sha256sum "$image_path/layout/blobs/sha256/$manifest_hex" | cut -d ' ' -f 1)
-            actual_size=$(stat -c %s "$image_path/layout/blobs/sha256/$manifest_hex")
+            verified_manifest="$image_path/layout/blobs/sha256/$manifest_hex"
+            actual_hex=$(sha256sum "$verified_manifest" | cut -d ' ' -f 1)
+            actual_size=$(stat -c %s "$verified_manifest")
             if [ "$actual_hex" != "$manifest_hex" ] || [ "$actual_size" -ne "$manifest_size" ]; then
               echo "platform manifest descriptor does not match its blob: $image_path" >&2
               exit 1
             fi
+            cmp "$image_path/manifest.json" "$verified_manifest" || {
+              echo "platform manifest sidecar differs from its verified blob: $image_path" >&2
+              exit 1
+            }
+
+            child_contract_digest=$(jq -r .digest "$image_path/static-ability-contract.descriptor.json")
+            child_contract_hex=''${child_contract_digest#sha256:}
+            test "$(sha256sum "$image_path/static-ability-contract.json" | cut -d ' ' -f 1)" = "$child_contract_hex"
+            jq -e \
+              --arg digest "$child_contract_digest" '
+                .annotations."dev.andyl.aos.ability-contract.digest" == $digest
+              ' "$verified_manifest" >/dev/null || {
+                echo "platform image does not bind its static ability contract: $image_path" >&2
+                exit 1
+              }
+            jq -c '.platforms[]' "$image_path/static-ability-contract.json" \
+              >> child-contract-platforms.jsonl
 
             for source_blob in "$image_path/layout/blobs/sha256/"*; do
               test -f "$source_blob"
@@ -177,6 +247,31 @@ in
             sort_by(.platform.os, .platform.architecture, (.platform.variant // ""), .digest)
           ' manifests.jsonl > manifests.pretty.json
           write_compact_json manifests.pretty.json manifests.json
+
+          jq -S -s '
+            sort_by(.platform.os, .platform.architecture, (.platform.variant // ""))
+          ' child-contract-platforms.jsonl > child-contract-platforms.json
+          jq -S -n \
+            --slurpfile platforms child-contract-platforms.json '
+              {
+                schema: "aos.container.static-abilities/v1",
+                platforms: $platforms[0],
+                runtime_grants: []
+              }
+            ' > expected-contract.pretty.json
+          write_compact_json expected-contract.pretty.json expected-contract.json
+          cmp expected-contract.json ${checkedAbilityContract}/contract.json || {
+            echo "aggregate static ability contract differs from the platform image contracts" >&2
+            exit 1
+          }
+          jq -e \
+            --slurpfile manifests manifests.json '
+              [.platforms[].platform]
+              == [$manifests[0][].platform]
+            ' ${checkedAbilityContract}/contract.json >/dev/null || {
+              echo "aggregate static ability contract platform set differs from the image index" >&2
+              exit 1
+            }
 
           # This is the publishable multi-platform index object.
           jq -S -n \
@@ -228,13 +323,15 @@ in
           printf '%s' '{"imageLayoutVersion":"${common.layoutVersion}"}' > "$out/layout/oci-layout"
 
           make_deterministic_tar "$out/layout" archive-members "$out/image.oci.tar"
-          rm -f *.pretty.json manifests.json manifests.jsonl index-spec.input.json archive-members
+          rm -f *.pretty.json manifests.json manifests.jsonl child-contract-platforms.json \
+            child-contract-platforms.jsonl expected-contract.json index-spec.input.json archive-members
         '';
       }
     ];
 
     passthru = {
       ociImageIndex = true;
+      inherit checkedAbilityContract;
       mediaType = common.indexMediaType;
     };
 

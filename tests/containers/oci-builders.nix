@@ -59,6 +59,11 @@
     pname = "oci-fixture-application-changed-delta";
     layerName = "fixture-application";
   };
+  abilityLayer = oci.mkClosureLayer {
+    roots = [pkgs.ability-package-smoke];
+    pname = "oci-fixture-ability-layer";
+    layerName = "fixture-ability";
+  };
   metadata = oci.mkRootMetadataLayer {
     pname = "oci-fixture-metadata";
     layerName = "fixture-metadata";
@@ -96,12 +101,12 @@
         requireExecutable = true;
       }
     ];
-    storeLayers = [baseLayerA applicationDelta];
+    storeLayers = [baseLayerA applicationDelta abilityLayer];
   };
   runtimeAudit = import ../../lib/build/runtime-closure-audit.nix {
     inherit pkgs lib;
     name = "oci-builder-fixture";
-    roots = [application];
+    roots = [application pkgs.ability-package-smoke];
     maxClosureMiB = 32;
     maxDevelopmentPayloadMiB = 1;
     allowTestArtifacts = true;
@@ -109,10 +114,38 @@
   changedRuntimeAudit = import ../../lib/build/runtime-closure-audit.nix {
     inherit pkgs lib;
     name = "oci-builder-changed-fixture";
-    roots = [changedApplication];
+    roots = [changedApplication pkgs.ability-package-smoke];
     maxClosureMiB = 32;
     maxDevelopmentPayloadMiB = 1;
     allowTestArtifacts = true;
+  };
+  abilityContractFor = {
+    architecture,
+    applicationRoot ? application,
+  }:
+    oci.mkStaticAbilityContract {
+      pname = "oci-fixture-${architecture}-static-abilities";
+      platform = {
+        inherit architecture;
+        os = "linux";
+      };
+      packages = [
+        {
+          payload = pkgs.ability-package-smoke;
+          manifest = pkgs.ability-package-smoke.abilities;
+        }
+      ];
+      runtimeRoots = [applicationRoot pkgs.ability-package-smoke];
+    };
+  amd64AbilityContract = abilityContractFor {architecture = "amd64";};
+  changedAmd64AbilityContract = abilityContractFor {
+    architecture = "amd64";
+    applicationRoot = changedApplication;
+  };
+  arm64AbilityContract = abilityContractFor {architecture = "arm64";};
+  multiPlatformAbilityContract = oci.mkStaticAbilityContract {
+    pname = "oci-fixture-multi-platform-static-abilities";
+    contracts = [arm64AbilityContract amd64AbilityContract];
   };
 
   mkPlatformImage = {
@@ -120,11 +153,17 @@
     pname ? "oci-fixture-${architecture}-image",
     applicationLayer ? applicationDelta,
     audit ? runtimeAudit,
+    abilityContract ? (
+      if architecture == "amd64"
+      then amd64AbilityContract
+      else arm64AbilityContract
+    ),
   }:
     oci.mkImageLayout {
       inherit pname;
-      layers = [baseLayerA applicationLayer metadata];
+      layers = [baseLayerA applicationLayer abilityLayer metadata];
       runtimeAudit = audit;
+      inherit abilityContract;
       platform = {
         inherit architecture;
         os = "linux";
@@ -159,11 +198,13 @@
     pname = "oci-fixture-amd64-image-changed-app";
     applicationLayer = changedApplicationDelta;
     audit = changedRuntimeAudit;
+    abilityContract = changedAmd64AbilityContract;
   };
   arm64Image = mkPlatformImage {architecture = "arm64";};
   multiPlatform = oci.mkMultiPlatformIndex {
     pname = "oci-fixture-multi-platform";
     images = [arm64Image amd64Image];
+    abilityContract = multiPlatformAbilityContract;
     referenceName = "aos-fixture:latest";
     annotations = {
       "org.opencontainers.image.title" = "AOS multi-platform fixture";
@@ -175,6 +216,7 @@
   singlePlatform = oci.mkMultiPlatformIndex {
     pname = "oci-fixture-single-platform";
     images = [amd64Image];
+    abilityContract = amd64AbilityContract;
     referenceName = "aos-fixture:latest";
   };
   dockerArchive = oci.mkDockerArchive {
@@ -182,6 +224,69 @@
     image = amd64Image;
     references = ["aos-fixture:latest"];
   };
+  tryBuilder = value: builtins.tryEval (builtins.deepSeq value true);
+  swappedAbilityCompanion = tryBuilder (oci.mkStaticAbilityContract {
+    pname = "oci-swapped-ability-companion-eval";
+    platform = {
+      architecture = "amd64";
+      os = "linux";
+    };
+    packages = [
+      {
+        payload = application;
+        manifest = pkgs.ability-package-smoke.abilities;
+      }
+    ];
+    runtimeRoots = [application];
+  });
+  absentAbilityPayload = tryBuilder (oci.mkStaticAbilityContract {
+    pname = "oci-absent-ability-payload-eval";
+    platform = {
+      architecture = "amd64";
+      os = "linux";
+    };
+    packages = [
+      {
+        payload = pkgs.ability-package-smoke;
+        manifest = pkgs.ability-package-smoke.abilities;
+      }
+    ];
+    runtimeRoots = [application];
+  });
+  wrongPlatformContract = tryBuilder (mkPlatformImage {
+    architecture = "amd64";
+    pname = "oci-wrong-platform-contract-eval";
+    abilityContract = arm64AbilityContract;
+  });
+  aggregateContractMismatch = tryBuilder (oci.mkMultiPlatformIndex {
+    pname = "oci-aggregate-contract-mismatch-eval";
+    images = [arm64Image amd64Image];
+    abilityContract = amd64AbilityContract;
+  });
+  evidenceReferenceGraph = oci.mkReferenceGraph {
+    pname = "oci-evidence-contract-mismatch-reference-graph";
+    rootPaths = [application];
+  };
+  evidenceSourceGraph = oci.mkEvidenceSourceGraph {
+    pname = "oci-evidence-contract-mismatch-source-graph";
+    referenceGraph = evidenceReferenceGraph;
+    packageCatalog = [];
+    candidateSources = [];
+  };
+  evidenceContractMismatch = tryBuilder (oci.mkEvidenceLayout {
+    pname = "oci-evidence-contract-mismatch-eval";
+    image = multiPlatform;
+    abilityContract = arm64AbilityContract;
+    referenceGraph = evidenceReferenceGraph;
+    sourceGraph = evidenceSourceGraph;
+    closureLayers = [baseLayerA];
+    packageCatalog = [];
+    definitionAttribute = "systems.fixture.build.containers.aos-fixture";
+    releaseIdentity = "fixture";
+    packageName = "aos";
+    packageVersion = "0.1.0";
+    imageName = "aos-fixture";
+  });
 
   validStickyMode = builtins.tryEval (oci.mkRootMetadataLayer {
     pname = "oci-valid-sticky-mode-eval";
@@ -259,6 +364,11 @@
   assert !missingFilePayload.success;
   assert !ambiguousFilePayload.success;
   assert !hostFileSource.success;
+  assert !swappedAbilityCompanion.success;
+  assert !absentAbilityPayload.success;
+  assert !wrongPlatformContract.success;
+  assert !aggregateContractMismatch.success;
+  assert !evidenceContractMismatch.success;
   assert lib.all (accepts oci.common.validateRepository) referenceVectors.repositories.valid;
   assert lib.all (value: !accepts oci.common.validateRepository value) referenceVectors.repositories.invalid;
   assert lib.all (accepts oci.common.validateTag) referenceVectors.tags.valid;
@@ -408,12 +518,12 @@ in
             assert_compact_sorted_json "$image/layout/index.json"
             jq -e '
               .rootfs.type == "layers"
-              and (.rootfs.diff_ids | length) == 3
+              and (.rootfs.diff_ids | length) == 4
               and .config.Entrypoint == ["/bin/base-tool"]
               and .config.ExposedPorts == {"8080/tcp": {}}
             ' "$image/config.json" >/dev/null \
               || fail "image config contract is incorrect"
-            jq -e '(.layers | length) == 3' "$image/manifest.json" >/dev/null \
+            jq -e '(.layers | length) == 4' "$image/manifest.json" >/dev/null \
               || fail "platform manifest layer count is incorrect"
 
             for blob in "$image/layout/blobs/sha256/"*; do
@@ -428,12 +538,42 @@ in
             rm -rf extracted-layout
           done
 
+          manifest_hex=$(jq -r '.digest | sub("^sha256:"; "")' ${amd64Image}/manifest-descriptor.json)
+          cp ${amd64Image}/manifest.json mismatched-manifest-sidecar.json
+          jq -cS '.annotations."dev.andyl.aos.ability-contract.digest" = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' \
+            mismatched-manifest-sidecar.json > mismatched-manifest-sidecar.next.json
+          mv mismatched-manifest-sidecar.next.json mismatched-manifest-sidecar.json
+          if cmp mismatched-manifest-sidecar.json ${amd64Image}/layout/blobs/sha256/$manifest_hex; then
+            fail "mismatched platform manifest sidecar/blob fixture was accepted"
+          fi
+
           assert_compact_sorted_json ${multiPlatform}/image-index.json
           assert_compact_sorted_json ${multiPlatform}/layout/index.json
+          assert_compact_sorted_json ${multiPlatform}/static-ability-contract.json
+          ability_contract_hex=$(sha256sum ${multiPlatform}/static-ability-contract.json | cut -d ' ' -f 1)
           jq -e '
+            .schema == "aos.container.static-abilities/v1"
+            and .runtime_grants == []
+            and (.platforms | length) == 2
+            and all(.platforms[];
+              . as $platform
+              | ($platform.packages | length) == 1
+                and ($platform.abilities | length) == 1
+                and $platform.abilities[0].export == "default"
+                and $platform.abilities[0].interface.name == "aos.test.package-smoke"
+                and $platform.abilities[0].availability == "unresolved-at-launch"
+                and any($platform.unresolved_launch_obligations[];
+                  .kind == "implementation-artifact"
+                  and .consumer.ability == $platform.abilities[0].interface
+                )
+            )
+          ' ${multiPlatform}/static-ability-contract.json >/dev/null \
+            || fail "static ability contract lost selected package ability identities"
+          jq -e --arg abilityDigest "sha256:$ability_contract_hex" '
             (.manifests | length) == 2
             and .manifests[0].platform.architecture == "amd64"
             and .manifests[1].platform.architecture == "arm64"
+            and .annotations."dev.andyl.aos.ability-contract.digest" == $abilityDigest
           ' ${multiPlatform}/image-index.json >/dev/null \
             || fail "multi-platform descriptors are missing or not canonical"
           jq -e '
@@ -477,7 +617,7 @@ in
           jq -e '
             length == 1
             and .[0].RepoTags == ["aos-fixture:latest"]
-            and (.[0].Layers | length) == 3
+            and (.[0].Layers | length) == 4
           ' docker-root/manifest.json >/dev/null \
             || fail "Docker archive manifest is incorrect"
           jq -r '.[0].Layers[]' docker-root/manifest.json | while IFS= read -r layer; do

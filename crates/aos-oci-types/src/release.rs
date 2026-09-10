@@ -7,8 +7,8 @@
 //!
 //! ```json
 //! {
-//!   "schemaVersion": 1,
-//!   "mediaType": "application/vnd.aos.container-release.v1+json",
+//!   "schemaVersion": 2,
+//!   "mediaType": "application/vnd.aos.container-release.v2+json",
 //!   "identity": {
 //!     "release": "1.0.0",
 //!     "package": "aos",
@@ -34,6 +34,7 @@
 //!     "readyForVerifiedPublication": true
 //!   },
 //!   "evidence": {
+//!     "abilities": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.aos.container.static-abilities.v1+json", "digest": "sha256:...", "size": 640 },
 //!     "sbom": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/spdx+json", "digest": "sha256:...", "size": 640 },
 //!     "source": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.aos.source-closure.v1+json", "digest": "sha256:...", "size": 640 },
 //!     "license": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.aos.license-report.v1+json", "digest": "sha256:...", "size": 640 },
@@ -68,14 +69,24 @@ use crate::model::{Descriptor, Platform};
 /// Stable registry-relative location of the first container-release sidecar.
 pub const CONTAINER_RELEASE_SIDECAR_PATH: &str = "containers/v1/index.json";
 
-/// Schema version carried by [`ContainerRelease`].
-pub const CONTAINER_RELEASE_SCHEMA_VERSION: u32 = 1;
+/// Legacy schema version accepted for previously signed container releases.
+pub const CONTAINER_RELEASE_SCHEMA_VERSION_V1: u32 = 1;
 
-/// Schema identifier carried by [`ContainerSignatureInput`].
-pub const CONTAINER_SIGNATURE_INPUT_SCHEMA: &str = "aos.container.signature-input/v1";
+/// Current schema version carried by newly signed [`ContainerRelease`] values.
+pub const CONTAINER_RELEASE_SCHEMA_VERSION: u32 = 2;
+
+/// Legacy schema accepted for previously signed container inputs.
+pub const CONTAINER_SIGNATURE_INPUT_SCHEMA_V1: &str = "aos.container.signature-input/v1";
+
+/// Current schema identifier carried by newly signed [`ContainerSignatureInput`] values.
+pub const CONTAINER_SIGNATURE_INPUT_SCHEMA: &str = "aos.container.signature-input/v2";
 
 /// DSSE payload type used for exact AOS container signature-input bytes.
 pub const CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE: &str =
+    "application/vnd.aos.container.signature-input.v2+json";
+
+/// Legacy DSSE payload type accepted for previously signed inputs.
+pub const CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1: &str =
     "application/vnd.aos.container.signature-input.v1+json";
 
 /// SSHSIG namespace used when an AOS trust key signs container DSSE PAE bytes.
@@ -107,7 +118,7 @@ pub fn definition_attribute_matches_image(attribute: &str, image: &str) -> bool 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerRelease {
-    /// Required AOS sidecar schema version, currently `1`.
+    /// Required AOS sidecar schema version.
     pub schema_version: u32,
     /// Required exact AOS container-release media type.
     pub media_type: MediaType,
@@ -120,6 +131,10 @@ pub struct ContainerRelease {
     /// Full-closure mapping, source, and licensing qualification.
     pub qualification: ContainerEvidenceQualification,
     /// Required source, compliance, provenance, and signature evidence.
+    ///
+    /// Static ability evidence is retained as an opaque OCI descriptor here.
+    /// Launch admission must parse its payload, verify the image binding, and
+    /// discharge every external obligation before granting runtime authority.
     pub evidence: ContainerReleaseEvidence,
 }
 
@@ -144,23 +159,41 @@ impl ContainerRelease {
     /// overlong identities, malformed descriptors, duplicate platforms,
     /// invalid Nix paths, or a missing/mistyped evidence role.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != CONTAINER_RELEASE_SCHEMA_VERSION {
-            return Err(Error::invalid(
-                "container release schemaVersion",
-                format!(
-                    "expected {CONTAINER_RELEASE_SCHEMA_VERSION}, got {}",
-                    self.schema_version
-                ),
-            ));
-        }
-        if self.media_type != MediaType::AosContainerRelease {
+        let expected_media_type = match self.schema_version {
+            CONTAINER_RELEASE_SCHEMA_VERSION_V1 => MediaType::AosContainerRelease,
+            CONTAINER_RELEASE_SCHEMA_VERSION => MediaType::AosContainerReleaseV2,
+            version => {
+                return Err(Error::invalid(
+                    "container release schemaVersion",
+                    format!(
+                        "expected {CONTAINER_RELEASE_SCHEMA_VERSION_V1} or {CONTAINER_RELEASE_SCHEMA_VERSION}, got {version}"
+                    ),
+                ));
+            }
+        };
+        if self.media_type != expected_media_type {
             return Err(Error::invalid(
                 "container release mediaType",
                 format!(
-                    "expected {}, got {}",
-                    MediaType::AosContainerRelease,
+                    "expected {expected_media_type}, got {}",
                     self.media_type
                 ),
+            ));
+        }
+        if self.schema_version == CONTAINER_RELEASE_SCHEMA_VERSION
+            && self.evidence.abilities.is_none()
+        {
+            return Err(Error::invalid(
+                "container release abilities",
+                "schema v2 requires static ability evidence",
+            ));
+        }
+        if self.schema_version == CONTAINER_RELEASE_SCHEMA_VERSION_V1
+            && self.evidence.abilities.is_some()
+        {
+            return Err(Error::invalid(
+                "container release abilities",
+                "schema v1 cannot carry static ability evidence",
             ));
         }
 
@@ -255,13 +288,27 @@ impl ContainerSignatureInput {
     ///
     /// Returns an error for the wrong schema or for invalid nested contracts.
     pub fn validate(&self) -> Result<()> {
-        if self.schema != CONTAINER_SIGNATURE_INPUT_SCHEMA {
+        if self.schema != CONTAINER_SIGNATURE_INPUT_SCHEMA
+            && self.schema != CONTAINER_SIGNATURE_INPUT_SCHEMA_V1
+        {
             return Err(Error::invalid(
                 "container signature input schema",
                 format!(
-                    "expected {CONTAINER_SIGNATURE_INPUT_SCHEMA}, got {}",
+                    "expected {CONTAINER_SIGNATURE_INPUT_SCHEMA_V1} or {CONTAINER_SIGNATURE_INPUT_SCHEMA}, got {}",
                     self.schema
                 ),
+            ));
+        }
+        if self.schema == CONTAINER_SIGNATURE_INPUT_SCHEMA && self.evidence.abilities.is_none() {
+            return Err(Error::invalid(
+                "container signature input abilities",
+                "schema v2 requires static ability evidence",
+            ));
+        }
+        if self.schema == CONTAINER_SIGNATURE_INPUT_SCHEMA_V1 && self.evidence.abilities.is_some() {
+            return Err(Error::invalid(
+                "container signature input abilities",
+                "schema v1 cannot carry static ability evidence",
             ));
         }
         self.identity.validate()?;
@@ -286,6 +333,16 @@ impl ContainerSignatureInput {
     pub fn validate_final_release(&self, release: &ContainerRelease) -> Result<()> {
         self.validate()?;
         release.validate()?;
+        let schemas_match = (self.schema == CONTAINER_SIGNATURE_INPUT_SCHEMA_V1
+            && release.schema_version == CONTAINER_RELEASE_SCHEMA_VERSION_V1)
+            || (self.schema == CONTAINER_SIGNATURE_INPUT_SCHEMA
+                && release.schema_version == CONTAINER_RELEASE_SCHEMA_VERSION);
+        if !schemas_match {
+            return Err(Error::invalid(
+                "container signature input schema",
+                "signature-input and final-release schema generations differ",
+            ));
+        }
         if !self.qualification.ready_for_verified_publication {
             return Err(Error::invalid(
                 "container signature input qualification",
@@ -363,11 +420,13 @@ impl ContainerDsseEnvelope {
     /// Returns an error for the wrong payload type, other than one signature,
     /// an invalid signer identity, or noncanonical/oversized base64 content.
     pub fn validate(&self) -> Result<()> {
-        if self.payload_type != CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE {
+        if self.payload_type != CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE
+            && self.payload_type != CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1
+        {
             return Err(Error::invalid(
                 "container DSSE payloadType",
                 format!(
-                    "expected {CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE}, got {}",
+                    "expected {CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1} or {CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE}, got {}",
                     self.payload_type
                 ),
             ));
@@ -399,6 +458,17 @@ impl ContainerDsseEnvelope {
         self.validate()?;
         let bytes = decode_canonical_base64(&self.payload, "container DSSE payload")?;
         let input = ContainerSignatureInput::from_canonical_json(&bytes)?;
+        let expected_payload_type = if input.schema == CONTAINER_SIGNATURE_INPUT_SCHEMA_V1 {
+            CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1
+        } else {
+            CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE
+        };
+        if self.payload_type != expected_payload_type {
+            return Err(Error::invalid(
+                "container DSSE payloadType",
+                "payload type does not match the decoded signature-input schema",
+            ));
+        }
         Ok((bytes, input))
     }
 
@@ -491,6 +561,16 @@ fn decode_canonical_base64(value: &str, field: &'static str) -> Result<Vec<u8>> 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerSignatureInputEvidence {
+    /// OCI referrer manifest retaining static abilities and launch obligations.
+    ///
+    /// This descriptor is archival evidence. It does not itself grant an
+    /// ability or prove that a launch environment discharged its obligations.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_strict_descriptor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub abilities: Option<Descriptor>,
     /// OCI referrer manifest for the SPDX 2.3 JSON SBOM.
     #[serde(deserialize_with = "deserialize_strict_descriptor")]
     pub sbom: Descriptor,
@@ -513,6 +593,13 @@ impl ContainerSignatureInputEvidence {
     /// Returns an error unless every descriptor is a correctly typed OCI
     /// referrer manifest.
     pub fn validate(&self) -> Result<()> {
+        if let Some(abilities) = &self.abilities {
+            validate_evidence_descriptor(
+                abilities,
+                "container signature input abilities",
+                MediaType::AosContainerStaticAbilities,
+            )?;
+        }
         validate_evidence_descriptor(
             &self.sbom,
             "container signature input SBOM",
@@ -536,7 +623,8 @@ impl ContainerSignatureInputEvidence {
     }
 
     fn matches(&self, evidence: &ContainerReleaseEvidence) -> bool {
-        self.sbom == evidence.sbom
+        self.abilities == evidence.abilities
+            && self.sbom == evidence.sbom
             && self.source == evidence.source
             && self.license == evidence.license
             && self.provenance == evidence.provenance
@@ -1032,6 +1120,16 @@ impl NixOutputIdentity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerReleaseEvidence {
+    /// OCI referrer manifest retaining static abilities and launch obligations.
+    ///
+    /// This descriptor is archival evidence. It does not itself grant an
+    /// ability or prove that a launch environment discharged its obligations.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_strict_descriptor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub abilities: Option<Descriptor>,
     /// OCI referrer manifest for the SPDX 2.3 JSON software bill of materials.
     #[serde(deserialize_with = "deserialize_strict_descriptor")]
     pub sbom: Descriptor,
@@ -1057,6 +1155,13 @@ impl ContainerReleaseEvidence {
     /// Returns an error unless every field is an OCI referrer-manifest
     /// descriptor whose `artifactType` exactly matches its required role.
     pub fn validate(&self) -> Result<()> {
+        if let Some(abilities) = &self.abilities {
+            validate_evidence_descriptor(
+                abilities,
+                "container release abilities",
+                MediaType::AosContainerStaticAbilities,
+            )?;
+        }
         validate_evidence_descriptor(&self.sbom, "container release SBOM", MediaType::SpdxJson)?;
         validate_evidence_descriptor(
             &self.source,
@@ -1205,6 +1310,9 @@ fn validate_unique_release_descriptors(release: &ContainerRelease) -> Result<()>
         (&release.evidence.signature, "signature"),
     ];
     let mut digests = BTreeSet::new();
+    if let Some(abilities) = &release.evidence.abilities {
+        digests.insert(abilities.digest);
+    }
     for (descriptor, role) in descriptors {
         if !digests.insert(descriptor.digest) {
             return Err(Error::invalid(
@@ -1237,6 +1345,9 @@ fn validate_unique_signature_input_descriptors(input: &ContainerSignatureInput) 
         (&input.evidence.provenance, "provenance"),
     ];
     let mut digests = BTreeSet::new();
+    if let Some(abilities) = &input.evidence.abilities {
+        digests.insert(abilities.digest);
+    }
     for (descriptor, role) in descriptors {
         if !digests.insert(descriptor.digest) {
             return Err(Error::invalid(
@@ -1563,6 +1674,16 @@ where
     StrictDescriptor::deserialize(deserializer).map(Descriptor::from)
 }
 
+fn deserialize_optional_strict_descriptor<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Descriptor>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<StrictDescriptor>::deserialize(deserializer)
+        .map(|descriptor| descriptor.map(Descriptor::from))
+}
+
 fn deserialize_strict_descriptors<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Vec<Descriptor>, D::Error>
@@ -1622,7 +1743,7 @@ mod tests {
         platform_manifest.platform = Some(Platform::linux_amd64());
         ContainerRelease {
             schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
-            media_type: MediaType::AosContainerRelease,
+            media_type: MediaType::AosContainerReleaseV2,
             identity: ContainerReleaseIdentity {
                 release: "1.0.0".to_string(),
                 package: "aos".to_string(),
@@ -1648,6 +1769,10 @@ mod tests {
             },
             qualification: qualification_fixture(),
             evidence: ContainerReleaseEvidence {
+                abilities: Some(evidence_descriptor(
+                    MediaType::AosContainerStaticAbilities,
+                    "abilities",
+                )),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
@@ -1665,6 +1790,7 @@ mod tests {
             oci: release.oci,
             nix: release.nix,
             evidence: ContainerSignatureInputEvidence {
+                abilities: release.evidence.abilities,
                 sbom: release.evidence.sbom,
                 source: release.evidence.source,
                 license: release.evidence.license,
@@ -1802,12 +1928,12 @@ mod tests {
     #[test]
     fn reports_exact_schema_identity_and_media_errors() {
         let mut release = release_fixture();
-        release.schema_version = 2;
+        release.schema_version = 3;
         assert_eq!(
             release.validate(),
             Err(Error::InvalidValue {
                 field: "container release schemaVersion",
-                reason: "expected 1, got 2".to_string(),
+                reason: "expected 1 or 2, got 3".to_string(),
             })
         );
 
@@ -1819,11 +1945,63 @@ mod tests {
                 field: "container release mediaType",
                 reason: format!(
                     "expected {}, got {}",
-                    MediaType::AosContainerRelease,
+                    MediaType::AosContainerReleaseV2,
                     MediaType::OciImageIndex
                 ),
             })
         );
+    }
+
+    #[test]
+    fn dispatches_legacy_and_current_ability_evidence_by_schema() {
+        let current_release = release_fixture();
+        let current_input = signature_input_fixture();
+
+        let mut legacy_release = current_release.clone();
+        legacy_release.schema_version = CONTAINER_RELEASE_SCHEMA_VERSION_V1;
+        legacy_release.media_type = MediaType::AosContainerRelease;
+        legacy_release.evidence.abilities = None;
+        let legacy_release_bytes = to_canonical_json(&legacy_release).expect("legacy release");
+        assert_eq!(
+            ContainerRelease::from_canonical_json(&legacy_release_bytes).expect("read legacy"),
+            legacy_release
+        );
+
+        let mut legacy_input = current_input.clone();
+        legacy_input.schema = CONTAINER_SIGNATURE_INPUT_SCHEMA_V1.to_string();
+        legacy_input.evidence.abilities = None;
+        let legacy_input_bytes = to_canonical_json(&legacy_input).expect("legacy input");
+        let decoded_legacy =
+            ContainerSignatureInput::from_canonical_json(&legacy_input_bytes).expect("read legacy");
+        decoded_legacy
+            .validate_final_release(&legacy_release)
+            .expect("bind legacy generation");
+        let mut legacy_envelope = ContainerDsseEnvelope {
+            payload_type: CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1.to_string(),
+            payload: base64::engine::general_purpose::STANDARD.encode(&legacy_input_bytes),
+            signatures: vec![ContainerDsseSignature {
+                keyid: base64::engine::general_purpose::STANDARD.encode(b"ssh-key"),
+                sig: base64::engine::general_purpose::STANDARD.encode(b"armored signature"),
+            }],
+        };
+        assert_eq!(
+            legacy_envelope
+                .signature_input()
+                .expect("legacy envelope input")
+                .1,
+            legacy_input
+        );
+        legacy_envelope.payload_type = CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE.to_string();
+        assert!(legacy_envelope.signature_input().is_err());
+
+        let mut missing_current = current_release.clone();
+        missing_current.evidence.abilities = None;
+        assert!(missing_current.validate().is_err());
+
+        let mut abilities_in_legacy = legacy_release.clone();
+        abilities_in_legacy.evidence.abilities = current_release.evidence.abilities.clone();
+        assert!(abilities_in_legacy.validate().is_err());
+        assert!(current_input.validate_final_release(&legacy_release).is_err());
     }
 
     #[test]

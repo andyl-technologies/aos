@@ -7,6 +7,7 @@
   image,
 }: let
   mediaTypes = {
+    abilities = "application/vnd.aos.container.static-abilities.v1+json";
     closure = "application/vnd.aos.nix-closure.v1+json";
     sbom = "application/spdx+json";
     source = "application/vnd.aos.source-closure.v1+json";
@@ -128,6 +129,29 @@ in
           index_digest=$(jq -r .digest ${evidence}/index-descriptor.json)
           ${verifyArtifacts}
 
+          ability_contract_digest=$(sha256sum ${evidence}/evidence/abilities.payload.json | cut -d ' ' -f 1)
+          jq -e '
+            .schema == "aos.container.static-abilities/v1"
+            and .runtime_grants == []
+            and (.platforms | length) == 1
+            and all(.platforms[];
+              ([.packages[].manifest.store_path] == ([.packages[].manifest.store_path] | sort | unique))
+              and ([.abilities[].package.store_path] == ([.abilities[].package.store_path] | sort))
+              and all(.unresolved_launch_obligations[];
+                .disposition == "external-launch-obligation"
+                and .requirement.strength == "required"
+              )
+            )
+          ' ${evidence}/evidence/abilities.payload.json >/dev/null
+          jq -e \
+            --arg digest "sha256:$ability_contract_digest" '
+              .annotations."dev.andyl.aos.ability-contract.digest" == $digest
+              and .annotations."dev.andyl.aos.ability-contract.media-type"
+                == "application/vnd.aos.container.static-abilities.v1+json"
+              and .annotations."dev.andyl.aos.ability-contract.schema"
+                == "aos.container.static-abilities/v1"
+            ' ${image}/image-index.json >/dev/null
+
           jq -e '
             .schemaVersion == 2
             and .mediaType == "application/vnd.oci.image.index.v1+json"
@@ -224,13 +248,15 @@ in
 
           jq -e \
             --slurpfile qualification ${evidence}/qualification.json '
-              .schema == "aos.container.signature-input/v1"
+              .schema == "aos.container.signature-input/v2"
               and .qualification == $qualification[0]
               and .qualification.readyForVerifiedPublication == true
               and .nix.definition.attribute == "systems.server.build.containers.aos"
               and (.nix.definition.derivationPath | test("^/nix/store/[0-9a-z]{32}-.*[.]drv$"))
               and .nix.output.name == "out"
               and (.nix.output.storePath | test("^/nix/store/[0-9a-z]{32}-"))
+              and .evidence.abilities.artifactType
+                == "application/vnd.aos.container.static-abilities.v1+json"
               and (.evidence | has("signature") | not)
             ' ${evidence}/signature-input.json >/dev/null
           input_hex=$(sha256sum ${evidence}/signature-input.json | cut -d ' ' -f 1)
@@ -243,8 +269,10 @@ in
               .schema == "aos.container.signing-request/v1"
               and .input.digest == $digest
               and .input.size == $size
+              and .input.mediaType == "application/vnd.aos.container.signature-input.v2+json"
               and .qualified == $input[0].qualification.readyForVerifiedPublication
               and .qualified == true
+              and .requiredOutput.finalSidecarMediaType == "application/vnd.aos.container-release.v2+json"
               and .unsignedRelease.qualification == $input[0].qualification
               and .constraints.privateMaterialPermittedInNixBuild == false
               and .constraints.finalizerMustRejectUnqualifiedInput == true
@@ -253,8 +281,8 @@ in
 
           jq -cS '
             del(.schema)
-            | .schemaVersion = 1
-            | .mediaType = "application/vnd.aos.container-release.v1+json"
+            | .schemaVersion = 2
+            | .mediaType = "application/vnd.aos.container-release.v2+json"
             | .evidence.signature = {
                 mediaType: "application/vnd.oci.image.manifest.v1+json",
                 artifactType: "application/vnd.dsse.envelope.v1+json",
@@ -283,14 +311,14 @@ in
           test ! -e ${evidence}/containers/v1/index.json
           jq -e '
             .schema == "aos.container.publication-roots/v1"
-            and (.referrers | length) == 5
+            and (.referrers | length) == 6
             and ([.referrers[].artifactType] == ([.referrers[].artifactType] | sort | unique))
           ' ${evidence}/publication-roots.json >/dev/null
           jq -e \
             --slurpfile roots ${evidence}/publication-roots.json '
             .schemaVersion == 2
             and .mediaType == "application/vnd.oci.image.index.v1+json"
-            and (.manifests | length) == 5
+            and (.manifests | length) == 6
             and .manifests == $roots[0].referrers
           ' ${evidence}/referrers/index.json >/dev/null
           jq -e \

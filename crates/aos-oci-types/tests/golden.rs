@@ -153,7 +153,7 @@ fn container_release_golden_vector() {
     platform_manifest.platform = Some(Platform::linux_amd64());
     let release = ContainerRelease {
         schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
-        media_type: MediaType::AosContainerRelease,
+        media_type: MediaType::AosContainerReleaseV2,
         identity: ContainerReleaseIdentity {
             release: "1.0.0".to_string(),
             package: "aos".to_string(),
@@ -193,6 +193,10 @@ fn container_release_golden_vector() {
             ready_for_verified_publication: true,
         },
         evidence: ContainerReleaseEvidence {
+            abilities: Some(artifact_descriptor(
+                MediaType::AosContainerStaticAbilities,
+                b"abilities",
+            )),
             sbom: artifact_descriptor(MediaType::SpdxJson, b"sbom"),
             source: artifact_descriptor(MediaType::AosSourceClosure, b"source"),
             license: artifact_descriptor(MediaType::AosLicenseReport, b"license"),
@@ -204,17 +208,18 @@ fn container_release_golden_vector() {
     release.validate().expect("valid container release");
     let json = to_canonical_json(&release).expect("canonical container release");
     let expected = concat!(
-        r#"{"evidence":{"license":{"artifactType":"application/vnd.aos.license-report.v1+json","digest":"sha256:cc1d3b0234846714b0aeda6cc34b057b4305bb83dd447fb88f816efeb59a4e96","mediaType":"application/vnd.oci.image.manifest.v1+json","size":7},"#,
+        r#"{"evidence":{"abilities":{"artifactType":"application/vnd.aos.container.static-abilities.v1+json","digest":"sha256:cfae417a8bcd2cfe163182bed6d7b730a0c57140cf27d4d0dd14fe2fc47b7c54","mediaType":"application/vnd.oci.image.manifest.v1+json","size":9},"#,
+        r#""license":{"artifactType":"application/vnd.aos.license-report.v1+json","digest":"sha256:cc1d3b0234846714b0aeda6cc34b057b4305bb83dd447fb88f816efeb59a4e96","mediaType":"application/vnd.oci.image.manifest.v1+json","size":7},"#,
         r#""provenance":{"artifactType":"application/vnd.in-toto+json","digest":"sha256:96d815328a42cb4ef89d5e0b7a1df6be43b484832c83a7b4596d8402c7c0b12b","mediaType":"application/vnd.oci.image.manifest.v1+json","size":10},"#,
         r#""sbom":{"artifactType":"application/spdx+json","digest":"sha256:98f3ae1ef67113d8140d4f6cb8d2830070e21ea48f091be519659846c771a374","mediaType":"application/vnd.oci.image.manifest.v1+json","size":4},"#,
         r#""signature":{"artifactType":"application/vnd.dsse.envelope.v1+json","digest":"sha256:1a2fc26dc7ea5a2a4748b7cb2b1ef193d96ab2c99f93092f69e63075b28d1278","mediaType":"application/vnd.oci.image.manifest.v1+json","size":9},"#,
         r#""source":{"artifactType":"application/vnd.aos.source-closure.v1+json","digest":"sha256:41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d","mediaType":"application/vnd.oci.image.manifest.v1+json","size":6}},"#,
-        r#""identity":{"image":"aos","package":"aos","packageVersion":"0.1.0","release":"1.0.0"},"mediaType":"application/vnd.aos.container-release.v1+json","#,
+        r#""identity":{"image":"aos","package":"aos","packageVersion":"0.1.0","release":"1.0.0"},"mediaType":"application/vnd.aos.container-release.v2+json","#,
         r#""nix":{"closure":{"artifactType":"application/vnd.aos.nix-closure.v1+json","digest":"sha256:6d4cb937d6d22521566bba561458d0d1952df6df7a80e46ef5dab9014fbc3557","mediaType":"application/vnd.oci.image.manifest.v1+json","size":7},"#,
         r#""definition":{"attribute":"containerImages.aos","derivationPath":"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container.drv"},"output":{"name":"out","storePath":"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container"}},"#,
         r#""oci":{"index":{"digest":"sha256:1bc04b5291c26a46d918139138b992d2de976d6851d0893b0476b85bfbdfc6e6","mediaType":"application/vnd.oci.image.index.v1+json","size":5},"#,
         r#""platformManifests":[{"digest":"sha256:8e7c7206e28f0d2a76643ceb44f86601b834c1dde73d45779114d7715c7dd7d7","mediaType":"application/vnd.oci.image.manifest.v1+json","platform":{"architecture":"amd64","os":"linux"},"size":14}]},"#,
-        r#""qualification":{"correspondingSource":{"complete":true,"unknownPaths":[]},"licensing":{"complete":true,"unknownPaths":[]},"mapping":{"complete":true,"unknownPaths":[]},"readyForVerifiedPublication":true,"schema":"aos.container.evidence-qualification/v1"},"schemaVersion":1}"#,
+        r#""qualification":{"correspondingSource":{"complete":true,"unknownPaths":[]},"licensing":{"complete":true,"unknownPaths":[]},"mapping":{"complete":true,"unknownPaths":[]},"readyForVerifiedPublication":true,"schema":"aos.container.evidence-qualification/v1"},"schemaVersion":2}"#,
     );
     assert_eq!(json, expected.as_bytes());
     assert_eq!(

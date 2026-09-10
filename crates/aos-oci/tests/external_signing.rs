@@ -8,7 +8,9 @@ use aos_oci::{
     container_signature_pae, finalize_container_publication, prepare_layout,
     write_container_signature_pae,
 };
-use aos_oci_types::{CONTAINER_DSSE_SIGNATURE_NAMESPACE, to_canonical_json};
+use aos_oci_types::{
+    CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_SIGNATURE_INPUT_SCHEMA_V1, to_canonical_json,
+};
 use ed25519_dalek::SigningKey;
 use std::fs;
 
@@ -104,4 +106,24 @@ fn wrong_namespace_or_key_never_exposes_a_partial_bundle() {
     fs::write(&signature, valid_wrong_key).expect("wrong-key signature");
     assert!(finalize_container_publication(&inputs, &signer, &signature, &output).is_err());
     assert!(!output.exists());
+}
+
+#[test]
+fn external_signing_rejects_legacy_unsigned_inputs_before_pae() {
+    let fixture = support::fixture();
+    let release = support::add_signed_release_graph(&fixture);
+    let mut input = support::publication_signature_input(&release);
+    input.schema = CONTAINER_SIGNATURE_INPUT_SCHEMA_V1.to_string();
+    input.evidence.abilities = None;
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let inputs = workspace.path().join("publication-inputs");
+    support::write_publication_inputs(&inputs, fixture.root(), &input);
+
+    let error = container_signature_pae(&inputs).expect_err("legacy input must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("external signing supports only signature-input schema")
+    );
 }
