@@ -163,15 +163,26 @@
       staticNoPie = true;
     };
 
-    mkAutotoolsTool = import ../lib/mk-autotools-tool.nix {
-      inherit
-        lib
-        phases
-        buildPlatform
-        hostPlatform
-        ;
-      tierStdenv = scope.tierBuildStdenv;
-    };
+    mkAutotoolsTool = let
+      mkTool = import ../lib/mk-autotools-tool.nix {
+        inherit
+          lib
+          phases
+          buildPlatform
+          hostPlatform
+          ;
+        tierStdenv = scope.tierBuildStdenv;
+      };
+    in
+      spec:
+        mkTool (
+          if hostPlatform.constraints.cpu == "x86_64"
+          then spec
+          else
+            # The completed predecessor's Perl avoids per-file emulator
+            # startup without introducing a dependency on this tier's Perl.
+            spec // {sourceScriptFilter = prev.perl;}
+        );
 
     manifest = import ./manifest.nix {
       inherit buildPlatform hostPlatform;
