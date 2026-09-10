@@ -571,9 +571,11 @@ campaign-marker handles, and v2 indexes. Standard non-interactive local-QEMU
 resume accepts delivery-order, random-draw, preemption, and typed Selection
 decisions and authenticates the supplied closure before opening attempt host
 resources. Historical override and application-random decisions remain
-unsupported. Session-owned, remote, interactive, and fork execution paths
-reject typed Selection schedules before launch because they do not consume the
-campaign closure.
+unsupported. Remote resume consumes the same closure through a content-bound
+envelope and a daemon-side validator before session allocation. Session-owned
+local-double, interactive, and divergent fork execution paths reject typed
+Selection schedules before launch because they do not consume the campaign
+closure.
 
 Campaign-backed quiescence and property saves export
 `crucible.savepoint-handle.v6`. Its `campaign-observation` boundary proof

@@ -192,9 +192,10 @@ usage error. Live QEMU boundary observation can wait for the backend's
 production completion window and is not limited by the control stream's short
 acknowledgement poll.
 
-New savepoint handles use schema `crucible.savepoint-handle.v3`. They include a
-`selector` line naming the property violation or guest marker (or `none`) and a
-`boundary-proof` line with the exact breakpoint or virtual-time coordinate.
+Session-owned savepoint handles use schema `crucible.savepoint-handle.v3`. They
+include a `selector` line naming the property violation or guest marker (or
+`none`) and a `boundary-proof` line with the exact breakpoint or virtual-time
+coordinate.
 Breakpoint proofs use positional fields `breakpoint`, ID, `suspend`, frontier,
 and quantum, followed by a `boundary-predicate` line containing the predicate's
 content address and canonical payload. Coordinate proofs use `coordinate`,
@@ -204,22 +205,26 @@ percent-encoded so spaces and punctuation cannot resemble additional fields.
 This lets an agent audit which selector fired and where, instead of inferring it
 from generic `set-breakpoint` acknowledgements.
 
-Campaign-backed marker saves use schema `crucible.savepoint-handle.v4` because
-their campaign owner stops on an authenticated named boundary without creating
-a session breakpoint. Their `boundary-proof` uses positional fields
+Historical campaign-backed marker save handles use schema
+`crucible.savepoint-handle.v4`. Their campaign owner stops on an authenticated
+named boundary without creating a session breakpoint, and their
+`boundary-proof` uses positional fields
 `campaign-marker-event`, retained event sequence, event content hash, source
 node, retired icount, frontier, and quantum. The predicate line binds the
 event to the selected guest marker. The reader reconstructs the canonical event,
 checks its content hash, and verifies that the embedded scenario enables the
 source node's white-box channel. The campaign owner authenticates actual event
 observation while capturing the save; later reads verify the self-contained
-event record and its scenario relationship. Crucible continues to read v3
-handles, and session-owned saves continue to write v3. A campaign-backed save
-writes a v5 handle and a v3 local closure index. Both retain the
-content-addressed canonical campaign replay closure needed for delivery-order,
-random-draw, preemption, and typed Selection schedules. Historical override or
-application-random decisions still fail before handle or closure storage is
-written because the portable format does not carry their replay authority.
+event record and its scenario relationship. Crucible continues to read v3 and
+v4 handles, and session-owned saves continue to write v3. Current
+campaign-backed virtual-time and marker saves write a v5 handle and a v3 local
+closure index. Both retain the content-addressed canonical campaign replay
+closure needed for delivery-order, random-draw, preemption, and typed Selection
+schedules. Remote resume accepts a v5 typed schedule only when the daemon
+authenticates that closure envelope before session allocation. Historical
+override or application-random decisions still fail before handle or closure
+storage is written because the portable format does not carry their replay
+authority.
 
 Campaign-backed quiescence and property saves use schema
 `crucible.savepoint-handle.v6`. Their `boundary-proof` line contains
