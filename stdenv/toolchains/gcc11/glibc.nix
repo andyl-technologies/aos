@@ -26,6 +26,10 @@ import ../lib/mk-glibc.nix {
   version = "2.34";
   url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.34.tar.xz";
   sha256 = "1vx5ny3fg9l3mx14pdk2wccy2h11axy4lgm9wmjp2izfcid5iz1l";
+  sourceScriptFilter =
+    if hostPlatform.constraints.cpu == "x86_64"
+    then null
+    else prev.perl;
   useCxx = true;
   extraPathDeps = [
     prev.bison

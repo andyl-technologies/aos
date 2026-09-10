@@ -59,6 +59,10 @@ in
     version = "2.39";
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.39.tar.xz";
     sha256 = "0zr0lk75rvkxp0xplfsggaj4fcv1xjpsvg5qrvp6yifim77q2mn0";
+    sourceScriptFilter =
+      if hostPlatform.constraints.cpu == "x86_64"
+      then null
+      else prev.perl;
     outputs = ["out" "bin" "dev" "static" "getent"];
     useCxx = true;
     cflags = "-O2";
