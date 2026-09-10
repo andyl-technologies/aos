@@ -2072,6 +2072,36 @@ mod tests {
     }
 
     #[test]
+    fn raw_planner_request_and_response_vectors_decode_and_validate_without_construction() {
+        // These reviewed fixtures are transport bytes captured independently
+        // of this test. Keep decoding as the first typed operation so a drifted
+        // constructor cannot regenerate the expected wire representation.
+        let request_bytes = decode_hex_fixture(include_str!("../testdata/planner-request-v2.hex"));
+        let response_bytes =
+            decode_hex_fixture(include_str!("../testdata/planner-response-v1.hex"));
+        assert_eq!(
+            encode_hex(blake3::hash(&request_bytes).as_bytes()),
+            "592e305f3a6ad2cd3f9b7fb4a94a413b1f7ad838b3d58e73f5200fdeab7315a4"
+        );
+        assert_eq!(
+            encode_hex(blake3::hash(&response_bytes).as_bytes()),
+            "5e99e8c56d31d7da71983b65c8ca70eadaf45d14d59c074ce30b6d393df0ec31"
+        );
+
+        let request = PlannerRequest::from_canonical_bytes(&request_bytes)
+            .expect("decode raw planner request vector");
+        let response = PlannerResponse::from_canonical_bytes(&response_bytes)
+            .expect("decode raw planner response vector");
+        response
+            .validate_for(&request)
+            .expect("validate raw response request basis");
+        let authority = PlannerAuthorityKey::from_bytes([0x22; 32]).expect("fixture authority");
+        assert!(response.verify(&authority));
+        assert_eq!(request.canonical_bytes(), request_bytes);
+        assert_eq!(response.canonical_bytes(), response_bytes);
+    }
+
+    #[test]
     fn legacy_planner_request_preserves_its_exact_bytes_and_identity() {
         let current = request(0x21);
         let legacy = PlannerRequest::new_for_schema(
@@ -2471,5 +2501,21 @@ mod tests {
             encoded.push(HEX[(byte & 0x0f) as usize] as char);
         }
         encoded
+    }
+
+    fn decode_hex_fixture(source: &str) -> Vec<u8> {
+        let hex = source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<String>();
+        assert_eq!(hex.len() % 2, 0, "raw vector has an incomplete byte");
+        (0..hex.len())
+            .step_by(2)
+            .map(|offset| {
+                u8::from_str_radix(&hex[offset..offset + 2], 16)
+                    .expect("raw vector contains non-hex data")
+            })
+            .collect()
     }
 }
