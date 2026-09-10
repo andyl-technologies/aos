@@ -1202,6 +1202,7 @@ in rec {
         "checks.crucible.phase4.gates.campaignMutationScaling" = phase4.gates.campaignMutationScaling;
         "checks.crucible.phase4.gates.campaignStatistics" = phase4.gates.campaignStatistics;
         "checks.crucible.phase4.gates.lazyFrontier" = phase4.gates.lazyFrontier;
+        "checks.crucible.phase5.gates.campaignContinuityV2" = phase5.gates.campaignContinuityV2;
         "checks.crucible.phase5.gates.campaignStoreComposition" = phase5.gates.campaignStoreComposition;
         "checks.crucible.phase5.gates.campaignStoreEquivalence" = phase5.gates.campaignStoreEquivalence;
         "checks.crucible.phase7.qemuHotForkEquivalenceVm" = phase7.qemuHotForkEquivalenceVm;
@@ -1407,6 +1408,17 @@ in rec {
           dependencies = [phase4.gates.e2eDeterminism.rawGate];
         };
         dependencies = [phase4.gates.e2eDeterminism];
+      };
+      campaignContinuityV2 = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase5.gates.campaignContinuityV2";
+        # lint needle: campaignContinuityV2 = import ./phase5-campaign-continuity-v2.nix
+        gate = import ./phase5-campaign-continuity-v2.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase5.gates.campaignContinuityV2";
+          taskIds = ["T-CAM-1.3" "T-CAM-1.4" "T-CAM-1.5" "T-CAM-5.8" "T-CAM-5.9"];
+          dependencies = [];
+        };
+        dependencies = [];
       };
       campaignStoreEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase5.gates.campaignStoreEquivalence";

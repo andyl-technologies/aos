@@ -21,12 +21,20 @@ struct ImplementedGateTestModel {
 
 // Process helpers are test-harness entry points, but they must never replace
 // the runnable test that exercises the gate under normal Cargo invocation.
-const IMPLEMENTED_GATE_TEST_MODELS: &[ImplementedGateTestModel] = &[ImplementedGateTestModel {
-    package: "crucible-daemon",
-    test_target: "gate_campaign_component_contract",
-    gate_entry_point: "same_campaign_survives_direct_rpc_and_independent_component_restarts",
-    ignored_process_helpers: &["coordinator_process_helper", "executor_process_helper"],
-}];
+const IMPLEMENTED_GATE_TEST_MODELS: &[ImplementedGateTestModel] = &[
+    ImplementedGateTestModel {
+        package: "crucible-daemon",
+        test_target: "gate_campaign_component_contract",
+        gate_entry_point: "same_campaign_survives_direct_rpc_and_independent_component_restarts",
+        ignored_process_helpers: &["coordinator_process_helper", "executor_process_helper"],
+    },
+    ImplementedGateTestModel {
+        package: "crucible-campaign",
+        test_target: "gate_campaign_continuity_v2",
+        gate_entry_point: "campaign_continuity_v2_survives_pause_restart_archive_restore_and_resume",
+        ignored_process_helpers: &["continuity_process_helper"],
+    },
+];
 
 #[test]
 fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Error>> {
@@ -284,6 +292,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate:campaign-component-contract",
                 "crucible-daemon",
                 "gate_campaign_component_contract"
+            ),
+            (
+                "gate:campaign-continuity-v2",
+                "crucible-campaign",
+                "gate_campaign_continuity_v2"
             ),
             (
                 "gate:scheduler-liveness",
