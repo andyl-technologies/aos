@@ -123,6 +123,14 @@ impl CampaignRepository {
                 .map(|result| result.map(|id| id.content_id()))
                 .collect::<Result<BTreeSet<_>, _>>()?,
         );
+        for search in candidate_inputs
+            .values()
+            .filter_map(|input| input.search.as_ref())
+        {
+            unpublished_derived_inputs.insert(search.id()?.content_id());
+            unpublished_derived_inputs.insert(search.parent_path().content_id());
+            unpublished_derived_inputs.insert(search.path().content_id());
+        }
         for object_id in request.input_bundle().object_ids() {
             let Some(object) = request.input_bundle().object(object_id)? else {
                 return Err(integrity("planner-request-bundle-object-is-missing"));
@@ -240,6 +248,32 @@ impl CampaignRepository {
                         return Err(integrity("planner-request-candidate-budget-mismatch"));
                     }
                 }
+                if let Some(search) = &input.search {
+                    let (expected, parent_path, path) =
+                        self.planner_search_candidate(&snapshot, offer)?;
+                    if search != &expected {
+                        return Err(integrity("planner-request-search-candidate-mismatch"));
+                    }
+
+                    for (expected_envelope, mismatch_reason) in [
+                        (
+                            ObjectEnvelope::for_branch_path(&parent_path)?,
+                            "planner-request-search-parent-path-mismatch",
+                        ),
+                        (
+                            ObjectEnvelope::for_branch_path(&path)?,
+                            "planner-request-search-path-mismatch",
+                        ),
+                    ] {
+                        let bundled = request
+                            .input_bundle()
+                            .object(expected_envelope.content_id())?
+                            .ok_or_else(|| integrity(mismatch_reason))?;
+                        if bundled != expected_envelope {
+                            return Err(integrity(mismatch_reason));
+                        }
+                    }
+                }
             }
             if let Some(guidance) = &input.guidance {
                 let offer = input
@@ -287,6 +321,10 @@ impl CampaignRepository {
             CanonicalBeamPlanner
                 .plan(request)
                 .map_err(CampaignRepositoryError::Codec)?
+        } else if let Some(mut planner) = CanonicalSearchPlanner::from_request(request)? {
+            planner
+                .plan(request)
+                .map_err(CampaignRepositoryError::Codec)?
         } else {
             return Ok(());
         };
@@ -311,6 +349,10 @@ impl CampaignRepository {
                 .map_err(CampaignRepositoryError::Codec)?
         } else if CanonicalBeamPlanner::supports_descriptor(request.engine())? {
             CanonicalBeamPlanner
+                .plan(request)
+                .map_err(CampaignRepositoryError::Codec)?
+        } else if let Some(mut planner) = CanonicalSearchPlanner::from_request(request)? {
+            planner
                 .plan(request)
                 .map_err(CampaignRepositoryError::Codec)?
         } else {

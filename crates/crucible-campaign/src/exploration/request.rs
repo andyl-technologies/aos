@@ -192,7 +192,8 @@ impl StopCondition {
     pub(crate) const fn uses_extended_wire_schema(&self) -> bool {
         matches!(
             self,
-            Self::ExecutionQuanta(_) | Self::VirtualTimeOrExecutionQuanta { .. }
+            Self::ExecutionQuanta(_)
+                | Self::VirtualTimeOrExecutionQuanta { .. }
                 | Self::NextChoiceOrExecutionQuanta { .. }
         )
     }
