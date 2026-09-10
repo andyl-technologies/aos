@@ -156,9 +156,10 @@ id = "remove-archival-leaf-during-multipart"
 title = "Remove an archival leaf during multipart upload"
 failure_class = "storage-multipart"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-required"
+implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.multipart-remove-leaf"
+fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.multipart-remove-leaf {fault_build_command}"
 prior_state = "The source snapshot and archive transfer journal authenticate all selected closure leaves."
@@ -168,7 +169,7 @@ recovery_commands = ["crucible --format jsonl campaign archive inspect --state {
 observables = ["transfer journal", "multipart upload identity", "selected leaf identity", "archive ref absence", "durability count"]
 post_recovery_invariant = "No incomplete closure is published or counted as durable and abandoned multipart resources are explained."
 backend_scope = "constrained-host-and-each-targeted-backend"
-prerequisites = ["multipart-interruption"]
+prerequisites = ["multipart-remove-leaf-retry", "multipart-interruption"]
 
 [[injections]]
 id = "expire-store-credentials"
@@ -366,6 +367,12 @@ id = "failed-source-staging-cleanup"
 package = "crucible-cas"
 source = "crates/crucible-cas/src/content_store/tests.rs"
 selector = "content_store::tests::changing_and_failing_sources_leave_no_published_object_or_staging_file"
+
+[[prerequisite_tests]]
+id = "multipart-remove-leaf-retry"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/s3.rs"
+selector = "content_store::s3::tests::multipart_remove_leaf_aborts_before_completion_and_retries"
 
 [[prerequisite_tests]]
 id = "multipart-interruption"
