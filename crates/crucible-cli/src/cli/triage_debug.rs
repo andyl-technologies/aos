@@ -1,6 +1,12 @@
 //! Failure triage and time-travel debugging planning.
 
+#[path = "triage_debug/campaign_evidence.rs"]
+pub(crate) mod campaign_evidence;
+
 use super::*;
+use campaign_evidence::{
+    build_campaign_triage_minimization, parse_failure_findings_ledger_v4_bytes,
+};
 pub(super) fn plan_triage_invocation(
     cli: &Cli,
     args: &TriageArgs,
@@ -81,7 +87,7 @@ pub(super) fn run_triage_invocation(
     let store = crucible::LocalDagStore::new(plan.store_root.clone());
     let loaded_findings = load_triage_findings_ledger(&store, &plan.findings)?;
     let stored_ledger = store_loaded_findings_ledger(&store, &loaded_findings)?;
-    let ledger = loaded_findings.ledger;
+    let ledger = loaded_findings.ledger.clone();
     if ledger.artifact_count() != 0 && ledger.signed_findings().is_empty() {
         return Err(CliError::Artifact(format!(
             "triage findings input contains {} artifact(s), but discovery-time signature evidence is not available; pass the signed findings ledger emitted by `search` or `fuzz` (use `--findings-out` to select its path)",
@@ -96,13 +102,9 @@ pub(super) fn run_triage_invocation(
     .map_err(|_| {
         CliError::Triage("triage clustering failed for the findings ledger".to_string())
     })?;
-    let minimization = build_triage_minimization(&plan, &clustering, &loaded_findings.evidence)?;
-    let report_set = build_triage_report_set(
-        plan.policy,
-        &clustering,
-        &minimization,
-        &loaded_findings.evidence,
-    )?;
+    let minimization = build_triage_minimization(&plan, &clustering, &loaded_findings)?;
+    let report_set =
+        build_triage_report_set(plan.policy, &clustering, &minimization, &loaded_findings)?;
     let signature_self_check = if plan.recompute_signatures {
         build_triage_signature_self_check(&loaded_findings.evidence)?
     } else {
@@ -162,8 +164,9 @@ pub(super) fn store_loaded_findings_ledger(
 pub(super) fn build_triage_minimization(
     plan: &TriageInvocationPlan,
     clustering: &crucible::FailureClusteringResult,
-    evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+    findings: &LoadedTriageFindings,
 ) -> Result<crucible::FailureSignaturePreservingMinimizationResult, CliError> {
+    let evidence = &findings.evidence;
     if clustering.cluster_count() == 0 {
         return Ok(crucible::FailureSignaturePreservingMinimizationResult {
             policy: plan.policy,
@@ -188,59 +191,75 @@ pub(super) fn build_triage_minimization(
             })
         }
         TriageMinimizeArg::Representative | TriageMinimizeArg::All => {
+            if !findings.campaign_evidence.is_empty() {
+                return build_campaign_triage_minimization(plan, clustering, findings);
+            }
             let templates = triage_signature_templates_by_fingerprint(clustering, evidence)?;
             let mut runs = Vec::new();
             for cluster in &clustering.clusters {
-                let representative = cluster.representative_member().ok_or_else(|| {
+                let _representative = cluster.representative_member().ok_or_else(|| {
                     CliError::Triage("triage cluster has no representative".to_string())
                 })?;
-                if representative.signature.failure_kind == crucible::FailureKind::Timeout {
-                    runs.push(triage_no_op_minimization_run(
-                        plan.policy,
-                        cluster,
-                        evidence,
-                        crucible_model::FailureMinimizationDisposition::NotApplicableTimeout,
-                    )?);
-                    continue;
-                }
-                let single_cluster = crucible::FailureClusteringResult {
-                    policy: clustering.policy,
-                    clusters: vec![cluster.clone()],
+                let selected_members = match plan.minimize {
+                    TriageMinimizeArg::Representative => &cluster.members[..1],
+                    TriageMinimizeArg::All => cluster.members.as_slice(),
+                    TriageMinimizeArg::None => unreachable!("matched minimizing mode"),
                 };
-                let mut minimized = single_cluster
-                    .minimize_representatives(
-                        crucible_model::MinimizationConfig::new(crucible::Seed::default()),
-                        |artifact| {
-                            evidence
-                            .get(&artifact)
-                            .map(|item| item.finding.clone())
-                            .ok_or(
+                for member in selected_members {
+                    if member.signature.failure_kind == crucible::FailureKind::Timeout {
+                        runs.push(triage_no_op_minimization_member_run(
+                            plan.policy,
+                            cluster,
+                            member.reproduction_artifact,
+                            &member.signature,
+                            evidence,
+                            crucible_model::FailureMinimizationDisposition::NotApplicableTimeout,
+                        )?);
+                        continue;
+                    }
+                    let single_cluster = crucible::FailureClusteringResult {
+                        policy: clustering.policy,
+                        clusters: vec![crucible::FailureCluster {
+                            id: cluster.id,
+                            signature_key: cluster.signature_key.clone(),
+                            members: vec![member.clone()],
+                        }],
+                    };
+                    let mut minimized = single_cluster
+                        .minimize_representatives(
+                            crucible_model::MinimizationConfig::new(crucible::Seed::default()),
+                            |artifact| {
+                                evidence
+                                    .get(&artifact)
+                                    .map(|item| item.finding.clone())
+                                    .ok_or(
+                                    crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
+                                        operation: "triage-minimization",
+                                        reason: "selected evidence missing from findings ledger",
+                                    },
+                                )
+                            },
+                            |candidate| {
+                                if let Some(item) = evidence.get(&candidate.artifact.id()) {
+                                    return Ok(Some(item.discovery_signature.clone()));
+                                }
+                                let template = templates.get(&candidate.finding_fingerprint).ok_or(
                                 crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
                                     operation: "triage-minimization",
-                                    reason: "representative evidence missing from findings ledger",
+                                    reason: "candidate evidence template missing from findings ledger",
                                 },
-                            )
-                        },
-                        |candidate| {
-                            if let Some(item) = evidence.get(&candidate.artifact.id()) {
-                                return Ok(Some(item.discovery_signature.clone()));
-                            }
-                            let template = templates.get(&candidate.finding_fingerprint).ok_or(
-                            crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
-                                operation: "triage-minimization",
-                                reason: "candidate evidence template missing from findings ledger",
+                            )?;
+                                triage_evidence_for_finding(candidate.clone(), template)
+                                    .map(|item| Some(item.discovery_signature))
                             },
-                        )?;
-                            triage_evidence_for_finding(candidate.clone(), template)
-                                .map(|item| Some(item.discovery_signature))
-                        },
-                    )
-                    .map_err(|_| {
-                        CliError::Triage(
-                            "triage signature-preserving minimization failed".to_string(),
                         )
-                    })?;
-                runs.append(&mut minimized.runs);
+                        .map_err(|_| {
+                            CliError::Triage(
+                                "triage signature-preserving minimization failed".to_string(),
+                            )
+                        })?;
+                    runs.append(&mut minimized.runs);
+                }
             }
             Ok(crucible::FailureSignaturePreservingMinimizationResult {
                 policy: plan.policy,
@@ -259,28 +278,43 @@ pub(super) fn triage_no_op_minimization_run(
     let representative = cluster
         .representative_member()
         .ok_or_else(|| CliError::Triage("triage cluster has no representative".to_string()))?;
-    let representative_evidence = evidence
-        .get(&representative.reproduction_artifact)
+    triage_no_op_minimization_member_run(
+        policy,
+        cluster,
+        representative.reproduction_artifact,
+        &representative.signature,
+        evidence,
+        disposition,
+    )
+}
+
+fn triage_no_op_minimization_member_run(
+    policy: crucible::SignaturePolicy,
+    cluster: &crucible::FailureCluster,
+    reproduction_artifact: crucible::ContentHash,
+    signature: &crucible::FailureSignature,
+    evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+    disposition: crucible_model::FailureMinimizationDisposition,
+) -> Result<crucible_model::FailureSignaturePreservingMinimizationRun, CliError> {
+    let member_evidence = evidence
+        .get(&reproduction_artifact)
         .ok_or_else(|| artifact_error("missing representative evidence in findings ledger"))?;
-    let target_signature_key = representative
-        .signature
-        .signature_key(policy)
-        .map_err(|_| {
-            CliError::Triage(
-                "triage representative signature does not project under policy".to_string(),
-            )
-        })?;
+    let target_signature_key = signature.signature_key(policy).map_err(|_| {
+        CliError::Triage(
+            "triage representative signature does not project under policy".to_string(),
+        )
+    })?;
     Ok(crucible_model::FailureSignaturePreservingMinimizationRun {
         cluster_id: cluster.id,
-        representative_artifact: representative.reproduction_artifact,
+        representative_artifact: reproduction_artifact,
         target_signature_key: target_signature_key.clone(),
         minimized_signature_key: target_signature_key,
         disposition,
         minimization: crucible_model::MinimizationRun {
             seed: crucible::Seed::default(),
-            target_fingerprint: representative_evidence.finding.finding_fingerprint,
-            original: representative_evidence.finding.clone(),
-            minimized: representative_evidence.finding.clone(),
+            target_fingerprint: member_evidence.finding.finding_fingerprint,
+            original: member_evidence.finding.clone(),
+            minimized: member_evidence.finding.clone(),
             attempts: Vec::new(),
         },
     })
@@ -292,23 +326,28 @@ pub(super) fn triage_signature_templates_by_fingerprint(
 ) -> Result<BTreeMap<crucible::ContentHash, TriageFindingEvidence>, CliError> {
     let mut templates = BTreeMap::new();
     for cluster in &clustering.clusters {
-        let representative = cluster
-            .representative_member()
-            .ok_or_else(|| CliError::Triage("triage cluster has no representative".to_string()))?;
-        let item = evidence
-            .get(&representative.reproduction_artifact)
-            .ok_or_else(|| artifact_error("missing representative evidence in findings ledger"))?;
-        match templates.entry(item.finding.finding_fingerprint) {
-            Entry::Vacant(entry) => {
-                entry.insert(item.clone());
-            }
-            Entry::Occupied(entry)
-                if entry.get().discovery_signature.report_material()
-                    == item.discovery_signature.report_material() => {}
-            Entry::Occupied(_) => {
-                return Err(CliError::Triage(
-                    "triage findings reuse a fingerprint with conflicting signatures".to_string(),
-                ));
+        if cluster.members.is_empty() {
+            return Err(CliError::Triage(
+                "triage cluster has no representative".to_string(),
+            ));
+        }
+        for member in &cluster.members {
+            let item = evidence
+                .get(&member.reproduction_artifact)
+                .ok_or_else(|| artifact_error("missing member evidence in findings ledger"))?;
+            match templates.entry(item.finding.finding_fingerprint) {
+                Entry::Vacant(entry) => {
+                    entry.insert(item.clone());
+                }
+                Entry::Occupied(entry)
+                    if entry.get().discovery_signature.report_material()
+                        == item.discovery_signature.report_material() => {}
+                Entry::Occupied(_) => {
+                    return Err(CliError::Triage(
+                        "triage findings reuse a fingerprint with conflicting signatures"
+                            .to_string(),
+                    ));
+                }
             }
         }
     }
@@ -319,20 +358,31 @@ pub(super) fn build_triage_report_set(
     policy: crucible::SignaturePolicy,
     clustering: &crucible::FailureClusteringResult,
     minimization: &crucible::FailureSignaturePreservingMinimizationResult,
-    evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+    findings: &LoadedTriageFindings,
 ) -> Result<crucible::FailureClusterReportSet, CliError> {
-    let runs_by_cluster = minimization
-        .runs
-        .iter()
-        .map(|run| (run.cluster_id, run))
-        .collect::<BTreeMap<_, _>>();
     let mut reports = Vec::new();
     for cluster in &clustering.clusters {
-        let run = runs_by_cluster
-            .get(&cluster.id)
-            .copied()
+        let representative = cluster
+            .representative_member()
+            .ok_or_else(|| CliError::Triage("triage cluster has no representative".to_string()))?;
+        let run = minimization
+            .runs
+            .iter()
+            .find(|run| {
+                run.cluster_id == cluster.id
+                    && run.representative_artifact == representative.reproduction_artifact
+            })
             .ok_or_else(|| CliError::Triage("missing triage minimization run".to_string()))?;
-        let item = triage_report_evidence_for_minimization_run(run, evidence)?;
+        let item = if findings.campaign_evidence.is_empty()
+            || run.minimized_artifact() == run.representative_artifact
+        {
+            triage_report_evidence_for_minimization_run(run, &findings.evidence)?
+        } else {
+            campaign_evidence::campaign_triage_report_evidence_for_run(
+                run,
+                &findings.campaign_evidence,
+            )?
+        };
         let report = crucible_model::FailureClusterReport::from_cluster(
             policy,
             cluster,
@@ -495,6 +545,7 @@ pub(super) fn triage_property_evidence_for_violation_with_recording(
     )?;
     Ok(TriageFindingEvidence {
         finding,
+        causal_entries: entries,
         recorded_event_log,
         failure,
         discovery_signature,
@@ -543,6 +594,7 @@ pub(super) fn triage_timeout_evidence(
     )?;
     Ok(TriageFindingEvidence {
         finding,
+        causal_entries: entries,
         recorded_event_log,
         failure: crucible_model::FailureClusterReportFailure::timeout(timeout),
         discovery_signature,
@@ -817,6 +869,7 @@ pub(super) fn looks_like_failure_findings_ledger(bytes: &[u8]) -> bool {
             schema == FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1
                 || schema == FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2
                 || schema == FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3
+                || schema == FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V4
         })
 }
 
@@ -835,6 +888,9 @@ pub(super) fn parse_failure_findings_ledger_bytes(
         }
         Some(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3) => {
             parse_failure_findings_ledger_v3_bytes(store, bytes, text)
+        }
+        Some(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V4) => {
+            parse_failure_findings_ledger_v4_bytes(store, bytes, text)
         }
         _ => Err(artifact_error(
             "unsupported findings ledger artifact schema",
@@ -863,6 +919,7 @@ pub(super) fn parse_failure_findings_ledger_v1_bytes(
     Ok(LoadedTriageFindings {
         ledger: crucible::FailureFindingsLedger::from_artifacts(artifacts),
         evidence: BTreeMap::new(),
+        campaign_evidence: Vec::new(),
         artifact_bytes: bytes.to_vec(),
     })
 }
@@ -913,6 +970,7 @@ pub(super) fn parse_failure_findings_ledger_v2_bytes(
     Ok(LoadedTriageFindings {
         ledger,
         evidence,
+        campaign_evidence: Vec::new(),
         artifact_bytes: bytes.to_vec(),
     })
 }
@@ -989,6 +1047,7 @@ pub(super) fn parse_failure_findings_ledger_v3_bytes(
     Ok(LoadedTriageFindings {
         ledger,
         evidence,
+        campaign_evidence: Vec::new(),
         artifact_bytes: bytes.to_vec(),
     })
 }
