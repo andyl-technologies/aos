@@ -38,6 +38,20 @@ const CORRUPT_TIER_COPY_TRIGGER: &str = "crucible.destructive-recovery.corrupt-t
 const CORRUPT_TIER_COPY_TEST_NAME: &str = "content_store::tests::corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier";
 #[cfg(feature = "destructive-recovery-faults")]
 const CORRUPT_TIER_COPY_CHILD_EXIT_CODE: i32 = 90;
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_INDEX_INTERRUPTION_CHILD_ENVIRONMENT: &str =
+    "CRUCIBLE_DESTRUCTIVE_RECOVERY_PACK_INDEX_INTERRUPTION_CHILD";
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_INDEX_INTERRUPTION_ROOT_ENVIRONMENT: &str =
+    "CRUCIBLE_DESTRUCTIVE_RECOVERY_PACK_INDEX_INTERRUPTION_ROOT";
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_INDEX_INTERRUPTION_TRIGGER: &str =
+    "crucible.destructive-recovery.pack-index-interruption";
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_INDEX_INTERRUPTION_TEST_NAME: &str =
+    "content_store::tests::pack_index_interruption_recovers_old_generation_and_retries";
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_INDEX_INTERRUPTION_CHILD_EXIT_CODE: i32 = 91;
 
 // Cross-instance directory fences can include filesystem sync work after the
 // lock is released. Leave enough headroom for highly parallel test runners.
@@ -4520,6 +4534,191 @@ fn packed_backend_restarts_repackages_and_keeps_old_reader_inodes_valid() {
 }
 
 #[test]
+fn packed_initialization_waits_for_in_flight_staging() {
+    let temporary = TempDir::new().expect("packed staging fixture root");
+    let root = temporary.path().join("packed");
+    let writer_store =
+        PackedBlobBackend::open("packed", &root, 64 * 1024).expect("writer packed backend");
+    let bytes = Arc::<[u8]>::from(&b"blocked packed staging body"[..]);
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
+    let (opened_sender, opened_receiver) = mpsc::channel();
+    let (release_sender, release_receiver) = mpsc::channel();
+    let source = BlobHandle::new(Arc::new(BlockingSource {
+        bytes: Arc::clone(&bytes),
+        opened: opened_sender,
+        release: Mutex::new(Some(release_receiver)),
+    }));
+    let writer = thread::spawn(move || writer_store.put_if_absent(id, &source));
+
+    opened_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("writer reached packed staging stream");
+    assert_eq!(pack_staging_file_count(&root), 1);
+    let lifecycle_probe = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join(".packed-admin/lifecycle.lock"))
+        .expect("open lifecycle lock probe");
+    let lock_error = rustix::fs::flock(
+        &lifecycle_probe,
+        rustix::fs::FlockOperation::NonBlockingLockExclusive,
+    )
+    .expect_err("in-flight staging retains shared lifecycle lock");
+    assert_eq!(
+        std::io::Error::from_raw_os_error(lock_error.raw_os_error()).kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+
+    let unrelated = root.join("packs/.operator-note");
+    fs::write(&unrelated, b"operator-owned hidden file").expect("write unrelated hidden file");
+    let (initialization_started_sender, initialization_started_receiver) = mpsc::channel();
+    let (initialized_sender, initialized_receiver) = mpsc::channel();
+    let initializer_root = root.clone();
+    let initializer = thread::spawn(move || {
+        initialization_started_sender
+            .send(())
+            .expect("signal initialization attempt");
+        let backend = PackedBlobBackend::open("packed", initializer_root, 64 * 1024)
+            .expect("initialize after staged put");
+        initialized_sender
+            .send(())
+            .expect("signal completed initialization");
+        backend
+    });
+
+    initialization_started_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("initializer started");
+    assert!(matches!(
+        initialized_receiver.recv_timeout(Duration::from_millis(50)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert_eq!(pack_staging_file_count(&root), 1);
+
+    release_sender.send(()).expect("release staged source");
+    writer
+        .join()
+        .expect("join packed writer")
+        .expect("complete packed put");
+    initialized_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("initializer completed after staged put");
+    let restarted = initializer.join().expect("join packed initializer");
+
+    assert_eq!(pack_staging_file_count(&root), 0);
+    assert!(unrelated.exists());
+    assert_eq!(
+        read_bytes(&restarted, id, None).expect("read staged object after initialization"),
+        bytes.as_ref()
+    );
+
+    drop(restarted);
+    let non_regular = root.join("packs/.pack.tmp-1-1");
+    fs::create_dir(&non_regular).expect("create non-regular owned staging name");
+    assert!(matches!(
+        PackedBlobBackend::open("packed", &root, 64 * 1024),
+        Err(StoreError::InvalidComposition {
+            reason: "packed staging path is not a regular file"
+        })
+    ));
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+#[test]
+fn pack_index_interruption_recovers_old_generation_and_retries() {
+    if std::env::var_os(PACK_INDEX_INTERRUPTION_CHILD_ENVIRONMENT).is_some() {
+        run_pack_index_interruption_child();
+        panic!("pack-index child returned without reaching the injected interruption");
+    }
+
+    let temporary = TempDir::new().expect("pack-index interruption fixture root");
+    let root = temporary.path().join("packed");
+    let store = PackedBlobBackend::open("packed", &root, 64 * 1024).expect("packed backend");
+    let first_bytes = vec![0x31; 8 * 1024];
+    let second_bytes = vec![0x72; 12 * 1024];
+    let first = ContentId::for_bytes(ObjectKind::RamExtent, 1, &first_bytes);
+    let second = ContentId::for_bytes(ObjectKind::DiskExtent, 1, &second_bytes);
+    put_bytes(&store, first, &first_bytes).expect("first packed put");
+    put_bytes(&store, second, &second_bytes).expect("second packed put");
+
+    let before = store.accounting().expect("old index accounting");
+    let plan = store.plan_repack().expect("interrupted repack plan");
+    assert_eq!(before.generation(), 2);
+    assert_eq!(before.packs(), 2);
+    drop(store);
+
+    let child = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .arg("--exact")
+        .arg(PACK_INDEX_INTERRUPTION_TEST_NAME)
+        .arg("--nocapture")
+        .env(PACK_INDEX_INTERRUPTION_CHILD_ENVIRONMENT, "1")
+        .env(PACK_INDEX_INTERRUPTION_ROOT_ENVIRONMENT, &root)
+        .env(
+            DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
+            PACK_INDEX_INTERRUPTION_TRIGGER,
+        )
+        .output()
+        .expect("run pack-index interruption child");
+    assert_eq!(
+        child.status.code(),
+        Some(PACK_INDEX_INTERRUPTION_CHILD_EXIT_CODE),
+        "pack-index child did not preserve the expected state:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr),
+    );
+    assert_eq!(pack_file_count(&root), 3);
+    assert_eq!(pack_staging_file_count(&root), 1);
+
+    let restarted =
+        PackedBlobBackend::open("packed", &root, 64 * 1024).expect("restart old generation");
+    assert_eq!(pack_file_count(&root), 2);
+    assert_eq!(pack_staging_file_count(&root), 0);
+    assert_eq!(
+        restarted.accounting().expect("recovered accounting"),
+        before
+    );
+    assert_eq!(
+        read_bytes(&restarted, first, None).expect("first old-generation object"),
+        first_bytes
+    );
+    assert_eq!(
+        read_bytes(&restarted, second, None).expect("second old-generation object"),
+        second_bytes
+    );
+
+    let report = restarted
+        .apply_repack(&plan)
+        .expect("retry exact interrupted plan");
+    assert!(!report.replayed());
+    assert_eq!(report.plan(), plan.id());
+    assert_eq!(report.before(), before);
+    assert_eq!(report.after().generation(), before.generation() + 1);
+    assert_eq!(report.after().packs(), 1);
+    assert_eq!(pack_file_count(&root), 1);
+    assert_eq!(
+        read_bytes(&restarted, first, None).expect("first object after retry"),
+        first_bytes
+    );
+    assert_eq!(
+        read_bytes(&restarted, second, None).expect("second object after retry"),
+        second_bytes
+    );
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn run_pack_index_interruption_child() {
+    let root = std::env::var_os(PACK_INDEX_INTERRUPTION_ROOT_ENVIRONMENT)
+        .map(PathBuf::from)
+        .expect("pack-index fixture root");
+    let store = PackedBlobBackend::open("packed", root, 64 * 1024).expect("child packed backend");
+    let plan = store.plan_repack().expect("child repack plan");
+
+    store
+        .apply_repack(&plan)
+        .expect("fault hook must interrupt before repack returns");
+}
+
+#[test]
 fn packed_inventory_deletes_logical_entries_without_removing_live_pack_bytes() {
     let temp = TempDir::new().expect("temporary directory");
     let root = temp.path().join("packed");
@@ -5100,6 +5299,19 @@ fn pack_file_count(root: &Path) -> usize {
         .count()
 }
 
+fn pack_staging_file_count(root: &Path) -> usize {
+    fs::read_dir(root.join("packs"))
+        .expect("read pack directory")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".pack.tmp-")
+        })
+        .count()
+}
+
 fn only_pack_path(root: &Path) -> PathBuf {
     let packs = fs::read_dir(root.join("packs"))
         .expect("read pack directory")
@@ -5176,6 +5388,48 @@ impl Read for CountingReader {
         let read = self.cursor.read(output)?;
         self.bytes_read.fetch_add(read, Ordering::SeqCst);
         Ok(read)
+    }
+}
+
+struct BlockingSource {
+    bytes: Arc<[u8]>,
+    opened: mpsc::Sender<()>,
+    release: Mutex<Option<mpsc::Receiver<()>>>,
+}
+
+impl BlobSource for BlockingSource {
+    fn logical_length(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        let release = self
+            .release
+            .lock()
+            .expect("blocking source release lock")
+            .take()
+            .expect("blocking source opens once");
+        self.opened.send(()).expect("signal blocking source open");
+        Ok(Box::new(BlockingReader {
+            cursor: Cursor::new(Arc::clone(&self.bytes)),
+            release: Some(release),
+        }))
+    }
+}
+
+struct BlockingReader {
+    cursor: Cursor<Arc<[u8]>>,
+    release: Option<mpsc::Receiver<()>>,
+}
+
+impl Read for BlockingReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(release) = self.release.take() {
+            release
+                .recv()
+                .map_err(|_| std::io::Error::other("blocking source release dropped"))?;
+        }
+        self.cursor.read(output)
     }
 }
 

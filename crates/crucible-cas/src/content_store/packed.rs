@@ -72,6 +72,14 @@ const MIN_TARGET_PACK_BYTES: u64 = 64 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_INDEX_INTERRUPTION_TRIGGER: &str =
+    "crucible.destructive-recovery.pack-index-interruption";
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_INDEX_INTERRUPTION_EXIT_CODE: i32 = 91;
+
 /// Checked logical and physical accounting for one packed leaf generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PackedStorageAccounting {
@@ -366,6 +374,16 @@ impl PackedBlobBackend {
                 next_entries.insert(id, entry);
             }
         }
+        if !candidates.is_empty() {
+            #[cfg(feature = "destructive-recovery-faults")]
+            inject_pack_index_interruption();
+
+            for candidate in &candidates {
+                remove_temporary(&candidate.temporary, true)?;
+            }
+            sync_directory(&self.packs)?;
+        }
+
         let next = IndexState {
             instance: index.instance,
             generation: index.generation.checked_add(1).ok_or(StoreError::Quota)?,
@@ -399,7 +417,9 @@ impl PackedBlobBackend {
             Ok(metadata) if metadata.file_type().is_file() => {
                 let index = self.load_index()?;
                 self.validate_index_packs(&index)?;
+                // Reclaim only after the retained generation and its packs authenticate.
                 self.cleanup_unreferenced_packs(&index)?;
+                self.cleanup_staging_packs()?;
             }
             Ok(_) => {
                 return Err(StoreError::InvalidComposition {
@@ -795,6 +815,52 @@ impl PackedBlobBackend {
         }
         Ok(removed)
     }
+
+    // The caller holds lifecycle exclusively after authenticating the retained generation.
+    fn cleanup_staging_packs(&self) -> Result<u64, StoreError> {
+        let mut removed = 0_u64;
+        for entry in fs::read_dir(&self.packs)
+            .map_err(|source| io_error("list packed staging files", &self.packs, source))?
+        {
+            let entry = entry
+                .map_err(|source| io_error("read packed staging entry", &self.packs, source))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| StoreError::Incompatible)?;
+            if !is_pack_temporary_name(&name) {
+                continue;
+            }
+            let file_type = entry.file_type().map_err(|source| {
+                io_error("inspect packed staging entry", &entry.path(), source)
+            })?;
+            if !file_type.is_file() {
+                return Err(StoreError::InvalidComposition {
+                    reason: "packed staging path is not a regular file",
+                });
+            }
+            fs::remove_file(entry.path()).map_err(|source| {
+                io_error(
+                    "remove abandoned packed staging file",
+                    &entry.path(),
+                    source,
+                )
+            })?;
+            removed = removed.checked_add(1).ok_or(StoreError::Quota)?;
+        }
+        if removed != 0 {
+            sync_directory(&self.packs)?;
+        }
+        Ok(removed)
+    }
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn inject_pack_index_interruption() {
+    let requested = std::env::var_os(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT);
+    if requested.as_deref() == Some(std::ffi::OsStr::new(PACK_INDEX_INTERRUPTION_TRIGGER)) {
+        std::process::exit(PACK_INDEX_INTERRUPTION_EXIT_CODE);
+    }
 }
 
 impl ImmutableBlobBackend for PackedBlobBackend {
@@ -834,8 +900,9 @@ impl ImmutableBlobBackend for PackedBlobBackend {
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        // Keep staging protected so exclusive startup cleanup cannot unlink an in-flight put.
+        let _lifecycle = self.lock_lifecycle(FlockOperation::LockShared)?;
         {
-            let _lifecycle = self.lock_lifecycle(FlockOperation::LockShared)?;
             let _state = self.lock_state()?;
             let index = self.load_index()?;
             if let Some(entry) = index.entries.get(&id) {
@@ -850,7 +917,6 @@ impl ImmutableBlobBackend for PackedBlobBackend {
 
         let candidate = self.build_pack(&[(id, source.clone())])?;
         let result = (|| {
-            let _lifecycle = self.lock_lifecycle(FlockOperation::LockShared)?;
             let _state = self.lock_state()?;
             let mut index = self.load_index()?;
             if let Some(existing) = index.entries.get(&id) {
@@ -1199,6 +1265,26 @@ fn remove_temporary(path: &Path, required: bool) -> Result<(), StoreError> {
         Err(_) if !required => Ok(()),
         Err(source) => Err(io_error("remove packed staging file", path, source)),
     }
+}
+
+fn is_pack_temporary_name(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(".pack.tmp-") else {
+        return false;
+    };
+    let Some((process, sequence)) = suffix.split_once('-') else {
+        return false;
+    };
+
+    is_canonical_decimal(process)
+        && process.parse::<u32>().is_ok()
+        && is_canonical_decimal(sequence)
+        && sequence.parse::<u64>().is_ok()
+}
+
+fn is_canonical_decimal(value: &str) -> bool {
+    !value.is_empty()
+        && (value.len() == 1 || !value.starts_with('0'))
+        && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn sync_directory(path: &Path) -> Result<(), StoreError> {

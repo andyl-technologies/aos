@@ -218,9 +218,10 @@ id = "interrupt-pack-index-publication"
 title = "Interrupt pack or index publication or repacking"
 failure_class = "storage-pack-publication"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-required"
+implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.pack-index-interruption"
+fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.pack-index-interruption {fault_build_command}"
 prior_state = "The old pack index generation and every object it names are readable and authenticated."
@@ -231,7 +232,7 @@ recovery_gap = "No public repack or incomplete-pack cleanup command is exposed; 
 observables = ["old index generation", "new index generation", "reader generation", "unreachable packs", "cleanup disposition"]
 post_recovery_invariant = "The old generation remains readable until a complete new generation is atomically visible."
 backend_scope = "constrained-host-and-each-targeted-backend"
-prerequisites = ["pack-generation-restart", "unindexed-pack-cleanup"]
+prerequisites = ["pack-index-interruption-recovery", "pack-staging-lifecycle-exclusion", "pack-generation-restart", "unindexed-pack-cleanup"]
 
 [[injections]]
 id = "fail-vm-during-atomic-world-fork"
@@ -411,6 +412,18 @@ id = "physical-corruption-rejection"
 package = "crucible-cas"
 source = "crates/crucible-cas/src/content_store/tests.rs"
 selector = "content_store::tests::compressed_directory_rejects_oversized_sources_and_corrupt_physical_records"
+
+[[prerequisite_tests]]
+id = "pack-index-interruption-recovery"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/tests.rs"
+selector = "content_store::tests::pack_index_interruption_recovers_old_generation_and_retries"
+
+[[prerequisite_tests]]
+id = "pack-staging-lifecycle-exclusion"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/tests.rs"
+selector = "content_store::tests::packed_initialization_waits_for_in_flight_staging"
 
 [[prerequisite_tests]]
 id = "pack-generation-restart"
