@@ -169,7 +169,15 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         )],
         "checks.crucible.phase5.gates.campaignStoreComposition",
     ),
-    unsupported("gate:campaign-continuity-v2", "crucible-campaign"),
+    automated(
+        "gate:campaign-continuity-v2",
+        "crucible-campaign",
+        &[integration_target(
+            "crucible-campaign",
+            "gate_campaign_continuity_v2",
+        )],
+        "checks.crucible.phase5.gates.campaignContinuityV2",
+    ),
     unsupported("gate:campaign-destructive-recovery", "crucible-daemon"),
     unsupported("gate:campaign-dogfood", "crucible-cli"),
     automated(

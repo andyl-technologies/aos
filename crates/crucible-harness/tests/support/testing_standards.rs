@@ -334,6 +334,35 @@ pub(super) fn source_shape_failures(
         }
     }
 
+    if standard.shape == TestShape::CampaignContinuityV2 {
+        for required in [
+            "fn campaign_continuity_v2_survives_pause_restart_archive_restore_and_resume(",
+            "fn continuity_process_helper()",
+            "Command::new(std::env::current_exe()",
+            ".arg(PROCESS_HELPER)",
+            "output.status.success()",
+            "DirectoryBlobBackend::new",
+            "DirectoryRefBackend::new",
+            "CampaignArchivePolicy::Executable",
+            "publish_transferred_campaign(",
+            "fn authenticate_checkpoint_closure(",
+            "query_campaign_graph",
+            "query_campaign_frontier",
+            "query_campaign_findings",
+            "assert_eq!(budget.spent_attempts, 2);",
+            "assert_eq!(claimable, vec![initial_attempt]);",
+            "assert!(replayed.replayed);",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove public graph/frontier/finding continuity, exact pin and checkpoint authentication, process restart, archive transfer, claim recovery, and single-charge resume accounting",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
     if standard.shape == TestShape::AttemptIdempotence {
         for required in [
             "CampaignRepository::new",
