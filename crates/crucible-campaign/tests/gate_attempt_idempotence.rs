@@ -408,6 +408,7 @@ fn fixture() -> (
     (repository, blobs, refs, lineage, policy)
 }
 
+// crucible-lint: allow rust-allow -- the fixture returns the exact admitted objects needed for idempotence assertions.
 #[allow(clippy::type_complexity)]
 fn admit_attempt(
     repository: &CampaignRepository,
