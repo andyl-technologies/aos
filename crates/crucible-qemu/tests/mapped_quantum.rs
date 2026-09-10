@@ -23,7 +23,9 @@ use crucible::{
     SchedulerSendAuthorizer, event_log_coverage_projection,
 };
 #[cfg(unix)]
-use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
+use crucible_protocol::selectable_catalog_plan::{
+    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectablePlanPendingRequest,
+};
 #[cfg(unix)]
 use crucible_protocol::{
     SelectionReply, SelectionRequest, WhiteboxCoverageMarkerBody, WhiteboxMarkerPayload,
@@ -84,10 +86,12 @@ fn mapped_quantum_can_publish_shared_shutdown_without_marking_plugin_done()
 #[cfg(unix)]
 #[test]
 fn mapped_quantum_publishes_one_exact_selectable_reply() -> Result<(), Box<dyn Error>> {
-    let region = mapped_region(6, None, &[])?;
+    let trap_icount = 6;
+    let stopped_icount = trap_icount + SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS;
+    let region = mapped_region(stopped_icount, None, &[])?;
     let mut hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
     let request = SelectionRequest::new(7, "packet-mode", "instance-a", None, 512)?;
-    let pending = SelectablePlanPendingRequest::new(request, 6, 0, 0x40_0000);
+    let pending = SelectablePlanPendingRequest::new(request, trap_icount, 0, 0x40_0000);
     let reply = SelectionReply::selected(7, [0x11; 32], [0x22; 32], b"fast".to_vec())?;
 
     QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &reply)?;
@@ -96,13 +100,24 @@ fn mapped_quantum_publishes_one_exact_selectable_reply() -> Result<(), Box<dyn E
         .expect_err("one-entry selectable reply ring must reject pipelining");
     assert!(queued.to_string().contains("already queued"));
 
-    let region = mapped_region(6, None, &[])?;
+    let region = mapped_region(stopped_icount, None, &[])?;
     let mut hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
     let wrong_sequence = SelectionReply::selected(8, [0x11; 32], [0x22; 32], b"fast".to_vec())?;
     let mismatch =
         QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &wrong_sequence)
             .expect_err("reply sequence must bind the retained request");
     assert!(mismatch.to_string().contains("sequence"));
+
+    let region = mapped_region(trap_icount, None, &[])?;
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
+    let wrong_boundary =
+        QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &reply)
+            .expect_err("reply admission must follow the native handoff instruction");
+    assert!(
+        wrong_boundary
+            .to_string()
+            .contains("requires stopped boundary 7, observed 6")
+    );
     Ok(())
 }
 

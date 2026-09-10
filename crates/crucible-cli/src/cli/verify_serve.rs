@@ -1088,8 +1088,10 @@ pub(super) fn scenario_identity_bytes(scenario: &crucible::ScenarioDef) -> Vec<u
 // crucible-lint: allow host-nondeterminism-state -- this pure admission check authenticates the exact campaign replay closure before the resumed backend is allocated.
 fn validate_remote_resume_replay_closure(
     scenario: &crucible::ScenarioDefForm,
+    // crucible-lint: allow host-nondeterminism-state -- the canonical configuration is authenticated schedule evidence forwarded unchanged to the daemon validator.
     configuration: &crucible::Configuration,
     checkpoint: &crucible::Checkpoint,
+    // crucible-lint: allow host-nondeterminism-state -- the API envelope remains untrusted transport input until the daemon validates every bound identity.
     envelope: &crucible_api::ResumeReplayClosure,
 ) -> Result<(), String> {
     crucible_daemon::qemu_campaign_lifecycle::validate_remote_resume_replay_closure(
@@ -1272,8 +1274,10 @@ where
 }
 
 pub(super) fn production_session_lifecycle_config(
+    // crucible-lint: allow host-nondeterminism-state -- this backend configuration is explicit CLI input and is not derived from host timing, entropy, or observations.
     campaign_config: crucible_api::ProductionVmLifecycleConfig,
     debug_authorization: &DebugAuthorizationPolicy,
+    // crucible-lint: allow host-nondeterminism-state -- the returned API configuration changes only operational debug authorization and does not construct scheduler state.
 ) -> crucible_api::ProductionVmLifecycleConfig {
     campaign_config.with_authorized_debug_gdbstubs_for_all_nodes("127.0.0.1:0", debug_authorization)
 }

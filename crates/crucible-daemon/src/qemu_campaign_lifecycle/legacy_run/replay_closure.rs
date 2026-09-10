@@ -338,8 +338,10 @@ impl GuardedCampaignReplayClosure {
 /// closure does not cover the exact supplied scenario and schedule.
 pub fn validate_remote_resume_replay_closure(
     scenario: &ScenarioDefForm,
+    // crucible-lint: allow host-nondeterminism-state -- the canonical configuration is reconstructed from authenticated schedule evidence and is only compared with the exact closure identity.
     configuration: &Configuration,
     checkpoint: &crucible::Checkpoint,
+    // crucible-lint: allow host-nondeterminism-state -- the API envelope is untrusted transport input until every scenario, configuration, checkpoint, and payload identity below matches.
     envelope: &crucible_api::ResumeReplayClosure,
 ) -> Result<(), GuardedCampaignReplayClosureError> {
     if envelope.schema_version() != GuardedCampaignReplayClosure::SCHEMA_VERSION {

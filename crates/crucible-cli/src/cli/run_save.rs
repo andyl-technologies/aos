@@ -567,6 +567,7 @@ where
         .schedule
         .decisions()
         .iter()
+        // crucible-lint: allow host-nondeterminism-state -- this reads authenticated scheduler evidence only to require its exact replay closure in the resume request.
         .any(|decision| matches!(decision, crucible::Decision::Selection(_)));
     if requires_replay_closure {
         let replay_closure_payload =
@@ -576,6 +577,7 @@ where
                 .map_err(|error| {
                     artifact_error(format!("encode remote resume replay closure: {error}"))
                 })?;
+        // crucible-lint: allow host-nondeterminism-state -- the request carries only the replay closure authenticated by the saved resume handle.
         let replay_closure = crucible_api::ResumeReplayClosure::new(
             &evidence.scenario_form,
             &evidence.schedule,
