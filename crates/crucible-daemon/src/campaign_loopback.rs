@@ -49,7 +49,11 @@
 //!       42 (GetCampaignStatusRequestV1) |
 //!       43 (GetCampaignStatusResponseV1) |
 //!       44 (SubmitCampaignDiscoveryRequestV1) |
-//!       45 (SubmitCampaignDiscoveryResponseV1)
+//!       45 (SubmitCampaignDiscoveryResponseV1) |
+//!       46 (QueryCampaignFindingOccurrencesRequestV1) |
+//!       47 (QueryCampaignFindingOccurrencesResponseV1) |
+//!       48 (GetCampaignFindingOccurrenceObjectRequestV1) |
+//!       49 (GetCampaignFindingOccurrenceObjectResponseV1)
 //! magic = "CRUCCS20"
 //! ```
 //!
@@ -74,24 +78,28 @@ use std::time::{Duration, Instant};
 
 use crucible_campaign::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignAuthorizationError,
-    CampaignCodecError, CampaignName, CampaignOperationalStatusProvider, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignRepository, CampaignService, CampaignServiceErrorResponse,
-    CampaignServiceFailure, CampaignServiceFailureSource, CampaignServiceOperation,
-    CreateCampaignRequest, CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
+    CampaignCodecError, CampaignFindingOccurrenceService, CampaignName,
+    CampaignOperationalStatusProvider, CampaignPrincipal, CampaignPrincipalAuthorizer,
+    CampaignRepository, CampaignService, CampaignServiceErrorResponse, CampaignServiceFailure,
+    CampaignServiceFailureSource, CampaignServiceOperation, CreateCampaignRequest,
+    CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
     ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
     GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
-    GetCampaignFindingObjectResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
+    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFrontierObjectRequest,
     GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
     GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
     GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, GetCampaignStatusRequest,
     GetCampaignStatusResponse, ListCampaignsRequest, ListCampaignsResponse,
     MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinCampaignResponse,
-    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignFindingsRequest,
-    QueryCampaignFindingsResponse, QueryCampaignFrontierRequest, QueryCampaignFrontierResponse,
-    QueryCampaignGraphRequest, QueryCampaignGraphResponse, RepositoryCampaignService,
-    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest,
-    SubmitCampaignDiscoveryResponse, WatchCampaignRequest, WatchCampaignResponse,
+    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
+    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    RepositoryCampaignService, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse, WatchCampaignRequest,
+    WatchCampaignResponse,
 };
 
 use crate::{
@@ -146,6 +154,10 @@ const GET_CAMPAIGN_STATUS_REQUEST_KIND: u8 = 42;
 const GET_CAMPAIGN_STATUS_RESPONSE_KIND: u8 = 43;
 const SUBMIT_DISCOVERY_REQUEST_KIND: u8 = 44;
 const SUBMIT_DISCOVERY_RESPONSE_KIND: u8 = 45;
+const QUERY_CAMPAIGN_FINDING_OCCURRENCES_REQUEST_KIND: u8 = 46;
+const QUERY_CAMPAIGN_FINDING_OCCURRENCES_RESPONSE_KIND: u8 = 47;
+const GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_REQUEST_KIND: u8 = 48;
+const GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_RESPONSE_KIND: u8 = 49;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 4_096;
@@ -711,6 +723,48 @@ impl CampaignService for LoopbackCampaignService {
     }
 }
 
+impl CampaignFindingOccurrenceService for LoopbackCampaignService {
+    fn query_campaign_finding_occurrences(
+        &self,
+        request: &QueryCampaignFindingOccurrencesRequest,
+    ) -> Result<QueryCampaignFindingOccurrencesResponse, Self::Error> {
+        self.exchange(
+            QUERY_CAMPAIGN_FINDING_OCCURRENCES_REQUEST_KIND,
+            QUERY_CAMPAIGN_FINDING_OCCURRENCES_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response =
+                    QueryCampaignFindingOccurrencesResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| failure.validate_for_query_campaign_finding_occurrences(request.snapshot()),
+        )
+    }
+
+    fn get_campaign_finding_occurrence_object(
+        &self,
+        request: &GetCampaignFindingOccurrenceObjectRequest,
+    ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error> {
+        self.exchange(
+            GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_REQUEST_KIND,
+            GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response =
+                    GetCampaignFindingOccurrenceObjectResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| {
+                failure.validate_for_get_campaign_finding_occurrence_object(request.snapshot())
+            },
+        )
+    }
+}
+
 /// Authenticated Linux credentials for one connected Unix-stream peer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UnixPeerCampaignCredentials {
@@ -1160,7 +1214,7 @@ pub fn serve_loopback_campaign_once<S>(
     service: &S,
 ) -> Result<(), LoopbackCampaignServerError>
 where
-    S: CampaignService,
+    S: CampaignService + CampaignFindingOccurrenceService,
     S::Error: CampaignServiceFailureSource,
 {
     serve_loopback_campaign_once_with_timeouts(stream, service, LoopbackCampaignTimeouts::default())
@@ -1177,7 +1231,7 @@ pub fn serve_loopback_campaign_once_with_timeouts<S>(
     timeouts: LoopbackCampaignTimeouts,
 ) -> Result<(), LoopbackCampaignServerError>
 where
-    S: CampaignService,
+    S: CampaignService + CampaignFindingOccurrenceService,
     S::Error: CampaignServiceFailureSource,
 {
     let result = serve_loopback_campaign_inner(stream, service, timeouts);
@@ -1193,7 +1247,7 @@ fn serve_loopback_campaign_inner<S>(
     timeouts: LoopbackCampaignTimeouts,
 ) -> Result<(), LoopbackCampaignServerError>
 where
-    S: CampaignService,
+    S: CampaignService + CampaignFindingOccurrenceService,
     S::Error: CampaignServiceFailureSource,
 {
     serve_loopback_campaign_inner_with_runtime_control(stream, service, None, timeouts)
@@ -1206,7 +1260,7 @@ fn serve_loopback_campaign_inner_with_runtime_control<S>(
     timeouts: LoopbackCampaignTimeouts,
 ) -> Result<(), LoopbackCampaignServerError>
 where
-    S: CampaignService,
+    S: CampaignService + CampaignFindingOccurrenceService,
     S::Error: CampaignServiceFailureSource,
 {
     configure_stream(stream, timeouts)?;
@@ -1505,6 +1559,72 @@ where
                     let failure = error.campaign_service_failure();
                     if let Err(error) =
                         failure.validate_for_query_campaign_findings(request.snapshot())
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        QUERY_CAMPAIGN_FINDING_OCCURRENCES_REQUEST_KIND => {
+            let request = QueryCampaignFindingOccurrencesRequest::from_canonical_bytes(&body)?;
+            match service.query_campaign_finding_occurrences(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        QUERY_CAMPAIGN_FINDING_OCCURRENCES_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) =
+                        failure.validate_for_query_campaign_finding_occurrences(request.snapshot())
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_REQUEST_KIND => {
+            let request = GetCampaignFindingOccurrenceObjectRequest::from_canonical_bytes(&body)?;
+            match service.get_campaign_finding_occurrence_object(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) = failure
+                        .validate_for_get_campaign_finding_occurrence_object(request.snapshot())
                     {
                         return reject_invalid_service_response(
                             stream,
