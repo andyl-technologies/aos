@@ -69,6 +69,7 @@ in
           patch -p1 < ${./autogen-patches/0001-handle-overlapping-path-copies.patch}
           patch -p1 < ${./autogen-patches/0002-fix-sprintf-buffer-sizes.patch}
           patch -p1 < ${./autogen-patches/0003-fix-definition-buffer-growth.patch}
+          patch -p1 < ${./autogen-patches/0004-remove-unused-enum-counter.patch}
           sed -i 's|/usr/bin/file|${file}/bin/file|g' configure config/libtool.m4
         '';
       }
