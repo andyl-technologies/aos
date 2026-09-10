@@ -248,13 +248,14 @@ impl CampaignRepository {
             path.id()?,
             StopCondition::NextChoice,
         )?;
-        let admission = AttemptAdmission::new(
+        let admission = AttemptAdmission::new_policy_bound(
             attempt.id()?,
             AttemptAdmissionRole::ExecutionBasis {
                 proposal: None,
                 cause: BranchRequestCause::ExhaustivePolicy(parent.snapshot.active_policy()),
                 admission_ordinal: AdmissionOrdinal::new(1),
             },
+            parent.snapshot.active_policy(),
         );
         Ok(Some((path, attempt, admission)))
     }
@@ -335,13 +336,14 @@ impl CampaignRepository {
             path.id()?,
             request.stop.clone(),
         )?;
-        let admission = AttemptAdmission::new(
+        let admission = AttemptAdmission::new_policy_bound(
             attempt.id()?,
             AttemptAdmissionRole::ExecutionBasis {
                 proposal: None,
                 cause: BranchRequestCause::Operator(request.command),
                 admission_ordinal: AdmissionOrdinal::new(1),
             },
+            parent.snapshot.active_policy(),
         );
         Ok((path, attempt, admission))
     }
@@ -388,7 +390,8 @@ impl CampaignRepository {
         let Some((_, _, expected)) = self.initial_discovery_basis(parent)? else {
             return Err(integrity("initial-discovery-is-not-admissible"));
         };
-        if admission != expected {
+        let legacy = AttemptAdmission::new(expected.attempt(), expected.role());
+        if admission != expected && admission != legacy {
             return Err(integrity("initial-discovery-owner-recomputation-mismatch"));
         }
         let mut expected_roots = parent.snapshot.roots();
@@ -420,7 +423,7 @@ impl CampaignRepository {
         {
             return Err(integrity("discovery-request-changed-lineage-or-policy"));
         }
-        let (_, _, admission) = self.discovery_request_basis(parent, request)?;
+        let (_, attempt, expected_admission) = self.discovery_request_basis(parent, request)?;
         self.ensure_budget_available(parent, 0, 1)?;
 
         let prior = parent.snapshot.roots();
@@ -439,6 +442,15 @@ impl CampaignRepository {
         let command_key = map_key_hash("accounting.command", request.command.as_hash());
         if self.merkle.get(prior.accounting, command_key)?.is_some() {
             return Err(integrity("discovery-request-reused-command"));
+        }
+        let admission_content = self
+            .merkle
+            .get(next.accounting, attempt_execution_basis_key(attempt.id()?))?
+            .ok_or_else(|| integrity("discovery-request-admission-is-missing"))?;
+        let admission = self.read_attempt_admission(admission_content)?;
+        let legacy = AttemptAdmission::new(expected_admission.attempt(), expected_admission.role());
+        if admission != expected_admission && admission != legacy {
+            return Err(integrity("discovery-request-admission-owner-mismatch"));
         }
         let mut upserts = attempt_admission_upserts(admission.id()?.content_id(), admission)?;
         upserts.insert(command_key, transition_content);

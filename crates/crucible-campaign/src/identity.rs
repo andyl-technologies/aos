@@ -587,9 +587,9 @@ content_object_id!(
 content_object_id!(
     AttemptAdmissionId,
     ObjectKind::CampaignFact,
-    [1, 2],
+    [1, 2, 3],
     "crucible.campaign.attempt-admission",
-    "Identifies one immutable attempt admission or additional cause; version 1 remains decodable for history compatibility."
+    "Identifies one immutable attempt admission or additional cause; versions 1 and 2 remain decodable for history compatibility."
 );
 content_object_id!(
     ObservationId,

@@ -65,7 +65,7 @@ impl CampaignRepository {
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         let admission = self.decode_attempt_admission(id)?;
         let attempt = self.read_attempt_cached(admission.attempt().content_id(), cache)?;
-        match admission.role() {
+        let proposal_policy = match admission.role() {
             AttemptAdmissionRole::ExecutionBasis {
                 proposal: Some(proposal),
                 cause,
@@ -76,6 +76,7 @@ impl CampaignRepository {
                 if request.cause() != cause {
                     return Err(integrity("attempt-execution-basis-mismatch"));
                 }
+                Some(proposal.policy())
             }
             AttemptAdmissionRole::ExecutionBasis { proposal: None, .. }
                 if !matches!(
@@ -85,12 +86,14 @@ impl CampaignRepository {
             {
                 return Err(integrity("branch-attempt-execution-basis-has-no-proposal"));
             }
-            AttemptAdmissionRole::ExecutionBasis { .. } => {}
+            AttemptAdmissionRole::ExecutionBasis { .. } => None,
             AttemptAdmissionRole::AdditionalCause { proposal } => {
                 let proposal = self.read_proposal(proposal.content_id())?;
                 self.validate_proposal_attempt_equivalence(&proposal, &attempt)?;
+                Some(proposal.policy())
             }
-        }
+        };
+        self.validate_attempt_admission_retention_policy(&admission, proposal_policy)?;
         Ok(admission)
     }
 
@@ -112,7 +115,7 @@ impl CampaignRepository {
         cache: &mut ChoiceValidationCache,
     ) -> Result<(), CampaignRepositoryError> {
         let attempt = self.read_attempt_cached(admission.attempt().content_id(), cache)?;
-        match admission.role() {
+        let proposal_policy = match admission.role() {
             AttemptAdmissionRole::ExecutionBasis {
                 proposal: Some(proposal),
                 cause,
@@ -126,6 +129,7 @@ impl CampaignRepository {
                 if request.cause() != cause {
                     return Err(integrity("attempt-execution-basis-mismatch"));
                 }
+                Some(proposal.policy())
             }
             AttemptAdmissionRole::ExecutionBasis { proposal: None, .. }
                 if !matches!(
@@ -135,13 +139,55 @@ impl CampaignRepository {
             {
                 return Err(integrity("branch-attempt-execution-basis-has-no-proposal"));
             }
-            AttemptAdmissionRole::ExecutionBasis { .. } => {}
+            AttemptAdmissionRole::ExecutionBasis { .. } => None,
             AttemptAdmissionRole::AdditionalCause { proposal } => {
                 let proposal = self.decode_proposal(proposal.content_id())?;
                 let request = self.decode_branch_request(proposal.request().content_id())?;
                 self.validate_proposal_attempt_equivalence_with_request(
                     &proposal, &attempt, &request,
                 )?;
+                Some(proposal.policy())
+            }
+        };
+        self.validate_attempt_admission_retention_policy_shallow(*admission, proposal_policy)?;
+        Ok(())
+    }
+
+    fn validate_attempt_admission_retention_policy(
+        &self,
+        admission: &AttemptAdmission,
+        proposal_policy: Option<CampaignPolicyId>,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.validate_attempt_admission_retention_policy_shallow(*admission, proposal_policy)?;
+        if let Some(policy) = admission.retention_policy().or(proposal_policy) {
+            self.read_policy(policy.content_id())?;
+        }
+        Ok(())
+    }
+
+    fn validate_attempt_admission_retention_policy_shallow(
+        &self,
+        admission: AttemptAdmission,
+        proposal_policy: Option<CampaignPolicyId>,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some(retention_policy) = admission.retention_policy() else {
+            return Ok(());
+        };
+        if admission.schema_version()
+            == crate::exploration::ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION
+            && proposal_policy.is_some_and(|policy| policy != retention_policy)
+        {
+            return Err(integrity("attempt-admission-retention-policy-mismatch"));
+        }
+        if let AttemptAdmissionRole::ExecutionBasis {
+            cause:
+                BranchRequestCause::ExhaustivePolicy(cause_policy)
+                | BranchRequestCause::ScenarioDefault(cause_policy),
+            ..
+        } = admission.role()
+        {
+            if cause_policy != retention_policy {
+                return Err(integrity("attempt-admission-retention-policy-mismatch"));
             }
         }
         Ok(())
@@ -215,6 +261,26 @@ impl CampaignRepository {
             roots.accounting,
             proposal,
             attempt,
+            true,
+        )
+    }
+
+    pub(in crate::repository) fn expected_stored_proposal_admission(
+        &self,
+        snapshot: &LoadedSnapshot,
+        proposal: ProposalId,
+        attempt: AttemptId,
+        stored: AttemptAdmission,
+    ) -> Result<AttemptAdmission, CampaignRepositoryError> {
+        let roots = snapshot.snapshot.roots();
+        self.expected_proposal_admission_at(
+            snapshot,
+            roots.exploration,
+            roots.accounting,
+            proposal,
+            attempt,
+            stored.schema_version()
+                == crate::exploration::ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION,
         )
     }
 
@@ -225,6 +291,7 @@ impl CampaignRepository {
         accounting_root: ContentId,
         proposal: ProposalId,
         attempt: AttemptId,
+        policy_bound: bool,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         let proposal_content = proposal.content_id();
         if self.merkle.get(
@@ -246,6 +313,9 @@ impl CampaignRepository {
         }
 
         let proposal_record = self.read_proposal(proposal_content)?;
+        if policy_bound && proposal_record.policy() != snapshot.snapshot.active_policy() {
+            return Err(integrity("attempt-admission-active-policy-mismatch"));
+        }
         let attempt_record = self.read_attempt(attempt.content_id())?;
         let request =
             self.validate_proposal_attempt_equivalence(&proposal_record, &attempt_record)?;
@@ -267,14 +337,16 @@ impl CampaignRepository {
                 {
                     return Err(integrity("branch-request-attempt-budget-exhausted"));
                 }
-                Ok(AttemptAdmission::new(
-                    attempt,
-                    AttemptAdmissionRole::ExecutionBasis {
-                        proposal: Some(proposal),
-                        cause: request.cause(),
-                        admission_ordinal: self.next_admission_ordinal(accounting_root)?,
-                    },
-                ))
+                let role = AttemptAdmissionRole::ExecutionBasis {
+                    proposal: Some(proposal),
+                    cause: request.cause(),
+                    admission_ordinal: self.next_admission_ordinal(accounting_root)?,
+                };
+                Ok(if policy_bound {
+                    AttemptAdmission::new_policy_bound(attempt, role, proposal_record.policy())
+                } else {
+                    AttemptAdmission::new(attempt, role)
+                })
             }
             (Some(indexed_attempt), Some(indexed_basis))
                 if indexed_attempt == attempt.content_id() =>
@@ -285,10 +357,12 @@ impl CampaignRepository {
                 {
                     return Err(integrity("attempt-execution-basis-index-mismatch"));
                 }
-                Ok(AttemptAdmission::new(
-                    attempt,
-                    AttemptAdmissionRole::AdditionalCause { proposal },
-                ))
+                let role = AttemptAdmissionRole::AdditionalCause { proposal };
+                Ok(if policy_bound {
+                    AttemptAdmission::new_policy_bound(attempt, role, proposal_record.policy())
+                } else {
+                    AttemptAdmission::new(attempt, role)
+                })
             }
             _ => Err(integrity("attempt-admission-index-shape")),
         }
