@@ -24,7 +24,7 @@ in
       hash = "sha256-cWDoDoTa/QDZVshIkcUzu3qxampU++FXSy86zwSWl3s=";
     };
 
-    buildDeps = [gnumake pkg-config texinfo gnupg];
+    buildDeps = [gnumake pkg-config texinfo gnupg libgpg-error];
     runtimeDeps = [libassuan libgpg-error npth glib];
     propagatedDeps = [libassuan libgpg-error];
 
