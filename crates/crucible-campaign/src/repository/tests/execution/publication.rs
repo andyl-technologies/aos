@@ -312,6 +312,90 @@ fn executor_candidate_publication_is_immutable_and_does_not_advance_the_campaign
 }
 
 #[test]
+fn campaign_report_counts_distinct_findings_from_one_observation() {
+    let (repository, lineage, policy) = fixture();
+    let campaign = "report-multiple-findings";
+    let (_, admitted, base_observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, campaign);
+    let properties = PropertyVerdictSet::new(BTreeMap::from([
+        (
+            "no-forwarding-loop".to_owned(),
+            PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::new())
+                .expect("first failed property"),
+        ),
+        (
+            "recovers-within-bound".to_owned(),
+            PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::new())
+                .expect("second failed property"),
+        ),
+    ]))
+    .expect("failed property verdicts");
+    let properties = repository
+        .publish_property_verdict_set(&properties)
+        .expect("publish failed property verdicts");
+    let observation = Observation::new(
+        base_observation.attempt(),
+        base_observation.child(),
+        base_observation.child_content(),
+        base_observation.path(),
+        base_observation.stop().clone(),
+        base_observation.measurements(),
+        properties,
+        base_observation.coverage(),
+        base_observation.discovered_choices().clone(),
+    )
+    .expect("observation with two failed properties");
+    let observed = repository
+        .publish_observation(campaign, admitted.new_snapshot, &observation)
+        .expect("publish observation");
+
+    let fingerprint = CampaignHash::derive("test-finding", b"two property failures");
+    let reproduction = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"verified two-property reproduction".to_vec(),
+        )
+        .expect("publish reproduction");
+    let mut snapshot = observed.new_snapshot;
+    for property in ["no-forwarding-loop", "recovers-within-bound"] {
+        let signature = FindingSignature::new(
+            FindingKind::PropertyViolation,
+            fingerprint,
+            Some(property.to_owned()),
+            "guest.property-violation".to_owned(),
+            Some(FindingTarget::Configuration(observation.child_content())),
+            BTreeSet::from([properties.content_id()]),
+        )
+        .expect("property finding signature");
+        snapshot = repository
+            .publish_finding(
+                campaign,
+                snapshot,
+                signature,
+                observed.observation,
+                reproduction,
+                None,
+                BTreeSet::new(),
+            )
+            .expect("publish property finding")
+            .new_snapshot;
+    }
+
+    let (report, endpoints) = repository
+        .project_campaign_report(campaign, snapshot)
+        .expect("project campaign report");
+    assert_eq!(report.outcomes().explored(), 1);
+    assert_eq!(report.outcomes().failures(), 0);
+    assert_eq!(report.outcomes().findings(), 2);
+    assert!(endpoints.is_empty());
+}
+
+#[test]
 fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let finding_signal = FindingKind::Divergence.guidance_signal().to_owned();

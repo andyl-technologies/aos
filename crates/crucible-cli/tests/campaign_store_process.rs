@@ -96,6 +96,17 @@ fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), 
     let live_head = campaign_status(&fixture)?;
     assert_eq!(live_head["state"], "running");
     let live_snapshot = json_string(&live_head, "snapshot")?;
+    let live_report = campaign_report(&fixture, &live_snapshot)?;
+    assert_eq!(live_report["schema"], "crucible.cli.campaign-report.v1");
+    assert_eq!(live_report["snapshot"], live_snapshot);
+    assert_eq!(live_report["explored_attempts"], 0);
+    assert_eq!(live_report["stopped_attempts"], 0);
+    assert_eq!(live_report["failed_attempts"], 0);
+    assert_eq!(live_report["unexplored_attempts"], 0);
+    assert!(live_report.get("unvisited_continuations").is_some());
+    assert!(live_report.get("exhausted_continuations").is_some());
+    assert!(live_report.get("pruned_continuations").is_some());
+    assert_eq!(live_report["complete"], true);
 
     let store_status = run_json(
         command(&["--format", "jsonl", "store", "status"]).arg(&fixture.store),
@@ -171,6 +182,14 @@ fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), 
     let reopened_head = campaign_status(&fixture)?;
     assert_eq!(reopened_head["snapshot"], live_snapshot);
     assert_eq!(reopened_head["state"], "running");
+    let reopened_report = campaign_report(&fixture, &live_snapshot)?;
+    assert_eq!(reopened_report["snapshot"], live_report["snapshot"]);
+    assert_eq!(reopened_report["state"], live_report["state"]);
+    assert_eq!(reopened_report["estimate"], live_report["estimate"]);
+    assert_eq!(
+        reopened_report["estimator_endpoints"],
+        live_report["estimator_endpoints"]
+    );
     restarted.stop()?;
 
     Ok(())
@@ -847,6 +866,11 @@ campaign = "*"
 
 [[grants]]
 principal = "{PRINCIPAL}"
+operation = "query-campaign-report"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
 operation = "watch-campaign"
 campaign = "*"
 
@@ -1243,6 +1267,20 @@ fn campaign_status(fixture: &FlightFixture) -> Result<Value, Box<dyn Error>> {
     run_json(
         connected_campaign(fixture).args(["status", CAMPAIGN]),
         "read campaign head",
+    )
+}
+
+fn campaign_report(fixture: &FlightFixture, snapshot: &str) -> Result<Value, Box<dyn Error>> {
+    run_json(
+        connected_campaign(fixture).args([
+            "report",
+            CAMPAIGN,
+            "--snapshot",
+            snapshot,
+            "--pages",
+            "2",
+        ]),
+        "read campaign report",
     )
 }
 
