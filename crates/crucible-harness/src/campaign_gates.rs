@@ -16,6 +16,15 @@ pub enum CampaignGateContract {
         /// Nix check attribute that runs the gate.
         nix_attr: &'static str,
     },
+    /// Automated component evidence that does not complete the canonical gate.
+    ComponentAutomated {
+        /// Cargo targets that jointly implement the component evidence.
+        targets: &'static [CampaignGateTarget],
+        /// Nix check attribute that runs the component evidence.
+        nix_attr: &'static str,
+        /// Production or acceptance scope still required to complete the gate.
+        remaining_scope: &'static [&'static str],
+    },
     /// A manual evidence schema and Nix validator for retained artifacts.
     Manual {
         /// Repository-relative evidence-contract path.
@@ -98,6 +107,24 @@ const fn automated(
     }
 }
 
+const fn component_automated(
+    name: &'static str,
+    owner: &'static str,
+    targets: &'static [CampaignGateTarget],
+    nix_attr: &'static str,
+    remaining_scope: &'static [&'static str],
+) -> CampaignGateSpec {
+    CampaignGateSpec {
+        name,
+        owner,
+        contract: CampaignGateContract::ComponentAutomated {
+            targets,
+            nix_attr,
+            remaining_scope,
+        },
+    }
+}
+
 const fn unsupported(name: &'static str, owner: &'static str) -> CampaignGateSpec {
     CampaignGateSpec {
         name,
@@ -148,6 +175,21 @@ const CAMPAIGN_CONTROL_RESPONSIVENESS_SELECTORS: &[LibraryExactSelector] = &[
         name: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
     },
 ];
+
+const HOT_FORK_ISOLATION_SHMEM_SELECTORS: &[LibraryExactSelector] = &[LibraryExactSelector {
+    source: "crates/crucible-shmem/src/mapped_setup_region.rs",
+    name: "mapped_setup_region::tests::hot_fork_child_installs_private_mapping_at_exact_source_address",
+}];
+
+const HOT_FORK_ISOLATION_QEMU_SELECTORS: &[LibraryExactSelector] = &[LibraryExactSelector {
+    source: "crates/crucible-qemu/src/node/tests/hot_fork.rs",
+    name: "node::tests::hot_fork::gate_hot_fork_isolation_keeps_two_resource_generations_physically_private",
+}];
+
+const HOT_FORK_ISOLATION_DAEMON_SELECTORS: &[LibraryExactSelector] = &[LibraryExactSelector {
+    source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs",
+    name: "qemu_hot_fork_world_factory::tests::two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world",
+}];
 
 /// Canonical RFC-0020 campaign gate catalog.
 pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
@@ -284,7 +326,47 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         }],
         "checks.crucible.phase7.qemuHotForkEquivalenceVm",
     ),
-    unsupported("gate:hot-fork-isolation", "crucible-daemon"),
+    component_automated(
+        "gate:hot-fork-isolation",
+        "crucible-daemon",
+        &[
+            CampaignGateTarget {
+                package: "crucible-shmem",
+                kind: CampaignGateTargetKind::LibExact {
+                    selectors: HOT_FORK_ISOLATION_SHMEM_SELECTORS,
+                    nix_source: "tests/crucible/phase7-crucible-hot-fork-isolation.nix",
+                    ignored: false,
+                },
+            },
+            CampaignGateTarget {
+                package: "crucible-qemu",
+                kind: CampaignGateTargetKind::LibExact {
+                    selectors: HOT_FORK_ISOLATION_QEMU_SELECTORS,
+                    nix_source: "tests/crucible/phase7-crucible-hot-fork-isolation.nix",
+                    ignored: false,
+                },
+            },
+            CampaignGateTarget {
+                package: "crucible-daemon",
+                kind: CampaignGateTargetKind::LibExact {
+                    selectors: HOT_FORK_ISOLATION_DAEMON_SELECTORS,
+                    nix_source: "tests/crucible/phase7-crucible-hot-fork-isolation.nix",
+                    ignored: false,
+                },
+            },
+        ],
+        "checks.crucible.phase7.gates.hotForkIsolation.rawGate",
+        &[
+            "native-network-device",
+            "native-9p-device",
+            "writable-qcow2-root",
+            "serial",
+            "pidfile",
+            "export-socket",
+            "temp-files",
+            "native-running-sibling-mutation",
+        ],
+    ),
     unsupported("gate:hot-fork-scaling", "crucible-daemon"),
     automated(
         "gate:lazy-frontier",
