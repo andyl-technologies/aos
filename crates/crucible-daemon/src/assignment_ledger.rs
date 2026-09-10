@@ -65,6 +65,8 @@ const ATTEMPT_STATE_CHECKSUM_DOMAIN_V1: &str = "crucible.executor.attempt-state-
 const RETENTION_STATE_MAGIC: &[u8] = b"crucible.executor.assignment-retention-state.v1\0";
 const RETENTION_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-retention-state.v1";
 const RETENTION_GENERATION_DOMAIN: &str = "crucible.executor.assignment-retention-generation.v1";
+const ABSENT_RETENTION_GENERATION_DOMAIN: &str =
+    "crucible.executor.absent-assignment-retention-generation.v1";
 const RETENTION_STATE_FILE: &str = "retention-state-v1";
 const MAX_LEDGER_RECORD_BYTES: u64 = 16 * 1024;
 const MAX_RETENTION_STATE_BYTES: u64 = 256;
@@ -1451,6 +1453,20 @@ pub struct DirectoryAssignmentLedger {
     retention_state: AssignmentRetentionState,
 }
 
+/// Authenticated retention access to an existing or absent optional directory ledger.
+///
+/// A missing ledger root represents a deployment without an executor. Present
+/// state retains the same exclusive lock and strict authentication as
+/// [`DirectoryAssignmentLedger::open_existing`].
+pub struct DirectoryAssignmentRetentionReader {
+    state: DirectoryAssignmentRetentionReaderState,
+}
+
+enum DirectoryAssignmentRetentionReaderState {
+    Authenticated(DirectoryAssignmentLedger),
+    Absent,
+}
+
 impl DirectoryAssignmentLedger {
     /// Opens a durable ledger and acquires exclusive single-writer ownership.
     ///
@@ -1562,6 +1578,42 @@ impl DirectoryAssignmentLedger {
             ));
         }
         Ok(())
+    }
+}
+
+impl DirectoryAssignmentRetentionReader {
+    /// Opens an authenticated ledger or represents an absent optional ledger.
+    ///
+    /// Only a missing root is treated as an empty ledger. A present root that
+    /// is inaccessible, malformed, incomplete, or concurrently owned fails
+    /// closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssignmentLedgerError`] when present state cannot be
+    /// authenticated without creating or repairing any path.
+    pub fn open_optional_existing(root: impl Into<PathBuf>) -> Result<Self, AssignmentLedgerError> {
+        let root = root.into();
+        match fs::symlink_metadata(&root) {
+            Ok(_) => Ok(Self {
+                state: DirectoryAssignmentRetentionReaderState::Authenticated(
+                    DirectoryAssignmentLedger::open_existing(root)?,
+                ),
+            }),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                state: DirectoryAssignmentRetentionReaderState::Absent,
+            }),
+            Err(source) => Err(io_error("inspect-optional-directory", &root, source)),
+        }
+    }
+
+    /// Reports whether an existing ledger was authenticated.
+    #[must_use]
+    pub const fn is_present(&self) -> bool {
+        matches!(
+            &self.state,
+            DirectoryAssignmentRetentionReaderState::Authenticated(_)
+        )
     }
 }
 
@@ -1829,8 +1881,25 @@ impl AssignmentRetentionAdmin for DirectoryAssignmentLedger {
     }
 }
 
+impl AssignmentRetentionAdmin for DirectoryAssignmentRetentionReader {
+    type Error = AssignmentLedgerError;
+
+    fn acquire_retention_fence(
+        &mut self,
+    ) -> Result<Box<dyn AssignmentRetentionFence<BackendError = Self::Error> + '_>, Self::Error>
+    {
+        Ok(Box::new(DirectoryAssignmentRetentionReaderFence {
+            state: &mut self.state,
+        }))
+    }
+}
+
 struct DirectoryAssignmentRetentionFence<'a> {
     ledger: &'a mut DirectoryAssignmentLedger,
+}
+
+struct DirectoryAssignmentRetentionReaderFence<'a> {
+    state: &'a mut DirectoryAssignmentRetentionReaderState,
 }
 
 impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
@@ -1875,6 +1944,58 @@ impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
         next: Option<AttemptRuntimeState>,
     ) -> Result<AttemptStateCas, Self::BackendError> {
         self.ledger.compare_exchange_attempt(key, expected, next)
+    }
+}
+
+impl AssignmentRetentionFence for DirectoryAssignmentRetentionReaderFence<'_> {
+    type BackendError = AssignmentLedgerError;
+
+    fn visit_roots(
+        &mut self,
+        visitor: &mut dyn FnMut(
+            AssignmentRetentionRoot,
+        ) -> Result<(), AssignmentRetentionVisitorError>,
+    ) -> Result<AssignmentRetentionSummary, AssignmentRetentionInventoryError<Self::BackendError>>
+    {
+        match self.state {
+            DirectoryAssignmentRetentionReaderState::Authenticated(ledger) => {
+                DirectoryAssignmentRetentionFence { ledger }.visit_roots(visitor)
+            }
+            DirectoryAssignmentRetentionReaderState::Absent => {
+                let generation = AssignmentRetentionGeneration::from_bytes(
+                    CampaignHash::derive(ABSENT_RETENTION_GENERATION_DOMAIN, &[]).as_bytes(),
+                );
+                Ok(AssignmentRetentionSummary::new(generation, 0, 0, 0, 0))
+            }
+        }
+    }
+
+    fn load_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+    ) -> Result<Option<AttemptRuntimeState>, Self::BackendError> {
+        match self.state {
+            DirectoryAssignmentRetentionReaderState::Authenticated(ledger) => {
+                ledger.load_attempt(key)
+            }
+            DirectoryAssignmentRetentionReaderState::Absent => Ok(None),
+        }
+    }
+
+    fn compare_exchange_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+        expected: Option<AttemptRuntimeState>,
+        next: Option<AttemptRuntimeState>,
+    ) -> Result<AttemptStateCas, Self::BackendError> {
+        match self.state {
+            DirectoryAssignmentRetentionReaderState::Authenticated(ledger) => {
+                ledger.compare_exchange_attempt(key, expected, next)
+            }
+            DirectoryAssignmentRetentionReaderState::Absent => {
+                Ok(AttemptStateCas::Conflict { current: None })
+            }
+        }
     }
 }
 

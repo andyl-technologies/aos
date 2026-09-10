@@ -47,6 +47,44 @@ fn existing_ledger_open_never_initializes_missing_state() {
 }
 
 #[test]
+fn optional_retention_reader_treats_only_a_missing_root_as_empty() {
+    let temporary = tempfile::tempdir().expect("ledger parent");
+    let root = temporary.path().join("optional-ledger");
+
+    let mut absent = DirectoryAssignmentRetentionReader::open_optional_existing(&root)
+        .expect("missing optional ledger");
+    assert!(!absent.is_present());
+    let summary = absent
+        .acquire_retention_fence()
+        .expect("absent ledger fence")
+        .visit_roots(&mut |_| Ok(()))
+        .expect("empty absent inventory");
+    assert_eq!(summary.attempt_records(), 0);
+    assert_eq!(summary.observation_roots(), 0);
+    assert_eq!(summary.checkpoint_roots(), 0);
+    drop(absent);
+    assert!(!root.exists());
+
+    fs::write(&root, b"not a ledger").expect("write malformed ledger root");
+    assert!(DirectoryAssignmentRetentionReader::open_optional_existing(&root).is_err());
+    fs::remove_file(&root).expect("remove malformed ledger root");
+    fs::create_dir(&root).expect("create incomplete ledger root");
+    assert!(DirectoryAssignmentRetentionReader::open_optional_existing(&root).is_err());
+    assert!(
+        fs::read_dir(&root)
+            .expect("read incomplete ledger")
+            .next()
+            .is_none()
+    );
+
+    fs::remove_dir(&root).expect("remove incomplete ledger root");
+    drop(DirectoryAssignmentLedger::open(&root).expect("initialize ledger"));
+    let present = DirectoryAssignmentRetentionReader::open_optional_existing(&root)
+        .expect("open existing optional ledger");
+    assert!(present.is_present());
+}
+
+#[test]
 fn writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
     let directory = tempfile::tempdir().expect("ledger directory");
     let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("first writer");

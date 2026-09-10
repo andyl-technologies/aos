@@ -21,8 +21,8 @@ use crucible_daemon::ExactCheckpointStore;
 use crucible_daemon::campaign_store_composition::{DirectoryBlobBackend, ImmutableBlobBackend};
 use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedCampaignContinuationControl, GuardedCampaignReplayClosure,
-    GuardedDefaultCampaignControlledObservationSource, GuardedDefaultCampaignObservationSource,
-    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
+    GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignRun,
+    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
     GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
 };
 
@@ -185,9 +185,10 @@ fn attach_guarded_resume_source(
                 evidence.schedule.clone(),
                 evidence.replay_closure.clone(),
                 evidence.checkpoint.clone(),
-                GuardedDefaultCampaignControlledObservationSource::new(source, control),
+                source,
                 final_stop,
                 checkpoints,
+                control,
             ),
             None => request.with_observation_resume_source(
                 evidence.schedule.clone(),
