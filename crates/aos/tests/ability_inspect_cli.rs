@@ -7,7 +7,8 @@ use std::process::{Command, Output};
 
 use aos_ability_inspect::{
     GraphQuery, INSPECTION_QUERY_MAX_DEPTH, InspectionBundle, InspectionView, NodeKey,
-    RenderFormat, render,
+    NodeObservation, ObservedNodeState, OperatorFocus, OperatorObservation, OperatorQuery,
+    ProjectionKind, RenderFormat, TransactionObservation, render,
 };
 use aos_ability_model::{DeploymentObligation, LocalKey, ObligationKind, TransactionId};
 use aos_ability_plan::test_support::verified_planning_transition_plan;
@@ -301,6 +302,75 @@ fn canonical_query_file_bounds_a_named_projection() -> Result<(), Box<dyn std::e
             .as_array()
             .is_some_and(|nodes| nodes.len() == 2)
     );
+    assert!(output.stderr.is_empty());
+    Ok(())
+}
+
+#[test]
+fn operator_cli_exports_a_single_focus_with_separate_observed_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempfile::tempdir()?;
+    let bundle_path = workspace.path().join("inspection.json");
+    let query_path = workspace.path().join("operator-query.json");
+    let observation_path = workspace.path().join("operator-observation.json");
+    let plan = checked_effect_plan();
+    let bundle = write_bundle(&bundle_path, &plan)?;
+    let digest = bundle.digest()?;
+    let request = plan.binding_plan().document().requests[0].id.clone();
+    let request_node = NodeKey::Request(request.clone());
+    let query = OperatorQuery::new(
+        OperatorFocus::FailingRequest { id: request },
+        ProjectionKind::Composition,
+        2,
+        32,
+    );
+    let observation = OperatorObservation::new(
+        plan.id(),
+        Sha256Digest::of_bytes("authenticated execution snapshot"),
+        1_725_900_000_000,
+        Vec::new(),
+        vec![NodeObservation {
+            node: request_node.clone(),
+            state: ObservedNodeState::Failed,
+        }],
+        vec![TransactionObservation {
+            transaction: TransactionId(LocalKey::new("operator-transaction")?),
+            members: vec![request_node],
+        }],
+    )?;
+    std::fs::write(&query_path, query.canonical_bytes()?)?;
+    std::fs::write(&observation_path, observation.canonical_bytes()?)?;
+
+    let output = run(
+        workspace.path(),
+        &[
+            "--json",
+            "ability",
+            "operator",
+            path_text(&bundle_path)?,
+            "--query",
+            path_text(&query_path)?,
+            "--observation",
+            path_text(&observation_path)?,
+            "--expected-digest",
+            &digest.to_string(),
+        ],
+    )?;
+
+    assert!(output.status.success(), "{}", stderr(&output)?);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(value["schema"], "aos.ability.operator-view/v1");
+    assert_eq!(value["focus"]["kind"], "failing-request");
+    assert!(value["statuses"].as_array().is_some_and(|statuses| {
+        statuses.iter().any(|status| {
+            status["plan_state"] == "declared" && status["observed_state"] == "failed"
+        })
+    }));
+    assert!(value["groups"].as_array().is_some_and(|groups| {
+        groups
+            .iter()
+            .any(|group| group["key"]["kind"] == "transaction")
+    }));
     assert!(output.stderr.is_empty());
     Ok(())
 }

@@ -12,6 +12,26 @@ pub enum AbilityCommand {
     ArtifactConsumption(AbilityArtifactConsumptionArgs),
     /// Export a checked retained execution timeline without mutating it
     Diagnostic(AbilityDiagnosticArgs),
+    /// Export a bounded interactive desired/observed operator view
+    Operator(AbilityOperatorArgs),
+}
+
+#[derive(Args)]
+pub struct AbilityOperatorArgs {
+    /// Read the canonical inspection bundle from this file
+    pub bundle: PathBuf,
+
+    /// Apply this canonical single-focus operator query
+    #[arg(long, value_name = "FILE")]
+    pub query: PathBuf,
+
+    /// Overlay this canonical caller-supplied observation
+    #[arg(long, value_name = "FILE")]
+    pub observation: Option<PathBuf>,
+
+    /// Match an independently obtained bundle digest
+    #[arg(long, value_name = "SHA256")]
+    pub expected_digest: Option<String>,
 }
 
 #[derive(Args)]

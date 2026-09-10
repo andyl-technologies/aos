@@ -10,9 +10,10 @@ use aos_ability_inspect::{
     ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES, ArtifactConsumptionExplanation,
     ArtifactConsumptionQuery, CheckedArtifactConsumptionEvidence, DiagnosticBundle,
     DiagnosticBundleAudience, ExecutionTimeline, GraphQuery, INSPECTION_BUNDLE_MAX_BYTES,
-    INSPECTION_QUERY_MAX_BYTES, InspectionBundle, InspectionView, PendingStateAvailability,
-    ProjectionKind, RenderFormat, TimelineEventInput, TimelineEventKind, TimelineProvenance,
-    TimelineTiming, ViewAnchor, render, render_projection, render_slice,
+    INSPECTION_QUERY_MAX_BYTES, InspectionBundle, InspectionView, OPERATOR_OBSERVATION_MAX_BYTES,
+    OPERATOR_QUERY_MAX_BYTES, OperatorObservation, OperatorQuery, OperatorView,
+    PendingStateAvailability, ProjectionKind, RenderFormat, TimelineEventInput, TimelineEventKind,
+    TimelineProvenance, TimelineTiming, ViewAnchor, render, render_projection, render_slice,
 };
 use aos_ability_model::{LocalKey, PlanNodeKey, RequiredFeature, TransactionId};
 use aos_ability_runtime::execution::{
@@ -26,8 +27,8 @@ use aos_package::config_eval::ability_store::RetainedAbilityDiagnosticSource;
 
 use crate::cli::{
     AbilityArtifactConsumptionArgs, AbilityCommand, AbilityDiagnosticArgs,
-    AbilityDiagnosticAudience, AbilityInspectArgs, AbilityProjection, AbilityRenderFormat,
-    ArtifactConsumptionRenderFormat,
+    AbilityDiagnosticAudience, AbilityInspectArgs, AbilityOperatorArgs, AbilityProjection,
+    AbilityRenderFormat, ArtifactConsumptionRenderFormat,
 };
 
 /// Runs one offline ability inspection command.
@@ -42,7 +43,61 @@ pub fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
         AbilityCommand::Inspect(args) => inspect(args, printer),
         AbilityCommand::ArtifactConsumption(args) => artifact_consumption(args, printer),
         AbilityCommand::Diagnostic(args) => diagnostic(args, printer),
+        AbilityCommand::Operator(args) => operator(args, printer),
     }
+}
+
+fn operator(args: &AbilityOperatorArgs, printer: &Printer) -> Result<()> {
+    let query_bytes = read_bounded_file(
+        &args.query,
+        u64::try_from(OPERATOR_QUERY_MAX_BYTES)
+            .context("operator query byte limit does not fit this platform")?,
+        "operator query",
+    )?;
+    let query = OperatorQuery::decode(&query_bytes).context("decoding canonical operator query")?;
+    let observation = args
+        .observation
+        .as_deref()
+        .map(|path| {
+            let bytes = read_bounded_file(
+                path,
+                u64::try_from(OPERATOR_OBSERVATION_MAX_BYTES)
+                    .context("operator observation byte limit does not fit this platform")?,
+                "operator observation",
+            )?;
+            OperatorObservation::decode(&bytes).context("decoding canonical operator observation")
+        })
+        .transpose()?;
+    let bundle_bytes = read_bounded_file(
+        &args.bundle,
+        u64::try_from(INSPECTION_BUNDLE_MAX_BYTES)
+            .context("inspection bundle byte limit does not fit this platform")?,
+        "inspection bundle",
+    )?;
+    let expected_digest = args
+        .expected_digest
+        .as_deref()
+        .map(Sha256Digest::parse)
+        .transpose()
+        .context("parsing --expected-digest")?;
+    let checked = InspectionBundle::decode(&bundle_bytes)
+        .context("decoding canonical ability inspection bundle")?
+        .check(expected_digest)
+        .context("checking ability inspection bundle semantics")?;
+    let view = InspectionView::from_bundle(&checked)
+        .context("projecting checked ability inspection view")?;
+    let operator = OperatorView::from_view(&view, &query, observation.as_ref())
+        .context("building bounded ability operator view")?;
+    let bytes = operator.canonical_bytes()?;
+    let output = std::str::from_utf8(&bytes).context("operator view JSON is not UTF-8")?;
+    printer.raw(output);
+
+    if matches!(view.anchor(), ViewAnchor::UnanchoredBundle { .. }) {
+        printer.warning(
+            "the bundle was semantically checked without an independent digest; its desired environment and policy are not asserted current",
+        );
+    }
+    Ok(())
 }
 
 fn artifact_consumption(args: &AbilityArtifactConsumptionArgs, printer: &Printer) -> Result<()> {
