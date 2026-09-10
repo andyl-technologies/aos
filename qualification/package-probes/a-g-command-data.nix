@@ -454,10 +454,20 @@ in {
     package = "gawk";
     executable = "awk";
     primary = {
-      input = "Two colon-delimited records.";
-      operation = "Sum the numeric second fields with awk.";
-      expected = "Awk emits the exact aggregate.";
-      arguments = ["-F:" "{ total += $2 } END { print total }"];
+      input = "Uninitialized array values and two colon-delimited records.";
+      operation = "Check scalar conversions, then sum the numeric second fields.";
+      expected = "Awk preserves empty array strings and emits the exact aggregate.";
+      files = {
+        "array-values.awk" = builtins.readFile ../../tests/build/toolchain-awk.awk;
+        "sum.awk" = "{ total += $2 } END { print total }\n";
+      };
+      arguments = [
+        "-F:"
+        "-f"
+        "@work@/primary/array-values.awk"
+        "-f"
+        "@work@/primary/sum.awk"
+      ];
       stdin = "alpha:19\nbeta:23\n";
       stdout = "42\n";
       stderr = "";
