@@ -3,7 +3,7 @@ let
   effectsInterface = {
     name = "aos.credential-delivery-effects";
     abi = 1;
-    descriptor = "sha256:a458175ca774c3fbe85172d79ec25255c560eed80846c42bf554767ea46ac222";
+    descriptor = "sha256:bc251c0837c1d453a6c5840d9146d9e27a95ad82032d9b4c60baf40d293cf1eb";
   };
 
   # Recovery retains time for an interrupted delivery, reconciliation, a
@@ -27,7 +27,7 @@ let
         key = "effects";
       };
       accepted_interfaces = [effectsInterface];
-      methods = ["deliver" "release"];
+      methods = ["acquire" "deliver" "release"];
       guarantees = [];
       lifetime = "instance";
     };
@@ -94,6 +94,47 @@ in {
         == context.provider
         && (change.kind == "create" || change.kind == "update"))
       context.changes;
+    incomingBindings =
+      builtins.filter
+      (binding:
+        binding.provider
+        == context.provider
+        && binding.provider_grant.principal == context.provider)
+      context.after.bindings;
+    consumerResources =
+      builtins.concatMap
+      (binding:
+        builtins.map
+        (permission: permission.resource)
+        (builtins.filter
+          (permission:
+            permission.resource.provider
+            != context.provider
+            && permission.access == "read")
+          binding.provider_grant.resources))
+      incomingBindings;
+    consumerTransition =
+      builtins.any
+      (change:
+        builtins.elem change.resource consumerResources
+        && builtins.elem change.kind [
+          "create"
+          "update"
+          "remove"
+          "reconcile-stopped"
+          "reconcile-divergent"
+        ])
+      context.changes;
+    unchanged =
+      if consumerTransition
+      then
+        builtins.filter
+        (change:
+          change.resource.provider
+          == context.provider
+          && change.kind == "unchanged")
+        context.changes
+      else [];
     removed =
       builtins.filter
       (change:
@@ -101,7 +142,7 @@ in {
         == context.provider
         && change.kind == "remove")
       context.changes;
-    terminalFor = authorityRole: change: method: let
+    terminalFor = authorityRole: change: method: access: let
       selected =
         builtins.filter
         (entry:
@@ -125,7 +166,11 @@ in {
             (permission:
               permission.resource
               == change.resource
-              && permission.access == "exclusive-write"
+              && (
+                permission.access
+                == access
+                || (access == "read" && permission.access == "exclusive-write")
+              )
               && builtins.elem method permission.operations)
             entry.binding.caller_grant.resources
           )
@@ -149,8 +194,12 @@ in {
       if builtins.length controllers == 1
       then (builtins.head controllers).controller
       else throw "credential-delivery transition requires one resource controller";
-    operation = authorityRole: change: method: family: phase: let
-      terminal = terminalFor authorityRole change method;
+    operation = authorityRole: change: method: family: phase: access: let
+      terminal = terminalFor authorityRole change method access;
+      version =
+        if authorityRole == "teardown"
+        then change.current
+        else change.desired;
     in {
       key = scopedKey "${method}-${change.resource.key}";
       branch_context = [];
@@ -167,13 +216,16 @@ in {
       };
       inputs = {
         source = "literal";
-        value = true;
+        value = {
+          inherit version;
+          view = change.resource.key;
+        };
       };
       preconditions = [];
       accesses = [
         {
           resource = change.resource;
-          mode = "exclusive-write";
+          mode = access;
         }
       ];
       controller = controllerFor change.resource;
@@ -198,21 +250,43 @@ in {
         operation "desired" change "deliver" {
           kind = "credential";
           action = "deliver";
-        } "preparing")
+        } "preparing" "exclusive-write")
       changed;
+    observes =
+      builtins.map
+      (change:
+        operation "desired" change "acquire" {
+          kind = "credential";
+          action = "acquire";
+        } "preparing" "read")
+      unchanged;
     releases =
       builtins.map
-      (change: operation "teardown" change "release" {kind = "release-resource";} "converging")
+      (change: operation "teardown" change "release" {kind = "release-resource";} "converging" "exclusive-write")
       removed;
-    deliveryExports =
+    viewExports =
       builtins.map
-      (change: {
-        key = "delivered-${change.resource.key}";
+      (entry: {
+        key = "view-${entry.change.resource.key}";
         kind = "completion";
-        node = node "deliver-${change.resource.key}";
-        outputs = {};
+        node = node "${entry.method}-${entry.change.resource.key}";
+        outputs.credential-view = {
+          producer = node "${entry.method}-${entry.change.resource.key}";
+          output = "credential-view";
+        };
       })
-      changed;
+      (
+        (builtins.map (change: {
+            inherit change;
+            method = "deliver";
+          })
+          changed)
+        ++ (builtins.map (change: {
+            inherit change;
+            method = "acquire";
+          })
+          unchanged)
+      );
     releaseExports =
       builtins.map
       (change: {
@@ -227,14 +301,14 @@ in {
       operations =
         builtins.sort
         (left: right: left.key.key < right.key.key)
-        (deliveries ++ releases);
+        (deliveries ++ observes ++ releases);
       decisions = [];
       merges = [];
       edges = [];
       exports =
         builtins.sort
         (left: right: left.key < right.key)
-        (deliveryExports ++ releaseExports);
+        (viewExports ++ releaseExports);
       imports = [];
       links = [];
       handoffs = [];
@@ -242,7 +316,7 @@ in {
       obligations = [];
     };
   in
-    if changed == [] && removed == []
+    if changed == [] && unchanged == [] && removed == []
     then
       fragment
       // {

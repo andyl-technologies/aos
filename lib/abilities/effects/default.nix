@@ -378,6 +378,21 @@ let
       checked = requireAttrs "Kubernetes object operation family" ["kind" "action"] value;
     in
       checked // {action = requireChoice "Kubernetes object action" ["apply" "delete" "observe"] checked.action;}
+    else if kind == "network-endpoint"
+    then let
+      checked = requireAttrs "network endpoint operation family" ["kind" "action"] value;
+    in
+      checked // {action = requireChoice "network endpoint action" ["materialize" "observe" "release"] checked.action;}
+    else if kind == "host-storage"
+    then let
+      checked = requireAttrs "host storage operation family" ["kind" "action"] value;
+    in
+      checked // {action = requireChoice "host storage action" ["ensure" "observe" "release"] checked.action;}
+    else if kind == "host-network-policy"
+    then let
+      checked = requireAttrs "host network policy operation family" ["kind" "action"] value;
+    in
+      checked // {action = requireChoice "host network policy action" ["apply" "observe" "remove"] checked.action;}
     else fail "operation family '${kind}' is unsupported";
 
   normalizeAggregateId = context: value: let

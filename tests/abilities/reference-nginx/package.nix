@@ -30,7 +30,7 @@
   credentialDeliveryEffects =
     interface
     "aos.credential-delivery-effects"
-    "sha256:a458175ca774c3fbe85172d79ec25255c560eed80846c42bf554767ea46ac222";
+    "sha256:bc251c0837c1d453a6c5840d9146d9e27a95ad82032d9b4c60baf40d293cf1eb";
   systemdService =
     interface
     "aos.systemd-service"
@@ -38,7 +38,7 @@
   nginxValidation =
     interface
     "aos.nginx-validation"
-    "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372";
+    "sha256:c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6";
   managedConfigurationEffects =
     interface
     "aos.managed-configuration-effects"
@@ -56,6 +56,13 @@
     stableResourceIdentity = true;
     releasesEphemeralOnDisable = true;
     retainsPersistentByDefault = true;
+    persistentDeleteMethod = null;
+  };
+
+  credentialEffectsLifecycle = {
+    stableResourceIdentity = true;
+    releasesEphemeralOnDisable = true;
+    retainsPersistentByDefault = false;
     persistentDeleteMethod = null;
   };
 
@@ -90,6 +97,59 @@
   string = schemas.string {
     maxLength = 65536;
     syntax = null;
+  };
+
+  credentialView = schemas.record {
+    fields = {
+      path = schemas.string {
+        maxLength = 4096;
+        syntax = null;
+      };
+      version = schemas.string {
+        maxLength = 71;
+        syntax = null;
+      };
+    };
+    optional = [];
+  };
+
+  credentialRequest = schemas.record {
+    fields = {
+      version = schemas.string {
+        maxLength = 71;
+        syntax = null;
+      };
+      view = localKeyString;
+    };
+    optional = [];
+  };
+
+  credentialObservation = schemas.record {
+    fields = {
+      delivered = schemas.boolean;
+      observed_version = schemas.optional (schemas.string {
+        maxLength = 71;
+        syntax = null;
+      });
+      requested_version = schemas.string {
+        maxLength = 71;
+        syntax = null;
+      };
+      schema = schemas.enum ["aos.ability.credential-delivery-observation/v1"];
+      view = localKeyString;
+    };
+    optional = [];
+  };
+
+  nginxValidationRequest = schemas.record {
+    fields = {
+      candidate = schemas.boolean;
+      credential_views = schemas.list {
+        element = credentialView;
+        maxItems = 1024;
+      };
+    };
+    optional = [];
   };
 
   localKeyString = schemas.string {
@@ -138,7 +198,7 @@
     optional = [];
   };
 
-  recoverableMethods = ["deliver" "observe" "prepare" "publish" "record" "release" "stop" "validate"];
+  recoverableMethods = ["acquire" "deliver" "observe" "prepare" "publish" "record" "release" "stop" "validate"];
 
   method = targetResource: operationFamily: name: {
     inherit operationFamily targetResource;
@@ -157,18 +217,47 @@
     };
   };
 
+  methodWithOutputs = targetResource: operationFamily: name: outputs:
+    (method targetResource operationFamily name) // {inherit outputs;};
+
+  validationMethod = operationFamily: name:
+    (method nginxValidation.name operationFamily name)
+    // {parameters = nginxValidationRequest;};
+
+  credentialEffectMethod = operationFamily: name: outputs:
+    (methodWithOutputs credentialDeliveryEffects.name operationFamily name outputs)
+    // {
+      parameters = credentialRequest;
+      outcome = {
+        completionEvidence = credentialObservation;
+        observationEvidence = credentialObservation;
+        supportsRejectedBeforeEffect = true;
+        indeterminate = "reconcile";
+      };
+    };
+
+  runtimeMethodOutput = schema: {
+    inherit schema;
+    phase = "runtime";
+    visibility = "protected";
+    lifetime = "instance";
+  };
+
   terminalExport = {
     name,
     group,
     handler,
     methods,
+    requestSchema ? schemas.boolean,
+    selectedLifecycle ? lifecycle,
   }:
     lib.abilities.define {
       interface = name;
       abi = 1;
-      requestSchema = schemas.boolean;
+      inherit requestSchema;
       outputs = {};
-      inherit methods lifecycle;
+      inherit methods;
+      lifecycle = selectedLifecycle;
       guarantees = [];
       aggregation = aggregation group;
       requires = {};
@@ -259,9 +348,9 @@ in {
             group = "nginx-validation";
             handler = "nginx-terminal";
             methods = {
-              record = method nginxValidation.name {kind = "record-generation-association";} "record";
-              release = method nginxValidation.name {kind = "release-resource";} "release";
-              validate = method nginxValidation.name {kind = "validate-candidate";} "validate";
+              record = validationMethod {kind = "record-generation-association";} "record";
+              release = validationMethod {kind = "release-resource";} "release";
+              validate = validationMethod {kind = "validate-candidate";} "validate";
             };
           };
         };
@@ -269,7 +358,7 @@ in {
       handlers.nginx-terminal = {
         artifact = nginxRuntime;
         entryPoint = "bin/nginx";
-        arguments = schemas.boolean;
+        arguments = nginxValidationRequest;
         result = schemas.boolean;
       };
     });
@@ -353,7 +442,7 @@ in {
             inherit lifecycle;
             guarantees = [];
             aggregation = aggregation "credentials";
-            requires.effects = methodRequirement credentialDeliveryEffects ["deliver" "release"];
+            requires.effects = methodRequirement credentialDeliveryEffects ["acquire" "deliver" "release"];
             composeEntry = "compose";
             transitionEntry = "transition";
             ownsResourceKinds = [credentialDelivery.name];
@@ -366,22 +455,34 @@ in {
           export = terminalExport {
             name = credentialDeliveryEffects.name;
             group = "credential-delivery-effects";
-            handler = "credential-delivery-terminal";
+            handler = "native-credential-delivery-v1";
+            requestSchema = credentialRequest;
+            selectedLifecycle = credentialEffectsLifecycle;
             methods = {
-              deliver = method credentialDeliveryEffects.name {
-                kind = "credential";
-                action = "deliver";
-              } "deliver";
-              release = method credentialDeliveryEffects.name {kind = "release-resource";} "release";
+              acquire =
+                credentialEffectMethod {
+                  kind = "credential";
+                  action = "acquire";
+                } "acquire" {
+                  credential-view = runtimeMethodOutput credentialView;
+                };
+              deliver =
+                credentialEffectMethod {
+                  kind = "credential";
+                  action = "deliver";
+                } "deliver" {
+                  credential-view = runtimeMethodOutput credentialView;
+                };
+              release = credentialEffectMethod {kind = "release-resource";} "release" {};
             };
           };
         };
       };
-      handlers.credential-delivery-terminal = {
+      handlers.native-credential-delivery-v1 = {
         artifact = credentialRuntime;
-        entryPoint = "bin/.aos-package-runtime-unwrapped";
-        arguments = schemas.boolean;
-        result = schemas.boolean;
+        entryPoint = "libexec/aos-credential-delivery-handler-v1";
+        arguments = credentialRequest;
+        result = credentialObservation;
       };
     });
 

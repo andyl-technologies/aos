@@ -9,10 +9,10 @@ use std::io::{self, Write};
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::identity::{compare_instance_ids, compare_request_ids};
 use aos_ability_model::{
-    AuthorityGrant, Binding, BindingPlanDocument, Diagnostic, DiagnosticClass, DiagnosticCode,
-    DiagnosticPhase, ImplementationKind, InstanceId, InterfaceKey, PackageDocument, PlanId,
-    RequestId, RequirementDeclaration, RequirementStrength, ResourceLifetime, ValueExpression,
-    VersionedDocument, compare_resource_ids,
+    AccessMode, AuthorityGrant, Binding, BindingPlanDocument, Diagnostic, DiagnosticClass,
+    DiagnosticCode, DiagnosticPhase, ImplementationKind, InstanceId, InterfaceKey, PackageDocument,
+    PlanId, RequestId, RequirementDeclaration, RequirementStrength, ResourceLifetime,
+    ValueExpression, VersionedDocument, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
@@ -1315,6 +1315,7 @@ fn validate_binding(
         binding,
         resources,
         aggregation,
+        false,
         index,
         "caller_grant",
         diagnostics,
@@ -1324,6 +1325,7 @@ fn validate_binding(
         binding,
         resources,
         aggregation,
+        true,
         index,
         "provider_grant",
         diagnostics,
@@ -1520,6 +1522,7 @@ fn validate_grant(
     binding: &Binding,
     resources: &BTreeSet<aos_ability_model::ResourceId>,
     aggregation: Option<&aos_ability_model::AggregationContract>,
+    permit_caller_observation: bool,
     index: usize,
     field: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1572,21 +1575,44 @@ fn validate_grant(
                 .child("operations"),
             diagnostics,
         );
-        if !resources.contains(&permission.resource)
-            || permission.resource.provider != binding.provider
-        {
+        if !grant_resource_in_scope(
+            permission,
+            resources,
+            &binding.provider,
+            &binding.request.consumer,
+            permit_caller_observation,
+        ) {
             let mut item = binding_diagnostic(
                 DiagnosticCode::ResourceScopeEscape,
                 DiagnosticClass::Unauthorized,
                 index,
-                "grant resource is outside the selected provider's authenticated plan resources"
-                    .to_string(),
+                    "grant resource is outside the selected provider's authenticated resources or read-only caller observation scope"
+                        .to_string(),
                 binding,
             );
             item.resource = Some(permission.resource.clone());
             push_diagnostic(diagnostics, item);
         }
     }
+}
+
+fn grant_resource_in_scope(
+    permission: &aos_ability_model::ResourcePermission,
+    resources: &BTreeSet<aos_ability_model::ResourceId>,
+    provider: &InstanceId,
+    caller: &InstanceId,
+    permit_caller_observation: bool,
+) -> bool {
+    if !resources.contains(&permission.resource) {
+        return false;
+    }
+    if permission.resource.provider == *provider {
+        return true;
+    }
+
+    permit_caller_observation
+        && permission.resource.provider == *caller
+        && permission.access == AccessMode::Read
 }
 
 fn validate_contributions(
@@ -1787,4 +1813,72 @@ fn binding_diagnostic(
 #[allow(dead_code)]
 fn lifetime_covers(available: ResourceLifetime, requested: ResourceLifetime) -> bool {
     available >= requested
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_ability_model::{
+        EnvironmentId, ExecutionStage, LocalKey, ResourceId, ResourcePermission,
+    };
+
+    use super::*;
+
+    #[test]
+    fn provider_observation_scope_is_exact_and_read_only() {
+        let instance = |name: &str| InstanceId {
+            environment: EnvironmentId {
+                authority: LocalKey::new("test").unwrap(),
+                key: LocalKey::new("host").unwrap(),
+                stage: ExecutionStage::Host,
+            },
+            key: LocalKey::new(name).unwrap(),
+        };
+        let provider = instance("provider");
+        let caller = instance("caller");
+        let foreign = instance("foreign");
+        let resource = |owner: InstanceId| ResourceId {
+            provider: owner,
+            key: LocalKey::new("resource").unwrap(),
+        };
+        let caller_resource = resource(caller.clone());
+        let resources = BTreeSet::from([
+            caller_resource.clone(),
+            resource(foreign.clone()),
+            resource(provider.clone()),
+        ]);
+        let permission = |resource, access| ResourcePermission {
+            resource,
+            access,
+            operations: Vec::new(),
+        };
+
+        assert!(grant_resource_in_scope(
+            &permission(caller_resource.clone(), AccessMode::Read),
+            &resources,
+            &provider,
+            &caller,
+            true,
+        ));
+        assert!(!grant_resource_in_scope(
+            &permission(caller_resource, AccessMode::SharedWrite),
+            &resources,
+            &provider,
+            &caller,
+            true,
+        ));
+        assert!(!grant_resource_in_scope(
+            &permission(resource(foreign), AccessMode::Read),
+            &resources,
+            &provider,
+            &caller,
+            true,
+        ));
+        assert!(grant_resource_in_scope(
+            &permission(resource(provider.clone()), AccessMode::ExclusiveWrite),
+            &resources,
+            &provider,
+            &caller,
+            false,
+        ));
+    }
 }

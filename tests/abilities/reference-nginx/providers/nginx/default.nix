@@ -20,7 +20,7 @@ let
   nginxValidation =
     interface
     "aos.nginx-validation"
-    "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372";
+    "sha256:c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6";
   systemdEffects =
     interface
     "aos.systemd-service-effects"
@@ -356,6 +356,19 @@ in {
       then (builtins.head serviceResources).resource
       else throw "nginx transition requires exactly one authorized service resource";
     needsValidation = configurationChanged != [] || credentialChanged != [];
+    credentialAvailable =
+      if needsValidation
+      then
+        builtins.filter
+        (change:
+          change.kind
+          == "create"
+          || change.kind == "update"
+          || change.kind == "unchanged"
+          || change.kind == "reconcile-stopped"
+          || change.kind == "reconcile-divergent")
+        credentialChanges
+      else [];
     needsConvergence = needsValidation || serviceChanged != [];
     needsAssociation =
       needsConvergence
@@ -380,6 +393,47 @@ in {
       kind = "operation";
       key = scopedKey name;
     };
+    lowerOperationResult = binding: operation: output: {
+      source = "operation-result";
+      reference = {
+        producer = {
+          kind = "operation";
+          key = {
+            scope = [
+              binding.provider.key
+              (builtins.substring 7 64 binding.implementation.descriptor)
+            ];
+            key = operation;
+          };
+        };
+        inherit output;
+      };
+    };
+    credentialMethod = change:
+      if change.kind == "unchanged"
+      then "acquire"
+      else "deliver";
+    credentialViewInputs =
+      builtins.map
+      (change:
+        lowerOperationResult
+        credential
+        "${credentialMethod change}-${change.resource.key}"
+        "credential-view")
+      credentialAvailable;
+    validationInputs = candidate: credentialViews: {
+      source = "object";
+      fields = {
+        candidate = {
+          source = "literal";
+          value = candidate;
+        };
+        credential_views = {
+          source = "list";
+          items = credentialViews;
+        };
+      };
+    };
     controllerFor = resource: let
       controllers = builtins.filter (entry: entry.resource == resource) context.controllers;
     in
@@ -395,17 +449,14 @@ in {
       method = "validate";
       family = {kind = "validate-candidate";};
       phase = "preparing";
-      input_phase = "planning";
+      input_phase = "runtime";
       target = {
         interface = validation.interface;
         resource = change.resource;
         operations = ["validate"];
         lifetime = "instance";
       };
-      inputs = {
-        source = "literal";
-        value = true;
-      };
+      inputs = validationInputs true credentialViewInputs;
       preconditions = [];
       accesses = [
         {
@@ -445,10 +496,7 @@ in {
         operations = ["record"];
         lifetime = "instance";
       };
-      inputs = {
-        source = "literal";
-        value = true;
-      };
+      inputs = validationInputs true [];
       preconditions = [];
       accesses = [
         {
@@ -572,10 +620,7 @@ in {
         operations = ["release"];
         lifetime = "instance";
       };
-      inputs = {
-        source = "literal";
-        value = true;
-      };
+      inputs = validationInputs false [];
       preconditions = [];
       accesses = [
         {
@@ -630,14 +675,14 @@ in {
         builtins.map
         (association: {
           binding = credential.id;
-          export = "delivered-${change.resource.key}";
+          export = "view-${change.resource.key}";
           direction = "after-export";
-          outputs = [];
+          outputs = ["credential-view"];
           consumer = node "validate-${association.resource.key}";
-          kind = "required-success";
+          kind = "data";
         })
         associationChanges)
-      credentialChanged;
+      credentialAvailable;
     teardownImports =
       builtins.map
       (change: {
@@ -774,14 +819,13 @@ in {
         builtins.sort edgeLess
         (convergenceEdges ++ credentialOnlyEdges ++ teardownEdges);
       exports = [];
-      imports =
-        builtins.sort importLess (
-          configurationImports
-          ++ credentialImports
-          ++ convergenceImports
-          ++ teardownImports
-          ++ credentialReleaseImports
-        );
+      imports = builtins.sort importLess (
+        configurationImports
+        ++ credentialImports
+        ++ convergenceImports
+        ++ teardownImports
+        ++ credentialReleaseImports
+      );
       links = [];
       handoffs = [];
       provider_readiness = [];
