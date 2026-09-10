@@ -36,6 +36,8 @@ fn spawn_scripted_process() -> std::io::Result<std::process::Child> {
         .spawn()
 }
 
+// crucible-lint: allow clippy-disallowed-method -- host time bounds scripted process teardown only and never enters modeled state.
+#[allow(clippy::disallowed_methods)]
 fn wait_for_scripted_process_termination(process_id: u32) -> std::io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(2);
     let stat_path = format!("/proc/{process_id}/stat");
