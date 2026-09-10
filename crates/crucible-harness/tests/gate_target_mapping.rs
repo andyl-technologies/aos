@@ -7,6 +7,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crucible_harness::campaign_gates::find_campaign_gate;
 use crucible_harness::find_gate;
 use crucible_harness::gate_targets::{GateTargetSpec, gate_targets};
 use toml::Value;
@@ -27,7 +28,7 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
             continue;
         }
 
-        if find_gate(target.gate).is_none() {
+        if find_gate(target.gate).is_none() && find_campaign_gate(target.gate).is_none() {
             failures.push(format!(
                 "{}:{} references unknown canonical gate {}",
                 target.package, target.test_target, target.gate
@@ -63,42 +64,42 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
             ));
         }
 
-        // Feature-gated `crucible` gate targets (those that exercise the
-        // `test-double` backend) must declare the feature both in the registry and
-        // in their `[[test]]` manifest entry, and pin an explicit path so the
-        // target is isolable. Crucible-side gate targets that run under default
-        // features (the real-simulator determinism gates) are auto-discovered and
-        // exempt.
+        // Every feature-gated integration target must declare each feature in
+        // its `[[test]]` entry and pin an explicit path so default workspace
+        // test discovery cannot compile it under the wrong feature set.
+        for required_feature in target.required_features {
+            if !manifest_test_target_requires_feature(
+                &fs::read_to_string(&manifest_path)?.parse()?,
+                target.test_target,
+                required_feature,
+            ) {
+                failures.push(format!(
+                    "{}:{} Cargo manifest must set required-features containing {:?}",
+                    target.package, target.test_target, required_feature
+                ));
+            }
+        }
+
+        if !target.required_features.is_empty()
+            && !manifest_test_target_has_path(
+                &fs::read_to_string(&manifest_path)?.parse()?,
+                target.test_target,
+                &format!("tests/{}.rs", target.test_target),
+            )
+        {
+            failures.push(format!(
+                "{}:{} Cargo manifest must set path = \"tests/{}.rs\"",
+                target.package, target.test_target, target.test_target
+            ));
+        }
+
+        // The `crucible` SimDouble gates specifically require test-double.
         let requires_test_double = crucible_gate_target_requires_test_double(target);
         if requires_test_double && target.required_features != ["test-double"].as_slice() {
             failures.push(format!(
                 "{}:{} must run with --features test-double",
                 target.package, target.test_target
             ));
-        }
-
-        if requires_test_double {
-            if !manifest_test_target_requires_feature(
-                &fs::read_to_string(&manifest_path)?.parse()?,
-                target.test_target,
-                "test-double",
-            ) {
-                failures.push(format!(
-                    "{}:{} Cargo manifest must set required-features = [\"test-double\"]",
-                    target.package, target.test_target
-                ));
-            }
-
-            if !manifest_test_target_has_path(
-                &fs::read_to_string(&manifest_path)?.parse()?,
-                target.test_target,
-                &format!("tests/{}.rs", target.test_target),
-            ) {
-                failures.push(format!(
-                    "{}:{} Cargo manifest must set path = \"tests/{}.rs\"",
-                    target.package, target.test_target, target.test_target
-                ));
-            }
         }
     }
 
@@ -226,6 +227,31 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate:campaign-statistics",
                 "crucible-campaign",
                 "gate_campaign_statistics"
+            ),
+            (
+                "gate:attempt-idempotence",
+                "crucible-campaign",
+                "gate_attempt_idempotence"
+            ),
+            (
+                "gate:campaign-mutation-scaling",
+                "crucible-campaign",
+                "gate_campaign_mutation_scaling"
+            ),
+            (
+                "gate:campaign-store-equivalence",
+                "crucible-cas",
+                "gate_campaign_store_equivalence"
+            ),
+            (
+                "gate:campaign-store-composition",
+                "crucible-cas",
+                "gate_campaign_store_composition"
+            ),
+            (
+                "gate:campaign-store-composition",
+                "crucible-cli",
+                "gate_campaign_store_composition"
             ),
             (
                 "gate:scheduler-liveness",
@@ -399,7 +425,7 @@ fn synthetic_mapping_failures(
     let mut failures = Vec::new();
 
     for target in targets {
-        if find_gate(target.gate).is_none() {
+        if find_gate(target.gate).is_none() && find_campaign_gate(target.gate).is_none() {
             failures.push(format!(
                 "{}:{} references unknown canonical gate {}",
                 target.package, target.test_target, target.gate
