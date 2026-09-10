@@ -7,6 +7,7 @@
   libcBuildOverrides ? {},
   libcBuildPerl ? null,
   perlNssLibraries ? "-lnss_files -lnss_dns",
+  perlArchname ? null,
   binutilsSource ? directory + "/binutils.nix",
   gccBuildOverrides ? {},
 }: let
@@ -94,6 +95,7 @@
       then {
         perl = import ./bootstrap-perl.nix {
           inherit buildTools;
+          archname = perlArchname;
           nssLibraries = perlNssLibraries;
           inherit (privateTools) buildPlatform;
           targetTools = privateTools // exports;

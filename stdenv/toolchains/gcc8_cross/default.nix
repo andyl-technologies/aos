@@ -198,9 +198,14 @@ in
     gccBuildOverrides.installCxxRuntimeWithCompiler = true;
     # Complete libc with the finished cross compiler and build-host generators.
     libcBuildPerl = prev.perl;
-    libcBuildOverrides = {crossGccStage1 = scope.crossGccStage2;};
+    libcBuildOverrides = {
+      crossGccStage1 = scope.crossGccStage2;
+      fixRiscvSyscallArguments = hostPlatform.constraints.cpu == "riscv64";
+    };
     # Static NSS backends are already included in this libc.a.
     perlNssLibraries = "";
+    # Configure runs build-host uname; CPAN must identify the target interpreter.
+    perlArchname = "${hostPlatform.constraints.cpu}-linux";
     privateTools = scope;
     buildTools = prev;
     directory = ./.;
