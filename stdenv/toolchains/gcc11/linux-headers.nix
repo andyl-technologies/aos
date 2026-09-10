@@ -9,6 +9,28 @@
   buildPlatform,
   hostPlatform,
 }: let
+  # Reuse the source filter so emulated builds do not fork for every kernel file.
+  filterSourceScripts = hostPlatform.constraints.cpu != "x86_64";
+  sourceScriptFilterSetup =
+    if filterSourceScripts
+    then ''
+      source_runtime_inputs="$TMPDIR/kernel-runtime-scripts"
+      mkdir -p "$source_runtime_inputs"
+      ${prev.perl}/bin/perl ${../../filter-runtime-scripts.pl} . "$source_runtime_inputs"
+    ''
+    else "";
+  sourceScriptRoot =
+    if filterSourceScripts
+    then ''"$source_runtime_inputs"''
+    else ".";
+  sourceScriptFilterCleanup =
+    if filterSourceScripts
+    then ''
+
+      rm -rf "$source_runtime_inputs"
+    ''
+    else "";
+
   src = builtins.fetchTarball {
     url = "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.14.tar.xz";
     sha256 = "15c91flxhankd62xwv02azjxy4hqll4s3jsl5kq8vbhjrz57lcl0";
@@ -53,8 +75,8 @@ in
               chmod -R u+w .
 
               # Pin source helpers that configure or make can execute directly.
-              AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
-                "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+              ${sourceScriptFilterSetup}AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+                "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} ${sourceScriptRoot}${sourceScriptFilterCleanup}
 
               make SHELL="${prev.bash}/bin/bash" ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
