@@ -6619,6 +6619,57 @@ authenticate the native manager helper, contact systemd, or mint activation
 evidence. Those boundaries and their public-entry tests remain open, and no
 readiness or task checkbox changes.
 
+Commit `9ca3b8953` adds a generic event-driven session around one fixed child.
+The public entry consumes optional standard input and at most four ordered
+child descriptor roles, borrows one caller-authenticated nonblocking control
+descriptor, retains the child pidfd and its initial information, and invokes a
+typed nonblocking exchange only while the leader is observed live. One absolute
+`CLOCK_MONOTONIC` deadline begins before validation, invocation preparation,
+spawn, protocol exchange, and concurrent bounded collection of standard output
+and standard error. Readable, writable, hangup, error, and invalid control
+states are handled explicitly; hangup permits at most one requested read
+attempt, and terminal states cannot create a readiness spin.
+
+After successful spawn, the supervisor returns only after synchronously
+attempting cancellation and leader reap. Completion preserves the exchange
+value, terminal child status, and bounded output; early exit, timeout, and
+output overflow remain distinct outcomes. Process, exchange, and cleanup errors
+are typed separately, and a secondary cleanup failure is retained alongside the
+primary failure. The unwind guard repeats kill-and-reap cleanup after a callback
+panic. The fresh process group is a cleanup mechanism, not a process-tree
+containment boundary: a privileged caller must supply an independently enforced
+cgroup when a child must not escape by changing its process group.
+
+Qualification used exact parent
+`678ea4a872de3ed5ee13dafb650a6953388e2548` plus only the four files in the
+commit. Their SHA-256 digests were
+`Cargo.toml` =
+`d537d17255029b719eadd3a694dc43a8a25b41b0cafb4f6e852ce606dad11d89`,
+`process.rs` =
+`0f55a1c244f09c38a27e3d94f8e4f08f32cc4a8c3512ad105dabfe48e7edca1f`,
+`process/session.rs` =
+`33e9eb25ff648f590fe13402bc40dfd328727214805a07a263dfc9c9f43c3513`,
+and `tests/fixed_process_session.rs` =
+`7a0e121e98b5c9b2db588fd2d756dce9359622688c28f93965540a7755a7c35e`.
+The pinned realized AOS development environment passed the exact three-file
+format check, all 159 non-ignored Linux library tests with seven fixtures
+ignored, the Linux all-target run, and strict all-target Clippy with warnings
+denied. A harness-free integration executable first proves that its public-entry
+parent has exactly one task, then passes a staged start/read/write/continue/final
+acknowledgement exchange through the public API and exits successfully.
+
+The cleanup-failure regression uses a one-shot `cfg(test)` hook after successful
+cancellation and before reap, then verifies that guard destruction still reaps
+the leader and that the primary exchange error retains the secondary cleanup
+error. It does not simulate every real kernel cleanup failure. Callback code
+runs inline and is not forcibly preempted; the supervisor checks the common
+deadline and liveness before and after each callback, so a callback that blocks
+can exceed the budget. The native C/libsystemd manager helper, strict helper
+protocol and limits, direct-manager query, activation evidence, production
+inspector binary and units, enforcing-MAC deployment, and VM handshake remain
+unimplemented. No activation token is minted, Network Apply remains
+unadvertised, and no readiness or task checkbox changes.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
