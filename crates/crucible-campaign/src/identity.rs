@@ -580,9 +580,9 @@ content_object_id!(
 content_object_id!(
     AttemptId,
     ObjectKind::CampaignFact,
-    [1, 2, 3, 4, 5, 6],
+    [1, 2, 3, 4, 7, 8],
     "crucible.campaign.attempt",
-    "Identifies one immutable semantic execution attempt; versions 1 through 4 remain decodable for history compatibility, and versions 5 and 6 carry modeled continuation input."
+    "Identifies one immutable semantic execution attempt; versions 1 through 4 remain decodable for history compatibility, versions 5 and 6 are rejected superseded pre-release encodings, and versions 7 and 8 carry source-authenticated modeled continuation input."
 );
 content_object_id!(
     AttemptAdmissionId,

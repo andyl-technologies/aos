@@ -576,6 +576,9 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                         scheduler_quiescence,
                     };
                     prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                    for append in self.settle_trigger_graph()? {
+                        merge_event_log_append(&mut outcome, append);
+                    }
                     self.append_live_signal_fault_campaign_discoveries(
                         signal_fault_frontier_start,
                         &mut outcome,
@@ -631,10 +634,16 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     if let Some(seed) = branch.seed {
                         self.inner.loop_impl_mut().reseed_future_decisions(seed)?;
                     }
-                    self.inner.loop_impl_mut().clear_branch_frontier_cap();
+                    self.branch = self.continuation_branches.pop_front();
+                    if let Some(next) = &self.branch {
+                        self.inner
+                            .loop_impl_mut()
+                            .set_branch_frontier_cap(next.frontier)?;
+                    } else {
+                        self.inner.loop_impl_mut().clear_branch_frontier_cap();
+                    }
                     let frontier = self.inner.loop_impl().frontier();
                     let scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);
-                    self.branch = None;
                     let mut decisions = pre_quantum_decisions;
                     decisions.extend(branch_decisions);
                     let mut outcome = QuantumOutcome {
@@ -652,6 +661,9 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                         scheduler_quiescence,
                     };
                     prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                    for append in self.settle_trigger_graph()? {
+                        merge_event_log_append(&mut outcome, append);
+                    }
                     self.append_live_signal_fault_campaign_discoveries(
                         signal_fault_frontier_start,
                         &mut outcome,
@@ -2034,6 +2046,14 @@ impl ProductionVmLifecycleLoop {
         boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
     ) -> Result<ContentHash, ExactCheckpointTransactionError> {
         boundary()?;
+        if !self.continuation_branches.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "exact checkpoint cannot retain unapplied cold-replay branch generations",
+                ),
+            }
+            .into());
+        }
         let checkpoint_virtual_time = self.inner.loop_impl().frontier();
         let network_committed_frontier = self.inner.committed_frontier();
         let fault_checkpoint = {

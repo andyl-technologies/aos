@@ -673,4 +673,19 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
         .reseed_future_decisions(second_seed)
         .expect("an idle scheduler should reset World-network cursors");
     assert_eq!(scheduler.world_network_rng_positions.get(&link), Some(&0));
+
+    let mut checkpoint_scheduler = test_scheduler(Vec::new(), Vec::new());
+    checkpoint_scheduler
+        .reseed_future_decisions(second_seed)
+        .expect("an idle scheduler should admit a branch re-seed");
+    let scenario = checkpoint_scheduler.configuration().def.clone();
+    let checkpoint = checkpoint_scheduler
+        .checkpoint()
+        .expect("reseeded scheduler checkpoint");
+    assert_eq!(
+        checkpoint
+            .configuration_for(&scenario)
+            .expect("reseeded checkpoint configuration"),
+        *checkpoint_scheduler.configuration()
+    );
 }

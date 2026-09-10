@@ -235,7 +235,7 @@ impl CampaignRecordKind {
             Self::BranchRequest => 9,
             Self::Proposal => 2,
             Self::BranchPath => 2,
-            Self::Attempt => 6,
+            Self::Attempt => 8,
             Self::AttemptAdmission => 2,
             Self::MeasurementSet => 2,
             Self::Observation => 12,
@@ -746,7 +746,7 @@ impl ObjectEnvelope {
             || record_kind == CampaignRecordKind::Proposal
                 && matches!(envelope.schema_version(), 1..=2)
             || record_kind == CampaignRecordKind::Attempt
-                && matches!(envelope.schema_version(), 1..=5)
+                && matches!(envelope.schema_version(), 1..=4 | 7..=8)
             || record_kind == CampaignRecordKind::AttemptAdmission
                 && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::Observation
