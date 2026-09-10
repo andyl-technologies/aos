@@ -238,9 +238,47 @@
       .abilities
       .outPath))
     .success;
+  proseVariant = prose:
+    pkgs.mkDerivation {
+      pname = "ability-prose-invariance";
+      version = "1.0.0";
+      src = ../../tests/abilities/prose-invariance;
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p "$out/share/ability-prose-invariance"
+            echo payload > "$out/share/ability-prose-invariance/value"
+          '';
+        }
+      ];
+      configModule = {
+        src = ../../tests/abilities/prose-invariance;
+        moduleAbiCompat = {
+          min = 1;
+          max = 1;
+        };
+        declares = [];
+        documentation.sections.reference = lib.aosDoc.section "Reference" [
+          (lib.aosDoc.paragraph prose)
+        ];
+      };
+      abilityPackage = {};
+    };
+  proseBefore = proseVariant "Original package guidance.";
+  proseAfter = proseVariant "Revised package guidance with no contract change.";
 in
   assert reservedAbilityOutputRejected "abilities";
   assert reservedAbilityOutputRejected "abilityPackage";
+  # Documentation prose is retained in the config companion and therefore
+  # changes that companion (and the later documentation object's identity).
+  # mkDerivation removes configModule before building the payload and prepares
+  # the ability companion only from payload/source/ability declarations, so the
+  # exact package manifest, semantic package digest, and transition inputs stay
+  # byte-identical across this prose-only edit.
+  assert proseBefore.config.drvPath != proseAfter.config.drvPath;
+  assert proseBefore.drvPath == proseAfter.drvPath;
+  assert proseBefore.abilities.drvPath == proseAfter.abilities.drvPath;
   assert canonicalInterface == expectedInterface;
   assert interfaceDocument.schema == "aos.ability.interface/v1";
   assert interfaceDocument.interface.name == "aos.test.echo";

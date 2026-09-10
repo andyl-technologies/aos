@@ -602,6 +602,8 @@ enum HubTopologyMethod {
     GetPackage,
     /// Selects exact canonical package documentation.
     GetPackageDocumentation,
+    /// Selects a canonical public ability reference derived from a signed companion.
+    GetPackageAbilityReference,
     /// Selects indexed package-documentation search.
     SearchPackageDocumentation,
     /// Selects a filtered page of structured package options.
@@ -1173,6 +1175,9 @@ impl HubTopologyMethod {
             ListPackages => "aos.hub.v1.PackageService/ListPackages",
             GetPackage => "aos.hub.v1.PackageService/GetPackage",
             GetPackageDocumentation => "aos.hub.v1.DocumentationService/GetPackageDocumentation",
+            GetPackageAbilityReference => {
+                "aos.hub.v1.DocumentationService/GetPackageAbilityReference"
+            }
             SearchPackageDocumentation => {
                 "aos.hub.v1.DocumentationService/SearchPackageDocumentation"
             }
@@ -1672,6 +1677,7 @@ pub mod hub_rpc {
         ListPackages: ListPackagesRequest => ListPackagesResponse;
         GetPackage: GetPackageRequest => GetPackageResponse;
         GetPackageDocumentation: GetPackageDocumentationRequest => GetPackageDocumentationResponse;
+        GetPackageAbilityReference: GetPackageAbilityReferenceRequest => GetPackageAbilityReferenceResponse;
         SearchPackageDocumentation: SearchPackageDocumentationRequest => SearchPackageDocumentationResponse;
         ListPackageOptions: ListPackageOptionsRequest => ListPackageOptionsResponse;
         GetPackageOption: GetPackageOptionRequest => GetPackageOptionResponse;

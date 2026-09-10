@@ -44,6 +44,8 @@
 
 pub mod load;
 
+mod ability_reference;
+
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
@@ -75,6 +77,8 @@ use crate::db::{
 };
 use crate::fetch::SurfaceFetch;
 
+pub use self::ability_reference::fetch_package_ability_reference;
+use self::ability_reference::verify_package_ability_references;
 use self::load::{load_registry_tree_with_reader, load_release_tree_with_reader, ObjectReader};
 
 /// Maximum branches (channels) processed per index run.
@@ -448,7 +452,10 @@ async fn index_registry_inner(
     let release_documentation_complete = db
         .release_documentation_projection_complete(registry.id)
         .await?
-        && db.release_browse_projection_complete(registry.id).await?;
+        && db.release_browse_projection_complete(registry.id).await?
+        && db
+            .package_ability_reference_projection_complete(registry.id)
+            .await?;
     if incremental_preconditions(
         status.as_ref().map(|status| status.state.as_str()),
         status
@@ -531,6 +538,9 @@ async fn index_registry_inner(
         .as_ref()
         .is_some_and(|status| status.state == "fresh")
         && indexed_roster_matches(db, registry.id, &roster_rows).await?
+        && db
+            .package_ability_reference_projection_complete(registry.id)
+            .await?
         // Signed container roots bind exact placement evidence. The reusable
         // artifact projection does not rehydrate that evidence, so force the
         // normal signed-release validation path for container registries.
@@ -738,6 +748,8 @@ async fn index_registry_inner(
 
                 let artifacts = release_snapshot_artifacts(&release_tree.packages);
                 let search = verify_package_documentation(fetch, &release_tree.packages).await?;
+                let ability_references =
+                    verify_package_ability_references(fetch, &release_tree.packages).await?;
                 {
                     let _projection = browse_projection_gate.lock().await;
                     db.retain_release_browse_catalog(
@@ -746,6 +758,12 @@ async fn index_registry_inner(
                         &release_tree.packages,
                         release_tree.root.registry.default_release.as_deref(),
                         &search,
+                    )
+                    .await?;
+                    db.retain_package_ability_reference_catalog(
+                        registry.id,
+                        &source_commit,
+                        &ability_references,
                     )
                     .await?;
                 }
@@ -865,6 +883,8 @@ async fn index_registry_inner(
     let image_presence = deduplicated_presence;
 
     let package_documentation = verify_package_documentation(fetch, &tree.packages).await?;
+    let package_ability_references =
+        verify_package_ability_references(fetch, &tree.packages).await?;
     db.retain_release_browse_catalog(
         registry.id,
         &commit_oid.to_hex(),
@@ -889,6 +909,7 @@ async fn index_registry_inner(
         roster: roster_rows,
         packages: tree.packages,
         package_documentation,
+        package_ability_references,
         releases,
         release_artifact_snapshots,
         release_images,
@@ -3717,7 +3738,9 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
         let artifacts = release_snapshot_artifacts(&[package]);
 
         assert_eq!(artifacts.len(), 3);
-        assert!(artifacts.iter().all(|entry| entry.artifact_kind == "output"));
+        assert!(artifacts
+            .iter()
+            .all(|entry| entry.artifact_kind == "output"));
         assert_eq!(
             artifacts
                 .iter()

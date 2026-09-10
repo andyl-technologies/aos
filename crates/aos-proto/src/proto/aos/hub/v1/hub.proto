@@ -333,6 +333,7 @@ service PackageService {
 // projections rebuilt by registry indexing.
 service DocumentationService {
   rpc GetPackageDocumentation(GetPackageDocumentationRequest) returns (GetPackageDocumentationResponse);
+  rpc GetPackageAbilityReference(GetPackageAbilityReferenceRequest) returns (GetPackageAbilityReferenceResponse);
   rpc SearchPackageDocumentation(SearchPackageDocumentationRequest) returns (SearchPackageDocumentationResponse);
   rpc ListPackageOptions(ListPackageOptionsRequest) returns (ListPackageOptionsResponse);
   rpc GetPackageOption(GetPackageOptionRequest) returns (GetPackageOptionResponse);
@@ -606,6 +607,29 @@ message PackageDocumentationIdentity {
 
 message GetPackageDocumentationResponse {
   PackageDocumentationIdentity identity = 1;
+  bytes canonical_json = 2;
+  string etag = 3;
+}
+
+message GetPackageAbilityReferenceRequest {
+  string registry = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  string release = 5;
+}
+
+message PackageAbilityReferenceIdentity {
+  string registry_commit = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  string manifest_sha256 = 5;
+  string package_digest = 6;
+}
+
+message GetPackageAbilityReferenceResponse {
+  PackageAbilityReferenceIdentity identity = 1;
   bytes canonical_json = 2;
   string etag = 3;
 }

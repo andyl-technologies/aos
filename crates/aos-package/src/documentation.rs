@@ -7,15 +7,18 @@
 //! through [`aos_doc_model`] before rendering or editor use.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read as _, Write};
 use std::net::{IpAddr, SocketAddr};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use aos_ability_model::VersionedDocument as _;
+use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 use aos_doc_model::{
     DOCUMENT_JSON_SCHEMA, DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES,
-    OptionDocument, PackageDocumentation, SearchDocument, tokenize,
+    OptionDocument, PackageAbilityReference, PackageDocumentation, SearchDocument, tokenize,
 };
 use aos_proto_types::{
     ComparePackageDocumentationRequest, GetPackageDocumentationRequest,
@@ -35,6 +38,8 @@ use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput
 pub(crate) struct LoadedDocumentation {
     /// Decoded canonical document.
     pub document: PackageDocumentation,
+    /// Public contracts derived from this installed package's authenticated companion.
+    pub ability_reference: Option<PackageAbilityReference>,
 }
 
 /// Runs one `apm docs` command.
@@ -377,7 +382,7 @@ pub(crate) fn load_installed_documents(scope: ProfileScope) -> Result<Vec<Loaded
             continue;
         };
         let path = Path::new(&artifact.store_path);
-        let loaded = load_document_file(path, Some(&artifact), &apm.name)?;
+        let mut loaded = load_document_file(path, Some(&artifact), &apm.name)?;
         if loaded.document.package.name != apm.name
             || loaded.document.package.version != apm.version
         {
@@ -390,6 +395,13 @@ pub(crate) fn load_installed_documents(scope: ProfileScope) -> Result<Vec<Loaded
                 loaded.document.package.version
             );
         }
+        loaded.ability_reference = apm
+            .ability
+            .as_ref()
+            .map(|ability| {
+                load_ability_reference(ability, &apm.name, &apm.version, &installed.store_path)
+            })
+            .transpose()?;
         documents.push(loaded);
     }
     documents.sort_by(|left, right| {
@@ -441,7 +453,88 @@ fn load_document_file(
             bail!("documentation object identity mismatch for {source}");
         }
     }
-    Ok(LoadedDocumentation { document })
+    Ok(LoadedDocumentation {
+        document,
+        ability_reference: None,
+    })
+}
+
+fn load_ability_reference(
+    ability: &crate::types::AbilityPackageMeta,
+    package_name: &str,
+    package_version: &str,
+    primary_store_path: &str,
+) -> Result<PackageAbilityReference> {
+    crate::ability_package::validate_ability_package_meta(ability)
+        .context("validating installed ability metadata for documentation")?;
+    let manifest = crate::ability_package::read_package_manifest(&ability.store_path)?;
+    if manifest.len() as u64 != ability.manifest_size
+        || Sha256Digest::of_bytes(&manifest).to_string() != ability.manifest_sha256
+    {
+        bail!("installed ability manifest identity mismatch for '{package_name}'");
+    }
+    let package = crate::ability_package::decode_package_manifest(&manifest)?;
+    if package.package.name.as_str() != package_name || package.package.version != package_version {
+        bail!("installed ability package identity mismatch for '{package_name}'");
+    }
+    let artifacts = crate::ability_package::collect_distinct_artifacts(&package)?;
+    crate::ability_package::verify_artifact_catalog(&artifacts, &ability.artifacts)
+        .context("binding installed ability artifacts to signed retention metadata")?;
+    if package.package.payload.store_path != primary_store_path {
+        bail!("installed ability payload identity mismatch for '{package_name}'");
+    }
+    if package.content_digest()?.to_string() != ability.package_digest {
+        bail!("installed ability semantic identity mismatch for '{package_name}'");
+    }
+
+    let supported_features = aos_doc_model::ability_reference_supported_features()?;
+    let mut interfaces = Vec::with_capacity(package.exports.len());
+    for export in &package.exports {
+        let path = Path::new(&ability.store_path)
+            .join("interfaces")
+            .join(format!("{}.json", export.interface.descriptor.hex()));
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&path)
+            .with_context(|| format!("opening installed ability interface {}", path.display()))?;
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("reading installed ability interface {}", path.display()))?;
+        let limit = aos_ability_model::ABILITY_LIMITS_V1.max_document_bytes;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > limit {
+            bail!(
+                "installed ability interface is not a bounded regular file: {}",
+                path.display()
+            );
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        std::io::Read::take(file, limit + 1)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("reading installed ability interface {}", path.display()))?;
+        if bytes.len() as u64 != metadata.len() {
+            bail!(
+                "installed ability interface changed while it was read: {}",
+                path.display()
+            );
+        }
+        let interface =
+            aos_ability_model::decode_canonical::<aos_ability_model::InterfaceDocument>(
+                &bytes,
+                aos_ability_model::ABILITY_LIMITS_V1,
+                &supported_features,
+            )
+            .with_context(|| format!("decoding installed ability interface {}", path.display()))?;
+        if interface.interface_key()? != export.interface {
+            bail!(
+                "installed ability interface identity mismatch for '{}'.",
+                export.name.as_str()
+            );
+        }
+        interfaces.push(interface);
+    }
+    PackageAbilityReference::from_documents(&package, &interfaces)
+        .context("generating authenticated package ability reference")
 }
 
 fn local_document(
@@ -1126,7 +1219,10 @@ mod tests {
         assert!(score_search_row(&row, &["enable".to_string()]) > 0);
         assert_eq!(score_search_row(&row, &["database".to_string()]), 0);
 
-        let loaded = LoadedDocumentation { document };
+        let loaded = LoadedDocumentation {
+            document,
+            ability_reference: None,
+        };
         let browsed = search_loaded_documents(std::slice::from_ref(&loaded), "", None, 25)
             .expect("empty documentation search browses packages");
         assert_eq!(browsed.len(), 1);
@@ -1143,6 +1239,7 @@ mod tests {
     fn documentation_loopback_browser_is_content_bearing_and_bounded() {
         let loaded = LoadedDocumentation {
             document: fixture(),
+            ability_reference: None,
         };
         let index = local_http_response(
             std::slice::from_ref(&loaded),

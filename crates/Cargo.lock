@@ -370,6 +370,8 @@ dependencies = [
 name = "aos-doc-model"
 version = "0.1.0"
 dependencies = [
+ "aos-ability-model",
+ "aos-contract",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -468,6 +470,8 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "aos-ability-model",
+ "aos-contract",
  "aos-doc-model",
  "aos-hub-console-contract",
  "aos-oci-types",

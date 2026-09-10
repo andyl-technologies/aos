@@ -673,6 +673,141 @@ fn ability_activation_input_survives_removal_of_the_last_structured_package() {
 }
 
 #[test]
+fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
+    use aos_doc_model::{
+        DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, InlineSpan,
+        PackageDocumentation, ProseBlock, RuntimeSurface, Section,
+    };
+
+    use super::runtime::{
+        RuntimeExposeConfigPin, RuntimePackageOrigin, RuntimePackagePin, RuntimeResolution,
+    };
+    use crate::types::{AbilityPackageMeta, ExposeConfigMeta};
+
+    let documentation = |prose: &str, config_hash: char| {
+        let mut document = PackageDocumentation {
+            schema: DOCUMENT_SCHEMA.to_string(),
+            package: DocumentedPackage {
+                name: "web".to_string(),
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                summary: "Web service".to_string(),
+                homepage: None,
+                license: "Apache-2.0".to_string(),
+            },
+            identity: DocumentationIdentity {
+                semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
+                runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
+                config_module_nar_hash: Some(format!(
+                    "sha256:{}",
+                    config_hash.to_string().repeat(64)
+                )),
+                system_module_nar_hash: None,
+                expose_artifact_nar_hash: None,
+                source_nar_hash: format!("sha256:{}", "2".repeat(64)),
+            },
+            sections: vec![Section {
+                id: "reference".to_string(),
+                title: "Reference".to_string(),
+                blocks: vec![ProseBlock::Paragraph {
+                    spans: vec![InlineSpan::Text {
+                        text: prose.to_string(),
+                    }],
+                }],
+            }],
+            options: Vec::new(),
+            runtime: RuntimeSurface::default(),
+        };
+        document.identity.semantic_schema_sha256 =
+            document.computed_semantic_schema_sha256().unwrap();
+        document
+    };
+    let documentation_before = documentation("Original package guidance.", '3');
+    let documentation_after = documentation("Revised package guidance.", '4');
+
+    assert_ne!(
+        documentation_before.document_sha256().unwrap(),
+        documentation_after.document_sha256().unwrap()
+    );
+    assert_eq!(
+        documentation_before.identity.semantic_schema_sha256,
+        documentation_after.identity.semantic_schema_sha256
+    );
+
+    let ability = AbilityPackageMeta {
+        store_path: "/nix/store/0000000000000000000000000000000b-web-abilities".to_string(),
+        nar_hash: format!("sha256:{}", "5".repeat(52)),
+        nar_size: 2,
+        references: Vec::new(),
+        manifest_sha256: format!("sha256:{}", "6".repeat(64)),
+        manifest_size: 1,
+        package_digest: format!("sha256:{}", "7".repeat(64)),
+        activation_mode: "structured-effects".to_string(),
+        artifacts: Vec::new(),
+        provenance: "provenance/web.ability.intoto.jsonl".to_string(),
+    };
+    let runtime = |config_hash: char| RuntimeResolution {
+        packages: BTreeMap::from([(
+            "web".to_string(),
+            RuntimePackagePin {
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                registry: "aos-core".to_string(),
+                origin: RuntimePackageOrigin::Registry,
+                store_path: "/nix/store/0000000000000000000000000000000a-web".to_string(),
+                nar_hash: format!("sha256:{}", "8".repeat(52)),
+                nar_size: 1,
+                config_dependency_outputs: BTreeMap::new(),
+                closure: Vec::new(),
+                expose: None,
+                expose_artifact: None,
+                config_projection: Some(RuntimeExposeConfigPin {
+                    config_output: format!(
+                        "/nix/store/0000000000000000000000000000000{config_hash}-web-config"
+                    ),
+                    config_nar_hash: format!("sha256:{}", config_hash.to_string().repeat(52)),
+                    config: ExposeConfigMeta::default(),
+                }),
+                ability: Some(ability.clone()),
+                legacy_config: None,
+            },
+        )]),
+        edges: BTreeMap::new(),
+    };
+    let input = serde_json::json!({
+        "schema": "aos.ability.activation-input/v1",
+        "required_features": ["abilities-v1", "ability-effects-v1"],
+        "desired_state": {},
+        "authenticated_policy_set": {}
+    });
+
+    let activation_before = super::enrich_ability_activation(Some(input.clone()), &runtime('3'))
+        .unwrap()
+        .unwrap();
+    let activation_after = super::enrich_ability_activation(Some(input), &runtime('4'))
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(activation_before, activation_after);
+    assert_eq!(
+        activation_before["packages"][0],
+        serde_json::json!({
+            "name": "web",
+            "version": "1.0.0",
+            "platform": "x86_64-linux",
+            "registry": "aos-core",
+            "runtime_store_path": "/nix/store/0000000000000000000000000000000a-web",
+            "runtime_nar_hash": format!("sha256:{}", "8".repeat(52)),
+            "runtime_nar_size": 1,
+            "ability_store_path": ability.store_path,
+            "ability_nar_hash": ability.nar_hash,
+            "manifest_sha256": ability.manifest_sha256,
+            "package_digest": ability.package_digest,
+        })
+    );
+}
+
+#[test]
 fn converges_after_one_undeclared_write_round() {
     // Case A resolution via the by-name structural fallback: `firewall.zone`'s
     // root `firewall` is not owned by any seeded package, so it resolves to the

@@ -35,14 +35,14 @@ use std::sync::Arc;
 use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
 use axum::body::Bytes;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 #[cfg(not(target_arch = "wasm32"))]
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use unicode_normalization::UnicodeNormalization as _;
 
 use crate::service::{ReadAuthorization, RegistryServeOutcome, RpcError, RpcService};
@@ -424,6 +424,10 @@ async fn browse_dispatch(
                         match suffix {
                             "documentation" => {
                                 browse::api_package_documentation(&svc, &slug, package, &q).await
+                            }
+                            "abilities" => {
+                                browse::api_package_ability_reference(&svc, &slug, package, &q)
+                                    .await
                             }
                             "options" => {
                                 browse::api_package_options(&svc, &slug, package, &q).await
@@ -1804,9 +1808,21 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         list_registries
     );
     r = rpc_route!(r, "/aos.hub.v1.RegistryService/GetRegistry", get_registry);
-    r = rpc_route!(r, "/aos.hub.v1.RegistryService/GetRegistryMetadata", get_registry_metadata);
-    r = rpc_route!(r, "/aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata", plan_update_registry_metadata);
-    r = rpc_route!(r, "/aos.hub.v1.RegistryService/UpdateRegistryMetadata", update_registry_metadata);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryService/GetRegistryMetadata",
+        get_registry_metadata
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata",
+        plan_update_registry_metadata
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryService/UpdateRegistryMetadata",
+        update_registry_metadata
+    );
     r = rpc_route!(r, "/aos.hub.v1.RegistryService/ListReleases", list_releases);
     r = rpc_route!(
         r,
@@ -2661,6 +2677,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.DocumentationService/GetPackageDocumentation",
         get_package_documentation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetPackageAbilityReference",
+        get_package_ability_reference
     );
     r = rpc_route!(
         r,
@@ -3870,10 +3891,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             .route("/_assets/app.js", get(assets::app_js))
             .route("/_assets/theme.js", get(assets::theme_js))
             .route("/_assets/{asset}", get(assets::console_asset))
-            .route(
-                "/_assets/geist-sans-variable.woff2",
-                get(assets::font_sans),
-            )
+            .route("/_assets/geist-sans-variable.woff2", get(assets::font_sans))
             .route("/_assets/geist-mono-variable.woff2", get(assets::font_mono))
             .route("/_assets/OFL.txt", get(assets::font_license));
         // Crawler-control and LLM-summary documents, served from the shared
