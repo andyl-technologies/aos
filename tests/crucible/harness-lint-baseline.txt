@@ -3,7 +3,7 @@
 #
 # Format:
 # category<TAB>repo-relative path<TAB>reason<TAB>pattern<TAB>suffix<TAB>count
-confinement	crates/crucible-api/src/server.rs	nondeterministic select	select!	; package `crucible-api` is not a host-nondeterminism boundary	2
+confinement	crates/crucible-api/src/server/response_wire.rs	nondeterministic select	select!	; package `crucible-api` is not a host-nondeterminism boundary	2
 confinement	crates/crucible-api/src/streaming.rs	nondeterministic select	select!	; package `crucible-api` is not a host-nondeterminism boundary	1
 confinement	crates/crucible-cas/src/content_store/composition.rs	host monotonic time	Instant	; package `crucible-cas` is not a host-nondeterminism boundary	5
 confinement	crates/crucible-cli/src/cli/artifact_capture.rs	host nondeterminism reaches API/session route	Decision		1
