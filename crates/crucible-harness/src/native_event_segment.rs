@@ -1,22 +1,43 @@
-//! Strict decoder for canonical scheduler event-log segments.
+//! Strict decoding for canonical scheduler event-log segments.
+//!
+//! The native collector uses this module to authenticate and summarize event
+//! segments without starting a Crucible runtime. It validates duplicated
+//! binary index fields against the authenticated canonical entry material so
+//! labels used in diagnostic reports cannot disagree with the material they
+//! describe.
 
 const MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
 const VERSION: u32 = 1;
 
+/// One authenticated scheduler event decoded for diagnostic reporting.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Entry {
-    pub(super) sequence: u64,
-    pub(super) virtual_ticks: u64,
-    pub(super) icount_retired: u64,
-    pub(super) kind: String,
-    pub(super) material: String,
+pub struct Entry {
+    /// Dense event sequence encoded by the segment.
+    pub sequence: u64,
+    /// Virtual-time tick encoded by the segment.
+    pub virtual_ticks: u64,
+    /// Retired instruction count encoded by the segment.
+    pub icount_retired: u64,
+    /// Event kind authenticated by the canonical material.
+    pub kind: String,
+    /// Canonical event-entry material authenticated by its content hash.
+    pub material: String,
 }
 
-pub(super) fn has_magic(bytes: &[u8]) -> bool {
+/// Returns whether `bytes` starts with the scheduler event-segment magic.
+#[must_use]
+pub fn has_magic(bytes: &[u8]) -> bool {
     bytes.starts_with(MAGIC)
 }
 
-pub(super) fn decode(bytes: &[u8], maximum_entries: u64) -> Result<Vec<Entry>, String> {
+/// Decodes one complete scheduler event-log segment within an entry bound.
+///
+/// # Errors
+///
+/// Returns an error when the segment is malformed, exceeds `maximum_entries`,
+/// contains unauthenticated material, or has binary index fields that disagree
+/// with the authenticated material.
+pub fn decode(bytes: &[u8], maximum_entries: u64) -> Result<Vec<Entry>, String> {
     let mut cursor = Cursor::new(bytes);
     if cursor.read_exact("magic", MAGIC.len())? != MAGIC {
         return Err(String::from("invalid event-segment magic"));
@@ -67,6 +88,10 @@ pub(super) fn decode(bytes: &[u8], maximum_entries: u64) -> Result<Vec<Entry>, S
                 "event entry {sequence} content hash does not authenticate its material"
             ));
         }
+        require_material_u64(&material, "sequence=", sequence)?;
+        require_material_u64(&material, "at_virtual_time_ticks=", virtual_ticks)?;
+        require_material_u64(&material, "at_icount_retired=", icount_retired)?;
+        require_material_string(&material, "event_payload.kind=", &kind)?;
         entries.push(Entry {
             sequence,
             virtual_ticks,
@@ -79,7 +104,45 @@ pub(super) fn decode(bytes: &[u8], maximum_entries: u64) -> Result<Vec<Entry>, S
     Ok(entries)
 }
 
-pub(super) fn entry_content_hash(material: &[u8]) -> [u8; 32] {
+fn require_material_u64(material: &str, prefix: &str, binary: u64) -> Result<(), String> {
+    let value = unique_material_value(material, prefix)?;
+    let material = value
+        .parse::<u64>()
+        .map_err(|error| format!("event material field `{prefix}` is not u64: {error}"))?;
+    if material != binary {
+        return Err(format!(
+            "event binary field `{prefix}` value {binary} differs from material {material}"
+        ));
+    }
+    Ok(())
+}
+
+fn require_material_string(material: &str, prefix: &str, binary: &str) -> Result<(), String> {
+    let material = unique_material_value(material, prefix)?;
+    if material != binary {
+        return Err(format!(
+            "event binary field `{prefix}` value `{binary}` differs from material `{material}`"
+        ));
+    }
+    Ok(())
+}
+
+fn unique_material_value<'a>(material: &'a str, prefix: &str) -> Result<&'a str, String> {
+    let mut values = material
+        .lines()
+        .filter_map(|line| line.strip_prefix(prefix));
+    let value = values
+        .next()
+        .ok_or_else(|| format!("event material lacks `{prefix}` field"))?;
+    if values.next().is_some() {
+        return Err(format!("event material repeats `{prefix}` field"));
+    }
+    Ok(value)
+}
+
+/// Computes the versioned content hash used by canonical event-entry material.
+#[must_use]
+pub fn entry_content_hash(material: &[u8]) -> [u8; 32] {
     let mut hasher = MaterialHasher::new();
     hasher.write_bytes(b"crucible.content-hash.v1");
     hasher.write_bytes(b"crucible.scheduler.event-log.entry.v1");

@@ -1,8 +1,8 @@
 //! Collector orchestration, bounds, and stable report schema.
 
 mod scenario;
-mod segment;
 
+use crucible_harness::native_event_segment as segment;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
