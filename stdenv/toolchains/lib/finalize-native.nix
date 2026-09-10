@@ -157,7 +157,7 @@
           gccStage1 = compilerForLibc;
         })
       compilerSource {});
-      coreutils = compileTool constructionManifest.coreutils;
+      coreutils = compileTool (constructionManifest.coreutils // (manifestToolOverrides.coreutils or {}));
     };
 in
   exports // lib.optionalAttrs (privateTools ? gccStage2) {gccStage2 = exports.gcc;}

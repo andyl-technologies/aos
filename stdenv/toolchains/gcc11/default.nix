@@ -203,6 +203,14 @@ in
     extraToolNames = [];
     compiler = gccRaw;
     compilerSource = ./gcc-export.nix;
+    manifestToolOverrides =
+      if hostPlatform.constraints.cpu == "riscv64"
+      then {
+        coreutils.preConfigure = ''
+          patch -p1 < ${./patches/coreutils-8.32-shared-stdbuf-probe.patch}
+        '';
+      }
+      else {};
     publicScriptFilter =
       if hostPlatform.constraints.cpu != "x86_64"
       then scope.perl
