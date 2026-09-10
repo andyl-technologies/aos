@@ -307,6 +307,56 @@ fn canonical_query_file_bounds_a_named_projection() -> Result<(), Box<dyn std::e
 }
 
 #[test]
+fn canonical_neighbor_cursor_is_honored_by_the_cli_caller() -> Result<(), Box<dyn std::error::Error>>
+{
+    let workspace = tempfile::tempdir()?;
+    let bundle_path = workspace.path().join("inspection.json");
+    let query_path = workspace.path().join("query.json");
+    let plan = checked_effect_plan();
+    let binding = plan.binding_plan().bindings()[0].id.clone();
+    let root = NodeKey::Binding(binding);
+    let view = InspectionView::from_checked(&plan)?;
+    let projection = view.project(ProjectionKind::Retention)?;
+    let mut outgoing = projection
+        .edges()
+        .iter()
+        .filter(|edge| edge.from == root)
+        .map(|edge| edge.to.clone())
+        .collect::<Vec<_>>();
+    outgoing.sort();
+    outgoing.dedup();
+    let after = outgoing
+        .first()
+        .ok_or("retention fixture has no outgoing binding neighbor")?
+        .clone();
+    assert!(outgoing.len() >= 2);
+
+    write_bundle(&bundle_path, &plan)?;
+    let query = GraphQuery::new([root], 1, 2).with_after(after.clone());
+    std::fs::write(&query_path, query.canonical_bytes()?)?;
+    let output = run(
+        workspace.path(),
+        &[
+            "--json",
+            "ability",
+            "inspect",
+            path_text(&bundle_path)?,
+            "--projection",
+            "retention",
+            "--query",
+            path_text(&query_path)?,
+        ],
+    )?;
+
+    assert!(output.status.success(), "{}", stderr(&output)?);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(value["after"], serde_json::to_value(after)?);
+    assert_eq!(value["nodes"].as_array().map(Vec::len), Some(2));
+    assert!(output.stderr.is_empty());
+    Ok(())
+}
+
+#[test]
 fn operator_cli_exports_a_single_focus_with_separate_observed_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let workspace = tempfile::tempdir()?;

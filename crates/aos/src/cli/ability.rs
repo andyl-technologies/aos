@@ -1,5 +1,6 @@
 //! Offline ability inspection command definitions.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
@@ -12,7 +13,7 @@ pub enum AbilityCommand {
     ArtifactConsumption(AbilityArtifactConsumptionArgs),
     /// Export a checked retained execution timeline without mutating it
     Diagnostic(AbilityDiagnosticArgs),
-    /// Export a bounded interactive desired/observed operator view
+    /// Render or browse a bounded desired/observed operator view
     Operator(AbilityOperatorArgs),
 }
 
@@ -32,6 +33,14 @@ pub struct AbilityOperatorArgs {
     /// Match an independently obtained bundle digest
     #[arg(long, value_name = "SHA256")]
     pub expected_digest: Option<String>,
+
+    /// Serve an interactive local browser for this operator view
+    #[arg(long)]
+    pub serve: bool,
+
+    /// Listen on this loopback address instead of an ephemeral port
+    #[arg(long, value_name = "ADDRESS", requires = "serve")]
+    pub listen: Option<SocketAddr>,
 }
 
 #[derive(Args)]
