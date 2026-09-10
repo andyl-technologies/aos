@@ -62,6 +62,7 @@ in
       else prev.perl;
     bootstrap = true;
     runtimeBinutils = binutils;
+    installRuntimeLibraryLink = hostPlatform.constraints.cpu == "riscv64";
     pathDeps = [
       prev.coreutils
       binutils

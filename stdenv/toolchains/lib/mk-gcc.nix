@@ -121,6 +121,13 @@
     [ -f "$out/bin/g++" ] && [ ! -f "$out/bin/c++" ] && ln -sf g++ "$out/bin/c++"
   '';
 
+  runtimeLibraryLink = optionalString (spec.installRuntimeLibraryLink or false) ''
+    # RISC-V drivers search the target lib directory, while native runtime
+    # libraries are installed under the compiler prefix's lib directory.
+    mkdir -p "$out/${targetPlatform.config}"
+    ln -s ../lib "$out/${targetPlatform.config}/lib"
+  '';
+
   finalMessage = spec.finalMessage or "GCC ${version} installed to $out";
 in
   builtins.derivation {
@@ -169,7 +176,7 @@ in
 
         ${aliasCommands}
 
-        ${spec.postInstall or ""}
+        ${runtimeLibraryLink}${spec.postInstall or ""}
 
         # Pin every exported driver, including target-prefixed aliases, to
         # the selected binutils. The final pass supplies this tier's binutils;
