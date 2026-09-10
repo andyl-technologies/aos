@@ -45,6 +45,10 @@ in
         script = ''
           patch -p1 < ${./guile-patches/high-wakeup-fd.patch}
 
+          # The suspendable-port suite includes the ordinary port tests in a
+          # separate process. Give each process its own files during make -j.
+          patch -p1 < ${./guile-patches/parallel-port-fixtures.patch}
+
           # The Nix build filesystem may allocate the nominally sparse extent,
           # in which case SEEK_DATA correctly returns the current offset.
           sed -i '/"SEEK_DATA while in hole"/{n;s/4096/10/;}' \
