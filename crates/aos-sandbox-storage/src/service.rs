@@ -1,19 +1,23 @@
-//! Authenticated one-request Storage repair and inventory service.
+//! Authenticated one-request Storage Prepare, repair, and inventory service.
 //!
 //! The service verifies the connection establisher before reading bytes, then
 //! requires both hello and request records to name that same live controller
 //! leader in the exact retained service cgroup. Its carrier forbids
-//! `SCM_RIGHTS`; the only public mutation input is the canonical Storage 1.4
-//! repair body plus the standard signed authorization artifacts.
+//! `SCM_RIGHTS`. Prepare and repair accept only their canonical Storage bodies
+//! plus the standard signed authorization artifacts. Prepare retains journaled
+//! authority and resolution evidence but performs no physical mutation; repair
+//! is the only method here that may dispatch a physical worker.
 //!
-//! Generic Apply, catalog preparation, legacy inventory, physical storage
-//! names, internal observer/worker envelopes, and caller-selected proofs are
-//! outside this boundary.
+//! Generic Apply, legacy inventory, physical storage names, internal
+//! observer/worker envelopes, and caller-selected proofs are outside this
+//! boundary. Prepare is non-authorizing and resolves only through protected
+//! policy and freshly authenticated local state.
 
 use aos_proto::aos::sandbox::local::v1::{BrokerErrorCode, BrokerMethod, StorageResult};
 use aos_sandbox_core::{FeatureRef, ProtocolId, ProtocolVersion, RawClockProvenance};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
+use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::session::{
     SIGNED_PLAN_LEASE_FEATURE_NAMESPACE, ValidatedUntrustedAuthorizationArtifacts,
@@ -26,15 +30,21 @@ use aos_sandbox_protocol::{
 };
 use buffa::Message as _;
 
-use crate::StorageAdmissionError;
 use crate::broker::{StorageBrokerError, advertised_storage_methods};
 use crate::peer::ControllerPeerVerifier;
 use crate::runtime::{
     StorageBrokerRuntime, StorageRuntimeError, WorkspacePinRepairExecutionOutcomeV1,
 };
 use crate::transport::{EXCHANGE_NANOSECONDS, accept_connection, boottime, receive, send};
+use crate::{StorageAdmissionError, StorageCatalogPreparationOutcomeV1};
 
 const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
+const CATALOG_OBSERVATION_NANOSECONDS: u64 = 35_000_000_000;
+const CATALOG_OBSERVATION_QUIESCENCE_RESERVE_NANOSECONDS: u64 = 6_000_000_000;
+const INVENTORY_RESPONSE_RESERVE_NANOSECONDS: u64 = 1_000_000_000;
+const INVENTORY_METHOD_NANOSECONDS: u64 = 42_000_000_000;
+const INVENTORY_POST_OBSERVATION_RESERVE_NANOSECONDS: u64 =
+    CATALOG_OBSERVATION_QUIESCENCE_RESERVE_NANOSECONDS + INVENTORY_RESPONSE_RESERVE_NANOSECONDS;
 
 /// Classifies handling of one accepted Storage connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,6 +87,9 @@ pub enum StorageServiceError {
 
 /// Defines the narrow runtime surface reachable from public Storage RPC.
 pub trait StorageRpcRuntime {
+    /// Reports whether protected policy and runtime state permit Prepare.
+    fn is_prepare_ready(&self) -> bool;
+
     /// Reports whether fresh repair admission is available.
     fn is_repair_ready(&self) -> bool;
 
@@ -108,10 +121,37 @@ pub trait StorageRpcRuntime {
     ///
     /// Returns [`StorageRuntimeError`] when non-legacy inventory is unavailable
     /// or a protected catalog row fails physical revalidation.
-    fn inventory_resources(&self) -> Result<Vec<u8>, StorageRuntimeError>;
+    fn inventory_resources(
+        &mut self,
+        activation_deadline_boottime_nanoseconds: u64,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<Vec<u8>, StorageRuntimeError>;
+
+    /// Resolves and durably retains one non-authorizing catalog preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError`] for unavailable readiness, rejected
+    /// authority or policy, stale state, clock failure, or durable retention.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_catalog<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample, StorageAdmissionError>;
 }
 
 impl StorageRpcRuntime for StorageBrokerRuntime {
+    fn is_prepare_ready(&self) -> bool {
+        Self::is_prepare_ready(self)
+    }
+
     fn is_repair_ready(&self) -> bool {
         Self::is_repair_ready(self)
     }
@@ -143,12 +183,43 @@ impl StorageRpcRuntime for StorageBrokerRuntime {
         )
     }
 
-    fn inventory_resources(&self) -> Result<Vec<u8>, StorageRuntimeError> {
-        Self::inventory_resources(self)
+    fn inventory_resources(
+        &mut self,
+        activation_deadline_boottime_nanoseconds: u64,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<Vec<u8>, StorageRuntimeError> {
+        Self::inventory_resources(
+            self,
+            activation_deadline_boottime_nanoseconds,
+            worker_cutoff_boottime_nanoseconds,
+        )
+    }
+
+    fn prepare_catalog<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample, StorageAdmissionError>,
+    {
+        Self::prepare_catalog(
+            self,
+            request_body,
+            artifacts,
+            protocol_version,
+            peer,
+            policy,
+            trusted_clock,
+        )
     }
 }
 
-/// Serves the closed Storage repair and authoritative-inventory method set.
+/// Serves closed Storage Prepare, repair, and authoritative-inventory methods.
 pub struct StorageService<R> {
     runtime: R,
     verifier: ControllerPeerVerifier,
@@ -207,6 +278,7 @@ impl<R: StorageRpcRuntime> StorageService<R> {
         let advertised_features = [signed_plan_lease_feature()?];
         let advertised_methods = advertised_storage_methods(
             self.runtime.is_inventory_ready(),
+            self.runtime.is_prepare_ready(),
             self.runtime.is_repair_ready(),
         );
         let session = match negotiate_client_hello(
@@ -262,7 +334,12 @@ impl<R: StorageRpcRuntime> StorageService<R> {
             return Ok(StorageConnectionOutcome::RequestRejected);
         }
 
+        let inventory_method =
+            envelope.method() == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES;
         let response = match envelope.method() {
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => {
+                self.dispatch_prepare(execution, connection.peer(), &session, &envelope)
+            }
             BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => {
                 self.dispatch_repair(execution, connection.peer(), &session, &envelope)
             }
@@ -281,13 +358,12 @@ impl<R: StorageRpcRuntime> StorageService<R> {
         {
             return Ok(StorageConnectionOutcome::PeerRejected);
         }
-        if send(
-            &mut connection,
-            &response,
-            exchange_deadline.min(request_deadline),
-        )
-        .is_err()
-        {
+        let response_deadline = if inventory_method {
+            request_deadline
+        } else {
+            exchange_deadline.min(request_deadline)
+        };
+        if send(&mut connection, &response, response_deadline).is_err() {
             return Ok(StorageConnectionOutcome::TransportRejected);
         }
 
@@ -320,7 +396,29 @@ impl<R: StorageRpcRuntime> StorageService<R> {
             return Err(ProtocolValidationError::PeerCredentialMismatch);
         }
 
-        let encoded = match self.runtime.inventory_resources() {
+        let activation_deadline = header.deadline_boottime_nanoseconds().min(
+            now.checked_add(INVENTORY_METHOD_NANOSECONDS)
+                .ok_or(ProtocolValidationError::DeadlineExpired)?,
+        );
+        let minimum_completion = now
+            .checked_add(INVENTORY_POST_OBSERVATION_RESERVE_NANOSECONDS)
+            .ok_or(ProtocolValidationError::DeadlineExpired)?;
+        if activation_deadline <= minimum_completion {
+            return Err(ProtocolValidationError::DeadlineExpired);
+        }
+        let worker_cutoff = now
+            .checked_add(CATALOG_OBSERVATION_NANOSECONDS)
+            .ok_or(ProtocolValidationError::DeadlineExpired)?
+            .min(
+                activation_deadline
+                    .checked_sub(INVENTORY_POST_OBSERVATION_RESERVE_NANOSECONDS)
+                    .ok_or(ProtocolValidationError::DeadlineExpired)?,
+            );
+
+        let encoded = match self
+            .runtime
+            .inventory_resources(activation_deadline, worker_cutoff)
+        {
             Ok(body) => encode_success_or_resource_exhausted(
                 header.request_id(),
                 envelope,
@@ -337,7 +435,7 @@ impl<R: StorageRpcRuntime> StorageService<R> {
             ),
         }?;
 
-        Ok((encoded.0, encoded.1, header.deadline_boottime_nanoseconds()))
+        Ok((encoded.0, encoded.1, activation_deadline))
     }
 
     fn dispatch_repair(
@@ -421,6 +519,73 @@ impl<R: StorageRpcRuntime> StorageService<R> {
             semantics.header().deadline_boottime_nanoseconds(),
         ))
     }
+
+    fn dispatch_prepare(
+        &mut self,
+        execution: crate::peer::ControllerExecution,
+        connection: &aos_sandbox_linux::seqpacket::ConnectionPeerIdentity,
+        session: &aos_sandbox_protocol::NegotiatedBrokerSession,
+        envelope: &ValidatedBrokerRequestEnvelope,
+    ) -> Result<(Vec<u8>, StorageConnectionOutcome, u64), ProtocolValidationError> {
+        if !self.runtime.is_prepare_ready() {
+            return Err(ProtocolValidationError::MethodMismatch);
+        }
+        let artifacts = envelope
+            .authorization()
+            .ok_or(ProtocolValidationError::InvalidField(
+                "envelope.authorization profile",
+            ))?;
+        let initial_clock =
+            trusted_paired_clock_sample().map_err(|_| ProtocolValidationError::DeadlineExpired)?;
+        let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            envelope.body(),
+            execution.credentials(),
+            self.verifier.policy(),
+            initial_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| ProtocolValidationError::InvalidField("Storage Prepare request"))?;
+        session.validate_header(semantics.header())?;
+        if self
+            .verifier
+            .recheck_connection(execution, connection)
+            .is_err()
+        {
+            return Err(ProtocolValidationError::PeerCredentialMismatch);
+        }
+
+        let mut trusted_clock =
+            || trusted_paired_clock_sample().map_err(|_| StorageAdmissionError::VerificationFailed);
+        let result = self.runtime.prepare_catalog(
+            envelope.body(),
+            artifacts,
+            session.version(),
+            execution.credentials(),
+            self.verifier.policy(),
+            &mut trusted_clock,
+        );
+        let encoded = match result {
+            Ok(outcome) => encode_success_or_resource_exhausted(
+                semantics.header().request_id(),
+                envelope,
+                outcome.response().encode_to_vec(),
+                semantics.header().maximum_response_bytes(),
+                "Storage Prepare result exceeds the response ceiling",
+                false,
+            ),
+            Err(error) => encode_runtime_error(
+                semantics.header().request_id(),
+                envelope,
+                &error,
+                semantics.header().maximum_response_bytes(),
+            ),
+        }?;
+
+        Ok((
+            encoded.0,
+            encoded.1,
+            semantics.header().deadline_boottime_nanoseconds(),
+        ))
+    }
 }
 
 fn signed_plan_lease_feature() -> Result<FeatureRef, StorageServiceError> {
@@ -481,7 +646,7 @@ fn encode_runtime_error(
             StorageBrokerError::Request | StorageBrokerError::Authority,
         ) => (
             BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST,
-            "Storage repair authority was rejected",
+            "Storage request authority was rejected",
         ),
         StorageRuntimeError::Configuration(_)
         | StorageRuntimeError::Bootstrap
@@ -496,7 +661,7 @@ fn encode_runtime_error(
         | StorageRuntimeError::WorkspacePinScope
         | StorageRuntimeError::Admission(_) => (
             BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE,
-            "Storage repair requires reconciliation",
+            "Storage request requires reconciliation",
         ),
     };
 
@@ -559,33 +724,89 @@ fn send_hello_error(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope;
+    use aos_proto::aos::sandbox::local::v1::{
+        Audience, BrokerClientHello, BrokerRequestEnvelope, Feature,
+    };
 
     use super::*;
 
     #[test]
-    fn public_method_set_never_includes_apply_prepare_or_legacy_inventory() {
-        assert!(advertised_storage_methods(false, false).is_empty());
+    fn public_method_set_never_includes_apply_or_legacy_inventory() {
+        assert!(advertised_storage_methods(false, false, false).is_empty());
         assert_eq!(
-            advertised_storage_methods(true, false),
+            advertised_storage_methods(true, false, false),
             [BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES]
         );
         assert_eq!(
-            advertised_storage_methods(false, true),
+            advertised_storage_methods(false, false, true),
             [BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN]
         );
-        let methods = advertised_storage_methods(true, true);
+        let methods = advertised_storage_methods(true, true, true);
 
         assert_eq!(
             methods,
             [
                 BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+                BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
                 BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN,
             ]
         );
         assert!(!methods.contains(&BrokerMethod::BROKER_METHOD_STORAGE_APPLY));
-        assert!(!methods.contains(&BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG));
         assert!(!methods.contains(&BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY));
+    }
+
+    #[test]
+    fn prepare_negotiation_starts_at_one_three_and_remains_in_one_four() {
+        let feature = signed_plan_lease_feature().unwrap();
+        let features = [feature.clone()];
+        let methods = advertised_storage_methods(true, true, true);
+        let peer = PeerCredentials {
+            uid: 811,
+            gid: 811,
+            pid: Some(300),
+        };
+        let policy = PeerPolicy {
+            uid: 811,
+            gid: Some(811),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        };
+
+        for minor in 2..=4 {
+            let hello = BrokerClientHello {
+                protocol_major: 1,
+                protocol_minor: minor,
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                required_features: vec![Feature {
+                    namespace: feature.namespace().to_owned(),
+                    major: feature.major(),
+                    minor: feature.minor(),
+                    ..Default::default()
+                }],
+                maximum_response_bytes: 4096,
+                required_methods: vec![BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG.into()],
+                ..Default::default()
+            };
+            let negotiated = negotiate_client_hello(
+                &hello.encode_to_vec(),
+                peer,
+                policy,
+                ProtocolId::StorageBroker,
+                &features,
+                &methods,
+            );
+
+            if minor == 2 {
+                assert_eq!(negotiated, Err(ProtocolValidationError::MethodMismatch));
+            } else {
+                let session = negotiated.unwrap();
+                assert_eq!(session.version(), ProtocolVersion::new(1, minor as u16));
+                assert!(
+                    session
+                        .advertised_methods()
+                        .contains(&BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG)
+                );
+            }
+        }
     }
 
     #[test]

@@ -529,6 +529,18 @@ impl StorageAuthorityV1 {
         )
     }
 
+    pub(crate) fn check_preparation_before_effect<F>(
+        &self,
+        admission: &VerifiedStoragePreparationAdmissionV1,
+        trusted_clock: &mut F,
+    ) -> Result<(), StorageAdmissionError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        self.0
+            .check_before_effect(&admission.admission.effect, trusted_clock)
+    }
+
     pub(crate) fn open_fence(
         &self,
         sandbox_id: &[u8; 16],

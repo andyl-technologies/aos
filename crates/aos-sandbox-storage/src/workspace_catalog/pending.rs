@@ -508,6 +508,30 @@ impl PendingStorageWorkspaceCatalogV1 {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn initialize_empty_for_test(
+        state_directory: &Path,
+        identity_pool: StorageIdentityPoolV1,
+    ) -> Result<(), StorageWorkspaceCatalogError> {
+        let head = CatalogHeadV1 {
+            generation: 1,
+            identity_pool: IdentityPoolWire::from(identity_pool),
+        };
+        let (mut journal, _) = Journal::open(
+            state_directory.join(WORKSPACE_JOURNAL_FILE),
+            workspace_journal_limits(),
+        )?;
+        journal.commit(&aos_sandbox::JournalTransaction::new(
+            [0xa8; 16],
+            vec![aos_sandbox::JournalRecord::put(
+                RecordNamespace::StorageResourceInventory,
+                HEAD_KEY.to_vec(),
+                super::encode_head(&head)?,
+            )],
+        )?)?;
+        Ok(())
+    }
+
     fn recover(
         journal: Journal,
         recovery: RecoveryReport,
@@ -593,40 +617,47 @@ impl PendingStorageWorkspaceCatalogV1 {
         self,
         plan: StorageWorkspaceCatalogPlanV1,
     ) -> Result<ValidatedPendingStorageWorkspaceCatalogV1, StorageWorkspaceCatalogError> {
-        let pool_end = self.identity_pool.end()?;
-        let mut planned_handles = BTreeSet::new();
-        for row in &plan.rows {
-            let range_end =
-                validate_identity_range(row.identity_range_start, row.identity_range_size)?;
-            if row.identity_range_start < self.identity_pool.range_start
-                || range_end > pool_end
-                || !planned_handles.insert(row.workspace_handle)
-            {
-                return Err(StorageWorkspaceCatalogError::IdentityConflict);
-            }
-
-            match (self.records.get(&row.workspace_handle), &row.policy) {
-                (None, _) => {}
-                (Some(_), StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent) => {
-                    return Err(StorageWorkspaceCatalogError::IdentityConflict);
-                }
-                (Some(record), _) if record.matches_pending_plan(row) => {}
-                (Some(_), _) => return Err(StorageWorkspaceCatalogError::IdentityConflict),
-            }
-        }
-        if self
-            .records
-            .keys()
-            .any(|handle| !planned_handles.contains(handle))
-        {
-            return Err(StorageWorkspaceCatalogError::IdentityConflict);
-        }
+        validate_plan_against_pending(&self, &plan)?;
 
         Ok(ValidatedPendingStorageWorkspaceCatalogV1 {
             pending: self,
             plan,
         })
     }
+}
+
+fn validate_plan_against_pending(
+    pending: &PendingStorageWorkspaceCatalogV1,
+    plan: &StorageWorkspaceCatalogPlanV1,
+) -> Result<(), StorageWorkspaceCatalogError> {
+    let pool_end = pending.identity_pool.end()?;
+    let mut planned_handles = BTreeSet::new();
+    for row in &plan.rows {
+        let range_end = validate_identity_range(row.identity_range_start, row.identity_range_size)?;
+        if row.identity_range_start < pending.identity_pool.range_start
+            || range_end > pool_end
+            || !planned_handles.insert(row.workspace_handle)
+        {
+            return Err(StorageWorkspaceCatalogError::IdentityConflict);
+        }
+
+        match (pending.records.get(&row.workspace_handle), &row.policy) {
+            (None, _) => {}
+            (Some(_), StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent) => {
+                return Err(StorageWorkspaceCatalogError::IdentityConflict);
+            }
+            (Some(record), _) if record.matches_pending_plan(row) => {}
+            (Some(_), _) => return Err(StorageWorkspaceCatalogError::IdentityConflict),
+        }
+    }
+    if pending
+        .records
+        .keys()
+        .any(|handle| !planned_handles.contains(handle))
+    {
+        return Err(StorageWorkspaceCatalogError::IdentityConflict);
+    }
+    Ok(())
 }
 
 /// Retains structurally validated catalog state and its exact authority plan.
@@ -654,14 +685,77 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
         &self.plan
     }
 
+    /// Replaces only the in-memory authority plan after exact revalidation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageWorkspaceCatalogError`] when the current durable rows
+    /// are not an allowed prefix of the newly composed transaction plan.
+    pub(crate) fn revalidate_plan(
+        &mut self,
+        plan: StorageWorkspaceCatalogPlanV1,
+    ) -> Result<(), StorageWorkspaceCatalogError> {
+        validate_plan_against_pending(&self.pending, &plan)?;
+        self.plan = plan;
+        Ok(())
+    }
+
     /// Returns whether the semantic workspace catalog already has a head.
     pub(crate) const fn is_initialized(&self) -> bool {
         self.pending.head.is_some()
     }
 
+    /// Reports whether every durable row already equals its terminal policy.
+    pub(crate) fn is_terminally_materialized(&self) -> bool {
+        self.is_initialized()
+            && self.pending.records.len() == self.plan.rows.len()
+            && self.plan.rows.iter().all(|row| {
+                let Some(record) = self.pending.records.get(&row.workspace_handle) else {
+                    return false;
+                };
+                match &row.policy {
+                    StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(publication) => {
+                        record.is_active()
+                            && record.matches_creation(publication)
+                            && record.pin_proof == publication.pin_proof
+                    }
+                    StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired {
+                        creation,
+                        retirement,
+                    } => {
+                        record.matches_creation(creation)
+                            && record.pin_proof == creation.pin_proof
+                            && record.matches_retirement(retirement)
+                    }
+                    StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent
+                    | StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(_) => false,
+                }
+            })
+    }
+
     /// Returns the retained journal sequence for a future freshness check.
     pub(crate) const fn journal_sequence(&self) -> u64 {
         self.pending.journal.snapshot_sequence()
+    }
+
+    /// Recomputes the retained journal binding without changing typestate.
+    pub(super) fn validate_current_snapshot(
+        &self,
+    ) -> Result<StorageWorkspaceCatalogSnapshotV1, StorageWorkspaceCatalogError> {
+        let current = snapshot_binding(
+            &self.pending.journal,
+            self.pending.identity_pool,
+            self.pending.head.as_ref(),
+        )?;
+        if current != self.pending.snapshot {
+            return Err(StorageWorkspaceCatalogError::CorruptRecord);
+        }
+        Ok(current)
+    }
+
+    /// Borrows the exact decoded rows retained under the journal lock.
+    pub(super) const fn records(&self) -> &std::collections::BTreeMap<[u8; 32], WorkspaceRecordV1> {
+        &self.pending.records
     }
 }
 
@@ -1338,6 +1432,54 @@ mod tests {
             validate_with_record(identity_pool, Some(&retired), plan(vec![converge_retired]),)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn an_allowed_older_active_prefix_never_becomes_terminal_authority() {
+        let identity_pool = pool(3);
+        let latest = publication(1);
+        let mut older = latest.clone();
+        let proof = &latest.pin_proof;
+        older.pin_proof = WorkspaceRootPinProofV1::new(
+            proof.kernel_boot_id(),
+            proof.mount_namespace_device(),
+            proof.mount_namespace_inode(),
+            proof.mount_id() + 100,
+            proof.mount_root().to_owned(),
+            proof.mount_point().to_owned(),
+            proof.filesystem_type().to_owned(),
+            proof.superblock_source().to_owned(),
+            proof.dataset_guid(),
+            proof.root_device() + 100,
+            proof.root_inode() + 100,
+        )
+        .unwrap();
+        let row = StorageWorkspaceCatalogRowPlanV1::new(
+            latest.workspace_handle,
+            latest.dataset_guid,
+            latest.operation_id,
+            latest.identity_range_start,
+            latest.identity_range_size,
+            StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(latest.clone()),
+            vec![active_prefix(&older, 1), active_prefix(&latest, 2)],
+        )
+        .unwrap();
+
+        let retained_older = validate_with_record(
+            identity_pool,
+            Some(&active_record(&older)),
+            plan(vec![row.clone()]),
+        )
+        .unwrap();
+        assert!(!retained_older.is_terminally_materialized());
+
+        let retained_latest = validate_with_record(
+            identity_pool,
+            Some(&active_record(&latest)),
+            plan(vec![row]),
+        )
+        .unwrap();
+        assert!(retained_latest.is_terminally_materialized());
     }
 
     #[test]

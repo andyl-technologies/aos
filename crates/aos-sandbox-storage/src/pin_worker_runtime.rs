@@ -28,20 +28,32 @@ use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags};
 
 use crate::authorization::StorageProtectedConfigurationV1;
 use crate::observation::ZfsObservationState;
+use crate::observation_protocol::{
+    MAXIMUM_CATALOG_OBSERVATION_PACKET_BYTES, MAXIMUM_CATALOG_OBSERVATION_RESULT_BYTES,
+    ReceivedWorkspaceCatalogObservationRequest, WorkspaceCatalogObservationFrameEncoder,
+    WorkspaceCatalogObservationRequestAssembler, WorkspaceCatalogObservationRequestV1,
+    WorkspaceCatalogObservationResultV1, decode_request as decode_catalog_observation_request,
+    decode_result as decode_catalog_observation_result,
+    encode_result as encode_catalog_observation_result, is_catalog_observation_frame,
+};
 use crate::pin_observer::{
-    WorkspacePinHostCustody, WorkspacePinObserverError, current_host_scope, observe_workspace_pin,
+    WorkspacePinHostCustody, WorkspacePinObserverError, current_catalog_custody_binding,
+    current_host_scope, observe_workspace_catalog_pin_pass, observe_workspace_pin,
     observe_workspace_pin_repair, observe_workspace_pin_repair_admission, open_workspace_slot,
     validate_host_scope,
 };
 use crate::pin_worker::{
-    AuthenticatedWorkspacePinWorkerRequestV1, MAXIMUM_PIN_WORKER_RESULT_BYTES,
+    AuthenticatedWorkspacePinWorkerRequestV1, MAXIMUM_PIN_WORKER_PACKET_BYTES,
+    MAXIMUM_PIN_WORKER_RESULT_BYTES, ReceivedWorkspacePinRequest, WorkspacePinRequestAssembler,
     WorkspacePinWorkerResultV1, boottime_now_nanoseconds, decode_request, decode_result,
     encode_result, ensure_before_deadline, receive_request_before, send_request_before,
     verify_same_live_subject, wait_before,
 };
 use crate::process::{
-    PinnedExecutable, execute_transaction_for, observe_transaction_for, open_cgroup_root,
+    PinnedExecutable, execute_transaction_for, observe_transaction_for,
+    observe_workspace_catalog_zfs_for, open_cgroup_root,
 };
+use crate::runtime::runtime_configuration_binding;
 use crate::workspace_pin::{
     WorkspaceDatasetObservationV1, WorkspacePinActionV1, WorkspacePinObservationV1,
     workspace_pin_path,
@@ -62,7 +74,9 @@ use crate::workspace_repair_worker::{
     AuthenticatedWorkspacePinRepairWorkerRequestV1, decode_request as decode_repair_worker_request,
     is_repair_worker_request,
 };
-use crate::{StorageAdmissionError, ZfsHelperContract, ZfsTransaction, ZfsWorkerError};
+use crate::{
+    StorageAdmissionError, StorageIdentityPoolV1, ZfsHelperContract, ZfsTransaction, ZfsWorkerError,
+};
 
 const READY_MAGIC: &[u8; 8] = b"AOSZPRD1";
 const ACK: &[u8; 10] = b"AOSZPACK\0\x01";
@@ -263,6 +277,41 @@ impl SystemdWorkspacePinExecutor {
         self.finish_exchange(exchange, ready.subject(), &worker_cgroup, &population)
     }
 
+    fn exchange_catalog_observation(
+        &mut self,
+        request_bytes: &[u8],
+        request: &WorkspaceCatalogObservationRequestV1,
+        custody: &WorkspacePinHostCustody,
+        exchange_deadline: u64,
+    ) -> Result<WorkspaceCatalogObservationResultV1, ZfsWorkerError> {
+        if self.fail_stopped {
+            return Err(ZfsWorkerError::Protocol(
+                "workspace pin executor is fail-stopped",
+            ));
+        }
+        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
+        verify_systemd_peer(socket.peer(), &self.systemd_manager_cgroup)?;
+        let ready = receive_packet_before(&mut socket, MAXIMUM_READY_BYTES, exchange_deadline)?;
+        let worker_path = decode_ready(ready.payload(), self.role)?;
+        let worker_cgroup = verify_worker_subject(
+            ready.subject(),
+            &self.worker_parent_cgroup,
+            Path::new(worker_path),
+            self.role,
+        )?;
+        let population = worker_cgroup.population_monitor()?;
+        let exchange = exchange_catalog_observation_after_ready(
+            &mut socket,
+            request_bytes,
+            request,
+            custody,
+            ready.subject(),
+            &worker_cgroup,
+            exchange_deadline,
+        );
+        self.finish_exchange(exchange, ready.subject(), &worker_cgroup, &population)
+    }
+
     fn finish_exchange<T>(
         &mut self,
         exchange: Result<T, ZfsWorkerError>,
@@ -364,6 +413,30 @@ pub(crate) struct FreshWorkspacePinRepairObservationV1 {
     validated: ValidatedWorkspacePinRepairAdmissionObservationV1,
 }
 
+/// Proves that a matching catalog result came from a terminated fixed observer.
+///
+/// Construction remains private to this module. The catalog typestate can
+/// inspect the result, but cannot manufacture the process-proven freshness
+/// capability from decoded wire bytes.
+pub(crate) struct FreshWorkspaceCatalogObservationV1 {
+    result: WorkspaceCatalogObservationResultV1,
+}
+
+impl FreshWorkspaceCatalogObservationV1 {
+    fn new(result: WorkspaceCatalogObservationResultV1) -> Self {
+        Self { result }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(result: WorkspaceCatalogObservationResultV1) -> Self {
+        Self::new(result)
+    }
+
+    pub(crate) const fn result(&self) -> &WorkspaceCatalogObservationResultV1 {
+        &self.result
+    }
+}
+
 impl FreshWorkspacePinRepairObservationV1 {
     fn new(validated: ValidatedWorkspacePinRepairAdmissionObservationV1) -> Self {
         Self { validated }
@@ -421,6 +494,24 @@ impl SystemdWorkspacePinObserver {
             .client
             .exchange_repair_admission(request, probe, custody, deadline)?;
         Ok(FreshWorkspacePinRepairObservationV1::new(validated))
+    }
+
+    /// Executes one complete catalog observation and returns freshness only
+    /// after the exact worker cgroup is proven empty.
+    pub(crate) fn observe_catalog(
+        &mut self,
+        request_bytes: &[u8],
+        request: &WorkspaceCatalogObservationRequestV1,
+        custody: &WorkspacePinHostCustody,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<FreshWorkspaceCatalogObservationV1, ZfsWorkerError> {
+        let result = self.client.exchange_catalog_observation(
+            request_bytes,
+            request,
+            custody,
+            worker_cutoff_boottime_nanoseconds,
+        )?;
+        Ok(FreshWorkspaceCatalogObservationV1::new(result))
     }
 }
 
@@ -512,6 +603,120 @@ fn exchange_repair_admission_after_ready(
     let validated = ValidatedWorkspacePinRepairAdmissionObservationV1::from_result(probe, result)?;
     send_packet_before(socket, ACK, exchange_deadline)?;
     Ok(validated)
+}
+
+fn exchange_catalog_observation_after_ready(
+    socket: &mut DescriptorSubjectSocket,
+    request_bytes: &[u8],
+    request: &WorkspaceCatalogObservationRequestV1,
+    custody: &WorkspacePinHostCustody,
+    ready_subject: &KernelAuthorizedRecordSubject,
+    worker_cgroup: &RetainedCgroupAnchor,
+    exchange_deadline: u64,
+) -> Result<WorkspaceCatalogObservationResultV1, ZfsWorkerError> {
+    send_catalog_observation_request_before(
+        socket,
+        request_bytes,
+        [
+            custody.mount_namespace().as_fd(),
+            custody.pin_root().as_fd(),
+        ],
+        exchange_deadline,
+    )?;
+    let response = receive_packet_before(
+        socket,
+        MAXIMUM_CATALOG_OBSERVATION_RESULT_BYTES,
+        exchange_deadline,
+    )?;
+    verify_same_live_subject(ready_subject, response.subject())?;
+    verify_exact_worker_subject(response.subject(), worker_cgroup)?;
+    let result = decode_catalog_observation_result(response.payload())?;
+    if !result.matches_request(request)? {
+        return Err(ZfsWorkerError::Authority);
+    }
+    send_packet_before(socket, ACK, exchange_deadline)?;
+    Ok(result)
+}
+
+fn send_catalog_observation_request_before(
+    socket: &mut DescriptorSubjectSocket,
+    request: &[u8],
+    descriptors: [std::os::fd::BorrowedFd<'_>; 2],
+    deadline_boottime_nanoseconds: u64,
+) -> Result<(), ZfsWorkerError> {
+    socket.provision_packet_capacity(MAXIMUM_CATALOG_OBSERVATION_PACKET_BYTES)?;
+    let mut frames = WorkspaceCatalogObservationFrameEncoder::new(request)?;
+    let mut first = true;
+    while let Some(frame) = frames.next_frame() {
+        loop {
+            ensure_before_deadline(deadline_boottime_nanoseconds)?;
+            let result = if first {
+                socket.send_with_descriptors(&frame, &descriptors)
+            } else {
+                socket.send(&frame)
+            };
+            match result {
+                Ok(()) => break,
+                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => wait_before(
+                    socket.as_fd()?,
+                    rustix::event::PollFlags::OUT,
+                    deadline_boottime_nanoseconds,
+                )?,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        first = false;
+    }
+    ensure_before_deadline(deadline_boottime_nanoseconds)
+}
+
+enum ObserverRequest {
+    WorkspacePin(ReceivedWorkspacePinRequest),
+    WorkspaceCatalog(ReceivedWorkspaceCatalogObservationRequest),
+}
+
+fn receive_observer_request_before(
+    socket: &mut DescriptorSubjectSocket,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<ObserverRequest, ZfsWorkerError> {
+    let maximum_packet_bytes =
+        MAXIMUM_PIN_WORKER_PACKET_BYTES.max(MAXIMUM_CATALOG_OBSERVATION_PACKET_BYTES);
+    let first = receive_packet_before(socket, maximum_packet_bytes, deadline_boottime_nanoseconds)?;
+    let catalog = is_catalog_observation_frame(first.payload());
+
+    if catalog {
+        let mut assembler = WorkspaceCatalogObservationRequestAssembler::default();
+        let mut received = assembler.accept(first)?;
+        while received.is_none() {
+            let continuation = receive_packet_before(
+                socket,
+                MAXIMUM_CATALOG_OBSERVATION_PACKET_BYTES,
+                deadline_boottime_nanoseconds,
+            )?;
+            received = assembler.accept(continuation)?;
+        }
+        return received
+            .map(ObserverRequest::WorkspaceCatalog)
+            .ok_or(ZfsWorkerError::Protocol(
+                "catalog observation request assembly was incomplete",
+            ));
+    }
+
+    let mut assembler = WorkspacePinRequestAssembler::default();
+    let mut received = assembler.accept(first)?;
+    while received.is_none() {
+        let continuation = receive_packet_before(
+            socket,
+            MAXIMUM_PIN_WORKER_PACKET_BYTES,
+            deadline_boottime_nanoseconds,
+        )?;
+        received = assembler.accept(continuation)?;
+    }
+    received
+        .map(ObserverRequest::WorkspacePin)
+        .ok_or(ZfsWorkerError::Protocol(
+            "workspace pin request assembly was incomplete",
+        ))
 }
 
 fn quiesce_worker(
@@ -805,7 +1010,22 @@ pub fn run_inherited_workspace_pin_observer(
         &encode_ready(&current_cgroup()?, WorkspacePinServiceRole::Observer)?,
         transaction_deadline,
     )?;
-    let received = receive_request_before(&mut socket, transaction_deadline)?;
+    let received = receive_observer_request_before(&mut socket, transaction_deadline)?;
+    let received = match received {
+        ObserverRequest::WorkspacePin(received) => received,
+        ObserverRequest::WorkspaceCatalog(received) => {
+            return execute_catalog_observation_request(
+                &protected,
+                &contract,
+                &executable_pin,
+                &single_threaded,
+                &storaged_cgroup,
+                &mut socket,
+                received,
+                transaction_deadline,
+            );
+        }
+    };
     verify_storaged_subject(&received.subject, &storaged_cgroup)?;
     let repair_admission_request = if is_repair_admission_request(&received.bytes) {
         Some(decode_repair_admission_request(&received.bytes)?)
@@ -949,6 +1169,86 @@ pub fn run_inherited_workspace_pin_observer(
         return Err(ZfsWorkerError::Protocol(
             "workspace pin acknowledgement is invalid",
         ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_catalog_observation_request(
+    protected: &StorageProtectedConfigurationV1,
+    contract: &ZfsHelperContract,
+    executable_pin: &PinnedExecutable,
+    single_threaded: &SingleThreadedProcess,
+    storaged_cgroup: &RetainedCgroupAnchor,
+    socket: &mut DescriptorSubjectSocket,
+    received: ReceivedWorkspaceCatalogObservationRequest,
+    transaction_deadline_boottime_nanoseconds: u64,
+) -> Result<(), ZfsWorkerError> {
+    verify_storaged_subject(&received.subject, storaged_cgroup)?;
+    let request = decode_catalog_observation_request(&received.bytes)?;
+    let (identity_pool_start, identity_pool_size) = request.bindings().identity_pool();
+    let identity_pool = StorageIdentityPoolV1::new(identity_pool_start, identity_pool_size)
+        .map_err(|_| ZfsWorkerError::Authority)?;
+    if runtime_configuration_binding(protected.public_binding(), identity_pool)
+        != request.bindings().runtime_binding()
+    {
+        return Err(ZfsWorkerError::Authority);
+    }
+    ensure_before_deadline(request.deadline_boottime_nanoseconds())?;
+
+    let [mount_namespace, pin_root]: [OwnedFd; 2] =
+        received.descriptors.try_into().map_err(|_| {
+            ZfsWorkerError::Protocol("catalog observation descriptor roles are invalid")
+        })?;
+    let mount_namespace = NamespaceFd::from_owned(mount_namespace, NamespaceKind::Mount)?;
+    let pin_root = ResolvedPath::from_inherited(pin_root)?;
+    let observation_deadline =
+        transaction_deadline_boottime_nanoseconds.min(request.deadline_boottime_nanoseconds());
+
+    mount_namespace.enter(single_threaded)?;
+    validate_catalog_custody(&request, &mount_namespace, &pin_root)?;
+    executable_pin.validate_current(contract)?;
+    let zfs_before = observe_workspace_catalog_zfs_for(contract, &request, observation_deadline)?;
+    validate_catalog_custody(&request, &mount_namespace, &pin_root)?;
+    let pin_before = observe_workspace_catalog_pin_pass(&request, &mount_namespace, &pin_root)
+        .map_err(map_observer_error)?;
+    validate_catalog_custody(&request, &mount_namespace, &pin_root)?;
+    let pin_after = observe_workspace_catalog_pin_pass(&request, &mount_namespace, &pin_root)
+        .map_err(map_observer_error)?;
+    validate_catalog_custody(&request, &mount_namespace, &pin_root)?;
+    executable_pin.validate_current(contract)?;
+    let zfs_after = observe_workspace_catalog_zfs_for(contract, &request, observation_deadline)?;
+    validate_catalog_custody(&request, &mount_namespace, &pin_root)?;
+    executable_pin.validate_current(contract)?;
+
+    let result = WorkspaceCatalogObservationResultV1::matched(
+        &request, zfs_before, pin_before, pin_after, zfs_after,
+    )?;
+    send_packet_before(
+        socket,
+        &encode_catalog_observation_result(&result)?,
+        observation_deadline,
+    )?;
+    let acknowledgement = receive_packet_before(socket, ACK.len(), observation_deadline)?;
+    verify_same_live_subject(&received.subject, acknowledgement.subject())?;
+    verify_storaged_subject(acknowledgement.subject(), storaged_cgroup)?;
+    if acknowledgement.payload() != ACK {
+        return Err(ZfsWorkerError::Protocol(
+            "catalog observation acknowledgement is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_catalog_custody(
+    request: &WorkspaceCatalogObservationRequestV1,
+    mount_namespace: &NamespaceFd,
+    pin_root: &ResolvedPath,
+) -> Result<(), ZfsWorkerError> {
+    if current_catalog_custody_binding(mount_namespace, pin_root).map_err(map_observer_error)?
+        != request.custody()
+    {
+        return Err(ZfsWorkerError::Authority);
     }
     Ok(())
 }

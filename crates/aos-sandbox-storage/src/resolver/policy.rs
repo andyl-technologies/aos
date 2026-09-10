@@ -63,6 +63,14 @@ impl ProtectedStorageResolverPolicyV1 {
         &self.project_ancestor
     }
 
+    pub(crate) const fn maximum_workspace_quota_bytes(&self) -> u64 {
+        self.maximum_workspace_quota_bytes
+    }
+
+    pub(crate) const fn maximum_workspace_reservation_bytes(&self) -> u64 {
+        self.maximum_workspace_reservation_bytes
+    }
+
     pub(crate) fn workspace_name(
         &self,
         sandbox_id: &[u8; 16],

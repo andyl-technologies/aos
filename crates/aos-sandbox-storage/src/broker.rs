@@ -6,6 +6,8 @@
 //! intent, and storage transaction intent in one journal transaction. It does
 //! not cross the ambiguous-mutation boundary and exposes no ZFS invocation.
 
+use std::collections::BTreeMap;
+
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::journal::RecordNamespace;
 use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV2, BrokerEffectStatusV2};
@@ -28,6 +30,11 @@ use crate::helper::{
     PreobservedZfsMutation, StorageMutationHelper, ZfsHelperError, ZfsHelperOutcome,
     ZfsProcessBackend,
 };
+use crate::observation_protocol::{
+    WorkspaceCatalogObservationExpectationV1, WorkspaceCatalogObservationObjectKindV1,
+    WorkspaceCatalogObservationObjectV1, WorkspaceCatalogObservationRootV1,
+    WorkspaceCatalogObservationTargetV1,
+};
 use crate::pin_observer::WorkspacePinHostCustody;
 use crate::pin_worker::{
     WorkspacePinWorkerAuthorityV1, encode_request as encode_pin_worker_request,
@@ -35,7 +42,14 @@ use crate::pin_worker::{
 use crate::pin_worker_runtime::{
     FreshWorkspacePinRepairObservationV1, SystemdWorkspacePinExecutor,
 };
-use crate::state::{CatalogPreparationConsumption, StorageWorkspaceProjection};
+use crate::resolver::StorageCatalogResolverV1;
+use crate::resolver::inventory::ProtectedStorageInventoryV2;
+use crate::resolver::protected_catalog::ProtectedStorageResolverPolicyDirectoryV1;
+use crate::resolver::protected_catalog::StorageResolverPolicyCatalogBindingV1;
+use crate::state::{
+    CatalogPreparationConsumption, StorageResolverPolicyAdmissionOutcomeV1,
+    StorageWorkspaceProjection,
+};
 use crate::workspace_catalog::{
     StorageWorkspaceCatalogActionV1, StorageWorkspaceCatalogActivePrefixV1,
     StorageWorkspaceCatalogPlanV1, StorageWorkspaceCatalogRowPlanV1,
@@ -63,9 +77,9 @@ use crate::workspace_repair_worker::{
 };
 use crate::{
     BeginStorageTransaction, CatalogPlanV1, CommittedStorageResultV1, DurableStoragePhase,
-    ProtectedStorageCatalogResolverV1, ResolvedCatalogCommitmentV1, StorageCatalogPreparationError,
-    StorageCatalogPreparationOutcomeV1, StorageTransactionStore, StorageWorkspaceCatalogError,
-    ZfsHelperContract, ZfsTransaction, decode_resolved,
+    ProtectedStorageCatalogResolverV1, ResolvedCatalogCommitmentV1, StorageAdmissionError,
+    StorageCatalogPreparationError, StorageCatalogPreparationOutcomeV1, StorageTransactionStore,
+    StorageWorkspaceCatalogError, ZfsHelperContract, ZfsTransaction, decode_resolved,
 };
 
 /// Reports fail-closed storage admission failure.
@@ -105,6 +119,47 @@ pub enum StorageAdmissionOutcome {
     },
     /// A future observer previously committed an exact result.
     Replay(crate::CommittedStorageResultV1),
+}
+
+/// Carries the terminal physical plan derived inside the locked coordinator.
+///
+/// Construction is private to this module so a self-consistent observation
+/// request cannot stand in for authenticated catalog and transaction state.
+/// Roots define every protected scope, allowed objects exhaustively name the
+/// authenticated filesystems or volumes inside it, and targets add terminal
+/// workspace pin expectations without replacing that complete inventory.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct AuthenticatedWorkspaceCatalogPhysicalPlanV1 {
+    roots: Vec<WorkspaceCatalogObservationRootV1>,
+    allowed_objects: Vec<WorkspaceCatalogObservationObjectV1>,
+    targets: Vec<WorkspaceCatalogObservationTargetV1>,
+}
+
+impl AuthenticatedWorkspaceCatalogPhysicalPlanV1 {
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        roots: Vec<WorkspaceCatalogObservationRootV1>,
+        allowed_objects: Vec<WorkspaceCatalogObservationObjectV1>,
+        targets: Vec<WorkspaceCatalogObservationTargetV1>,
+    ) -> Self {
+        Self {
+            roots,
+            allowed_objects,
+            targets,
+        }
+    }
+
+    pub(crate) fn roots(&self) -> &[WorkspaceCatalogObservationRootV1] {
+        &self.roots
+    }
+
+    pub(crate) fn allowed_objects(&self) -> &[WorkspaceCatalogObservationObjectV1] {
+        &self.allowed_objects
+    }
+
+    pub(crate) fn targets(&self) -> &[WorkspaceCatalogObservationTargetV1] {
+        &self.targets
+    }
 }
 
 /// Serializes protected storage authority and durable transaction admission.
@@ -344,6 +399,174 @@ impl StorageAdmissionCoordinator {
         self.transactions.fail_after_next_journal_commit_for_test();
     }
 
+    pub(crate) fn admit_trusted_resolver_policy(
+        &mut self,
+        binding: StorageResolverPolicyCatalogBindingV1,
+    ) -> Result<StorageResolverPolicyAdmissionOutcomeV1, StorageBrokerError> {
+        self.transactions
+            .admit_resolver_policy_catalog(binding)
+            .map_err(Into::into)
+    }
+
+    /// Resolves and retains one production Prepare from freshly loaded policy and state.
+    ///
+    /// Exact replay authenticates current request authority and the retained V3
+    /// policy binding but never reloads policy or reruns resolution. A fresh
+    /// request first admits the complete trusted policy publication, including
+    /// an empty revoke-all publication, then selects only its exact assignment.
+    /// The final protected clock sample occurs after all nonmutating sealing and
+    /// immediately before the atomic preparation retain.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_catalog_from_protected_policy<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        resolver_policies: &ProtectedStorageResolverPolicyDirectoryV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        self.transactions.ensure_authority_readable()?;
+        let initial_clock = trusted_clock().map_err(|_| StorageBrokerError::Authority)?;
+        let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            initial_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageBrokerError::Request)?;
+        let operation_id = semantics.operation_id();
+        let sandbox_id = *semantics.fence().sandbox_id();
+        let request_id = *semantics.header().request_id();
+        let retained = self
+            .transactions
+            .catalog_preparation_record(&operation_id)?
+            .map(<[u8]>::to_vec);
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .map(<[u8]>::to_vec);
+        let admission = self
+            .authority
+            .admit_preparation(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                peer,
+                policy,
+                &initial_clock,
+                prior_fence.as_deref(),
+            )
+            .map_err(|_| StorageBrokerError::Authority)?;
+
+        if let Some(sealed_record) = retained {
+            let retained = self.authenticate_catalog_preparation(operation_id, sealed_record)?;
+            if retained.record.resolver_policy_binding().is_none() {
+                return Err(StorageCatalogPreparationError::ResolutionRejected.into());
+            }
+            retained.record.replay_matches(
+                &semantics,
+                admission.plan_digest(),
+                admission.lease_digest(),
+                initial_clock.host_boot_id(),
+                initial_clock.boottime_nanoseconds(),
+            )?;
+            if &retained.preparation_fence != admission.fence()
+                || admission.transport_request_digest()
+                    != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+            {
+                return Err(StorageCatalogPreparationError::Equivocation.into());
+            }
+            if retained.record.consumption().is_some() {
+                self.authenticate_consumed_preparation(&retained)?;
+            }
+            self.authority
+                .check_preparation_before_effect(&admission, trusted_clock)
+                .map_err(|_| StorageBrokerError::Authority)?;
+            return retained.record.outcome().map_err(Into::into);
+        }
+
+        let loaded_policy = resolver_policies
+            .load()
+            .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        let policy_catalog_binding = loaded_policy
+            .binding()
+            .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        self.transactions
+            .admit_resolver_policy_catalog(policy_catalog_binding)?;
+        let selected_policy = loaded_policy
+            .select(admission.resolution().assignment())
+            .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        let policy_binding = selected_policy.binding();
+        let policy = selected_policy.into_policy();
+
+        let verified_journal = self.transactions.verified_resolver_journal()?;
+        let inventory =
+            ProtectedStorageInventoryV2::from_verified_journal(verified_journal, &policy)
+                .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        if semantics.inventory_binding() != inventory.binding() {
+            return Err(StorageCatalogPreparationError::InventoryMismatch.into());
+        }
+        let current_head = self.transactions.catalog_head_binding()?;
+        if semantics.expected_catalog_head() != current_head
+            || inventory.catalog_head() != current_head
+        {
+            return Err(StorageCatalogPreparationError::StaleCatalogHead.into());
+        }
+        let resolver = StorageCatalogResolverV1::new(policy, inventory)
+            .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        let catalog = resolver.resolve(admission.resolution(), current_head)?;
+        let sealed = self
+            .authority
+            .seal_preparation(&admission)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let prepared = RetainedStorageCatalogPreparationV1::prepare_with_policy(
+            &semantics,
+            catalog,
+            request_id,
+            initial_clock.host_boot_id(),
+            admission.effect_deadline_boottime_nanoseconds(),
+            admission.plan_digest(),
+            admission.lease_digest(),
+            StoragePreparationAuthorityRecordsV1 {
+                sealed_fence: &sealed.current_fence,
+                sealed_effect: &sealed.effect,
+                sealed_operation_fence: &sealed.operation_fence,
+            },
+            policy_binding,
+        )?;
+        let receipt = self
+            .authority
+            .seal_catalog_preparation_receipt(&operation_id, &prepared.receipt_payload)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let record = prepared.record.with_receipt(receipt)?;
+        let sealed_record = self
+            .authority
+            .seal_catalog_preparation_record(&operation_id, &record.encode_payload()?)
+            .map_err(|_| StorageBrokerError::Authority)?;
+
+        self.authority
+            .check_preparation_before_effect(&admission, trusted_clock)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        self.transactions.retain_catalog_preparation(
+            operation_id,
+            sandbox_id,
+            request_id,
+            current_head,
+            sealed.current_fence,
+            sealed.effect,
+            sealed.operation_fence,
+            sealed_record,
+            Some(policy_binding),
+        )?;
+        record.outcome().map_err(Into::into)
+    }
+
     /// Resolves and durably retains one independently authorized catalog preparation.
     ///
     /// The returned receipt is authenticated replay evidence only. It cannot
@@ -357,7 +580,8 @@ impl StorageAdmissionCoordinator {
     /// resolution, operation equivocation, corrupt replay links, or failure to
     /// retain the preparation and its authority records atomically.
     #[allow(clippy::too_many_arguments)]
-    pub fn prepare_catalog<R: ProtectedStorageCatalogResolverV1>(
+    #[cfg(test)]
+    pub(crate) fn prepare_catalog<R: ProtectedStorageCatalogResolverV1>(
         &mut self,
         request_body: &[u8],
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,
@@ -469,6 +693,7 @@ impl StorageAdmissionCoordinator {
             sealed.effect,
             sealed.operation_fence,
             sealed_record,
+            None,
         )?;
         record.outcome().map_err(Into::into)
     }
@@ -1920,6 +2145,10 @@ impl StorageAdmissionCoordinator {
         if record.operation_id() != operation_id {
             return Err(StorageCatalogPreparationError::CorruptRecord.into());
         }
+        if let Some(policy_binding) = record.resolver_policy_binding() {
+            self.transactions
+                .validate_historical_resolver_policy(policy_binding)?;
+        }
 
         let receipt_payload = self
             .authority
@@ -2198,10 +2427,132 @@ impl StorageAdmissionCoordinator {
     pub(crate) fn workspace_catalog_plan(
         &self,
     ) -> Result<StorageWorkspaceCatalogPlanV1, StorageBrokerError> {
+        self.workspace_catalog_composition()
+            .map(|composition| composition.0)
+    }
+
+    /// Composes complete protected physical scope beside the structural plan.
+    ///
+    /// `None` means at least one row is intentionally non-terminal and cannot
+    /// authorize inventory yet. A present plan includes every authenticated
+    /// root and descendant dataset even when the workspace plan is empty.
+    pub(crate) fn workspace_catalog_activation_plan(
+        &self,
+    ) -> Result<
+        (
+            StorageWorkspaceCatalogPlanV1,
+            Option<AuthenticatedWorkspaceCatalogPhysicalPlanV1>,
+        ),
+        StorageBrokerError,
+    > {
+        self.workspace_catalog_composition()
+    }
+
+    fn workspace_catalog_composition(
+        &self,
+    ) -> Result<
+        (
+            StorageWorkspaceCatalogPlanV1,
+            Option<AuthenticatedWorkspaceCatalogPhysicalPlanV1>,
+        ),
+        StorageBrokerError,
+    > {
         let projection = self.transactions.workspace_projection_plan()?;
+        let verified_journal = self.transactions.verified_resolver_journal()?;
+        let physical = verified_journal.physical();
+        if physical.binding().generation() != projection.physical_head_generation()
+            || physical.binding().digest() != projection.physical_head_digest()
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+
+        let mut root_table = BTreeMap::new();
+        for root in physical.roots() {
+            match root_table.get(root.dataset_prefix()) {
+                Some(existing_guid) if *existing_guid != root.guid() => {
+                    return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+                }
+                Some(_) => {}
+                None => {
+                    root_table.insert(root.dataset_prefix().to_owned(), root.guid());
+                }
+            }
+        }
+        let roots = root_table
+            .iter()
+            .map(|(name, guid)| {
+                WorkspaceCatalogObservationRootV1::new(name.clone(), *guid)
+                    .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate.into())
+            })
+            .collect::<Result<Vec<_>, StorageBrokerError>>()?;
+        for (index, root) in roots.iter().enumerate() {
+            if roots[..index]
+                .iter()
+                .any(|candidate| strict_dataset_descendant(root.name(), candidate.name()))
+            {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            }
+        }
+        let root_indices = roots
+            .iter()
+            .enumerate()
+            .map(|(index, root)| {
+                u16::try_from(index)
+                    .map(|index| (root.name().to_owned(), index))
+                    .map_err(|_| {
+                        StorageBrokerError::WorkspaceCatalog(
+                            StorageWorkspaceCatalogError::InvalidCandidate,
+                        )
+                    })
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let mut allowed_object_rows = physical
+            .datasets()
+            .iter()
+            .map(|dataset| {
+                let root_index = root_indices
+                    .get(dataset.root().dataset_prefix())
+                    .copied()
+                    .ok_or(crate::StorageStateError::AuthorityLinkMismatch)?;
+                let root = roots
+                    .get(usize::from(root_index))
+                    .filter(|root| root.guid() == dataset.root().guid())
+                    .ok_or(crate::StorageStateError::AuthorityLinkMismatch)?;
+                if !strict_dataset_descendant(dataset.name(), root.name()) {
+                    return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+                }
+                Ok((dataset.name().to_owned(), root_index, dataset.guid()))
+            })
+            .collect::<Result<Vec<_>, StorageBrokerError>>()?;
+        allowed_object_rows.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+        let allowed_objects = allowed_object_rows
+            .into_iter()
+            .map(|(name, root_index, guid)| {
+                WorkspaceCatalogObservationObjectV1::new(
+                    root_index,
+                    name,
+                    WorkspaceCatalogObservationObjectKindV1::Filesystem,
+                    guid,
+                )
+                .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate.into())
+            })
+            .collect::<Result<Vec<_>, StorageBrokerError>>()?;
+
         let mut rows = Vec::with_capacity(projection.entries().len());
+        let mut physical_rows = Vec::with_capacity(projection.entries().len());
+        let mut all_rows_terminal = true;
         for entry in projection.entries() {
             let creation = self.transactions.workspace_projection_creation(entry)?;
+            let (creation_catalog, _, _) = self.committed_context(creation)?;
+            let (root_name, root_guid, dataset_name) = match creation_catalog.plan() {
+                CatalogPlanV1::CreateWorkspace { destination, .. }
+                | CatalogPlanV1::Clone { destination, .. } => (
+                    destination.root().dataset_prefix().to_owned(),
+                    destination.root().guid(),
+                    destination.name().to_owned(),
+                ),
+                _ => return Err(crate::StorageStateError::AuthorityLinkMismatch.into()),
+            };
             let (identity_range_start, identity_range_size) = self
                 .transactions
                 .workspace_identity_range(entry.creation_operation_id())?
@@ -2273,6 +2624,32 @@ impl StorageAdmissionCoordinator {
             } else {
                 return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
             };
+            let expectation = match &policy {
+                StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(publication) => {
+                    Some(WorkspaceCatalogObservationExpectationV1::Present {
+                        mount_id: publication.pin_proof().mount_id(),
+                        root_device: publication.pin_proof().root_device(),
+                        root_inode: publication.pin_proof().root_inode(),
+                    })
+                }
+                StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired { .. } => {
+                    Some(WorkspaceCatalogObservationExpectationV1::Absent)
+                }
+                StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent
+                | StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(_) => {
+                    all_rows_terminal = false;
+                    None
+                }
+            };
+            physical_rows.push((
+                entry.workspace_handle(),
+                entry.creation_operation_id(),
+                root_name,
+                root_guid,
+                dataset_name,
+                entry.dataset_guid(),
+                expectation,
+            ));
             rows.push(StorageWorkspaceCatalogRowPlanV1::new(
                 entry.workspace_handle(),
                 entry.dataset_guid(),
@@ -2284,15 +2661,59 @@ impl StorageAdmissionCoordinator {
             )?);
         }
 
-        StorageWorkspaceCatalogPlanV1::new(
+        let structural = StorageWorkspaceCatalogPlanV1::new(
             projection.transaction_sequence(),
             projection.transaction_snapshot_digest(),
             projection.plan_digest(),
             projection.physical_head_generation(),
             projection.physical_head_digest(),
             rows,
-        )
-        .map_err(Into::into)
+        )?;
+        if !all_rows_terminal {
+            return Ok((structural, None));
+        }
+
+        let targets = physical_rows
+            .into_iter()
+            .map(
+                |(
+                    workspace_handle,
+                    creation_operation_id,
+                    root_name,
+                    _,
+                    dataset_name,
+                    dataset_guid,
+                    expectation,
+                )| {
+                    let root_index = root_indices.get(&root_name).copied().ok_or(
+                        StorageBrokerError::WorkspaceCatalog(
+                            StorageWorkspaceCatalogError::InvalidCandidate,
+                        ),
+                    )?;
+                    let expectation = expectation.ok_or(StorageBrokerError::WorkspaceCatalog(
+                        StorageWorkspaceCatalogError::InvalidCandidate,
+                    ))?;
+                    WorkspaceCatalogObservationTargetV1::new(
+                        workspace_handle,
+                        creation_operation_id,
+                        root_index,
+                        dataset_name,
+                        dataset_guid,
+                        expectation,
+                    )
+                    .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate.into())
+                },
+            )
+            .collect::<Result<Vec<_>, StorageBrokerError>>()?;
+
+        Ok((
+            structural,
+            Some(AuthenticatedWorkspaceCatalogPhysicalPlanV1 {
+                roots,
+                allowed_objects,
+                targets,
+            }),
+        ))
     }
 
     pub(crate) fn workspace_projection(
@@ -2367,6 +2788,11 @@ impl StorageAdmissionCoordinator {
     }
 }
 
+fn strict_dataset_descendant(name: &str, root: &str) -> bool {
+    name.strip_prefix(root)
+        .is_some_and(|suffix| suffix.starts_with('/') && suffix.len() > 1)
+}
+
 fn fence_is_same_or_successor(
     historical: &BrokerAuthorizationFenceV1,
     current: &BrokerAuthorizationFenceV1,
@@ -2394,14 +2820,21 @@ fn fence_is_same_or_successor(
 
 /// Returns the closed method set safe for the incomplete storage service.
 ///
-/// Apply and catalog preparation remain absent. Authoritative inventory and
-/// the isolated repair method are advertised independently from their exact
-/// runtime readiness proofs.
+/// Apply remains absent. Authoritative inventory, non-authorizing catalog
+/// preparation, and isolated repair are advertised independently from their
+/// exact runtime readiness proofs.
 #[must_use]
-pub fn advertised_storage_methods(inventory_ready: bool, repair_ready: bool) -> Vec<BrokerMethod> {
-    let mut methods = Vec::with_capacity(2);
+pub fn advertised_storage_methods(
+    inventory_ready: bool,
+    prepare_ready: bool,
+    repair_ready: bool,
+) -> Vec<BrokerMethod> {
+    let mut methods = Vec::with_capacity(3);
     if inventory_ready {
         methods.push(BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES);
+    }
+    if prepare_ready {
+        methods.push(BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG);
     }
     if repair_ready {
         methods.push(BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN);
@@ -2427,8 +2860,8 @@ mod tests {
     use aos_proto::aos::sandbox::local::v1::{
         ApplyStorageRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerClientHello,
         BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope, Feature, InventoryStorageRequest,
-        PrepareStorageCatalogRequest, RepairStorageWorkspacePinRequest, StorageAction,
-        StorageResult,
+        PrepareStorageCatalogRequest, PrepareStorageCatalogResponse,
+        RepairStorageWorkspacePinRequest, StorageAction, StorageResult,
     };
     use aos_sandbox_core::format::{
         encode_broker_authorization_plan, encode_ownership_lease, encode_signature,
@@ -2462,6 +2895,12 @@ mod tests {
         SealedZfsProgram, SystemdZfsProcessBackend, ZfsHelperError, ZfsPostconditionObservation,
         ZfsProcessOutput,
     };
+    use crate::resolver::inventory::ProtectedStorageInventoryV2;
+    use crate::resolver::policy::ProtectedStorageResolverPolicyV1;
+    use crate::resolver::protected_catalog::{
+        ProtectedStorageResolverPolicyDirectoryV1, encode_catalog_for_test,
+    };
+    use crate::root_policy::WorkspaceRootPolicyV1;
     use crate::workspace_pin::derive_attempt_id;
     use crate::workspace_repair::StorageWorkspacePinRepairIntentV1;
     use crate::{
@@ -2843,6 +3282,40 @@ mod tests {
 
             self.signed_artifacts(
                 assignment,
+                vec![grant],
+                current_wall_seconds - 30,
+                current_wall_seconds + 600,
+                current_wall_seconds + 600,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 4),
+            )
+        }
+
+        fn preparation_artifacts_for_rpc(
+            &self,
+            apply_request: &[u8],
+            preparation_request: &[u8],
+            current_wall_seconds: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+                preparation_request,
+                rpc_peer(),
+                rpc_peer_policy(),
+                vm_clock().boottime_nanoseconds(),
+            )
+            .unwrap();
+            let grant = BrokerGrant::new(
+                semantics.broker_verb(),
+                semantics.grant_target(),
+                semantics.argument_commitment(),
+                preparation_request.len() as u32,
+                0,
+            )
+            .unwrap();
+
+            self.signed_artifacts(
+                decode_assignment(apply_request).unwrap(),
                 vec![grant],
                 current_wall_seconds - 30,
                 current_wall_seconds + 600,
@@ -3553,6 +4026,30 @@ mod tests {
         value.encode_to_vec()
     }
 
+    fn vm_prepare_create_request(
+        assignment_digest: ObjectDigest,
+        effect_deadline_boottime_nanoseconds: u64,
+    ) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::default();
+        let header = value.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 4;
+        header.request_id = vec![86; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = effect_deadline_boottime_nanoseconds;
+        header.maximum_response_bytes = STORAGE_RPC_RESPONSE_BYTES;
+        let fence = value.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = 7;
+        fence.assignment_digest = assignment_digest.as_bytes().to_vec();
+        value.action = StorageAction::STORAGE_ACTION_CREATE_WORKSPACE.into();
+        value.operation_id = vec![86; 16];
+        value.quota_bytes = 33_554_432;
+        value.encode_to_vec()
+    }
+
     fn vm_destroy_request(
         workspace_handle: [u8; 32],
         assignment_digest: ObjectDigest,
@@ -3610,6 +4107,29 @@ mod tests {
                     .unwrap(),
                 ancestor: ProjectAncestorPolicyV1::new(ancestor, 268_435_456, 8, 16).unwrap(),
             },
+        )
+        .unwrap()
+    }
+
+    fn vm_prepared_create_catalog(
+        generation: u64,
+        policy: &ProtectedStorageResolverPolicyV1,
+    ) -> ResolvedCatalogCommitmentV1 {
+        let destination = PlannedDataset::from_catalog(
+            policy.root().clone(),
+            &policy.workspace_name(&[2; 16]).unwrap(),
+            policy.domains(),
+        )
+        .unwrap();
+        ResolvedCatalogCommitmentV1::new_execution_v3(
+            generation,
+            policy.domains(),
+            CatalogPlanV1::CreateWorkspace {
+                destination,
+                space: policy.space(33_554_432, 1_048_576).unwrap(),
+                ancestor: policy.project_ancestor().clone(),
+            },
+            Some(WorkspaceRootPolicyV1::create_initialize()),
         )
         .unwrap()
     }
@@ -3793,6 +4313,212 @@ mod tests {
             )
             .unwrap();
         coordinator
+    }
+
+    fn production_resolver_policy(
+        request: &[u8],
+        bootstrap_catalog: &ResolvedCatalogCommitmentV1,
+    ) -> ProtectedStorageResolverPolicyV1 {
+        let CatalogPlanV1::SetQuota {
+            dataset, ancestor, ..
+        } = bootstrap_catalog.plan()
+        else {
+            panic!("production Prepare fixture requires a SetQuota bootstrap catalog")
+        };
+        ProtectedStorageResolverPolicyV1::new(
+            decode_assignment(request).unwrap(),
+            dataset.root().clone(),
+            bootstrap_catalog.domains(),
+            ancestor.clone(),
+            65_536,
+            4_096,
+        )
+        .unwrap()
+    }
+
+    fn production_create_catalog(
+        generation: u64,
+        policy: &ProtectedStorageResolverPolicyV1,
+        sandbox_id: [u8; 16],
+    ) -> ResolvedCatalogCommitmentV1 {
+        let destination = PlannedDataset::from_catalog(
+            policy.root().clone(),
+            &policy.workspace_name(&sandbox_id).unwrap(),
+            policy.domains(),
+        )
+        .unwrap();
+        let plan = CatalogPlanV1::CreateWorkspace {
+            destination,
+            space: policy.space(4_096, 1).unwrap(),
+            ancestor: policy.project_ancestor().clone(),
+        };
+        ResolvedCatalogCommitmentV1::new_execution_v3(
+            generation,
+            policy.domains(),
+            plan,
+            Some(WorkspaceRootPolicyV1::create_initialize()),
+        )
+        .unwrap()
+    }
+
+    fn production_preparation_request(
+        apply_request: &[u8],
+        expected_catalog: &ResolvedCatalogCommitmentV1,
+        inventory: crate::CatalogBindingV1,
+        expected_head: crate::CatalogBindingV1,
+    ) -> Vec<u8> {
+        let (bytes, _, _) =
+            preparation_request_at_head(apply_request, expected_catalog, expected_head);
+        let mut request = PrepareStorageCatalogRequest::decode_from_slice(&bytes).unwrap();
+        request.inventory_generation = inventory.generation();
+        request.inventory_digest = inventory.digest().as_bytes().to_vec();
+        request.encode_to_vec()
+    }
+
+    fn preparation_artifacts(
+        fixture: &Fixture,
+        apply_request: &[u8],
+        preparation_request: &[u8],
+    ) -> ValidatedUntrustedAuthorizationArtifacts {
+        let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            preparation_request,
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let grant = BrokerGrant::new(
+            semantics.broker_verb(),
+            semantics.grant_target(),
+            semantics.argument_commitment(),
+            preparation_request.len() as u32,
+            0,
+        )
+        .unwrap();
+        fixture.signed_artifacts(
+            decode_assignment(apply_request).unwrap(),
+            vec![grant],
+            100,
+            300,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+            ProtocolVersion::new(1, 3),
+        )
+    }
+
+    fn protected_resolver_policy_directory(
+        parent: &Path,
+        fixture: &Fixture,
+        generation: u64,
+        policies: &[ProtectedStorageResolverPolicyV1],
+    ) -> (PathBuf, ProtectedStorageResolverPolicyDirectoryV1) {
+        let directory = parent.join(format!("resolver-policy-{generation}"));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let bytes =
+            encode_catalog_for_test(generation, fixture.protected_authority_binding(), policies);
+        let catalog = directory.join("storage-resolver-policy.catalog");
+        fs::write(&catalog, bytes).unwrap();
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o600)).unwrap();
+        let uid = fs::metadata(&directory).unwrap().uid();
+        let protected = ProtectedStorageResolverPolicyDirectoryV1::open_for_test(
+            &directory,
+            fixture.protected_authority_binding(),
+            uid,
+        )
+        .unwrap();
+        (directory, protected)
+    }
+
+    fn publish_resolver_policy_catalog(
+        directory: &Path,
+        fixture: &Fixture,
+        generation: u64,
+        policies: &[ProtectedStorageResolverPolicyV1],
+    ) {
+        let staging = directory.join("storage-resolver-policy.next");
+        fs::write(
+            &staging,
+            encode_catalog_for_test(generation, fixture.protected_authority_binding(), policies),
+        )
+        .unwrap();
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(staging, directory.join("storage-resolver-policy.catalog")).unwrap();
+    }
+
+    struct ProductionPreparationFixture {
+        state: TempDir,
+        fixture: Fixture,
+        broker: StorageAdmissionCoordinator,
+        policy: ProtectedStorageResolverPolicyV1,
+        policies: ProtectedStorageResolverPolicyDirectoryV1,
+        request: Vec<u8>,
+        artifacts: ValidatedUntrustedAuthorizationArtifacts,
+        expected_catalog: ResolvedCatalogCommitmentV1,
+        head: crate::CatalogBindingV1,
+        policy_directory: PathBuf,
+    }
+
+    fn production_preparation_fixture(policy_generation: u64) -> ProductionPreparationFixture {
+        let state = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let bootstrap_catalog = catalog(8, 9);
+        let request = create_request(7, ObjectDigest::from_bytes([6; 32]));
+        let policy = production_resolver_policy(&request, &bootstrap_catalog);
+        let broker = initialized_coordinator(&state, &fixture, &bootstrap_catalog);
+        let journal = broker.transactions.verified_resolver_journal().unwrap();
+        let inventory = ProtectedStorageInventoryV2::from_verified_journal(journal, &policy)
+            .unwrap()
+            .binding();
+        let head = broker.transactions.catalog_head_binding().unwrap();
+        let expected_catalog = production_create_catalog(head.generation() + 1, &policy, [2; 16]);
+        let preparation =
+            production_preparation_request(&request, &expected_catalog, inventory, head);
+        let artifacts = preparation_artifacts(&fixture, &request, &preparation);
+        let (policy_directory, policies) = protected_resolver_policy_directory(
+            state.path(),
+            &fixture,
+            policy_generation,
+            std::slice::from_ref(&policy),
+        );
+
+        ProductionPreparationFixture {
+            state,
+            fixture,
+            broker,
+            policy,
+            policies,
+            request: preparation,
+            artifacts,
+            expected_catalog,
+            head,
+            policy_directory,
+        }
+    }
+
+    fn production_preparation_for_operation(
+        production: &ProductionPreparationFixture,
+        operation: u8,
+    ) -> (Vec<u8>, ValidatedUntrustedAuthorizationArtifacts) {
+        let apply_request = create_request(operation, ObjectDigest::from_bytes([6; 32]));
+        let journal = production
+            .broker
+            .transactions
+            .verified_resolver_journal()
+            .unwrap();
+        let inventory =
+            ProtectedStorageInventoryV2::from_verified_journal(journal, &production.policy)
+                .unwrap()
+                .binding();
+        let request = production_preparation_request(
+            &apply_request,
+            &production.expected_catalog,
+            inventory,
+            production.head,
+        );
+        let artifacts = preparation_artifacts(&production.fixture, &apply_request, &request);
+        (request, artifacts)
     }
 
     fn runtime_coordinator(
@@ -4704,12 +5430,21 @@ mod tests {
         let mut runtime = crate::StorageBrokerRuntime::from_protected_components_for_test(
             observer_coordinator,
             || {
-                crate::StorageWorkspaceCatalogV1::open_root_owned(
+                let initialized = crate::StorageWorkspaceCatalogV1::open_root_owned(
+                    &repair_catalog_path,
+                    identity_pool,
+                )?;
+                drop(initialized);
+                crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_root_owned(
                     &repair_catalog_path,
                     identity_pool,
                 )
                 .map_err(Into::into)
             },
+            crate::runtime::runtime_configuration_binding(
+                fixture.protected_authority_binding(),
+                identity_pool,
+            ),
             custody,
             contract,
             pin_executor,
@@ -4911,12 +5646,21 @@ mod tests {
         let mut runtime = crate::StorageBrokerRuntime::from_protected_components_for_test(
             restart_coordinator,
             || {
-                crate::StorageWorkspaceCatalogV1::open_root_owned(
+                let initialized = crate::StorageWorkspaceCatalogV1::open_root_owned(
+                    &repair_catalog_path,
+                    identity_pool,
+                )?;
+                drop(initialized);
+                crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_root_owned(
                     &repair_catalog_path,
                     identity_pool,
                 )
                 .map_err(Into::into)
             },
+            crate::runtime::runtime_configuration_binding(
+                fixture.protected_authority_binding(),
+                identity_pool,
+            ),
             restart_custody,
             restart_contract,
             restart_pin_executor,
@@ -5040,15 +5784,7 @@ mod tests {
                 .open_operation_fence(&repair_semantics.operation_id(), operation_fence)
                 .unwrap()
         );
-        let repair_inventory = decode_storage_resource_inventory_response(
-            &runtime
-                .workspace_catalog_for_test()
-                .inventory_resources()
-                .unwrap(),
-            1_048_576,
-        )
-        .unwrap();
-        assert!(repair_inventory.workspaces().is_empty());
+        assert!(!runtime.is_inventory_ready());
 
         // Exact replay of the interrupted effect is resolved before a new
         // observer or mutator activation and cannot alter its durable history.
@@ -5180,19 +5916,7 @@ mod tests {
                 .status(),
             BrokerEffectStatusV2::Complete
         );
-        let repair_inventory = decode_storage_resource_inventory_response(
-            &runtime
-                .workspace_catalog_for_test()
-                .inventory_resources()
-                .unwrap(),
-            1_048_576,
-        )
-        .unwrap();
-        assert_eq!(repair_inventory.workspaces().len(), 1);
-        assert_eq!(
-            repair_inventory.workspaces()[0].workspace_handle(),
-            &observation_handle
-        );
+        assert!(!runtime.is_inventory_ready());
 
         // Exact replay of the completed successor is also side-effect free.
         let replay_sequence = runtime
@@ -5350,6 +6074,7 @@ mod tests {
     fn systemd_storage_rpc_vm_fixture() {
         match std::env::var("AOS_STORAGE_RPC_ROLE").unwrap().as_str() {
             "seed" => seed_storage_rpc_state(),
+            "audit" => audit_storage_rpc_state(),
             "controller" => storage_rpc_controller_loop(),
             "decoy" => storage_rpc_decoy(),
             role => panic!("unknown Storage RPC fixture role {role}"),
@@ -5367,6 +6092,9 @@ mod tests {
             .map(PathBuf::from)
             .unwrap();
         let bootstrap_directory = std::env::var_os("AOS_STORAGE_BOOTSTRAP_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let resolver_policy_directory = std::env::var_os("AOS_STORAGE_RESOLVER_POLICY_DIRECTORY")
             .map(PathBuf::from)
             .unwrap();
         let state_directory = std::env::var_os("AOS_STORAGE_STATE_DIRECTORY")
@@ -5493,6 +6221,106 @@ mod tests {
         assert_eq!(initial_pin.attempt().attempt_ordinal(), 1);
         let pin_path = PathBuf::from(crate::workspace_pin::workspace_pin_path(&workspace_handle));
         assert!(!pin_path.exists());
+
+        let prepare_manifest = assignment_manifest_at(&specification, 7);
+        let prepare_clock = vm_clock();
+        let prepare_apply_request = vm_prepare_create_request(
+            prepare_manifest.digest(),
+            prepare_clock
+                .boottime_nanoseconds()
+                .checked_add(600_000_000_000)
+                .unwrap(),
+        );
+        let CatalogPlanV1::CreateWorkspace {
+            destination,
+            ancestor,
+            ..
+        } = catalog.plan()
+        else {
+            panic!("Storage RPC bootstrap did not carry its managed root")
+        };
+        let resolver_policy = ProtectedStorageResolverPolicyV1::new(
+            decode_assignment(&prepare_apply_request).unwrap(),
+            destination.root().clone(),
+            catalog.domains(),
+            ancestor.clone(),
+            134_217_728,
+            67_108_864,
+        )
+        .unwrap();
+        let verified_journal = coordinator
+            .transactions
+            .verified_resolver_journal()
+            .unwrap();
+        let inventory =
+            ProtectedStorageInventoryV2::from_verified_journal(verified_journal, &resolver_policy)
+                .unwrap()
+                .binding();
+        let head = coordinator.transactions.catalog_head_binding().unwrap();
+        write_public_fixture_file(
+            &fixture_directory.join("catalog-head-generation"),
+            head.generation().to_string().as_bytes(),
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("catalog-head-digest"),
+            head.digest().as_bytes(),
+        );
+        let expected_catalog = vm_prepared_create_catalog(head.generation() + 1, &resolver_policy);
+        let mut prepare_request =
+            PrepareStorageCatalogRequest::decode_from_slice(&production_preparation_request(
+                &prepare_apply_request,
+                &expected_catalog,
+                inventory,
+                head,
+            ))
+            .unwrap();
+        prepare_request
+            .header
+            .get_or_insert_default()
+            .protocol_minor = 4;
+        let prepare_request = prepare_request.encode_to_vec();
+        let prepare_artifacts = fixture.preparation_artifacts_for_rpc(
+            &prepare_apply_request,
+            &prepare_request,
+            prepare_clock.wall_seconds(),
+        );
+        let prepare_artifacts = BrokerAuthorizationArtifactsV1 {
+            broker_plan: prepare_artifacts.broker_plan().to_vec(),
+            broker_plan_signature: prepare_artifacts.broker_plan_signature().to_vec(),
+            ownership_lease: prepare_artifacts.ownership_lease().to_vec(),
+            ownership_lease_signature: prepare_artifacts.ownership_lease_signature().to_vec(),
+            ..Default::default()
+        };
+
+        fs::create_dir_all(&resolver_policy_directory).unwrap();
+        fs::set_permissions(
+            &resolver_policy_directory,
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let policy_path = resolver_policy_directory.join("storage-resolver-policy.catalog");
+        fs::write(
+            &policy_path,
+            encode_catalog_for_test(7, fixture.protected_authority_binding(), &[resolver_policy]),
+        )
+        .unwrap();
+        fs::set_permissions(&policy_path, fs::Permissions::from_mode(0o600)).unwrap();
+        write_public_fixture_file(
+            &fixture_directory.join("prepare-request.pb"),
+            &prepare_request,
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("prepare-artifacts.pb"),
+            &prepare_artifacts.encode_to_vec(),
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("prepare-catalog-generation"),
+            expected_catalog.generation().to_string().as_bytes(),
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("prepare-catalog-digest"),
+            expected_catalog.digest().as_bytes(),
+        );
         drop(coordinator);
 
         let workspace_catalog =
@@ -5547,6 +6375,55 @@ mod tests {
         write_public_fixture_file(&marker, b"ready\n");
     }
 
+    fn audit_storage_rpc_state() {
+        let fixture_directory = Path::new(STORAGE_RPC_FIXTURE_DIRECTORY);
+        let state_directory = std::env::var_os("AOS_STORAGE_STATE_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let root_guid = std::env::var("AOS_STORAGE_ROOT_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let ancestor_guid = std::env::var("AOS_STORAGE_ANCESTOR_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let fixture = Fixture::new();
+        let catalog = vm_create_catalog(
+            root_guid,
+            ancestor_guid,
+            "aosproof/aos/project/rpc-workspace",
+        );
+        let identity_pool = crate::StorageIdentityPoolV1::new(
+            MINIMUM_HOST_IDENTITY_RANGE,
+            MINIMUM_HOST_IDENTITY_RANGE * 4,
+        )
+        .unwrap();
+        let configuration_binding = crate::runtime::runtime_configuration_binding(
+            fixture.protected_authority_binding(),
+            identity_pool,
+        );
+        let store = StorageTransactionStore::open_root_owned_runtime(
+            &state_directory,
+            StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+            catalog.generation() - 1,
+            configuration_binding,
+            catalog.generation() - 1,
+            std::slice::from_ref(&catalog),
+        )
+        .unwrap();
+        let head = store.catalog_head_binding().unwrap();
+        let expected_generation: u64 =
+            fs::read_to_string(fixture_directory.join("catalog-head-generation"))
+                .unwrap()
+                .parse()
+                .unwrap();
+        let expected_digest = fs::read(fixture_directory.join("catalog-head-digest")).unwrap();
+
+        assert_eq!(head.generation(), expected_generation);
+        assert_eq!(head.digest().as_bytes(), expected_digest.as_slice());
+    }
+
     fn provision_storage_rpc_bootstrap(directory: &Path, catalog: &ResolvedCatalogCommitmentV1) {
         fs::create_dir_all(directory).unwrap();
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
@@ -5577,6 +6454,8 @@ mod tests {
         let command_path = Path::new(STORAGE_RPC_CONTROL_DIRECTORY).join("command");
         let result_path = Path::new(STORAGE_RPC_CONTROL_DIRECTORY).join("result");
         let mut previous = String::new();
+        let mut prepared_response = None;
+        let mut live_inventory_response = None;
 
         loop {
             let command = fs::read_to_string(&command_path).unwrap_or_default();
@@ -5591,7 +6470,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("malformed Storage RPC command {command}"));
             let detail = match action {
                 "inventory-empty" => {
-                    assert_eq!(storage_rpc_inventory(90), 0);
+                    let inventory = storage_rpc_inventory(90);
+                    assert_eq!(storage_rpc_inventory_count(&inventory), 0);
                     "inventory-empty"
                 }
                 "missing-authority" => {
@@ -5603,12 +6483,46 @@ mod tests {
                     "repair"
                 }
                 "inventory-live" => {
-                    assert_eq!(storage_rpc_inventory(91), 1);
+                    let inventory = storage_rpc_inventory(91);
+                    assert_eq!(storage_rpc_inventory_count(&inventory), 1);
+                    if let Some(expected) = &live_inventory_response {
+                        assert_eq!(&inventory, expected);
+                    } else {
+                        live_inventory_response = Some(inventory);
+                    }
                     "inventory-live"
                 }
                 "retry" => {
                     storage_rpc_repair(true);
                     "retry-conflict"
+                }
+                "prepare" => {
+                    assert!(prepared_response.is_none());
+                    prepared_response = Some(storage_rpc_prepare());
+                    "prepare"
+                }
+                "prepare-replay" => {
+                    let replayed_response = storage_rpc_prepare();
+                    assert_eq!(prepared_response.as_ref(), Some(&replayed_response));
+                    "prepare-replay"
+                }
+                "prepare-one-two-unavailable" => {
+                    storage_rpc_method_unavailable(
+                        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+                        2,
+                    );
+                    "prepare-one-two-unavailable"
+                }
+                "prepare-unavailable" => {
+                    storage_rpc_method_unavailable(
+                        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+                        4,
+                    );
+                    "prepare-unavailable"
+                }
+                "apply-unavailable" => {
+                    storage_rpc_method_unavailable(BrokerMethod::BROKER_METHOD_STORAGE_APPLY, 4);
+                    "apply-unavailable"
                 }
                 "exit" => {
                     fs::write(&result_path, format!("{token} ok exit\n")).unwrap();
@@ -5618,6 +6532,109 @@ mod tests {
             };
             fs::write(&result_path, format!("{token} ok {detail}\n")).unwrap();
         }
+    }
+
+    fn storage_rpc_prepare() -> Vec<u8> {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG;
+        let request =
+            fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-request.pb")).unwrap();
+        let artifacts = BrokerAuthorizationArtifactsV1::decode_from_slice(
+            &fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-artifacts.pb"))
+                .unwrap(),
+        )
+        .unwrap();
+        let packet = encode_authorized_request_envelope(
+            ProtocolId::StorageBroker,
+            method,
+            &request,
+            &[],
+            AuthorizationArtifactBytes {
+                broker_plan: &artifacts.broker_plan,
+                broker_plan_signature: &artifacts.broker_plan_signature,
+                ownership_lease: &artifacts.ownership_lease,
+                ownership_lease_signature: &artifacts.ownership_lease_signature,
+            },
+        )
+        .unwrap();
+        let request = PrepareStorageCatalogRequest::decode_from_slice(&request).unwrap();
+        let request_id: [u8; 16] = request
+            .header
+            .as_option()
+            .unwrap()
+            .request_id
+            .as_slice()
+            .try_into()
+            .unwrap();
+        let maximum_response_bytes = request.header.as_option().unwrap().maximum_response_bytes;
+        let (mut socket, session, deadline) = storage_rpc_handshake(method);
+        session.decode_request(&packet, 0).unwrap();
+        crate::transport::send(&mut socket, &packet, deadline).unwrap();
+        let response =
+            crate::transport::receive(&mut socket, maximum_response_bytes as usize, deadline)
+                .unwrap();
+        let response = decode_response_envelope(
+            response.payload(),
+            &request_id,
+            method,
+            &[],
+            0,
+            session.maximum_response_bytes(),
+            maximum_response_bytes,
+        )
+        .unwrap();
+        assert!(response.error().is_none());
+        let prepared = PrepareStorageCatalogResponse::decode_from_slice(response.body()).unwrap();
+        let expected_generation: u64 = fs::read_to_string(
+            Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-catalog-generation"),
+        )
+        .unwrap()
+        .parse()
+        .unwrap();
+        let expected_digest =
+            fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-catalog-digest"))
+                .unwrap();
+        assert_eq!(prepared.operation_id, vec![86; 16]);
+        assert_eq!(prepared.catalog_generation, expected_generation);
+        assert_eq!(prepared.catalog_digest, expected_digest);
+        assert!(!prepared.non_authorizing_receipt.is_empty());
+        response.body().to_vec()
+    }
+
+    fn storage_rpc_method_unavailable(method: BrokerMethod, minor: u32) {
+        let mut socket =
+            aos_sandbox_linux::seqpacket::SeqpacketSocket::connect(Path::new(STORAGE_RPC_SOCKET))
+                .unwrap();
+        let deadline = crate::transport::boottime()
+            .unwrap()
+            .checked_add(crate::transport::EXCHANGE_NANOSECONDS)
+            .unwrap();
+        let hello = storage_rpc_client_hello_at(method, minor);
+        crate::transport::send(&mut socket, &hello.encode_to_vec(), deadline).unwrap();
+        let response = crate::transport::receive(
+            &mut socket,
+            aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
+            deadline,
+        )
+        .unwrap();
+        let feature = FeatureRef::new(
+            aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
+            1,
+            0,
+        )
+        .unwrap();
+        assert!(matches!(
+            decode_server_hello(
+                response.payload(),
+                ProtocolId::StorageBroker,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                ProtocolVersion::new(1, minor as u16),
+                &[feature],
+                &[method],
+                STORAGE_RPC_RESPONSE_BYTES,
+            ),
+            Err(aos_sandbox_protocol::ProtocolValidationError::BrokerRejected(code))
+                if code == BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST
+        ));
     }
 
     fn storage_rpc_decoy() {
@@ -5726,7 +6743,7 @@ mod tests {
         }
     }
 
-    fn storage_rpc_inventory(request_marker: u8) -> usize {
+    fn storage_rpc_inventory(request_marker: u8) -> Vec<u8> {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES;
         let now = crate::transport::boottime().unwrap();
         let mut request = InventoryStorageRequest::default();
@@ -5762,7 +6779,11 @@ mod tests {
         .unwrap();
         assert!(response.error().is_none());
 
-        decode_storage_resource_inventory_response(response.body(), STORAGE_RPC_RESPONSE_BYTES)
+        response.body().to_vec()
+    }
+
+    fn storage_rpc_inventory_count(response: &[u8]) -> usize {
+        decode_storage_resource_inventory_response(response, STORAGE_RPC_RESPONSE_BYTES)
             .unwrap()
             .workspaces()
             .len()
@@ -5811,9 +6832,13 @@ mod tests {
     }
 
     fn storage_rpc_client_hello(method: BrokerMethod) -> BrokerClientHello {
+        storage_rpc_client_hello_at(method, 4)
+    }
+
+    fn storage_rpc_client_hello_at(method: BrokerMethod, minor: u32) -> BrokerClientHello {
         BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 4,
+            protocol_minor: minor,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             required_features: vec![Feature {
                 namespace: aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE
@@ -5838,6 +6863,511 @@ mod tests {
 
         assert!(metadata.file_type().is_dir());
         assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn production_prepare_resolves_and_retains_an_authenticated_v3_record() {
+        let mut production = production_preparation_fixture(7);
+        let before = production.broker.transactions.journal_sequence_for_test();
+        let mut samples = 0;
+
+        let prepared = production
+            .broker
+            .prepare_catalog_from_protected_policy(
+                &production.request,
+                &production.artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || {
+                    samples += 1;
+                    Ok(clock())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(samples, 2);
+        assert_eq!(prepared.operation_id(), [7; 16]);
+        assert_eq!(prepared.catalog(), production.expected_catalog.binding());
+        // One-record floor admission and four-record preparation retention
+        // contribute their begin/commit frames to the journal sequence.
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            before + 9
+        );
+        let sealed_record = production
+            .broker
+            .transactions
+            .catalog_preparation_record(&[7; 16])
+            .unwrap()
+            .unwrap();
+        let payload = production
+            .broker
+            .authority
+            .open_catalog_preparation_record(&[7; 16], sealed_record)
+            .unwrap();
+        assert_eq!(&payload[..8], b"AOSSPR01");
+        assert_eq!(u16::from_be_bytes(payload[8..10].try_into().unwrap()), 3);
+        let retained = RetainedStorageCatalogPreparationV1::decode_payload(payload).unwrap();
+        assert_eq!(retained.encode_payload().unwrap(), payload);
+        let selected_binding = production
+            .policies
+            .load()
+            .unwrap()
+            .select(production.policy.assignment())
+            .unwrap()
+            .binding();
+        assert_eq!(retained.resolver_policy_binding(), Some(selected_binding));
+        assert_ne!(selected_binding.entry_digest().as_bytes(), &[0; 32]);
+        production
+            .broker
+            .authenticate_catalog_preparations()
+            .unwrap();
+        let floor = production
+            .broker
+            .transactions
+            .resolver_policy_floor()
+            .unwrap();
+        assert_eq!(floor.generation(), 7);
+        assert_ne!(floor.catalog_digest().as_bytes(), &[0; 32]);
+        for (namespace, key) in [
+            (RecordNamespace::DesiredState, [2; 16]),
+            (RecordNamespace::Effect, [135; 16]),
+            (RecordNamespace::AuthorityPublication, [7; 16]),
+        ] {
+            assert!(
+                production
+                    .broker
+                    .transactions
+                    .authority_record(namespace, &key)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert_eq!(
+            production
+                .broker
+                .transactions
+                .catalog_head_binding()
+                .unwrap(),
+            production.head
+        );
+        assert_eq!(production.broker.transactions.phase([7; 16]).unwrap(), None);
+    }
+
+    #[test]
+    fn production_prepare_second_clock_rejections_retain_only_the_policy_floor() {
+        let rejected_samples = [
+            Err(StorageAdmissionError::VerificationFailed),
+            Ok(clock_at([50; 16], 150, 200)),
+            Ok(clock_at([51; 16], 150, 101)),
+        ];
+
+        for rejected_sample in rejected_samples {
+            let mut production = production_preparation_fixture(7);
+            let before = production.broker.transactions.journal_sequence_for_test();
+            let mut samples = 0;
+            let result = production.broker.prepare_catalog_from_protected_policy(
+                &production.request,
+                &production.artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || {
+                    samples += 1;
+                    if samples == 1 {
+                        Ok(clock())
+                    } else {
+                        rejected_sample
+                    }
+                },
+            );
+
+            assert!(matches!(result, Err(StorageBrokerError::Authority)));
+            assert_eq!(samples, 2);
+            // Only the independently trusted, one-record policy publication
+            // becomes durable. No user preparation or authority link does.
+            assert_eq!(
+                production.broker.transactions.journal_sequence_for_test(),
+                before + 3
+            );
+            let floor = production
+                .broker
+                .transactions
+                .resolver_policy_floor()
+                .unwrap();
+            assert_eq!(floor.generation(), 7);
+            assert_eq!(
+                production
+                    .broker
+                    .transactions
+                    .catalog_head_binding()
+                    .unwrap(),
+                production.head
+            );
+            assert!(
+                production
+                    .broker
+                    .transactions
+                    .catalog_preparation_record(&[7; 16])
+                    .unwrap()
+                    .is_none()
+            );
+            for (namespace, key) in [
+                (RecordNamespace::DesiredState, [2; 16]),
+                (RecordNamespace::Effect, [135; 16]),
+                (RecordNamespace::AuthorityPublication, [7; 16]),
+            ] {
+                assert!(
+                    production
+                        .broker
+                        .transactions
+                        .authority_record(namespace, &key)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn revoked_prepare_authority_fails_before_policy_admission() {
+        let mut production = production_preparation_fixture(7);
+        let mut revoked_fixture = Fixture::new();
+        revoked_fixture.revocation = RevocationScopeId::from_bytes([46; 16]);
+        let apply_request = create_request(7, ObjectDigest::from_bytes([6; 32]));
+        let revoked_artifacts =
+            preparation_artifacts(&revoked_fixture, &apply_request, &production.request);
+        let before = production.broker.transactions.journal_sequence_for_test();
+
+        assert!(matches!(
+            production.broker.prepare_catalog_from_protected_policy(
+                &production.request,
+                &revoked_artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            before
+        );
+        assert!(
+            production
+                .broker
+                .transactions
+                .resolver_policy_floor()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn revoke_all_and_unknown_assignment_publications_advance_the_policy_floor() {
+        let mut production = production_preparation_fixture(7);
+        let (request, artifacts) = production_preparation_for_operation(&production, 8);
+        let initial_sequence = production.broker.transactions.journal_sequence_for_test();
+
+        publish_resolver_policy_catalog(&production.policy_directory, &production.fixture, 8, &[]);
+        assert!(matches!(
+            production.broker.prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::ResolutionRejected
+            ))
+        ));
+        let revoke_all = production.policies.load().unwrap().binding().unwrap();
+        let floor = production
+            .broker
+            .transactions
+            .resolver_policy_floor()
+            .unwrap();
+        assert_eq!(floor.generation(), revoke_all.generation());
+        assert_eq!(floor.catalog_digest(), revoke_all.digest());
+
+        let assignment = production.policy.assignment();
+        let sibling_assignment = BrokerAssignment::new(
+            assignment.sandbox(),
+            IncarnationId::from_bytes([99; 16]),
+            assignment.epoch(),
+            assignment.desired_generation(),
+            assignment.digest(),
+        )
+        .unwrap();
+        let sibling_policy = ProtectedStorageResolverPolicyV1::new(
+            sibling_assignment,
+            production.policy.root().clone(),
+            production.policy.domains(),
+            production.policy.project_ancestor().clone(),
+            production.policy.maximum_workspace_quota_bytes(),
+            production.policy.maximum_workspace_reservation_bytes(),
+        )
+        .unwrap();
+        publish_resolver_policy_catalog(
+            &production.policy_directory,
+            &production.fixture,
+            9,
+            &[sibling_policy],
+        );
+        assert!(matches!(
+            production.broker.prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::ResolutionRejected
+            ))
+        ));
+        let unknown = production.policies.load().unwrap().binding().unwrap();
+        let floor = production
+            .broker
+            .transactions
+            .resolver_policy_floor()
+            .unwrap();
+        assert_eq!(floor.generation(), unknown.generation());
+        assert_eq!(floor.catalog_digest(), unknown.digest());
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            initial_sequence + 6
+        );
+        assert!(
+            production
+                .broker
+                .transactions
+                .catalog_preparation_record(&[8; 16])
+                .unwrap()
+                .is_none()
+        );
+        for (namespace, key) in [
+            (RecordNamespace::DesiredState, [2; 16]),
+            (RecordNamespace::Effect, [136; 16]),
+            (RecordNamespace::AuthorityPublication, [8; 16]),
+        ] {
+            assert!(
+                production
+                    .broker
+                    .transactions
+                    .authority_record(namespace, &key)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        publish_resolver_policy_catalog(
+            &production.policy_directory,
+            &production.fixture,
+            8,
+            std::slice::from_ref(&production.policy),
+        );
+        let before_restore = production.broker.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            production.broker.prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            ),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::Rollback
+            ))
+        ));
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            before_restore
+        );
+
+        publish_resolver_policy_catalog(
+            &production.policy_directory,
+            &production.fixture,
+            9,
+            std::slice::from_ref(&production.policy),
+        );
+        assert!(matches!(
+            production.broker.prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            ),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::Rollback
+            ))
+        ));
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            before_restore
+        );
+    }
+
+    #[test]
+    fn v3_prepare_reopens_and_replays_under_a_newer_floor_without_resolution() {
+        let mut production = production_preparation_fixture(7);
+        let prepared = production
+            .broker
+            .prepare_catalog_from_protected_policy(
+                &production.request,
+                &production.artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            )
+            .unwrap();
+
+        publish_resolver_policy_catalog(
+            &production.policy_directory,
+            &production.fixture,
+            8,
+            std::slice::from_ref(&production.policy),
+        );
+        let newer = production.policies.load().unwrap().binding().unwrap();
+        assert_eq!(
+            production
+                .broker
+                .admit_trusted_resolver_policy(newer)
+                .unwrap(),
+            StorageResolverPolicyAdmissionOutcomeV1::Advanced
+        );
+        let sequence = production.broker.transactions.journal_sequence_for_test();
+        let sealed_preparation = production
+            .broker
+            .transactions
+            .catalog_preparation_record(&[7; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+
+        // Exact replay must not consult the current resolver file. Destroy its
+        // syntax while retaining the already-opened protected directory.
+        fs::write(
+            production
+                .policy_directory
+                .join("storage-resolver-policy.catalog"),
+            b"malformed current publication",
+        )
+        .unwrap();
+        let ProductionPreparationFixture {
+            state,
+            fixture,
+            broker: prior_broker,
+            policies,
+            request,
+            artifacts,
+            head,
+            ..
+        } = production;
+        drop(prior_broker);
+        let mut broker = coordinator(&state, &fixture);
+        broker.authenticate_catalog_preparations().unwrap();
+        let mut samples = 0;
+        let replayed = broker
+            .prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || {
+                    samples += 1;
+                    Ok(clock())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(samples, 2);
+        assert_eq!(replayed, prepared);
+        assert_eq!(broker.transactions.journal_sequence_for_test(), sequence);
+        assert_eq!(broker.transactions.catalog_head_binding().unwrap(), head);
+        assert_eq!(
+            broker
+                .transactions
+                .catalog_preparation_record(&[7; 16])
+                .unwrap(),
+            Some(sealed_preparation.as_slice())
+        );
+        let floor = broker.transactions.resolver_policy_floor().unwrap();
+        assert_eq!(floor.generation(), newer.generation());
+        assert_eq!(floor.catalog_digest(), newer.digest());
+    }
+
+    #[test]
+    fn v3_preparation_requires_its_policy_floor_on_reopen() {
+        for floor_mutation in 0..3 {
+            let mut production = production_preparation_fixture(7);
+            production
+                .broker
+                .prepare_catalog_from_protected_policy(
+                    &production.request,
+                    &production.artifacts,
+                    &production.policies,
+                    ProtocolVersion::new(1, 3),
+                    peer(),
+                    peer_policy(),
+                    &mut || Ok(clock()),
+                )
+                .unwrap();
+            let original = production
+                .broker
+                .transactions
+                .resolver_policy_floor()
+                .unwrap();
+            match floor_mutation {
+                0 => production
+                    .broker
+                    .transactions
+                    .remove_authority_record_for_test(
+                        RecordNamespace::StorageResolverPolicyFloor,
+                        b"current",
+                    ),
+                1 => production
+                    .broker
+                    .transactions
+                    .put_resolver_policy_floor_for_test(6, original.catalog_digest()),
+                2 => production
+                    .broker
+                    .transactions
+                    .put_resolver_policy_floor_for_test(
+                        original.generation(),
+                        ObjectDigest::from_bytes([99; 32]),
+                    ),
+                _ => unreachable!(),
+            }
+
+            drop(production.broker);
+            let reopened = coordinator(&production.state, &production.fixture);
+            assert!(matches!(
+                reopened.authenticate_catalog_preparations(),
+                Err(StorageBrokerError::State(
+                    crate::StorageStateError::MissingAuthorityLink
+                        | crate::StorageStateError::AuthorityLinkMismatch
+                ))
+            ));
+        }
     }
 
     #[test]
@@ -7124,6 +8654,29 @@ mod tests {
     }
 
     #[test]
+    fn initialized_empty_workspace_plan_retains_roots_and_project_infrastructure() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let broker = initialized_coordinator(&directory, &fixture, &create_catalog(8));
+
+        let (plan, physical_plan) = broker.workspace_catalog_activation_plan().unwrap();
+        let physical_plan = physical_plan.unwrap();
+
+        assert!(plan.rows().is_empty());
+        assert_eq!(physical_plan.roots().len(), 1);
+        assert_eq!(physical_plan.roots()[0].name(), "tank/aos");
+        assert_eq!(
+            physical_plan
+                .allowed_objects()
+                .iter()
+                .map(|object| (object.name(), object.guid()))
+                .collect::<Vec<_>>(),
+            [("tank/aos/project", 15)]
+        );
+        assert!(physical_plan.targets().is_empty());
+    }
+
+    #[test]
     fn authenticated_workspace_history_composes_a_closed_pending_catalog_plan() {
         let state_directory = TempDir::new().unwrap();
         let workspace_directory = TempDir::new().unwrap();
@@ -7150,7 +8703,8 @@ mod tests {
             )
             .unwrap();
 
-        let plan = broker.workspace_catalog_plan().unwrap();
+        let (plan, physical_plan) = broker.workspace_catalog_activation_plan().unwrap();
+        let physical_plan = physical_plan.unwrap();
         assert!(plan.transaction_sequence() > 1);
         assert_ne!(plan.transaction_snapshot_digest().as_bytes(), &[0; 32]);
         assert_ne!(plan.plan_digest().as_bytes(), &[0; 32]);
@@ -7165,6 +8719,17 @@ mod tests {
             row.policy(),
             StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(_)
         ));
+        assert_eq!(physical_plan.roots().len(), 1);
+        assert_eq!(physical_plan.roots()[0].name(), "tank/aos");
+        assert_eq!(
+            physical_plan
+                .allowed_objects()
+                .iter()
+                .map(|object| (object.name(), object.guid()))
+                .collect::<Vec<_>>(),
+            [("tank/aos/project", 15), ("tank/aos/project/work", 11)]
+        );
+        assert_eq!(physical_plan.targets().len(), 1);
 
         let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536 * 4).unwrap();
         let pending = crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
@@ -9034,24 +10599,25 @@ mod tests {
 
     #[test]
     fn apply_is_never_advertised_without_complete_effect_readiness() {
-        assert!(advertised_storage_methods(false, false).is_empty());
+        assert!(advertised_storage_methods(false, false, false).is_empty());
         assert_eq!(
-            advertised_storage_methods(true, false),
+            advertised_storage_methods(true, false, false),
             [BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES]
         );
         assert_eq!(
-            advertised_storage_methods(false, true),
+            advertised_storage_methods(false, false, true),
             [BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN]
         );
         assert_eq!(
-            advertised_storage_methods(true, true),
+            advertised_storage_methods(true, true, true),
             [
                 BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+                BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
                 BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN,
             ]
         );
         assert!(
-            !advertised_storage_methods(true, true)
+            !advertised_storage_methods(true, true, true)
                 .contains(&BrokerMethod::BROKER_METHOD_STORAGE_APPLY)
         );
     }

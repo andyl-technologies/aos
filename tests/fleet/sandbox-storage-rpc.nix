@@ -1,4 +1,4 @@
-# Installed-systemd proof for the public Storage repair and inventory boundary.
+# Installed-systemd proof for the public Storage Prepare, repair, and inventory boundary.
 {
   lib,
   mkSystem,
@@ -8,8 +8,34 @@
   selectedFixture = "broker::tests::systemd_storage_rpc_vm_fixture";
   authorityDirectory = "/run/aos/sandbox-storage-authority";
   bootstrapDirectory = "/run/aos/sandbox-storage-bootstrap";
+  resolverPolicyDirectory = "/run/aos/sandbox-storage-resolver-policy";
   fixtureDirectory = "/run/aos/storage-rpc-fixture";
   stateDirectory = "/var/lib/aos/sandbox-storage";
+  seccompProbeChmodStatus =
+    if pkgs.stdenv.hostPlatform.isx86_64
+    then "chmod"
+    else if pkgs.stdenv.hostPlatform.isAarch64
+    then "chmod-unavailable"
+    else throw "Storage broker seccomp probe does not support ${pkgs.stdenv.hostPlatform.system}";
+
+  seccompProbe = pkgs.mkDerivation {
+    pname = "aos-storage-broker-seccomp-probe";
+    version = "0.1.0";
+    src = null;
+    buildDeps = [];
+    runtimeDeps = [];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          $CC -std=c11 -Wall -Wextra -Werror -O2 \
+            ${../sandbox/storage-broker-seccomp-probe.c} \
+            -o "$out/bin/storage-broker-seccomp-probe"
+        '';
+      }
+    ];
+  };
 
   fixture = pkgs.mkCargoPackage {
     pname = "aos-sandbox-storage-rpc-tests";
@@ -62,8 +88,15 @@
       };
       aos.sandbox.storageBroker = {
         enable = true;
-        inherit authorityDirectory bootstrapDirectory;
+        inherit authorityDirectory bootstrapDirectory resolverPolicyDirectory;
+        # Match the seed and audit binding: four minimum-size identity ranges.
+        identityPoolStart = 65536;
+        identityPoolSize = 262144;
       };
+
+      # ExecStartPre inherits the exact production service confinement. This
+      # test-only probe adds neither a privilege prefix nor a broker RPC.
+      systemd.services.aos-storaged.serviceConfig.ExecStartPre = "${seccompProbe}/bin/storage-broker-seccomp-probe";
 
       aos.image.budgets = {
         maxRootMiB = 1024;
@@ -148,6 +181,12 @@ in {
     COREUTILS = "${pkgs.coreutils}/bin"
     FINDMNT = "${pkgs.util-linux}/bin/findmnt"
     PIN_ROOT = "/run/aos/sandbox-pins/workspaces"
+    SECCOMP_PROBE = "${stateDirectory}/seccomp-probe"
+    SECCOMP_PROBE_MARKER = (
+        "AOS_STORAGE_BROKER_SECCOMP_PROBE_PASS "
+        "boot-id-read-only openat2 ${seccompProbeChmodStatus} "
+        "fchmod fchmodat fchmodat2"
+    )
     STATE_JOURNAL = "${stateDirectory}/storage-state.journal"
     ZFS = "${pkgs.zfsForKernel system.config.system.build.kernel}/sbin/zfs"
     ZPOOL = "${pkgs.zfsForKernel system.config.system.build.kernel}/sbin/zpool"
@@ -172,6 +211,13 @@ in {
             f"{COREUTILS}/sha256sum '{STATE_JOURNAL}'"
         ).split()[0]
 
+    def dataset_snapshot():
+        return machine.succeed(
+            f"{ZFS} get -Hp -r -o name,property,value "
+            "guid,mountpoint,canmount,quota,refquota,reservation,"
+            "filesystem_limit,snapshot_limit aosproof/aos"
+        )
+
     command_number = 0
 
     def controller(action, expected):
@@ -186,6 +232,38 @@ in {
             "/run/storage-rpc-controller/result",
             timeout=30,
         )
+
+    def seccomp_probe_passes():
+        return int(machine.succeed(
+            "journalctl -u aos-storaged.service --no-pager -o cat "
+            f"| grep -Fxc '{SECCOMP_PROBE_MARKER}' || true"
+        ).strip())
+
+    def storaged_diagnostics():
+        for command in (
+            "systemctl show aos-storaged.service "
+            "-p ActiveState -p SubState -p Result -p MainPID "
+            "-p ExecMainCode -p ExecMainStatus -p NRestarts",
+            "systemctl status aos-storaged.service --no-pager -l",
+            "journalctl -u aos-storaged.service --no-pager -n 200",
+        ):
+            status, stdout, stderr = machine.execute(command)
+            print(f"storaged diagnostic ({status}): {command}")
+            print(stdout.decode("utf-8", errors="replace"))
+            print(stderr.decode("utf-8", errors="replace"))
+
+    def start_storaged(inventory_action, inventory_expected, expected_probe_passes):
+        try:
+            machine.succeed("systemctl start aos-storaged.service", timeout=150)
+            controller(inventory_action, inventory_expected)
+            machine.succeed("systemctl is-active --quiet aos-storaged.service")
+            assert seccomp_probe_passes() == expected_probe_passes
+        except Exception:
+            try:
+                storaged_diagnostics()
+            except Exception as diagnostic_error:
+                print(f"storaged diagnostics failed: {diagnostic_error}")
+            raise
 
     machine.wait_for_unit("multi-user.target", timeout=120)
     machine.wait_for_unit("aos-sandbox-zfs-ready.service", timeout=30)
@@ -227,11 +305,15 @@ in {
         "${authorityDirectory} ${bootstrapDirectory} ${stateDirectory}"
     )
     machine.succeed(f"{COREUTILS}/chmod 0755 ${fixtureDirectory}")
+    machine.succeed(f"{COREUTILS}/touch '{SECCOMP_PROBE}'")
+    machine.succeed(f"{COREUTILS}/chown 0:0 '{SECCOMP_PROBE}'")
+    machine.succeed(f"{COREUTILS}/chmod 0600 '{SECCOMP_PROBE}'")
     seed_command = (
         f"{COREUTILS}/env "
         "AOS_STORAGE_RPC_ROLE=seed "
         "AOS_STORAGE_AUTHORITY_DIRECTORY=${authorityDirectory} "
         "AOS_STORAGE_BOOTSTRAP_DIRECTORY=${bootstrapDirectory} "
+        "AOS_STORAGE_RESOLVER_POLICY_DIRECTORY=${resolverPolicyDirectory} "
         "AOS_STORAGE_STATE_DIRECTORY=${stateDirectory} "
         f"AOS_STORAGE_ROOT_GUID={root_guid} "
         f"AOS_STORAGE_ANCESTOR_GUID={ancestor_guid} "
@@ -240,6 +322,9 @@ in {
         "--ignored --exact '${selectedFixture}' --test-threads=1 --nocapture"
     )
     machine.succeed(seed_command, timeout=60)
+    audit_command = seed_command.replace(
+        "AOS_STORAGE_RPC_ROLE=seed", "AOS_STORAGE_RPC_ROLE=audit"
+    )
     seeded_parent_identity = machine.succeed(
         f"{COREUTILS}/stat -c '%d:%i' '{PIN_ROOT}'"
     ).strip()
@@ -260,10 +345,9 @@ in {
     observer_before = socket_sample("aos-sandbox-workspace-pin-observer.socket")
     worker_before = socket_sample("aos-sandbox-workspace-pin-worker.socket")
     claims_before = replay_claims()
-    machine.succeed("systemctl start aos-storaged.service", timeout=150)
-    machine.wait_until_succeeds(
-        "systemctl is-active --quiet aos-storaged.service", timeout=20
-    )
+    baseline_hash = journal_hash()
+    assert seccomp_probe_passes() == 0
+    start_storaged("inventory-empty", "inventory-empty", 1)
     observer_started = socket_sample("aos-sandbox-workspace-pin-observer.socket")
     worker_started = socket_sample("aos-sandbox-workspace-pin-worker.socket")
     assert observer_started == (observer_before[0] + 1, observer_before[1]), (
@@ -290,26 +374,48 @@ in {
     ), service_values
     assert int(service_values["MainPID"]) > 1, service_values
     installed_service = machine.succeed("systemctl cat aos-storaged.service")
+    exec_start_lines = installed_service.splitlines()
+    exec_start_index = next(
+        index for index, line in enumerate(exec_start_lines)
+        if line.startswith("ExecStart=")
+    )
+    exec_start_pool = [
+        line.strip().removesuffix("\\").strip()
+        for line in exec_start_lines[exec_start_index + 3:exec_start_index + 5]
+    ]
+    assert exec_start_pool == ["65536", "262144"], exec_start_pool
     for setting in (
         "CapabilityBoundingSet=",
         "NoNewPrivileges=true",
         "PrivateDevices=true",
         "PrivateNetwork=true",
+        "ProcSubset=all",
         "ProtectSystem=strict",
+        "RestrictSUIDSGID=false",
         "RestrictAddressFamilies=AF_UNIX",
+        "SystemCallArchitectures=native",
+        "SystemCallErrorNumber=EPERM",
+        "SystemCallFilter=~chmod",
+        "SystemCallFilter=~fchmod",
+        "SystemCallFilter=~fchmodat",
+        "SystemCallFilter=~fchmodat2",
         "RuntimeDirectory=aos/sandbox-pins/workspaces",
         "RuntimeDirectoryMode=0700",
         "RuntimeDirectoryPreserve=yes",
-        "ReadOnlyPaths=${authorityDirectory} ${bootstrapDirectory}",
+        "ReadOnlyPaths=${authorityDirectory}",
+        "ReadOnlyPaths=${bootstrapDirectory}",
+        "ReadOnlyPaths=-${resolverPolicyDirectory}",
+        "ExecStartPre=${seccompProbe}/bin/storage-broker-seccomp-probe",
     ):
         assert setting in installed_service, (setting, installed_service)
+    assert "ExecStartPre=+" not in installed_service, installed_service
     installed_socket = machine.succeed("systemctl cat aos-storaged.socket")
     for setting in (
         "ListenSequentialPacket=/run/aos/sandbox-storage/control.sock",
         "FileDescriptorName=aos-storaged",
-        "Accept=no",
-        "PassCredentials=yes",
-        "PassPIDFD=yes",
+        "Accept=false",
+        "PassCredentials=true",
+        "PassPIDFD=true",
         "SocketUser=aos-sandboxd",
         "SocketGroup=aos-sandboxd",
         "SocketMode=0600",
@@ -326,8 +432,6 @@ in {
         f"{COREUTILS}/stat -c '%u:%g:%a' '{PIN_ROOT}'"
     ).strip() == "0:0:700"
 
-    baseline_hash = journal_hash()
-    controller("inventory-empty", "inventory-empty")
     assert journal_hash() == baseline_hash
     assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_started
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_started
@@ -365,7 +469,7 @@ in {
     ).splitlines() == [pin]
     controller("inventory-live", "inventory-live")
 
-    stable_hash = journal_hash()
+    repair_hash = journal_hash()
     stable_parent_identity = machine.succeed(
         f"{COREUTILS}/stat -c '%d:%i' '{PIN_ROOT}'"
     ).strip()
@@ -375,37 +479,102 @@ in {
     machine.succeed("systemctl stop aos-storaged.service")
     machine.succeed(f"test -d '{PIN_ROOT}'")
     machine.succeed(f"test -d '{pin}'")
+    start_storaged("inventory-live", "inventory-live", 2)
+    assert journal_hash() == repair_hash
     assert machine.succeed(
         f"{COREUTILS}/stat -c '%d:%i' '{PIN_ROOT}'"
     ).strip() == stable_parent_identity
     assert machine.succeed(
         f"{COREUTILS}/stat -c '%d:%i' '{pin}'"
     ).strip() == stable_pin_identity
-
-    machine.succeed("systemctl start aos-storaged.service", timeout=150)
-    machine.wait_until_succeeds(
-        "systemctl is-active --quiet aos-storaged.service", timeout=20
-    )
-    assert machine.succeed(
-        f"{COREUTILS}/stat -c '%d:%i' '{PIN_ROOT}'"
-    ).strip() == stable_parent_identity
-    assert machine.succeed(
-        f"{COREUTILS}/stat -c '%d:%i' '{pin}'"
-    ).strip() == stable_pin_identity
-    assert journal_hash() == stable_hash
     assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
     assert replay_claims() == 1
 
     controller("retry", "retry-conflict")
-    assert journal_hash() == stable_hash
+    controller("inventory-live", "inventory-live")
+    assert journal_hash() == repair_hash
     assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
     assert replay_claims() == 1
+
+    prepare_observer = socket_sample("aos-sandbox-workspace-pin-observer.socket")
+    prepare_worker = socket_sample("aos-sandbox-workspace-pin-worker.socket")
+    prepare_zfs_worker = socket_sample("aos-sandbox-zfs-worker.socket")
+    prepare_claims = replay_claims()
+    prepare_datasets = dataset_snapshot()
+    prepare_before = journal_hash()
+    controller("prepare-one-two-unavailable", "prepare-one-two-unavailable")
+    controller("apply-unavailable", "apply-unavailable")
+    controller("prepare", "prepare")
+    prepare_after = journal_hash()
+    assert prepare_after != prepare_before
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == prepare_observer
+    assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == prepare_worker
+    assert socket_sample("aos-sandbox-zfs-worker.socket") == prepare_zfs_worker
+    assert replay_claims() == prepare_claims == 1
+    assert dataset_snapshot() == prepare_datasets
+
+    stable_hash = prepare_after
+    machine.succeed("systemctl stop aos-storaged.service")
+    machine.succeed(audit_command, timeout=60)
+    assert journal_hash() == stable_hash
+    machine.succeed(f"test -d '{PIN_ROOT}'")
+    machine.succeed(f"test -d '{pin}'")
+    assert machine.succeed(
+        f"{COREUTILS}/stat -c '%d:%i' '{PIN_ROOT}'"
+    ).strip() == stable_parent_identity
+    assert machine.succeed(
+        f"{COREUTILS}/stat -c '%d:%i' '{pin}'"
+    ).strip() == stable_pin_identity
+
+    start_storaged("inventory-live", "inventory-live", 3)
+    assert machine.succeed(
+        f"{COREUTILS}/stat -c '%d:%i' '{PIN_ROOT}'"
+    ).strip() == stable_parent_identity
+    assert machine.succeed(
+        f"{COREUTILS}/stat -c '%d:%i' '{pin}'"
+    ).strip() == stable_pin_identity
+    assert journal_hash() == stable_hash
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
+    assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
+    assert socket_sample("aos-sandbox-zfs-worker.socket") == prepare_zfs_worker
+    assert replay_claims() == 1
+    assert dataset_snapshot() == prepare_datasets
+
+    controller("prepare-replay", "prepare-replay")
+    assert journal_hash() == stable_hash
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
+    assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
+    assert socket_sample("aos-sandbox-zfs-worker.socket") == prepare_zfs_worker
+    assert replay_claims() == 1
+    assert dataset_snapshot() == prepare_datasets
+
     controller("inventory-live", "inventory-live")
     assert journal_hash() == stable_hash
 
     machine.succeed("systemctl start aos-storage-rpc-decoy.service", timeout=20)
+    assert journal_hash() == stable_hash
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
+    assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
+    assert replay_claims() == 1
+
+    machine.succeed("systemctl stop aos-storaged.service")
+    machine.succeed(audit_command, timeout=60)
+    assert journal_hash() == stable_hash
+    machine.succeed(
+        "${pkgs.coreutils}/bin/mv ${resolverPolicyDirectory} "
+        "${resolverPolicyDirectory}.missing"
+    )
+    start_storaged("inventory-live", "inventory-live", 4)
+    machine.wait_until_succeeds(
+        "journalctl -u aos-storaged.service --no-pager "
+        "| grep -F 'Storage Prepare disabled: resolver policy is invalid'",
+        timeout=20,
+    )
+    assert journal_hash() == stable_hash
+    controller("prepare-unavailable", "prepare-unavailable")
+    controller("inventory-live", "inventory-live")
     assert journal_hash() == stable_hash
     assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired

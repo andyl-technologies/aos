@@ -20,6 +20,8 @@
 //! Version two inserts the exact catalog format and root-policy digest after
 //! `assignment-digest`. A version-one record remains byte-for-byte readable,
 //! but cannot yield execution authority because it predates that binding.
+//! Version three additionally binds the generation and complete digest of the
+//! trusted resolver-policy catalog and the digest of its exact assignment row.
 
 use aos_proto::aos::sandbox::local::v1::PrepareStorageCatalogResponse;
 use aos_sandbox_core::{BrokerArgumentCommitment, ObjectDigest};
@@ -30,11 +32,13 @@ use aos_sandbox_protocol::semantics::storage_prepare::{
 use crate::{
     AuthorizedStorageResolutionV1, CatalogBindingV1, CatalogPlanV1, ReservationPolicy,
     ResolvedCatalogCommitmentV1, catalog::ExecutionCatalogBindingV1,
+    resolver::protected_catalog::StorageResolverPolicyBindingV1,
 };
 
 const RECORD_MAGIC: &[u8; 8] = b"AOSSPR01";
 const LEGACY_RECORD_VERSION: u16 = 1;
 const EXECUTION_RECORD_VERSION: u16 = 2;
+const POLICY_RECORD_VERSION: u16 = 3;
 const RECEIPT_MAGIC: &[u8; 8] = b"AOSSPRC1";
 const RECEIPT_VERSION: u16 = 1;
 const MAXIMUM_CANONICAL_REQUEST_BYTES: usize = 32 * 1024;
@@ -46,6 +50,7 @@ const MAXIMUM_AUTHORITY_RECORD_BYTES: usize = 16 * 1024;
 enum PreparationRecordFormatV1 {
     LegacyV1,
     ExecutionV2,
+    PolicyV3,
 }
 
 impl PreparationRecordFormatV1 {
@@ -53,6 +58,7 @@ impl PreparationRecordFormatV1 {
         match self {
             Self::LegacyV1 => LEGACY_RECORD_VERSION,
             Self::ExecutionV2 => EXECUTION_RECORD_VERSION,
+            Self::PolicyV3 => POLICY_RECORD_VERSION,
         }
     }
 
@@ -60,6 +66,7 @@ impl PreparationRecordFormatV1 {
         match version {
             LEGACY_RECORD_VERSION => Ok(Self::LegacyV1),
             EXECUTION_RECORD_VERSION => Ok(Self::ExecutionV2),
+            POLICY_RECORD_VERSION => Ok(Self::PolicyV3),
             _ => Err(StorageCatalogPreparationError::CorruptRecord),
         }
     }
@@ -200,6 +207,7 @@ pub(crate) struct RetainedStorageCatalogPreparationV1 {
     lease_digest: ObjectDigest,
     assignment_digest: ObjectDigest,
     root_policy_digest: ObjectDigest,
+    resolver_policy_binding: Option<StorageResolverPolicyBindingV1>,
     sealed_fence: Vec<u8>,
     sealed_effect: Vec<u8>,
     sealed_operation_fence: Vec<u8>,
@@ -283,6 +291,7 @@ pub(crate) struct StoragePreparationAuthorityRecordsV1<'a> {
 }
 
 impl RetainedStorageCatalogPreparationV1 {
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         semantics: &CanonicalStoragePreparationSemanticsV1,
@@ -293,6 +302,56 @@ impl RetainedStorageCatalogPreparationV1 {
         plan_digest: ObjectDigest,
         lease_digest: ObjectDigest,
         authority_records: StoragePreparationAuthorityRecordsV1<'_>,
+    ) -> Result<NewStorageCatalogPreparationV1, StorageCatalogPreparationError> {
+        Self::prepare_inner(
+            semantics,
+            catalog,
+            request_id,
+            host_boot_id,
+            effect_deadline_boottime_nanoseconds,
+            plan_digest,
+            lease_digest,
+            authority_records,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_with_policy(
+        semantics: &CanonicalStoragePreparationSemanticsV1,
+        catalog: ResolvedCatalogCommitmentV1,
+        request_id: [u8; 16],
+        host_boot_id: [u8; 16],
+        effect_deadline_boottime_nanoseconds: u64,
+        plan_digest: ObjectDigest,
+        lease_digest: ObjectDigest,
+        authority_records: StoragePreparationAuthorityRecordsV1<'_>,
+        policy_binding: StorageResolverPolicyBindingV1,
+    ) -> Result<NewStorageCatalogPreparationV1, StorageCatalogPreparationError> {
+        Self::prepare_inner(
+            semantics,
+            catalog,
+            request_id,
+            host_boot_id,
+            effect_deadline_boottime_nanoseconds,
+            plan_digest,
+            lease_digest,
+            authority_records,
+            Some(policy_binding),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_inner(
+        semantics: &CanonicalStoragePreparationSemanticsV1,
+        catalog: ResolvedCatalogCommitmentV1,
+        request_id: [u8; 16],
+        host_boot_id: [u8; 16],
+        effect_deadline_boottime_nanoseconds: u64,
+        plan_digest: ObjectDigest,
+        lease_digest: ObjectDigest,
+        authority_records: StoragePreparationAuthorityRecordsV1<'_>,
+        resolver_policy_binding: Option<StorageResolverPolicyBindingV1>,
     ) -> Result<NewStorageCatalogPreparationV1, StorageCatalogPreparationError> {
         validate_resolution(semantics, &catalog)?;
         if host_boot_id == [0; 16]
@@ -310,22 +369,27 @@ impl RetainedStorageCatalogPreparationV1 {
         }
         let preparation_digest = semantics.argument_commitment().digest();
         let assignment_digest = ObjectDigest::from_bytes(*semantics.fence().assignment_digest());
-        let (record_format, root_policy_digest) = match catalog.format_version() {
-            2 => (
-                PreparationRecordFormatV1::LegacyV1,
-                ObjectDigest::from_bytes([0; 32]),
-            ),
-            3 => {
-                let execution = catalog
-                    .execution_binding()
-                    .map_err(|_| StorageCatalogPreparationError::ResolutionMismatch)?;
-                (
-                    PreparationRecordFormatV1::ExecutionV2,
-                    execution.root_policy_digest(),
-                )
-            }
-            _ => return Err(StorageCatalogPreparationError::ResolutionMismatch),
-        };
+        let (record_format, root_policy_digest) =
+            match (catalog.format_version(), resolver_policy_binding) {
+                (2, None) => (
+                    PreparationRecordFormatV1::LegacyV1,
+                    ObjectDigest::from_bytes([0; 32]),
+                ),
+                (3, policy_binding) => {
+                    let execution = catalog
+                        .execution_binding()
+                        .map_err(|_| StorageCatalogPreparationError::ResolutionMismatch)?;
+                    (
+                        if policy_binding.is_some() {
+                            PreparationRecordFormatV1::PolicyV3
+                        } else {
+                            PreparationRecordFormatV1::ExecutionV2
+                        },
+                        execution.root_policy_digest(),
+                    )
+                }
+                _ => return Err(StorageCatalogPreparationError::ResolutionMismatch),
+            };
         let receipt_payload = encode_receipt_payload(
             semantics.operation_id(),
             catalog.binding(),
@@ -349,6 +413,7 @@ impl RetainedStorageCatalogPreparationV1 {
             lease_digest,
             assignment_digest,
             root_policy_digest,
+            resolver_policy_binding,
             sealed_fence: authority_records.sealed_fence.to_vec(),
             sealed_effect: authority_records.sealed_effect.to_vec(),
             sealed_operation_fence: authority_records.sealed_operation_fence.to_vec(),
@@ -393,6 +458,7 @@ impl RetainedStorageCatalogPreparationV1 {
         let format_bytes = match self.record_format {
             PreparationRecordFormatV1::LegacyV1 => 0,
             PreparationRecordFormatV1::ExecutionV2 => 34,
+            PreparationRecordFormatV1::PolicyV3 => 106,
         };
         let mut encoder = Encoder::with_capacity(
             532 + format_bytes
@@ -434,9 +500,20 @@ impl RetainedStorageCatalogPreparationV1 {
         encoder.fixed(self.plan_digest.as_bytes());
         encoder.fixed(self.lease_digest.as_bytes());
         encoder.fixed(self.assignment_digest.as_bytes());
-        if self.record_format == PreparationRecordFormatV1::ExecutionV2 {
+        if matches!(
+            self.record_format,
+            PreparationRecordFormatV1::ExecutionV2 | PreparationRecordFormatV1::PolicyV3
+        ) {
             encoder.fixed(&self.catalog.format_version().to_be_bytes());
             encoder.fixed(self.root_policy_digest.as_bytes());
+        }
+        if self.record_format == PreparationRecordFormatV1::PolicyV3 {
+            let binding = self
+                .resolver_policy_binding
+                .ok_or(StorageCatalogPreparationError::CorruptRecord)?;
+            encoder.fixed(&binding.generation().to_be_bytes());
+            encoder.fixed(binding.catalog_digest().as_bytes());
+            encoder.fixed(binding.entry_digest().as_bytes());
         }
         encoder.variable(&self.sealed_fence)?;
         encoder.variable(&self.sealed_effect)?;
@@ -496,10 +573,21 @@ impl RetainedStorageCatalogPreparationV1 {
         let assignment_digest = ObjectDigest::from_bytes(decoder.nonzero()?);
         let (catalog_format, root_policy_digest) = match record_format {
             PreparationRecordFormatV1::LegacyV1 => (2, ObjectDigest::from_bytes([0; 32])),
-            PreparationRecordFormatV1::ExecutionV2 => (
+            PreparationRecordFormatV1::ExecutionV2 | PreparationRecordFormatV1::PolicyV3 => (
                 u16::from_be_bytes(decoder.fixed()?),
                 ObjectDigest::from_bytes(decoder.fixed()?),
             ),
+        };
+        let resolver_policy_binding = match record_format {
+            PreparationRecordFormatV1::PolicyV3 => Some(
+                StorageResolverPolicyBindingV1::from_authenticated_parts(
+                    u64::from_be_bytes(decoder.fixed()?),
+                    ObjectDigest::from_bytes(decoder.fixed()?),
+                    ObjectDigest::from_bytes(decoder.fixed()?),
+                )
+                .map_err(|_| StorageCatalogPreparationError::CorruptRecord)?,
+            ),
+            PreparationRecordFormatV1::LegacyV1 | PreparationRecordFormatV1::ExecutionV2 => None,
         };
         let sealed_fence = decoder.variable(MAXIMUM_AUTHORITY_RECORD_BYTES)?.to_vec();
         let sealed_effect = decoder.variable(MAXIMUM_AUTHORITY_RECORD_BYTES)?.to_vec();
@@ -528,7 +616,7 @@ impl RetainedStorageCatalogPreparationV1 {
         }
         match record_format {
             PreparationRecordFormatV1::LegacyV1 if catalog.format_version() == catalog_format => {}
-            PreparationRecordFormatV1::ExecutionV2 => {
+            PreparationRecordFormatV1::ExecutionV2 | PreparationRecordFormatV1::PolicyV3 => {
                 let execution = catalog
                     .execution_binding()
                     .map_err(|_| StorageCatalogPreparationError::CorruptRecord)?;
@@ -558,6 +646,7 @@ impl RetainedStorageCatalogPreparationV1 {
             lease_digest,
             assignment_digest,
             root_policy_digest,
+            resolver_policy_binding,
             sealed_fence,
             sealed_effect,
             sealed_operation_fence,
@@ -654,7 +743,10 @@ impl RetainedStorageCatalogPreparationV1 {
     pub(crate) fn execution_binding(
         &self,
     ) -> Result<ExecutionCatalogBindingV1, StorageCatalogPreparationError> {
-        if self.record_format != PreparationRecordFormatV1::ExecutionV2 {
+        if !matches!(
+            self.record_format,
+            PreparationRecordFormatV1::ExecutionV2 | PreparationRecordFormatV1::PolicyV3
+        ) {
             return Err(StorageCatalogPreparationError::ResolutionRejected);
         }
         let execution = self
@@ -665,6 +757,10 @@ impl RetainedStorageCatalogPreparationV1 {
             return Err(StorageCatalogPreparationError::CorruptRecord);
         }
         Ok(execution)
+    }
+
+    pub(crate) const fn resolver_policy_binding(&self) -> Option<StorageResolverPolicyBindingV1> {
+        self.resolver_policy_binding
     }
 
     pub(crate) fn sealed_fence(&self) -> &[u8] {
@@ -1051,6 +1147,7 @@ mod tests {
             lease_digest: ObjectDigest::from_bytes([42; 32]),
             assignment_digest: ObjectDigest::from_bytes([43; 32]),
             root_policy_digest,
+            resolver_policy_binding: None,
             sealed_fence: vec![44],
             sealed_effect: vec![45],
             sealed_operation_fence: vec![46],

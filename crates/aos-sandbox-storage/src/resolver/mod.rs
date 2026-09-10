@@ -8,6 +8,7 @@
 mod actions;
 pub(crate) mod inventory;
 pub(crate) mod policy;
+pub(crate) mod protected_catalog;
 
 use aos_sandbox_protocol::semantics::CatalogBindingV1;
 use aos_sandbox_protocol::semantics::storage_prepare::StoragePreparationOperationV1;

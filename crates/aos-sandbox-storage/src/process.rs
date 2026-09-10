@@ -39,7 +39,11 @@ use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
 };
 
-use crate::observation::{ZfsObservationPlan, ZfsObservationResult};
+use crate::observation::{
+    MAXIMUM_CATALOG_ZFS_STDOUT_BYTES, ZfsObservationPlan, ZfsObservationResult,
+    evaluate_workspace_catalog_zfs, workspace_catalog_zfs_arguments,
+};
+use crate::observation_protocol::WorkspaceCatalogObservationRequestV1;
 use crate::{
     ResolvedCatalogCommitmentV1, StorageOperation, ZfsHelperContract, ZfsTransaction,
     ZfsTransactionError,
@@ -114,6 +118,82 @@ pub enum ZfsWorkerError {
 #[must_use]
 pub const fn process_timeout() -> Duration {
     PROCESS_TIMEOUT
+}
+
+/// Runs one complete host-wide ZFS catalog observation before an absolute deadline.
+///
+/// This separate path raises only the catalog-observation stdout ceiling. The
+/// ordinary transaction observer remains capped at 64 KiB. Only a plan with no
+/// authenticated protected roots skips the process; initialized-empty
+/// workspace catalogs still observe configured roots and infrastructure.
+pub(crate) fn observe_workspace_catalog_zfs_for(
+    contract: &ZfsHelperContract,
+    request: &WorkspaceCatalogObservationRequestV1,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<aos_sandbox_core::ObjectDigest, ZfsWorkerError> {
+    if request.roots().is_empty() {
+        return evaluate_workspace_catalog_zfs(request, &[])
+            .map_err(|_| ZfsWorkerError::Protocol("invalid catalog ZFS observation"));
+    }
+    let timeout = remaining_boottime(deadline_boottime_nanoseconds)?;
+    let arguments = workspace_catalog_zfs_arguments();
+    let outcome = run_fixed_process(FixedProcessRequest {
+        executable: contract.executable(),
+        arguments: &arguments,
+        timeout,
+        maximum_stdout_bytes: MAXIMUM_CATALOG_ZFS_STDOUT_BYTES,
+        maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
+    });
+    let output = match outcome {
+        Ok(FixedProcessOutcome::Completed(output))
+            if output.exit_code == Some(0)
+                && output.signal.is_none()
+                && output.stderr.is_empty() =>
+        {
+            output.stdout
+        }
+        Ok(FixedProcessOutcome::Completed(_)) => {
+            return Err(ZfsWorkerError::Protocol(
+                "global catalog ZFS observation command failed",
+            ));
+        }
+        Ok(FixedProcessOutcome::TimedOut) => {
+            return Err(ZfsWorkerError::Protocol(
+                "global catalog ZFS observation timed out",
+            ));
+        }
+        Ok(FixedProcessOutcome::OutputLimitExceeded) => {
+            return Err(ZfsWorkerError::Protocol(
+                "global catalog ZFS observation exceeded its ceiling",
+            ));
+        }
+        Err(aos_sandbox_linux::Error::Syscall {
+            operation: "spawn fixed process",
+            source,
+        }) if source.raw_os_error().is_some() => return Err(ZfsWorkerError::Exec(source)),
+        Err(error) => return Err(error.into()),
+    };
+    evaluate_workspace_catalog_zfs(request, &output)
+        .map_err(|_| ZfsWorkerError::Protocol("invalid catalog ZFS observation"))
+}
+
+fn remaining_boottime(deadline_boottime_nanoseconds: u64) -> Result<Duration, ZfsWorkerError> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let seconds = u64::try_from(now.tv_sec)
+        .map_err(|_| ZfsWorkerError::Protocol("CLOCK_BOOTTIME seconds are invalid"))?;
+    let nanoseconds = u64::try_from(now.tv_nsec)
+        .map_err(|_| ZfsWorkerError::Protocol("CLOCK_BOOTTIME nanoseconds are invalid"))?;
+    let now = seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or(ZfsWorkerError::Protocol("CLOCK_BOOTTIME overflowed"))?;
+    deadline_boottime_nanoseconds
+        .checked_sub(now)
+        .filter(|remaining| *remaining != 0)
+        .map(Duration::from_nanos)
+        .ok_or(ZfsWorkerError::Protocol(
+            "catalog observation deadline elapsed",
+        ))
 }
 
 /// Executes typed storage transactions through systemd-created one-shot workers.
@@ -987,6 +1067,10 @@ mod tests {
 
     use super::*;
     use crate::observation::ZfsObservationState;
+    use crate::observation_protocol::{
+        WorkspaceCatalogCustodyBindingV1, WorkspaceCatalogObservationBindingsV1,
+        WorkspaceCatalogObservationRootV1,
+    };
     use crate::{
         ActiveHoldEvidence, CatalogPlanV1, HoldId, ManagedDatasetRoot, PlannedDataset,
         PlannedSnapshot, ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset,
@@ -996,6 +1080,55 @@ mod tests {
     fn socket_pair() -> (SeqpacketSocket, SeqpacketSocket) {
         let (left, right) = SeqpacketSocket::pair_with_record_subjects().unwrap();
         (left, SeqpacketSocket::from_owned(right).unwrap())
+    }
+
+    fn catalog_observation_request(
+        roots: Vec<WorkspaceCatalogObservationRootV1>,
+    ) -> WorkspaceCatalogObservationRequestV1 {
+        WorkspaceCatalogObservationRequestV1::new(
+            [1; 32],
+            1,
+            WorkspaceCatalogObservationBindingsV1::new(
+                ObjectDigest::from_bytes([2; 32]),
+                [3; 16],
+                4,
+                ObjectDigest::from_bytes([5; 32]),
+                ObjectDigest::from_bytes([6; 32]),
+                7,
+                ObjectDigest::from_bytes([8; 32]),
+                9,
+                ObjectDigest::from_bytes([10; 32]),
+                11,
+                65_536,
+                65_536,
+            )
+            .unwrap(),
+            WorkspaceCatalogCustodyBindingV1::new([12; 16], 13, 14, 15, 16, 17).unwrap(),
+            roots,
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn only_a_plan_without_protected_roots_skips_global_zfs() {
+        let contract = ZfsHelperContract::new(PathBuf::from(
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-zfs/bin/zfs",
+        ))
+        .unwrap();
+        let unconfigured = catalog_observation_request(Vec::new());
+        let configured_empty = catalog_observation_request(vec![
+            WorkspaceCatalogObservationRootV1::new("tank/aos".to_owned(), 18).unwrap(),
+        ]);
+
+        assert!(observe_workspace_catalog_zfs_for(&contract, &unconfigured, 1).is_ok());
+        assert!(matches!(
+            observe_workspace_catalog_zfs_for(&contract, &configured_empty, 1),
+            Err(ZfsWorkerError::Protocol(
+                "catalog observation deadline elapsed"
+            ))
+        ));
     }
 
     fn assert_deadline_elapsed(error: ZfsWorkerError) {

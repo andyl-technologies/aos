@@ -23,6 +23,21 @@
 mod pending;
 
 #[allow(
+    dead_code,
+    reason = "activation typestate is wired with the production observer boundary"
+)]
+mod activation;
+
+#[allow(
+    unused_imports,
+    reason = "activation typestate is re-exported for runtime integration"
+)]
+pub(crate) use activation::{
+    ActivatedStorageWorkspaceCatalogV1, StorageWorkspaceCatalogActivationCandidateV1,
+    StorageWorkspaceCatalogActivationPreparationFailureV1,
+    StorageWorkspaceCatalogActivationPromotionFailureV1,
+};
+#[allow(
     unused_imports,
     reason = "pending typestate is re-exported for the later runtime integration"
 )]
@@ -329,6 +344,11 @@ impl StorageWorkspacePublicationV1 {
             identity_range_size: intent.identity_range_size,
             pin_proof,
         })
+    }
+
+    /// Returns the exact satisfied root-pin proof bound to this publication.
+    pub(crate) const fn pin_proof(&self) -> &WorkspaceRootPinProofV1 {
+        &self.pin_proof
     }
 }
 

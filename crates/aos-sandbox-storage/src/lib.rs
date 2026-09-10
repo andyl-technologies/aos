@@ -33,6 +33,11 @@ mod catalog_transition;
 )]
 mod helper;
 mod observation;
+#[allow(
+    dead_code,
+    reason = "catalog observation protocol is wired with the activation typestate"
+)]
+mod observation_protocol;
 pub mod peer;
 mod pin_observer;
 mod pin_worker;
@@ -90,8 +95,8 @@ pub use request::{
     StorageSemanticsError, decode_resolved,
 };
 pub use runtime::{
-    StorageBrokerRuntime, StorageRuntimeError, StorageRuntimeMutationOutcome,
-    StorageRuntimeReadiness, WorkspacePinRepairExecutionOutcomeV1,
+    StorageBrokerRuntime, StoragePrepareReadiness, StorageRuntimeError,
+    StorageRuntimeMutationOutcome, StorageRuntimeReadiness, WorkspacePinRepairExecutionOutcomeV1,
 };
 pub use service::{
     StorageConnectionOutcome, StorageRpcRuntime, StorageService, StorageServiceError,

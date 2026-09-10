@@ -22,6 +22,9 @@ use crate::catalog_transition::{
     CatalogReservation, PhysicalWorkspaceProjection, StorageCatalogTransitionProvider,
     VerifiedPhysicalCatalogSnapshotV2,
 };
+use crate::resolver::protected_catalog::{
+    StorageResolverPolicyBindingV1, StorageResolverPolicyCatalogBindingV1,
+};
 use crate::workspace_catalog::StorageWorkspacePublicationIntentV1;
 use crate::workspace_pin::{
     BeginWorkspacePinAttemptV1, MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE, WorkspaceDatasetObservationV1,
@@ -50,6 +53,10 @@ const RUNTIME_CONFIGURATION_DOMAIN: &[u8] = b"aos.sandbox.storage.runtime-config
 const RUNTIME_CONFIGURATION_MAGIC: &[u8; 8] = b"AOSSCFG1";
 const RUNTIME_CONFIGURATION_VERSION: u16 = 1;
 const RUNTIME_CONFIGURATION_KEY: &[u8] = b"current";
+const RESOLVER_POLICY_FLOOR_DOMAIN: &[u8] = b"aos.sandbox.storage.resolver-policy-floor.v1\0";
+const RESOLVER_POLICY_FLOOR_MAGIC: &[u8; 8] = b"AOSRPF01";
+const RESOLVER_POLICY_FLOOR_VERSION: u16 = 1;
+const RESOLVER_POLICY_FLOOR_KEY: &[u8] = b"current";
 const PUBLICATION_INTENT_DOMAIN: &[u8] = b"aos.sandbox.storage.publication-intent.v1\0";
 const PUBLICATION_INTENT_MAGIC: &[u8; 8] = b"AOSSPI01";
 const PUBLICATION_INTENT_VERSION: u16 = 1;
@@ -64,7 +71,7 @@ const RESULT_HAS_VERSION_HANDLE: u8 = 1 << 1;
 const RESULT_HAS_OBJECT_GUID: u8 = 1 << 2;
 const MAXIMUM_OPERATIONS: usize = 256;
 const MATERIALIZED_RECORDS_PER_OPERATION: usize = 8;
-const GLOBAL_MATERIALIZED_RECORDS: usize = 2;
+const GLOBAL_MATERIALIZED_RECORDS: usize = 3;
 const MAXIMUM_JOURNAL_RECORD_BYTES: usize = MAXIMUM_PREPARATION_RECORD_BYTES + 128;
 
 /// Reports durable storage state validation or transition failure.
@@ -460,6 +467,39 @@ pub(crate) struct CatalogPreparationConsumption {
     consumed_record: Vec<u8>,
 }
 
+/// Retains the highest trusted resolver-policy publication admitted locally.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StorageResolverPolicyFloorV1 {
+    generation: u64,
+    catalog_digest: ObjectDigest,
+}
+
+impl StorageResolverPolicyFloorV1 {
+    const fn from_binding(binding: StorageResolverPolicyCatalogBindingV1) -> Self {
+        Self {
+            generation: binding.generation(),
+            catalog_digest: binding.digest(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn catalog_digest(self) -> ObjectDigest {
+        self.catalog_digest
+    }
+}
+
+/// Reports whether trusted policy admission advanced or replayed the floor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StorageResolverPolicyAdmissionOutcomeV1 {
+    Advanced,
+    Replay,
+}
+
 impl CatalogPreparationConsumption {
     pub(crate) fn new(
         expected_head: CatalogBindingV1,
@@ -490,6 +530,7 @@ pub struct StorageTransactionStore {
     records: BTreeMap<[u8; 16], DurableRecord>,
     catalog_transitions: StorageCatalogTransitionProvider,
     runtime_configuration: Option<ObjectDigest>,
+    resolver_policy_floor: Option<StorageResolverPolicyFloorV1>,
     publication_intents: BTreeMap<[u8; 16], StorageWorkspacePublicationIntentV1>,
     pin_attempts: BTreeMap<[u8; 16], WorkspacePinAttemptV1>,
     repair_intents: BTreeMap<[u8; 16], StorageWorkspacePinRepairIntentV1>,
@@ -615,6 +656,7 @@ impl StorageTransactionStore {
     ) -> Result<Self, StorageStateError> {
         let records = load_durable_records(&journal, &key)?;
         let runtime_configuration = load_runtime_configuration(&journal, &key)?;
+        let resolver_policy_floor = load_resolver_policy_floor(&journal, &key)?;
         let publication_intents = load_publication_intents(&journal, &key)?;
         let pin_attempts = load_attempts(&journal, key.key_id, &key.secret)?;
         let repair_intents = load_repair_intents(&journal, key.key_id, &key.secret)?;
@@ -644,6 +686,7 @@ impl StorageTransactionStore {
             records,
             catalog_transitions,
             runtime_configuration,
+            resolver_policy_floor,
             publication_intents,
             pin_attempts,
             repair_intents,
@@ -718,6 +761,7 @@ impl StorageTransactionStore {
         self.records.is_empty()
             && self.catalog_transitions.head_binding().is_none()
             && self.runtime_configuration.is_none()
+            && self.resolver_policy_floor.is_none()
             && self.publication_intents.is_empty()
             && self.pin_attempts.is_empty()
             && self.journal.is_materialized_empty()
@@ -2189,6 +2233,72 @@ impl StorageTransactionStore {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(crate) const fn resolver_policy_floor(&self) -> Option<StorageResolverPolicyFloorV1> {
+        self.resolver_policy_floor
+    }
+
+    pub(crate) fn admit_resolver_policy_catalog(
+        &mut self,
+        binding: StorageResolverPolicyCatalogBindingV1,
+    ) -> Result<StorageResolverPolicyAdmissionOutcomeV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let durable_floor = self.fresh_resolver_policy_floor()?;
+        if let Some(current) = durable_floor {
+            if binding.generation() < current.generation
+                || (binding.generation() == current.generation
+                    && binding.digest() != current.catalog_digest)
+            {
+                return Err(StorageStateError::Rollback);
+            }
+            if binding.generation() == current.generation {
+                return Ok(StorageResolverPolicyAdmissionOutcomeV1::Replay);
+            }
+        }
+
+        let floor = StorageResolverPolicyFloorV1::from_binding(binding);
+        let transaction = JournalTransaction::new(
+            resolver_policy_floor_transaction_id(floor),
+            vec![resolver_policy_floor_record(&self.key, floor)?],
+        )?;
+        self.commit_journal(&transaction)?;
+        self.resolver_policy_floor = Some(floor);
+        Ok(StorageResolverPolicyAdmissionOutcomeV1::Advanced)
+    }
+
+    pub(crate) fn validate_historical_resolver_policy(
+        &self,
+        binding: StorageResolverPolicyBindingV1,
+    ) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
+        let floor = self
+            .fresh_resolver_policy_floor()?
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if floor.generation < binding.generation()
+            || (floor.generation == binding.generation()
+                && floor.catalog_digest != binding.catalog_digest())
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_fresh_resolver_policy(
+        &self,
+        binding: StorageResolverPolicyBindingV1,
+    ) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
+        let floor = self
+            .fresh_resolver_policy_floor()?
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if binding.generation() != floor.generation
+            || binding.catalog_digest() != floor.catalog_digest
+        {
+            return Err(StorageStateError::Rollback);
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn retain_catalog_preparation(
         &mut self,
@@ -2200,6 +2310,7 @@ impl StorageTransactionStore {
         sealed_effect: Vec<u8>,
         sealed_operation_fence: Vec<u8>,
         sealed_preparation: Vec<u8>,
+        policy_binding: Option<StorageResolverPolicyBindingV1>,
     ) -> Result<(), StorageStateError> {
         self.ensure_authority_readable()?;
         if operation_id == [0; 16]
@@ -2219,6 +2330,9 @@ impl StorageTransactionStore {
         if self.catalog_transitions.head_binding() != Some(expected_head) {
             return Err(StorageStateError::InvalidTransition);
         }
+        if let Some(binding) = policy_binding {
+            self.validate_fresh_resolver_policy(binding)?;
+        }
         if self.records.contains_key(&operation_id)
             || self
                 .journal
@@ -2235,28 +2349,38 @@ impl StorageTransactionStore {
         {
             return Err(StorageStateError::Equivocation);
         }
-        let transaction = JournalTransaction::new(
-            catalog_preparation_transaction_id(operation_id),
-            vec![
-                JournalRecord::put(
-                    RecordNamespace::DesiredState,
-                    sandbox_id.to_vec(),
-                    sealed_fence,
-                ),
-                JournalRecord::put(RecordNamespace::Effect, request_id.to_vec(), sealed_effect),
-                JournalRecord::put(
-                    RecordNamespace::AuthorityPublication,
-                    operation_id.to_vec(),
-                    sealed_operation_fence,
-                ),
-                JournalRecord::put(
-                    RecordNamespace::StorageCatalogPreparation,
-                    operation_id.to_vec(),
-                    sealed_preparation,
-                ),
-            ],
-        )?;
-        self.commit_journal(&transaction)
+        let records = vec![
+            JournalRecord::put(
+                RecordNamespace::DesiredState,
+                sandbox_id.to_vec(),
+                sealed_fence,
+            ),
+            JournalRecord::put(RecordNamespace::Effect, request_id.to_vec(), sealed_effect),
+            JournalRecord::put(
+                RecordNamespace::AuthorityPublication,
+                operation_id.to_vec(),
+                sealed_operation_fence,
+            ),
+            JournalRecord::put(
+                RecordNamespace::StorageCatalogPreparation,
+                operation_id.to_vec(),
+                sealed_preparation,
+            ),
+        ];
+        let transaction =
+            JournalTransaction::new(catalog_preparation_transaction_id(operation_id), records)?;
+        self.commit_journal(&transaction)?;
+        Ok(())
+    }
+
+    fn fresh_resolver_policy_floor(
+        &self,
+    ) -> Result<Option<StorageResolverPolicyFloorV1>, StorageStateError> {
+        let durable = load_resolver_policy_floor(&self.journal, &self.key)?;
+        if durable != self.resolver_policy_floor {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        Ok(durable)
     }
 
     #[cfg(test)]
@@ -2287,6 +2411,22 @@ impl StorageTransactionStore {
             vec![JournalRecord::put(namespace, key.to_vec(), value)],
         )
         .unwrap();
+        self.journal.commit(&transaction).unwrap();
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    pub(crate) fn put_resolver_policy_floor_for_test(
+        &mut self,
+        generation: u64,
+        catalog_digest: ObjectDigest,
+    ) {
+        let floor = StorageResolverPolicyFloorV1 {
+            generation,
+            catalog_digest,
+        };
+        let record = resolver_policy_floor_record(&self.key, floor).unwrap();
+        let transaction = JournalTransaction::new([229; 16], vec![record]).unwrap();
         self.journal.commit(&transaction).unwrap();
     }
 
@@ -3400,6 +3540,102 @@ fn load_runtime_configuration(
     decode_runtime_configuration(key, bytes).map(Some)
 }
 
+fn load_resolver_policy_floor(
+    journal: &Journal,
+    key: &StorageStateKey,
+) -> Result<Option<StorageResolverPolicyFloorV1>, StorageStateError> {
+    let mut records = journal.records(RecordNamespace::StorageResolverPolicyFloor);
+    let Some((record_key, bytes)) = records.next() else {
+        return Ok(None);
+    };
+    if record_key != RESOLVER_POLICY_FLOOR_KEY || records.next().is_some() {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    decode_resolver_policy_floor(key, bytes).map(Some)
+}
+
+fn resolver_policy_floor_record(
+    key: &StorageStateKey,
+    floor: StorageResolverPolicyFloorV1,
+) -> Result<JournalRecord, StorageStateError> {
+    if floor.generation == 0 || floor.catalog_digest.as_bytes() == &[0; 32] {
+        return Err(StorageStateError::InvalidValue);
+    }
+    let mut bytes = Vec::with_capacity(98);
+    bytes.extend_from_slice(RESOLVER_POLICY_FLOOR_MAGIC);
+    bytes.extend_from_slice(&RESOLVER_POLICY_FLOOR_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&key.key_id);
+    bytes.extend_from_slice(&floor.generation.to_be_bytes());
+    bytes.extend_from_slice(floor.catalog_digest.as_bytes());
+    let tag = resolver_policy_floor_tag(key, &bytes)?;
+    bytes.extend_from_slice(&tag);
+    Ok(JournalRecord::put(
+        RecordNamespace::StorageResolverPolicyFloor,
+        RESOLVER_POLICY_FLOOR_KEY.to_vec(),
+        bytes,
+    ))
+}
+
+fn decode_resolver_policy_floor(
+    key: &StorageStateKey,
+    bytes: &[u8],
+) -> Result<StorageResolverPolicyFloorV1, StorageStateError> {
+    if bytes.len() != 98
+        || &bytes[..8] != RESOLVER_POLICY_FLOOR_MAGIC
+        || u16::from_be_bytes(
+            bytes[8..10]
+                .try_into()
+                .map_err(|_| StorageStateError::CorruptRecord)?,
+        ) != RESOLVER_POLICY_FLOOR_VERSION
+        || bytes[10..26] != key.key_id
+    {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    resolver_policy_floor_mac(key, &bytes[..66])?
+        .verify_slice(&bytes[66..])
+        .map_err(|_| StorageStateError::CorruptRecord)?;
+    let floor = StorageResolverPolicyFloorV1 {
+        generation: u64::from_be_bytes(
+            bytes[26..34]
+                .try_into()
+                .map_err(|_| StorageStateError::CorruptRecord)?,
+        ),
+        catalog_digest: ObjectDigest::from_bytes(
+            bytes[34..66]
+                .try_into()
+                .map_err(|_| StorageStateError::CorruptRecord)?,
+        ),
+    };
+    if floor.generation == 0 || floor.catalog_digest.as_bytes() == &[0; 32] {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    Ok(floor)
+}
+
+fn resolver_policy_floor_tag(
+    key: &StorageStateKey,
+    payload: &[u8],
+) -> Result<[u8; 32], StorageStateError> {
+    Ok(resolver_policy_floor_mac(key, payload)?
+        .finalize()
+        .into_bytes()
+        .into())
+}
+
+fn resolver_policy_floor_mac(
+    key: &StorageStateKey,
+    payload: &[u8],
+) -> Result<HmacSha256, StorageStateError> {
+    let mut mac =
+        HmacSha256::new_from_slice(&key.secret).map_err(|_| StorageStateError::InvalidValue)?;
+    mac.update(RESOLVER_POLICY_FLOOR_DOMAIN);
+    mac.update(&[RecordNamespace::StorageResolverPolicyFloor as u8]);
+    mac.update(&(RESOLVER_POLICY_FLOOR_KEY.len() as u32).to_be_bytes());
+    mac.update(RESOLVER_POLICY_FLOOR_KEY);
+    mac.update(payload);
+    Ok(mac)
+}
+
 fn runtime_configuration_record(
     key: &StorageStateKey,
     binding: ObjectDigest,
@@ -3659,6 +3895,20 @@ fn catalog_preparation_transaction_id(operation_id: [u8; 16]) -> [u8; 16] {
     let mut hash = Sha256::new();
     hash.update(b"aos.sandbox.storage.catalog-preparation-transaction.v1\0");
     hash.update(operation_id);
+    let digest: [u8; 32] = hash.finalize().into();
+    let mut id = [0; 16];
+    id.copy_from_slice(&digest[..16]);
+    if id == [0; 16] {
+        id[15] = 1;
+    }
+    id
+}
+
+fn resolver_policy_floor_transaction_id(floor: StorageResolverPolicyFloorV1) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"aos.sandbox.storage.resolver-policy-floor-transaction.v1\0");
+    hash.update(floor.generation.to_be_bytes());
+    hash.update(floor.catalog_digest.as_bytes());
     let digest: [u8; 32] = hash.finalize().into();
     let mut id = [0; 16];
     id.copy_from_slice(&digest[..16]);
@@ -3971,6 +4221,7 @@ mod tests {
     use crate::broker::FreshWorkspacePinAuthority;
     use crate::resolver::inventory::ProtectedStorageInventoryV2;
     use crate::resolver::policy::ProtectedStorageResolverPolicyV1;
+    use crate::resolver::protected_catalog::StorageResolverPolicyCatalogBindingV1;
     use crate::root_policy::WorkspaceRootPolicyV1;
     use crate::workspace_pin::{
         WorkspaceDatasetObservationV1, WorkspacePinHostScopeV1, WorkspacePinObservationV1,
@@ -3986,6 +4237,130 @@ mod tests {
 
     pub(super) fn key(byte: u8) -> StorageStateKey {
         StorageStateKey::new([byte; 16], [byte.wrapping_add(1); 32]).unwrap()
+    }
+
+    fn resolver_policy_binding(
+        generation: u64,
+        marker: u8,
+    ) -> StorageResolverPolicyCatalogBindingV1 {
+        StorageResolverPolicyCatalogBindingV1::from_parts_for_test(
+            generation,
+            ObjectDigest::from_bytes([marker; 32]),
+        )
+    }
+
+    #[test]
+    fn trusted_policy_floor_is_authenticated_monotone_and_replay_stable() {
+        let directory = TempDir::new().unwrap();
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        let first = resolver_policy_binding(7, 41);
+        let next = resolver_policy_binding(8, 42);
+
+        assert_eq!(
+            store.admit_resolver_policy_catalog(first).unwrap(),
+            StorageResolverPolicyAdmissionOutcomeV1::Advanced
+        );
+        let after_first = store.journal_sequence_for_test();
+        assert_eq!(
+            store.admit_resolver_policy_catalog(first).unwrap(),
+            StorageResolverPolicyAdmissionOutcomeV1::Replay
+        );
+        assert_eq!(store.journal_sequence_for_test(), after_first);
+        for rejected in [
+            resolver_policy_binding(6, 40),
+            resolver_policy_binding(7, 99),
+        ] {
+            assert!(matches!(
+                store.admit_resolver_policy_catalog(rejected),
+                Err(StorageStateError::Rollback)
+            ));
+            assert_eq!(store.journal_sequence_for_test(), after_first);
+        }
+
+        assert_eq!(
+            store.admit_resolver_policy_catalog(next).unwrap(),
+            StorageResolverPolicyAdmissionOutcomeV1::Advanced
+        );
+        drop(store);
+        let reopened = StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        assert_eq!(
+            reopened.resolver_policy_floor(),
+            Some(StorageResolverPolicyFloorV1 {
+                generation: 8,
+                catalog_digest: ObjectDigest::from_bytes([42; 32]),
+            })
+        );
+    }
+
+    #[test]
+    fn fresh_floor_reload_detects_cached_deletion_and_substitution() {
+        let directory = TempDir::new().unwrap();
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        let binding = resolver_policy_binding(7, 41);
+        store.admit_resolver_policy_catalog(binding).unwrap();
+
+        store.remove_authority_record_for_test(
+            RecordNamespace::StorageResolverPolicyFloor,
+            RESOLVER_POLICY_FLOOR_KEY,
+        );
+        assert!(matches!(
+            store.admit_resolver_policy_catalog(binding),
+            Err(StorageStateError::CorruptRecord)
+        ));
+
+        drop(store);
+        let mut reopened =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        reopened.put_authority_record_for_test(
+            RecordNamespace::StorageResolverPolicyFloor,
+            RESOLVER_POLICY_FLOOR_KEY,
+            vec![0; 98],
+        );
+        drop(reopened);
+        assert!(matches!(
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0),
+            Err(StorageStateError::CorruptRecord)
+        ));
+    }
+
+    #[test]
+    fn policy_floor_rejects_wrong_location_and_authentication_key() {
+        let wrong_location = TempDir::new().unwrap();
+        let mut store =
+            StorageTransactionStore::open_for_test(wrong_location.path(), key(1), 0).unwrap();
+        let floor = StorageResolverPolicyFloorV1 {
+            generation: 7,
+            catalog_digest: ObjectDigest::from_bytes([41; 32]),
+        };
+        let bytes = resolver_policy_floor_record(&store.key, floor)
+            .unwrap()
+            .value()
+            .unwrap()
+            .to_vec();
+        store.put_authority_record_for_test(
+            RecordNamespace::StorageResolverPolicyFloor,
+            b"wrong",
+            bytes,
+        );
+        drop(store);
+        assert!(matches!(
+            StorageTransactionStore::open_for_test(wrong_location.path(), key(1), 0),
+            Err(StorageStateError::CorruptRecord)
+        ));
+
+        let wrong_key = TempDir::new().unwrap();
+        let mut store =
+            StorageTransactionStore::open_for_test(wrong_key.path(), key(1), 0).unwrap();
+        store
+            .admit_resolver_policy_catalog(resolver_policy_binding(7, 41))
+            .unwrap();
+        drop(store);
+        assert!(matches!(
+            StorageTransactionStore::open_for_test(wrong_key.path(), key(2), 0),
+            Err(StorageStateError::CorruptRecord)
+        ));
     }
 
     fn domains() -> StorageDomainsV1 {
@@ -4180,7 +4555,7 @@ mod tests {
         (destination, store)
     }
 
-    fn workspace_pin_proof(
+    pub(super) fn workspace_pin_proof(
         workspace_handle: [u8; 32],
         dataset_name: &str,
         dataset_guid: u64,

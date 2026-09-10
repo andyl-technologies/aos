@@ -1,4 +1,4 @@
-//! Runs the root-only, systemd-activated Storage repair and inventory broker.
+//! Runs the root-only, systemd-activated Storage Prepare, repair, and inventory broker.
 //!
 //! Deployment supplies an existing protected authority directory, immutable
 //! bootstrap publication, durable state root, finite subordinate-identity
@@ -14,8 +14,8 @@ use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_storage::activation::take_systemd_listener;
 use aos_sandbox_storage::peer::ControllerPeerVerifier;
 use aos_sandbox_storage::{
-    StorageBrokerRuntime, StorageIdentityPoolV1, StorageRuntimeError, StorageService,
-    StorageServiceError, SystemdZfsExecutor,
+    StorageBrokerRuntime, StorageIdentityPoolV1, StoragePrepareReadiness, StorageRuntimeError,
+    StorageService, StorageServiceError, SystemdZfsExecutor,
 };
 
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
@@ -50,18 +50,34 @@ fn run() -> Result<(), StorageServiceError> {
             .map_err(StorageRuntimeError::WorkspaceCatalog)?;
     let executor = SystemdZfsExecutor::new(PathBuf::from(ZFS_WORKER_SOCKET), open_cgroup_root()?)
         .map_err(StorageRuntimeError::Worker)?;
-    let runtime = StorageBrokerRuntime::open_root_owned(
+    let runtime = StorageBrokerRuntime::open_root_owned_with_resolver_policy(
         &arguments.authority_directory,
         &arguments.bootstrap_directory,
         Path::new(STATE_ROOT),
+        arguments.resolver_policy_directory.as_deref(),
         identity_pool,
         arguments.zfs_executable,
         executor,
     )?;
+    if let Some(diagnostic) = prepare_readiness_diagnostic(runtime.prepare_readiness()) {
+        eprintln!("aos-storaged: {diagnostic}");
+    }
     let mut service = StorageService::new(runtime, verifier);
 
     loop {
         service.serve_once(&mut listener)?;
+    }
+}
+
+fn prepare_readiness_diagnostic(readiness: StoragePrepareReadiness) -> Option<&'static str> {
+    match readiness {
+        StoragePrepareReadiness::Unconfigured => {
+            Some("Storage Prepare disabled: resolver policy is unconfigured")
+        }
+        StoragePrepareReadiness::PolicyInvalid => {
+            Some("Storage Prepare disabled: resolver policy is invalid")
+        }
+        StoragePrepareReadiness::Ready => None,
     }
 }
 
@@ -72,6 +88,7 @@ struct Arguments {
     zfs_executable: PathBuf,
     authority_directory: PathBuf,
     bootstrap_directory: PathBuf,
+    resolver_policy_directory: Option<PathBuf>,
 }
 
 fn arguments() -> Result<Arguments, StorageServiceError> {
@@ -84,6 +101,7 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
     let zfs_executable = required_path(arguments.next(), "ZFS executable")?;
     let authority_directory = required_path(arguments.next(), "authority directory")?;
     let bootstrap_directory = required_path(arguments.next(), "bootstrap directory")?;
+    let resolver_policy_directory = optional_path(arguments.next(), "resolver policy directory")?;
     if arguments.next().is_some() {
         return Err(usage_error());
     }
@@ -95,6 +113,7 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
         zfs_executable,
         authority_directory,
         bootstrap_directory,
+        resolver_policy_directory,
     })
 }
 
@@ -134,9 +153,22 @@ fn required_path(
     Ok(path)
 }
 
+fn optional_path(
+    value: Option<std::ffi::OsString>,
+    label: &str,
+) -> Result<Option<PathBuf>, StorageServiceError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value == "-" {
+        return Ok(None);
+    }
+    required_path(Some(value), label).map(Some)
+}
+
 fn usage_error() -> StorageServiceError {
     StorageServiceError::Activation(
-        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY"
+        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY [RESOLVER_POLICY_DIRECTORY|-]"
             .to_owned(),
     )
 }
@@ -196,5 +228,35 @@ mod tests {
                 "accepted {value}"
             );
         }
+    }
+
+    #[test]
+    fn resolver_policy_path_is_optional_and_explicitly_disableable() {
+        assert_eq!(optional_path(None, "resolver policy").unwrap(), None);
+        assert_eq!(
+            optional_path(Some("-".into()), "resolver policy").unwrap(),
+            None
+        );
+        assert_eq!(
+            optional_path(Some("/etc/aos/storage-policy".into()), "resolver policy").unwrap(),
+            Some(PathBuf::from("/etc/aos/storage-policy"))
+        );
+        assert!(optional_path(Some("relative".into()), "resolver policy").is_err());
+    }
+
+    #[test]
+    fn prepare_readiness_diagnostics_are_bounded() {
+        assert_eq!(
+            prepare_readiness_diagnostic(StoragePrepareReadiness::Unconfigured),
+            Some("Storage Prepare disabled: resolver policy is unconfigured")
+        );
+        assert_eq!(
+            prepare_readiness_diagnostic(StoragePrepareReadiness::PolicyInvalid),
+            Some("Storage Prepare disabled: resolver policy is invalid")
+        );
+        assert_eq!(
+            prepare_readiness_diagnostic(StoragePrepareReadiness::Ready),
+            None
+        );
     }
 }

@@ -7,6 +7,7 @@
 //! `statmount(2)` evidence. ZFS dataset identity is supplied only as a typed
 //! result from the separate read-only ZFS observer.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
@@ -15,8 +16,13 @@ use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace, Moun
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 use rustix::fs::{FileType, Mode, OFlags};
+use sha2::{Digest as _, Sha256};
 
 use crate::StorageStateError;
+use crate::observation_protocol::{
+    WorkspaceCatalogCustodyBindingV1, WorkspaceCatalogObservationExpectationV1,
+    WorkspaceCatalogObservationRequestV1,
+};
 use crate::workspace_pin::{
     WORKSPACE_PIN_ROOT, WorkspaceDatasetObservationV1, WorkspacePinAttemptV1,
     WorkspacePinHostScopeV1, WorkspacePinObservationV1, WorkspaceRootPinProofV1,
@@ -26,6 +32,8 @@ use crate::workspace_repair::WorkspacePinRepairProbeV1;
 use crate::workspace_repair_admission::WorkspacePinRepairAdmissionProbeV1;
 
 const MAXIMUM_HOST_MOUNTS: usize = 65_536;
+const CATALOG_PIN_OBSERVATION_DIGEST_DOMAIN: &[u8] =
+    b"aos.sandbox.storage.workspace-catalog-pin-root-observation.v1\0";
 
 struct WorkspacePinObservationTargetV1<'a> {
     host_scope: WorkspacePinHostScopeV1,
@@ -117,6 +125,13 @@ impl WorkspacePinHostCustody {
     /// Borrows the retained exact fixed pin-root descriptor.
     pub(crate) const fn pin_root(&self) -> &ResolvedPath {
         &self.pin_root
+    }
+
+    /// Revalidates and binds the complete retained descriptor identity.
+    pub(crate) fn catalog_binding(
+        &self,
+    ) -> Result<WorkspaceCatalogCustodyBindingV1, WorkspacePinObserverError> {
+        current_catalog_custody_binding(&self.mount_namespace, &self.pin_root)
     }
 }
 
@@ -322,6 +337,203 @@ fn mount_count_at_point(
         .iter()
         .filter(|mount| mount.mount_point.as_os_str().as_bytes() == expected_mount_point.as_bytes())
         .count())
+}
+
+/// Revalidates the retained host namespace and pin-root descriptor identities.
+pub(crate) fn current_catalog_custody_binding(
+    mount_namespace: &NamespaceFd,
+    retained_pin_root: &ResolvedPath,
+) -> Result<WorkspaceCatalogCustodyBindingV1, WorkspacePinObserverError> {
+    let scope = current_host_scope(mount_namespace, retained_pin_root)?;
+    let pin_root_identity = retained_pin_root.identity();
+    WorkspaceCatalogCustodyBindingV1::new(
+        scope.kernel_boot_id(),
+        scope.mount_namespace_device(),
+        scope.mount_namespace_inode(),
+        MountId::from_fd(retained_pin_root.as_fd())?.get(),
+        pin_root_identity.device,
+        pin_root_identity.inode,
+    )
+    .map_err(|_| WorkspacePinObserverError::HostScopeMismatch)
+}
+
+/// Performs one complete, request-bound pin-root observation pass.
+///
+/// Every directory entry and every descendant mount must be one requested
+/// present target. Absent targets must have neither a slot nor a mount. This
+/// is linear in the host mount inventory rather than repeating it per row.
+pub(crate) fn observe_workspace_catalog_pin_pass(
+    request: &WorkspaceCatalogObservationRequestV1,
+    mount_namespace: &NamespaceFd,
+    retained_pin_root: &ResolvedPath,
+) -> Result<aos_sandbox_core::ObjectDigest, WorkspacePinObserverError> {
+    let custody = current_catalog_custody_binding(mount_namespace, retained_pin_root)?;
+    if custody != request.custody() {
+        return Err(WorkspacePinObserverError::HostScopeMismatch);
+    }
+
+    let expected_directories = request
+        .targets()
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.expectation(),
+                WorkspaceCatalogObservationExpectationV1::Present { .. }
+            )
+        })
+        .map(|target| workspace_component_bytes(&target.workspace_handle()))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if catalog_pin_root_entries(retained_pin_root)? != expected_directories {
+        return Err(WorkspacePinObserverError::HostScopeMismatch);
+    }
+
+    let inventory = MountNamespace::pinned(mount_namespace)?
+        .inventory(MAXIMUM_HOST_MOUNTS, MountListOrder::Forward)?;
+    let descendant_prefix = format!("{WORKSPACE_PIN_ROOT}/").into_bytes();
+    let mut descendant_mounts = BTreeMap::new();
+    for mount in inventory.mounts {
+        let mount_point = mount.mount_point.as_os_str().as_bytes();
+        if mount_point.starts_with(&descendant_prefix)
+            && descendant_mounts
+                .insert(mount_point.to_vec(), mount)
+                .is_some()
+        {
+            return Err(WorkspacePinObserverError::HostScopeMismatch);
+        }
+    }
+    let expected_mount_points = request
+        .targets()
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.expectation(),
+                WorkspaceCatalogObservationExpectationV1::Present { .. }
+            )
+        })
+        .map(|target| workspace_pin_path(&target.workspace_handle()).into_bytes())
+        .collect::<BTreeSet<_>>();
+    if descendant_mounts.keys().cloned().collect::<BTreeSet<_>>() != expected_mount_points {
+        return Err(WorkspacePinObserverError::HostScopeMismatch);
+    }
+
+    for target in request.targets() {
+        match target.expectation() {
+            WorkspaceCatalogObservationExpectationV1::Absent => {
+                if open_workspace_slot(retained_pin_root, &target.workspace_handle())?.is_some() {
+                    return Err(WorkspacePinObserverError::HostScopeMismatch);
+                }
+            }
+            WorkspaceCatalogObservationExpectationV1::Present {
+                mount_id,
+                root_device,
+                root_inode,
+            } => {
+                let slot = open_workspace_slot(retained_pin_root, &target.workspace_handle())?
+                    .ok_or(WorkspacePinObserverError::HostScopeMismatch)?;
+                let metadata = rustix::fs::fstat(slot.as_fd())?;
+                let mount_point = workspace_pin_path(&target.workspace_handle());
+                let mount = descendant_mounts
+                    .get(mount_point.as_bytes())
+                    .ok_or(WorkspacePinObserverError::HostScopeMismatch)?;
+                if !directory_identity_is_valid(&metadata)
+                    || metadata.st_dev != root_device
+                    || metadata.st_ino != root_inode
+                    || MountId::from_fd(slot.as_fd())?.get() != mount_id
+                    || mount.mount_id.get() != mount_id
+                    || mount.root.as_os_str().as_bytes() != b"/"
+                    || mount.filesystem_type.as_os_str().as_bytes() != b"zfs"
+                    || mount.superblock_source.as_os_str().as_bytes()
+                        != target.dataset_name().as_bytes()
+                    || mount.device_major != rustix::fs::major(metadata.st_dev)
+                    || mount.device_minor != rustix::fs::minor(metadata.st_dev)
+                {
+                    return Err(WorkspacePinObserverError::HostScopeMismatch);
+                }
+            }
+        }
+    }
+    if current_catalog_custody_binding(mount_namespace, retained_pin_root)? != custody {
+        return Err(WorkspacePinObserverError::HostScopeMismatch);
+    }
+
+    let mut digest = Sha256::new();
+    digest.update(CATALOG_PIN_OBSERVATION_DIGEST_DOMAIN);
+    digest.update(request.physical_plan_digest().as_bytes());
+    digest.update(custody.kernel_boot_id());
+    digest.update(custody.mount_namespace_device().to_be_bytes());
+    digest.update(custody.mount_namespace_inode().to_be_bytes());
+    digest.update(custody.pin_root_mount_id().to_be_bytes());
+    digest.update(custody.pin_root_device().to_be_bytes());
+    digest.update(custody.pin_root_inode().to_be_bytes());
+    for target in request.targets() {
+        digest.update(target.workspace_handle());
+        match target.expectation() {
+            WorkspaceCatalogObservationExpectationV1::Absent => digest.update([0]),
+            WorkspaceCatalogObservationExpectationV1::Present {
+                mount_id,
+                root_device,
+                root_inode,
+            } => {
+                digest.update([1]);
+                digest.update(mount_id.to_be_bytes());
+                digest.update(root_device.to_be_bytes());
+                digest.update(root_inode.to_be_bytes());
+            }
+        }
+    }
+    let digest = aos_sandbox_core::ObjectDigest::from_bytes(digest.finalize().into());
+    if digest.as_bytes() == &[0; 32] {
+        return Err(WorkspacePinObserverError::HostScopeMismatch);
+    }
+    Ok(digest)
+}
+
+fn catalog_pin_root_entries(
+    pin_root: &ResolvedPath,
+) -> Result<BTreeSet<Vec<u8>>, WorkspacePinObserverError> {
+    let readable = rustix::fs::openat(
+        pin_root.as_fd(),
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let entries = rustix::fs::Dir::new(readable)?;
+    let mut names = BTreeSet::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name().to_bytes();
+        if matches!(name, b"." | b"..") {
+            continue;
+        }
+        validate_workspace_component(name)?;
+        if !names.insert(name.to_vec()) {
+            return Err(WorkspacePinObserverError::HostScopeMismatch);
+        }
+    }
+    Ok(names)
+}
+
+fn workspace_component_bytes(
+    workspace_handle: &[u8; 32],
+) -> Result<Vec<u8>, WorkspacePinObserverError> {
+    let pin_path = workspace_pin_path(workspace_handle);
+    let component = pin_path
+        .rsplit_once('/')
+        .map(|(_, component)| component.as_bytes().to_vec())
+        .ok_or(WorkspacePinObserverError::HostScopeMismatch)?;
+    validate_workspace_component(&component)?;
+    Ok(component)
+}
+
+fn validate_workspace_component(component: &[u8]) -> Result<(), WorkspacePinObserverError> {
+    if component.len() != 64
+        || component
+            .iter()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(byte))
+    {
+        return Err(WorkspacePinObserverError::HostScopeMismatch);
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_host_scope(

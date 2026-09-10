@@ -13,12 +13,22 @@ use std::ffi::OsString;
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
+use crate::observation_protocol::{
+    WorkspaceCatalogObservationExpectationV1, WorkspaceCatalogObservationObjectKindV1,
+    WorkspaceCatalogObservationRequestV1,
+};
 use crate::{
     CatalogObjectKind, HoldId, PostconditionPolicyV1, ProjectAncestorPolicyV1, ReservationPolicy,
     WorkspaceSpacePolicyV1, ZfsPrecondition, ZfsTransaction,
 };
 
 const OBSERVATION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.zfs-observation.v1\0";
+const CATALOG_OBSERVATION_DIGEST_DOMAIN: &[u8] =
+    b"aos.sandbox.storage.workspace-catalog-zfs-observation.v1\0";
+const MAXIMUM_GLOBAL_ZFS_ROWS: usize = 65_536;
+const MAXIMUM_GLOBAL_ZFS_LINE_BYTES: usize = 288;
+pub(crate) const MAXIMUM_CATALOG_ZFS_STDOUT_BYTES: usize =
+    MAXIMUM_GLOBAL_ZFS_ROWS * MAXIMUM_GLOBAL_ZFS_LINE_BYTES;
 
 /// Selects one closed observation phase around a durable mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -776,6 +786,181 @@ fn hold_tag(hold_id: HoldId) -> String {
     tag
 }
 
+/// Returns the one fixed host-wide dataset inventory command.
+pub(crate) fn workspace_catalog_zfs_arguments() -> Vec<OsString> {
+    [
+        "list",
+        "-H",
+        "-p",
+        "-t",
+        "filesystem,volume",
+        "-o",
+        "name,type,guid",
+        "-s",
+        "name",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect()
+}
+
+/// Validates one successful complete global ZFS inventory against the request.
+///
+/// Rows outside every authenticated managed root are syntax-checked and count
+/// toward the explicit host cap. At or below a protected root, every row must
+/// match the authenticated allowed-object table exactly; unknown names, kinds,
+/// and GUIDs fail closed. A missing name is authoritative absence only because
+/// this output came from the operand-free global command and completed.
+pub(crate) fn evaluate_workspace_catalog_zfs(
+    request: &WorkspaceCatalogObservationRequestV1,
+    output: &[u8],
+) -> Result<ObjectDigest, ZfsObservationError> {
+    if output.len() > MAXIMUM_CATALOG_ZFS_STDOUT_BYTES {
+        return Err(ZfsObservationError::InvalidOutput);
+    }
+
+    let mut inventory = BTreeMap::new();
+    let mut prior_name: Option<&[u8]> = None;
+    let lines = complete_lines(output, true)?;
+    if lines.len() > MAXIMUM_GLOBAL_ZFS_ROWS {
+        return Err(ZfsObservationError::InvalidOutput);
+    }
+    for line in lines {
+        if line.len() > MAXIMUM_GLOBAL_ZFS_LINE_BYTES {
+            return Err(ZfsObservationError::InvalidOutput);
+        }
+        let fields = exact_fields(line, 3)?;
+        if !valid_global_dataset_name(fields[0])
+            || prior_name.is_some_and(|prior| prior >= fields[0])
+        {
+            return Err(ZfsObservationError::InvalidOutput);
+        }
+        let kind = match fields[1] {
+            b"filesystem" => ObservedObjectKind::Filesystem,
+            b"volume" => ObservedObjectKind::Volume,
+            _ => return Err(ZfsObservationError::InvalidOutput),
+        };
+        let guid = decimal_u64(fields[2])?;
+        if guid == 0 {
+            return Err(ZfsObservationError::InvalidOutput);
+        }
+        let name = text_field(fields[0])?;
+        if inventory.insert(name, (kind, guid)).is_some() {
+            return Err(ZfsObservationError::InvalidOutput);
+        }
+        prior_name = Some(fields[0]);
+    }
+
+    let mut allowed = BTreeMap::new();
+    for root in request.roots() {
+        allowed.insert(root.name(), (ObservedObjectKind::Filesystem, root.guid()));
+    }
+    for object in request.allowed_objects() {
+        let kind = match object.kind() {
+            WorkspaceCatalogObservationObjectKindV1::Filesystem => ObservedObjectKind::Filesystem,
+            WorkspaceCatalogObservationObjectKindV1::Volume => ObservedObjectKind::Volume,
+        };
+        allowed.insert(object.name(), (kind, object.guid()));
+    }
+    for (name, observed) in &inventory {
+        let inside_protected_root = request
+            .roots()
+            .iter()
+            .any(|root| *name == root.name() || strict_dataset_descendant(name, root.name()));
+        if inside_protected_root && allowed.get(*name) != Some(observed) {
+            return Err(ZfsObservationError::InvalidOutput);
+        }
+    }
+    for (name, expected) in allowed {
+        if inventory.get(name) != Some(&expected) {
+            return Err(ZfsObservationError::InvalidOutput);
+        }
+    }
+    for target in request.targets() {
+        let observed = inventory.get(target.dataset_name());
+        match target.expectation() {
+            WorkspaceCatalogObservationExpectationV1::Present { .. }
+                if observed == Some(&(ObservedObjectKind::Filesystem, target.dataset_guid())) => {}
+            WorkspaceCatalogObservationExpectationV1::Absent if observed.is_none() => {}
+            _ => return Err(ZfsObservationError::InvalidOutput),
+        }
+    }
+    workspace_catalog_zfs_digest(request)
+}
+
+fn strict_dataset_descendant(name: &str, root: &str) -> bool {
+    name.strip_prefix(root)
+        .is_some_and(|suffix| suffix.starts_with('/') && suffix.len() > 1)
+}
+
+fn workspace_catalog_zfs_digest(
+    request: &WorkspaceCatalogObservationRequestV1,
+) -> Result<ObjectDigest, ZfsObservationError> {
+    let mut digest = Sha256::new();
+    digest.update(CATALOG_OBSERVATION_DIGEST_DOMAIN);
+    digest.update(request.physical_plan_digest().as_bytes());
+    digest.update(
+        u32::try_from(request.roots().len())
+            .map_err(|_| ZfsObservationError::InvalidPlan)?
+            .to_be_bytes(),
+    );
+    digest.update(
+        u32::try_from(request.allowed_objects().len())
+            .map_err(|_| ZfsObservationError::InvalidPlan)?
+            .to_be_bytes(),
+    );
+    digest.update(
+        u32::try_from(request.targets().len())
+            .map_err(|_| ZfsObservationError::InvalidPlan)?
+            .to_be_bytes(),
+    );
+    for root in request.roots() {
+        digest.update((root.name().len() as u16).to_be_bytes());
+        digest.update(root.name().as_bytes());
+        digest.update(root.guid().to_be_bytes());
+    }
+    for object in request.allowed_objects() {
+        digest.update(object.root_index().to_be_bytes());
+        digest.update([match object.kind() {
+            WorkspaceCatalogObservationObjectKindV1::Filesystem => 0,
+            WorkspaceCatalogObservationObjectKindV1::Volume => 1,
+        }]);
+        digest.update((object.name().len() as u16).to_be_bytes());
+        digest.update(object.name().as_bytes());
+        digest.update(object.guid().to_be_bytes());
+    }
+    for target in request.targets() {
+        digest.update(target.workspace_handle());
+        digest.update((target.dataset_name().len() as u16).to_be_bytes());
+        digest.update(target.dataset_name().as_bytes());
+        digest.update(target.dataset_guid().to_be_bytes());
+        digest.update([match target.expectation() {
+            WorkspaceCatalogObservationExpectationV1::Present { .. } => 1,
+            WorkspaceCatalogObservationExpectationV1::Absent => 0,
+        }]);
+    }
+    let digest = ObjectDigest::from_bytes(digest.finalize().into());
+    if digest.as_bytes() == &[0; 32] {
+        Err(ZfsObservationError::InvalidOutput)
+    } else {
+        Ok(digest)
+    }
+}
+
+fn valid_global_dataset_name(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && name.split(|byte| *byte == b'/').all(|component| {
+            !component.is_empty()
+                && component != b"."
+                && component != b".."
+                && component[0] != b'-'
+                && component.iter().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':' | b'%')
+                })
+        })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -821,6 +1006,75 @@ mod tests {
         .unwrap()
     }
 
+    fn catalog_request(
+        expectation: WorkspaceCatalogObservationExpectationV1,
+    ) -> WorkspaceCatalogObservationRequestV1 {
+        use crate::observation_protocol::{
+            WorkspaceCatalogCustodyBindingV1, WorkspaceCatalogObservationBindingsV1,
+            WorkspaceCatalogObservationObjectKindV1, WorkspaceCatalogObservationObjectV1,
+            WorkspaceCatalogObservationRootV1, WorkspaceCatalogObservationTargetV1,
+        };
+
+        let mut allowed_objects = vec![
+            WorkspaceCatalogObservationObjectV1::new(
+                0,
+                "tank/aos/project".to_owned(),
+                WorkspaceCatalogObservationObjectKindV1::Filesystem,
+                30,
+            )
+            .unwrap(),
+        ];
+        if matches!(
+            expectation,
+            WorkspaceCatalogObservationExpectationV1::Present { .. }
+        ) {
+            allowed_objects.push(
+                WorkspaceCatalogObservationObjectV1::new(
+                    0,
+                    "tank/aos/work".to_owned(),
+                    WorkspaceCatalogObservationObjectKindV1::Filesystem,
+                    22,
+                )
+                .unwrap(),
+            );
+        }
+
+        WorkspaceCatalogObservationRequestV1::new(
+            [1; 32],
+            2,
+            WorkspaceCatalogObservationBindingsV1::new(
+                ObjectDigest::from_bytes([3; 32]),
+                [4; 16],
+                5,
+                ObjectDigest::from_bytes([6; 32]),
+                ObjectDigest::from_bytes([7; 32]),
+                8,
+                ObjectDigest::from_bytes([9; 32]),
+                10,
+                ObjectDigest::from_bytes([11; 32]),
+                12,
+                65_536,
+                65_536,
+            )
+            .unwrap(),
+            WorkspaceCatalogCustodyBindingV1::new([13; 16], 14, 15, 16, 17, 18).unwrap(),
+            vec![WorkspaceCatalogObservationRootV1::new("tank/aos".to_owned(), 19).unwrap()],
+            allowed_objects,
+            vec![
+                WorkspaceCatalogObservationTargetV1::new(
+                    [20; 32],
+                    [21; 16],
+                    0,
+                    "tank/aos/work".to_owned(),
+                    22,
+                    expectation,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap()
+    }
+
     #[test]
     fn plans_compile_only_closed_machine_queries() {
         let transaction = transaction();
@@ -843,6 +1097,209 @@ mod tests {
             );
             assert!(!arguments.iter().any(|argument| argument.contains(' ')));
         }
+    }
+
+    #[test]
+    fn catalog_inventory_uses_the_exact_operand_free_global_command() {
+        let arguments = workspace_catalog_zfs_arguments()
+            .into_iter()
+            .map(|argument| argument.into_string().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            arguments,
+            [
+                "list",
+                "-H",
+                "-p",
+                "-t",
+                "filesystem,volume",
+                "-o",
+                "name,type,guid",
+                "-s",
+                "name",
+            ]
+        );
+    }
+
+    #[test]
+    fn catalog_inventory_accepts_unrelated_rows_without_hashing_them() {
+        let request = catalog_request(WorkspaceCatalogObservationExpectationV1::Present {
+            mount_id: 23,
+            root_device: 24,
+            root_inode: 25,
+        });
+        let first = evaluate_workspace_catalog_zfs(
+            &request,
+            b"other/system\tfilesystem\t100\ntank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/work\tfilesystem\t22\n",
+        )
+        .unwrap();
+        let second = evaluate_workspace_catalog_zfs(
+            &request,
+            b"another/system\tvolume\t101\ntank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/work\tfilesystem\t22\n",
+        )
+        .unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn catalog_inventory_uses_a_strict_protected_root_boundary() {
+        let request = catalog_request(WorkspaceCatalogObservationExpectationV1::Present {
+            mount_id: 23,
+            root_device: 24,
+            root_inode: 25,
+        });
+
+        assert!(
+            evaluate_workspace_catalog_zfs(
+                &request,
+                b"tank/aos\tfilesystem\t19\ntank/aos-other/residual\tvolume\t31\ntank/aos/project\tfilesystem\t30\ntank/aos/work\tfilesystem\t22\n",
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn catalog_inventory_requires_roots_and_exact_terminal_targets() {
+        let present = catalog_request(WorkspaceCatalogObservationExpectationV1::Present {
+            mount_id: 23,
+            root_device: 24,
+            root_inode: 25,
+        });
+        let absent = catalog_request(WorkspaceCatalogObservationExpectationV1::Absent);
+
+        assert!(
+            evaluate_workspace_catalog_zfs(
+                &present,
+                b"tank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/work\tfilesystem\t22\n",
+            )
+            .is_ok()
+        );
+        assert!(
+            evaluate_workspace_catalog_zfs(
+                &absent,
+                b"tank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\n",
+            )
+            .is_ok()
+        );
+        for rejected in [
+            b"tank/aos/project\tfilesystem\t30\ntank/aos/work\tfilesystem\t22\n".as_slice(),
+            b"tank/aos\tfilesystem\t19\n",
+            b"tank/aos\tfilesystem\t20\ntank/aos/project\tfilesystem\t30\ntank/aos/work\tfilesystem\t22\n",
+            b"tank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/work\tvolume\t22\n",
+            b"tank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t31\ntank/aos/work\tfilesystem\t22\n",
+            b"tank/aos\tfilesystem\t19\ntank/aos/project\tvolume\t30\ntank/aos/work\tfilesystem\t22\n",
+            b"tank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/residual\tfilesystem\t31\ntank/aos/work\tfilesystem\t22\n",
+            b"tank/aos/work\tfilesystem\t22\ntank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\n",
+            b"tank/aos\tfilesystem\t19\ntank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/work\tfilesystem\t22\n",
+            b"tank/aos\tfilesystem\t19",
+        ] {
+            assert!(evaluate_workspace_catalog_zfs(&present, rejected).is_err());
+        }
+        assert!(
+            evaluate_workspace_catalog_zfs(
+                &absent,
+                b"tank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/work\tfilesystem\t22\n",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn catalog_inventory_rejects_the_request_only_digest_blind_spot() {
+        let request = catalog_request(WorkspaceCatalogObservationExpectationV1::Present {
+            mount_id: 23,
+            root_device: 24,
+            root_inode: 25,
+        });
+        let requested = b"tank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/work\tfilesystem\t22\n";
+        let residual = b"tank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/residual\tfilesystem\t31\ntank/aos/work\tfilesystem\t22\n";
+
+        assert!(evaluate_workspace_catalog_zfs(&request, requested).is_ok());
+        assert!(evaluate_workspace_catalog_zfs(&request, residual).is_err());
+    }
+
+    #[test]
+    fn initialized_empty_catalog_still_enforces_configured_root_infrastructure() {
+        use crate::observation_protocol::{
+            WorkspaceCatalogCustodyBindingV1, WorkspaceCatalogObservationBindingsV1,
+            WorkspaceCatalogObservationObjectKindV1, WorkspaceCatalogObservationObjectV1,
+            WorkspaceCatalogObservationRootV1,
+        };
+
+        let request = WorkspaceCatalogObservationRequestV1::new(
+            [1; 32],
+            2,
+            WorkspaceCatalogObservationBindingsV1::new(
+                ObjectDigest::from_bytes([3; 32]),
+                [4; 16],
+                5,
+                ObjectDigest::from_bytes([6; 32]),
+                ObjectDigest::from_bytes([7; 32]),
+                8,
+                ObjectDigest::from_bytes([9; 32]),
+                10,
+                ObjectDigest::from_bytes([11; 32]),
+                12,
+                65_536,
+                65_536,
+            )
+            .unwrap(),
+            WorkspaceCatalogCustodyBindingV1::new([13; 16], 14, 15, 16, 17, 18).unwrap(),
+            vec![WorkspaceCatalogObservationRootV1::new("tank/aos".to_owned(), 19).unwrap()],
+            vec![
+                WorkspaceCatalogObservationObjectV1::new(
+                    0,
+                    "tank/aos/project".to_owned(),
+                    WorkspaceCatalogObservationObjectKindV1::Filesystem,
+                    30,
+                )
+                .unwrap(),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(
+            evaluate_workspace_catalog_zfs(
+                &request,
+                b"other/system\tfilesystem\t1\ntank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\n",
+            )
+            .is_ok()
+        );
+        assert!(evaluate_workspace_catalog_zfs(&request, b"").is_err());
+        assert!(
+            evaluate_workspace_catalog_zfs(
+                &request,
+                b"tank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/residual\tfilesystem\t31\n",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn catalog_inventory_rejects_more_than_the_explicit_host_row_cap() {
+        use std::fmt::Write as _;
+
+        let request = catalog_request(WorkspaceCatalogObservationExpectationV1::Present {
+            mount_id: 23,
+            root_device: 24,
+            root_inode: 25,
+        });
+        let mut output = String::from(
+            "tank/aos\tfilesystem\t19\ntank/aos/project\tfilesystem\t30\ntank/aos/work\tfilesystem\t22\n",
+        );
+        for index in 0..(MAXIMUM_GLOBAL_ZFS_ROWS - 1) {
+            writeln!(
+                &mut output,
+                "zpool/unrelated-{index:05}\tfilesystem\t{}",
+                index + 100
+            )
+            .unwrap();
+        }
+
+        assert!(evaluate_workspace_catalog_zfs(&request, output.as_bytes()).is_err());
     }
 
     #[test]

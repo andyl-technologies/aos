@@ -16,7 +16,7 @@ use std::io::Read as _;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
-use aos_sandbox_core::model::{IdentityProfile, SandboxSpec};
+use aos_sandbox_core::model::SandboxSpec;
 use aos_sandbox_core::{
     CanonicalAssignmentManifestV1, ObjectDigest, ProtocolVersion, RawPairedClockSample,
 };
@@ -27,19 +27,28 @@ use sha2::{Digest as _, Sha256};
 
 use crate::authorization::StorageProtectedConfigurationV1;
 use crate::broker::{
-    AuthorizedWorkspacePinRepairAttemptV1, WorkspacePinExecutionOutcomeV1,
-    WorkspaceRemovePinRequirementV1,
+    AuthenticatedWorkspaceCatalogPhysicalPlanV1, AuthorizedWorkspacePinRepairAttemptV1,
 };
 use crate::helper::{StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome};
+use crate::observation_protocol::{
+    WorkspaceCatalogObservationBindingsV1, WorkspaceCatalogObservationRequestV1, encode_request,
+};
 use crate::pin_observer::WorkspacePinHostCustody;
+use crate::pin_worker::boottime_now_nanoseconds;
 use crate::pin_worker_runtime::{SystemdWorkspacePinExecutor, SystemdWorkspacePinObserver};
 use crate::process::open_cgroup_root;
+use crate::resolver::protected_catalog::ProtectedStorageResolverPolicyDirectoryV1;
+use crate::workspace_catalog::{
+    PendingStorageWorkspaceCatalogV1, StorageWorkspaceCatalogActivationCandidateV1,
+    ValidatedPendingStorageWorkspaceCatalogV1,
+};
+use crate::workspace_repair_observer::random_challenge;
 use crate::{
     CommittedStorageResultV1, DurableStoragePhase, ResolvedCatalogCommitmentV1,
     StorageAdmissionCoordinator, StorageAdmissionError, StorageAdmissionOutcome,
-    StorageBrokerError, StorageIdentityPoolV1, StorageStateError, StorageTransactionStore,
-    StorageWorkspaceCatalogError, StorageWorkspaceCatalogV1, SystemdZfsExecutor, ZfsHelperContract,
-    ZfsTransactionError, ZfsWorkerError, decode_resolved,
+    StorageBrokerError, StorageCatalogPreparationOutcomeV1, StorageIdentityPoolV1,
+    StorageStateError, StorageTransactionStore, StorageWorkspaceCatalogError, SystemdZfsExecutor,
+    ZfsHelperContract, ZfsTransactionError, ZfsWorkerError,
 };
 
 const BOOTSTRAP_FILE: &str = "storage-genesis.catalog";
@@ -107,6 +116,17 @@ pub enum StorageRuntimeReadiness {
     },
 }
 
+/// Describes whether protected policy permits production catalog preparation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoragePrepareReadiness {
+    /// Deployment intentionally omitted the external resolver-policy catalog.
+    Unconfigured,
+    /// Configured policy was missing, insecure, malformed, or rolled back.
+    PolicyInvalid,
+    /// A complete trusted policy publication was durably admitted.
+    Ready,
+}
+
 /// Reports one synchronous authorized mutation result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageRuntimeMutationOutcome {
@@ -133,13 +153,17 @@ pub enum WorkspacePinRepairExecutionOutcomeV1 {
 /// Owns the sole Storage coordinator and fixed worker helper.
 pub struct StorageBrokerRuntime {
     coordinator: StorageAdmissionCoordinator,
-    workspaces: StorageWorkspaceCatalogV1,
+    workspaces: Option<ValidatedPendingStorageWorkspaceCatalogV1>,
+    configuration_binding: ObjectDigest,
+    broker_instance_id: [u8; 16],
     pin_custody: WorkspacePinHostCustody,
     pin_contract: ZfsHelperContract,
     pin_executor: SystemdWorkspacePinExecutor,
     pin_observer: SystemdWorkspacePinObserver,
     helper: StorageMutationHelper<SystemdZfsProcessBackend>,
     readiness: StorageRuntimeReadiness,
+    resolver_policies: Option<ProtectedStorageResolverPolicyDirectoryV1>,
+    prepare_readiness: StoragePrepareReadiness,
 }
 
 impl StorageBrokerRuntime {
@@ -164,6 +188,62 @@ impl StorageBrokerRuntime {
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
     ) -> Result<Self, StorageRuntimeError> {
+        Self::open_root_owned_inner(
+            authority_directory,
+            bootstrap_directory,
+            state_directory,
+            None,
+            identity_pool,
+            zfs_executable,
+            executor,
+        )
+    }
+
+    /// Opens the runtime with an optional external resolver-policy publication.
+    ///
+    /// An omitted policy leaves repair and inventory available but disables
+    /// Prepare. A configured invalid or rolled-back publication is classified
+    /// as [`StoragePrepareReadiness::PolicyInvalid`] without manufacturing a
+    /// fallback policy. Journal I/O or authenticated-state corruption remains
+    /// fatal to the whole runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError`] under the same protected authority,
+    /// bootstrap, journal, worker, and recovery failures as
+    /// [`Self::open_root_owned`]. A policy rollback is classified rather than
+    /// returned, while an uncertain policy-floor commit is fatal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_root_owned_with_resolver_policy(
+        authority_directory: &Path,
+        bootstrap_directory: &Path,
+        state_directory: &Path,
+        resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1,
+        zfs_executable: PathBuf,
+        executor: SystemdZfsExecutor,
+    ) -> Result<Self, StorageRuntimeError> {
+        Self::open_root_owned_inner(
+            authority_directory,
+            bootstrap_directory,
+            state_directory,
+            resolver_policy_directory,
+            identity_pool,
+            zfs_executable,
+            executor,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_root_owned_inner(
+        authority_directory: &Path,
+        bootstrap_directory: &Path,
+        state_directory: &Path,
+        resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1,
+        zfs_executable: PathBuf,
+        executor: SystemdZfsExecutor,
+    ) -> Result<Self, StorageRuntimeError> {
         // Retain the host mount namespace before constructing any subsystem
         // that may later acquire a namespace-scoped helper.
         let pin_custody = WorkspacePinHostCustody::retain_initial_root_owned()
@@ -172,6 +252,7 @@ impl StorageBrokerRuntime {
             StorageProtectedConfigurationV1::from_protected_directory(authority_directory)?;
         let configuration_binding =
             runtime_configuration_binding(protected_configuration.public_binding(), identity_pool);
+        let authority_binding = protected_configuration.public_binding();
         let (authority, state_key, _) = protected_configuration.into_parts();
         let bootstrap = ProtectedStorageBootstrap::open_root_owned(bootstrap_directory)?;
         let transactions = StorageTransactionStore::open_root_owned_runtime(
@@ -204,29 +285,46 @@ impl StorageBrokerRuntime {
                 &bootstrap.catalogs,
             )?;
         }
-        let coordinator = StorageAdmissionCoordinator::new(authority, transactions);
+        let mut coordinator = StorageAdmissionCoordinator::new(authority, transactions);
+        // Existing V3 records must authenticate against the preexisting floor;
+        // a current policy publication cannot heal missing rollback evidence.
+        coordinator
+            .authenticate_catalog_preparations()
+            .map_err(StorageRuntimeError::Admission)?;
+        let (resolver_policies, prepare_readiness) = configure_resolver_policy(
+            &mut coordinator,
+            resolver_policy_directory,
+            authority_binding,
+        )?;
         // Historical repair authority must authenticate before either ordinary
         // effect histories or the workspace inventory becomes an input.
         // Keep both exclusive journals for the runtime lifetime. Acquiring the
         // transaction journal first is the only permitted cross-journal order.
-        let workspaces = authenticate_before_workspace_inventory(
+        let pending_workspaces = authenticate_before_workspace_inventory(
             || authenticate_startup_authority(&coordinator),
             || {
-                StorageWorkspaceCatalogV1::open_root_owned(state_directory, identity_pool)
+                PendingStorageWorkspaceCatalogV1::open_root_owned(state_directory, identity_pool)
                     .map_err(Into::into)
             },
         )?;
+        let (workspace_plan, _) = coordinator.workspace_catalog_activation_plan()?;
+        let workspaces = pending_workspaces.validate_plan(workspace_plan)?;
+        let broker_instance_id = random_challenge()?;
 
         let backend = SystemdZfsProcessBackend::new(executor);
         let mut runtime = Self {
             coordinator,
-            workspaces,
+            workspaces: Some(workspaces),
+            configuration_binding,
+            broker_instance_id,
             pin_custody,
             pin_contract: contract.clone(),
             pin_executor,
             pin_observer,
             helper: StorageMutationHelper::new(contract, backend),
             readiness: StorageRuntimeReadiness::IntegrationIncomplete,
+            resolver_policies,
+            prepare_readiness,
         };
         runtime.readiness = if legacy_recovery {
             StorageRuntimeReadiness::LegacyRecoveryOnly {
@@ -246,6 +344,7 @@ impl StorageBrokerRuntime {
     pub(crate) fn from_protected_components_for_test<F>(
         coordinator: StorageAdmissionCoordinator,
         open_workspaces: F,
+        configuration_binding: ObjectDigest,
         pin_custody: WorkspacePinHostCustody,
         pin_contract: ZfsHelperContract,
         mut pin_executor: SystemdWorkspacePinExecutor,
@@ -253,26 +352,32 @@ impl StorageBrokerRuntime {
         helper: StorageMutationHelper<SystemdZfsProcessBackend>,
     ) -> Result<Self, StorageRuntimeError>
     where
-        F: FnOnce() -> Result<StorageWorkspaceCatalogV1, StorageRuntimeError>,
+        F: FnOnce() -> Result<PendingStorageWorkspaceCatalogV1, StorageRuntimeError>,
     {
         // Preserve the production construction order: prove the complete
         // mutator cgroup empty, authenticate the transaction journal, and only
         // then open the workspace journal under the already-held first lock.
         pin_executor.recover_quiescence()?;
-        let workspaces = authenticate_before_workspace_inventory(
+        let pending_workspaces = authenticate_before_workspace_inventory(
             || authenticate_startup_authority(&coordinator),
             open_workspaces,
         )?;
+        let (workspace_plan, _) = coordinator.workspace_catalog_activation_plan()?;
+        let workspaces = pending_workspaces.validate_plan(workspace_plan)?;
 
         let mut runtime = Self {
             coordinator,
-            workspaces,
+            workspaces: Some(workspaces),
+            configuration_binding,
+            broker_instance_id: random_challenge()?,
             pin_custody,
             pin_contract,
             pin_executor,
             pin_observer,
             helper,
             readiness: StorageRuntimeReadiness::IntegrationIncomplete,
+            resolver_policies: None,
+            prepare_readiness: StoragePrepareReadiness::Unconfigured,
         };
         runtime.readiness = runtime.reconcile_startup()?;
 
@@ -290,21 +395,46 @@ impl StorageBrokerRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) const fn workspace_catalog_for_test(&self) -> &StorageWorkspaceCatalogV1 {
-        &self.workspaces
+    pub(crate) fn workspace_catalog_for_test(&self) -> &ValidatedPendingStorageWorkspaceCatalogV1 {
+        self.workspaces
+            .as_ref()
+            .unwrap_or_else(|| unreachable!("workspace catalog custody escaped runtime"))
     }
 
     #[cfg(test)]
     pub(crate) fn into_journals_for_test(
         self,
-    ) -> (StorageAdmissionCoordinator, StorageWorkspaceCatalogV1) {
-        (self.coordinator, self.workspaces)
+    ) -> (
+        StorageAdmissionCoordinator,
+        ValidatedPendingStorageWorkspaceCatalogV1,
+    ) {
+        (
+            self.coordinator,
+            self.workspaces
+                .unwrap_or_else(|| unreachable!("workspace catalog custody escaped runtime")),
+        )
     }
 
     /// Returns the fail-closed startup readiness classification.
     #[must_use]
     pub const fn readiness(&self) -> StorageRuntimeReadiness {
         self.readiness
+    }
+
+    /// Returns the protected resolver-policy startup classification.
+    #[must_use]
+    pub const fn prepare_readiness(&self) -> StoragePrepareReadiness {
+        self.prepare_readiness
+    }
+
+    /// Reports whether production Prepare is safe in the current runtime state.
+    #[must_use]
+    pub const fn is_prepare_ready(&self) -> bool {
+        matches!(self.prepare_readiness, StoragePrepareReadiness::Ready)
+            && matches!(
+                self.readiness,
+                StorageRuntimeReadiness::Ready | StorageRuntimeReadiness::IntegrationIncomplete
+            )
     }
 
     /// Reports whether the complete Apply composition has converged.
@@ -338,11 +468,17 @@ impl StorageBrokerRuntime {
     /// has already authenticated repair history before the workspace catalog
     /// was opened.
     #[must_use]
-    pub const fn is_inventory_ready(&self) -> bool {
-        !matches!(
+    pub fn is_inventory_ready(&self) -> bool {
+        if matches!(
             self.readiness,
             StorageRuntimeReadiness::LegacyRecoveryOnly { .. }
-        )
+        ) {
+            return false;
+        }
+        let Some(workspaces) = self.workspaces.as_ref() else {
+            return false;
+        };
+        workspaces.is_terminally_materialized()
     }
 
     /// Encodes the current physically revalidated workspace inventory.
@@ -352,12 +488,231 @@ impl StorageBrokerRuntime {
     /// Returns [`StorageRuntimeError::Recovery`] for legacy-only state, or a
     /// workspace-catalog error when a retained launch resource no longer
     /// matches its protected physical identity.
-    pub fn inventory_resources(&self) -> Result<Vec<u8>, StorageRuntimeError> {
-        if !self.is_inventory_ready() {
+    pub fn inventory_resources(
+        &mut self,
+        activation_deadline_boottime_nanoseconds: u64,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<Vec<u8>, StorageRuntimeError> {
+        let now = boottime_now_nanoseconds()?;
+        if !self.is_inventory_ready()
+            || now >= worker_cutoff_boottime_nanoseconds
+            || worker_cutoff_boottime_nanoseconds >= activation_deadline_boottime_nanoseconds
+        {
             return Err(StorageRuntimeError::Recovery);
         }
 
-        self.workspaces.inventory_resources().map_err(Into::into)
+        let validated = self
+            .workspaces
+            .take()
+            .ok_or(StorageRuntimeError::Recovery)?;
+        let result = self.inventory_from_validated(
+            validated,
+            activation_deadline_boottime_nanoseconds,
+            worker_cutoff_boottime_nanoseconds,
+        );
+        match result {
+            Ok((validated, inventory)) => {
+                self.workspaces = Some(validated);
+                Ok(inventory)
+            }
+            Err((validated, error)) => {
+                self.workspaces = Some(validated);
+                Err(error)
+            }
+        }
+    }
+
+    fn inventory_from_validated(
+        &mut self,
+        validated: ValidatedPendingStorageWorkspaceCatalogV1,
+        activation_deadline_boottime_nanoseconds: u64,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<
+        (ValidatedPendingStorageWorkspaceCatalogV1, Vec<u8>),
+        (
+            ValidatedPendingStorageWorkspaceCatalogV1,
+            StorageRuntimeError,
+        ),
+    > {
+        let (plan, physical_plan) = match self.coordinator.workspace_catalog_activation_plan() {
+            Ok(composition) => composition,
+            Err(error) => return Err((validated, error.into())),
+        };
+        let Some(physical_plan) = physical_plan else {
+            return Err((validated, StorageRuntimeError::Recovery));
+        };
+        let nonce = match catalog_observation_nonce() {
+            Ok(nonce) => nonce,
+            Err(error) => return Err((validated, error.into())),
+        };
+        let request = match self.catalog_observation_request(
+            &validated,
+            &plan,
+            &physical_plan,
+            nonce,
+            activation_deadline_boottime_nanoseconds,
+        ) {
+            Ok(request) => request,
+            Err(error) => return Err((validated, error)),
+        };
+        let (candidate, fresh) = match prepare_catalog_candidate_before_observation(
+            validated,
+            physical_plan,
+            request,
+            |request_bytes, request| {
+                self.pin_observer
+                    .observe_catalog(
+                        request_bytes,
+                        request,
+                        &self.pin_custody,
+                        worker_cutoff_boottime_nanoseconds,
+                    )
+                    .map_err(Into::into)
+            },
+        ) {
+            Ok(prepared) => prepared,
+            Err(failure) => return Err(failure),
+        };
+
+        let original_request = candidate.request();
+        let nonce = original_request.nonce();
+        let bindings = original_request.bindings();
+        let deadline = original_request.deadline_boottime_nanoseconds();
+        let (recomposed_plan, recomposed_physical_plan) =
+            match self.coordinator.workspace_catalog_activation_plan() {
+                Ok(composition) => composition,
+                Err(error) => return Err((candidate.into_validated(), error.into())),
+            };
+        let Some(recomposed_physical_plan) = recomposed_physical_plan else {
+            return Err((candidate.into_validated(), StorageRuntimeError::Recovery));
+        };
+        let custody = match self.pin_custody.catalog_binding() {
+            Ok(custody) => custody,
+            Err(_) => {
+                return Err((
+                    candidate.into_validated(),
+                    StorageRuntimeError::WorkspacePinScope,
+                ));
+            }
+        };
+        let recomposed_request = match WorkspaceCatalogObservationRequestV1::new(
+            nonce,
+            deadline,
+            bindings,
+            custody,
+            recomposed_physical_plan.roots().to_vec(),
+            recomposed_physical_plan.allowed_objects().to_vec(),
+            recomposed_physical_plan.targets().to_vec(),
+        ) {
+            Ok(request) => request,
+            Err(error) => return Err((candidate.into_validated(), error.into())),
+        };
+        let now = match boottime_now_nanoseconds() {
+            Ok(now) => now,
+            Err(error) => return Err((candidate.into_validated(), error.into())),
+        };
+        let activated = match candidate.activate(
+            recomposed_plan,
+            recomposed_physical_plan,
+            recomposed_request,
+            fresh,
+            now,
+        ) {
+            Ok(activated) => activated,
+            Err(failure) => {
+                let (validated, error) = failure.into_parts();
+                return Err((validated, error.into()));
+            }
+        };
+        let (validated, inventory) = activated.into_inventory();
+        Ok((validated, inventory))
+    }
+
+    fn catalog_observation_request(
+        &self,
+        validated: &ValidatedPendingStorageWorkspaceCatalogV1,
+        plan: &crate::workspace_catalog::StorageWorkspaceCatalogPlanV1,
+        physical_plan: &AuthenticatedWorkspaceCatalogPhysicalPlanV1,
+        nonce: [u8; 32],
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<WorkspaceCatalogObservationRequestV1, StorageRuntimeError> {
+        let snapshot = validated.snapshot();
+        let catalog_generation = snapshot
+            .catalog_generation()
+            .ok_or(StorageRuntimeError::Recovery)?;
+        let identity_pool = snapshot.identity_pool();
+        let bindings = WorkspaceCatalogObservationBindingsV1::new(
+            self.configuration_binding,
+            self.broker_instance_id,
+            plan.transaction_sequence(),
+            plan.transaction_snapshot_digest(),
+            plan.plan_digest(),
+            plan.physical_head().0,
+            plan.physical_head().1,
+            snapshot.journal_sequence(),
+            snapshot.digest(),
+            catalog_generation,
+            identity_pool.range_start(),
+            identity_pool.range_size(),
+        )?;
+        let custody = self
+            .pin_custody
+            .catalog_binding()
+            .map_err(|_| StorageRuntimeError::WorkspacePinScope)?;
+        WorkspaceCatalogObservationRequestV1::new(
+            nonce,
+            deadline_boottime_nanoseconds,
+            bindings,
+            custody,
+            physical_plan.roots().to_vec(),
+            physical_plan.allowed_objects().to_vec(),
+            physical_plan.targets().to_vec(),
+        )
+        .map_err(Into::into)
+    }
+
+    /// Resolves and retains one non-authorizing production catalog preparation.
+    ///
+    /// Apply remains unavailable. This path uses only the root-owned policy
+    /// directory retained at startup and a fresh authenticated transaction
+    /// projection; callers cannot supply a resolver or inventory snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError`] when Prepare readiness is unavailable,
+    /// request authority fails, policy or durable state is stale, resolution is
+    /// denied, either protected clock sample fails, or atomic retention fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_catalog<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        if !self.is_prepare_ready() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let resolver_policies = self
+            .resolver_policies
+            .as_ref()
+            .ok_or(StorageRuntimeError::Recovery)?;
+        self.coordinator
+            .prepare_catalog_from_protected_policy(
+                request_body,
+                artifacts,
+                resolver_policies,
+                protocol_version,
+                peer,
+                policy,
+                trusted_clock,
+            )
+            .map_err(Into::into)
     }
 
     /// Repairs one existing workspace root pin through fresh observation.
@@ -513,53 +868,18 @@ impl StorageBrokerRuntime {
         manifest: &CanonicalAssignmentManifestV1,
         sandbox_spec: &SandboxSpec,
     ) -> Result<StorageAdmissionOutcome, StorageRuntimeError> {
-        if !self.is_apply_ready() {
-            return Err(StorageRuntimeError::Recovery);
-        }
-        let IdentityProfile::PrivateUserns { id_range_size, .. } = sandbox_spec.identity_profile()
-        else {
-            return Err(StorageRuntimeError::Recovery);
-        };
-        let semantics = decode_resolved(
+        let _ = (
             request_body,
+            artifacts,
             catalog,
+            protocol_version,
             peer,
             policy,
-            current_clock.boottime_nanoseconds(),
-        )
-        .map_err(|_| StorageRuntimeError::Admission(StorageBrokerError::Request))?;
-        let range_start = match self
-            .coordinator
-            .workspace_identity_range(*semantics.operation_id())?
-        {
-            Some((range_start, range_size)) if range_size == id_range_size.get() => range_start,
-            Some(_) => {
-                return Err(StorageRuntimeError::Admission(
-                    StorageBrokerError::WorkspaceCatalog(
-                        StorageWorkspaceCatalogError::IdentityConflict,
-                    ),
-                ));
-            }
-            None => {
-                let retained_ranges = self.coordinator.workspace_identity_ranges()?;
-                self.workspaces
-                    .reserve_identity_range(&retained_ranges, id_range_size.get())?
-            }
-        };
-        self.coordinator
-            .admit_workspace_apply_intent(
-                request_body,
-                artifacts,
-                catalog,
-                protocol_version,
-                peer,
-                policy,
-                current_clock,
-                range_start,
-                manifest,
-                sandbox_spec,
-            )
-            .map_err(Into::into)
+            current_clock,
+            manifest,
+            sandbox_spec,
+        );
+        Err(StorageRuntimeError::Recovery)
     }
 
     /// Executes one already-admitted Prepared effect under fresh authority.
@@ -583,104 +903,8 @@ impl StorageBrokerRuntime {
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
-        if !self.is_apply_ready() {
-            return Err(StorageRuntimeError::Recovery);
-        }
-        let outcome = match self.execute_composed(operation_id, trusted_clock) {
-            Ok(outcome) => outcome,
-            Err(_) => {
-                self.latch_recovery_required();
-                return Err(StorageRuntimeError::Recovery);
-            }
-        };
-        if matches!(outcome, ZfsHelperOutcome::ObservationRequired { .. }) {
-            self.latch_recovery_required();
-        }
-        Ok(outcome.into())
-    }
-
-    fn execute_composed<F>(
-        &mut self,
-        operation_id: [u8; 16],
-        trusted_clock: &mut F,
-    ) -> Result<ZfsHelperOutcome, crate::helper::ZfsHelperError>
-    where
-        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
-    {
-        let prepared = self
-            .coordinator
-            .preobserve(&mut self.helper, operation_id)?;
-        let remove_requirement = self
-            .coordinator
-            .workspace_remove_pin_requirement(&prepared)?;
-        match remove_requirement {
-            WorkspaceRemovePinRequirementV1::Required(expected_pin) => {
-                let entry = prepared.entry();
-                let (pin_outcome, committed) =
-                    self.coordinator.execute_workspace_remove_and_destroy(
-                        &mut self.pin_executor,
-                        &self.pin_contract,
-                        &self.pin_custody,
-                        prepared,
-                        expected_pin,
-                        trusted_clock,
-                    )?;
-                return match (pin_outcome, committed) {
-                    (WorkspacePinExecutionOutcomeV1::Satisfied, Some(result)) => {
-                        let retirement = self
-                            .coordinator
-                            .workspace_retirement(result)
-                            .map_err(|_| crate::helper::ZfsHelperError::PostconditionMismatch)?;
-                        self.workspaces
-                            .retire(retirement)
-                            .map_err(|_| crate::helper::ZfsHelperError::PostconditionMismatch)?;
-                        Ok(ZfsHelperOutcome::Committed(result))
-                    }
-                    _ => Ok(ZfsHelperOutcome::ObservationRequired {
-                        phase: DurableStoragePhase::Ambiguous,
-                        mutation_digest: entry.mutation_digest(),
-                    }),
-                };
-            }
-            WorkspaceRemovePinRequirementV1::Missing => {
-                return Err(crate::helper::ZfsHelperError::PostconditionMismatch);
-            }
-            WorkspaceRemovePinRequirementV1::NotWorkspace => {}
-        }
-
-        let outcome =
-            self.coordinator
-                .execute_preobserved(&mut self.helper, prepared, trusted_clock)?;
-        let ZfsHelperOutcome::Committed(result) = outcome else {
-            return Ok(outcome);
-        };
-        if self
-            .coordinator
-            .workspace_identity_range(result.operation_id())
-            .map_err(|_| crate::helper::ZfsHelperError::PostconditionMismatch)?
-            .is_none()
-        {
-            return Ok(ZfsHelperOutcome::Committed(result));
-        }
-
-        let pin_outcome = self.coordinator.execute_workspace_pin_ensure(
-            &mut self.pin_executor,
-            &self.pin_contract,
-            &self.pin_custody,
-            result,
-            trusted_clock,
-        )?;
-        if pin_outcome != WorkspacePinExecutionOutcomeV1::Satisfied {
-            return Err(crate::helper::ZfsHelperError::PostconditionMismatch);
-        }
-        let publication = self
-            .coordinator
-            .workspace_publication(result)
-            .map_err(|_| crate::helper::ZfsHelperError::PostconditionMismatch)?;
-        self.workspaces
-            .publish(publication)
-            .map_err(|_| crate::helper::ZfsHelperError::PostconditionMismatch)?;
-        Ok(ZfsHelperOutcome::Committed(result))
+        let _ = (operation_id, trusted_clock);
+        Err(StorageRuntimeError::Recovery)
     }
 
     fn reconcile_startup(&mut self) -> Result<StorageRuntimeReadiness, StorageRuntimeError> {
@@ -757,17 +981,11 @@ impl StorageBrokerRuntime {
                 _ => return Err(StorageRuntimeError::Recovery),
             }
         }
-        let identity_ranges = self
-            .coordinator
-            .workspace_identity_ranges()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let (workspace_plan, _) = self.coordinator.workspace_catalog_activation_plan()?;
         self.workspaces
-            .validate_transaction_identity_ranges(&identity_ranges)?;
-        let projection = self
-            .coordinator
-            .workspace_projection()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        self.workspaces.converge(projection)?;
+            .as_mut()
+            .ok_or(StorageRuntimeError::Recovery)?
+            .revalidate_plan(workspace_plan)?;
         Ok(if pending == 0 {
             StorageRuntimeReadiness::IntegrationIncomplete
         } else {
@@ -786,6 +1004,39 @@ impl StorageBrokerRuntime {
     }
 }
 
+fn prepare_catalog_candidate_before_observation<T>(
+    validated: ValidatedPendingStorageWorkspaceCatalogV1,
+    physical_plan: AuthenticatedWorkspaceCatalogPhysicalPlanV1,
+    request: WorkspaceCatalogObservationRequestV1,
+    observe: impl FnOnce(&[u8], &WorkspaceCatalogObservationRequestV1) -> Result<T, StorageRuntimeError>,
+) -> Result<
+    (StorageWorkspaceCatalogActivationCandidateV1, T),
+    (
+        ValidatedPendingStorageWorkspaceCatalogV1,
+        StorageRuntimeError,
+    ),
+> {
+    let candidate = match StorageWorkspaceCatalogActivationCandidateV1::new(
+        validated,
+        physical_plan,
+        request,
+    ) {
+        Ok(candidate) => candidate,
+        Err(failure) => {
+            let (validated, error) = failure.into_parts();
+            return Err((validated, error.into()));
+        }
+    };
+    let request_bytes = match encode_request(candidate.request()) {
+        Ok(bytes) => bytes,
+        Err(error) => return Err((candidate.into_validated(), error.into())),
+    };
+    match observe(&request_bytes, candidate.request()) {
+        Ok(observation) => Ok((candidate, observation)),
+        Err(error) => Err((candidate.into_validated(), error)),
+    }
+}
+
 pub(crate) fn authenticate_startup_authority(
     coordinator: &StorageAdmissionCoordinator,
 ) -> Result<(), StorageRuntimeError> {
@@ -795,6 +1046,62 @@ pub(crate) fn authenticate_startup_authority(
     coordinator
         .authenticate_catalog_preparations()
         .map_err(|_| StorageRuntimeError::Recovery)
+}
+
+fn configure_resolver_policy(
+    coordinator: &mut StorageAdmissionCoordinator,
+    policy_directory: Option<&Path>,
+    authority_binding: ObjectDigest,
+) -> Result<
+    (
+        Option<ProtectedStorageResolverPolicyDirectoryV1>,
+        StoragePrepareReadiness,
+    ),
+    StorageRuntimeError,
+> {
+    let Some(policy_directory) = policy_directory else {
+        return Ok((None, StoragePrepareReadiness::Unconfigured));
+    };
+    let protected = match ProtectedStorageResolverPolicyDirectoryV1::open_root_owned(
+        policy_directory,
+        authority_binding,
+    ) {
+        Ok(protected) => protected,
+        Err(_) => return Ok((None, StoragePrepareReadiness::PolicyInvalid)),
+    };
+    classify_resolver_policy_publication(protected, |binding| {
+        coordinator.admit_trusted_resolver_policy(binding)
+    })
+}
+
+fn classify_resolver_policy_publication<F>(
+    protected: ProtectedStorageResolverPolicyDirectoryV1,
+    mut admit: F,
+) -> Result<
+    (
+        Option<ProtectedStorageResolverPolicyDirectoryV1>,
+        StoragePrepareReadiness,
+    ),
+    StorageRuntimeError,
+>
+where
+    F: FnMut(
+        crate::resolver::protected_catalog::StorageResolverPolicyCatalogBindingV1,
+    )
+        -> Result<crate::state::StorageResolverPolicyAdmissionOutcomeV1, StorageBrokerError>,
+{
+    let binding = match protected.load().and_then(|catalog| catalog.binding()) {
+        Ok(binding) => binding,
+        Err(_) => return Ok((Some(protected), StoragePrepareReadiness::PolicyInvalid)),
+    };
+    let readiness = match admit(binding) {
+        Ok(_) => StoragePrepareReadiness::Ready,
+        Err(StorageBrokerError::State(StorageStateError::Rollback)) => {
+            StoragePrepareReadiness::PolicyInvalid
+        }
+        Err(error) => return Err(StorageRuntimeError::Admission(error)),
+    };
+    Ok((Some(protected), readiness))
 }
 
 fn authenticate_before_workspace_inventory<T>(
@@ -815,6 +1122,15 @@ pub(crate) fn runtime_configuration_binding(
     digest.update(identity_pool.range_start().to_be_bytes());
     digest.update(identity_pool.range_size().to_be_bytes());
     ObjectDigest::from_bytes(digest.finalize().into())
+}
+
+fn catalog_observation_nonce() -> Result<[u8; 32], ZfsWorkerError> {
+    let first = random_challenge()?;
+    let second = random_challenge()?;
+    let mut nonce = [0_u8; 32];
+    nonce[..16].copy_from_slice(&first);
+    nonce[16..].copy_from_slice(&second);
+    Ok(nonce)
 }
 
 impl From<ZfsHelperOutcome> for StorageRuntimeMutationOutcome {
@@ -988,13 +1304,18 @@ fn decode_bootstrap(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     use tempfile::TempDir;
 
     use super::*;
+    use crate::resolver::protected_catalog::{
+        ProtectedStorageResolverPolicyDirectoryV1, encode_catalog_for_test,
+    };
+    use crate::state::StorageResolverPolicyAdmissionOutcomeV1;
+    use crate::workspace_catalog::StorageWorkspaceCatalogPlanV1;
     use crate::{
         CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
         ReservationPolicy, ResolvedDataset, StorageDomainsV1, WorkspaceSpacePolicyV1,
@@ -1026,6 +1347,54 @@ mod tests {
         .unwrap()
     }
 
+    fn empty_workspace_plan() -> StorageWorkspaceCatalogPlanV1 {
+        StorageWorkspaceCatalogPlanV1::new(
+            31,
+            ObjectDigest::from_bytes([32; 32]),
+            ObjectDigest::from_bytes([33; 32]),
+            34,
+            ObjectDigest::from_bytes([35; 32]),
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn empty_observation_request(
+        validated: &ValidatedPendingStorageWorkspaceCatalogV1,
+    ) -> WorkspaceCatalogObservationRequestV1 {
+        let plan = validated.plan();
+        let snapshot = validated.snapshot();
+        let identity_pool = snapshot.identity_pool();
+        let generation = snapshot.catalog_generation().unwrap_or(1);
+        WorkspaceCatalogObservationRequestV1::new(
+            [36; 32],
+            37,
+            WorkspaceCatalogObservationBindingsV1::new(
+                ObjectDigest::from_bytes([38; 32]),
+                [39; 16],
+                plan.transaction_sequence(),
+                plan.transaction_snapshot_digest(),
+                plan.plan_digest(),
+                plan.physical_head().0,
+                plan.physical_head().1,
+                snapshot.journal_sequence(),
+                snapshot.digest(),
+                generation,
+                identity_pool.range_start(),
+                identity_pool.range_size(),
+            )
+            .unwrap(),
+            crate::observation_protocol::WorkspaceCatalogCustodyBindingV1::new(
+                [40; 16], 41, 42, 43, 44, 45,
+            )
+            .unwrap(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
     fn encode_bootstrap(generation: u64, catalogs: &[ResolvedCatalogCommitmentV1]) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(BOOTSTRAP_MAGIC);
@@ -1052,6 +1421,76 @@ mod tests {
         trailing.push(0);
         assert!(decode_bootstrap(&trailing).is_err());
         assert!(decode_bootstrap(&encode_bootstrap(6, &[])).is_err());
+    }
+
+    #[test]
+    fn inventory_preparation_finishes_or_fails_before_observer_invocation() {
+        let directory = TempDir::new().unwrap();
+        let identity_pool = StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+        let pending =
+            PendingStorageWorkspaceCatalogV1::open_for_test(directory.path(), identity_pool)
+                .unwrap();
+        let validated = pending.validate_plan(empty_workspace_plan()).unwrap();
+        let request = empty_observation_request(&validated);
+        let observer_called = Cell::new(false);
+
+        let failure = prepare_catalog_candidate_before_observation(
+            validated,
+            AuthenticatedWorkspaceCatalogPhysicalPlanV1::new_for_test(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            request,
+            |_, _| {
+                observer_called.set(true);
+                Ok(())
+            },
+        )
+        .err()
+        .unwrap();
+
+        assert!(!observer_called.get());
+        assert!(!failure.0.is_initialized());
+        assert_eq!(failure.0.plan(), &empty_workspace_plan());
+    }
+
+    #[test]
+    fn observer_failure_restores_validated_catalog_custody() {
+        let directory = TempDir::new().unwrap();
+        let identity_pool = StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+        PendingStorageWorkspaceCatalogV1::initialize_empty_for_test(
+            directory.path(),
+            identity_pool,
+        )
+        .unwrap();
+        let pending =
+            PendingStorageWorkspaceCatalogV1::open_for_test(directory.path(), identity_pool)
+                .unwrap();
+        let validated = pending.validate_plan(empty_workspace_plan()).unwrap();
+        let snapshot = validated.snapshot();
+        let request = empty_observation_request(&validated);
+        let observer_called = Cell::new(false);
+
+        let failure = prepare_catalog_candidate_before_observation::<()>(
+            validated,
+            AuthenticatedWorkspaceCatalogPhysicalPlanV1::new_for_test(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            request,
+            |_, _| {
+                observer_called.set(true);
+                Err(StorageRuntimeError::Recovery)
+            },
+        )
+        .err()
+        .unwrap();
+
+        assert!(observer_called.get());
+        assert_eq!(failure.0.snapshot(), snapshot);
+        assert!(failure.0.is_terminally_materialized());
     }
 
     #[test]
@@ -1142,5 +1581,79 @@ mod tests {
         );
         assert!(matches!(rejected, Err(StorageRuntimeError::Recovery)));
         assert!(!inventory_opened.get());
+    }
+
+    #[test]
+    fn resolver_policy_publication_has_bounded_ready_invalid_and_rollback_states() {
+        let temporary = TempDir::new().unwrap();
+        let directory = temporary.path().join("policy");
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let expected_uid = fs::metadata(&directory).unwrap().uid();
+        let authority = ObjectDigest::from_bytes([21; 32]);
+        let catalog_path = directory.join("storage-resolver-policy.catalog");
+        fs::write(&catalog_path, encode_catalog_for_test(7, authority, &[])).unwrap();
+        fs::set_permissions(&catalog_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let protected = ProtectedStorageResolverPolicyDirectoryV1::open_for_test(
+            &directory,
+            authority,
+            expected_uid,
+        )
+        .unwrap();
+        let admissions = std::cell::Cell::new(0);
+        let (retained, readiness) = classify_resolver_policy_publication(protected, |binding| {
+            admissions.set(admissions.get() + 1);
+            assert_eq!(binding.generation(), 7);
+            Ok(StorageResolverPolicyAdmissionOutcomeV1::Advanced)
+        })
+        .unwrap();
+        assert!(retained.is_some());
+        assert_eq!(readiness, StoragePrepareReadiness::Ready);
+        assert_eq!(admissions.get(), 1);
+
+        fs::write(&catalog_path, b"malformed").unwrap();
+        let protected = ProtectedStorageResolverPolicyDirectoryV1::open_for_test(
+            &directory,
+            authority,
+            expected_uid,
+        )
+        .unwrap();
+        let (retained, readiness) = classify_resolver_policy_publication(protected, |_| {
+            panic!("invalid publication reached policy-floor admission")
+        })
+        .unwrap();
+        assert!(retained.is_some());
+        assert_eq!(readiness, StoragePrepareReadiness::PolicyInvalid);
+
+        fs::write(&catalog_path, encode_catalog_for_test(7, authority, &[])).unwrap();
+        let protected = ProtectedStorageResolverPolicyDirectoryV1::open_for_test(
+            &directory,
+            authority,
+            expected_uid,
+        )
+        .unwrap();
+        let (retained, readiness) = classify_resolver_policy_publication(protected, |_| {
+            Err(StorageBrokerError::State(StorageStateError::Rollback))
+        })
+        .unwrap();
+        assert!(retained.is_some());
+        assert_eq!(readiness, StoragePrepareReadiness::PolicyInvalid);
+
+        let protected = ProtectedStorageResolverPolicyDirectoryV1::open_for_test(
+            &directory,
+            authority,
+            expected_uid,
+        )
+        .unwrap();
+        let failure = classify_resolver_policy_publication(protected, |_| {
+            Err(StorageBrokerError::State(StorageStateError::CorruptRecord))
+        });
+        assert!(matches!(
+            failure,
+            Err(StorageRuntimeError::Admission(StorageBrokerError::State(
+                StorageStateError::CorruptRecord
+            )))
+        ));
     }
 }
