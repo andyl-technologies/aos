@@ -12,6 +12,22 @@ use crucible_harness::find_gate;
 use crucible_harness::gate_targets::{GateTargetSpec, gate_targets};
 use toml::Value;
 
+struct ImplementedGateTestModel {
+    package: &'static str,
+    test_target: &'static str,
+    gate_entry_point: &'static str,
+    ignored_process_helpers: &'static [&'static str],
+}
+
+// Process helpers are test-harness entry points, but they must never replace
+// the runnable test that exercises the gate under normal Cargo invocation.
+const IMPLEMENTED_GATE_TEST_MODELS: &[ImplementedGateTestModel] = &[ImplementedGateTestModel {
+    package: "crucible-daemon",
+    test_target: "gate_campaign_component_contract",
+    gate_entry_point: "same_campaign_survives_direct_rpc_and_independent_component_restarts",
+    ignored_process_helpers: &["coordinator_process_helper", "executor_process_helper"],
+}];
+
 #[test]
 fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
@@ -57,10 +73,11 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
                     display_repo_path(&test_path, &root)
                 ));
             }
-        } else if content.contains("#[ignore") {
-            failures.push(format!(
-                "{}: implemented gate target must not be ignored",
-                display_repo_path(&test_path, &root)
+        } else {
+            failures.extend(implemented_gate_test_failures(
+                target,
+                &content,
+                &display_repo_path(&test_path, &root),
             ));
         }
 
@@ -387,7 +404,11 @@ fn mapping_regression_failures() -> Vec<String> {
         },
     ];
 
-    let feature_findings = synthetic_mapping_failures(&targets, &BTreeMap::new());
+    let ignored_implemented_target = BTreeMap::from([(
+        ("crucible-harness", "harness_lint"),
+        "#[test]\n#[ignore]\nfn harness_lint_gate() {}",
+    )]);
+    let feature_findings = synthetic_mapping_failures(&targets, &ignored_implemented_target);
     if !feature_findings
         .iter()
         .any(|finding| finding.contains("--features test-double"))
@@ -428,6 +449,72 @@ fn mapping_regression_failures() -> Vec<String> {
         .any(|finding| finding.contains("unknown canonical gate"))
     {
         failures.push("gate-target mapping regression failed to reject unknown gate".to_string());
+    }
+
+    let component_target = GateTargetSpec {
+        gate: "gate:campaign-component-contract",
+        package: "crucible-daemon",
+        test_target: "gate_campaign_component_contract",
+        required_features: &[],
+        placeholder: false,
+    };
+    let runnable_component_gate = r#"
+        #[test]
+        fn same_campaign_survives_direct_rpc_and_independent_component_restarts() {}
+
+        #[test]
+        #[ignore = "spawned process helper"]
+        fn coordinator_process_helper() {}
+
+        #[test]
+        #[ignore = "spawned process helper"]
+        fn executor_process_helper() {}
+    "#;
+    let runnable_findings = implemented_gate_test_failures(
+        &component_target,
+        runnable_component_gate,
+        "synthetic component gate",
+    );
+    if !runnable_findings.is_empty() {
+        failures.push(format!(
+            "gate-target mapping regression rejected modeled process helpers: {}",
+            runnable_findings.join(", ")
+        ));
+    }
+
+    let ignored_entry_point = runnable_component_gate.replace(
+        "#[test]\n        fn same_campaign_survives",
+        "#[test]\n        #[ignore]\n        fn same_campaign_survives",
+    );
+    if !implemented_gate_test_failures(
+        &component_target,
+        &ignored_entry_point,
+        "synthetic component gate",
+    )
+    .iter()
+    .any(|finding| finding.contains("gate entry point") && finding.contains("must not be ignored"))
+    {
+        failures.push(
+            "gate-target mapping regression failed to reject ignored component gate entry point"
+                .to_string(),
+        );
+    }
+
+    let unmodeled_helper = format!(
+        "{runnable_component_gate}\n#[test]\n#[ignore]\nfn unmodeled_process_helper() {{}}"
+    );
+    if !implemented_gate_test_failures(
+        &component_target,
+        &unmodeled_helper,
+        "synthetic component gate",
+    )
+    .iter()
+    .any(|finding| finding.contains("unmodeled_process_helper"))
+    {
+        failures.push(
+            "gate-target mapping regression failed to reject an unmodeled ignored helper"
+                .to_string(),
+        );
     }
 
     failures
@@ -471,10 +558,11 @@ fn synthetic_mapping_failures(
                         target.package, target.test_target
                     ));
                 }
-            } else if content.contains("#[ignore") {
-                failures.push(format!(
-                    "{}:{} implemented gate target must not be ignored",
-                    target.package, target.test_target
+            } else {
+                failures.extend(implemented_gate_test_failures(
+                    target,
+                    content,
+                    &format!("{}:{}", target.package, target.test_target),
                 ));
             }
         } else if !target.placeholder {
@@ -486,6 +574,108 @@ fn synthetic_mapping_failures(
     }
 
     failures
+}
+
+fn implemented_gate_test_failures(
+    target: &GateTargetSpec,
+    content: &str,
+    subject: &str,
+) -> Vec<String> {
+    let Some(model) = IMPLEMENTED_GATE_TEST_MODELS
+        .iter()
+        .find(|model| model.package == target.package && model.test_target == target.test_target)
+    else {
+        return content
+            .contains("#[ignore")
+            .then(|| format!("{subject}: implemented gate target must not be ignored"))
+            .into_iter()
+            .collect();
+    };
+
+    let tests = integration_test_functions(content);
+    let mut failures = Vec::new();
+
+    match tests.get(model.gate_entry_point) {
+        Some(false) => {}
+        Some(true) => failures.push(format!(
+            "{subject}: implemented gate entry point `{}` must not be ignored",
+            model.gate_entry_point
+        )),
+        None => failures.push(format!(
+            "{subject}: must declare runnable gate entry point `{}`",
+            model.gate_entry_point
+        )),
+    }
+
+    for helper in model.ignored_process_helpers {
+        match tests.get(*helper) {
+            Some(true) => {}
+            Some(false) => failures.push(format!(
+                "{subject}: process helper `{helper}` must remain ignored"
+            )),
+            None => failures.push(format!(
+                "{subject}: missing modeled process helper `{helper}`"
+            )),
+        }
+    }
+
+    for (name, ignored) in &tests {
+        if *ignored && !model.ignored_process_helpers.contains(&name.as_str()) {
+            failures.push(format!(
+                "{subject}: ignored test `{name}` is not a modeled process helper"
+            ));
+        }
+    }
+
+    let ignored_attribute_count = content.match_indices("#[ignore").count();
+    let ignored_test_count = tests.values().filter(|ignored| **ignored).count();
+    if ignored_attribute_count != ignored_test_count {
+        failures.push(format!(
+            "{subject}: contains an ignored attribute outside a modeled test function"
+        ));
+    }
+
+    failures
+}
+
+fn integration_test_functions(content: &str) -> BTreeMap<String, bool> {
+    // Rustfmt emits test attributes and signatures one per line. Keeping this
+    // parser narrow makes an unparsed `ignore` fail the raw-count check above.
+    let mut tests = BTreeMap::new();
+    let mut has_test_attribute = false;
+    let mut has_ignore_attribute = false;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line == "#[test]" {
+            has_test_attribute = true;
+            has_ignore_attribute = false;
+            continue;
+        }
+        if !has_test_attribute {
+            continue;
+        }
+        if line.starts_with("#[ignore") {
+            has_ignore_attribute = true;
+            continue;
+        }
+        if line.starts_with("#[") || line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+
+        if let Some(signature) = line
+            .strip_prefix("fn ")
+            .or_else(|| line.strip_prefix("async fn "))
+            && let Some((name, _)) = signature.split_once('(')
+        {
+            tests.insert(name.trim().to_string(), has_ignore_attribute);
+        }
+
+        has_test_attribute = false;
+        has_ignore_attribute = false;
+    }
+
+    tests
 }
 
 fn crucible_gate_target_requires_test_double(target: &GateTargetSpec) -> bool {
