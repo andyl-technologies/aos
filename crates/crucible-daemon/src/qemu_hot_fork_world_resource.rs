@@ -34,6 +34,7 @@ where
     released: BTreeSet<ProductionVmNodeGeneration>,
     lifecycle_launcher_required: bool,
     lifecycle_launcher_finished: bool,
+    auxiliary_lifecycle_active: bool,
     terminal: bool,
     terminal_failure: Option<String>,
 }
@@ -61,6 +62,10 @@ where
                 .field("maximum_nodes", &state.maximum_nodes)
                 .field("issued", &state.issued.len())
                 .field("released", &state.released.len())
+                .field(
+                    "auxiliary_lifecycle_active",
+                    &state.auxiliary_lifecycle_active,
+                )
                 .field("terminal", &state.terminal),
             Err(_) => output.field("state", &"poisoned"),
         };
@@ -95,6 +100,7 @@ where
                 released: BTreeSet::new(),
                 lifecycle_launcher_required: false,
                 lifecycle_launcher_finished: false,
+                auxiliary_lifecycle_active: false,
                 terminal: false,
                 terminal_failure: None,
             })),
@@ -139,6 +145,11 @@ where
                     .terminal_failure
                     .as_deref()
                     .unwrap_or("hot-fork world resource owner is terminal"),
+            ));
+        }
+        if state.lifecycle_launcher_finished {
+            return Err(world_resource_error(
+                "hot-fork world primary node registry is already sealed",
             ));
         }
         if state
@@ -187,6 +198,11 @@ where
                     .terminal_failure
                     .as_deref()
                     .unwrap_or("hot-fork world resource owner is terminal"),
+            ));
+        }
+        if state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                "hot-fork world auxiliary lifecycle is active",
             ));
         }
         Ok(operation(&mut state.guard))
@@ -248,6 +264,74 @@ where
         })
     }
 
+    /// Mints a sequential private lifecycle lease from the retained aggregate.
+    ///
+    /// The aggregate remains the sole owner of physical resources and final
+    /// release authority. The auxiliary lease receives a duplicated process
+    /// contract and serial access to the same cancellation, execution-quantum,
+    /// run-directory, and host-resource state. A new lease is available only
+    /// after every primary node target and the primary lifecycle launcher have
+    /// attested cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an executor error when the primary lifecycle is incomplete, a
+    /// prior auxiliary lease remains active, the owner is terminal or poisoned,
+    /// or the process contract cannot be duplicated.
+    pub fn auxiliary_lifecycle_guard(
+        &mut self,
+    ) -> Result<QemuHotForkWorldAuxiliaryGuard<G>, QemuVmRealizationError>
+    where
+        G: QemuAttemptProcessResourceGuard,
+    {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if state.terminal {
+            return Err(world_resource_error(
+                state
+                    .terminal_failure
+                    .as_deref()
+                    .unwrap_or("hot-fork world resource owner is terminal"),
+            ));
+        }
+        if !state.lifecycle_launcher_required || !state.lifecycle_launcher_finished {
+            return Err(world_resource_error(
+                "hot-fork world auxiliary lifecycle preceded primary launcher cleanup",
+            ));
+        }
+        if state.issued != state.released {
+            return Err(world_resource_error(
+                "hot-fork world auxiliary lifecycle has an unfinished primary child target",
+            ));
+        }
+        if state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                "hot-fork world auxiliary lifecycle is already active",
+            ));
+        }
+        let process_contract = state
+            .guard
+            .child_process_contract()?
+            .try_clone_for_attempt_generation()
+            .map_err(|source| {
+                world_resource_error(format!(
+                    "duplicate hot-fork world auxiliary process contract: {source}"
+                ))
+            })?;
+        state.auxiliary_lifecycle_active = true;
+        drop(state);
+
+        Ok(QemuHotForkWorldAuxiliaryGuard {
+            state: Arc::clone(&self.state),
+            resources: self.resources,
+            cancellation: self.cancellation.clone(),
+            process_contract,
+            finished: false,
+        })
+    }
+
     /// Releases aggregate enforcement after every exact child target finished.
     ///
     /// The method is idempotent after success. An incomplete target set
@@ -280,6 +364,14 @@ where
             let message = String::from(
                 "hot-fork world aggregate release preceded lifecycle launcher cleanup",
             );
+            state.guard.quarantine();
+            state.terminal = true;
+            state.terminal_failure = Some(message.clone());
+            return Err(world_resource_error(message));
+        }
+        if state.auxiliary_lifecycle_active {
+            let message =
+                String::from("hot-fork world aggregate release has an active auxiliary lifecycle");
             state.guard.quarantine();
             state.terminal = true;
             state.terminal_failure = Some(message.clone());
@@ -446,6 +538,178 @@ where
 }
 
 impl<G> Drop for QemuHotForkWorldLifecycleGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn drop(&mut self) {
+        self.quarantine();
+    }
+}
+
+/// Linear process-resource lease for one private auxiliary lifecycle.
+///
+/// The duplicated process contract retains the aggregate containment identity,
+/// but carries no run path or child identity. Each generation directory is
+/// provisioned afresh through the underlying aggregate guard. The caller must
+/// supply the distinct execution and process identities used to populate that
+/// directory; this lease never receives source-template or publication
+/// authority.
+#[must_use = "finish the auxiliary lifecycle lease after exact child cleanup"]
+pub struct QemuHotForkWorldAuxiliaryGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    state: Arc<Mutex<QemuHotForkWorldResourceState<G>>>,
+    resources: AttemptResourceLimits,
+    cancellation: ExecutionCancellation,
+    process_contract: QemuChildProcessContract,
+    finished: bool,
+}
+
+impl<G> fmt::Debug for QemuHotForkWorldAuxiliaryGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("QemuHotForkWorldAuxiliaryGuard")
+            .field("resources", &self.resources)
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<G> QemuAttemptOperationalBoundary for QemuHotForkWorldAuxiliaryGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        self.resources
+    }
+
+    fn cancellation(&self) -> &ExecutionCancellation {
+        &self.cancellation
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                "hot-fork world auxiliary lifecycle is not operational",
+            ));
+        }
+        state.guard.check_operational_boundary()
+    }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                "hot-fork world auxiliary lifecycle is not operational",
+            ));
+        }
+        state.guard.charge_execution_quantum()
+    }
+}
+
+impl<G> QemuAttemptResourceGuard for QemuHotForkWorldAuxiliaryGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.finished {
+            return Ok(());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if state.terminal || !state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                state
+                    .terminal_failure
+                    .as_deref()
+                    .unwrap_or("hot-fork world auxiliary lifecycle is not active"),
+            ));
+        }
+        state.auxiliary_lifecycle_active = false;
+        self.finished = true;
+        Ok(())
+    }
+
+    fn quarantine(&mut self) {
+        if !self.finished {
+            quarantine_world_state(&self.state);
+            self.finished = true;
+        }
+    }
+}
+
+impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldAuxiliaryGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                "hot-fork world auxiliary lifecycle cannot lend its process contract",
+            ));
+        }
+        drop(state);
+        Ok(&self.process_contract)
+    }
+
+    fn prepare_generation_run_directory(
+        &mut self,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                "hot-fork world auxiliary lifecycle cannot prepare a generation directory",
+            ));
+        }
+        state.guard.prepare_generation_run_directory(requirements)
+    }
+
+    fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.guard.retain_failed_launch_child(child);
+                state.guard.quarantine();
+                state.terminal = true;
+                state.terminal_failure = Some(String::from(
+                    "hot-fork world auxiliary lifecycle retained an unreaped launch child",
+                ));
+            }
+            Err(poisoned) => {
+                let mut state = poisoned.into_inner();
+                state.guard.retain_failed_launch_child(child);
+                state.guard.quarantine();
+                state.terminal = true;
+                state.terminal_failure = Some(String::from(
+                    "hot-fork world auxiliary resource registry was poisoned",
+                ));
+            }
+        }
+        self.finished = true;
+    }
+}
+
+impl<G> Drop for QemuHotForkWorldAuxiliaryGuard<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
@@ -662,6 +926,7 @@ mod tests {
     // crucible-lint: allow panic-shortcut -- fixture construction and expected success must fail the test on error.
     #![allow(clippy::expect_used)]
 
+    use std::os::unix::net::UnixStream;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crucible::NodeId;
@@ -674,6 +939,7 @@ mod tests {
         resources: AttemptResourceLimits,
         cancellation: ExecutionCancellation,
         counter: QemuExecutionQuantumCounter,
+        process_contract: QemuChildProcessContract,
         finishes: Arc<AtomicUsize>,
         quarantines: Arc<AtomicUsize>,
     }
@@ -688,10 +954,17 @@ mod tests {
         }
 
         fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
-            Ok(())
+            if self.cancellation.is_canceled() {
+                Err(QemuVmRealizationError::Canceled {
+                    operation: "check fake world resources",
+                })
+            } else {
+                Ok(())
+            }
         }
 
         fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+            self.check_operational_boundary()?;
             self.counter.charge()
         }
     }
@@ -707,8 +980,27 @@ mod tests {
         }
     }
 
+    impl QemuAttemptProcessResourceGuard for FakeGuard {
+        fn child_process_contract(
+            &self,
+        ) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+            Ok(&self.process_contract)
+        }
+
+        fn prepare_generation_run_directory(
+            &mut self,
+            _requirements: QemuLaunchResourceRequirements,
+        ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+            Err(world_resource_error(
+                "fake world resources do not provision run directories",
+            ))
+        }
+
+        fn retain_failed_launch_child(&mut self, _child: QemuNodeChild) {}
+    }
+
     fn resources() -> AttemptResourceLimits {
-        AttemptResourceLimits::new(2, 1024, 1024, 2).expect("resource limits")
+        AttemptResourceLimits::new(1, 1024, 1024, 2).expect("resource limits")
     }
 
     fn identity(name: &str, generation: u64) -> ProductionVmNodeGeneration {
@@ -723,13 +1015,33 @@ mod tests {
 
     fn guard(finishes: Arc<AtomicUsize>, quarantines: Arc<AtomicUsize>) -> FakeGuard {
         let resources = resources();
+        let (cgroup_procs, _cgroup_peer) =
+            UnixStream::pair().expect("fake cgroup process descriptor");
+        let (cancellation_event, _cancellation_peer) =
+            UnixStream::pair().expect("fake cancellation descriptor");
         FakeGuard {
             resources,
             cancellation: ExecutionCancellation::default(),
             counter: QemuExecutionQuantumCounter::new(resources),
+            process_contract: QemuChildProcessContract::from_unvalidated_test_descriptors(
+                cgroup_procs.into(),
+                cancellation_event.into(),
+                resources.maximum_vcpus(),
+                resources.maximum_resident_bytes(),
+                resources.maximum_disk_bytes(),
+            ),
             finishes,
             quarantines,
         }
+    }
+
+    fn finish_primary_lifecycle(owner: &mut QemuHotForkWorldResourceOwner<FakeGuard>, node: &str) {
+        let mut target = owner
+            .reserve_node(identity(node, 1))
+            .expect("primary target");
+        QemuAttemptResourceGuard::finish(&mut target).expect("finish primary target");
+        let mut lifecycle = owner.lifecycle_guard().expect("primary lifecycle guard");
+        QemuAttemptResourceGuard::finish(&mut lifecycle).expect("finish primary lifecycle");
     }
 
     #[test]
@@ -841,6 +1153,148 @@ mod tests {
 
         drop(ambiguous);
         assert!(owner.finish().is_err());
+        assert_eq!(finishes.load(Ordering::Acquire), 0);
+        assert_eq!(quarantines.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn auxiliary_lifecycle_requires_complete_primary_cleanup() {
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let quarantines = Arc::new(AtomicUsize::new(0));
+        let mut owner = QemuHotForkWorldResourceOwner::new(
+            guard(Arc::clone(&finishes), Arc::clone(&quarantines)),
+            1,
+        )
+        .expect("world owner");
+        assert!(owner.auxiliary_lifecycle_guard().is_err());
+
+        let mut target = owner
+            .reserve_node(identity("node", 1))
+            .expect("primary target");
+        let mut lifecycle = owner.lifecycle_guard().expect("primary lifecycle guard");
+        QemuAttemptResourceGuard::finish(&mut lifecycle).expect("finish primary lifecycle");
+        assert!(owner.auxiliary_lifecycle_guard().is_err());
+
+        QemuAttemptResourceGuard::finish(&mut target).expect("finish primary target");
+        let mut auxiliary = owner
+            .auxiliary_lifecycle_guard()
+            .expect("complete primary admits auxiliary lifecycle");
+        QemuAttemptResourceGuard::finish(&mut auxiliary).expect("finish auxiliary lifecycle");
+        owner.finish().expect("finish aggregate");
+
+        assert_eq!(finishes.load(Ordering::Acquire), 1);
+        assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn auxiliary_lifecycle_is_a_single_reusable_sequential_lease() {
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let quarantines = Arc::new(AtomicUsize::new(0));
+        let mut owner = QemuHotForkWorldResourceOwner::new(
+            guard(Arc::clone(&finishes), Arc::clone(&quarantines)),
+            1,
+        )
+        .expect("world owner");
+        finish_primary_lifecycle(&mut owner, "node");
+
+        let mut first = owner
+            .auxiliary_lifecycle_guard()
+            .expect("first auxiliary lifecycle");
+        assert!(owner.auxiliary_lifecycle_guard().is_err());
+        QemuAttemptResourceGuard::finish(&mut first).expect("finish first auxiliary lifecycle");
+
+        let mut second = owner
+            .auxiliary_lifecycle_guard()
+            .expect("second sequential auxiliary lifecycle");
+        QemuAttemptResourceGuard::finish(&mut second).expect("finish second auxiliary lifecycle");
+        owner.finish().expect("finish aggregate");
+        owner.finish().expect("aggregate finish is idempotent");
+
+        assert_eq!(finishes.load(Ordering::Acquire), 1);
+        assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn auxiliary_lifecycle_shares_one_capacity_quantum_and_cancellation() {
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let quarantines = Arc::new(AtomicUsize::new(0));
+        let mut owner = QemuHotForkWorldResourceOwner::new(
+            guard(Arc::clone(&finishes), Arc::clone(&quarantines)),
+            1,
+        )
+        .expect("world owner");
+        let mut target = owner
+            .reserve_node(identity("node", 1))
+            .expect("primary target");
+        target.charge_execution_quantum().expect("primary quantum");
+        QemuAttemptResourceGuard::finish(&mut target).expect("finish primary target");
+        let mut lifecycle = owner.lifecycle_guard().expect("primary lifecycle guard");
+        QemuAttemptResourceGuard::finish(&mut lifecycle).expect("finish primary lifecycle");
+
+        let mut auxiliary = owner
+            .auxiliary_lifecycle_guard()
+            .expect("auxiliary lifecycle");
+        assert_eq!(auxiliary.resource_limits(), owner.resource_limits());
+        assert!(
+            auxiliary
+                .cancellation()
+                .same_incarnation(owner.cancellation())
+        );
+        auxiliary
+            .charge_execution_quantum()
+            .expect("remaining shared quantum");
+        assert!(auxiliary.charge_execution_quantum().is_err());
+
+        owner.cancellation().cancel_for_test();
+        assert!(auxiliary.check_operational_boundary().is_err());
+        assert_eq!(finishes.load(Ordering::Acquire), 0);
+        assert_eq!(quarantines.load(Ordering::Acquire), 0);
+        QemuAttemptResourceGuard::finish(&mut auxiliary).expect("finish canceled auxiliary");
+        owner.finish().expect("finish canceled aggregate");
+
+        assert_eq!(finishes.load(Ordering::Acquire), 1);
+        assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn auxiliary_cleanup_failure_quarantines_and_poisons_the_aggregate() {
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let quarantines = Arc::new(AtomicUsize::new(0));
+        let mut owner = QemuHotForkWorldResourceOwner::new(
+            guard(Arc::clone(&finishes), Arc::clone(&quarantines)),
+            1,
+        )
+        .expect("world owner");
+        finish_primary_lifecycle(&mut owner, "node");
+        let mut auxiliary = owner
+            .auxiliary_lifecycle_guard()
+            .expect("auxiliary lifecycle");
+
+        auxiliary.quarantine();
+        assert!(owner.auxiliary_lifecycle_guard().is_err());
+        assert!(owner.finish().is_err());
+
+        assert_eq!(finishes.load(Ordering::Acquire), 0);
+        assert_eq!(quarantines.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn aggregate_finish_refuses_an_active_auxiliary_lifecycle() {
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let quarantines = Arc::new(AtomicUsize::new(0));
+        let mut owner = QemuHotForkWorldResourceOwner::new(
+            guard(Arc::clone(&finishes), Arc::clone(&quarantines)),
+            1,
+        )
+        .expect("world owner");
+        finish_primary_lifecycle(&mut owner, "node");
+        let auxiliary = owner
+            .auxiliary_lifecycle_guard()
+            .expect("auxiliary lifecycle");
+
+        assert!(owner.finish().is_err());
+        drop(auxiliary);
+
         assert_eq!(finishes.load(Ordering::Acquire), 0);
         assert_eq!(quarantines.load(Ordering::Acquire), 1);
     }
