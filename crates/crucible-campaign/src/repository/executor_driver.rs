@@ -19,6 +19,30 @@ use crate::{
     SavepointCaptureResolution,
 };
 
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const COORDINATOR_BEFORE_OBSERVATION_COMMIT_TRIGGER: &str =
+    "crucible.destructive-recovery.coordinator-before-observation-commit";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_FAULT_EXIT_CODE: i32 = 86;
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn terminate_before_observation_commit_if_requested() {
+    let requested = std::env::var_os(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT);
+    if requested.as_deref()
+        == Some(std::ffi::OsStr::new(
+            COORDINATOR_BEFORE_OBSERVATION_COMMIT_TRIGGER,
+        ))
+    {
+        // Exiting without unwinding models loss of the coordinator's volatile
+        // reservations at the exact authenticated-publication boundary.
+        std::process::exit(DESTRUCTIVE_RECOVERY_FAULT_EXIT_CODE);
+    }
+}
+
 /// Coordinator-owned bounded driver for one local executor component.
 pub struct CampaignExecutorDriver<S> {
     repository: Arc<CampaignRepository>,
@@ -117,6 +141,8 @@ impl<S> CampaignExecutorDriver<S> {
             .validate_executor_finding_candidate(observation, finding_candidate)?;
         let observation_record = self.repository.load_observation(observation)?;
         let expected = self.repository.head(campaign)?.snapshot_id();
+        #[cfg(feature = "destructive-recovery-faults")]
+        terminate_before_observation_commit_if_requested();
         let observation =
             self.repository
                 .publish_observation(campaign, expected, &observation_record)?;

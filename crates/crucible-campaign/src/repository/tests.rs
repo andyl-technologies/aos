@@ -295,8 +295,6 @@ fn fixture_with_quota_and_authorities(
     CampaignPolicy,
     Arc<MemoryBlobBackend>,
 ) {
-    let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", b"scenario"));
-    let genesis = ConfigurationId::from_hash(CampaignHash::derive("test", b"genesis"));
     let blobs = Arc::new(MemoryBlobBackend::new("campaign", max_logical_bytes));
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = if let Some((planner, debugger)) = authorities {
@@ -305,6 +303,16 @@ fn fixture_with_quota_and_authorities(
     } else {
         CampaignRepository::new(blobs.clone(), refs)
     };
+
+    let (repository, lineage, policy) = initialize_fixture(repository);
+    (repository, lineage, policy, blobs)
+}
+
+fn initialize_fixture(
+    repository: CampaignRepository,
+) -> (CampaignRepository, CampaignLineage, CampaignPolicy) {
+    let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", b"scenario"));
+    let genesis = ConfigurationId::from_hash(CampaignHash::derive("test", b"genesis"));
     let scenario_content = repository
         .publish_scenario_artifact(scenario, 1, b"scenario".to_vec())
         .expect("scenario artifact");
@@ -349,7 +357,7 @@ fn fixture_with_quota_and_authorities(
         true,
     )
     .expect("policy");
-    (repository, lineage, policy, blobs)
+    (repository, lineage, policy)
 }
 
 fn command(
