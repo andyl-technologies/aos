@@ -99,14 +99,7 @@ impl GuardedCampaignFindingOracle for QemuSearchSupplementalOracle {
     ) -> Result<Option<GuardedCampaignFindingOracleEvaluation>, GuardedCampaignFindingOracleError>
     {
         self.assertion_finding(configuration)
-            .map(|finding| {
-                finding.map(|finding| {
-                    GuardedCampaignFindingOracleEvaluation::new(
-                        finding.violation().assertion.name.clone(),
-                        crucible_campaign::CampaignHash::from_bytes(finding.fingerprint().bytes),
-                    )
-                })
-            })
+            .map(|finding| finding.map(GuardedCampaignFindingOracleEvaluation::new))
             .map_err(|error| GuardedCampaignFindingOracleError::new(error.to_string()))
     }
 }

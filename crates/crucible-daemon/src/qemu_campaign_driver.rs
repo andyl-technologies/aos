@@ -291,7 +291,6 @@ pub struct QemuFreshPendingObservation {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct QemuFindingCandidateBoundaryEvidence {
     replay: CrucibleFindingReplayEvidence,
-    property_verdicts: PropertyVerdictSet,
     measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
     final_events: Vec<SchedulerEventLogEntry>,
     triage: QemuFindingCandidateTriageInputs,
@@ -416,10 +415,6 @@ impl QemuFindingCandidateBoundaryEvidence {
 
     pub(crate) fn measurement_replay_evidence(&self) -> &[CrucibleMeasurementReplayEvidence] {
         &self.measurement_replay_evidence
-    }
-
-    pub(crate) const fn property_verdicts(&self) -> &PropertyVerdictSet {
-        &self.property_verdicts
     }
 
     pub(crate) fn final_events(&self) -> &[SchedulerEventLogEntry] {
@@ -946,7 +941,7 @@ impl QemuFindingReplayDriver for QemuFreshModeledDriver {
         candidate: &ConfigurationArtifact,
         final_events: Vec<SchedulerEventLogEntry>,
     ) -> Result<QemuFindingCandidateBoundaryEvidence, QemuFreshModeledDriverError> {
-        build_finding_candidate_boundary_evidence(pending, candidate, final_events)
+        build_finding_candidate_boundary_evidence(pending, candidate, final_events, None)
     }
 }
 
@@ -983,6 +978,28 @@ impl QemuFreshAttemptDriver for QemuFreshSupplementalModeledDriver {
             (Some(_), None) | (None, Some(_)) => Err(QemuFreshModeledDriverError::ScenarioMismatch),
         }
         .map_err(AttemptWorkerFailure::Terminal)
+    }
+}
+
+impl QemuFindingReplayDriver for QemuFreshSupplementalModeledDriver {
+    fn build_finding_candidate_boundary_evidence(
+        &self,
+        pending: QemuFreshPendingObservation,
+        candidate: &ConfigurationArtifact,
+        final_events: Vec<SchedulerEventLogEntry>,
+    ) -> Result<QemuFindingCandidateBoundaryEvidence, QemuFreshModeledDriverError> {
+        match (self.oracle.as_deref(), self.source) {
+            (Some(oracle), Some(source)) => build_finding_candidate_boundary_evidence(
+                pending,
+                candidate,
+                final_events,
+                Some((oracle, source)),
+            ),
+            (None, None) => {
+                build_finding_candidate_boundary_evidence(pending, candidate, final_events, None)
+            }
+            (Some(_), None) | (None, Some(_)) => Err(QemuFreshModeledDriverError::ScenarioMismatch),
+        }
     }
 }
 
@@ -2357,6 +2374,19 @@ fn project_boundary(
         .map(FailurePropertyViolationRecord::new)
         .map(FailureClusterReportFailure::property)
         .collect();
+    if let Some((evaluation, _)) = &supplemental
+        && !failures.iter().any(|failure| {
+            matches!(
+                failure,
+                FailureClusterReportFailure::Property(record)
+                    if record.violation.assertion.name == evaluation.property()
+            )
+        })
+    {
+        failures.push(FailureClusterReportFailure::property(
+            FailurePropertyViolationRecord::new(evaluation.violation().clone()),
+        ));
+    }
     if let Some(timeout) = timeout {
         failures.push(FailureClusterReportFailure::timeout(timeout));
     }
@@ -2528,13 +2558,14 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
     mut pending: QemuFreshPendingObservation,
     candidate: &ConfigurationArtifact,
     final_events: Vec<SchedulerEventLogEntry>,
+    supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
 ) -> Result<QemuFindingCandidateBoundaryEvidence, QemuFreshModeledDriverError> {
     append_event_entries(
         &mut pending.event_log,
         &mut pending.event_log_bytes,
         final_events.clone(),
     )?;
-    let projection = project_boundary(pending, false, None)?;
+    let projection = project_boundary(pending, false, supplemental_oracle)?;
     if projection.child != *candidate {
         return Err(QemuFreshModeledDriverError::Artifact(
             CrucibleArtifactError::SemanticIdentityMismatch {
@@ -2555,7 +2586,6 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
     let coverage_fingerprint = coverage_fingerprint_from_event_log(&causal_entries);
     Ok(QemuFindingCandidateBoundaryEvidence {
         replay,
-        property_verdicts: projection.properties,
         measurement_replay_evidence: vec![projection.measurement_evidence],
         final_events,
         triage: QemuFindingCandidateTriageInputs {

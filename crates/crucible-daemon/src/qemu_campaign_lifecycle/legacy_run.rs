@@ -55,8 +55,8 @@ use crate::{
     ExactCheckpointStoreError, ExecutionCancellation, ExecutorCapacityError,
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostResourceFactory,
     MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, QemuAttemptHostResourceFactory,
-    QemuFreshModeledDriver, QemuFreshModeledDriverError, RepositoryAttemptAdmission,
-    SharedQemuAttemptHostResourceFactory, decode_crucible_configuration_artifact_with_selections,
+    QemuFreshModeledDriverError, RepositoryAttemptAdmission, SharedQemuAttemptHostResourceFactory,
+    decode_crucible_configuration_artifact_with_selections,
 };
 
 mod executor;
@@ -869,30 +869,32 @@ impl GuardedCampaignSupplementalFinding {
 /// One deterministic property failure returned by a supplemental oracle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuardedCampaignFindingOracleEvaluation {
-    property: String,
-    fingerprint: CampaignHash,
+    finding: crucible::SearchAssertionFinding,
 }
 
 impl GuardedCampaignFindingOracleEvaluation {
-    /// Builds one scenario-property result and its stable failure fingerprint.
+    /// Retains one typed assertion finding returned by the immutable oracle.
     #[must_use]
-    pub fn new(property: String, fingerprint: CampaignHash) -> Self {
-        Self {
-            property,
-            fingerprint,
-        }
+    pub fn new(finding: crucible::SearchAssertionFinding) -> Self {
+        Self { finding }
     }
 
     /// Returns the scenario-declared property selected by the oracle.
     #[must_use]
     pub fn property(&self) -> &str {
-        &self.property
+        &self.finding.violation().assertion.name
     }
 
     /// Returns the stable failure fingerprint for the evaluated configuration.
     #[must_use]
-    pub const fn fingerprint(&self) -> CampaignHash {
-        self.fingerprint
+    pub fn fingerprint(&self) -> CampaignHash {
+        CampaignHash::from_bytes(self.finding.fingerprint().bytes)
+    }
+
+    /// Returns the actual typed assertion violation produced by the oracle.
+    #[must_use]
+    pub const fn violation(&self) -> &crucible::HostAssertionViolation {
+        self.finding.violation()
     }
 }
 
@@ -1338,14 +1340,17 @@ where
     );
     let (lifecycle_factory, execution_evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(production);
-    let main_driver =
-        QemuFreshSupplementalModeledDriver::new(request.supplemental_finding_oracle.clone());
+    let supplemental_oracle = request.supplemental_finding_oracle.clone();
+    let main_driver = QemuFreshSupplementalModeledDriver::new(supplemental_oracle.clone());
     let main = QemuFreshExecutionRunner::new(lifecycle_factory, main_driver);
     let replay_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
         request.lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(host),
     );
-    let replay = QemuFreshExecutionRunner::new(replay_lifecycles, QemuFreshModeledDriver::new());
+    let replay = QemuFreshExecutionRunner::new(
+        replay_lifecycles,
+        QemuFreshSupplementalModeledDriver::new(supplemental_oracle),
+    );
 
     let (repository, planner_authority) = default_run_repository(
         Arc::new(MemoryBlobBackend::new(
