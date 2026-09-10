@@ -1206,6 +1206,7 @@ in rec {
         "checks.crucible.phase5.gates.campaignContinuityV2" = phase5.gates.campaignContinuityV2;
         "checks.crucible.phase5.gates.campaignStoreComposition" = phase5.gates.campaignStoreComposition;
         "checks.crucible.phase5.gates.campaignStoreEquivalence" = phase5.gates.campaignStoreEquivalence;
+        "checks.crucible.phase7.gates.hotForkIsolation.rawGate" = phase7.gates.hotForkIsolation.rawGate;
         "checks.crucible.phase7.qemuHotForkEquivalenceVm" = phase7.qemuHotForkEquivalenceVm;
       };
     };
@@ -2960,6 +2961,20 @@ in rec {
       ];
     };
     gates = rec {
+      hotForkIsolation = redBeforeAdvance {
+        attrPath = "checks.crucible.phase7.gates.hotForkIsolation";
+        gate = import ./phase7-crucible-hot-fork-isolation.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase7.gates.hotForkIsolation.rawGate";
+          taskIds = [];
+        };
+        dependencies = [];
+        phase = "phase7";
+        reason = "native resource isolation acceptance remains incomplete";
+        taskIds = ["T-CAM-7.1" "T-CAM-7.3" "T-CAM-7.6"];
+        gateName = "gate:hot-fork-isolation";
+        owner = "crucible-daemon";
+      };
       perfBench = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";
         # lint needle: perfBench = import ./phase7-perf-bench.nix
