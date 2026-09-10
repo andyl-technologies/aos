@@ -2374,15 +2374,14 @@ fn project_boundary(
         .map(FailurePropertyViolationRecord::new)
         .map(FailureClusterReportFailure::property)
         .collect();
-    if let Some((evaluation, _)) = &supplemental
-        && !failures.iter().any(|failure| {
-            matches!(
+    if let Some((evaluation, _)) = &supplemental {
+        failures.retain(|failure| {
+            !matches!(
                 failure,
                 FailureClusterReportFailure::Property(record)
                     if record.violation.assertion.name == evaluation.property()
             )
-        })
-    {
+        });
         failures.push(FailureClusterReportFailure::property(
             FailurePropertyViolationRecord::new(evaluation.violation().clone()),
         ));
