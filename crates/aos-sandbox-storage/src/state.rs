@@ -13,19 +13,24 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
-use aos_sandbox_core::{MediaType, ObjectDescriptor, ObjectDigest};
+use aos_sandbox_core::{
+    AssignmentEpoch, BrokerAssignment, DesiredGeneration, IncarnationId, MediaType, NodeId,
+    ObjectDescriptor, ObjectDigest, SandboxId,
+};
 use hmac::{Hmac, Mac as _};
 use sha2::{Digest as _, Sha256};
 
 use crate::broker::FreshWorkspacePinAuthority;
 use crate::catalog_transition::{
     CatalogReservation, PhysicalWorkspaceProjection, StorageCatalogTransitionProvider,
-    VerifiedPhysicalCatalogSnapshotV2,
+    VerifiedPhysicalCatalogSnapshotV1,
 };
 use crate::resolver::protected_catalog::{
     StorageResolverPolicyBindingV1, StorageResolverPolicyCatalogBindingV1,
 };
-use crate::workspace_catalog::StorageWorkspacePublicationIntentV1;
+use crate::workspace_catalog::{
+    DurablePortableWorkspaceMetadataV1, StorageWorkspacePublicationIntentV1,
+};
 use crate::workspace_pin::{
     BeginWorkspacePinAttemptV1, MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE, WorkspaceDatasetObservationV1,
     WorkspacePinActionV1, WorkspacePinAttemptPhaseV1, WorkspacePinAttemptV1,
@@ -40,11 +45,7 @@ use crate::{CatalogBindingV1, CatalogPlanV1, PostconditionPolicyV1, ResolvedCata
 type HmacSha256 = Hmac<Sha256>;
 
 const MAGIC: &[u8; 8] = b"AOSSTX01";
-const VERSION: u16 = 4;
-const IDENTITY_VERSION: u16 = 3;
-const LEGACY_VERSION: u16 = 2;
-#[cfg(test)]
-pub(crate) const TEST_LEGACY_FORMAT_VERSIONS: [u16; 2] = [LEGACY_VERSION, IDENTITY_VERSION];
+const VERSION: u16 = 1;
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.storage.state.record.v1\0";
 const MUTATION_DOMAIN: &[u8] = b"aos.sandbox.storage.mutation.v1\0";
 const POSTCONDITION_DOMAIN: &[u8] = b"aos.sandbox.storage.postcondition.v1\0";
@@ -62,9 +63,10 @@ const PUBLICATION_INTENT_MAGIC: &[u8; 8] = b"AOSSPI01";
 const PUBLICATION_INTENT_VERSION: u16 = 1;
 const MAXIMUM_RECORD_BYTES: usize = 64 * 1024;
 const MAXIMUM_PREPARATION_RECORD_BYTES: usize = 128 * 1024;
+pub(crate) const MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES: usize =
+    MAXIMUM_PREPARATION_RECORD_BYTES;
 const FIXED_PREFIX_BYTES: usize = 8 + 2 + 1 + 16 + 16 + 16 + 32 + 32 + 8 + 32 + 32 + 4;
-const LEGACY_RESULT_BYTES: usize = 8 + 32 + 32;
-const RESULT_BYTES: usize = LEGACY_RESULT_BYTES + 1 + 32 + 32 + 8;
+const RESULT_BYTES: usize = 8 + 32 + 32 + 1 + 32 + 32 + 8;
 const MAC_BYTES: usize = 32;
 const RESULT_HAS_STORAGE_HANDLE: u8 = 1;
 const RESULT_HAS_VERSION_HANDLE: u8 = 1 << 1;
@@ -153,14 +155,21 @@ impl StorageStateKey {
     }
 
     #[cfg(test)]
-    pub(crate) fn seal_workspace_publication_intent_for_test(
+    pub(crate) fn retag_workspace_publication_intent_for_test(
         &self,
-        intent: &StorageWorkspacePublicationIntentV1,
-    ) -> Result<Vec<u8>, StorageStateError> {
-        publication_intent_record(self, intent)?
-            .value()
-            .map(ToOwned::to_owned)
-            .ok_or(StorageStateError::InvalidValue)
+        bytes: &mut [u8],
+    ) -> Result<(), StorageStateError> {
+        let payload_length = bytes
+            .len()
+            .checked_sub(MAC_BYTES)
+            .ok_or(StorageStateError::CorruptRecord)?;
+        let operation_id: [u8; 16] = bytes
+            .get(26..42)
+            .and_then(|value| value.try_into().ok())
+            .ok_or(StorageStateError::CorruptRecord)?;
+        let tag = publication_intent_tag(self, &operation_id, &bytes[..payload_length])?;
+        bytes[payload_length..].copy_from_slice(&tag);
+        Ok(())
     }
 }
 
@@ -421,8 +430,8 @@ struct DurableRecord {
 /// Its fields are private so row vectors or hashes cannot be promoted by a
 /// caller. Construction reloads both the physical head and every operation
 /// record directly from the protected journal and cross-validates them.
-pub(crate) struct VerifiedStorageResolverJournalV2 {
-    physical: VerifiedPhysicalCatalogSnapshotV2,
+pub(crate) struct VerifiedStorageResolverJournalV1 {
+    physical: VerifiedPhysicalCatalogSnapshotV1,
     records: BTreeMap<[u8; 16], VerifiedStorageResolverOperationV1>,
 }
 
@@ -432,8 +441,8 @@ pub(crate) struct VerifiedStorageResolverOperationV1 {
     result: CommittedStorageResultV1,
 }
 
-impl VerifiedStorageResolverJournalV2 {
-    pub(crate) const fn physical(&self) -> &VerifiedPhysicalCatalogSnapshotV2 {
+impl VerifiedStorageResolverJournalV1 {
+    pub(crate) const fn physical(&self) -> &VerifiedPhysicalCatalogSnapshotV1 {
         &self.physical
     }
 
@@ -966,32 +975,6 @@ impl StorageTransactionStore {
         self.catalog_transitions
             .head_binding()
             .ok_or(StorageStateError::InvalidTransition)
-    }
-
-    /// Reports whether legacy pending state lacks the runtime binding.
-    ///
-    /// Such state may be observed for recovery but cannot authorize dispatch.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageStateError::Journal`] after a commit failure poisons
-    /// the cached authority view.
-    pub fn requires_legacy_recovery(&self) -> Result<bool, StorageStateError> {
-        self.ensure_authority_readable()?;
-        let missing_publication_intent = self.records.values().try_fold(
-            false,
-            |missing, record| -> Result<bool, StorageStateError> {
-                let catalog =
-                    ResolvedCatalogCommitmentV1::from_canonical_bytes(&record.catalog_bytes)
-                        .map_err(|_| StorageStateError::CorruptRecord)?;
-                Ok(missing
-                    || (requires_workspace_publication(catalog.plan())
-                        && !self.publication_intents.contains_key(&record.operation_id)))
-            },
-        )?;
-        Ok((self.runtime_configuration.is_none()
-            && (!self.records.is_empty() || self.catalog_transitions.head_binding().is_some()))
-            || missing_publication_intent)
     }
 
     pub(crate) fn workspace_publication_intent(
@@ -1582,27 +1565,35 @@ impl StorageTransactionStore {
             WorkspacePinActionV1::Ensure,
             1,
         )?;
-        WorkspacePinAttemptV1::new_ambiguous(
+        let common = (
             attempt_id,
-            1,
-            WorkspacePinActionV1::Ensure,
-            record.operation_id,
             record.operation_id,
             operation_fence_digest,
+            workspace_handle,
+            dataset_guid,
+        );
+        WorkspacePinAttemptV1::new_ambiguous(
+            common.0,
+            1,
+            WorkspacePinActionV1::Ensure,
+            common.1,
+            common.1,
+            common.2,
             effect_assignment_digest,
             intent.assignment_digest(),
             result.catalog(),
             result.result_digest(),
-            workspace_handle,
+            common.3,
             host_scope.kernel_boot_id(),
             host_scope.mount_namespace_device(),
             host_scope.mount_namespace_inode(),
             clock_provenance,
             effect_deadline_boottime_nanoseconds,
             dataset_name.to_owned(),
-            dataset_guid,
+            common.4,
             intent.identity_range_start(),
             intent.identity_range_size(),
+            intent.portable_metadata().root_policy(),
             None,
         )
     }
@@ -1670,6 +1661,7 @@ impl StorageTransactionStore {
             latest.dataset_guid(),
             latest.identity_range_start(),
             latest.identity_range_size(),
+            latest.root_policy(),
             None,
         )
     }
@@ -1810,6 +1802,7 @@ impl StorageTransactionStore {
             dataset.guid(),
             intent.identity_range_start(),
             intent.identity_range_size(),
+            intent.portable_metadata().root_policy(),
             Some(expected_pin),
         )
     }
@@ -2010,7 +2003,7 @@ impl StorageTransactionStore {
     pub(crate) fn workspace_projection(
         &self,
     ) -> Result<Vec<StorageWorkspaceProjection>, StorageStateError> {
-        self.workspace_projection_plan()?.compatibility_projection()
+        self.workspace_projection_plan()?.ready_projection()
     }
 
     pub(crate) fn managed_workspace_creation(
@@ -2103,7 +2096,10 @@ impl StorageTransactionStore {
         catalog: &ResolvedCatalogCommitmentV1,
     ) -> Result<PreparedRecord, StorageStateError> {
         self.ensure_authority_readable()?;
-        if operation_id == [0; 16] || request_digest.as_bytes() == &[0; 32] {
+        if operation_id == [0; 16]
+            || request_digest.as_bytes() == &[0; 32]
+            || matches!(catalog.plan(), CatalogPlanV1::Snapshot { .. })
+        {
             return Err(StorageStateError::InvalidValue);
         }
         let mutation_digest = mutation_digest(operation_id, request_digest, catalog.binding());
@@ -2178,7 +2174,7 @@ impl StorageTransactionStore {
     /// chain before the opaque source is returned.
     pub(crate) fn verified_resolver_journal(
         &self,
-    ) -> Result<VerifiedStorageResolverJournalV2, StorageStateError> {
+    ) -> Result<VerifiedStorageResolverJournalV1, StorageStateError> {
         self.ensure_authority_readable()?;
         let physical = StorageCatalogTransitionProvider::load_resolver_snapshot(
             &self.journal,
@@ -2208,7 +2204,7 @@ impl StorageTransactionStore {
                 VerifiedStorageResolverOperationV1 { catalog, result },
             );
         }
-        Ok(VerifiedStorageResolverJournalV2 { physical, records })
+        Ok(VerifiedStorageResolverJournalV1 { physical, records })
     }
 
     pub(crate) fn catalog_preparation_record(
@@ -2310,7 +2306,7 @@ impl StorageTransactionStore {
         sealed_effect: Vec<u8>,
         sealed_operation_fence: Vec<u8>,
         sealed_preparation: Vec<u8>,
-        policy_binding: Option<StorageResolverPolicyBindingV1>,
+        policy_binding: StorageResolverPolicyBindingV1,
     ) -> Result<(), StorageStateError> {
         self.ensure_authority_readable()?;
         if operation_id == [0; 16]
@@ -2330,9 +2326,7 @@ impl StorageTransactionStore {
         if self.catalog_transitions.head_binding() != Some(expected_head) {
             return Err(StorageStateError::InvalidTransition);
         }
-        if let Some(binding) = policy_binding {
-            self.validate_fresh_resolver_policy(binding)?;
-        }
+        self.validate_fresh_resolver_policy(policy_binding)?;
         if self.records.contains_key(&operation_id)
             || self
                 .journal
@@ -2457,46 +2451,6 @@ impl StorageTransactionStore {
         self.journal.snapshot_sequence()
     }
 
-    #[cfg(test)]
-    pub(crate) fn rewrite_legacy_ambiguous_for_test(
-        &mut self,
-        operation_id: [u8; 16],
-        format_version: u16,
-    ) -> Result<(), StorageStateError> {
-        let mut record = self
-            .records
-            .get(&operation_id)
-            .cloned()
-            .ok_or(StorageStateError::InvalidTransition)?;
-        if record.phase != DurableStoragePhase::Prepared || record.format_version != VERSION {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        if !TEST_LEGACY_FORMAT_VERSIONS.contains(&format_version) {
-            return Err(StorageStateError::InvalidValue);
-        }
-        record.format_version = format_version;
-        record.phase = DurableStoragePhase::Ambiguous;
-        let transaction = JournalTransaction::new(
-            transaction_id(operation_id, DurableStoragePhase::Ambiguous),
-            vec![
-                JournalRecord::put(
-                    RecordNamespace::Operation,
-                    operation_id.to_vec(),
-                    encode_record(&record, &self.key)?,
-                ),
-                JournalRecord::delete(
-                    RecordNamespace::StorageCatalogReservation,
-                    operation_id.to_vec(),
-                ),
-            ],
-        )?;
-        self.commit_journal(&transaction)?;
-        self.records.insert(operation_id, record);
-        self.catalog_transitions
-            .remove_reservation_for_test(operation_id);
-        Ok(())
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin_authorized_with_publication(
         &mut self,
@@ -2585,6 +2539,15 @@ impl StorageTransactionStore {
         }
         if let Some(intent) = publication_intent.as_ref() {
             self.validate_publication_intent_range(intent)?;
+            let metadata = intent.portable_metadata();
+            if catalog.root_policy() != Some(metadata.root_policy())
+                || metadata.request_id() != request_id
+                || metadata.request_digest() != request_digest
+                || metadata.assignment().sandbox().as_bytes() != &sandbox_id
+                || metadata.assignment().digest() != intent.assignment_digest()
+            {
+                return Err(StorageStateError::AuthorityLinkMismatch);
+            }
         }
         if let Some(preparation) = preparation.as_ref() {
             if self.catalog_transitions.head_binding() != Some(preparation.expected_head) {
@@ -2722,9 +2685,7 @@ impl StorageTransactionStore {
         if record.phase != DurableStoragePhase::Prepared {
             return Err(StorageStateError::InvalidTransition);
         }
-        if record.format_version >= VERSION {
-            self.preflight_effect_capacity(&record)?;
-        }
+        self.preflight_effect_capacity(&record)?;
         record.phase = DurableStoragePhase::Ambiguous;
         self.publish(record)
     }
@@ -2761,55 +2722,6 @@ impl StorageTransactionStore {
             return Err(StorageStateError::AuthorityLinkMismatch);
         }
         Ok(())
-    }
-
-    /// Publishes a committed result for a recovered legacy transaction.
-    ///
-    /// Current records must use the observation-bound catalog transition path.
-    /// This low-level compatibility entry point can finish an already-ambiguous
-    /// version 2 or 3 record only when a trusted migration caller supplies the
-    /// externally published result-catalog binding. The production helper has
-    /// no such migration source and deliberately leaves legacy recovery open
-    /// and observation-only; it never redispatches the mutation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageStateError::InvalidTransition`] unless the exact
-    /// ambiguous legacy operation is current and the result advances catalog
-    /// generation. Returns [`StorageStateError::Journal`] after a commit
-    /// failure poisons the cached authority view until reopen.
-    pub fn commit_verified(
-        &mut self,
-        operation_id: [u8; 16],
-        mutation_digest: ObjectDigest,
-        verified: VerifiedStorageResultV1,
-    ) -> Result<CommittedStorageResultV1, StorageStateError> {
-        self.ensure_authority_readable()?;
-        let mut record = self.exact_current(operation_id, mutation_digest)?.clone();
-        let latest_generation = latest_generation(&self.records);
-        if record.format_version >= VERSION
-            || record.phase != DurableStoragePhase::Ambiguous
-            || verified.operation_id != record.operation_id
-            || verified.request_digest != record.request_digest
-            || verified.mutation_digest != record.mutation_digest
-            || verified.catalog != record.catalog
-            || verified.postcondition_digest != record.postcondition_digest
-            || verified.result_catalog.generation() <= record.catalog.generation()
-            || verified.result_catalog.generation() < latest_generation
-            || self.records.values().any(|existing| {
-                catalog_forks(existing.catalog, verified.result_catalog)
-                    || existing.result.is_some_and(|result| {
-                        catalog_forks(result.catalog, verified.result_catalog)
-                    })
-            })
-        {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        let result = self.committed_result(&verified)?;
-        record.phase = DurableStoragePhase::Committed;
-        record.result = Some(result);
-        self.publish(record)?;
-        Ok(result)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3244,8 +3156,6 @@ fn validate_durable_records(
                     return Err(StorageStateError::CorruptRecord);
                 }
             }
-            (Some(_), None)
-                if matches!(record.format_version, LEGACY_VERSION | IDENTITY_VERSION) => {}
             (None, None) => {}
             _ => return Err(StorageStateError::CorruptRecord),
         }
@@ -3283,6 +3193,15 @@ fn validate_publication_intent_set(
             .map_err(|_| StorageStateError::CorruptRecord)?;
         if !requires_workspace_publication(catalog.plan())
             || intent.request_catalog() != record.catalog
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        let metadata = intent.portable_metadata();
+        if catalog.root_policy() != Some(metadata.root_policy())
+            || metadata.request_id() != record.request_id
+            || metadata.request_digest() != record.request_digest
+            || metadata.assignment().sandbox().as_bytes() != &record.sandbox_id
+            || metadata.assignment().digest() != intent.assignment_digest()
         {
             return Err(StorageStateError::AuthorityLinkMismatch);
         }
@@ -3421,9 +3340,10 @@ fn publication_intent_record(
     let media_type = intent.root_image().media_type().as_str().as_bytes();
     let media_length =
         u16::try_from(media_type.len()).map_err(|_| StorageStateError::InvalidValue)?;
-    let mut bytes = Vec::with_capacity(196 + media_type.len());
+    let version = PUBLICATION_INTENT_VERSION;
+    let mut bytes = Vec::with_capacity(512 + media_type.len());
     bytes.extend_from_slice(PUBLICATION_INTENT_MAGIC);
-    bytes.extend_from_slice(&PUBLICATION_INTENT_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&version.to_be_bytes());
     bytes.extend_from_slice(&key.key_id);
     bytes.extend_from_slice(&intent.operation_id());
     bytes.extend_from_slice(&intent.request_catalog().generation().to_be_bytes());
@@ -3435,9 +3355,22 @@ fn publication_intent_record(
     bytes.extend_from_slice(&intent.root_image().encoded_size().to_be_bytes());
     bytes.extend_from_slice(&intent.identity_range_start().to_be_bytes());
     bytes.extend_from_slice(&intent.identity_range_size().to_be_bytes());
+    let metadata = intent.portable_metadata();
+    bytes.extend_from_slice(&metadata.request_id());
+    bytes.extend_from_slice(metadata.request_digest().as_bytes());
+    let assignment = metadata.assignment();
+    bytes.extend_from_slice(assignment.sandbox().as_bytes());
+    bytes.extend_from_slice(assignment.incarnation().as_bytes());
+    bytes.extend_from_slice(&assignment.epoch().get().to_be_bytes());
+    bytes.extend_from_slice(&assignment.desired_generation().get().to_be_bytes());
+    bytes.extend_from_slice(assignment.digest().as_bytes());
+    bytes.extend_from_slice(metadata.node().as_bytes());
+    bytes.extend_from_slice(&metadata.root_policy().canonical_bytes());
+    put_u32_bytes(&mut bytes, metadata.manifest_bytes())?;
+    put_u32_bytes(&mut bytes, metadata.sandbox_spec_bytes())?;
     let tag = publication_intent_tag(key, &record_key, &bytes)?;
     bytes.extend_from_slice(&tag);
-    if bytes.len() > MAXIMUM_RECORD_BYTES {
+    if bytes.len() > MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES {
         return Err(StorageStateError::InvalidValue);
     }
     Ok(JournalRecord::put(
@@ -3452,7 +3385,7 @@ fn decode_publication_intent(
     record_key: &[u8],
     bytes: &[u8],
 ) -> Result<StorageWorkspacePublicationIntentV1, StorageStateError> {
-    if bytes.len() > MAXIMUM_RECORD_BYTES || bytes.len() < 197 {
+    if bytes.len() > MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES || bytes.len() < 197 {
         return Err(StorageStateError::CorruptRecord);
     }
     let payload_length = bytes
@@ -3464,10 +3397,11 @@ fn decode_publication_intent(
         .map_err(|_| StorageStateError::CorruptRecord)?;
 
     let mut decoder = Cursor::new(&bytes[..payload_length]);
-    if decoder.take(8)? != PUBLICATION_INTENT_MAGIC
-        || decoder.u16()? != PUBLICATION_INTENT_VERSION
-        || decoder.array::<16>()? != key.key_id
-    {
+    if decoder.take(8)? != PUBLICATION_INTENT_MAGIC {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let version = decoder.u16()?;
+    if version != PUBLICATION_INTENT_VERSION || decoder.array::<16>()? != key.key_id {
         return Err(StorageStateError::CorruptRecord);
     }
     let operation_id = decoder.array::<16>()?;
@@ -3487,6 +3421,32 @@ fn decode_publication_intent(
     );
     let identity_range_start = decoder.u32()?;
     let identity_range_size = decoder.u32()?;
+    let request_id = decoder.array()?;
+    let request_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let assignment = BrokerAssignment::new(
+        SandboxId::from_bytes(decoder.array()?),
+        IncarnationId::from_bytes(decoder.array()?),
+        AssignmentEpoch::new(decoder.u64()?),
+        DesiredGeneration::new(decoder.u64()?),
+        ObjectDigest::from_bytes(decoder.array()?),
+    )
+    .map_err(|_| StorageStateError::CorruptRecord)?;
+    let node = NodeId::from_bytes(decoder.array()?);
+    let root_policy =
+        crate::root_policy::WorkspaceRootPolicyV1::from_canonical_bytes(decoder.take(64)?)
+            .map_err(|_| StorageStateError::CorruptRecord)?;
+    let manifest_bytes = decoder.u32_bytes(48 * 1024)?.to_vec();
+    let sandbox_spec_bytes = decoder.u32_bytes(16 * 1024)?.to_vec();
+    let portable_metadata = DurablePortableWorkspaceMetadataV1::new(
+        request_id,
+        request_digest,
+        assignment,
+        node,
+        root_policy,
+        manifest_bytes,
+        sandbox_spec_bytes,
+    )
+    .map_err(|_| StorageStateError::CorruptRecord)?;
     if decoder.remaining() != 0 {
         return Err(StorageStateError::CorruptRecord);
     }
@@ -3497,8 +3457,16 @@ fn decode_publication_intent(
         root_image,
         identity_range_start,
         identity_range_size,
+        portable_metadata,
     )
     .map_err(|_| StorageStateError::CorruptRecord)
+}
+
+fn put_u32_bytes(bytes: &mut Vec<u8>, value: &[u8]) -> Result<(), StorageStateError> {
+    let length = u32::try_from(value.len()).map_err(|_| StorageStateError::InvalidValue)?;
+    bytes.extend_from_slice(&length.to_be_bytes());
+    bytes.extend_from_slice(value);
+    Ok(())
 }
 
 fn publication_intent_tag(
@@ -3965,23 +3933,11 @@ fn encode_record(
     record: &DurableRecord,
     key: &StorageStateKey,
 ) -> Result<Vec<u8>, StorageStateError> {
-    encode_record_version(record, key, record.format_version)
-}
-
-fn encode_record_version(
-    record: &DurableRecord,
-    key: &StorageStateKey,
-    version: u16,
-) -> Result<Vec<u8>, StorageStateError> {
-    if !matches!(version, LEGACY_VERSION | IDENTITY_VERSION | VERSION) {
+    if record.format_version != VERSION {
         return Err(StorageStateError::CorruptRecord);
     }
     let result_len = if record.result.is_some() {
-        if version >= IDENTITY_VERSION {
-            RESULT_BYTES
-        } else {
-            LEGACY_RESULT_BYTES
-        }
+        RESULT_BYTES
     } else {
         0
     };
@@ -3994,7 +3950,7 @@ fn encode_record_version(
     }
     let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&version.to_be_bytes());
+    bytes.extend_from_slice(&VERSION.to_be_bytes());
     bytes.push(phase_code(record.phase));
     bytes.extend_from_slice(&record.operation_id);
     bytes.extend_from_slice(&record.sandbox_id);
@@ -4011,15 +3967,13 @@ fn encode_record_version(
         bytes.extend_from_slice(&result.catalog.generation().to_be_bytes());
         bytes.extend_from_slice(result.catalog.digest().as_bytes());
         bytes.extend_from_slice(result.result_digest.as_bytes());
-        if version >= IDENTITY_VERSION {
-            let flags = (u8::from(result.storage_handle.is_some()) * RESULT_HAS_STORAGE_HANDLE)
-                | (u8::from(result.immutable_version_handle.is_some()) * RESULT_HAS_VERSION_HANDLE)
-                | (u8::from(result.object_guid.is_some()) * RESULT_HAS_OBJECT_GUID);
-            bytes.push(flags);
-            bytes.extend_from_slice(&result.storage_handle.unwrap_or([0; 32]));
-            bytes.extend_from_slice(&result.immutable_version_handle.unwrap_or([0; 32]));
-            bytes.extend_from_slice(&result.object_guid.unwrap_or(0).to_be_bytes());
-        }
+        let flags = (u8::from(result.storage_handle.is_some()) * RESULT_HAS_STORAGE_HANDLE)
+            | (u8::from(result.immutable_version_handle.is_some()) * RESULT_HAS_VERSION_HANDLE)
+            | (u8::from(result.object_guid.is_some()) * RESULT_HAS_OBJECT_GUID);
+        bytes.push(flags);
+        bytes.extend_from_slice(&result.storage_handle.unwrap_or([0; 32]));
+        bytes.extend_from_slice(&result.immutable_version_handle.unwrap_or([0; 32]));
+        bytes.extend_from_slice(&result.object_guid.unwrap_or(0).to_be_bytes());
     }
     let mut mac =
         HmacSha256::new_from_slice(&key.secret).map_err(|_| StorageStateError::InvalidValue)?;
@@ -4045,7 +3999,7 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
         return Err(StorageStateError::CorruptRecord);
     }
     let version = cursor.u16()?;
-    if !matches!(version, LEGACY_VERSION | IDENTITY_VERSION | VERSION) {
+    if version != VERSION {
         return Err(StorageStateError::CorruptRecord);
     }
     let phase = match cursor.u8()? {
@@ -4076,15 +4030,7 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
         )
         .map_err(|_| StorageStateError::CorruptRecord)?;
         let result_digest = ObjectDigest::from_bytes(cursor.array()?);
-        let identity = if version >= IDENTITY_VERSION {
-            decode_result_identity(&mut cursor)?
-        } else {
-            DecodedResultIdentity {
-                storage_handle: None,
-                immutable_version_handle: None,
-                object_guid: None,
-            }
-        };
+        let identity = decode_result_identity(&mut cursor)?;
         Some(CommittedStorageResultV1 {
             operation_id,
             catalog,
@@ -4203,6 +4149,13 @@ impl<'a> Cursor<'a> {
     fn u64(&mut self) -> Result<u64, StorageStateError> {
         Ok(u64::from_be_bytes(self.array()?))
     }
+    fn u32_bytes(&mut self, maximum: usize) -> Result<&'a [u8], StorageStateError> {
+        let length = usize::try_from(self.u32()?).map_err(|_| StorageStateError::CorruptRecord)?;
+        if length > maximum {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        self.take(length)
+    }
     fn remaining(&self) -> usize {
         self.bytes.len() - self.offset
     }
@@ -4216,18 +4169,24 @@ mod tests {
     use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 
     use aos_sandbox::JournalError;
+    use aos_sandbox_core::model::{
+        AssignmentManifestV1, IdentityProfile, NetworkKind, NetworkProfile, ResourceProfile,
+        SandboxAncestry, SandboxSpec, UnmappableIdentityPolicy,
+    };
     use aos_sandbox_core::{
-        AssignmentEpoch, BrokerAssignment, DesiredGeneration, IncarnationId, PortableMediaType,
-        SandboxId,
+        AssignmentEpoch, BrokerAssignment, CanonicalAssignmentManifestV1, DesiredGeneration,
+        FeatureRef, IncarnationId, NamespaceGeneration, NodeId, PortableMediaType, ProjectId,
+        ResourceVector, SandboxId, descriptor_for_bytes, encode_sandbox_spec,
     };
     use tempfile::TempDir;
 
     use super::*;
     use crate::broker::FreshWorkspacePinAuthority;
-    use crate::resolver::inventory::ProtectedStorageInventoryV2;
+    use crate::resolver::inventory::ProtectedStorageInventoryV1;
     use crate::resolver::policy::ProtectedStorageResolverPolicyV1;
     use crate::resolver::protected_catalog::StorageResolverPolicyCatalogBindingV1;
     use crate::root_policy::WorkspaceRootPolicyV1;
+    use crate::workspace_catalog::DurablePortableWorkspaceMetadataV1;
     use crate::workspace_pin::{
         WorkspaceDatasetObservationV1, WorkspacePinHostScopeV1, WorkspacePinObservationV1,
         WorkspacePinRecoveryDispositionV1, WorkspaceRootPinProofV1,
@@ -4382,6 +4341,37 @@ mod tests {
         catalog_with_physical_identity(generation, destination_name, 10, 15)
     }
 
+    #[test]
+    fn transaction_record_rejects_authenticated_unknown_version() {
+        let state_key = key(1);
+        let catalog = catalog(7, "tank/aos/project/work");
+        let record = DurableRecord {
+            format_version: VERSION,
+            phase: DurableStoragePhase::Prepared,
+            operation_id: [31; 16],
+            sandbox_id: [32; 16],
+            request_id: [33; 16],
+            request_digest: digest(34),
+            mutation_digest: digest(35),
+            catalog: catalog.binding(),
+            postcondition_digest: postcondition_digest(catalog.canonical_bytes()),
+            catalog_bytes: catalog.canonical_bytes().to_vec(),
+            result: None,
+        };
+        let mut encoded = encode_record(&record, &state_key).unwrap();
+        encoded[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        let body_length = encoded.len() - MAC_BYTES;
+        let mut mac = HmacSha256::new_from_slice(&state_key.secret).unwrap();
+        mac.update(RECORD_DOMAIN);
+        mac.update(&encoded[..body_length]);
+        encoded[body_length..].copy_from_slice(&mac.finalize().into_bytes());
+
+        assert!(matches!(
+            decode_record(&encoded, &state_key),
+            Err(StorageStateError::CorruptRecord)
+        ));
+    }
+
     pub(super) fn publication_intent(
         operation_id: [u8; 16],
         catalog: &ResolvedCatalogCommitmentV1,
@@ -4403,17 +4393,105 @@ mod tests {
         range_start: u32,
         range_size: u32,
     ) -> StorageWorkspacePublicationIntentV1 {
+        publication_intent_with_authority(
+            operation_id,
+            catalog,
+            marker,
+            range_start,
+            range_size,
+            SandboxId::from_bytes([marker.wrapping_sub(2); 16]),
+            [marker.wrapping_sub(1); 16],
+            digest(marker.wrapping_sub(3)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publication_intent_with_authority(
+        operation_id: [u8; 16],
+        catalog: &ResolvedCatalogCommitmentV1,
+        marker: u8,
+        range_start: u32,
+        range_size: u32,
+        sandbox: SandboxId,
+        request_id: [u8; 16],
+        request_digest: ObjectDigest,
+    ) -> StorageWorkspacePublicationIntentV1 {
+        let incarnation = IncarnationId::from_bytes([marker.wrapping_add(2); 16]);
+        let node = NodeId::from_bytes([marker.wrapping_add(3); 16]);
+        let root_image = ObjectDescriptor::new(
+            MediaType::new(PortableMediaType::View.as_str().to_owned()).unwrap(),
+            digest(marker.wrapping_add(1)),
+            u64::from(marker) + 1,
+        );
+        let environment = ObjectDescriptor::new(
+            MediaType::new(PortableMediaType::Environment.as_str().to_owned()).unwrap(),
+            digest(marker.wrapping_add(4)),
+            u64::from(marker) + 2,
+        );
+        let spec = SandboxSpec::new(
+            FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0).unwrap(),
+            IdentityProfile::PrivateUserns {
+                id_range_size: std::num::NonZeroU32::new(range_size).unwrap(),
+                unmappable_policy: UnmappableIdentityPolicy::Reject,
+                required_features: Vec::new(),
+            },
+            ResourceProfile::new(Vec::new()).unwrap(),
+            environment.clone(),
+            root_image.clone(),
+            Vec::new(),
+            NetworkProfile::new(NetworkKind::Isolated, Vec::new(), Vec::new()).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let spec_bytes = encode_sandbox_spec(&spec);
+        let spec_descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned()).unwrap(),
+            &spec_bytes,
+        );
+        let manifest = CanonicalAssignmentManifestV1::new(
+            AssignmentManifestV1::new(
+                sandbox,
+                ProjectId::from_bytes([marker.wrapping_add(5); 16]),
+                SandboxAncestry::new(sandbox, Vec::new()).unwrap(),
+                incarnation,
+                node,
+                AssignmentEpoch::new(u64::from(marker) + 1),
+                DesiredGeneration::new(u64::from(marker) + 1),
+                NamespaceGeneration::new(u64::from(marker) + 1),
+                spec_descriptor,
+                ObjectDescriptor::new(
+                    MediaType::new(PortableMediaType::Policy.as_str().to_owned()).unwrap(),
+                    digest(marker.wrapping_add(6)),
+                    u64::from(marker) + 3,
+                ),
+                environment,
+                root_image.clone(),
+                Vec::new(),
+                digest(marker.wrapping_add(7)),
+                ResourceVector::ZERO,
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let assignment = manifest.broker_assignment().unwrap();
+        let portable_metadata = DurablePortableWorkspaceMetadataV1::new(
+            request_id,
+            request_digest,
+            assignment,
+            node,
+            catalog.root_policy().unwrap(),
+            manifest.canonical_bytes().to_vec(),
+            spec_bytes,
+        )
+        .unwrap();
         StorageWorkspacePublicationIntentV1::from_authenticated_parts(
             operation_id,
             catalog.binding(),
-            digest(marker),
-            ObjectDescriptor::new(
-                MediaType::new(PortableMediaType::View.as_str().to_owned()).unwrap(),
-                digest(marker.wrapping_add(1)),
-                u64::from(marker) + 1,
-            ),
+            assignment.digest(),
+            root_image,
             range_start,
             range_size,
+            portable_metadata,
         )
         .unwrap()
     }
@@ -4436,7 +4514,7 @@ mod tests {
         let ancestor = ProjectAncestorPolicyV1::new(ancestor_dataset, 65_536, 8, 16).unwrap();
         let destination = PlannedDataset::from_catalog(root, destination_name, domains()).unwrap();
         let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             generation,
             domains(),
             CatalogPlanV1::CreateWorkspace {
@@ -4468,7 +4546,7 @@ mod tests {
         .unwrap();
         let policy = ProjectAncestorPolicyV1::new(ancestor.clone(), 65_536, 8, 16).unwrap();
         let destination = PlannedDataset::from_catalog(root, destination_name, domains()).unwrap();
-        let catalog = ResolvedCatalogCommitmentV1::new_execution_v3(
+        let catalog = ResolvedCatalogCommitmentV1::new_execution_v1(
             generation,
             domains(),
             CatalogPlanV1::CreateWorkspace {
@@ -4496,7 +4574,7 @@ mod tests {
             domains(),
         )
         .unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             generation,
             domains(),
             CatalogPlanV1::DestroyDataset { dataset },
@@ -4522,7 +4600,7 @@ mod tests {
         )
         .unwrap();
         let destination = PlannedSnapshot::from_catalog(source.clone(), "revision-1").unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             generation,
             domains(),
             CatalogPlanV1::Snapshot {
@@ -4584,6 +4662,7 @@ mod tests {
             dataset_guid,
             8,
             9,
+            WorkspaceRootPolicyV1::create_initialize().root_attributes(),
         )
         .unwrap()
     }
@@ -4594,7 +4673,7 @@ mod tests {
         let create = catalog(7, "tank/aos/project/work");
         initialize(store, &create);
         let create_operation = [101; 16];
-        let intent = publication_intent(create_operation, &create, 102);
+        let intent = publication_intent(create_operation, &create, 106);
         let assignment_digest = intent.assignment_digest();
         let BeginStorageTransaction::Prepared { mutation_digest } = store
             .begin_authorized_with_publication(
@@ -4711,19 +4790,31 @@ mod tests {
             44,
             "vault/aos-other/project/workspace-created",
         );
-        let selected_catalog =
-            ResolvedCatalogCommitmentV1::new(7, domains(), selected_execution.plan().clone())
-                .unwrap();
-        let other_catalog =
-            ResolvedCatalogCommitmentV1::new(7, domains(), other_execution.plan().clone()).unwrap();
-        let other_snapshot =
-            PlannedSnapshot::from_catalog(other_ancestor.clone(), "history").unwrap();
-        let snapshot_catalog = ResolvedCatalogCommitmentV1::new(
+        let selected_catalog = ResolvedCatalogCommitmentV1::new_for_test(
             7,
             domains(),
-            CatalogPlanV1::Snapshot {
-                source: other_ancestor.clone(),
-                destination: other_snapshot,
+            selected_execution.plan().clone(),
+        )
+        .unwrap();
+        let other_catalog =
+            ResolvedCatalogCommitmentV1::new_for_test(7, domains(), other_execution.plan().clone())
+                .unwrap();
+        let other_dataset = ResolvedDataset::from_catalog(
+            other_ancestor.root().clone(),
+            "vault/aos-other/project/existing",
+            45,
+            [46; 32],
+            domains(),
+        )
+        .unwrap();
+        let other_quota_catalog = ResolvedCatalogCommitmentV1::new_for_test(
+            7,
+            domains(),
+            CatalogPlanV1::SetQuota {
+                dataset: other_dataset.clone(),
+                space: WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap(),
+                ancestor: ProjectAncestorPolicyV1::new(other_ancestor.clone(), 65_536, 8, 16)
+                    .unwrap(),
             },
         )
         .unwrap();
@@ -4732,14 +4823,18 @@ mod tests {
         store
             .initialize_catalog_from_protected_snapshot(
                 6,
-                &[selected_catalog.clone(), other_catalog.clone()],
+                &[
+                    selected_catalog.clone(),
+                    other_catalog.clone(),
+                    other_quota_catalog.clone(),
+                ],
             )
             .unwrap();
         let BeginStorageTransaction::Prepared { mutation_digest } = store
-            .begin([45; 16], digest(46), &snapshot_catalog)
+            .begin([45; 16], digest(46), &other_quota_catalog)
             .unwrap()
         else {
-            panic!("other-root Snapshot did not prepare")
+            panic!("other-root quota update did not prepare")
         };
         store
             .mark_mutation_ambiguous([45; 16], mutation_digest)
@@ -4748,9 +4843,9 @@ mod tests {
             .commit_observed(
                 [45; 16],
                 mutation_digest,
-                &snapshot_catalog,
-                &snapshot_catalog.plan().postcondition(),
-                Some(47),
+                &other_quota_catalog,
+                &other_quota_catalog.plan().postcondition(),
+                Some(other_dataset.guid()),
                 digest(48),
             )
             .unwrap();
@@ -4780,7 +4875,7 @@ mod tests {
         )
         .unwrap();
         let inventory =
-            ProtectedStorageInventoryV2::from_verified_journal(verified, &policy).unwrap();
+            ProtectedStorageInventoryV1::from_verified_journal(verified, &policy).unwrap();
 
         assert_eq!(inventory.root(), selected_ancestor.root());
         assert_eq!(
@@ -4788,8 +4883,8 @@ mod tests {
             Some(&selected_ancestor)
         );
         assert!(inventory.dataset(&other_handle).is_none());
-        assert_eq!(other_handle, other_ancestor.storage_handle());
-        assert!(inventory.name_is_occupied("vault/aos-other/project@history"));
+        assert_eq!(other_handle, other_dataset.storage_handle());
+        assert!(inventory.name_is_occupied(other_dataset.name()));
     }
 
     #[test]
@@ -5286,8 +5381,14 @@ mod tests {
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
         initialize(&mut store, &catalog);
         let operation_id = [41; 16];
-        let first = publication_intent(operation_id, &catalog, 42);
-        let substituted = publication_intent(operation_id, &catalog, 43);
+        let first = publication_intent(operation_id, &catalog, 47);
+        let substituted = publication_intent_at(
+            operation_id,
+            &catalog,
+            47,
+            first.identity_range_start() + 65_536,
+            65_536,
+        );
         let arguments = (
             operation_id,
             digest(44),
@@ -5330,6 +5431,74 @@ mod tests {
     }
 
     #[test]
+    fn publication_intent_rejects_cross_link_substitution_before_durable_write() {
+        let directory = TempDir::new().unwrap();
+        let catalog = catalog(7, "tank/aos/project/work");
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &catalog);
+
+        let operation_id = [171; 16];
+        let request_digest = digest(172);
+        let sandbox = SandboxId::from_bytes([173; 16]);
+        let request_id = [174; 16];
+        let marker = 175;
+        let range_start = u32::from(marker) * 65_536;
+        let sequence = store.journal_sequence_for_test();
+        let candidates = [
+            publication_intent_with_authority(
+                operation_id,
+                &catalog,
+                marker,
+                range_start,
+                65_536,
+                sandbox,
+                [176; 16],
+                request_digest,
+            ),
+            publication_intent_with_authority(
+                operation_id,
+                &catalog,
+                marker,
+                range_start,
+                65_536,
+                sandbox,
+                request_id,
+                digest(177),
+            ),
+            publication_intent_with_authority(
+                operation_id,
+                &catalog,
+                marker,
+                range_start,
+                65_536,
+                SandboxId::from_bytes([178; 16]),
+                request_id,
+                request_digest,
+            ),
+        ];
+
+        for candidate in candidates {
+            assert!(matches!(
+                store.begin_authorized_with_publication(
+                    operation_id,
+                    request_digest,
+                    &catalog,
+                    *sandbox.as_bytes(),
+                    request_id,
+                    vec![1; 8],
+                    vec![2; 8],
+                    vec![3; 8],
+                    Some(candidate),
+                ),
+                Err(StorageStateError::AuthorityLinkMismatch)
+            ));
+            assert_eq!(store.journal_sequence_for_test(), sequence);
+            assert_eq!(store.phase(operation_id).unwrap(), None);
+        }
+    }
+
+    #[test]
     fn publication_intent_admission_rejects_overlaps_without_advancing_the_journal() {
         let directory = TempDir::new().unwrap();
         let catalog = catalog(7, "tank/aos/project/work");
@@ -5338,7 +5507,7 @@ mod tests {
         initialize(&mut store, &catalog);
         let first_operation = [47; 16];
         let range_start = 47 * 65_536;
-        let first = publication_intent_at(first_operation, &catalog, 48, range_start, 65_536);
+        let first = publication_intent_at(first_operation, &catalog, 52, range_start, 65_536);
         let prepare = |store: &mut StorageTransactionStore,
                        operation_id,
                        intent: StorageWorkspacePublicationIntentV1| {
@@ -5372,7 +5541,7 @@ mod tests {
             let candidate = publication_intent_at(
                 operation_id,
                 &catalog,
-                operation_id[0],
+                operation_id[0].wrapping_add(5),
                 candidate_start,
                 65_536,
             );
@@ -5446,6 +5615,7 @@ mod tests {
                 101,
                 65_536,
                 65_536,
+                WorkspaceRootPolicyV1::create_initialize(),
                 None,
             )
             .unwrap()
@@ -5665,7 +5835,7 @@ mod tests {
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
         initialize(&mut store, &create);
         let operation_id = [91; 16];
-        let intent = publication_intent(operation_id, &create, 92);
+        let intent = publication_intent(operation_id, &create, 96);
         let assignment_digest = intent.assignment_digest();
         let BeginStorageTransaction::Prepared { mutation_digest } = store
             .begin_authorized_with_publication(
@@ -5790,7 +5960,7 @@ mod tests {
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
         initialize(&mut store, &create);
         let creation_operation_id = [141; 16];
-        let publication = publication_intent(creation_operation_id, &create, 142);
+        let publication = publication_intent(creation_operation_id, &create, 146);
         let workspace_assignment_digest = publication.assignment_digest();
         let BeginStorageTransaction::Prepared { mutation_digest } = store
             .begin_authorized_with_publication(
@@ -5875,6 +6045,7 @@ mod tests {
             101,
             publication.identity_range_start(),
             publication.identity_range_size(),
+            create.root_policy().unwrap(),
             None,
         )
         .unwrap()
@@ -6005,6 +6176,7 @@ mod tests {
             101,
             publication.identity_range_start(),
             publication.identity_range_size(),
+            create.root_policy().unwrap(),
             None,
         )
         .unwrap()
@@ -6146,6 +6318,7 @@ mod tests {
             101,
             publication.identity_range_start(),
             publication.identity_range_size(),
+            publication.portable_metadata().root_policy(),
             None,
         )
         .unwrap()
@@ -6415,6 +6588,7 @@ mod tests {
             first.dataset_guid(),
             18,
             19,
+            first.root_policy().root_attributes(),
         )
         .unwrap();
         let latest = WorkspacePinAttemptV1::new_ambiguous(
@@ -6438,6 +6612,7 @@ mod tests {
             first.dataset_guid(),
             first.identity_range_start(),
             first.identity_range_size(),
+            first.root_policy(),
             None,
         )
         .unwrap()
@@ -6598,10 +6773,10 @@ mod tests {
             let BeginStorageTransaction::Prepared { mutation_digest } = store
                 .begin_authorized_with_publication(
                     operation_id,
-                    digest(90 + index),
+                    digest(57 + index),
                     catalog,
-                    [10 + index; 16],
-                    [20 + index; 16],
+                    [58 + index; 16],
+                    [59 + index; 16],
                     vec![30 + index; 8],
                     vec![40 + index; 8],
                     vec![50 + index; 8],
@@ -6629,10 +6804,10 @@ mod tests {
         assert!(matches!(
             store.begin_authorized_with_publication(
                 [3; 16],
-                digest(93),
+                digest(60),
                 &third,
-                [13; 16],
-                [23; 16],
+                [61; 16],
+                [62; 16],
                 vec![33; 8],
                 vec![43; 8],
                 vec![53; 8],
@@ -6651,7 +6826,7 @@ mod tests {
             Err(StorageStateError::Journal(JournalError::Poisoned))
         ));
         assert!(matches!(
-            store.authority_record(RecordNamespace::DesiredState, &[11; 16]),
+            store.authority_record(RecordNamespace::DesiredState, &[59; 16]),
             Err(StorageStateError::Journal(JournalError::Poisoned))
         ));
         drop(store);
@@ -6667,7 +6842,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_catalog_chain_recovers_every_zfs_transition_kind() {
+    fn physical_catalog_chain_recovers_every_production_transition_kind() {
         let directory = TempDir::new().unwrap();
         let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
         let ancestor_dataset =
@@ -6675,6 +6850,14 @@ mod tests {
                 .unwrap();
         let ancestor = ProjectAncestorPolicyV1::new(ancestor_dataset, 65_536, 8, 16).unwrap();
         let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
+        let seed_workspace = ResolvedDataset::from_catalog(
+            root.clone(),
+            "tank/aos/project/seed",
+            100,
+            [30; 32],
+            domains(),
+        )
+        .unwrap();
         let workspace = ResolvedDataset::from_catalog(
             root.clone(),
             "tank/aos/project/work",
@@ -6684,7 +6867,8 @@ mod tests {
         )
         .unwrap();
         let snapshot =
-            ResolvedSnapshot::from_catalog(workspace.clone(), "revision-1", 201, [32; 32]).unwrap();
+            ResolvedSnapshot::from_catalog(seed_workspace.clone(), "revision-1", 201, [32; 32])
+                .unwrap();
         let clone = ResolvedDataset::from_catalog(
             root.clone(),
             "tank/aos/project/clone",
@@ -6694,8 +6878,17 @@ mod tests {
         )
         .unwrap();
         let hold_id = HoldId::from_bytes([34; 16]).unwrap();
+        let bootstrap_snapshot_context = ResolvedCatalogCommitmentV1::new_for_test(
+            7,
+            domains(),
+            CatalogPlanV1::HoldSnapshot {
+                snapshot: snapshot.clone(),
+                hold_id,
+            },
+        )
+        .unwrap();
         let catalogs = vec![
-            ResolvedCatalogCommitmentV1::new(
+            ResolvedCatalogCommitmentV1::new_for_test(
                 7,
                 domains(),
                 CatalogPlanV1::CreateWorkspace {
@@ -6710,21 +6903,8 @@ mod tests {
                 },
             )
             .unwrap(),
-            ResolvedCatalogCommitmentV1::new(
+            ResolvedCatalogCommitmentV1::new_for_test(
                 9,
-                domains(),
-                CatalogPlanV1::Snapshot {
-                    source: workspace.clone(),
-                    destination: PlannedSnapshot::from_catalog(
-                        workspace.clone(),
-                        snapshot.component(),
-                    )
-                    .unwrap(),
-                },
-            )
-            .unwrap(),
-            ResolvedCatalogCommitmentV1::new(
-                11,
                 domains(),
                 CatalogPlanV1::HoldSnapshot {
                     snapshot: snapshot.clone(),
@@ -6732,8 +6912,8 @@ mod tests {
                 },
             )
             .unwrap(),
-            ResolvedCatalogCommitmentV1::new(
-                13,
+            ResolvedCatalogCommitmentV1::new_for_test(
+                11,
                 domains(),
                 CatalogPlanV1::Clone {
                     source: Box::new(snapshot.clone()),
@@ -6746,8 +6926,8 @@ mod tests {
                 },
             )
             .unwrap(),
-            ResolvedCatalogCommitmentV1::new(
-                15,
+            ResolvedCatalogCommitmentV1::new_for_test(
+                13,
                 domains(),
                 CatalogPlanV1::SetQuota {
                     dataset: clone.clone(),
@@ -6756,16 +6936,16 @@ mod tests {
                 },
             )
             .unwrap(),
-            ResolvedCatalogCommitmentV1::new(
-                17,
+            ResolvedCatalogCommitmentV1::new_for_test(
+                15,
                 domains(),
                 CatalogPlanV1::DestroyDataset {
                     dataset: clone.clone(),
                 },
             )
             .unwrap(),
-            ResolvedCatalogCommitmentV1::new(
-                19,
+            ResolvedCatalogCommitmentV1::new_for_test(
+                17,
                 domains(),
                 CatalogPlanV1::ReleaseHold {
                     snapshot: snapshot.clone(),
@@ -6773,15 +6953,23 @@ mod tests {
                 },
             )
             .unwrap(),
-            ResolvedCatalogCommitmentV1::new(
-                21,
+            ResolvedCatalogCommitmentV1::new_for_test(
+                19,
                 domains(),
                 CatalogPlanV1::DestroySnapshot {
                     snapshot: snapshot.clone(),
                 },
             )
             .unwrap(),
-            ResolvedCatalogCommitmentV1::new(
+            ResolvedCatalogCommitmentV1::new_for_test(
+                21,
+                domains(),
+                CatalogPlanV1::DestroyDataset {
+                    dataset: seed_workspace,
+                },
+            )
+            .unwrap(),
+            ResolvedCatalogCommitmentV1::new_for_test(
                 23,
                 domains(),
                 CatalogPlanV1::DestroyDataset { dataset: workspace },
@@ -6790,7 +6978,12 @@ mod tests {
         ];
         let mut store =
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
-        initialize(&mut store, &catalogs[0]);
+        store
+            .initialize_catalog_from_protected_snapshot(
+                6,
+                &[catalogs[0].clone(), bootstrap_snapshot_context],
+            )
+            .unwrap();
 
         for (index, catalog) in catalogs.iter().enumerate() {
             let operation_byte = u8::try_from(index + 1).unwrap();
@@ -6957,7 +7150,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_result_retains_workspace_and_mints_a_version_handle() {
+    fn snapshot_is_rejected_before_any_durable_state_change() {
         let directory = TempDir::new().unwrap();
         let catalog = snapshot_catalog(7);
         let operation_id = [47; 16];
@@ -6965,46 +7158,14 @@ mod tests {
         let mut store =
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
         initialize(&mut store, &catalog);
-        let BeginStorageTransaction::Prepared { mutation_digest } =
-            store.begin(operation_id, request_digest, &catalog).unwrap()
-        else {
-            panic!("new snapshot operation was not prepared")
-        };
-        store
-            .mark_mutation_ambiguous(operation_id, mutation_digest)
-            .unwrap();
-        let result = store
-            .commit_observed(
-                operation_id,
-                mutation_digest,
-                &catalog,
-                &catalog.plan().postcondition(),
-                Some(91),
-                digest(50),
-            )
-            .unwrap();
+        let before = store.journal_sequence_for_test();
 
-        assert_eq!(result.storage_handle(), Some([81; 32]));
-        assert_eq!(result.object_guid(), Some(91));
-        assert!(
-            result
-                .immutable_version_handle()
-                .is_some_and(|handle| handle != [0; 32] && handle != [81; 32])
-        );
-
-        let legacy_bytes = encode_record_version(
-            store.records.get(&operation_id).unwrap(),
-            &store.key,
-            LEGACY_VERSION,
-        )
-        .unwrap();
-        let legacy = decode_record(&legacy_bytes, &store.key)
-            .unwrap()
-            .result
-            .unwrap();
-        assert_eq!(legacy.storage_handle(), None);
-        assert_eq!(legacy.immutable_version_handle(), None);
-        assert_eq!(legacy.object_guid(), None);
+        assert!(matches!(
+            store.begin(operation_id, request_digest, &catalog),
+            Err(StorageStateError::InvalidValue)
+        ));
+        assert_eq!(store.journal_sequence_for_test(), before);
+        assert_eq!(store.phase(operation_id).unwrap(), None);
     }
 
     #[test]
@@ -7017,7 +7178,7 @@ mod tests {
         ];
 
         for (flags, storage_handle, version_handle, object_guid) in cases {
-            let mut bytes = Vec::with_capacity(RESULT_BYTES - LEGACY_RESULT_BYTES);
+            let mut bytes = Vec::with_capacity(1 + 32 + 32 + 8);
             bytes.push(flags);
             bytes.extend_from_slice(&storage_handle);
             bytes.extend_from_slice(&version_handle);

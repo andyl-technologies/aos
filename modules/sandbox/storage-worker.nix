@@ -26,6 +26,20 @@
   # production qualification until an enforcing MAC policy covers its required
   # move_mount and unmount operations without exposing other host mutations.
   workerRestrictSuidSgid = false;
+
+  # The existing pin worker is not the future root-initializer domain. Keep
+  # its ownership capability and root-mode mutation surface closed so source
+  # wiring cannot be mistaken for deployable Create readiness.
+  workspacePinWorkerCapabilities = [
+    "CAP_SYS_ADMIN"
+    "CAP_SYS_CHROOT"
+  ];
+  workspacePinWorkerRootMutationDeny = [
+    "~chmod"
+    "~fchmod"
+    "~fchmodat"
+    "~fchmodat2"
+  ];
 in {
   options.aos.sandbox.storageWorker = {
     enable = lib.mkEnableOption "the fixed one-transaction OpenZFS worker";
@@ -92,6 +106,13 @@ in {
       {
         assertion = cfg.workerGid > 0 && cfg.workerGid < 65536;
         message = "aos.sandbox.storageWorker.workerGid must be in 1..65535";
+      }
+      {
+        assertion =
+          !builtins.elem "CAP_CHOWN" workspacePinWorkerCapabilities
+          && !builtins.elem "CAP_FOWNER" workspacePinWorkerCapabilities
+          && builtins.elem "~fchmod" workspacePinWorkerRootMutationDeny;
+        message = "the unqualified workspace pin worker must not gain root-initializer authority";
       }
     ];
 
@@ -350,14 +371,8 @@ in {
         User = "root";
         Group = "root";
 
-        CapabilityBoundingSet = [
-          "CAP_SYS_ADMIN"
-          "CAP_SYS_CHROOT"
-        ];
-        AmbientCapabilities = [
-          "CAP_SYS_ADMIN"
-          "CAP_SYS_CHROOT"
-        ];
+        CapabilityBoundingSet = workspacePinWorkerCapabilities;
+        AmbientCapabilities = workspacePinWorkerCapabilities;
         DevicePolicy = "closed";
         DeviceAllow = ["/dev/zfs rw"];
         LimitNOFILE = 128;
@@ -401,11 +416,7 @@ in {
           "~socket"
           "~socketpair"
           "~connect"
-          "~chmod"
-          "~fchmod"
-          "~fchmodat"
-          "~fchmodat2"
-        ];
+        ] ++ workspacePinWorkerRootMutationDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
       };

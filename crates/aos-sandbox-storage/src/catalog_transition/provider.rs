@@ -21,10 +21,10 @@ impl StorageCatalogTransitionProvider {
         journal: &Journal,
         key_id: [u8; 16],
         secret: &[u8; 32],
-    ) -> Result<VerifiedPhysicalCatalogSnapshotV2, StorageStateError> {
+    ) -> Result<VerifiedPhysicalCatalogSnapshotV1, StorageStateError> {
         let provider = Self::load(journal, key_id, secret)?;
         let head = provider.head.ok_or(StorageStateError::InvalidTransition)?;
-        VerifiedPhysicalCatalogSnapshotV2::from_state(head)
+        VerifiedPhysicalCatalogSnapshotV1::from_state(head)
     }
 
     pub(crate) fn load(
@@ -112,10 +112,6 @@ impl StorageCatalogTransitionProvider {
         }
         let state = PhysicalCatalogState::bootstrap(generation, catalogs)?;
         let payload = HeadPayload {
-            format: match state.format {
-                PhysicalStateFormatV1::LegacyV1 => CatalogRecordFormatV1::LegacyV1,
-                PhysicalStateFormatV1::ExecutionV2 => CatalogRecordFormatV1::ExecutionV2,
-            },
             binding: state.binding.into(),
             operation_id: None,
             transition_digest: None,
@@ -185,16 +181,9 @@ impl StorageCatalogTransitionProvider {
             .as_ref()
             .cloned()
             .ok_or(StorageStateError::InvalidTransition)?;
-        let format = match (predecessor.format, catalog.format_version()) {
-            (PhysicalStateFormatV1::LegacyV1, 2) => CatalogRecordFormatV1::LegacyV1,
-            (PhysicalStateFormatV1::LegacyV1 | PhysicalStateFormatV1::ExecutionV2, 3) => {
-                CatalogRecordFormatV1::ExecutionV2
-            }
-            (PhysicalStateFormatV1::ExecutionV2, 2) => {
-                return Err(StorageStateError::InvalidTransition);
-            }
-            _ => return Err(StorageStateError::InvalidTransition),
-        };
+        if catalog.format_version() != FORMAT_VERSION {
+            return Err(StorageStateError::InvalidTransition);
+        }
         if predecessor.binding.generation().checked_add(1) != Some(catalog.generation()) {
             return Err(StorageStateError::InvalidTransition);
         }
@@ -226,7 +215,6 @@ impl StorageCatalogTransitionProvider {
         }
 
         let payload = ReservationPayload {
-            format,
             operation_id,
             request_digest: *request_digest.as_bytes(),
             mutation_digest: *mutation_digest.as_bytes(),
@@ -282,11 +270,6 @@ impl StorageCatalogTransitionProvider {
     pub(crate) fn install_reservation(&mut self, reservation: CatalogReservation) {
         self.reservations
             .insert(reservation.payload.operation_id, reservation);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn remove_reservation_for_test(&mut self, operation_id: [u8; 16]) {
-        self.reservations.remove(&operation_id);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -401,7 +384,6 @@ impl StorageCatalogTransitionProvider {
         }
         let transition_digest = transition_digest(&transition)?;
         let head_payload = HeadPayload {
-            format: transition.format,
             binding: result_state.binding.into(),
             operation_id: Some(operation_id),
             transition_digest: Some(*transition_digest.as_bytes()),
@@ -441,17 +423,7 @@ impl StorageCatalogTransitionProvider {
     ) -> Result<Option<CatalogTransitionEvidence>, StorageStateError> {
         let reservation = self.reservations.get(&operation_id);
         let transition = self.transitions.get(&operation_id);
-        if matches!(
-            record_version,
-            STORAGE_RECORD_LEGACY_VERSION | STORAGE_RECORD_IDENTITY_VERSION
-        ) {
-            return if reservation.is_none() && transition.is_none() {
-                Ok(None)
-            } else {
-                Err(StorageStateError::CorruptRecord)
-            };
-        }
-        if record_version != STORAGE_RECORD_TRANSITION_VERSION {
+        if record_version != STORAGE_RECORD_VERSION {
             return Err(StorageStateError::CorruptRecord);
         }
 

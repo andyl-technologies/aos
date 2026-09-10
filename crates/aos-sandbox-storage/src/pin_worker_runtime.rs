@@ -24,7 +24,7 @@ use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError,
 };
-use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags};
+use rustix::fs::{AtFlags, FileType, FlockOperation, Gid, Mode, OFlags, Uid};
 
 use crate::authorization::StorageProtectedConfigurationV1;
 use crate::observation::ZfsObservationState;
@@ -52,6 +52,9 @@ use crate::pin_worker::{
 use crate::process::{
     PinnedExecutable, execute_transaction_for, observe_transaction_for,
     observe_workspace_catalog_zfs_for, open_cgroup_root,
+};
+use crate::root_policy::{
+    PortableRootAttributesV1, WorkspaceRootDispositionV1, WorkspaceRootPolicyV1,
 };
 use crate::runtime::runtime_configuration_binding;
 use crate::workspace_pin::{
@@ -1467,8 +1470,76 @@ fn materialize_pin(
     filesystem.set_string("source", attempt.dataset_name())?;
     let detached = filesystem.create()?.mount()?;
     detached.set_attributes(false, MountAttributes::secure_writable(), None)?;
+    let root_policy = attempt.root_policy();
+    if root_policy.is_create_initialize() {
+        // An fsmount descriptor is path-only. Fresh Create roots have the
+        // fixed accessible dataset shape; open the root itself so mutation
+        // never targets a caller path or an already-attached mount.
+        let detached_root = rustix::fs::openat(
+            detached.as_fd(),
+            ".",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        enforce_workspace_root_policy(&detached_root, root_policy)?;
+    } else {
+        // Clone is verification-only. fstat on the detached O_PATH mount
+        // descriptor does not require search/read permission on a source
+        // root whose authenticated mode is intentionally restrictive.
+        enforce_workspace_root_policy(detached.as_fd(), root_policy)?;
+    }
     detached.attach(&slot)?;
     Ok(())
+}
+
+fn enforce_workspace_root_policy(
+    root: impl std::os::fd::AsFd,
+    root_policy: WorkspaceRootPolicyV1,
+) -> Result<(), ZfsWorkerError> {
+    let before = rustix::fs::fstat(root.as_fd())?;
+    let observed = portable_root_attributes(&before)?;
+
+    match root_policy
+        .classify_observed_root(observed)
+        .map_err(|_| ZfsWorkerError::Authority)?
+    {
+        WorkspaceRootDispositionV1::AlreadyConforming
+        | WorkspaceRootDispositionV1::PreserveAuthenticated => {}
+        WorkspaceRootDispositionV1::Initialize(required) => {
+            rustix::fs::fchown(
+                root.as_fd(),
+                Some(Uid::from_raw(required.uid())),
+                Some(Gid::from_raw(required.gid())),
+            )?;
+            // Ownership changes may clear special bits, so mode is applied last.
+            rustix::fs::fchmod(
+                root.as_fd(),
+                Mode::from_raw_mode(u32::from(required.mode())),
+            )?;
+        }
+    }
+
+    let after = rustix::fs::fstat(root.as_fd())?;
+    if before.st_dev != after.st_dev
+        || before.st_ino != after.st_ino
+        || portable_root_attributes(&after)? != root_policy.root_attributes()
+    {
+        return Err(ZfsWorkerError::Authority);
+    }
+    Ok(())
+}
+
+fn portable_root_attributes(
+    metadata: &rustix::fs::Stat,
+) -> Result<PortableRootAttributesV1, ZfsWorkerError> {
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
+        || metadata.st_dev == 0
+        || metadata.st_ino == 0
+    {
+        return Err(ZfsWorkerError::Authority);
+    }
+    PortableRootAttributesV1::new(metadata.st_uid, metadata.st_gid, metadata.st_mode & 0o7777)
+        .map_err(|_| ZfsWorkerError::Authority)
 }
 
 fn remove_pin_and_dataset(

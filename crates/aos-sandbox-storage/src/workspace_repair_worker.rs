@@ -354,7 +354,7 @@ mod tests {
         let destination =
             PlannedDataset::from_catalog(root, "tank/aos/project/work", domains).unwrap();
         let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             7,
             domains,
             CatalogPlanV1::CreateWorkspace {

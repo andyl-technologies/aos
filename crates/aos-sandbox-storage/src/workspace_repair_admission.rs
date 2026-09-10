@@ -34,6 +34,7 @@ use crate::pin_worker::{
     MAXIMUM_PIN_WORKER_REQUEST_BYTES, MAXIMUM_PIN_WORKER_RESULT_BYTES, WorkspacePinWorkerResultV1,
     decode_result as decode_pin_worker_result, encode_result as encode_pin_worker_result,
 };
+use crate::root_policy::WorkspaceRootPolicyV1;
 use crate::workspace_pin::{
     MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE, WorkspaceDatasetObservationV1, WorkspacePinActionV1,
     WorkspacePinAttemptPhaseV1, WorkspacePinAttemptV1, WorkspacePinHostScopeV1,
@@ -298,6 +299,7 @@ pub(crate) struct WorkspacePinRepairAdmissionProbeV1 {
     current_host_scope: WorkspacePinHostScopeV1,
     dataset_name: String,
     dataset_guid: u64,
+    root_policy: WorkspaceRootPolicyV1,
 }
 
 impl WorkspacePinRepairAdmissionProbeV1 {
@@ -327,6 +329,7 @@ impl WorkspacePinRepairAdmissionProbeV1 {
         );
         hasher.update(self.dataset_name.as_bytes());
         hasher.update(self.dataset_guid.to_be_bytes());
+        hasher.update(self.root_policy.commitment().as_bytes());
         ObjectDigest::from_bytes(hasher.finalize().into())
     }
 
@@ -352,6 +355,10 @@ impl WorkspacePinRepairAdmissionProbeV1 {
 
     pub(crate) const fn dataset_guid(&self) -> u64 {
         self.dataset_guid
+    }
+
+    pub(crate) const fn root_policy(&self) -> WorkspaceRootPolicyV1 {
+        self.root_policy
     }
 }
 
@@ -467,6 +474,7 @@ pub(crate) fn bind_probe(
         current_host_scope,
         dataset_name: latest_attempt.dataset_name().to_owned(),
         dataset_guid: latest_attempt.dataset_guid(),
+        root_policy: latest_attempt.root_policy(),
     })
 }
 
@@ -805,7 +813,7 @@ mod tests {
         let destination =
             PlannedDataset::from_catalog(root, "tank/aos/project/work", domains).unwrap();
         let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             7,
             domains,
             CatalogPlanV1::CreateWorkspace {
@@ -834,6 +842,7 @@ mod tests {
             52,
             53,
             54,
+            WorkspaceRootPolicyV1::create_initialize().root_attributes(),
         )
         .unwrap()
     }
@@ -860,6 +869,7 @@ mod tests {
             52,
             65_536,
             65_536,
+            WorkspaceRootPolicyV1::create_initialize(),
             None,
         )
         .unwrap()
@@ -887,6 +897,7 @@ mod tests {
             52,
             65_536,
             65_536,
+            WorkspaceRootPolicyV1::create_initialize(),
             Some(pin_proof()),
         )
         .unwrap()

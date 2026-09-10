@@ -144,11 +144,11 @@ impl StorageWorkspaceProjectionPlanV1 {
         &self.entries
     }
 
-    /// Returns the legacy ready-only view used by the current catalog adapter.
+    /// Returns the ready-only projection used by the catalog adapter.
     ///
     /// Pending rows stay explicitly accounted for by this plan but remain
     /// withheld from publication until the later physical-evidence boundary.
-    pub(super) fn compatibility_projection(
+    pub(super) fn ready_projection(
         &self,
     ) -> Result<Vec<StorageWorkspaceProjection>, StorageStateError> {
         if self.transaction_sequence == 0
@@ -1067,6 +1067,7 @@ mod tests {
     use super::*;
     use crate::broker::FreshWorkspacePinAuthority;
     use crate::catalog::ResolvedCatalogCommitmentV1;
+    use crate::root_policy::WorkspaceRootPolicyV1;
     use crate::state::tests::{
         catalog, destroy_dataset_catalog, digest, initialize, key,
         prepare_workspace_remove_attempt, publication_intent,
@@ -1074,7 +1075,7 @@ mod tests {
     use crate::state::{BeginStorageTransaction, StorageTransactionStore, attempt_record};
     use crate::workspace_pin::{
         WorkspaceDatasetObservationV1, WorkspacePinHostScopeV1, WorkspacePinObservationV1,
-        WorkspaceRootPinProofV1,
+        WorkspacePinRecoveryDispositionV1, WorkspaceRootPinProofV1,
     };
     use crate::workspace_repair::StorageWorkspacePinRepairIntentV1;
 
@@ -1102,6 +1103,7 @@ mod tests {
             dataset_guid,
             8,
             9,
+            WorkspaceRootPolicyV1::create_initialize().root_attributes(),
         )
         .unwrap()
     }
@@ -1142,6 +1144,7 @@ mod tests {
             dataset_guid,
             attempt.identity_range_start(),
             attempt.identity_range_size(),
+            attempt.root_policy(),
             None,
         )
         .unwrap()
@@ -1185,7 +1188,7 @@ mod tests {
         let plan = initialized.workspace_projection_plan().unwrap();
         assert!(plan.entries.is_empty());
         assert!(plan.expected_workspace_handles.is_empty());
-        assert!(plan.compatibility_projection().unwrap().is_empty());
+        assert!(plan.ready_projection().unwrap().is_empty());
         drop(initialized);
 
         let reopened =
@@ -1278,7 +1281,7 @@ mod tests {
             (71_u8, &second_catalog, 102_u64),
         ] {
             let operation_id = [marker; 16];
-            let intent = publication_intent(operation_id, catalog, marker.wrapping_add(1));
+            let intent = publication_intent(operation_id, catalog, marker.wrapping_add(5));
             let assignment_digest = intent.assignment_digest();
             let BeginStorageTransaction::Prepared { mutation_digest } = store
                 .begin_authorized_with_publication(
@@ -1334,20 +1337,23 @@ mod tests {
                 CatalogPlanV1::CreateWorkspace { destination, .. } => destination.name(),
                 _ => panic!("fixture catalog was not a workspace creation"),
             };
-            store
-                .complete_workspace_pin_attempt(
-                    attempt.attempt_id(),
-                    &WorkspaceDatasetObservationV1::Exact {
-                        name: dataset_name.to_owned(),
-                        guid: dataset_guid,
-                    },
-                    &WorkspacePinObservationV1::Present(workspace_pin_proof(
-                        workspace_handle,
-                        dataset_name,
-                        dataset_guid,
-                    )),
-                )
-                .unwrap();
+            assert_eq!(
+                store
+                    .complete_workspace_pin_attempt(
+                        attempt.attempt_id(),
+                        &WorkspaceDatasetObservationV1::Exact {
+                            name: dataset_name.to_owned(),
+                            guid: dataset_guid,
+                        },
+                        &WorkspacePinObservationV1::Present(workspace_pin_proof(
+                            workspace_handle,
+                            dataset_name,
+                            dataset_guid,
+                        )),
+                    )
+                    .unwrap(),
+                WorkspacePinRecoveryDispositionV1::CompletePublication
+            );
         }
 
         let plan = store.workspace_projection_plan().unwrap();
@@ -1363,7 +1369,7 @@ mod tests {
             entry.disposition,
             WorkspaceProjectionDispositionV1::Ready(_)
         )));
-        assert_eq!(plan.compatibility_projection().unwrap().len(), 2);
+        assert_eq!(plan.ready_projection().unwrap().len(), 2);
     }
 
     #[test]
@@ -1421,7 +1427,7 @@ mod tests {
                 ..
             }
         ));
-        assert!(missing.compatibility_projection().unwrap().is_empty());
+        assert!(missing.ready_projection().unwrap().is_empty());
 
         let host_scope = WorkspacePinHostScopeV1::new([4; 16], 5, 6).unwrap();
         let attempt = store
@@ -1461,7 +1467,7 @@ mod tests {
                 ..
             }] if binding.attempt_id == attempt.attempt_id()
         ));
-        assert!(ambiguous.compatibility_projection().unwrap().is_empty());
+        assert!(ambiguous.ready_projection().unwrap().is_empty());
 
         let proof = workspace_pin_proof(
             creation.storage_handle().unwrap(),
@@ -1498,7 +1504,7 @@ mod tests {
             ) && binding.attempt_id == attempt.attempt_id()
         ));
         assert_eq!(
-            ready.compatibility_projection().unwrap(),
+            ready.ready_projection().unwrap(),
             vec![StorageWorkspaceProjection::Active(creation)]
         );
 
@@ -1555,7 +1561,7 @@ mod tests {
                 ..
             }] if latest.attempt_id == remove.attempt_id()
         ));
-        assert!(pending.compatibility_projection().unwrap().is_empty());
+        assert!(pending.ready_projection().unwrap().is_empty());
 
         drop(store);
         let mut reopened =
@@ -1582,12 +1588,7 @@ mod tests {
                 ..
             }] if latest.attempt_id == remove.attempt_id()
         ));
-        assert!(
-            awaiting_commit
-                .compatibility_projection()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(awaiting_commit.ready_projection().unwrap().is_empty());
 
         let destroy = ResolvedCatalogCommitmentV1::from_canonical_bytes(
             &reopened
@@ -1628,7 +1629,7 @@ mod tests {
                 && historical_ensure.attempt_ordinal < removal_binding.attempt_ordinal
         ));
         assert!(matches!(
-            retired.compatibility_projection().unwrap().as_slice(),
+            retired.ready_projection().unwrap().as_slice(),
             [StorageWorkspaceProjection::Retired { .. }]
         ));
     }
@@ -1703,7 +1704,7 @@ mod tests {
             }] if *workspace_handle == remove.workspace_handle()
                 && latest.attempt_id == remove.attempt_id()
         ));
-        assert!(plan.compatibility_projection().unwrap().is_empty());
+        assert!(plan.ready_projection().unwrap().is_empty());
 
         drop(store);
         let reopened = StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
@@ -1854,7 +1855,7 @@ mod tests {
             }] if latest.attempt_id == repair.attempt_id()
                 && binding.attempt_id == initial.attempt_id()
         ));
-        assert!(ambiguous.compatibility_projection().unwrap().is_empty());
+        assert!(ambiguous.ready_projection().unwrap().is_empty());
 
         drop(store);
         let (_left_directory, mut left_effect) = clone_test_store(&directory);

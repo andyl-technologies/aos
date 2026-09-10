@@ -989,7 +989,7 @@ mod tests {
         let destination =
             PlannedDataset::from_catalog(root, "tank/aos/project/work", domains).unwrap();
         let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
-        let catalog = ResolvedCatalogCommitmentV1::new(
+        let catalog = ResolvedCatalogCommitmentV1::new_for_test(
             7,
             domains,
             CatalogPlanV1::CreateWorkspace {
@@ -1398,7 +1398,7 @@ mod tests {
             ResolvedDataset::from_catalog(root, "tank/aos/project", 15, [1; 32], domains).unwrap();
         let ancestor = ProjectAncestorPolicyV1::new(ancestor_dataset, 65_536, 8, 16).unwrap();
         let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::None).unwrap();
-        let catalog = ResolvedCatalogCommitmentV1::new(
+        let catalog = ResolvedCatalogCommitmentV1::new_for_test(
             8,
             domains,
             CatalogPlanV1::SetQuota {

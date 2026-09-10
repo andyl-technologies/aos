@@ -3191,9 +3191,10 @@ Portable canonical semantics commit every action, assignment, specification,
 slot, resource, and historical-fence field. Append-only broker verbs 29 and 30
 name materialization and reap, while Mount-local authenticated effect codes 6
 and 7 preserve those operations across journal recovery without crossing
-broker domains. Common signed-plan admission now accepts registered compatible
-protocol versions from 1.1 onward, allowing the 1.3 plan to remain version-bound
-while Storage and Network stay capped at their registered 1.1 maximum.
+broker domains. Common signed-plan admission accepts each broker's registered
+contract without cross-domain version inheritance. Mount remains version-bound
+to its own plan, Storage is pinned to exact 1.0, and Network negotiates only its
+independently registered versions.
 
 The production Mount broker opens the existing private catalog root as the
 destination-slot anchor store. It atomically persists the signed assignment
@@ -3710,15 +3711,14 @@ and Network still need authoritative current-resource inventories, and the
 controller still needs durable whole-catalog generation and tombstone
 reconciliation before it can schedule the existing Host 1.4 dispatch.
 
-### Version-separated Storage and Network resource inventory contracts
+### Exact Storage and Network resource inventory contracts
 
-Storage and Network protocol 1.2 now define distinct authoritative-resource
-inventory methods instead of extending the legacy action-summary responses in
-place. A 1.1 peer can continue to negotiate the original summaries, but cannot
-request either new method or interpret an empty response as a complete physical
-snapshot. Both new methods remain authority-free and descriptor-free: the fixed
-node controller may observe broker-owned state, but receives no live kernel
-descriptor and gains no mutation authority.
+Exact Storage 1.0 and Network 1.2 define distinct authoritative-resource
+inventory methods. Storage admits no predecessor profile, and neither protocol
+allows an empty response to masquerade as a complete physical snapshot. Both
+methods remain authority-free and descriptor-free: the fixed node controller
+may observe broker-owned state, but receives no live kernel descriptor and
+gains no mutation authority.
 
 Storage snapshots bind every current launchable workspace handle to its exact
 assignment fence, portable root image, current-boot root-pin device and inode,
@@ -3737,12 +3737,12 @@ into a Host launch catalog. Physical namespace identities and handles are
 unique, and the only admissible pin path is derived beneath the fixed Host
 network-pin root.
 
-Focused validation covers Storage and Network 1.1/1.2 negotiation separation,
-request-header version binding, strict ordering, current-boot enforcement,
-duplicate physical resources, overlapping identity ranges, invalid lifecycle
-and lease combinations, fixed pin derivation, response ceilings, and nested
-hostile-field validation. The protobuf, core registry, and protocol library
-suites pass, along with Rust formatting and diff checks.
+Focused validation covers exact Storage 1.0 and Network 1.2 negotiation
+separation, request-header version binding, strict ordering, current-boot
+enforcement, duplicate physical resources, overlapping identity ranges,
+invalid lifecycle and lease combinations, fixed pin derivation, response
+ceilings, and nested hostile-field validation. The protobuf, core registry,
+and protocol library suites pass, along with Rust formatting and diff checks.
 
 This advances `SBX-BPROTO-04`, `SBX-CTRL-03`, `SBX-STOR-01`, and `SBX-NET-01`
 without claiming an authoritative producer. Storage still needs to publish
@@ -3849,39 +3849,37 @@ qualification also remain open.
 
 ### Recoverable Storage result identity
 
-Storage transaction results now retain the exact ZFS object GUID required by
-their typed postcondition and the opaque resource identities needed by every
+Storage transaction results retain the exact ZFS object GUID required by their
+typed postcondition and the opaque resource identities needed by every
 subsequent operation. Create and clone results mint a workspace handle with a
 broker-secret HMAC over the exact operation, request, observed GUID, result
-catalog, and handle kind. Snapshot results retain the source workspace handle
-and mint a separately domain-separated immutable-version handle. Hold, release,
-quota, and exact destroy results reproduce only the already-catalogued handles
-they addressed. Missing or zero capture GUIDs, a changed GUID for an existing
-object, and a GUID reported for an absence postcondition all fail before the
-result can become durable.
+catalog, and handle kind. The typed state model can represent a Snapshot result,
+but production Snapshot admission remains held before durable mutation until
+its source metadata is authenticated. Hold, release, quota, and exact destroy
+results reproduce only the already-catalogued handles they addressed. Missing
+or zero capture GUIDs, a changed GUID for an existing object, and a GUID reported
+for an absence postcondition all fail before the result can become durable.
 
-The authenticated `AOSSTX01` record is version three and commits the optional
-workspace handle, version handle, and observed GUID in a closed fixed-width
-result extension. Version-two records remain readable without fabricating
-identities that they never stored. The same operation replay returns the exact
-minted values after restart, while malformed presence bits, zero sentinels, or
-a version handle without its workspace are rejected.
+The sole authenticated `AOSSTX01` v1 record commits the optional workspace
+handle, version handle, and observed GUID in a closed fixed-width result
+extension. Unknown record versions fail closed. The same operation replay
+returns the exact minted values after restart, while malformed presence bits,
+zero sentinels, or a version handle without its workspace are rejected.
 
-Resolved Storage catalog bytes are now independently recoverable as typed
-plans. Format version two adds the owning dataset GUID omitted by snapshot-
-based operations and the exact project-ancestor handle omitted by the former
-format. A strict bounded decoder reconstructs all eight operation variants
-only through their checked constructors and then requires byte-for-byte
-canonical re-encoding, including the redundant postcondition. The transaction
-store accepts a recovery entry only while every operation, phase, mutation,
-assignment, request, and catalog binding still names the exact current record.
-Format-one bytes remain distinguishable and digest-checkable as history, but
-fail typed recovery instead of inventing missing inputs.
+Resolved Storage catalog v1 bytes are independently recoverable as typed plans
+and include the owning dataset GUID and exact project-ancestor handle. A strict
+bounded decoder reconstructs all eight operation variants only through their
+checked constructors and then requires byte-for-byte canonical re-encoding,
+including the redundant postcondition. The transaction store accepts a recovery
+entry only while every operation, phase, mutation, assignment, request, and
+catalog binding still names the exact current record. Unknown catalog versions
+fail typed recovery instead of selecting a predecessor decoder.
 
-Focused validation covers all eight catalog-operation round trips, legacy and
-trailing bytes, redundant-field corruption, capture/existing/absence GUID
-shape, keyed workspace and version handles, exact replay, and version-two
-journal recovery. All 33 Storage library tests pass. Strict all-target,
+Focused validation covers all eight catalog-operation round trips, unknown
+versions and trailing bytes, redundant-field corruption,
+capture/existing/absence GUID shape, keyed workspace and version handles, exact
+replay, and sole-v1 journal recovery. All 33 Storage library tests pass. Strict
+all-target,
 all-feature crate-local Clippy without dependency linting, warnings-as-errors
 rustdoc, Rust formatting, and diff checks pass. Full hermetic evaluation also
 passes at
@@ -3896,7 +3894,7 @@ Apply orchestration are still required.
 ### Protected Storage workspace catalog and authoritative inventory
 
 Storage now owns a protected, append-only workspace catalog that can populate
-the registered 1.2 authoritative inventory contract. A generation-one head
+the exact 1.0 authoritative inventory contract. A generation-one head
 fixes the trusted subordinate-identity pool. Every later publication advances
 the head atomically with one canonical workspace row that retains the opaque
 workspace handle, nonzero ZFS dataset GUID, creation correlation, exact
@@ -3929,7 +3927,7 @@ the fixed pin to be absent before converting the row to a permanent tombstone.
 
 Each inventory call revalidates every current-boot pin, emits rows in strict
 handle order with the protected journal boundary and broker-process identity,
-and decodes its own bounded protobuf through the public Storage 1.2 validator
+and decodes its own bounded protobuf through the public Storage 1.0 validator
 before returning bytes. Focused validation covers operation-fence relocation,
 manifest/spec substitution, initialization and restart, replay, allocation and
 exhaustion, assignment rebinding, retirement continuity, permanent range
@@ -4779,10 +4777,10 @@ recomputes its resulting state. Every transition must join the authenticated
 request, mutation, catalog generation, and physical object GUID; semantic
 conflicts and branches fail closed even when their individual records are
 authenticated. The provider and
-[`state.rs`](../../../crates/aos-sandbox-storage/src/state.rs) distinguish
-legacy v2/v3 operation records from the new v4 catalog-bearing form and poison
-cached authority after a commit failure so a later request cannot continue
-from a possibly divergent in-memory view.
+[`state.rs`](../../../crates/aos-sandbox-storage/src/state.rs) accept only the
+sole v1 catalog-bearing operation record and reject unknown version markers.
+They poison cached authority after a commit failure so a later request cannot
+continue from a possibly divergent in-memory view.
 
 The current Storage library suite passes 65 tests with one real-systemd test
 ignored. Coverage includes deterministic post-durable-error and reopen cases,
@@ -4795,8 +4793,8 @@ This remains foundation toward `SBX-STOR-01`, not its completion. No production
 coordinator or `storaged` startup path yet provisions the trusted bootstrap
 publisher, journal authentication key, and protected trust anchors; constructs
 this authority under the same lifetime lock; or exposes the production broker
-handler. The legacy migration source, root-pin and workspace publication, and
-Storage Apply advertisement also remain unimplemented. The real worker VM
+handler. Root-pin and workspace publication and Storage Apply advertisement
+also remain unimplemented. The real worker VM
 handles are still pre-QEMU, so neither the production mutation boundary nor
 `SBX-P0-07` has runtime qualification. Both tasks remain open.
 
@@ -5162,16 +5160,15 @@ Storage Apply remains unadvertised, and no completion is claimed for
 
 ### Typed Storage pin proof and live workspace publication (in progress)
 
-The workspace catalog now persists the exact satisfied Ensure proof rather than
-reconstructing publication authority from mutable filesystem metadata. Catalog
-format 2 binds that proof into a new resource-digest domain. Active publish,
-recovery, replay, and inventory revalidate the proof's boot, host namespace,
-mount point, ZFS name and GUID; the live `O_PATH` directory type, device and
-inode; the distinct parent and unique mount ID; and a bounded mount-inventory
-entry whose root, filesystem, source and device match. A reopened descriptor
-and second inventory pass must agree before publication is accepted. Format 1
-rows remain decodable only for historical retirement reconstruction and cannot
-authorize a fresh active publication.
+The workspace catalog v1 persists the exact satisfied Ensure proof rather than
+reconstructing publication authority from mutable filesystem metadata. Its
+resource digest binds that proof. Active publish, recovery, replay, and
+inventory revalidate the proof's boot, host namespace, mount point, ZFS name
+and GUID; the live `O_PATH` directory type, device and inode; the distinct
+parent and unique mount ID; and a bounded mount-inventory entry whose root,
+filesystem, source and device match. A reopened descriptor and second inventory
+pass must agree before publication is accepted. Unknown record versions fail
+closed and cannot authorize a fresh or historical publication.
 
 Custody checks now distinguish the protected empty mount slot from the mounted
 filesystem root. The unmounted slot must remain under the exact protected
@@ -5180,7 +5177,7 @@ proved ZFS mount occupies that slot, its root owner and mode are guest data and
 may change without invalidating the mount identity. Regression coverage rejects
 an unmounted UID 992 or mode `0777` slot, accepts those attributes on an exact
 mounted root, rejects same-device/inode substitutions with a changed mount ID,
-and rejects boot, namespace, source, inode, proof, and legacy-envelope
+and rejects boot, namespace, source, inode, proof, and unknown-envelope
 substitutions. It preserves the existing cross-workspace device/inode alias
 check. This does not authorize recursive ownership repair or add `CAP_CHOWN`.
 
@@ -5252,7 +5249,7 @@ Apply stays unadvertised and `SBX-STOR-01`,
 
 ### Storage workspace root-pin repair recovery (in progress)
 
-Storage protocol 1.4 reserves controller method 21 for
+Exact Storage protocol 1.0 reserves controller method 21 for
 `RepairWorkspacePin`. The method requires the standard authorization carrier,
 accepts no descriptors, and carries only the request header, assignment fence,
 nonzero 16-byte repair operation ID, and exact 32-byte workspace handle.
@@ -5260,7 +5257,7 @@ Dataset names, GUIDs, mount points, observations, and attempt ordinals remain
 protected broker facts. The portable authorization registry assigns the
 resource-targeted `StorageRepairWorkspacePin` verb global code 33; the
 Storage-local authenticated Effect codec assigns it append-only code 9.
-Peers below Storage 1.4 cannot negotiate the method or decode its canonical
+Only an exact Storage 1.0 peer can negotiate the method or decode its canonical
 semantics.
 
 The repair compiler produces one fixed 183-byte, nine-TLV canonical semantic
@@ -5327,7 +5324,7 @@ remain open; no
 Commit `23ee70104fd313ba3497a07a263fa3d2cec2d0af` implements the
 fresh admission and immediate one-shot execution path that follows the
 recovery foundation above. `StorageBrokerRuntime::repair_workspace_pin` accepts
-only the raw Storage 1.4 request, standard authorization artifacts, negotiated
+only the raw Storage 1.0 request, standard authorization artifacts, negotiated
 version, peer identity and policy, and a protected-clock provider. Callers
 cannot select an observation, catalog, dataset name or GUID, attempt ordinal,
 host scope, or pin proof. The method resolves an exact durable replay before
@@ -5482,9 +5479,9 @@ It accepts only the fixed controller cgroup and verifies the connection
 establisher's UID, GID, PID, pidfd liveness, process leader, and cgroup before
 reading request bytes. After each receive it verifies the independent record
 subject, then rechecks the original establisher around dispatch. The bounded
-sequenced-packet transport forbids descriptors, negotiates the existing
-Storage 1.2 through 1.4 profiles, and exposes only `InventoryResources` and
-`RepairWorkspacePin`. The module requires externally provisioned protected
+sequenced-packet transport forbids descriptors, negotiates exact Storage 1.0,
+and exposes only `InventoryResources` and `RepairWorkspacePin`. The module
+requires externally provisioned protected
 authority, bootstrap, and state paths; it does not manufacture trust roots or
 genesis state.
 
@@ -5658,7 +5655,7 @@ historical-prefix, and retirement tests.
 This qualifies source-level structural composition only. No production runtime
 opens or retains the pending typestate, invokes the closed plan composer, or
 consumes the validated plan at a physical-evidence activation boundary; the
-current runtime still opens the active catalog directly and uses the legacy
+current runtime still opens the active catalog directly and uses the
 ready-only convergence path. For this new path, composition with retained
 transaction-journal, workspace-journal, host mount-namespace, and pin-root
 custody; fresh ZFS and root-pin observation; a freshness recheck followed by
@@ -5673,16 +5670,14 @@ checkbox is closed.
 ### Verified Storage resolution and execution metadata (in progress)
 
 Commit `ac8196c5fa0aa107374131b9803bc14a9f5de565` adds the protected,
-pure-resolution foundation for a future production Prepare path. Catalog
-format 3 binds an opaque checked workspace-root policy, retained preparation
-format 2 binds that exact catalog format and policy digest, and physical-state
-format 2 authenticates the rich 136-byte snapshot-root record needed to
-preserve portable root attributes across Clone. Legacy catalog, preparation,
-physical-state, reservation, transition, and head encodings remain frozen.
-Recovery can migrate a verified legacy chain into physical-state format 2,
-refuses a legacy catalog-format-2 operation after an execution-format physical
-head, and never treats a legacy snapshot without rich metadata as Clone
-authority.
+pure-resolution foundation for a future production Prepare path. The sole
+catalog v1 binds an opaque checked workspace-root policy, retained preparation
+v1 binds that exact catalog and policy digest, and physical-state v1
+authenticates the rich 136-byte snapshot-root record needed to preserve
+portable root attributes across Clone. Catalog, preparation, physical-state,
+reservation, transition, and head decoders accept only their exact v1
+encodings and reject unknown version markers. No predecessor record is treated
+as Snapshot or Clone authority.
 
 The new resolver authenticates the complete physical chain and durable
 operation set in both directions before selecting one protected root and
@@ -5699,8 +5694,8 @@ specification.
 The pinned development-shell Storage library run executed 180 tests: 177
 passed, none failed, and the three installed-systemd fixtures were ignored.
 All Storage targets also compiled, formatting and cached-diff checks passed,
-and focused regressions cover legacy golden bytes, V1-to-V2 recovery, rich
-metadata tamper, capacity bounds, oversized version dispatch, global
+and focused regressions cover sole-v1 golden bytes, unknown-version rejection,
+rich metadata tamper, capacity bounds, oversized version dispatch, global
 multi-root validation, reverse operation-set validation, all eight resolver
 actions, sibling Prepare-body substitution, assignment-incarnation and epoch
 substitution, and the independent Apply manifest and specification check.
@@ -7258,3 +7253,47 @@ realized as a Nix build or VM and does not qualify any mutation path.
 `SBX-CTRL-03` remains open until the authenticated public/coordinator transport,
 assignment compiler, Guardian signer integration, and privileged broker Apply
 paths are implemented and qualified.
+
+### Storage 1.0 Apply composition precursor (source in progress)
+
+This Storage increment hard-cuts the local broker protocol to exact version
+1.0. Portable workspace metadata retains its exact canonical assignment-manifest
+and sandbox-spec bytes in an authenticated, bounded publication intent before
+a privileged effect. Live admission, durable reopen, and the independent pin
+worker use one semantic encoder and cross-check the operation, request,
+transport digest, full assignment, admitted node, exact planned destination
+and catalog, and root policy. The destination handle is minted only after the
+effect is verified. Storage catalog, catalog-preparation,
+physical-transition, workspace-publication, and root-pin state each admit only
+their sole current v1 encoding; an unknown v2 marker fails closed rather than
+selecting a predecessor decoder.
+
+The source execution path now routes Create and Clone through that retained
+metadata and identity-range admission, and routes Hold, Release, SetQuota, and
+Destroy through the generic admission path. Snapshot remains held: canonical
+request routing rejects it before artifact authority, sealing, or any durable
+effect because its authenticated source-root metadata is not yet part of the
+broker authority path. The internal physical-transition v1 format already
+round-trips and authenticates rich snapshot-root metadata, but that support is
+not production Snapshot admission. A v1 pin attempt/proof binds portable
+unshifted root attributes. Create opens and
+normalizes the detached mount root with descriptor-only fchown then fchmod,
+reobserves exact inode/device/uid/gid/mode, and attaches only afterward; Clone
+is verification-only. Remove retains the creation root policy so those proof
+attributes survive reopen. The worker transfer shares the state publication
+record ceiling and frames the complete bounded request.
+
+This is not production qualification. The installed workspace pin worker
+intentionally still lacks `CAP_CHOWN`/`CAP_FOWNER` and denies fchmod, and no
+dedicated root-initializer systemd/MAC domain or installed AArch64/x86_64 VM
+result exists. Clone readiness additionally depends on authenticated source
+snapshot root metadata, and crash recovery between committed dataset creation
+and the first durable pin attempt still requires a complete recovery story.
+An exact retained Prepared request can resume before its authority deadline;
+an expired Prepared intent still lacks an authenticated abort/tombstone path.
+Clone also lacks authenticated whole-tree source identity-map provenance: the
+root-attribute check alone does not prove every nested UID/GID composes with
+the target private-userns range.
+Production constructs `StorageApplyReadiness::WorkspaceBackendUnavailable`, so
+Apply remains unadvertised. `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, and
+`SBX-P0-10` remain open.

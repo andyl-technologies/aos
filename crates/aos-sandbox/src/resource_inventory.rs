@@ -1,7 +1,8 @@
 //! Authenticates and durably records Storage and Network resource inventories.
 //!
-//! Each query uses an independent one-shot protocol 1.2 session and accepts a
-//! response only from the configured live broker execution. The controller
+//! Each query uses an independent one-shot session at the domain's exact
+//! protocol version: Storage 1.0 or Network 1.2. A response is accepted only
+//! from the configured live broker execution. The controller
 //! records the exact request and complete response in a domain-specific latest
 //! snapshot:
 //!
@@ -46,7 +47,6 @@ use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordName
 
 mod format;
 
-const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
 const RESPONSE_BYTES: u32 = 15 * 1024 * 1024;
 const QUERY_WINDOW_NANOSECONDS: u64 = 10_000_000_000;
 const MAXIMUM_QUERY_BYTES: usize = 4 * 1024;
@@ -372,9 +372,10 @@ impl ResourceInventoryClient {
             self.domain.method(),
             &request_body,
         )?;
+        let protocol_version = self.domain.protocol_version();
         let hello = BrokerClientHello {
-            protocol_major: CARRIER_VERSION.major().into(),
-            protocol_minor: CARRIER_VERSION.minor().into(),
+            protocol_major: protocol_version.major().into(),
+            protocol_minor: protocol_version.minor().into(),
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: RESPONSE_BYTES,
             required_methods: vec![self.domain.method().into()],
@@ -394,7 +395,7 @@ impl ResourceInventoryClient {
             &hello_bytes,
             self.domain.protocol(),
             Audience::AUDIENCE_NODE_CONTROLLER,
-            CARRIER_VERSION,
+            protocol_version,
             &[],
             &[self.domain.method()],
             RESPONSE_BYTES,
@@ -471,6 +472,13 @@ impl InventoryDomain {
         }
     }
 
+    const fn protocol_version(self) -> ProtocolVersion {
+        match self {
+            Self::Storage => ProtocolVersion::new(1, 0),
+            Self::Network => ProtocolVersion::new(1, 2),
+        }
+    }
+
     const fn namespace(self) -> RecordNamespace {
         match self {
             Self::Storage => RecordNamespace::StorageResourceInventory,
@@ -479,9 +487,10 @@ impl InventoryDomain {
     }
 
     fn request_body(self, request_id: [u8; 16], deadline: u64) -> Vec<u8> {
+        let protocol_version = self.protocol_version();
         let header = Some(RequestHeader {
-            protocol_major: CARRIER_VERSION.major().into(),
-            protocol_minor: CARRIER_VERSION.minor().into(),
+            protocol_major: protocol_version.major().into(),
+            protocol_minor: protocol_version.minor().into(),
             request_id: request_id.to_vec(),
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             deadline_boottime_nanoseconds: deadline,
@@ -543,7 +552,7 @@ impl InventoryDomain {
             }
         }
         .map_err(|_| ResourceInventoryError::CorruptState)?;
-        if header.protocol_version() != CARRIER_VERSION
+        if header.protocol_version() != self.protocol_version()
             || header.audience() != Audience::AUDIENCE_NODE_CONTROLLER
             || header.maximum_response_bytes() != RESPONSE_BYTES
         {
@@ -1382,6 +1391,65 @@ mod tests {
             response_body,
         )
         .unwrap()
+    }
+
+    fn assert_hello_and_request_protocol_round_trip(domain: InventoryDomain) {
+        let protocol_version = domain.protocol_version();
+        let hello = BrokerClientHello {
+            protocol_major: protocol_version.major().into(),
+            protocol_minor: protocol_version.minor().into(),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: RESPONSE_BYTES,
+            required_methods: vec![domain.method().into()],
+            ..Default::default()
+        };
+        let peer = synthetic_credentials();
+        let policy = PeerPolicy {
+            uid: peer.uid,
+            gid: Some(peer.gid),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        };
+        let server = aos_sandbox_protocol::negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer,
+            policy,
+            domain.protocol(),
+            &[],
+            &[domain.method()],
+        )
+        .unwrap();
+        assert_eq!(server.version(), protocol_version);
+
+        let client = decode_server_hello(
+            &server.server_hello().encode_to_vec(),
+            domain.protocol(),
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            protocol_version,
+            &[],
+            &[domain.method()],
+            RESPONSE_BYTES,
+        )
+        .unwrap();
+        let request_body = domain.request_body([1; 16], 2);
+        let request = domain.decode_request(&request_body).unwrap();
+        client.validate_header(&request).unwrap();
+        let packet =
+            encode_unauthed_request_envelope(domain.protocol(), domain.method(), &request_body)
+                .unwrap();
+        let decoded = server.decode_request(&packet, 0).unwrap();
+
+        assert_eq!(decoded.body(), request_body);
+        assert!(decoded.authorization().is_none());
+    }
+
+    #[test]
+    fn storage_hello_and_request_round_trip_uses_exact_one_zero() {
+        assert_hello_and_request_protocol_round_trip(InventoryDomain::Storage);
+    }
+
+    #[test]
+    fn network_hello_and_request_round_trip_uses_exact_one_two() {
+        assert_hello_and_request_protocol_round_trip(InventoryDomain::Network);
     }
 
     #[test]

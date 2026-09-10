@@ -538,7 +538,7 @@ rejected.
 
 ### Storage workspace root-pin repair
 
-Storage root-pin repair is a resource-targeted Storage 1.4 operation. Its
+Storage root-pin repair is a resource-targeted Storage 1.0 operation. Its
 public node-local request carries only the canonical repair request and the
 standard signed plan, plan signature, ownership lease, and lease signature.
 The caller does not supply a dataset name or GUID, creation catalog, attempt

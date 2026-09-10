@@ -13,15 +13,14 @@ use aos_sandbox_core::ObjectDigest;
 use crate::{
     ActiveHoldEvidence, CatalogPlanV1, CatalogSemanticError, HoldId, ManagedDatasetRoot,
     PlannedDataset, PlannedSnapshot, ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset,
-    ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1, catalog::ResolvedCatalogFormatV1,
-    root_policy::WorkspaceRootPolicyV1,
+    ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1, root_policy::WorkspaceRootPolicyV1,
 };
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSCAT1";
+const FORMAT_VERSION: u16 = 1;
 const MAXIMUM_CANONICAL_BYTES: usize = 16 * 1024;
 
 pub(crate) struct DecodedCatalog {
-    pub(crate) format: ResolvedCatalogFormatV1,
     pub(crate) generation: u64,
     pub(crate) domains: StorageDomainsV1,
     pub(crate) plan: CatalogPlanV1,
@@ -37,7 +36,9 @@ pub(crate) fn decode_catalog(bytes: &[u8]) -> Result<DecodedCatalog, CatalogSema
     if required_array::<8>(decoder.field(1)?)? != *FORMAT_MAGIC {
         return Err(CatalogSemanticError::MalformedEncoding);
     }
-    let format = ResolvedCatalogFormatV1::from_version(required_u16(decoder.field(2)?)?)?;
+    if required_u16(decoder.field(2)?)? != FORMAT_VERSION {
+        return Err(CatalogSemanticError::UnsupportedEncodingVersion);
+    }
     let generation = required_u64(decoder.field(3)?)?;
     let pool = required_text(decoder.field(4)?)?;
     let dataset_prefix = required_text(decoder.field(5)?)?;
@@ -68,10 +69,7 @@ pub(crate) fn decode_catalog(bytes: &[u8]) -> Result<DecodedCatalog, CatalogSema
     for tag in 28..=37 {
         let _ = decoder.field(tag)?;
     }
-    let encoded_root_policy = match format {
-        ResolvedCatalogFormatV1::LegacyV2 => None,
-        ResolvedCatalogFormatV1::ExecutionV3 => Some(decoder.field(38)?),
-    };
+    let encoded_root_policy = Some(decoder.field(38)?);
     decoder.finish()?;
 
     let space = raw_space.finish(&root, domains, ancestor_handle)?;
@@ -98,7 +96,6 @@ pub(crate) fn decode_catalog(bytes: &[u8]) -> Result<DecodedCatalog, CatalogSema
     };
 
     Ok(DecodedCatalog {
-        format,
         generation,
         domains,
         plan,

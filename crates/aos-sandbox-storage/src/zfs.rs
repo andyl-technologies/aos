@@ -519,7 +519,7 @@ mod tests {
         let source = ResolvedSnapshot::from_catalog(dataset, "v1", 12, [2; 32]).unwrap();
         let destination =
             PlannedDataset::from_catalog(root(), "tank/aos/project/clone", domains()).unwrap();
-        let catalog = ResolvedCatalogCommitmentV1::new(
+        let catalog = ResolvedCatalogCommitmentV1::new_for_test(
             7,
             domains(),
             CatalogPlanV1::Clone {
@@ -615,7 +615,7 @@ mod tests {
                     version_handle: [2; 32],
                 },
             };
-            let catalog = ResolvedCatalogCommitmentV1::new(7, domains(), plan).unwrap();
+            let catalog = ResolvedCatalogCommitmentV1::new_for_test(7, domains(), plan).unwrap();
             let transaction = ZfsTransaction::from_catalog(operation, &catalog).unwrap();
             let arguments = strings(&transaction);
             assert_eq!(arguments[1], "aos:abababababababababababababababab");
@@ -626,7 +626,7 @@ mod tests {
     fn operation_and_quota_substitution_fail_closed() {
         let destination =
             PlannedDataset::from_catalog(root(), "tank/aos/project/new", domains()).unwrap();
-        let catalog = ResolvedCatalogCommitmentV1::new(
+        let catalog = ResolvedCatalogCommitmentV1::new_for_test(
             7,
             domains(),
             CatalogPlanV1::CreateWorkspace {

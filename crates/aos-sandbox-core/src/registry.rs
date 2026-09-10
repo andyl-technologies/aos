@@ -433,20 +433,24 @@ impl ProtocolVersion {
 
 /// Negotiates one protocol independently from every other compatibility domain.
 ///
-/// V1 peers must use the same major and cannot demand semantics newer than the
-/// local maximum minor. Successful negotiation returns the offered version;
-/// callers advertise only versions they have conformance-tested.
+/// Storage has a single exact baseline. Other domains retain their existing
+/// same-major compatibility policy until their independent cutovers.
 ///
 /// # Errors
 ///
-/// Returns [`RegistryError::IncompatibleProtocol`] for a major mismatch or a
-/// peer minor newer than the compiled registry.
+/// Returns [`RegistryError::IncompatibleProtocol`] when the offer is outside
+/// the compiled policy for that protocol domain.
 pub fn negotiate_protocol(
     protocol: ProtocolId,
     offered: ProtocolVersion,
 ) -> Result<ProtocolVersion, RegistryError> {
     let local = protocol_version(protocol);
-    if offered.major == local.major && offered.minor <= local.minor {
+    let compatible = if protocol == ProtocolId::StorageBroker {
+        offered == local
+    } else {
+        offered.major == local.major && offered.minor <= local.minor
+    };
+    if compatible {
         Ok(offered)
     } else {
         Err(RegistryError::IncompatibleProtocol {
@@ -463,7 +467,7 @@ const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
     match protocol {
         ProtocolId::HostBroker => ProtocolVersion::new(1, 5),
         ProtocolId::MountBroker => ProtocolVersion::new(1, 6),
-        ProtocolId::StorageBroker => ProtocolVersion::new(1, 4),
+        ProtocolId::StorageBroker => ProtocolVersion::new(1, 0),
         ProtocolId::NetworkBroker => ProtocolVersion::new(1, 2),
         ProtocolId::OwnershipAuthority => ProtocolVersion::new(1, 1),
         ProtocolId::PublicApi
@@ -664,21 +668,15 @@ mod tests {
             Ok(ProtocolVersion::new(1, 1))
         );
         assert_eq!(
-            negotiate_protocol(ProtocolId::StorageBroker, ProtocolVersion::new(1, 3)),
-            Ok(ProtocolVersion::new(1, 3))
+            negotiate_protocol(ProtocolId::StorageBroker, ProtocolVersion::new(1, 0)),
+            Ok(ProtocolVersion::new(1, 0))
         );
-        assert_eq!(
-            negotiate_protocol(ProtocolId::StorageBroker, ProtocolVersion::new(1, 2)),
-            Ok(ProtocolVersion::new(1, 2))
-        );
-        assert_eq!(
-            negotiate_protocol(ProtocolId::StorageBroker, ProtocolVersion::new(1, 4)),
-            Ok(ProtocolVersion::new(1, 4))
-        );
-        assert!(matches!(
-            negotiate_protocol(ProtocolId::StorageBroker, ProtocolVersion::new(1, 5)),
-            Err(RegistryError::IncompatibleProtocol { .. })
-        ));
+        for version in [ProtocolVersion::new(1, 1), ProtocolVersion::new(2, 0)] {
+            assert!(matches!(
+                negotiate_protocol(ProtocolId::StorageBroker, version),
+                Err(RegistryError::IncompatibleProtocol { .. })
+            ));
+        }
         assert_eq!(
             negotiate_protocol(ProtocolId::NetworkBroker, ProtocolVersion::new(1, 2)),
             Ok(ProtocolVersion::new(1, 2))

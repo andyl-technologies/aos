@@ -30,6 +30,7 @@ use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb, ObjectDigest};
 use hmac::{Hmac, Mac as _};
 use sha2::Digest as _;
 
+use crate::root_policy::WorkspaceRootPolicyV1;
 use crate::workspace_pin::{
     WorkspaceDatasetObservationV1, WorkspacePinAttemptPhaseV1, WorkspacePinHostScopeV1,
     WorkspacePinObservationV1,
@@ -347,6 +348,7 @@ pub(crate) struct WorkspacePinRepairProbeV1 {
     dataset_guid: u64,
     identity_range_start: u32,
     identity_range_size: u32,
+    root_policy: WorkspaceRootPolicyV1,
 }
 
 impl WorkspacePinRepairProbeV1 {
@@ -372,6 +374,7 @@ impl WorkspacePinRepairProbeV1 {
         dataset_guid: u64,
         identity_range_start: u32,
         identity_range_size: u32,
+        root_policy: WorkspaceRootPolicyV1,
     ) -> Result<Self, StorageStateError> {
         let probe = Self {
             generated_challenge,
@@ -394,6 +397,7 @@ impl WorkspacePinRepairProbeV1 {
             dataset_guid,
             identity_range_start,
             identity_range_size,
+            root_policy,
         };
         probe.validate()?;
         Ok(probe)
@@ -482,6 +486,7 @@ impl WorkspacePinRepairProbeV1 {
         hasher.update(self.dataset_guid.to_be_bytes());
         hasher.update(self.identity_range_start.to_be_bytes());
         hasher.update(self.identity_range_size.to_be_bytes());
+        hasher.update(self.root_policy.commitment().as_bytes());
         ObjectDigest::from_bytes(hasher.finalize().into())
     }
 
@@ -519,6 +524,10 @@ impl WorkspacePinRepairProbeV1 {
 
     pub(crate) const fn workspace_handle(&self) -> [u8; 32] {
         self.workspace_handle
+    }
+
+    pub(crate) const fn root_policy(&self) -> WorkspaceRootPolicyV1 {
+        self.root_policy
     }
 }
 
@@ -833,6 +842,12 @@ mod tests {
     }
 
     fn probe() -> WorkspacePinRepairProbeV1 {
+        probe_with_policy(crate::root_policy::WorkspaceRootPolicyV1::create_initialize())
+    }
+
+    fn probe_with_policy(
+        root_policy: crate::root_policy::WorkspaceRootPolicyV1,
+    ) -> WorkspacePinRepairProbeV1 {
         WorkspacePinRepairProbeV1::new(
             [21; 16],
             [22; 16],
@@ -854,8 +869,35 @@ mod tests {
             37,
             38,
             39,
+            root_policy,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn repair_observation_rejects_root_policy_substitution_before_effect() {
+        let original = probe();
+        let attributes =
+            crate::root_policy::PortableRootAttributesV1::new(1000, 1001, 0o2750).unwrap();
+        let substituted = probe_with_policy(
+            crate::root_policy::WorkspaceRootPolicyV1::clone_preserve(
+                91,
+                attributes,
+                ObjectDigest::from_bytes([92; 32]),
+            )
+            .unwrap(),
+        );
+        let observation = WorkspacePinRepairProbeResultV1::bind(
+            &original,
+            WorkspaceDatasetObservationV1::Absent,
+            WorkspacePinObservationV1::Absent,
+        );
+
+        assert_ne!(original.digest(), substituted.digest());
+        assert!(matches!(
+            observation.consume(&substituted),
+            Err(StorageStateError::AuthorityLinkMismatch)
+        ));
     }
 
     #[test]

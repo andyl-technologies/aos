@@ -1,15 +1,27 @@
 //! Canonical protected inventory consumed by Storage catalog resolution.
 //!
 //! The format is an internal, bounded snapshot rather than a portable wire
-//! contract. Callers must obtain it from authenticated protected state. A
-//! snapshot may carry a separately authenticated root-metadata record; legacy
-//! snapshots remain inventory-readable but cannot be clone sources.
+//! contract. Callers must obtain it from authenticated protected state. Every
+//! snapshot carries a separately authenticated root-metadata record.
 //!
 //! ```text
 //! snapshot-root-record-v1 =
 //!   magic || version || reserved || snapshot-guid || dataset-guid ||
 //!   uid || gid || mode || reserved || storage-handle || version-handle ||
 //!   immutable-content-commitment
+//!
+//! resolver-inventory-v1 =
+//!   magic || version || generation || catalog-head || managed-root || domains ||
+//!   dataset-count || dataset-rows || snapshot-count || snapshot-rows ||
+//!   hold-count || hold-rows || occupied-name-count || occupied-names
+//! dataset-row = storage-handle || name || dataset-guid
+//! snapshot-row = storage-handle || version-handle || name || snapshot-guid ||
+//!   immutable-content-commitment || root-record-digest || snapshot-root-record-v1
+//! hold-row = snapshot-guid || hold-id
+//! catalog-head = generation || digest
+//! managed-root = pool || dataset-prefix || root-guid
+//! domains = disclosure || encryption || accounting || retention
+//! name = length:u16 || utf8
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,7 +36,7 @@ use crate::root_policy::{
 };
 use crate::{
     ActiveHoldEvidence, HoldId, ManagedDatasetRoot, ResolvedDataset, ResolvedSnapshot,
-    StorageDomainsV1, state::VerifiedStorageResolverJournalV2,
+    StorageDomainsV1, state::VerifiedStorageResolverJournalV1,
 };
 
 use super::policy::ProtectedStorageResolverPolicyV1;
@@ -33,9 +45,9 @@ const RECORD_MAGIC: &[u8; 8] = b"AOSSRM01";
 const RECORD_VERSION: u16 = 1;
 const RECORD_BYTES: usize = 136;
 const RECORD_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.snapshot-root-record.v1\0";
-const INVENTORY_MAGIC: &[u8; 8] = b"AOSSRI02";
-const INVENTORY_VERSION: u16 = 2;
-const INVENTORY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.resolver-inventory.v2\0";
+const INVENTORY_MAGIC: &[u8; 8] = b"AOSSRI01";
+const INVENTORY_VERSION: u16 = 1;
+const INVENTORY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.resolver-inventory.v1\0";
 const MAXIMUM_OBJECTS: usize = 256;
 const MAXIMUM_HOLDS: usize = 512;
 const MAXIMUM_TOMBSTONES: usize = 256;
@@ -56,9 +68,6 @@ pub(crate) enum ProtectedStorageInventoryError {
     /// The canonical inventory exceeds its fixed size ceiling.
     #[error("protected Storage resolver inventory exceeds its byte ceiling")]
     InventoryTooLarge,
-    /// A legacy snapshot lacks authenticated root metadata required for Clone.
-    #[error("source snapshot has no authenticated root metadata")]
-    LegacySnapshotMetadata,
 }
 
 impl From<WorkspaceRootPolicyError> for ProtectedStorageInventoryError {
@@ -228,23 +237,15 @@ impl AuthenticatedSnapshotRootMetadataV1 {
     }
 }
 
-/// Associates one immutable snapshot with optional authenticated root metadata.
+/// Associates one immutable snapshot with authenticated root metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ProtectedSnapshotInventoryV2 {
+pub(crate) struct ProtectedSnapshotInventoryV1 {
     snapshot: ResolvedSnapshot,
-    content_commitment: Option<ObjectDigest>,
-    root_metadata: Option<AuthenticatedSnapshotRootMetadataV1>,
+    content_commitment: ObjectDigest,
+    root_metadata: AuthenticatedSnapshotRootMetadataV1,
 }
 
-impl ProtectedSnapshotInventoryV2 {
-    pub(crate) fn legacy(snapshot: ResolvedSnapshot) -> Self {
-        Self {
-            snapshot,
-            content_commitment: None,
-            root_metadata: None,
-        }
-    }
-
+impl ProtectedSnapshotInventoryV1 {
     #[cfg(test)]
     pub(super) fn authenticated_for_test(
         snapshot: ResolvedSnapshot,
@@ -280,8 +281,8 @@ impl ProtectedSnapshotInventoryV2 {
         }
         Ok(Self {
             snapshot,
-            content_commitment: Some(content_commitment),
-            root_metadata: Some(root_metadata),
+            content_commitment,
+            root_metadata,
         })
     }
 
@@ -292,11 +293,9 @@ impl ProtectedSnapshotInventoryV2 {
     pub(crate) fn clone_root_policy(
         &self,
     ) -> Result<WorkspaceRootPolicyV1, ProtectedStorageInventoryError> {
-        let metadata = self
-            .root_metadata
-            .ok_or(ProtectedStorageInventoryError::LegacySnapshotMetadata)?;
+        let metadata = self.root_metadata;
         let record = metadata.record();
-        if self.content_commitment != Some(record.content_commitment) {
+        if self.content_commitment != record.content_commitment {
             return Err(ProtectedStorageInventoryError::InconsistentInventory);
         }
         let compact =
@@ -308,21 +307,21 @@ impl ProtectedSnapshotInventoryV2 {
 
 /// Carries one canonical, bounded snapshot of already-authenticated local state.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ProtectedStorageInventoryV2 {
+pub(crate) struct ProtectedStorageInventoryV1 {
     binding: CatalogBindingV1,
     catalog_head: CatalogBindingV1,
     root: ManagedDatasetRoot,
     domains: StorageDomainsV1,
     datasets: BTreeMap<[u8; 32], ResolvedDataset>,
-    snapshots: BTreeMap<([u8; 32], [u8; 32]), ProtectedSnapshotInventoryV2>,
+    snapshots: BTreeMap<([u8; 32], [u8; 32]), ProtectedSnapshotInventoryV1>,
     holds: BTreeSet<(u64, [u8; 16])>,
     occupied_names: BTreeSet<String>,
     bytes: Vec<u8>,
 }
 
-impl ProtectedStorageInventoryV2 {
+impl ProtectedStorageInventoryV1 {
     pub(crate) fn from_verified_journal(
-        source: VerifiedStorageResolverJournalV2,
+        source: VerifiedStorageResolverJournalV1,
         policy: &ProtectedStorageResolverPolicyV1,
     ) -> Result<Self, ProtectedStorageInventoryError> {
         let physical = source.physical();
@@ -441,12 +440,11 @@ impl ProtectedStorageInventoryV2 {
                 version_handle,
             )
             .map_err(|_| ProtectedStorageInventoryError::InconsistentInventory)?;
-            let protected = match row.root_metadata() {
-                Some(metadata) => {
-                    ProtectedSnapshotInventoryV2::from_verified_journal_record(snapshot, metadata)?
-                }
-                None => ProtectedSnapshotInventoryV2::legacy(snapshot),
-            };
+            let metadata = row
+                .root_metadata()
+                .ok_or(ProtectedStorageInventoryError::InconsistentInventory)?;
+            let protected =
+                ProtectedSnapshotInventoryV1::from_verified_journal_record(snapshot, metadata)?;
             if dataset.root() == policy.root() && dataset.domains() == policy.domains() {
                 snapshots.push(protected);
             }
@@ -511,7 +509,7 @@ impl ProtectedStorageInventoryV2 {
         root: ManagedDatasetRoot,
         domains: StorageDomainsV1,
         datasets: Vec<ResolvedDataset>,
-        snapshots: Vec<ProtectedSnapshotInventoryV2>,
+        snapshots: Vec<ProtectedSnapshotInventoryV1>,
         holds: Vec<ActiveHoldEvidence>,
         tombstone_names: Vec<String>,
     ) -> Result<Self, ProtectedStorageInventoryError> {
@@ -536,7 +534,7 @@ impl ProtectedStorageInventoryV2 {
         root: ManagedDatasetRoot,
         domains: StorageDomainsV1,
         datasets: Vec<ResolvedDataset>,
-        snapshots: Vec<ProtectedSnapshotInventoryV2>,
+        snapshots: Vec<ProtectedSnapshotInventoryV1>,
         holds: Vec<ActiveHoldEvidence>,
         tombstone_names: Vec<String>,
     ) -> Result<Self, ProtectedStorageInventoryError> {
@@ -660,7 +658,7 @@ impl ProtectedStorageInventoryV2 {
         &self,
         storage_handle: &[u8; 32],
         version_handle: &[u8; 32],
-    ) -> Option<&ProtectedSnapshotInventoryV2> {
+    ) -> Option<&ProtectedSnapshotInventoryV1> {
         self.snapshots.get(&(*storage_handle, *version_handle))
     }
 
@@ -710,7 +708,7 @@ fn encode_inventory(
     root: &ManagedDatasetRoot,
     domains: StorageDomainsV1,
     datasets: &BTreeMap<[u8; 32], ResolvedDataset>,
-    snapshots: &BTreeMap<([u8; 32], [u8; 32]), ProtectedSnapshotInventoryV2>,
+    snapshots: &BTreeMap<([u8; 32], [u8; 32]), ProtectedSnapshotInventoryV1>,
     holds: &BTreeSet<(u64, [u8; 16])>,
     occupied_names: &BTreeSet<String>,
 ) -> Result<Vec<u8>, ProtectedStorageInventoryError> {
@@ -742,16 +740,9 @@ fn encode_inventory(
         encoder.fixed(version_handle)?;
         encoder.variable(row.snapshot().name().as_bytes())?;
         encoder.fixed(&row.snapshot().guid().to_be_bytes())?;
-        match (row.content_commitment, row.root_metadata) {
-            (None, None) => encoder.fixed(&[0])?,
-            (Some(content), Some(metadata)) => {
-                encoder.fixed(&[1])?;
-                encoder.fixed(content.as_bytes())?;
-                encoder.fixed(metadata.record_digest().as_bytes())?;
-                encoder.fixed(&metadata.record().canonical_bytes())?;
-            }
-            _ => return Err(ProtectedStorageInventoryError::InconsistentInventory),
-        }
+        encoder.fixed(row.content_commitment.as_bytes())?;
+        encoder.fixed(row.root_metadata.record_digest().as_bytes())?;
+        encoder.fixed(&row.root_metadata.record().canonical_bytes())?;
     }
     encoder.count(holds.len())?;
     for (snapshot_guid, hold_id) in holds {

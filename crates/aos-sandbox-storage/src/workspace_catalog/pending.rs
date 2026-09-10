@@ -1063,6 +1063,7 @@ mod tests {
             dataset_guid,
             u64::from(marker) + 80,
             u64::from(marker) + 90,
+            crate::root_policy::WorkspaceRootPolicyV1::create_initialize().root_attributes(),
         )
         .unwrap();
         StorageWorkspacePublicationV1 {
@@ -1702,6 +1703,7 @@ mod tests {
             proof.dataset_guid(),
             proof.root_device() + 100,
             proof.root_inode() + 100,
+            proof.root_attributes(),
         )
         .unwrap();
         let row = StorageWorkspaceCatalogRowPlanV1::new(

@@ -99,6 +99,10 @@ impl StorageResolverPolicyBindingV1 {
     pub(crate) const fn entry_digest(self) -> ObjectDigest {
         self.entry_digest
     }
+
+    pub(crate) const fn catalog_binding(self) -> StorageResolverPolicyCatalogBindingV1 {
+        self.catalog
+    }
 }
 
 /// Identifies one complete trusted resolver-policy publication.

@@ -1,21 +1,25 @@
 //! Canonical portable authority semantics for storage requests.
 //!
-//! Storage V1 encodes tagged, length-delimited fields in ascending tag order:
+//! Storage canonical semantics encode tagged, length-delimited fields in
+//! ascending tag order:
 //!
 //! ```text
 //! field := tag:u8 || length:u32be || value:length
 //! fields := magic, version, action, assignment fence, operation ID,
 //!           optional storage handle, optional version handle, quota,
-//!           opaque catalog generation, opaque catalog digest
+//!           opaque catalog generation, opaque catalog digest,
+//!           optional exact assignment-manifest and sandbox-spec bytes
 //! ```
 //!
 //! The catalog association is opaque portable input. It authenticates a
 //! node-local resolution without carrying ZFS names, GUIDs, or properties.
 
 use aos_proto::aos::sandbox::local::v1::{ApplyStorageRequest, StorageAction};
+use aos_sandbox_core::model::SandboxSpec;
 use aos_sandbox_core::{
     BrokerArgumentCommitment, BrokerAssignment, BrokerGrantTarget, BrokerResourceHandle,
-    BrokerVerb, ObjectDigest, ProtocolId,
+    BrokerVerb, CanonicalAssignmentManifestV1, DecodeLimits, ObjectDigest, ProtocolId,
+    decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec,
 };
 use buffa::Message as _;
 
@@ -26,7 +30,9 @@ use crate::{
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSSEM1";
 const FORMAT_VERSION: u16 = 1;
-const MAXIMUM_CANONICAL_BYTES: usize = 32 * 1024;
+const MAXIMUM_ASSIGNMENT_MANIFEST_BYTES: usize = 48 * 1024;
+const MAXIMUM_SANDBOX_SPEC_BYTES: usize = 16 * 1024;
+const MAXIMUM_CANONICAL_BYTES: usize = 65 * 1024;
 
 /// Reports a storage request that has no single closed portable meaning.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -41,8 +47,46 @@ pub enum StorageSemanticsError {
     #[error("storage catalog association uses a reserved value")]
     InvalidCatalogBinding,
     /// The canonical semantic representation exceeded its fixed invariant.
-    #[error("canonical storage semantics exceed the V1 byte ceiling")]
+    #[error("canonical storage semantics exceed the fixed byte ceiling")]
     CanonicalEncodingTooLarge,
+    /// Required portable workspace metadata is absent or cross-bound.
+    #[error("portable workspace metadata does not match the assignment fence")]
+    InvalidWorkspaceMetadata,
+}
+
+/// Owns the canonical portable metadata required by workspace creation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalStorageWorkspaceMetadataV1 {
+    manifest: CanonicalAssignmentManifestV1,
+    sandbox_spec: SandboxSpec,
+    manifest_bytes: Vec<u8>,
+    sandbox_spec_bytes: Vec<u8>,
+}
+
+impl CanonicalStorageWorkspaceMetadataV1 {
+    /// Returns the exact canonical assignment manifest.
+    #[must_use]
+    pub const fn manifest(&self) -> &CanonicalAssignmentManifestV1 {
+        &self.manifest
+    }
+
+    /// Returns the exact canonical sandbox specification.
+    #[must_use]
+    pub const fn sandbox_spec(&self) -> &SandboxSpec {
+        &self.sandbox_spec
+    }
+
+    /// Returns the exact manifest bytes committed by signed semantics.
+    #[must_use]
+    pub fn manifest_bytes(&self) -> &[u8] {
+        &self.manifest_bytes
+    }
+
+    /// Returns the exact sandbox-spec bytes committed by signed semantics.
+    #[must_use]
+    pub fn sandbox_spec_bytes(&self) -> &[u8] {
+        &self.sandbox_spec_bytes
+    }
 }
 
 /// Carries the sole catalog association permitted in portable authority.
@@ -136,6 +180,13 @@ pub enum StorageOperation {
 }
 
 impl StorageOperation {
+    /// Reports whether the action creates a workspace and therefore requires
+    /// portable workspace metadata.
+    #[must_use]
+    pub const fn requires_workspace_metadata(self) -> bool {
+        matches!(self, Self::CreateWorkspace { .. } | Self::Clone { .. })
+    }
+
     /// Returns the authority verb selected by this operation.
     #[must_use]
     pub const fn broker_verb(self) -> BrokerVerb {
@@ -194,6 +245,46 @@ impl StorageOperation {
             operation_id,
             self,
             catalog,
+            None,
+        )?;
+        Ok(BrokerArgumentCommitment::for_canonical_bytes(&bytes))
+    }
+
+    /// Reconstructs a workspace commitment from durable portable metadata.
+    ///
+    /// This uses the same validation and canonical encoder as live request
+    /// admission. The byte slices must therefore be the exact canonical
+    /// manifest and sandbox specification retained with the operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageSemanticsError`] when metadata is absent, malformed,
+    /// noncanonical, or does not bind the supplied assignment and operation.
+    pub fn persisted_workspace_argument_commitment(
+        self,
+        assignment: BrokerAssignment,
+        operation_id: [u8; 16],
+        catalog: CatalogBindingV1,
+        manifest_bytes: &[u8],
+        sandbox_spec_bytes: &[u8],
+    ) -> Result<BrokerArgumentCommitment, StorageSemanticsError> {
+        if operation_id == [0; 16] {
+            return Err(StorageSemanticsError::InvalidActionShape);
+        }
+        self.grant_target()?;
+        let metadata =
+            decode_workspace_metadata(self, assignment, manifest_bytes, sandbox_spec_bytes)?
+                .ok_or(StorageSemanticsError::InvalidWorkspaceMetadata)?;
+        let bytes = encode_canonical(
+            *assignment.sandbox().as_bytes(),
+            *assignment.incarnation().as_bytes(),
+            assignment.epoch().get(),
+            assignment.desired_generation().get(),
+            *assignment.digest().as_bytes(),
+            operation_id,
+            self,
+            catalog,
+            Some(&metadata),
         )?;
         Ok(BrokerArgumentCommitment::for_canonical_bytes(&bytes))
     }
@@ -255,6 +346,7 @@ pub struct CanonicalStorageSemanticsV1 {
     commitment: BrokerArgumentCommitment,
     target: BrokerGrantTarget,
     catalog: CatalogBindingV1,
+    workspace_metadata: Option<CanonicalStorageWorkspaceMetadataV1>,
 }
 
 impl CanonicalStorageSemanticsV1 {
@@ -319,6 +411,20 @@ impl CanonicalStorageSemanticsV1 {
             .filter(|value| *value != StorageAction::STORAGE_ACTION_UNSPECIFIED)
             .ok_or(ProtocolValidationError::UnknownAction)?;
         let operation = operation_for(action, storage, version, request.quota_bytes)?;
+        let assignment = BrokerAssignment::new(
+            aos_sandbox_core::SandboxId::from_bytes(sandbox_id),
+            aos_sandbox_core::IncarnationId::from_bytes(incarnation_id),
+            aos_sandbox_core::AssignmentEpoch::new(fence.assignment_epoch),
+            aos_sandbox_core::DesiredGeneration::new(fence.desired_generation),
+            ObjectDigest::from_bytes(assignment_digest),
+        )
+        .map_err(|_| StorageSemanticsError::InvalidWorkspaceMetadata)?;
+        let workspace_metadata = decode_workspace_metadata(
+            operation,
+            assignment,
+            &request.assignment_manifest,
+            &request.sandbox_spec,
+        )?;
         let target = operation.grant_target()?;
         let bytes = encode_canonical(
             sandbox_id,
@@ -329,6 +435,7 @@ impl CanonicalStorageSemanticsV1 {
             operation_id,
             operation,
             catalog,
+            workspace_metadata.as_ref(),
         )?;
         let commitment = BrokerArgumentCommitment::for_canonical_bytes(&bytes);
         Ok(Self {
@@ -339,6 +446,7 @@ impl CanonicalStorageSemanticsV1 {
             commitment,
             target,
             catalog,
+            workspace_metadata,
         })
     }
 
@@ -382,6 +490,12 @@ impl CanonicalStorageSemanticsV1 {
     pub const fn catalog_binding(&self) -> CatalogBindingV1 {
         self.catalog
     }
+
+    /// Returns the portable workspace metadata, when required.
+    #[must_use]
+    pub const fn workspace_metadata(&self) -> Option<&CanonicalStorageWorkspaceMetadataV1> {
+        self.workspace_metadata.as_ref()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -394,6 +508,7 @@ fn encode_canonical(
     operation_id: [u8; 16],
     operation: StorageOperation,
     catalog: CatalogBindingV1,
+    workspace_metadata: Option<&CanonicalStorageWorkspaceMetadataV1>,
 ) -> Result<Vec<u8>, StorageSemanticsError> {
     let mut encoder = Encoder::new();
     encoder.field(1, FORMAT_MAGIC)?;
@@ -410,7 +525,75 @@ fn encode_canonical(
     encoder.field(12, &operation.quota_bytes().to_be_bytes())?;
     encoder.field(13, &catalog.generation().to_be_bytes())?;
     encoder.field(14, catalog.digest().as_bytes())?;
+    if let Some(metadata) = workspace_metadata {
+        encoder.field(15, metadata.manifest_bytes())?;
+        encoder.field(16, metadata.sandbox_spec_bytes())?;
+    }
     Ok(encoder.finish())
+}
+
+fn decode_workspace_metadata(
+    operation: StorageOperation,
+    assignment: BrokerAssignment,
+    manifest_bytes: &[u8],
+    sandbox_spec_bytes: &[u8],
+) -> Result<Option<CanonicalStorageWorkspaceMetadataV1>, StorageSemanticsError> {
+    let creates_workspace = operation.requires_workspace_metadata();
+    if !creates_workspace {
+        if !manifest_bytes.is_empty() || !sandbox_spec_bytes.is_empty() {
+            return Err(StorageSemanticsError::InvalidWorkspaceMetadata);
+        }
+        return Ok(None);
+    }
+    if manifest_bytes.is_empty()
+        || manifest_bytes.len() > MAXIMUM_ASSIGNMENT_MANIFEST_BYTES
+        || sandbox_spec_bytes.is_empty()
+        || sandbox_spec_bytes.len() > MAXIMUM_SANDBOX_SPEC_BYTES
+    {
+        return Err(StorageSemanticsError::InvalidWorkspaceMetadata);
+    }
+    let manifest = CanonicalAssignmentManifestV1::from_canonical_bytes(
+        manifest_bytes,
+        metadata_decode_limits(MAXIMUM_ASSIGNMENT_MANIFEST_BYTES),
+    )
+    .map_err(|_| StorageSemanticsError::InvalidWorkspaceMetadata)?;
+    let sandbox_spec = decode_sandbox_spec(
+        sandbox_spec_bytes,
+        metadata_decode_limits(MAXIMUM_SANDBOX_SPEC_BYTES),
+    )
+    .map_err(|_| StorageSemanticsError::InvalidWorkspaceMetadata)?;
+    let spec_descriptor = descriptor_for_bytes(
+        manifest.manifest().sandbox_spec().media_type().clone(),
+        sandbox_spec_bytes,
+    );
+    if encode_sandbox_spec(&sandbox_spec) != sandbox_spec_bytes
+        || manifest
+            .broker_assignment()
+            .map_err(|_| StorageSemanticsError::InvalidWorkspaceMetadata)?
+            != assignment
+        || &spec_descriptor != manifest.manifest().sandbox_spec()
+        || manifest.manifest().root_view() != sandbox_spec.root_view()
+        || manifest.manifest().environment() != sandbox_spec.environment()
+    {
+        return Err(StorageSemanticsError::InvalidWorkspaceMetadata);
+    }
+    Ok(Some(CanonicalStorageWorkspaceMetadataV1 {
+        manifest,
+        sandbox_spec,
+        manifest_bytes: manifest_bytes.to_vec(),
+        sandbox_spec_bytes: sandbox_spec_bytes.to_vec(),
+    }))
+}
+
+fn metadata_decode_limits(maximum_bytes: usize) -> DecodeLimits {
+    DecodeLimits {
+        maximum_bytes,
+        maximum_collection_items: 4_096,
+        maximum_total_items: 16_384,
+        maximum_byte_string_bytes: maximum_bytes,
+        maximum_text_bytes: 4_096,
+        maximum_depth: 64,
+    }
 }
 
 fn operation_for(
@@ -533,7 +716,18 @@ impl Encoder {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::num::NonZeroU32;
+
     use aos_proto::aos::sandbox::local::v1::Audience;
+    use aos_sandbox_core::model::{
+        AssignmentManifestV1, IdentityProfile, NetworkKind, NetworkProfile, ResourceProfile,
+        SandboxAncestry, UnmappableIdentityPolicy,
+    };
+    use aos_sandbox_core::{
+        AssignmentEpoch, DesiredGeneration, FeatureRef, IncarnationId, MediaType,
+        NamespaceGeneration, NodeId, ObjectDescriptor, PortableMediaType, ProjectId,
+        ResourceVector, SandboxId,
+    };
 
     use super::*;
 
@@ -573,6 +767,70 @@ mod tests {
         request
     }
 
+    fn descriptor(kind: PortableMediaType, marker: u8) -> ObjectDescriptor {
+        ObjectDescriptor::new(
+            MediaType::new(kind.as_str().to_owned()).unwrap(),
+            ObjectDigest::from_bytes([marker; 32]),
+            1,
+        )
+    }
+
+    fn workspace_metadata() -> (CanonicalAssignmentManifestV1, Vec<u8>) {
+        let specification = SandboxSpec::new(
+            FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0).unwrap(),
+            IdentityProfile::PrivateUserns {
+                id_range_size: NonZeroU32::new(65_536).unwrap(),
+                unmappable_policy: UnmappableIdentityPolicy::Reject,
+                required_features: Vec::new(),
+            },
+            ResourceProfile::new(Vec::new()).unwrap(),
+            descriptor(PortableMediaType::Environment, 8),
+            descriptor(PortableMediaType::View, 9),
+            Vec::new(),
+            NetworkProfile::new(NetworkKind::Isolated, Vec::new(), Vec::new()).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let specification_bytes = encode_sandbox_spec(&specification);
+        let specification_descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned()).unwrap(),
+            &specification_bytes,
+        );
+        let manifest = AssignmentManifestV1::new(
+            SandboxId::from_bytes([2; 16]),
+            ProjectId::from_bytes([10; 16]),
+            SandboxAncestry::new(SandboxId::from_bytes([2; 16]), Vec::new()).unwrap(),
+            IncarnationId::from_bytes([3; 16]),
+            NodeId::from_bytes([11; 16]),
+            AssignmentEpoch::new(4),
+            DesiredGeneration::new(5),
+            NamespaceGeneration::new(6),
+            specification_descriptor,
+            descriptor(PortableMediaType::Policy, 12),
+            specification.environment().clone(),
+            specification.root_view().clone(),
+            Vec::new(),
+            ObjectDigest::from_bytes([13; 32]),
+            ResourceVector::ZERO,
+            Vec::new(),
+        )
+        .unwrap();
+        (
+            CanonicalAssignmentManifestV1::new(manifest),
+            specification_bytes,
+        )
+    }
+
+    fn create_with_metadata() -> (ApplyStorageRequest, CanonicalAssignmentManifestV1, Vec<u8>) {
+        let (manifest, specification_bytes) = workspace_metadata();
+        let mut request = create();
+        request.fence.get_or_insert_default().assignment_digest =
+            manifest.digest().as_bytes().to_vec();
+        request.assignment_manifest = manifest.canonical_bytes().to_vec();
+        request.sandbox_spec.clone_from(&specification_bytes);
+        (request, manifest, specification_bytes)
+    }
+
     #[test]
     fn portable_storage_commitment_has_a_fixed_golden_digest() {
         let binding = CatalogBindingV1::from_publisher(
@@ -583,8 +841,9 @@ mod tests {
             ]),
         )
         .unwrap();
+        let (request, _, _) = create_with_metadata();
         let semantics = CanonicalStorageSemanticsV1::decode(
-            &create().encode_to_vec(),
+            &request.encode_to_vec(),
             binding,
             peer(),
             policy(),
@@ -594,8 +853,8 @@ mod tests {
         assert_eq!(
             semantics.argument_commitment().digest().as_bytes(),
             &[
-                85, 58, 176, 86, 105, 221, 225, 64, 92, 183, 216, 216, 221, 171, 103, 28, 107, 183,
-                117, 144, 168, 56, 6, 107, 40, 245, 81, 115, 162, 149, 231, 200,
+                237, 171, 81, 35, 25, 158, 189, 43, 154, 159, 10, 201, 171, 59, 60, 100, 116, 237,
+                113, 67, 57, 41, 128, 106, 131, 105, 174, 173, 61, 211, 100, 131,
             ]
         );
         assert!(
@@ -608,7 +867,7 @@ mod tests {
 
     #[test]
     fn portable_compiler_rejects_action_field_smuggling() {
-        let mut request = create();
+        let (mut request, _, _) = create_with_metadata();
         request.storage_handle = vec![8; 32];
         let binding =
             CatalogBindingV1::from_publisher(1, ObjectDigest::from_bytes([1; 32])).unwrap();
@@ -622,5 +881,139 @@ mod tests {
             ),
             Err(StorageSemanticsError::InvalidActionShape)
         );
+    }
+
+    #[test]
+    fn live_and_persisted_workspace_commitments_are_identical() {
+        let (request, manifest, specification_bytes) = create_with_metadata();
+        let binding =
+            CatalogBindingV1::from_publisher(1, ObjectDigest::from_bytes([1; 32])).unwrap();
+        let semantics = CanonicalStorageSemanticsV1::decode(
+            &request.encode_to_vec(),
+            binding,
+            peer(),
+            policy(),
+            100,
+        )
+        .unwrap();
+        let assignment = manifest.broker_assignment().unwrap();
+        let persisted = semantics
+            .operation()
+            .persisted_workspace_argument_commitment(
+                assignment,
+                *semantics.operation_id(),
+                binding,
+                manifest.canonical_bytes(),
+                &specification_bytes,
+            )
+            .unwrap();
+
+        assert_eq!(semantics.argument_commitment(), persisted);
+        assert!(semantics.workspace_metadata().is_some());
+    }
+
+    #[test]
+    fn workspace_metadata_rejects_substitution_and_oversize() {
+        let (request, _, _) = create_with_metadata();
+        let binding =
+            CatalogBindingV1::from_publisher(1, ObjectDigest::from_bytes([1; 32])).unwrap();
+
+        let mut substituted = request.clone();
+        substituted.fence.get_or_insert_default().assignment_digest[0] ^= 1;
+        assert_eq!(
+            CanonicalStorageSemanticsV1::decode(
+                &substituted.encode_to_vec(),
+                binding,
+                peer(),
+                policy(),
+                100,
+            ),
+            Err(StorageSemanticsError::InvalidWorkspaceMetadata)
+        );
+
+        let mut substituted = request.clone();
+        substituted.sandbox_spec[0] ^= 1;
+        assert_eq!(
+            CanonicalStorageSemanticsV1::decode(
+                &substituted.encode_to_vec(),
+                binding,
+                peer(),
+                policy(),
+                100,
+            ),
+            Err(StorageSemanticsError::InvalidWorkspaceMetadata)
+        );
+
+        let mut oversized = request;
+        oversized.assignment_manifest = vec![1; MAXIMUM_ASSIGNMENT_MANIFEST_BYTES + 1];
+        assert_eq!(
+            CanonicalStorageSemanticsV1::decode(
+                &oversized.encode_to_vec(),
+                binding,
+                peer(),
+                policy(),
+                100,
+            ),
+            Err(StorageSemanticsError::InvalidWorkspaceMetadata)
+        );
+
+        let mut unknown_field = oversized.encode_to_vec();
+        unknown_field.extend_from_slice(&[0x52, 0x01, 0x00]);
+        assert_eq!(
+            CanonicalStorageSemanticsV1::decode(&unknown_field, binding, peer(), policy(), 100,),
+            Err(StorageSemanticsError::Protocol(
+                ProtocolValidationError::UnknownFields
+            ))
+        );
+    }
+
+    #[test]
+    fn workspace_metadata_requirement_covers_exactly_create_and_clone() {
+        let storage_handle = [1; 32];
+        let version_handle = [2; 32];
+        let operations = [
+            (StorageOperation::CreateWorkspace { quota_bytes: 1 }, true),
+            (StorageOperation::Snapshot { storage_handle }, false),
+            (
+                StorageOperation::HoldSnapshot {
+                    storage_handle,
+                    version_handle,
+                },
+                false,
+            ),
+            (
+                StorageOperation::ReleaseHold {
+                    storage_handle,
+                    version_handle,
+                },
+                false,
+            ),
+            (
+                StorageOperation::Clone {
+                    storage_handle,
+                    version_handle,
+                    quota_bytes: 1,
+                },
+                true,
+            ),
+            (
+                StorageOperation::SetQuota {
+                    storage_handle,
+                    quota_bytes: 1,
+                },
+                false,
+            ),
+            (
+                StorageOperation::Destroy {
+                    storage_handle,
+                    version_handle: None,
+                },
+                false,
+            ),
+        ];
+
+        for (operation, expected) in operations {
+            assert_eq!(operation.requires_workspace_metadata(), expected);
+        }
     }
 }

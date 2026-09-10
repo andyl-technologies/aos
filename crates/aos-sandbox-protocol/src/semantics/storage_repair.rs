@@ -1,6 +1,6 @@
 //! Canonical portable authority semantics for workspace root-pin repair.
 //!
-//! Storage 1.4 admits only a fresh operation identity, the current assignment
+//! Storage admits only a fresh operation identity, the current assignment
 //! fence, and an existing opaque workspace handle. Physical storage identity,
 //! pin observations, attempt ordinals, and worker inputs remain protected
 //! broker state and cannot be selected by a caller.
@@ -30,7 +30,6 @@ use crate::{
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSRPR1";
 const FORMAT_VERSION: u16 = 1;
-const MINIMUM_PROTOCOL_MINOR: u16 = 4;
 const MAXIMUM_CANONICAL_BYTES: usize = 256;
 
 /// Reports a repair request that has no single closed portable meaning.
@@ -62,7 +61,8 @@ impl CanonicalStorageRepairSemanticsV1 {
     ///
     /// Returns [`StorageRepairSemanticsError`] for an oversized or malformed
     /// message, unknown fields, peer/header/fence failure, a protocol older
-    /// than Storage 1.4, zero or incorrectly sized identities, or overflow.
+    /// other than the exact Storage baseline, zero or incorrectly sized
+    /// identities, or overflow.
     pub fn decode(
         bytes: &[u8],
         peer: PeerCredentials,
@@ -89,9 +89,6 @@ impl CanonicalStorageRepairSemanticsV1 {
             ProtocolId::StorageBroker,
             now_boottime_nanoseconds,
         )?;
-        if header.protocol_version().minor() < MINIMUM_PROTOCOL_MINOR {
-            return Err(ProtocolValidationError::InvalidField("header.protocol_minor").into());
-        }
 
         let fence = validate_fence(
             request
@@ -246,7 +243,7 @@ mod tests {
         let mut request = RepairStorageWorkspacePinRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = MINIMUM_PROTOCOL_MINOR.into();
+        header.protocol_minor = 0;
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 200;
@@ -331,11 +328,10 @@ mod tests {
 
     #[test]
     fn protocol_version_id_shapes_and_unknown_fields_fail_closed() {
-        for minor in 0..=3 {
-            let mut old = request();
-            old.header.get_or_insert_default().protocol_minor = minor;
-            assert!(decode(&old).is_err());
-        }
+        assert!(decode(&request()).is_ok());
+        let mut unsupported = request();
+        unsupported.header.get_or_insert_default().protocol_minor = 1;
+        assert!(decode(&unsupported).is_err());
         let mut wrong_major = request();
         wrong_major.header.get_or_insert_default().protocol_major = 2;
         assert!(decode(&wrong_major).is_err());

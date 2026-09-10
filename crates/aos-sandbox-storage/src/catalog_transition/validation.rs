@@ -6,19 +6,14 @@ use super::*;
 
 pub(super) fn normalize_and_validate(
     state: &mut PhysicalStateWire,
-    format: PhysicalStateFormatV1,
 ) -> Result<(), StorageStateError> {
     state.roots.sort();
     state.datasets.sort();
     state.snapshots.sort();
     state.holds.sort();
     state.tombstones.sort();
-    let expected_version = match format {
-        PhysicalStateFormatV1::LegacyV1 => LEGACY_FORMAT_VERSION,
-        PhysicalStateFormatV1::ExecutionV2 => EXECUTION_FORMAT_VERSION,
-    };
     if state.magic != STATE_MAGIC
-        || state.version != expected_version
+        || state.version != FORMAT_VERSION
         || state.generation == 0
         || state.roots.len() > MAXIMUM_OBJECTS
         || state.datasets.len() > MAXIMUM_OBJECTS

@@ -165,7 +165,12 @@ impl NegotiatedBrokerSession {
         if !self.advertised_methods.contains(&request.method) {
             return Err(ProtocolValidationError::MethodMismatch);
         }
-        validate_authorization_profile(self.version, &self.required_features, &request)?;
+        validate_authorization_profile(
+            self.protocol,
+            self.version,
+            &self.required_features,
+            &request,
+        )?;
         Ok(request)
     }
 
@@ -455,7 +460,12 @@ pub fn negotiate_client_hello(
         validate_proto_methods(&hello.required_methods, protocol, "hello.required_methods")?;
     validate_role_methods(policy.audience, &required_methods)?;
     ensure_method_subset(&required_methods, &advertised_methods)?;
-    validate_negotiated_authorization_profile(version, &required_features, &required_methods)?;
+    validate_negotiated_authorization_profile(
+        protocol,
+        version,
+        &required_features,
+        &required_methods,
+    )?;
 
     Ok(NegotiatedBrokerSession {
         protocol,
@@ -533,6 +543,7 @@ pub fn decode_server_hello(
     validate_methods_available(&advertised_methods, offered_version)?;
     ensure_method_subset(required_methods, &advertised_methods)?;
     validate_negotiated_authorization_profile(
+        protocol,
         offered_version,
         required_features,
         required_methods,
@@ -1008,6 +1019,7 @@ const fn authorization_decode_limits(maximum_bytes: usize) -> DecodeLimits {
 }
 
 fn validate_negotiated_authorization_profile(
+    protocol: ProtocolId,
     version: ProtocolVersion,
     required_features: &[FeatureRef],
     required_methods: &[BrokerMethod],
@@ -1017,7 +1029,7 @@ fn validate_negotiated_authorization_profile(
         .copied()
         .any(method_requires_authorization);
     let feature_required = required_features.iter().any(is_signed_plan_lease_feature);
-    if version.minor() == 0 {
+    if version.minor() == 0 && protocol != ProtocolId::StorageBroker {
         if feature_required || requires_effect_authority {
             return Err(ProtocolValidationError::RequiredFeatureUnavailable(
                 SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
@@ -1034,12 +1046,15 @@ fn validate_negotiated_authorization_profile(
 }
 
 fn validate_authorization_profile(
+    protocol: ProtocolId,
     version: ProtocolVersion,
     required_features: &[FeatureRef],
     request: &ValidatedBrokerRequestEnvelope,
 ) -> Result<(), ProtocolValidationError> {
     if method_requires_authorization(request.method) {
-        if version.minor() < 1 || !required_features.iter().any(is_signed_plan_lease_feature) {
+        if (version.minor() < 1 && protocol != ProtocolId::StorageBroker)
+            || !required_features.iter().any(is_signed_plan_lease_feature)
+        {
             return Err(ProtocolValidationError::RequiredFeatureUnavailable(
                 SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
             ));
@@ -1137,7 +1152,6 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
         | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
-        | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
@@ -1451,7 +1465,6 @@ fn valid_response_body_shape(
     } else if matches!(
         method,
         BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
-            | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
             | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
     ) {
         true
@@ -1535,7 +1548,6 @@ fn validate_method(
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
                 | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
                 | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
-                | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
                 | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         ) | (
             ProtocolId::NetworkBroker,
@@ -1557,17 +1569,7 @@ fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -
     ) {
         return version.minor() >= 6;
     }
-    if method == BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN {
-        return version.minor() >= 4;
-    }
-    if method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG {
-        return version.minor() >= 3;
-    }
-    if matches!(
-        method,
-        BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
-            | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
-    ) {
+    if method == BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES {
         return version.minor() >= 2;
     }
     if method == BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG {
@@ -1895,10 +1897,23 @@ mod tests {
         ));
 
         let version = ProtocolVersion::new(1, minimum_minor);
-        assert!(validate_negotiated_authorization_profile(version, &[], &[method]).is_err());
         assert!(
-            validate_negotiated_authorization_profile(version, &client_features(), &[method])
-                .is_ok()
+            validate_negotiated_authorization_profile(
+                ProtocolId::HostBroker,
+                version,
+                &[],
+                &[method]
+            )
+            .is_err()
+        );
+        assert!(
+            validate_negotiated_authorization_profile(
+                ProtocolId::HostBroker,
+                version,
+                &client_features(),
+                &[method]
+            )
+            .is_ok()
         );
 
         let unauthenticated = ValidatedBrokerRequestEnvelope {
@@ -1908,7 +1923,13 @@ mod tests {
             authorization: None,
         };
         assert!(
-            validate_authorization_profile(version, &client_features(), &unauthenticated).is_err()
+            validate_authorization_profile(
+                ProtocolId::HostBroker,
+                version,
+                &client_features(),
+                &unauthenticated
+            )
+            .is_err()
         );
         assert!(
             validate_outbound_carriers(
@@ -3008,16 +3029,10 @@ mod tests {
         .unwrap_or_else(|error| panic!("empty inventory response did not decode: {error}"));
         assert!(decoded.body().is_empty());
 
-        for (protocol, method) in [
-            (
-                ProtocolId::StorageBroker,
-                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY,
-            ),
-            (
-                ProtocolId::NetworkBroker,
-                BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY,
-            ),
-        ] {
+        for (protocol, method) in [(
+            ProtocolId::NetworkBroker,
+            BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY,
+        )] {
             let inventory = decode_request_envelope(
                 &BrokerRequestEnvelope {
                     method: method.into(),
@@ -3160,7 +3175,7 @@ mod tests {
             (
                 ProtocolId::StorageBroker,
                 BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
-                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY,
+                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
             ),
             (
                 ProtocolId::NetworkBroker,
@@ -3628,17 +3643,11 @@ mod tests {
     }
 
     #[test]
-    fn storage_and_network_resource_inventories_require_protocol_one_two() {
-        for (protocol, method) in [
-            (
-                ProtocolId::StorageBroker,
-                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
-            ),
-            (
-                ProtocolId::NetworkBroker,
-                BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
-            ),
-        ] {
+    fn network_resource_inventory_requires_protocol_one_two() {
+        for (protocol, method) in [(
+            ProtocolId::NetworkBroker,
+            BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+        )] {
             assert!(!method_available_in_version(
                 method,
                 ProtocolVersion::new(1, 1)
@@ -3685,21 +3694,64 @@ mod tests {
     }
 
     #[test]
-    fn storage_catalog_preparation_requires_one_three_authority_and_no_descriptors() {
-        let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG;
-        assert!(!method_available_in_version(
-            method,
-            ProtocolVersion::new(1, 2)
-        ));
+    fn storage_resource_inventory_uses_only_the_exact_baseline() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES;
         assert!(method_available_in_version(
             method,
-            ProtocolVersion::new(1, 3)
+            ProtocolVersion::new(1, 0)
+        ));
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 0,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 4096,
+            required_methods: vec![method.into()],
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::StorageBroker,
+            &client_features(),
+            &[method],
+        )
+        .unwrap();
+        let packet =
+            encode_unauthed_request_envelope(ProtocolId::StorageBroker, method, b"inventory")
+                .unwrap();
+        assert!(session.decode_request(&packet, 0).is_ok());
+
+        for (major, minor) in [(1, 1), (2, 0)] {
+            let mut unsupported = hello.clone();
+            unsupported.protocol_major = major;
+            unsupported.protocol_minor = minor;
+            assert!(matches!(
+                negotiate_client_hello(
+                    &unsupported.encode_to_vec(),
+                    peer(),
+                    policy(),
+                    ProtocolId::StorageBroker,
+                    &client_features(),
+                    &[method],
+                ),
+                Err(ProtocolValidationError::Protocol(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn storage_catalog_preparation_requires_baseline_authority_and_no_descriptors() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG;
+        assert!(method_available_in_version(
+            method,
+            ProtocolVersion::new(1, 0)
         ));
 
         let features = client_features();
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 3,
+            protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: 4096,
             required_features: features.iter().map(proto_feature).collect(),
@@ -3761,19 +3813,19 @@ mod tests {
             Err(ProtocolValidationError::DescriptorTableMismatch)
         );
 
-        let mut legacy = hello.clone();
-        legacy.protocol_minor = 2;
-        assert_eq!(
+        let mut unsupported = hello.clone();
+        unsupported.protocol_minor = 1;
+        assert!(matches!(
             negotiate_client_hello(
-                &legacy.encode_to_vec(),
+                &unsupported.encode_to_vec(),
                 peer(),
                 policy(),
                 ProtocolId::StorageBroker,
                 &features,
                 &[method],
             ),
-            Err(ProtocolValidationError::MethodMismatch)
-        );
+            Err(ProtocolValidationError::Protocol(_))
+        ));
         let mut network_hello = hello.clone();
         network_hello.protocol_minor = 2;
         assert_eq!(
@@ -3808,6 +3860,7 @@ mod tests {
 
         let advertised = [BrokerMethod::BROKER_METHOD_STORAGE_APPLY];
         let mut apply_hello = root_mount_hello;
+        apply_hello.protocol_minor = 0;
         apply_hello.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         apply_hello.required_methods = advertised.into_iter().map(Into::into).collect();
         let apply_session = negotiate_client_hello(
@@ -3826,23 +3879,26 @@ mod tests {
     }
 
     #[test]
-    fn storage_pin_repair_requires_one_four_authority_and_no_descriptors() {
-        let method = BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN;
-        for minor in 0..=3 {
-            assert!(!method_available_in_version(
-                method,
-                ProtocolVersion::new(1, minor)
-            ));
-        }
+    fn storage_apply_is_available_at_the_exact_baseline() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_APPLY;
         assert!(method_available_in_version(
             method,
-            ProtocolVersion::new(1, 4)
+            ProtocolVersion::new(1, 0)
+        ));
+    }
+
+    #[test]
+    fn storage_pin_repair_requires_baseline_authority_and_no_descriptors() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN;
+        assert!(method_available_in_version(
+            method,
+            ProtocolVersion::new(1, 0)
         ));
 
         let features = client_features();
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 4,
+            protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: 4096,
             required_features: features.iter().map(proto_feature).collect(),
@@ -3904,21 +3960,19 @@ mod tests {
             Err(ProtocolValidationError::DescriptorTableMismatch)
         );
 
-        for minor in 0..=3 {
-            let mut legacy = hello.clone();
-            legacy.protocol_minor = minor;
-            assert_eq!(
-                negotiate_client_hello(
-                    &legacy.encode_to_vec(),
-                    peer(),
-                    policy(),
-                    ProtocolId::StorageBroker,
-                    &features,
-                    &[method],
-                ),
-                Err(ProtocolValidationError::MethodMismatch)
-            );
-        }
+        let mut unsupported = hello.clone();
+        unsupported.protocol_minor = 1;
+        assert!(matches!(
+            negotiate_client_hello(
+                &unsupported.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::StorageBroker,
+                &features,
+                &[method],
+            ),
+            Err(ProtocolValidationError::Protocol(_))
+        ));
 
         let mut wrong_audience = hello;
         wrong_audience.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
@@ -3966,7 +4020,11 @@ mod tests {
             let features = client_features();
             let hello = BrokerClientHello {
                 protocol_major: 1,
-                protocol_minor: 1,
+                protocol_minor: if protocol == ProtocolId::StorageBroker {
+                    0
+                } else {
+                    1
+                },
                 audience: Audience::AUDIENCE_MOUNT_WORKER.into(),
                 required_features: features.iter().map(proto_feature).collect(),
                 maximum_response_bytes: 8192,

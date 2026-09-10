@@ -5,7 +5,7 @@
 //! canonical versioned JSON:
 //!
 //! ```text
-//! {"version":2,"record":{...}}
+//! {"version":1,"record":{...}}
 //! ```
 //!
 //! A catalog head fixes the trusted subordinate-identity pool and advances by
@@ -62,12 +62,13 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::model::{IdentityProfile, SandboxSpec};
 use aos_sandbox_core::{
-    BrokerAssignment, CanonicalAssignmentManifestV1, DescriptorRole, MediaType, NodeId,
-    ObjectDescriptor, ObjectDigest, PortableMediaType, descriptor_for_bytes, encode_sandbox_spec,
-    validate_descriptor_role,
+    BrokerAssignment, CanonicalAssignmentManifestV1, DecodeLimits, DescriptorRole, MediaType,
+    NodeId, ObjectDescriptor, ObjectDigest, PortableMediaType, decode_sandbox_spec,
+    descriptor_for_bytes, encode_sandbox_spec, validate_descriptor_role,
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace};
+use aos_sandbox_protocol::semantics::storage::CanonicalStorageWorkspaceMetadataV1;
 use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS,
     MINIMUM_HOST_IDENTITY_RANGE, decode_storage_resource_inventory_response,
@@ -76,6 +77,7 @@ use buffa::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::root_policy::WorkspaceRootPolicyV1;
 use crate::workspace_pin::WorkspaceRootPinProofV1;
 use crate::{
     CatalogBindingV1, CatalogPlanV1, CommittedStorageResultV1, ResolvedCatalogCommitmentV1,
@@ -85,8 +87,8 @@ const WORKSPACE_JOURNAL_FILE: &str = "storage-workspaces.journal";
 const WORKSPACE_PIN_ROOT: &str = "/run/aos/sandbox-pins/workspaces";
 const HEAD_KEY: &[u8] = b"aos.storage.workspace.head.v1\0";
 const RECORD_KEY_PREFIX: &[u8] = b"aos.storage.workspace.v1\0";
-const RECORD_FORMAT_VERSION: u16 = 2;
-const RESOURCE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-resource.v2\0";
+const RECORD_FORMAT_VERSION: u16 = 1;
+const RESOURCE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-resource.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-transaction.v1\0";
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024;
 const MAXIMUM_HOST_MOUNTS: usize = 65_536;
@@ -104,18 +106,35 @@ pub(crate) struct StorageWorkspacePublicationIntentV1 {
     root_image: ObjectDescriptor,
     identity_range_start: u32,
     identity_range_size: u32,
+    portable_metadata: DurablePortableWorkspaceMetadataV1,
+}
+
+/// Retains portable bytes and their exact admitted replay binding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DurablePortableWorkspaceMetadataV1 {
+    request_id: [u8; 16],
+    request_digest: ObjectDigest,
+    assignment: BrokerAssignment,
+    node: NodeId,
+    root_policy: WorkspaceRootPolicyV1,
+    manifest_bytes: Vec<u8>,
+    sandbox_spec_bytes: Vec<u8>,
 }
 
 impl StorageWorkspacePublicationIntentV1 {
-    pub(crate) fn from_portable(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
         operation_id: [u8; 16],
+        request_id: [u8; 16],
+        request_digest: ObjectDigest,
         request_catalog: &ResolvedCatalogCommitmentV1,
         assignment: BrokerAssignment,
         node: NodeId,
-        manifest: &CanonicalAssignmentManifestV1,
-        sandbox_spec: &SandboxSpec,
+        metadata: &CanonicalStorageWorkspaceMetadataV1,
         identity_range_start: u32,
     ) -> Result<Self, StorageWorkspaceCatalogError> {
+        let manifest = metadata.manifest();
+        let sandbox_spec = metadata.sandbox_spec();
         if operation_id == [0; 16]
             || !matches!(
                 request_catalog.plan(),
@@ -129,21 +148,19 @@ impl StorageWorkspacePublicationIntentV1 {
         {
             return Err(StorageWorkspaceCatalogError::InvalidCandidate);
         }
-
         let encoded_specification = encode_sandbox_spec(sandbox_spec);
         let specification_media_type =
             MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned())
                 .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
         let specification_descriptor =
             descriptor_for_bytes(specification_media_type, &encoded_specification);
-        let manifest = manifest.manifest();
-        if &specification_descriptor != manifest.sandbox_spec()
-            || sandbox_spec.root_view() != manifest.root_view()
-            || sandbox_spec.environment() != manifest.environment()
+        if &specification_descriptor != manifest.manifest().sandbox_spec()
+            || sandbox_spec.root_view() != manifest.manifest().root_view()
+            || sandbox_spec.environment() != manifest.manifest().environment()
         {
             return Err(StorageWorkspaceCatalogError::InvalidCandidate);
         }
-        validate_root_image(manifest.root_view())?;
+        validate_root_image(manifest.manifest().root_view())?;
         let IdentityProfile::PrivateUserns { id_range_size, .. } = sandbox_spec.identity_profile()
         else {
             return Err(StorageWorkspaceCatalogError::InvalidCandidate);
@@ -152,14 +169,26 @@ impl StorageWorkspacePublicationIntentV1 {
             return Err(StorageWorkspaceCatalogError::InvalidCandidate);
         }
         validate_identity_range(identity_range_start, id_range_size.get())?;
-
+        let root_policy = request_catalog
+            .root_policy()
+            .ok_or(StorageWorkspaceCatalogError::InvalidCandidate)?;
+        let portable_metadata = DurablePortableWorkspaceMetadataV1::new(
+            request_id,
+            request_digest,
+            assignment,
+            node,
+            root_policy,
+            metadata.manifest_bytes().to_vec(),
+            metadata.sandbox_spec_bytes().to_vec(),
+        )?;
         Ok(Self {
             operation_id,
             request_catalog: request_catalog.binding(),
             assignment_digest: assignment.digest(),
-            root_image: manifest.root_view().clone(),
+            root_image: manifest.manifest().root_view().clone(),
             identity_range_start,
             identity_range_size: id_range_size.get(),
+            portable_metadata,
         })
     }
 
@@ -170,10 +199,28 @@ impl StorageWorkspacePublicationIntentV1 {
         root_image: ObjectDescriptor,
         identity_range_start: u32,
         identity_range_size: u32,
+        portable_metadata: DurablePortableWorkspaceMetadataV1,
     ) -> Result<Self, StorageWorkspaceCatalogError> {
+        portable_metadata.validate()?;
+        let manifest = CanonicalAssignmentManifestV1::from_canonical_bytes(
+            portable_metadata.manifest_bytes(),
+            portable_decode_limits(48 * 1024),
+        )
+        .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
+        let spec = decode_sandbox_spec(
+            portable_metadata.sandbox_spec_bytes(),
+            portable_decode_limits(16 * 1024),
+        )
+        .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
+        let IdentityProfile::PrivateUserns { id_range_size, .. } = spec.identity_profile() else {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        };
         if operation_id == [0; 16]
             || assignment_digest.as_bytes() == &[0; 32]
             || identity_range_size < MINIMUM_HOST_IDENTITY_RANGE
+            || assignment_digest != portable_metadata.assignment().digest()
+            || &root_image != manifest.manifest().root_view()
+            || identity_range_size != id_range_size.get()
         {
             return Err(StorageWorkspaceCatalogError::InvalidCandidate);
         }
@@ -186,6 +233,7 @@ impl StorageWorkspacePublicationIntentV1 {
             root_image,
             identity_range_start,
             identity_range_size,
+            portable_metadata,
         })
     }
 
@@ -211,6 +259,121 @@ impl StorageWorkspacePublicationIntentV1 {
 
     pub(crate) const fn identity_range_start(&self) -> u32 {
         self.identity_range_start
+    }
+
+    pub(crate) const fn portable_metadata(&self) -> &DurablePortableWorkspaceMetadataV1 {
+        &self.portable_metadata
+    }
+}
+
+impl DurablePortableWorkspaceMetadataV1 {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        request_id: [u8; 16],
+        request_digest: ObjectDigest,
+        assignment: BrokerAssignment,
+        node: NodeId,
+        root_policy: WorkspaceRootPolicyV1,
+        manifest_bytes: Vec<u8>,
+        sandbox_spec_bytes: Vec<u8>,
+    ) -> Result<Self, StorageWorkspaceCatalogError> {
+        let metadata = Self {
+            request_id,
+            request_digest,
+            assignment,
+            node,
+            root_policy,
+            manifest_bytes,
+            sandbox_spec_bytes,
+        };
+        metadata.validate()?;
+        Ok(metadata)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), StorageWorkspaceCatalogError> {
+        if self.request_id == [0; 16]
+            || self.request_digest.as_bytes() == &[0; 32]
+            || self.node.as_bytes() == &[0; 16]
+            || self.manifest_bytes.is_empty()
+            || self.manifest_bytes.len() > 48 * 1024
+            || self.sandbox_spec_bytes.is_empty()
+            || self.sandbox_spec_bytes.len() > 16 * 1024
+            || self.root_policy.validate().is_err()
+        {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        }
+        let manifest = CanonicalAssignmentManifestV1::from_canonical_bytes(
+            &self.manifest_bytes,
+            portable_decode_limits(48 * 1024),
+        )
+        .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
+        let spec = decode_sandbox_spec(&self.sandbox_spec_bytes, portable_decode_limits(16 * 1024))
+            .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
+        let descriptor = descriptor_for_bytes(
+            manifest.manifest().sandbox_spec().media_type().clone(),
+            &self.sandbox_spec_bytes,
+        );
+        if encode_sandbox_spec(&spec) != self.sandbox_spec_bytes
+            || manifest
+                .broker_assignment()
+                .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?
+                != self.assignment
+            || manifest.manifest().node() != self.node
+            || &descriptor != manifest.manifest().sandbox_spec()
+            || manifest.manifest().root_view() != spec.root_view()
+            || manifest.manifest().environment() != spec.environment()
+        {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn request_id(&self) -> [u8; 16] {
+        self.request_id
+    }
+    pub(crate) const fn request_digest(&self) -> ObjectDigest {
+        self.request_digest
+    }
+    pub(crate) const fn assignment(&self) -> BrokerAssignment {
+        self.assignment
+    }
+    pub(crate) const fn node(&self) -> NodeId {
+        self.node
+    }
+    pub(crate) const fn root_policy(&self) -> WorkspaceRootPolicyV1 {
+        self.root_policy
+    }
+    pub(crate) fn manifest_bytes(&self) -> &[u8] {
+        &self.manifest_bytes
+    }
+    pub(crate) fn sandbox_spec_bytes(&self) -> &[u8] {
+        &self.sandbox_spec_bytes
+    }
+
+    pub(crate) fn assignment_manifest(
+        &self,
+    ) -> Result<CanonicalAssignmentManifestV1, StorageWorkspaceCatalogError> {
+        CanonicalAssignmentManifestV1::from_canonical_bytes(
+            &self.manifest_bytes,
+            portable_decode_limits(48 * 1024),
+        )
+        .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)
+    }
+
+    pub(crate) fn sandbox_spec(&self) -> Result<SandboxSpec, StorageWorkspaceCatalogError> {
+        decode_sandbox_spec(&self.sandbox_spec_bytes, portable_decode_limits(16 * 1024))
+            .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)
+    }
+}
+
+fn portable_decode_limits(maximum_bytes: usize) -> DecodeLimits {
+    DecodeLimits {
+        maximum_bytes,
+        maximum_collection_items: 4_096,
+        maximum_total_items: 16_384,
+        maximum_byte_string_bytes: maximum_bytes,
+        maximum_text_bytes: 4_096,
+        maximum_depth: 64,
     }
 }
 
@@ -551,14 +714,6 @@ impl StorageWorkspaceCatalogV1 {
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
-    }
-
-    pub(crate) fn validate_transaction_identity_ranges(
-        &self,
-        transaction_ranges: &[(u32, u32)],
-    ) -> Result<(), StorageWorkspaceCatalogError> {
-        self.combined_reserved_ranges(transaction_ranges)
-            .map(|_| ())
     }
 
     pub(crate) fn reserve_identity_range(
@@ -1906,6 +2061,12 @@ mod tests {
                 dataset_guid,
                 metadata.st_dev,
                 metadata.st_ino,
+                crate::root_policy::PortableRootAttributesV1::new(
+                    metadata.st_uid,
+                    metadata.st_gid,
+                    metadata.st_mode & 0o7777,
+                )
+                .unwrap(),
             )
             .unwrap();
 
@@ -1969,6 +2130,7 @@ mod tests {
             proof.dataset_guid(),
             proof.root_device(),
             proof.root_inode(),
+            proof.root_attributes(),
         )
         .unwrap()
     }
@@ -2332,16 +2494,16 @@ mod tests {
     }
 
     #[test]
-    fn legacy_record_envelope_version_is_rejected() {
+    fn unknown_record_envelope_version_is_rejected() {
         let fixture = Fixture::new(2);
         fixture.create_pin(1);
         let mut catalog = fixture.open([81; 16]).unwrap();
         catalog.publish(fixture.publication(1, [81; 16])).unwrap();
         let record = catalog.records[&[1; 32]].clone();
-        let legacy = serde_json::to_vec(&RecordEnvelopeV1 { version: 1, record }).unwrap();
+        let unknown = serde_json::to_vec(&RecordEnvelopeV1 { version: 2, record }).unwrap();
 
         assert!(matches!(
-            decode_record(&legacy),
+            decode_record(&unknown),
             Err(StorageWorkspaceCatalogError::CorruptRecord)
         ));
     }

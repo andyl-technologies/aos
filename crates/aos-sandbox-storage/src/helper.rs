@@ -493,7 +493,7 @@ mod tests {
         let destination = PlannedDataset::from_catalog(root, name, domains).unwrap();
         let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
         (
-            ResolvedCatalogCommitmentV1::new(
+            ResolvedCatalogCommitmentV1::new_for_test(
                 7,
                 domains,
                 CatalogPlanV1::CreateWorkspace {
@@ -621,36 +621,6 @@ mod tests {
         );
         assert_eq!(helper.backend.execute_count, 0);
         assert_eq!(helper.backend.precondition_observation_count, 0);
-    }
-
-    #[test]
-    fn legacy_ambiguous_recovery_fails_closed_without_redispatch() {
-        for format_version in crate::state::TEST_LEGACY_FORMAT_VERSIONS {
-            let directory = TempDir::new().unwrap();
-            let (catalog, _) = fixture();
-            let mut store = open_store(&directory);
-            prepare(&mut store, &catalog);
-            store
-                .rewrite_legacy_ambiguous_for_test([3; 16], format_version)
-                .unwrap();
-            drop(store);
-
-            let mut recovered = open_store(&directory);
-            let mut helper = StorageMutationHelper::new(
-                ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
-                backend(&catalog),
-            );
-            assert!(matches!(
-                helper.observe_only(&mut recovered, [3; 16]),
-                Err(ZfsHelperError::State(StorageStateError::InvalidTransition))
-            ));
-            assert_eq!(helper.backend.execute_count, 0);
-            assert_eq!(helper.backend.precondition_observation_count, 0);
-            assert_eq!(
-                recovered.phase([3; 16]).unwrap(),
-                Some(DurableStoragePhase::Ambiguous)
-            );
-        }
     }
 
     #[test]

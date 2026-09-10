@@ -18,9 +18,16 @@
 //! workspace-handle:32 | host-boot-id:16 | host-mount-namespace:(dev:u64,ino:u64)
 //! clock-provenance:16 | exclusive-effect-deadline-boottime:u64
 //! dataset-name:(len:u16,utf8) | dataset-guid:u64 | uid-range:(start:u32,size:u32)
+//! root-policy:(presence=1:u8,canonical-AOSWRP01-bytes)
 //! authority-receipt:(len:u16,opaque-authenticated-record)
 //! expected-pin:(presence:u8,payload?) | satisfied-pin:(presence:u8,payload?)
 //! hmac-sha256:32
+//!
+//! pin-proof = boot-id:16 | mount-namespace:(dev:u64,ino:u64) | mount-id:u64 |
+//!   mount-root:(len:u16,utf8) | mount-point:(len:u16,utf8) |
+//!   filesystem-type:(len:u16,utf8) | superblock-source:(len:u16,utf8) |
+//!   dataset-guid:u64 | root:(dev:u64,ino:u64) |
+//!   root-attributes:(uid:u32,gid:u32,mode:u16)
 //! ```
 
 use std::collections::BTreeMap;
@@ -31,6 +38,7 @@ use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::root_policy::{PortableRootAttributesV1, WorkspaceRootPolicyV1};
 use crate::{CatalogBindingV1, StorageStateError};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -53,6 +61,7 @@ const U32_BYTES: usize = 4;
 const STRING_LENGTH_BYTES: usize = 2;
 const MINIMUM_STRING_CONTENT_BYTES: usize = 1;
 const PRESENCE_BYTES: usize = 1;
+const ROOT_POLICY_CANONICAL_BYTES: usize = 64;
 const MINIMUM_ATTEMPT_BODY_BYTES: usize =
     // Header and attempt discriminator.
     MAGIC.len() + 2 + ID_BYTES + ID_BYTES + 3
@@ -62,8 +71,10 @@ const MINIMUM_ATTEMPT_BODY_BYTES: usize =
     + U64_BYTES + DIGEST_BYTES + DIGEST_BYTES + DIGEST_BYTES
     // Host boot and initial mount-namespace identity.
     + ID_BYTES + U64_BYTES * 2 + ID_BYTES + U64_BYTES
-    // Shortest dataset name, GUID, reserved identity range, and absent proofs.
+    // Shortest dataset name, GUID, reserved identity range, and mandatory root policy.
     + STRING_LENGTH_BYTES + MINIMUM_STRING_CONTENT_BYTES + U64_BYTES + U32_BYTES * 2
+    + PRESENCE_BYTES + ROOT_POLICY_CANONICAL_BYTES
+    // Shortest nonempty authority receipt and two absent proofs.
     + STRING_LENGTH_BYTES + MINIMUM_STRING_CONTENT_BYTES
     + PRESENCE_BYTES * 2;
 
@@ -133,6 +144,7 @@ pub(crate) struct WorkspaceRootPinProofV1 {
     dataset_guid: u64,
     root_device: u64,
     root_inode: u64,
+    root_attributes: PortableRootAttributesV1,
 }
 
 impl WorkspaceRootPinProofV1 {
@@ -149,6 +161,7 @@ impl WorkspaceRootPinProofV1 {
         dataset_guid: u64,
         root_device: u64,
         root_inode: u64,
+        root_attributes: PortableRootAttributesV1,
     ) -> Result<Self, StorageStateError> {
         let proof = Self {
             kernel_boot_id,
@@ -162,6 +175,7 @@ impl WorkspaceRootPinProofV1 {
             dataset_guid,
             root_device,
             root_inode,
+            root_attributes,
         };
         proof.validate()?;
         Ok(proof)
@@ -179,6 +193,7 @@ impl WorkspaceRootPinProofV1 {
             || self.dataset_guid == 0
             || self.root_device == 0
             || self.root_inode == 0
+            || self.root_attributes.validate().is_err()
         {
             return Err(StorageStateError::InvalidValue);
         }
@@ -227,6 +242,10 @@ impl WorkspaceRootPinProofV1 {
 
     pub(crate) const fn root_inode(&self) -> u64 {
         self.root_inode
+    }
+
+    pub(crate) const fn root_attributes(&self) -> PortableRootAttributesV1 {
+        self.root_attributes
     }
 }
 
@@ -319,6 +338,7 @@ pub(crate) struct WorkspacePinAttemptV1 {
     dataset_guid: u64,
     identity_range_start: u32,
     identity_range_size: u32,
+    root_policy: WorkspaceRootPolicyV1,
     authority_receipt: Vec<u8>,
     expected_pin: Option<WorkspaceRootPinProofV1>,
     satisfied_pin: Option<WorkspaceRootPinProofV1>,
@@ -347,6 +367,7 @@ impl WorkspacePinAttemptV1 {
         dataset_guid: u64,
         identity_range_start: u32,
         identity_range_size: u32,
+        root_policy: WorkspaceRootPolicyV1,
         expected_pin: Option<WorkspaceRootPinProofV1>,
     ) -> Result<Self, StorageStateError> {
         let attempt = Self {
@@ -371,6 +392,7 @@ impl WorkspacePinAttemptV1 {
             dataset_guid,
             identity_range_start,
             identity_range_size,
+            root_policy,
             authority_receipt: Vec::new(),
             expected_pin,
             satisfied_pin: None,
@@ -403,6 +425,7 @@ impl WorkspacePinAttemptV1 {
                 .checked_add(self.identity_range_size)
                 .is_none()
             || self.authority_receipt.len() > MAXIMUM_AUTHORITY_RECEIPT_BYTES
+            || self.root_policy.validate().is_err()
         {
             return Err(StorageStateError::InvalidValue);
         }
@@ -601,6 +624,10 @@ impl WorkspacePinAttemptV1 {
         self.identity_range_size
     }
 
+    pub(crate) const fn root_policy(&self) -> WorkspaceRootPolicyV1 {
+        self.root_policy
+    }
+
     pub(crate) fn expected_pin(&self) -> Option<&WorkspaceRootPinProofV1> {
         self.expected_pin.as_ref()
     }
@@ -652,6 +679,7 @@ impl WorkspacePinAttemptV1 {
             && self.dataset_guid == other.dataset_guid
             && self.identity_range_start == other.identity_range_start
             && self.identity_range_size == other.identity_range_size
+            && self.root_policy == other.root_policy
             && self.expected_pin == other.expected_pin
     }
 
@@ -671,19 +699,23 @@ impl WorkspacePinAttemptV1 {
 
     pub(crate) fn capacity_completion(&self) -> Result<Self, StorageStateError> {
         match self.action {
-            WorkspacePinActionV1::Ensure => self.satisfy(Some(WorkspaceRootPinProofV1::new(
-                self.host_boot_id,
-                self.host_mount_namespace_device,
-                self.host_mount_namespace_inode,
-                u64::MAX,
-                "/".to_owned(),
-                workspace_pin_path(&self.workspace_handle),
-                "zfs".to_owned(),
-                self.dataset_name.clone(),
-                self.dataset_guid,
-                u64::MAX,
-                u64::MAX,
-            )?)),
+            WorkspacePinActionV1::Ensure => {
+                let proof = WorkspaceRootPinProofV1::new(
+                    self.host_boot_id,
+                    self.host_mount_namespace_device,
+                    self.host_mount_namespace_inode,
+                    u64::MAX,
+                    "/".to_owned(),
+                    workspace_pin_path(&self.workspace_handle),
+                    "zfs".to_owned(),
+                    self.dataset_name.clone(),
+                    self.dataset_guid,
+                    u64::MAX,
+                    u64::MAX,
+                    self.root_policy.root_attributes(),
+                )?;
+                self.satisfy(Some(proof))
+            }
             WorkspacePinActionV1::RemoveAndDestroy => self.satisfy(None),
         }
     }
@@ -697,6 +729,7 @@ impl WorkspacePinAttemptV1 {
             && proof.filesystem_type == "zfs"
             && proof.superblock_source == self.dataset_name
             && proof.dataset_guid == self.dataset_guid
+            && proof.root_attributes == self.root_policy.root_attributes()
     }
 }
 
@@ -786,6 +819,8 @@ fn encode_attempt(
     bytes.extend_from_slice(&attempt.dataset_guid.to_be_bytes());
     bytes.extend_from_slice(&attempt.identity_range_start.to_be_bytes());
     bytes.extend_from_slice(&attempt.identity_range_size.to_be_bytes());
+    bytes.push(1);
+    bytes.extend_from_slice(&attempt.root_policy.canonical_bytes());
     put_bytes(&mut bytes, &attempt.authority_receipt)?;
     put_optional_proof(&mut bytes, attempt.expected_pin.as_ref())?;
     put_optional_proof(&mut bytes, attempt.satisfied_pin.as_ref())?;
@@ -804,10 +839,11 @@ pub(crate) fn decode_attempt(
     }
     let (body, supplied_tag) = bytes.split_at(bytes.len() - MAC_BYTES);
     let mut decoder = Decoder::new(body);
-    if decoder.array::<8>()? != *MAGIC
-        || decoder.u16()? != VERSION
-        || decoder.array::<16>()? != key_id
-    {
+    if decoder.array::<8>()? != *MAGIC {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let version = decoder.u16()?;
+    if version != VERSION || decoder.array::<16>()? != key_id {
         return Err(StorageStateError::CorruptRecord);
     }
     let attempt_id = decoder.array::<16>()?;
@@ -841,6 +877,12 @@ pub(crate) fn decode_attempt(
         dataset_guid: decoder.u64()?,
         identity_range_start: decoder.u32()?,
         identity_range_size: decoder.u32()?,
+        root_policy: if decoder.u8()? == 1 {
+            WorkspaceRootPolicyV1::from_canonical_bytes(decoder.take(ROOT_POLICY_CANONICAL_BYTES)?)
+                .map_err(|_| StorageStateError::CorruptRecord)?
+        } else {
+            return Err(StorageStateError::CorruptRecord);
+        },
         authority_receipt: decoder.bytes()?,
         expected_pin: decoder.optional_proof()?,
         satisfied_pin: decoder.optional_proof()?,
@@ -878,6 +920,10 @@ fn put_optional_proof(
     bytes.extend_from_slice(&proof.dataset_guid.to_be_bytes());
     bytes.extend_from_slice(&proof.root_device.to_be_bytes());
     bytes.extend_from_slice(&proof.root_inode.to_be_bytes());
+    let attributes = proof.root_attributes;
+    bytes.extend_from_slice(&attributes.uid().to_be_bytes());
+    bytes.extend_from_slice(&attributes.gid().to_be_bytes());
+    bytes.extend_from_slice(&attributes.mode().to_be_bytes());
     Ok(())
 }
 
@@ -1009,21 +1055,39 @@ impl<'a> Decoder<'a> {
     fn optional_proof(&mut self) -> Result<Option<WorkspaceRootPinProofV1>, StorageStateError> {
         match self.u8()? {
             0 => Ok(None),
-            1 => WorkspaceRootPinProofV1::new(
-                self.array()?,
-                self.u64()?,
-                self.u64()?,
-                self.u64()?,
-                self.string()?,
-                self.string()?,
-                self.string()?,
-                self.string()?,
-                self.u64()?,
-                self.u64()?,
-                self.u64()?,
-            )
-            .map(Some)
-            .map_err(|_| StorageStateError::CorruptRecord),
+            1 => {
+                let kernel_boot_id = self.array()?;
+                let mount_namespace_device = self.u64()?;
+                let mount_namespace_inode = self.u64()?;
+                let mount_id = self.u64()?;
+                let mount_root = self.string()?;
+                let mount_point = self.string()?;
+                let filesystem_type = self.string()?;
+                let superblock_source = self.string()?;
+                let dataset_guid = self.u64()?;
+                let root_device = self.u64()?;
+                let root_inode = self.u64()?;
+                let root_attributes =
+                    PortableRootAttributesV1::new(self.u32()?, self.u32()?, u32::from(self.u16()?))
+                        .map_err(|_| StorageStateError::CorruptRecord)?;
+                let proof = WorkspaceRootPinProofV1::new(
+                    kernel_boot_id,
+                    mount_namespace_device,
+                    mount_namespace_inode,
+                    mount_id,
+                    mount_root,
+                    mount_point,
+                    filesystem_type,
+                    superblock_source,
+                    dataset_guid,
+                    root_device,
+                    root_inode,
+                    root_attributes,
+                );
+                proof
+                    .map(Some)
+                    .map_err(|_| StorageStateError::CorruptRecord)
+            }
             _ => Err(StorageStateError::CorruptRecord),
         }
     }
@@ -1056,6 +1120,25 @@ mod tests {
             guid,
             5,
             6,
+            WorkspaceRootPolicyV1::create_initialize().root_attributes(),
+        )
+        .unwrap()
+    }
+
+    fn proof_with_root_attributes(name: &str, guid: u64) -> WorkspaceRootPinProofV1 {
+        WorkspaceRootPinProofV1::new(
+            [1; 16],
+            2,
+            3,
+            4,
+            "/".to_owned(),
+            workspace_pin_path(&[8; 32]),
+            "zfs".to_owned(),
+            name.to_owned(),
+            guid,
+            5,
+            6,
+            WorkspaceRootPolicyV1::create_initialize().root_attributes(),
         )
         .unwrap()
     }
@@ -1082,7 +1165,39 @@ mod tests {
             9,
             100_000,
             65_536,
+            WorkspaceRootPolicyV1::create_initialize(),
             (action == WorkspacePinActionV1::RemoveAndDestroy).then(|| proof("tank/aos/work", 9)),
+        )
+        .unwrap()
+        .with_authority_receipt(vec![0xa5])
+        .unwrap()
+    }
+
+    fn workspace_attempt(action: WorkspacePinActionV1) -> WorkspacePinAttemptV1 {
+        WorkspacePinAttemptV1::new_ambiguous(
+            [1; 16],
+            1,
+            action,
+            [2; 16],
+            [3; 16],
+            ObjectDigest::from_bytes([4; 32]),
+            ObjectDigest::from_bytes([5; 32]),
+            ObjectDigest::from_bytes([6; 32]),
+            catalog(),
+            ObjectDigest::from_bytes([7; 32]),
+            [8; 32],
+            [1; 16],
+            2,
+            3,
+            [10; 16],
+            1_000,
+            "tank/aos/work".to_owned(),
+            9,
+            100_000,
+            65_536,
+            WorkspaceRootPolicyV1::create_initialize(),
+            (action == WorkspacePinActionV1::RemoveAndDestroy)
+                .then(|| proof_with_root_attributes("tank/aos/work", 9)),
         )
         .unwrap()
         .with_authority_receipt(vec![0xa5])
@@ -1093,7 +1208,7 @@ mod tests {
     fn codec_authenticates_location_and_content() {
         let key_id = [10; 16];
         let secret = [11; 32];
-        let attempt = attempt(WorkspacePinActionV1::RemoveAndDestroy);
+        let attempt = workspace_attempt(WorkspacePinActionV1::RemoveAndDestroy);
         let record = attempt_record(&attempt, key_id, &secret).unwrap();
         let bytes = record.value().unwrap();
 
@@ -1104,14 +1219,30 @@ mod tests {
         assert!(decode_attempt(&changed, key_id, &secret).is_err());
         assert!(decode_attempt(bytes, [12; 16], &secret).is_err());
         assert!(decode_attempt(bytes, key_id, &[13; 32]).is_err());
+
+        let mut unknown_version = bytes.to_vec();
+        unknown_version[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        let body_length = unknown_version.len() - MAC_BYTES;
+        let tag = record_tag(
+            &secret,
+            &attempt.attempt_id(),
+            &unknown_version[..body_length],
+        )
+        .unwrap();
+        unknown_version[body_length..].copy_from_slice(&tag);
+        assert!(decode_attempt(&unknown_version, key_id, &secret).is_err());
     }
 
     #[test]
-    fn codec_roundtrips_every_legal_shape_at_minimum_name_length() {
+    fn current_codec_roundtrips_every_legal_shape_at_minimum_name_length() {
         let key_id = [10; 16];
         let secret = [11; 32];
-        let mut ensure = attempt(WorkspacePinActionV1::Ensure);
+        let mut ensure = workspace_attempt(WorkspacePinActionV1::Ensure);
         ensure.dataset_name = "x".to_owned();
+        let minimum = encode_attempt(&ensure, key_id, &secret).unwrap();
+        assert_eq!(minimum.len(), MINIMUM_ATTEMPT_BODY_BYTES + MAC_BYTES);
+        assert!(decode_attempt(&minimum[..minimum.len() - 1], key_id, &secret).is_err());
+
         let ensure_pin = WorkspaceRootPinProofV1::new(
             [1; 16],
             2,
@@ -1124,10 +1255,11 @@ mod tests {
             9,
             5,
             6,
+            WorkspaceRootPolicyV1::create_initialize().root_attributes(),
         )
         .unwrap();
         let ensure_satisfied = ensure.satisfy(Some(ensure_pin)).unwrap();
-        let remove = attempt(WorkspacePinActionV1::RemoveAndDestroy);
+        let remove = workspace_attempt(WorkspacePinActionV1::RemoveAndDestroy);
         let remove_satisfied = remove.satisfy(None).unwrap();
 
         for candidate in [&ensure, &ensure_satisfied, &remove, &remove_satisfied] {
@@ -1138,6 +1270,32 @@ mod tests {
                 *candidate
             );
         }
+    }
+
+    #[test]
+    fn root_policy_codec_preserves_attributes_through_ensure_and_remove() {
+        let key_id = [10; 16];
+        let secret = [11; 32];
+        let ensure = workspace_attempt(WorkspacePinActionV1::Ensure)
+            .satisfy(Some(proof_with_root_attributes("tank/aos/work", 9)))
+            .unwrap();
+        let remove = workspace_attempt(WorkspacePinActionV1::RemoveAndDestroy);
+
+        for candidate in [&ensure, &remove] {
+            let encoded = encode_attempt(candidate, key_id, &secret).unwrap();
+            let reopened = decode_attempt(&encoded, key_id, &secret).unwrap();
+
+            assert_eq!(reopened, *candidate);
+            assert_eq!(
+                reopened.root_policy(),
+                WorkspaceRootPolicyV1::create_initialize()
+            );
+        }
+
+        let mut substituted = remove;
+        substituted.expected_pin.as_mut().unwrap().root_attributes =
+            PortableRootAttributesV1::new(0, 0, 0o700).unwrap();
+        assert!(encode_attempt(&substituted, key_id, &secret).is_err());
     }
 
     #[test]
@@ -1197,6 +1355,7 @@ mod tests {
             9,
             5,
             6,
+            WorkspaceRootPolicyV1::create_initialize().root_attributes(),
         )
         .unwrap();
         assert_eq!(
@@ -1219,6 +1378,7 @@ mod tests {
             9,
             5,
             6,
+            WorkspaceRootPolicyV1::create_initialize().root_attributes(),
         )
         .unwrap();
         assert_eq!(
@@ -1242,6 +1402,7 @@ mod tests {
                 9,
                 5,
                 6,
+                WorkspaceRootPolicyV1::create_initialize().root_attributes(),
             )
             .is_err()
         );

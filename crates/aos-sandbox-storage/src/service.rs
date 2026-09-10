@@ -1,19 +1,23 @@
-//! Authenticated one-request Storage Prepare, repair, and inventory service.
+//! Authenticated one-request Storage broker service.
 //!
 //! The service verifies the connection establisher before reading bytes, then
 //! requires both hello and request records to name that same live controller
 //! leader in the exact retained service cgroup. Its carrier forbids
-//! `SCM_RIGHTS`. Prepare and repair accept only their canonical Storage bodies
-//! plus the standard signed authorization artifacts. Prepare retains journaled
-//! authority and resolution evidence but performs no physical mutation; repair
-//! is the only method here that may dispatch a physical worker.
+//! `SCM_RIGHTS`. Prepare, repair, and gated Apply accept only their canonical
+//! Storage bodies plus the standard signed authorization artifacts. Prepare
+//! retains journaled authority and resolution evidence but performs no physical
+//! mutation; repair and Apply may dispatch their fixed physical workers.
 //!
-//! Generic Apply, legacy inventory, physical storage names, internal
-//! observer/worker envelopes, and caller-selected proofs are outside this
+//! Apply dispatch remains unreachable unless the runtime presents complete
+//! backend and deployment readiness; current production construction keeps
+//! that gate closed. Physical storage names, internal
+//! observer/worker envelopes, and caller-selected proofs remain outside this
 //! boundary. Prepare is non-authorizing and resolves only through protected
 //! policy and freshly authenticated local state.
 
-use aos_proto::aos::sandbox::local::v1::{BrokerErrorCode, BrokerMethod, StorageResult};
+use aos_proto::aos::sandbox::local::v1::{
+    ApplyStorageRequest, BrokerErrorCode, BrokerMethod, StorageResult,
+};
 use aos_sandbox_core::{FeatureRef, ProtocolId, ProtocolVersion, RawClockProvenance};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
@@ -26,14 +30,15 @@ use aos_sandbox_protocol::{
     MAXIMUM_HANDSHAKE_BYTES, PeerCredentials, PeerPolicy, ProtocolValidationError,
     ValidatedBrokerRequestEnvelope, decode_storage_resource_inventory_request,
     encode_error_response_envelope, encode_success_response_envelope, failed_server_hello,
-    negotiate_client_hello, validate_request_descriptor_roles,
+    negotiate_client_hello, validate_request_descriptor_roles, validate_request_header,
 };
 use buffa::Message as _;
 
 use crate::broker::{StorageBrokerError, advertised_storage_methods};
 use crate::peer::ControllerPeerVerifier;
 use crate::runtime::{
-    StorageBrokerRuntime, StorageRuntimeError, WorkspacePinRepairExecutionOutcomeV1,
+    StorageApplyReadiness, StorageBrokerRuntime, StorageRuntimeError,
+    StorageRuntimeMutationOutcome, WorkspacePinRepairExecutionOutcomeV1,
 };
 use crate::transport::{EXCHANGE_NANOSECONDS, accept_connection, boottime, receive, send};
 use crate::{StorageAdmissionError, StorageCatalogPreparationOutcomeV1};
@@ -93,10 +98,13 @@ pub trait StorageRpcRuntime {
     /// Reports whether protected policy and runtime state permit Prepare.
     fn is_prepare_ready(&self) -> bool;
 
+    /// Returns the fail-closed production Apply backend classification.
+    fn apply_readiness(&self) -> StorageApplyReadiness;
+
     /// Reports whether fresh repair admission is available.
     fn is_repair_ready(&self) -> bool;
 
-    /// Reports whether authenticated non-legacy inventory is available.
+    /// Reports whether authenticated current inventory is available.
     fn is_inventory_ready(&self) -> bool;
 
     /// Repairs an existing workspace root pin from public request authority.
@@ -122,7 +130,7 @@ pub trait StorageRpcRuntime {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageRuntimeError`] when non-legacy inventory is unavailable
+    /// Returns [`StorageRuntimeError`] when authenticated inventory is unavailable
     /// or a protected catalog row fails physical revalidation.
     fn inventory_resources(
         &mut self,
@@ -148,6 +156,25 @@ pub trait StorageRpcRuntime {
     ) -> Result<StorageCatalogPreparationOutcomeV1, StorageRuntimeError>
     where
         F: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample, StorageAdmissionError>;
+
+    /// Admits and consumes one Storage 1.0 Apply request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError`] when the complete Apply composition is
+    /// unavailable, signed admission fails, or execution requires recovery.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_storage<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+    ) -> Result<StorageRuntimeMutationOutcome, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample, StorageAdmissionError>;
 }
 
 impl StorageRpcRuntime for StorageBrokerRuntime {
@@ -157,6 +184,10 @@ impl StorageRpcRuntime for StorageBrokerRuntime {
 
     fn is_prepare_ready(&self) -> bool {
         Self::is_prepare_ready(self)
+    }
+
+    fn apply_readiness(&self) -> StorageApplyReadiness {
+        Self::apply_readiness(self)
     }
 
     fn is_repair_ready(&self) -> bool {
@@ -224,9 +255,50 @@ impl StorageRpcRuntime for StorageBrokerRuntime {
             trusted_clock,
         )
     }
+
+    fn apply_storage<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+    ) -> Result<StorageRuntimeMutationOutcome, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample, StorageAdmissionError>,
+    {
+        let current_clock = trusted_clock().map_err(|_| StorageRuntimeError::Recovery)?;
+        let (operation_id, _operation, admission) = Self::admit_signed_apply_intent(
+            self,
+            request_body,
+            artifacts,
+            protocol_version,
+            peer,
+            policy,
+            &current_clock,
+        )?;
+        match admission {
+            crate::StorageAdmissionOutcome::Prepared { .. }
+            | crate::StorageAdmissionOutcome::ObservationRequired {
+                phase: crate::DurableStoragePhase::Prepared,
+                ..
+            } => Self::execute_admitted(self, operation_id, trusted_clock),
+            crate::StorageAdmissionOutcome::ObservationRequired {
+                phase,
+                mutation_digest,
+            } => Ok(StorageRuntimeMutationOutcome::ObservationRequired {
+                phase,
+                mutation_digest,
+            }),
+            crate::StorageAdmissionOutcome::Replay(result) => {
+                Ok(StorageRuntimeMutationOutcome::Committed(result))
+            }
+        }
+    }
 }
 
-/// Serves closed Storage Prepare, repair, and authoritative-inventory methods.
+/// Serves the closed, independently gated Storage method set.
 pub struct StorageService<R> {
     runtime: R,
     verifier: ControllerPeerVerifier,
@@ -348,6 +420,9 @@ impl<R: StorageRpcRuntime> StorageService<R> {
         let inventory_method =
             envelope.method() == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES;
         let response = match envelope.method() {
+            BrokerMethod::BROKER_METHOD_STORAGE_APPLY => {
+                self.dispatch_apply(execution, connection.peer(), &session, &envelope)
+            }
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => {
                 self.dispatch_prepare(execution, connection.peer(), &session, &envelope)
             }
@@ -451,6 +526,101 @@ impl<R: StorageRpcRuntime> StorageService<R> {
         }?;
 
         Ok((encoded.0, encoded.1, activation_deadline))
+    }
+
+    fn dispatch_apply(
+        &mut self,
+        execution: crate::peer::ControllerExecution,
+        connection: &aos_sandbox_linux::seqpacket::ConnectionPeerIdentity,
+        session: &aos_sandbox_protocol::NegotiatedBrokerSession,
+        envelope: &ValidatedBrokerRequestEnvelope,
+    ) -> Result<(Vec<u8>, StorageConnectionOutcome, u64), ProtocolValidationError> {
+        if self.runtime.apply_readiness() == StorageApplyReadiness::WorkspaceBackendUnavailable
+            || session.version() != ProtocolVersion::new(1, 0)
+        {
+            return Err(ProtocolValidationError::MethodMismatch);
+        }
+        let artifacts = envelope
+            .authorization()
+            .ok_or(ProtocolValidationError::InvalidField(
+                "envelope.authorization profile",
+            ))?;
+        let initial_clock =
+            trusted_paired_clock_sample().map_err(|_| ProtocolValidationError::DeadlineExpired)?;
+        let request = ApplyStorageRequest::decode_from_slice(envelope.body())
+            .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+        if !request.__buffa_unknown_fields.is_empty() {
+            return Err(ProtocolValidationError::UnknownFields);
+        }
+        let header = request
+            .header
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("header"))?;
+        let header = validate_request_header(
+            header,
+            execution.credentials(),
+            self.verifier.policy(),
+            ProtocolId::StorageBroker,
+            initial_clock.boottime_nanoseconds(),
+        )?;
+        session.validate_header(&header)?;
+        if self
+            .verifier
+            .recheck_connection(execution, connection)
+            .is_err()
+        {
+            return Err(ProtocolValidationError::PeerCredentialMismatch);
+        }
+
+        let mut trusted_clock =
+            || trusted_paired_clock_sample().map_err(|_| StorageAdmissionError::VerificationFailed);
+        let result = self.runtime.apply_storage(
+            envelope.body(),
+            artifacts,
+            session.version(),
+            execution.credentials(),
+            self.verifier.policy(),
+            &mut trusted_clock,
+        );
+        let encoded = match result {
+            Ok(StorageRuntimeMutationOutcome::Committed(result)) => {
+                let body = StorageResult {
+                    storage_handle: result
+                        .storage_handle()
+                        .map_or_else(Vec::new, |handle| handle.to_vec()),
+                    immutable_version_handle: result
+                        .immutable_version_handle()
+                        .map_or_else(Vec::new, |handle| handle.to_vec()),
+                    non_secret_receipt: result.result_digest().as_bytes().to_vec(),
+                    ..Default::default()
+                }
+                .encode_to_vec();
+                encode_success_or_resource_exhausted(
+                    header.request_id(),
+                    envelope,
+                    body,
+                    header.maximum_response_bytes(),
+                    "Storage Apply result exceeds the response ceiling",
+                    false,
+                )
+            }
+            Ok(StorageRuntimeMutationOutcome::ObservationRequired { .. }) => encode_safe_error(
+                header.request_id(),
+                envelope,
+                BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT,
+                "Storage operation is durable and requires authoritative inventory",
+                false,
+                header.maximum_response_bytes(),
+            ),
+            Err(error) => encode_runtime_error(
+                header.request_id(),
+                envelope,
+                &error,
+                header.maximum_response_bytes(),
+            ),
+        }?;
+
+        Ok((encoded.0, encoded.1, header.deadline_boottime_nanoseconds()))
     }
 
     fn dispatch_repair(
@@ -764,7 +934,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn public_method_set_never_includes_apply_or_legacy_inventory() {
+    fn public_method_set_never_includes_apply_without_complete_readiness() {
         assert!(advertised_storage_methods(false, false, false).is_empty());
         assert_eq!(
             advertised_storage_methods(true, false, false),
@@ -785,11 +955,10 @@ mod tests {
             ]
         );
         assert!(!methods.contains(&BrokerMethod::BROKER_METHOD_STORAGE_APPLY));
-        assert!(!methods.contains(&BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY));
     }
 
     #[test]
-    fn prepare_negotiation_starts_at_one_three_and_remains_in_one_four() {
+    fn prepare_negotiation_accepts_only_storage_one_zero() {
         let feature = signed_plan_lease_feature().unwrap();
         let features = [feature.clone()];
         let methods = advertised_storage_methods(true, true, true);
@@ -804,7 +973,7 @@ mod tests {
             audience: Audience::AUDIENCE_NODE_CONTROLLER,
         };
 
-        for minor in 2..=4 {
+        for minor in 0..=2 {
             let hello = BrokerClientHello {
                 protocol_major: 1,
                 protocol_minor: minor,
@@ -828,16 +997,19 @@ mod tests {
                 &methods,
             );
 
-            if minor == 2 {
-                assert_eq!(negotiated, Err(ProtocolValidationError::MethodMismatch));
-            } else {
+            if minor == 0 {
                 let session = negotiated.unwrap();
-                assert_eq!(session.version(), ProtocolVersion::new(1, minor as u16));
+                assert_eq!(session.version(), ProtocolVersion::new(1, 0));
                 assert!(
                     session
                         .advertised_methods()
                         .contains(&BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG)
                 );
+            } else {
+                assert!(matches!(
+                    negotiated,
+                    Err(ProtocolValidationError::Protocol(_))
+                ));
             }
         }
     }

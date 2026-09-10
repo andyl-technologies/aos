@@ -1,13 +1,12 @@
 //! Authenticated descriptor-carrying workspace root-pin worker protocol.
 //!
 //! The broker sends one bounded envelope containing an exact resolved ZFS
-//! catalog and four opaque protected records. The fixed worker independently
+//! catalog and four base protected records. Every Ensure additionally requires
+//! its authenticated publication-intent record. The fixed worker independently
 //! opens its root-owned Storage authority configuration, authenticates those
 //! records, and reconstructs the typed root-pin attempt before using either
 //! inherited descriptor. Raw mount paths, ZFS argv, descriptor numbers, and
 //! caller-asserted observation results never cross this wire.
-//!
-//! The version-one request is:
 //!
 //! ```text
 //! AOSZPIN1 | version:u16 | reserved:u16 | parent-request-id:16
@@ -17,6 +16,7 @@
 //! current-fence:(length:u32,authenticated-bytes)
 //! effect:(length:u32,authenticated-bytes)
 //! operation-fence:(length:u32,authenticated-bytes)
+//! publication-intent:(length:u32,optional-authenticated-bytes)
 //! ```
 //!
 //! The accompanying descriptor table has exactly two roles in fixed order:
@@ -40,6 +40,8 @@ use aos_sandbox_linux::seqpacket::descriptor_subject::{
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::StorageAuthorityV1;
+use crate::root_policy::PortableRootAttributesV1;
+use crate::state::MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES;
 use crate::workspace_pin::{
     WorkspaceDatasetObservationV1, WorkspacePinActionV1, WorkspacePinAttemptPhaseV1,
     WorkspacePinAttemptV1, WorkspacePinObservationV1, WorkspaceRootPinProofV1,
@@ -80,6 +82,7 @@ pub(crate) struct WorkspacePinWorkerAuthorityV1 {
     current_fence: Vec<u8>,
     effect: Vec<u8>,
     operation_fence: Vec<u8>,
+    publication_intent: Option<Vec<u8>>,
 }
 
 #[cfg(test)]
@@ -90,6 +93,7 @@ pub(crate) enum WorkspacePinWorkerAuthorityRecord {
     CurrentFence,
     Effect,
     OperationFence,
+    PublicationIntent,
 }
 
 impl WorkspacePinWorkerAuthorityV1 {
@@ -106,6 +110,27 @@ impl WorkspacePinWorkerAuthorityV1 {
             current_fence,
             effect,
             operation_fence,
+            publication_intent: None,
+        };
+        authority.validate()?;
+        Ok(authority)
+    }
+
+    pub(crate) fn new_with_publication_intent(
+        parent_request_id: [u8; 16],
+        attempt_record: Vec<u8>,
+        current_fence: Vec<u8>,
+        effect: Vec<u8>,
+        operation_fence: Vec<u8>,
+        publication_intent: Vec<u8>,
+    ) -> Result<Self, ZfsWorkerError> {
+        let authority = Self {
+            parent_request_id,
+            attempt_record,
+            current_fence,
+            effect,
+            operation_fence,
+            publication_intent: Some(publication_intent),
         };
         authority.validate()?;
         Ok(authority)
@@ -117,6 +142,9 @@ impl WorkspacePinWorkerAuthorityV1 {
             || !bounded_record(&self.current_fence, MAXIMUM_AUTHORITY_RECORD_BYTES)
             || !bounded_record(&self.effect, MAXIMUM_AUTHORITY_RECORD_BYTES)
             || !bounded_record(&self.operation_fence, MAXIMUM_AUTHORITY_RECORD_BYTES)
+            || self.publication_intent.as_ref().is_some_and(|record| {
+                !bounded_record(record, MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES)
+            })
         {
             return Err(ZfsWorkerError::Protocol(
                 "workspace pin authority envelope is invalid",
@@ -145,6 +173,10 @@ impl WorkspacePinWorkerAuthorityV1 {
         &self.operation_fence
     }
 
+    pub(crate) fn publication_intent(&self) -> Option<&[u8]> {
+        self.publication_intent.as_deref()
+    }
+
     #[cfg(test)]
     pub(crate) fn substitute_record_from(
         &mut self,
@@ -167,6 +199,10 @@ impl WorkspacePinWorkerAuthorityV1 {
             WorkspacePinWorkerAuthorityRecord::OperationFence => {
                 self.operation_fence.clone_from(&donor.operation_fence);
             }
+            WorkspacePinWorkerAuthorityRecord::PublicationIntent => {
+                self.publication_intent
+                    .clone_from(&donor.publication_intent);
+            }
         }
     }
 }
@@ -180,10 +216,10 @@ pub(crate) struct WorkspacePinWorkerRequestV1 {
 
 /// Carries one statically authenticated, non-clone worker request.
 ///
-/// Construction authenticates all four protected records and their catalog
-/// relationships. A worker must still validate the transferred namespace/root
-/// descriptors and call [`check_before_effect`] immediately before its first
-/// mutation.
+/// Construction authenticates all four base protected records and, for Ensure,
+/// the publication-intent record, plus their catalog relationships. A worker
+/// must still validate the transferred namespace/root descriptors and call
+/// [`check_before_effect`] immediately before its first mutation.
 pub(crate) struct AuthenticatedWorkspacePinWorkerRequestV1 {
     request: WorkspacePinWorkerRequestV1,
     attempt: WorkspacePinAttemptV1,
@@ -342,13 +378,57 @@ fn authenticate_request_for(
         )
         .map_err(|_| ZfsWorkerError::Authority)?;
     let operation = request.catalog.plan().operation();
-    let semantic_commitment = operation
-        .persisted_argument_commitment(
+    let semantic_commitment = if attempt.action() == WorkspacePinActionV1::Ensure {
+        let publication_record = request
+            .authority
+            .publication_intent()
+            .ok_or(ZfsWorkerError::Authority)?;
+        let publication = state_key
+            .open_workspace_publication_intent(attempt.creation_operation_id(), publication_record)
+            .map_err(|_| ZfsWorkerError::Authority)?;
+        let metadata = publication.portable_metadata();
+        let manifest = metadata
+            .assignment_manifest()
+            .map_err(|_| ZfsWorkerError::Authority)?;
+        let sandbox_spec = metadata
+            .sandbox_spec()
+            .map_err(|_| ZfsWorkerError::Authority)?;
+        let aos_sandbox_core::model::IdentityProfile::PrivateUserns { id_range_size, .. } =
+            sandbox_spec.identity_profile()
+        else {
+            return Err(ZfsWorkerError::Authority);
+        };
+        if publication.operation_id() != attempt.creation_operation_id()
+            || publication.request_catalog() != request.catalog.binding()
+            || publication.assignment_digest() != operation_fence.assignment().digest()
+            || publication.root_image() != manifest.manifest().root_view()
+            || publication.identity_range_start() != attempt.identity_range_start()
+            || publication.identity_range_size() != attempt.identity_range_size()
+            || publication.identity_range_size() != id_range_size.get()
+            || metadata.request_id() != request.authority.parent_request_id
+            || metadata.request_digest() != effect.transport_request_digest()
+            || metadata.assignment() != operation_fence.assignment()
+            || metadata.node() != operation_fence.node()
+            || request.catalog.root_policy() != Some(metadata.root_policy())
+            || metadata.root_policy() != attempt.root_policy()
+        {
+            return Err(ZfsWorkerError::Authority);
+        }
+        operation.persisted_workspace_argument_commitment(
+            operation_fence.assignment(),
+            attempt.effect_operation_id(),
+            request.catalog.binding(),
+            metadata.manifest_bytes(),
+            metadata.sandbox_spec_bytes(),
+        )
+    } else {
+        operation.persisted_argument_commitment(
             operation_fence.assignment(),
             attempt.effect_operation_id(),
             request.catalog.binding(),
         )
-        .map_err(|_| ZfsWorkerError::Authority)?;
+    }
+    .map_err(|_| ZfsWorkerError::Authority)?;
     let grant_target = operation
         .grant_target()
         .map_err(|_| ZfsWorkerError::Authority)?;
@@ -460,6 +540,12 @@ pub(crate) fn encode_request(
     let effect_length = checked_length(&authority.effect, MAXIMUM_AUTHORITY_RECORD_BYTES)?;
     let operation_fence_length =
         checked_length(&authority.operation_fence, MAXIMUM_AUTHORITY_RECORD_BYTES)?;
+    let publication_intent_length = authority
+        .publication_intent
+        .as_ref()
+        .map(|record| checked_length(record, MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES))
+        .transpose()?
+        .unwrap_or(0);
 
     let mut bytes = Vec::with_capacity(
         64 + executable.len()
@@ -467,7 +553,8 @@ pub(crate) fn encode_request(
             + authority.attempt_record.len()
             + authority.current_fence.len()
             + authority.effect.len()
-            + authority.operation_fence.len(),
+            + authority.operation_fence.len()
+            + authority.publication_intent.as_ref().map_or(0, Vec::len),
     );
     bytes.extend_from_slice(REQUEST_MAGIC);
     bytes.extend_from_slice(&WIRE_VERSION.to_be_bytes());
@@ -484,6 +571,10 @@ pub(crate) fn encode_request(
         operation_fence_length,
         &authority.operation_fence,
     );
+    bytes.extend_from_slice(&publication_intent_length.to_be_bytes());
+    if let Some(record) = &authority.publication_intent {
+        bytes.extend_from_slice(record);
+    }
     if bytes.len() > MAXIMUM_PIN_WORKER_REQUEST_BYTES {
         return Err(ZfsWorkerError::Protocol(
             "workspace pin request exceeds byte ceiling",
@@ -499,10 +590,12 @@ pub(crate) fn decode_request(bytes: &[u8]) -> Result<WorkspacePinWorkerRequestV1
         ));
     }
     let mut decoder = Decoder::new(bytes);
-    if decoder.take(REQUEST_MAGIC.len())? != REQUEST_MAGIC
-        || decoder.u16()? != WIRE_VERSION
-        || decoder.u16()? != 0
-    {
+    if decoder.take(REQUEST_MAGIC.len())? != REQUEST_MAGIC {
+        return Err(ZfsWorkerError::Protocol(
+            "workspace pin request header is invalid",
+        ));
+    }
+    if decoder.u16()? != WIRE_VERSION || decoder.u16()? != 0 {
         return Err(ZfsWorkerError::Protocol(
             "workspace pin request header is invalid",
         ));
@@ -527,15 +620,28 @@ pub(crate) fn decode_request(bytes: &[u8]) -> Result<WorkspacePinWorkerRequestV1
     let operation_fence = decoder
         .bounded_record(MAXIMUM_AUTHORITY_RECORD_BYTES)?
         .to_vec();
+    let publication_intent = decoder
+        .optional_bounded_record(MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES)?
+        .map(<[u8]>::to_vec);
     decoder.finish()?;
 
-    let authority = WorkspacePinWorkerAuthorityV1::new(
-        parent_request_id,
-        attempt_record,
-        current_fence,
-        effect,
-        operation_fence,
-    )?;
+    let authority = match publication_intent {
+        Some(publication_intent) => WorkspacePinWorkerAuthorityV1::new_with_publication_intent(
+            parent_request_id,
+            attempt_record,
+            current_fence,
+            effect,
+            operation_fence,
+            publication_intent,
+        )?,
+        None => WorkspacePinWorkerAuthorityV1::new(
+            parent_request_id,
+            attempt_record,
+            current_fence,
+            effect,
+            operation_fence,
+        )?,
+    };
     let contract = ZfsHelperContract::new(executable.clone())
         .map_err(|_| ZfsWorkerError::Protocol("workspace pin executable is invalid"))?;
     let request = WorkspacePinWorkerRequestV1 {
@@ -597,6 +703,11 @@ pub(crate) fn encode_result(
             bytes.extend_from_slice(&proof.dataset_guid().to_be_bytes());
             bytes.extend_from_slice(&proof.root_device().to_be_bytes());
             bytes.extend_from_slice(&proof.root_inode().to_be_bytes());
+            let attributes = proof.root_attributes();
+            bytes.push(1);
+            bytes.extend_from_slice(&attributes.uid().to_be_bytes());
+            bytes.extend_from_slice(&attributes.gid().to_be_bytes());
+            bytes.extend_from_slice(&attributes.mode().to_be_bytes());
         }
     }
     if bytes.len() > MAXIMUM_PIN_WORKER_RESULT_BYTES {
@@ -614,10 +725,12 @@ pub(crate) fn decode_result(bytes: &[u8]) -> Result<WorkspacePinWorkerResultV1, 
         ));
     }
     let mut decoder = Decoder::new(bytes);
-    if decoder.take(RESULT_MAGIC.len())? != RESULT_MAGIC
-        || decoder.u16()? != WIRE_VERSION
-        || decoder.u16()? != 0
-    {
+    if decoder.take(RESULT_MAGIC.len())? != RESULT_MAGIC {
+        return Err(ZfsWorkerError::Protocol(
+            "workspace pin result header is invalid",
+        ));
+    }
+    if decoder.u16()? != WIRE_VERSION || decoder.u16()? != 0 {
         return Err(ZfsWorkerError::Protocol(
             "workspace pin result header is invalid",
         ));
@@ -640,22 +753,46 @@ pub(crate) fn decode_result(bytes: &[u8]) -> Result<WorkspacePinWorkerResultV1, 
     let pin = match decoder.byte()? {
         1 => WorkspacePinObservationV1::Absent,
         2 => WorkspacePinObservationV1::Mismatch,
-        3 => WorkspacePinObservationV1::Present(
-            WorkspaceRootPinProofV1::new(
-                decoder.array()?,
-                decoder.u64()?,
-                decoder.u64()?,
-                decoder.u64()?,
-                decoder.result_string()?,
-                decoder.result_string()?,
-                decoder.result_string()?,
-                decoder.result_string()?,
-                decoder.u64()?,
-                decoder.u64()?,
-                decoder.u64()?,
+        3 => {
+            let kernel_boot_id = decoder.array()?;
+            let mount_namespace_device = decoder.u64()?;
+            let mount_namespace_inode = decoder.u64()?;
+            let mount_id = decoder.u64()?;
+            let mount_root = decoder.result_string()?;
+            let mount_point = decoder.result_string()?;
+            let filesystem_type = decoder.result_string()?;
+            let superblock_source = decoder.result_string()?;
+            let dataset_guid = decoder.u64()?;
+            let root_device = decoder.u64()?;
+            let root_inode = decoder.u64()?;
+            if decoder.byte()? != 1 {
+                return Err(ZfsWorkerError::Protocol(
+                    "workspace root attributes are invalid",
+                ));
+            }
+            let root_attributes = PortableRootAttributesV1::new(
+                decoder.u32()?,
+                decoder.u32()?,
+                u32::from(decoder.u16()?),
             )
-            .map_err(|_| ZfsWorkerError::Protocol("workspace pin proof is invalid"))?,
-        ),
+            .map_err(|_| ZfsWorkerError::Protocol("workspace root attributes are invalid"))?;
+            let proof = WorkspaceRootPinProofV1::new(
+                kernel_boot_id,
+                mount_namespace_device,
+                mount_namespace_inode,
+                mount_id,
+                mount_root,
+                mount_point,
+                filesystem_type,
+                superblock_source,
+                dataset_guid,
+                root_device,
+                root_inode,
+                root_attributes,
+            )
+            .map_err(|_| ZfsWorkerError::Protocol("workspace pin proof is invalid"))?;
+            WorkspacePinObservationV1::Present(proof)
+        }
         _ => {
             return Err(ZfsWorkerError::Protocol("workspace pin result is invalid"));
         }
@@ -1207,6 +1344,25 @@ impl<'a> Decoder<'a> {
         self.take(length)
     }
 
+    fn optional_bounded_record(
+        &mut self,
+        maximum: usize,
+    ) -> Result<Option<&'a [u8]>, ZfsWorkerError> {
+        let length = usize::try_from(self.u32()?).map_err(|_| {
+            ZfsWorkerError::Protocol("workspace pin record length does not fit usize")
+        })?;
+        if length > maximum {
+            return Err(ZfsWorkerError::Protocol(
+                "workspace pin request record length is invalid",
+            ));
+        }
+        if length == 0 {
+            Ok(None)
+        } else {
+            self.take(length).map(Some)
+        }
+    }
+
     fn finish(self) -> Result<(), ZfsWorkerError> {
         if self.offset == self.bytes.len() {
             Ok(())
@@ -1249,7 +1405,7 @@ mod tests {
         let destination =
             PlannedDataset::from_catalog(root, "tank/aos/project/work", domains).unwrap();
         let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             7,
             domains,
             CatalogPlanV1::CreateWorkspace {
@@ -1320,9 +1476,12 @@ mod tests {
             request.binding().digest(),
         )
         .unwrap();
-        let exhausted =
-            ResolvedCatalogCommitmentV1::new(u64::MAX, request.domains(), request.plan().clone())
-                .unwrap();
+        let exhausted = ResolvedCatalogCommitmentV1::new_for_test(
+            u64::MAX,
+            request.domains(),
+            request.plan().clone(),
+        )
+        .unwrap();
         let wrapped =
             crate::CatalogBindingV1::from_publisher(1, ObjectDigest::from_bytes([33; 32])).unwrap();
 
@@ -1371,6 +1530,7 @@ mod tests {
             10,
             11,
             12,
+            PortableRootAttributesV1::new(0, 0, 0o755).unwrap(),
         )
         .unwrap();
         let result = WorkspacePinWorkerResultV1::new(
@@ -1396,6 +1556,45 @@ mod tests {
         let mut zero_digest = bytes;
         zero_digest[28..60].fill(0);
         assert!(decode_result(&zero_digest).is_err());
+
+        let mut unknown_version = encode_result(&result).unwrap();
+        unknown_version[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        assert!(decode_result(&unknown_version).is_err());
+    }
+
+    #[test]
+    fn result_round_trip_preserves_portable_root_attributes() {
+        let attributes = PortableRootAttributesV1::new(0, 0, 0o755).unwrap();
+        let proof = WorkspaceRootPinProofV1::new(
+            [6; 16],
+            7,
+            8,
+            9,
+            "/".to_owned(),
+            "/run/aos/sandbox-pins/workspaces/fixture".to_owned(),
+            "zfs".to_owned(),
+            "tank/aos/project/work".to_owned(),
+            10,
+            11,
+            12,
+            attributes,
+        )
+        .unwrap();
+        let result = WorkspacePinWorkerResultV1::new(
+            [5; 16],
+            WorkspaceDatasetObservationV1::Exact {
+                name: "tank/aos/project/work".to_owned(),
+                guid: 10,
+            },
+            WorkspacePinObservationV1::Present(proof),
+            ObjectDigest::from_bytes([13; 32]),
+        );
+        let decoded = decode_result(&encode_result(&result).unwrap()).unwrap();
+        let WorkspacePinObservationV1::Present(proof) = decoded.pin() else {
+            panic!("portable root proof was lost");
+        };
+
+        assert_eq!(proof.root_attributes(), attributes);
     }
 
     #[test]
@@ -1417,6 +1616,42 @@ mod tests {
                 vec![4]
             )
             .is_err()
+        );
+        assert!(
+            WorkspacePinWorkerAuthorityV1::new_with_publication_intent(
+                [1; 16],
+                vec![1],
+                vec![2],
+                vec![3],
+                vec![4],
+                vec![5; MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES + 1],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn maximum_publication_intent_round_trips_through_worker_request() {
+        let contract = ZfsHelperContract::new("/nix/store/hash-zfs/sbin/zfs".into()).unwrap();
+        let authority = WorkspacePinWorkerAuthorityV1::new_with_publication_intent(
+            [1; 16],
+            vec![2; 128],
+            vec![3; 129],
+            vec![4; 130],
+            vec![5; 131],
+            vec![6; MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES],
+        )
+        .unwrap();
+        let encoded = encode_request(&contract, &fixture_catalog(), &authority).unwrap();
+        let decoded = decode_request(&encoded).unwrap();
+
+        assert_eq!(
+            decoded.authority.publication_intent().unwrap().len(),
+            MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES
+        );
+        assert_eq!(
+            encode_request(&contract, &decoded.catalog, &decoded.authority).unwrap(),
+            encoded
         );
     }
 

@@ -19,7 +19,7 @@ use crate::{
 };
 
 use self::actions::resolve_action;
-use self::inventory::{ProtectedStorageInventoryError, ProtectedStorageInventoryV2};
+use self::inventory::{ProtectedStorageInventoryError, ProtectedStorageInventoryV1};
 use self::policy::ProtectedStorageResolverPolicyV1;
 
 /// Reports why protected state could not produce one closed catalog plan.
@@ -58,13 +58,13 @@ impl From<ProtectedStorageInventoryError> for StorageCatalogResolverErrorV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StorageCatalogResolverV1 {
     policy: ProtectedStorageResolverPolicyV1,
-    inventory: ProtectedStorageInventoryV2,
+    inventory: ProtectedStorageInventoryV1,
 }
 
 impl StorageCatalogResolverV1 {
     pub(crate) fn new(
         policy: ProtectedStorageResolverPolicyV1,
-        inventory: ProtectedStorageInventoryV2,
+        inventory: ProtectedStorageInventoryV1,
     ) -> Result<Self, StorageCatalogResolverErrorV1> {
         if policy.root() != inventory.root()
             || policy.domains() != inventory.domains()
@@ -100,7 +100,7 @@ impl StorageCatalogResolverV1 {
             sandbox_id,
             operation_id,
         )?;
-        ResolvedCatalogCommitmentV1::new_execution_v3(
+        ResolvedCatalogCommitmentV1::new_execution_v1(
             generation,
             self.policy.domains(),
             plan,
@@ -109,7 +109,7 @@ impl StorageCatalogResolverV1 {
         .map_err(|_| StorageCatalogResolverErrorV1::PolicyRejected)
     }
 
-    pub(crate) const fn inventory(&self) -> &ProtectedStorageInventoryV2 {
+    pub(crate) const fn inventory(&self) -> &ProtectedStorageInventoryV1 {
         &self.inventory
     }
 
@@ -161,7 +161,7 @@ mod tests {
 
     use super::inventory::{
         AuthenticatedSnapshotRootMetadataV1, CheckedSnapshotRootMetadataRecordV1,
-        ProtectedSnapshotInventoryV2,
+        ProtectedSnapshotInventoryV1,
     };
     use super::*;
     use crate::root_policy::PortableRootAttributesV1;
@@ -201,11 +201,7 @@ mod tests {
         .unwrap()
     }
 
-    fn fixture(
-        authenticated_clone: bool,
-        catalog_generation: u64,
-        tombstones: Vec<String>,
-    ) -> Fixture {
+    fn fixture(catalog_generation: u64, tombstones: Vec<String>) -> Fixture {
         let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 20).unwrap();
         let ancestor = ResolvedDataset::from_catalog(
             root.clone(),
@@ -245,30 +241,33 @@ mod tests {
             ResolvedSnapshot::from_catalog(workspace.clone(), "unheld", 31, [32; 32]).unwrap();
         let clone_source =
             ResolvedSnapshot::from_catalog(archive.clone(), "source", 33, [34; 32]).unwrap();
-        let checked_metadata = CheckedSnapshotRootMetadataRecordV1::new(
-            clone_source.guid(),
-            archive.guid(),
-            PortableRootAttributesV1::new(501, 20, 0o6750).unwrap(),
-            archive.storage_handle(),
-            clone_source.version_handle(),
-            ObjectDigest::from_bytes([35; 32]),
-        )
-        .unwrap();
-        let authenticated_metadata = AuthenticatedSnapshotRootMetadataV1::authenticate_for_test(
-            &checked_metadata.canonical_bytes(),
-            checked_metadata.record_digest(),
-        )
-        .unwrap();
-        let clone_row = if authenticated_clone {
-            ProtectedSnapshotInventoryV2::authenticated_for_test(
-                clone_source.clone(),
+        let authenticated_row = |snapshot: &ResolvedSnapshot, commitment_byte| {
+            let checked_metadata = CheckedSnapshotRootMetadataRecordV1::new(
+                snapshot.guid(),
+                snapshot.dataset().guid(),
+                PortableRootAttributesV1::new(501, 20, 0o6750).unwrap(),
+                snapshot.dataset().storage_handle(),
+                snapshot.version_handle(),
+                ObjectDigest::from_bytes([commitment_byte; 32]),
+            )
+            .unwrap();
+            let authenticated_metadata =
+                AuthenticatedSnapshotRootMetadataV1::authenticate_for_test(
+                    &checked_metadata.canonical_bytes(),
+                    checked_metadata.record_digest(),
+                )
+                .unwrap();
+
+            ProtectedSnapshotInventoryV1::authenticated_for_test(
+                snapshot.clone(),
                 checked_metadata.content_commitment(),
                 authenticated_metadata,
             )
             .unwrap()
-        } else {
-            ProtectedSnapshotInventoryV2::legacy(clone_source.clone())
         };
+        let held_row = authenticated_row(&held_snapshot, 35);
+        let unheld_row = authenticated_row(&unheld_snapshot, 36);
+        let clone_row = authenticated_row(&clone_source, 37);
         let hold_id = HoldId::from_bytes([36; 16]).unwrap();
         let head = CatalogBindingV1::from_publisher(
             catalog_generation,
@@ -284,7 +283,7 @@ mod tests {
             1 << 26,
         )
         .unwrap();
-        let inventory = ProtectedStorageInventoryV2::from_authenticated_rows_for_test(
+        let inventory = ProtectedStorageInventoryV1::from_authenticated_rows_for_test(
             40,
             head,
             root,
@@ -295,11 +294,7 @@ mod tests {
                 empty_workspace.clone(),
                 archive,
             ],
-            vec![
-                ProtectedSnapshotInventoryV2::legacy(held_snapshot.clone()),
-                ProtectedSnapshotInventoryV2::legacy(unheld_snapshot.clone()),
-                clone_row,
-            ],
+            vec![held_row, unheld_row, clone_row],
             vec![
                 ActiveHoldEvidence::from_catalog(held_snapshot.guid(), hold_id).unwrap(),
                 ActiveHoldEvidence::from_catalog(clone_source.guid(), hold_id).unwrap(),
@@ -335,8 +330,8 @@ mod tests {
     }
 
     #[test]
-    fn every_storage_action_resolves_to_one_closed_execution_catalog() {
-        let fixture = fixture(true, 50, Vec::new());
+    fn every_storage_action_resolves_to_one_closed_v1_catalog() {
+        let fixture = fixture(50, Vec::new());
         let create = resolve(
             &fixture,
             StoragePreparationOperationV1::CreateWorkspace {
@@ -473,7 +468,7 @@ mod tests {
             destroy_snapshot,
             destroy_dataset,
         ] {
-            assert_eq!(catalog.format_version(), 3);
+            assert_eq!(catalog.format_version(), 1);
             assert_eq!(catalog.generation(), 51);
             assert_eq!(
                 catalog.execution_binding().unwrap().catalog(),
@@ -483,20 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn clone_requires_authenticated_exact_source_metadata() {
-        let legacy = fixture(false, 50, Vec::new());
-        let operation = StoragePreparationOperationV1::Clone {
-            storage_handle: legacy.clone_source.dataset().storage_handle(),
-            version_handle: legacy.clone_source.version_handle(),
-            hold_id: legacy.hold_id.as_bytes(),
-            quota_bytes: 4096,
-            reservation_bytes: 0,
-        };
-        assert_eq!(
-            resolve(&legacy, operation, [96; 16], [97; 16]),
-            Err(StorageCatalogResolverErrorV1::InventoryRejected)
-        );
-
+    fn clone_metadata_authentication_rejects_tampering() {
         let attributes = PortableRootAttributesV1::new(501, 20, 0o6750).unwrap();
         let metadata = CheckedSnapshotRootMetadataRecordV1::new(
             33,
@@ -522,7 +504,7 @@ mod tests {
     fn resolver_rejects_occupied_names_held_objects_and_exhausted_heads() {
         let occupied_name =
             "tank/aos/project/workspace-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a".to_owned();
-        let occupied = fixture(true, 50, vec![occupied_name]);
+        let occupied = fixture(50, vec![occupied_name]);
         assert_eq!(
             resolve(
                 &occupied,
@@ -548,7 +530,7 @@ mod tests {
             Err(StorageCatalogResolverErrorV1::StateConflict)
         );
 
-        let exhausted = fixture(true, u64::MAX, Vec::new());
+        let exhausted = fixture(u64::MAX, Vec::new());
         assert_eq!(
             resolve(
                 &exhausted,
@@ -566,7 +548,7 @@ mod tests {
 
     #[test]
     fn policy_assignment_distinguishes_incarnation_and_epoch_for_one_sandbox() {
-        let fixture = fixture(true, 50, Vec::new());
+        let fixture = fixture(50, Vec::new());
 
         assert_eq!(fixture.resolver.policy.assignment(), assignment(2, 4));
         assert_ne!(fixture.resolver.policy.assignment(), assignment(3, 4));

@@ -124,8 +124,7 @@ impl BrokerAuthority {
         current_clock: &RawPairedClockSample,
         prior_fence: Option<&[u8]>,
     ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
-        if request.protocol_version.minor() < 1
-            || negotiate_protocol(request.protocol, request.protocol_version).is_err()
+        if !supports_signed_admission(request.protocol, request.protocol_version)
             || request.audience.protocol() != request.protocol
             || request.audience != self.domain.audience()
             || request.request_id == [0; 16]
@@ -486,6 +485,11 @@ impl BrokerAuthority {
     }
 }
 
+fn supports_signed_admission(protocol: ProtocolId, version: ProtocolVersion) -> bool {
+    negotiate_protocol(protocol, version).is_ok()
+        && (version.minor() >= 1 || protocol == ProtocolId::StorageBroker)
+}
+
 /// Carries exact authenticated records that callers must commit atomically.
 #[derive(Debug)]
 pub struct VerifiedBrokerAdmission {
@@ -564,6 +568,30 @@ impl BrokerDomain {
             Self::Mount => BrokerAudience::Mount,
             Self::Storage => BrokerAudience::Storage,
             Self::Network => BrokerAudience::Network,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_storage_admits_a_minor_zero_signed_request() {
+        let version = ProtocolVersion::new(1, 0);
+        let cases = [
+            (ProtocolId::StorageBroker, true),
+            (ProtocolId::HostBroker, false),
+            (ProtocolId::MountBroker, false),
+            (ProtocolId::NetworkBroker, false),
+        ];
+
+        for (protocol, expected) in cases {
+            assert_eq!(
+                supports_signed_admission(protocol, version),
+                expected,
+                "unexpected signed-admission result for {protocol:?}"
+            );
         }
     }
 }

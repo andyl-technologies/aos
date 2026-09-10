@@ -16,18 +16,22 @@ use std::io::Read as _;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
-use aos_sandbox_core::model::SandboxSpec;
+use aos_proto::aos::sandbox::local::v1::ApplyStorageRequest;
+use aos_sandbox_core::model::{IdentityProfile, SandboxSpec, UnmappableIdentityPolicy};
 use aos_sandbox_core::{
     CanonicalAssignmentManifestV1, ObjectDigest, ProtocolVersion, RawPairedClockSample,
 };
+use aos_sandbox_protocol::semantics::storage::{CanonicalStorageSemanticsV1, StorageOperation};
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+use buffa::Message as _;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::StorageProtectedConfigurationV1;
 use crate::broker::{
     AuthenticatedWorkspaceCatalogPhysicalPlanV1, AuthorizedWorkspacePinRepairAttemptV1,
+    WorkspacePinExecutionOutcomeV1, WorkspaceRemovePinRequirementV1,
 };
 use crate::helper::{StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome};
 use crate::observation_protocol::{
@@ -38,6 +42,7 @@ use crate::pin_worker::boottime_now_nanoseconds;
 use crate::pin_worker_runtime::{SystemdWorkspacePinExecutor, SystemdWorkspacePinObserver};
 use crate::process::open_cgroup_root;
 use crate::resolver::protected_catalog::ProtectedStorageResolverPolicyDirectoryV1;
+use crate::root_policy::PortableRootAttributesV1;
 use crate::workspace_catalog::{
     PendingStorageWorkspaceCatalogV1, StorageWorkspaceCatalogActivationCandidateV1,
     ValidatedPendingStorageWorkspaceCatalogV1,
@@ -118,11 +123,6 @@ pub enum StorageRuntimeReadiness {
     /// No RPC remains available in this state. The service must exit so its
     /// supervisor can construct a new runtime and replay the durable prefix.
     ReopenRequired,
-    /// Pre-runtime-binding state is retained strictly for non-dispatch recovery.
-    LegacyRecoveryOnly {
-        /// Count of retained operations, including already committed history.
-        operations: usize,
-    },
 }
 
 impl StorageRuntimeReadiness {
@@ -142,9 +142,8 @@ impl StorageRuntimeReadiness {
 /// Describes whether the complete generic Apply backend exists.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageApplyReadiness {
-    /// Apply has authenticated portable workspace metadata and root setup.
-    Ready,
-    /// Portable workspace metadata and privileged root initialization are absent.
+    /// Apply remains closed until every advertised action, including Snapshot,
+    /// has a dedicated worker and complete MAC and platform qualification.
     WorkspaceBackendUnavailable,
 }
 
@@ -310,16 +309,13 @@ impl StorageBrokerRuntime {
             open_cgroup_root()?,
         )?;
 
-        let legacy_recovery = transactions.requires_legacy_recovery()?;
-        if !legacy_recovery {
-            transactions.validate_runtime_restart(
-                configuration_binding,
-                bootstrap.genesis_generation,
-                &bootstrap.catalogs,
-            )?;
-        }
+        transactions.validate_runtime_restart(
+            configuration_binding,
+            bootstrap.genesis_generation,
+            &bootstrap.catalogs,
+        )?;
         let mut coordinator = StorageAdmissionCoordinator::new(authority, transactions);
-        // Existing V3 records must authenticate against the preexisting floor;
+        // Existing records must authenticate against the preexisting floor;
         // a current policy publication cannot heal missing rollback evidence.
         coordinator
             .authenticate_catalog_preparations()
@@ -360,17 +356,7 @@ impl StorageBrokerRuntime {
             resolver_policies,
             prepare_readiness,
         };
-        runtime.readiness = if legacy_recovery {
-            StorageRuntimeReadiness::LegacyRecoveryOnly {
-                operations: runtime
-                    .coordinator
-                    .recovery_entries()
-                    .map_err(|_| StorageRuntimeError::Recovery)?
-                    .len(),
-            }
-        } else {
-            runtime.reconcile_startup()?
-        };
+        runtime.readiness = runtime.reconcile_startup()?;
         Ok(runtime)
     }
 
@@ -439,13 +425,6 @@ impl StorageBrokerRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn workspace_catalog_for_test(&self) -> &ValidatedPendingStorageWorkspaceCatalogV1 {
-        self.workspaces
-            .as_ref()
-            .unwrap_or_else(|| unreachable!("workspace catalog custody escaped runtime"))
-    }
-
-    #[cfg(test)]
     pub(crate) fn into_journals_for_test(
         self,
     ) -> (
@@ -490,15 +469,9 @@ impl StorageBrokerRuntime {
             && self.readiness.permits_catalog_methods()
     }
 
-    /// Reports whether the complete Apply composition has converged.
-    ///
-    /// Catalog convergence is necessary but not sufficient. The separate
-    /// backend gate remains closed until portable workspace metadata and the
-    /// privileged root initializer are composed into the request path.
-    #[must_use]
-    pub const fn is_apply_ready(&self) -> bool {
-        self.readiness.permits_catalog_methods()
-            && matches!(self.apply_readiness, StorageApplyReadiness::Ready)
+    fn operation_permits_apply(&self, operation_id: [u8; 16]) -> Result<bool, StorageRuntimeError> {
+        let _ = operation_id;
+        Ok(false)
     }
 
     /// Reports whether the isolated repair path may accept a fresh request.
@@ -513,10 +486,8 @@ impl StorageBrokerRuntime {
 
     /// Reports whether authenticated authoritative inventory may be exposed.
     ///
-    /// Legacy state is retained only for non-dispatch recovery and cannot be
-    /// projected into a launch-resource inventory. Every current-format state
-    /// has already authenticated repair history before the workspace catalog
-    /// was opened.
+    /// Every admitted state has authenticated repair history before the
+    /// workspace catalog is opened.
     #[must_use]
     pub fn is_inventory_ready(&self) -> bool {
         if !self.readiness.permits_catalog_methods() {
@@ -774,7 +745,7 @@ impl StorageBrokerRuntime {
 
     /// Repairs one existing workspace root pin through fresh observation.
     ///
-    /// The caller supplies only the raw Storage 1.4 request and standard
+    /// The caller supplies only the raw Storage 1.0 request and standard
     /// authorization artifacts. Dataset identity, catalog, attempt ordinal,
     /// mount observation, and host scope are derived from authenticated state
     /// and retained descriptors while the runtime holds its exclusive journals.
@@ -908,9 +879,8 @@ impl StorageBrokerRuntime {
     /// chooses first-fit against every retained transaction intent and catalog
     /// tombstone, then commits that exact range with the signed operation.
     /// Rejected or interrupted intents remain reserved and are never silently
-    /// reused. This path remains unavailable until [`Self::is_apply_ready`]
-    /// reports that catalog convergence and the independent backend gate are
-    /// both ready.
+    /// reused. This path remains unavailable while
+    /// [`Self::apply_readiness`] reports that the complete backend is held.
     ///
     /// # Errors
     ///
@@ -930,7 +900,74 @@ impl StorageBrokerRuntime {
         manifest: &CanonicalAssignmentManifestV1,
         sandbox_spec: &SandboxSpec,
     ) -> Result<StorageAdmissionOutcome, StorageRuntimeError> {
-        let _ = (
+        if self.apply_readiness == StorageApplyReadiness::WorkspaceBackendUnavailable
+            || protocol_version != ProtocolVersion::new(1, 0)
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let semantics = CanonicalStorageSemanticsV1::decode(
+            request_body,
+            catalog.binding(),
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+        if semantics.header().protocol_version() != protocol_version {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        if !self.operation_permits_apply(*semantics.operation_id())? {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let metadata = semantics
+            .workspace_metadata()
+            .ok_or(StorageRuntimeError::Recovery)?;
+        if metadata.manifest() != manifest || metadata.sandbox_spec() != sandbox_spec {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        let prepared = self
+            .coordinator
+            .prepared_catalog_for_apply(*semantics.operation_id())?;
+        if &prepared != catalog {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let IdentityProfile::PrivateUserns {
+            id_range_size,
+            unmappable_policy,
+            ..
+        } = sandbox_spec.identity_profile()
+        else {
+            return Err(StorageRuntimeError::Recovery);
+        };
+        let root_attributes = catalog
+            .root_policy()
+            .ok_or(StorageRuntimeError::Recovery)?
+            .root_attributes();
+        if !private_identity_profile_supports_root(
+            *unmappable_policy,
+            root_attributes,
+            id_range_size.get(),
+        ) {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let transaction_ranges = self.coordinator.workspace_identity_ranges()?;
+        let pool = self
+            .workspaces
+            .as_ref()
+            .ok_or(StorageRuntimeError::Recovery)?
+            .snapshot()
+            .identity_pool();
+        let retained_range = self
+            .coordinator
+            .workspace_identity_range(*semantics.operation_id())?;
+        let identity_range_start = select_identity_range_for_apply(
+            pool,
+            &transaction_ranges,
+            retained_range,
+            id_range_size.get(),
+        )?;
+        let result = self.coordinator.admit_workspace_apply_intent(
             request_body,
             artifacts,
             catalog,
@@ -938,10 +975,102 @@ impl StorageBrokerRuntime {
             peer,
             policy,
             current_clock,
+            identity_range_start,
             manifest,
             sandbox_spec,
         );
-        Err(StorageRuntimeError::Recovery)
+        self.finish_live_transaction_mutation(result, StorageRuntimeError::Admission)
+    }
+
+    /// Admits Storage 1.0 Apply using only signed bytes and protected preparation state.
+    ///
+    /// Create and Clone consume their exact canonical portable metadata and
+    /// reserve an identity range. Hold, Release, SetQuota, and Destroy retain
+    /// the generic admission path. Snapshot remains explicitly held, and the
+    /// incomplete Apply surface is structurally absent from advertisement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError`] when Apply is unavailable, the request
+    /// version differs from the negotiated version, preparation or signed
+    /// authority is invalid, workspace metadata is absent or inconsistent, or
+    /// durable admission fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_signed_apply_intent(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<([u8; 16], StorageOperation, StorageAdmissionOutcome), StorageRuntimeError> {
+        if self.apply_readiness == StorageApplyReadiness::WorkspaceBackendUnavailable
+            || protocol_version != ProtocolVersion::new(1, 0)
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let request = ApplyStorageRequest::decode_from_slice(request_body)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        if !request.__buffa_unknown_fields.is_empty() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let operation_id: [u8; 16] = request
+            .operation_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        if !self.operation_permits_apply(operation_id)? {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let catalog = self.coordinator.prepared_catalog_for_apply(operation_id)?;
+        let semantics = CanonicalStorageSemanticsV1::decode(
+            request_body,
+            catalog.binding(),
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+        if semantics.header().protocol_version() != protocol_version {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let operation = semantics.operation();
+        let result = match apply_admission_route(operation) {
+            StorageApplyAdmissionRoute::Held => return Err(StorageRuntimeError::Recovery),
+            StorageApplyAdmissionRoute::Workspace => {
+                let metadata = semantics
+                    .workspace_metadata()
+                    .ok_or(StorageRuntimeError::Recovery)?;
+                let manifest = metadata.manifest().clone();
+                let sandbox_spec = metadata.sandbox_spec().clone();
+                return self
+                    .admit_workspace_apply_intent(
+                        request_body,
+                        artifacts,
+                        &catalog,
+                        protocol_version,
+                        peer,
+                        policy,
+                        current_clock,
+                        &manifest,
+                        &sandbox_spec,
+                    )
+                    .map(|outcome| (operation_id, operation, outcome));
+            }
+            StorageApplyAdmissionRoute::Generic => self.coordinator.admit_apply_intent(
+                request_body,
+                artifacts,
+                &catalog,
+                protocol_version,
+                peer,
+                policy,
+                current_clock,
+            ),
+        };
+        let outcome =
+            self.finish_live_transaction_mutation(result, StorageRuntimeError::Admission)?;
+        Ok((operation_id, operation, outcome))
     }
 
     /// Executes one already-admitted Prepared effect under fresh authority.
@@ -949,7 +1078,7 @@ impl StorageBrokerRuntime {
     /// This method performs pre-observation, reopens current durable authority,
     /// samples the supplied protected clock before Ambiguous, durably crosses
     /// Ambiguous, samples again, and dispatches exactly once. Service code must
-    /// not call it unless [`Self::is_apply_ready`] is true.
+    /// not call it while [`Self::apply_readiness`] reports a held backend.
     ///
     /// # Errors
     ///
@@ -965,8 +1094,96 @@ impl StorageBrokerRuntime {
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
-        let _ = (operation_id, trusted_clock);
-        Err(StorageRuntimeError::Recovery)
+        if !self.operation_permits_apply(operation_id)? {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let prepared = self
+            .coordinator
+            .preobserve(&mut self.helper, operation_id)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let mutation_digest = prepared.entry().mutation_digest();
+        let creates_workspace = matches!(
+            prepared.catalog().plan(),
+            crate::CatalogPlanV1::CreateWorkspace { .. } | crate::CatalogPlanV1::Clone { .. }
+        );
+        let removal = self
+            .coordinator
+            .workspace_remove_pin_requirement(&prepared)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+
+        // Every path below can cross a physical-effect boundary. Close all
+        // public gates until exact postconditions and catalog activation agree.
+        self.latch_recovery_required();
+        let committed = match removal {
+            WorkspaceRemovePinRequirementV1::Required(expected_pin) => {
+                let result = self.coordinator.execute_workspace_remove_and_destroy(
+                    &mut self.pin_executor,
+                    &self.pin_contract,
+                    &self.pin_custody,
+                    prepared,
+                    expected_pin,
+                    trusted_clock,
+                );
+                let (pin_outcome, committed) = self
+                    .finish_live_transaction_mutation(result, |_| StorageRuntimeError::Recovery)?;
+                if pin_outcome == WorkspacePinExecutionOutcomeV1::ObservationRequired {
+                    return Ok(StorageRuntimeMutationOutcome::ObservationRequired {
+                        phase: DurableStoragePhase::Ambiguous,
+                        mutation_digest,
+                    });
+                }
+                committed.ok_or(StorageRuntimeError::Recovery)?
+            }
+            WorkspaceRemovePinRequirementV1::Missing => {
+                return Err(StorageRuntimeError::Recovery);
+            }
+            WorkspaceRemovePinRequirementV1::NotWorkspace => {
+                let execution = self
+                    .coordinator
+                    .execute_preobserved(&mut self.helper, prepared, trusted_clock)
+                    .map_err(|_| StorageRuntimeError::Recovery);
+                match self.finish_live_transaction_mutation(execution, |error| error)? {
+                    ZfsHelperOutcome::Committed(committed) => committed,
+                    ZfsHelperOutcome::ObservationRequired {
+                        phase,
+                        mutation_digest,
+                    } => {
+                        return Ok(StorageRuntimeMutationOutcome::ObservationRequired {
+                            phase,
+                            mutation_digest,
+                        });
+                    }
+                }
+            }
+        };
+
+        if creates_workspace {
+            let result = self.coordinator.execute_workspace_pin_ensure(
+                &mut self.pin_executor,
+                &self.pin_contract,
+                &self.pin_custody,
+                committed,
+                trusted_clock,
+            );
+            let pin_outcome =
+                self.finish_live_transaction_mutation(result, |_| StorageRuntimeError::Recovery)?;
+            if pin_outcome == WorkspacePinExecutionOutcomeV1::ObservationRequired {
+                return Ok(StorageRuntimeMutationOutcome::ObservationRequired {
+                    phase: DurableStoragePhase::Committed,
+                    mutation_digest,
+                });
+            }
+        }
+
+        let readiness = self.reconcile_startup()?;
+        self.readiness = readiness;
+        if !self.readiness.permits_catalog_methods() {
+            return Ok(StorageRuntimeMutationOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Committed,
+                mutation_digest,
+            });
+        }
+        Ok(StorageRuntimeMutationOutcome::Committed(committed))
     }
 
     fn reconcile_startup(&mut self) -> Result<StorageRuntimeReadiness, StorageRuntimeError> {
@@ -1106,6 +1323,16 @@ impl StorageBrokerRuntime {
             ordinary_error,
         )
     }
+}
+
+const fn private_identity_profile_supports_root(
+    unmappable_policy: UnmappableIdentityPolicy,
+    attributes: PortableRootAttributesV1,
+    range_size: u32,
+) -> bool {
+    matches!(unmappable_policy, UnmappableIdentityPolicy::Reject)
+        && attributes.uid() < range_size
+        && attributes.gid() < range_size
 }
 
 fn finish_live_transaction_mutation<T, E>(
@@ -1266,6 +1493,96 @@ fn catalog_observation_nonce() -> Result<[u8; 32], ZfsWorkerError> {
     nonce[..16].copy_from_slice(&first);
     nonce[16..].copy_from_slice(&second);
     Ok(nonce)
+}
+
+fn reserve_identity_range(
+    pool: StorageIdentityPoolV1,
+    transaction_ranges: &[(u32, u32)],
+    requested_size: u32,
+) -> Result<u32, StorageWorkspaceCatalogError> {
+    let (pool_end, ranges) = validate_identity_ranges(pool, transaction_ranges)?;
+    let mut candidate = pool.range_start();
+    for (start, end) in ranges {
+        let candidate_end = candidate
+            .checked_add(requested_size)
+            .ok_or(StorageWorkspaceCatalogError::IdentityExhausted)?;
+        if candidate_end <= start {
+            return Ok(candidate);
+        }
+        candidate = candidate.max(end);
+    }
+    candidate
+        .checked_add(requested_size)
+        .filter(|end| *end <= pool_end)
+        .map(|_| candidate)
+        .ok_or(StorageWorkspaceCatalogError::IdentityExhausted)
+}
+
+fn select_identity_range_for_apply(
+    pool: StorageIdentityPoolV1,
+    transaction_ranges: &[(u32, u32)],
+    retained_range: Option<(u32, u32)>,
+    requested_size: u32,
+) -> Result<u32, StorageWorkspaceCatalogError> {
+    let Some((range_start, range_size)) = retained_range else {
+        return reserve_identity_range(pool, transaction_ranges, requested_size);
+    };
+    let (_, validated_ranges) = validate_identity_ranges(pool, transaction_ranges)?;
+    let range_end = range_start
+        .checked_add(range_size)
+        .ok_or(StorageWorkspaceCatalogError::IdentityConflict)?;
+    if range_size != requested_size
+        || validated_ranges
+            .binary_search(&(range_start, range_end))
+            .is_err()
+    {
+        return Err(StorageWorkspaceCatalogError::IdentityConflict);
+    }
+    Ok(range_start)
+}
+
+fn validate_identity_ranges(
+    pool: StorageIdentityPoolV1,
+    transaction_ranges: &[(u32, u32)],
+) -> Result<(u32, Vec<(u32, u32)>), StorageWorkspaceCatalogError> {
+    let pool_end = pool
+        .range_start()
+        .checked_add(pool.range_size())
+        .ok_or(StorageWorkspaceCatalogError::InvalidCandidate)?;
+    let mut ranges = transaction_ranges
+        .iter()
+        .map(|(start, size)| {
+            let end = start
+                .checked_add(*size)
+                .ok_or(StorageWorkspaceCatalogError::IdentityConflict)?;
+            if *start < pool.range_start() || end > pool_end {
+                return Err(StorageWorkspaceCatalogError::IdentityConflict);
+            }
+            Ok((*start, end))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return Err(StorageWorkspaceCatalogError::IdentityConflict);
+    }
+    Ok((pool_end, ranges))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StorageApplyAdmissionRoute {
+    Held,
+    Workspace,
+    Generic,
+}
+
+const fn apply_admission_route(operation: StorageOperation) -> StorageApplyAdmissionRoute {
+    if matches!(operation, StorageOperation::Snapshot { .. }) {
+        StorageApplyAdmissionRoute::Held
+    } else if operation.requires_workspace_metadata() {
+        StorageApplyAdmissionRoute::Workspace
+    } else {
+        StorageApplyAdmissionRoute::Generic
+    }
 }
 
 impl From<ZfsHelperOutcome> for StorageRuntimeMutationOutcome {
@@ -1470,7 +1787,7 @@ mod tests {
                 .unwrap();
         let destination =
             PlannedDataset::from_catalog(root, "tank/aos/project/work", domains).unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             generation,
             domains,
             CatalogPlanV1::CreateWorkspace {
@@ -1840,6 +2157,129 @@ mod tests {
             Err(StorageRuntimeError::Admission(StorageBrokerError::State(
                 StorageStateError::CorruptRecord
             )))
+        ));
+    }
+
+    #[test]
+    fn apply_router_holds_snapshot_and_covers_every_other_action() {
+        let storage_handle = [1; 32];
+        let version_handle = [2; 32];
+        let routes = [
+            (
+                StorageOperation::CreateWorkspace { quota_bytes: 1 },
+                StorageApplyAdmissionRoute::Workspace,
+            ),
+            (
+                StorageOperation::Snapshot { storage_handle },
+                StorageApplyAdmissionRoute::Held,
+            ),
+            (
+                StorageOperation::HoldSnapshot {
+                    storage_handle,
+                    version_handle,
+                },
+                StorageApplyAdmissionRoute::Generic,
+            ),
+            (
+                StorageOperation::ReleaseHold {
+                    storage_handle,
+                    version_handle,
+                },
+                StorageApplyAdmissionRoute::Generic,
+            ),
+            (
+                StorageOperation::Clone {
+                    storage_handle,
+                    version_handle,
+                    quota_bytes: 1,
+                },
+                StorageApplyAdmissionRoute::Workspace,
+            ),
+            (
+                StorageOperation::SetQuota {
+                    storage_handle,
+                    quota_bytes: 1,
+                },
+                StorageApplyAdmissionRoute::Generic,
+            ),
+            (
+                StorageOperation::Destroy {
+                    storage_handle,
+                    version_handle: None,
+                },
+                StorageApplyAdmissionRoute::Generic,
+            ),
+        ];
+
+        for (operation, expected) in routes {
+            assert_eq!(apply_admission_route(operation), expected);
+        }
+    }
+
+    #[test]
+    fn identity_selector_reuses_retained_range_and_rejects_conflicts() {
+        let range = aos_sandbox_protocol::MINIMUM_HOST_IDENTITY_RANGE;
+        let pool = StorageIdentityPoolV1::new(range, range * 2).unwrap();
+        let retained = (range, range);
+        let all_ranges = [retained, (range * 2, range)];
+
+        let live =
+            select_identity_range_for_apply(pool, &all_ranges, Some(retained), range).unwrap();
+        let reopened =
+            select_identity_range_for_apply(pool, &all_ranges, Some(retained), range).unwrap();
+
+        assert_eq!(live, range);
+        assert_eq!(reopened, live);
+        assert!(matches!(
+            select_identity_range_for_apply(pool, &all_ranges, None, range),
+            Err(StorageWorkspaceCatalogError::IdentityExhausted)
+        ));
+        assert!(matches!(
+            select_identity_range_for_apply(pool, &all_ranges, Some((range, range - 1)), range),
+            Err(StorageWorkspaceCatalogError::IdentityConflict)
+        ));
+        assert!(matches!(
+            select_identity_range_for_apply(pool, &all_ranges, Some((range * 3, range)), range),
+            Err(StorageWorkspaceCatalogError::IdentityConflict)
+        ));
+    }
+
+    #[test]
+    fn snapshot_apply_route_remains_held() {
+        assert_eq!(
+            apply_admission_route(StorageOperation::Snapshot {
+                storage_handle: [1; 32],
+            }),
+            StorageApplyAdmissionRoute::Held
+        );
+    }
+
+    #[test]
+    fn clone_root_must_fit_the_rejecting_private_identity_map() {
+        let range = aos_sandbox_protocol::MINIMUM_HOST_IDENTITY_RANGE;
+        let upper = PortableRootAttributesV1::new(range - 1, range - 1, 0).unwrap();
+        let uid_outside = PortableRootAttributesV1::new(range, 0, 0o755).unwrap();
+        let gid_outside = PortableRootAttributesV1::new(0, range, 0o755).unwrap();
+
+        assert!(private_identity_profile_supports_root(
+            UnmappableIdentityPolicy::Reject,
+            upper,
+            range,
+        ));
+        assert!(!private_identity_profile_supports_root(
+            UnmappableIdentityPolicy::Reject,
+            uid_outside,
+            range,
+        ));
+        assert!(!private_identity_profile_supports_root(
+            UnmappableIdentityPolicy::Reject,
+            gid_outside,
+            range,
+        ));
+        assert!(!private_identity_profile_supports_root(
+            UnmappableIdentityPolicy::IsolatedSynthesizedPresentation,
+            upper,
+            range,
         ));
     }
 }

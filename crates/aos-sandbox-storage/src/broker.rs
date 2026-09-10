@@ -16,6 +16,7 @@ use aos_sandbox_core::{
     BrokerAssignment, BrokerGrantTarget, BrokerVerb, CanonicalAssignmentManifestV1, NodeId,
     ObjectDigest, ProtocolVersion, RawPairedClockSample,
 };
+use aos_sandbox_protocol::semantics::storage::StorageOperation;
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -43,9 +44,12 @@ use crate::pin_worker_runtime::{
     FreshWorkspacePinRepairObservationV1, SystemdWorkspacePinExecutor,
 };
 use crate::resolver::StorageCatalogResolverV1;
-use crate::resolver::inventory::ProtectedStorageInventoryV2;
-use crate::resolver::protected_catalog::ProtectedStorageResolverPolicyDirectoryV1;
-use crate::resolver::protected_catalog::StorageResolverPolicyCatalogBindingV1;
+use crate::resolver::inventory::ProtectedStorageInventoryV1;
+#[cfg(test)]
+use crate::resolver::protected_catalog::StorageResolverPolicyBindingV1;
+use crate::resolver::protected_catalog::{
+    ProtectedStorageResolverPolicyDirectoryV1, StorageResolverPolicyCatalogBindingV1,
+};
 use crate::state::{
     CatalogPreparationConsumption, StorageResolverPolicyAdmissionOutcomeV1,
     StorageWorkspaceProjection,
@@ -415,7 +419,7 @@ impl StorageAdmissionCoordinator {
 
     /// Resolves and retains one production Prepare from freshly loaded policy and state.
     ///
-    /// Exact replay authenticates current request authority and the retained V3
+    /// Exact replay authenticates current request authority and the retained v1
     /// policy binding but never reloads policy or reruns resolution. A fresh
     /// request first admits the complete trusted policy publication, including
     /// an empty revoke-all publication, then selects only its exact assignment.
@@ -471,9 +475,6 @@ impl StorageAdmissionCoordinator {
 
         if let Some(sealed_record) = retained {
             let retained = self.authenticate_catalog_preparation(operation_id, sealed_record)?;
-            if retained.record.resolver_policy_binding().is_none() {
-                return Err(StorageCatalogPreparationError::ResolutionRejected.into());
-            }
             retained.record.replay_matches(
                 &semantics,
                 admission.plan_digest(),
@@ -512,7 +513,7 @@ impl StorageAdmissionCoordinator {
 
         let verified_journal = self.transactions.verified_resolver_journal()?;
         let inventory =
-            ProtectedStorageInventoryV2::from_verified_journal(verified_journal, &policy)
+            ProtectedStorageInventoryV1::from_verified_journal(verified_journal, &policy)
                 .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
         if semantics.inventory_binding() != inventory.binding() {
             return Err(StorageCatalogPreparationError::InventoryMismatch.into());
@@ -567,7 +568,7 @@ impl StorageAdmissionCoordinator {
             sealed.effect,
             sealed.operation_fence,
             sealed_record,
-            Some(policy_binding),
+            policy_binding,
         )?;
         record.outcome().map_err(Into::into)
     }
@@ -659,11 +660,17 @@ impl StorageAdmissionCoordinator {
             return Err(StorageCatalogPreparationError::StaleCatalogHead.into());
         }
         let catalog = resolver.resolve(admission.resolution(), current_head)?;
+        let policy_binding = StorageResolverPolicyBindingV1::from_authenticated_parts(
+            catalog.generation(),
+            catalog.digest(),
+            admission.resolution().assignment().digest(),
+        )
+        .map_err(|_| StorageCatalogPreparationError::ResolutionMismatch)?;
         let sealed = self
             .authority
             .seal_preparation(&admission)
             .map_err(|_| StorageBrokerError::Authority)?;
-        let prepared = RetainedStorageCatalogPreparationV1::prepare(
+        let prepared = RetainedStorageCatalogPreparationV1::prepare_with_policy(
             &semantics,
             catalog,
             request_id,
@@ -676,6 +683,7 @@ impl StorageAdmissionCoordinator {
                 sealed_effect: &sealed.effect,
                 sealed_operation_fence: &sealed.operation_fence,
             },
+            policy_binding,
         )?;
         let receipt = self
             .authority
@@ -689,6 +697,8 @@ impl StorageAdmissionCoordinator {
 
         // The store rechecks the head while committing all four records. No
         // resolver output becomes durable if that compare-and-swap fails.
+        self.transactions
+            .admit_resolver_policy_catalog(policy_binding.catalog_binding())?;
         self.transactions.retain_catalog_preparation(
             operation_id,
             sandbox_id,
@@ -698,7 +708,7 @@ impl StorageAdmissionCoordinator {
             sealed.effect,
             sealed.operation_fence,
             sealed_record,
-            None,
+            policy_binding,
         )?;
         record.outcome().map_err(Into::into)
     }
@@ -1807,7 +1817,9 @@ impl StorageAdmissionCoordinator {
     /// future privileged observer/helper must reconcile the typed transaction
     /// under this same lock before any service may advertise Apply.
     /// `CreateWorkspace` and `Clone` are rejected because they require the
-    /// composed runtime's workspace-publication admission path.
+    /// composed runtime's workspace-publication admission path. Snapshot is
+    /// held until authenticated source-root metadata is part of its authority
+    /// path; no durable admission or effect is created for it.
     ///
     /// # Errors
     ///
@@ -1839,9 +1851,11 @@ impl StorageAdmissionCoordinator {
     /// Verifies and durably records a workspace-creating Apply admission.
     ///
     /// The canonical assignment manifest and sandbox specification are checked
-    /// against the admitted assignment. Only their exact assignment digest,
-    /// root descriptor, and private-userns range are retained as an
-    /// authenticated, operation-bound intent in the same initial transaction.
+    /// against the admitted assignment. Storage 1.0 retains their exact
+    /// canonical bytes alongside the request replay identity, full assignment,
+    /// node, exact planned destination and catalog, root policy, and
+    /// private-userns range in the authenticated operation-bound intent. The
+    /// destination handle is minted only after the effect is verified.
     ///
     /// # Errors
     ///
@@ -1895,6 +1909,12 @@ impl StorageAdmissionCoordinator {
             current_clock.boottime_nanoseconds(),
         )
         .map_err(|_| StorageBrokerError::Request)?;
+        if matches!(semantics.operation(), StorageOperation::Snapshot { .. }) {
+            return Err(StorageBrokerError::Request);
+        }
+        if publication_inputs.is_none() && semantics.operation().requires_workspace_metadata() {
+            return Err(StorageBrokerError::Request);
+        }
         let assignment =
             decode_assignment(request_body).map_err(|_| StorageBrokerError::Request)?;
         let sandbox_id = *assignment.sandbox().as_bytes();
@@ -1960,15 +1980,23 @@ impl StorageAdmissionCoordinator {
                 prior_fence.as_deref(),
             )
             .map_err(|_| StorageBrokerError::Authority)?;
+        let request_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
         let publication_intent = publication_inputs
             .map(|(identity_range_start, manifest, sandbox_spec)| {
-                crate::workspace_catalog::StorageWorkspacePublicationIntentV1::from_portable(
+                let metadata = semantics
+                    .workspace_metadata()
+                    .ok_or(StorageWorkspaceCatalogError::InvalidCandidate)?;
+                if metadata.manifest() != manifest || metadata.sandbox_spec() != sandbox_spec {
+                    return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+                }
+                crate::workspace_catalog::StorageWorkspacePublicationIntentV1::new(
                     *semantics.operation_id(),
+                    request_id,
+                    request_digest,
                     catalog,
                     assignment,
                     admission.fence.node(),
-                    manifest,
-                    sandbox_spec,
+                    metadata,
                     identity_range_start,
                 )
             })
@@ -2010,7 +2038,6 @@ impl StorageAdmissionCoordinator {
             .authority
             .seal(&sandbox_id, &request_id, &operation_id, &admission)
             .map_err(|_| StorageBrokerError::Authority)?;
-        let request_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
         let outcome = if existing {
             let consumption = preparation
                 .record
@@ -2150,10 +2177,8 @@ impl StorageAdmissionCoordinator {
         if record.operation_id() != operation_id {
             return Err(StorageCatalogPreparationError::CorruptRecord.into());
         }
-        if let Some(policy_binding) = record.resolver_policy_binding() {
-            self.transactions
-                .validate_historical_resolver_policy(policy_binding)?;
-        }
+        self.transactions
+            .validate_historical_resolver_policy(record.resolver_policy_binding())?;
 
         let receipt_payload = self
             .authority
@@ -2262,6 +2287,29 @@ impl StorageAdmissionCoordinator {
         Ok(())
     }
 
+    /// Reopens the exact catalog retained by one authenticated preparation.
+    ///
+    /// This accessor does not authorize execution. It exists so the production
+    /// runtime can derive Apply inputs from protected preparation state instead
+    /// of accepting a caller-selected catalog beside the signed request.
+    pub(crate) fn prepared_catalog_for_apply(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<ResolvedCatalogCommitmentV1, StorageBrokerError> {
+        let sealed = self
+            .transactions
+            .catalog_preparation_record(&operation_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let preparation = self.authenticate_catalog_preparation(operation_id, sealed)?;
+        if preparation.record.consumption().is_some() {
+            let entry = self.transactions.current_recovery_entry(operation_id)?;
+            self.authenticate_consumed_preparation(&preparation)?;
+            return self.transactions.recover_catalog(entry).map_err(Into::into);
+        }
+        Ok(preparation.record.catalog().clone())
+    }
+
     fn persisted_effect_context(
         &self,
         entry: crate::StorageRecoveryEntry,
@@ -2296,13 +2344,35 @@ impl StorageAdmissionCoordinator {
             .authority
             .open_admission_intent(&entry.request_id(), &effect_bytes)
             .map_err(|_| ZfsHelperError::Authority)?;
-        let semantic_commitment = operation
-            .persisted_argument_commitment(
+        let semantic_commitment = match self
+            .transactions
+            .workspace_publication_intent(entry.operation_id())?
+            .map(|intent| intent.portable_metadata().clone())
+        {
+            Some(metadata) => {
+                if metadata.request_id() != entry.request_id()
+                    || metadata.request_digest() != entry.request_digest()
+                    || metadata.assignment() != operation_fence.assignment()
+                    || metadata.node() != operation_fence.node()
+                    || catalog.root_policy() != Some(metadata.root_policy())
+                {
+                    return Err(ZfsHelperError::Authority);
+                }
+                operation.persisted_workspace_argument_commitment(
+                    operation_fence.assignment(),
+                    entry.operation_id(),
+                    catalog.binding(),
+                    metadata.manifest_bytes(),
+                    metadata.sandbox_spec_bytes(),
+                )
+            }
+            None => operation.persisted_argument_commitment(
                 operation_fence.assignment(),
                 entry.operation_id(),
                 catalog.binding(),
-            )
-            .map_err(|_| ZfsHelperError::Authority)?;
+            ),
+        }
+        .map_err(|_| ZfsHelperError::Authority)?;
         let grant_target = operation
             .grant_target()
             .map_err(|_| ZfsHelperError::Authority)?;
@@ -2344,12 +2414,16 @@ impl StorageAdmissionCoordinator {
             .authority_record(RecordNamespace::AuthorityPublication, &entry.operation_id())?
             .ok_or(crate::StorageStateError::MissingAuthorityLink)?
             .to_vec();
-        WorkspacePinWorkerAuthorityV1::new(
+        let publication_intent = self
+            .transactions
+            .workspace_publication_intent_record(attempt.creation_operation_id())?;
+        WorkspacePinWorkerAuthorityV1::new_with_publication_intent(
             entry.request_id(),
             attempt_record,
             current_fence,
             effect,
             operation_fence,
+            publication_intent,
         )
         .map_err(ZfsHelperError::Backend)
     }
@@ -2823,11 +2897,12 @@ fn fence_is_same_or_successor(
             && current.plan_digest() == historical.plan_digest())
 }
 
-/// Returns the closed method set safe for the incomplete storage service.
+/// Returns the closed method set safe for the current storage composition.
 ///
-/// Apply remains absent. Authoritative inventory, non-authorizing catalog
-/// preparation, and isolated repair are advertised independently from their
-/// exact runtime readiness proofs.
+/// Authoritative inventory, non-authorizing catalog preparation, isolated
+/// repair are advertised independently from their exact runtime readiness
+/// proofs. Apply remains absent until every action and privileged backend has
+/// qualified in a future complete implementation.
 #[must_use]
 pub fn advertised_storage_methods(
     inventory_ready: bool,
@@ -2844,7 +2919,6 @@ pub fn advertised_storage_methods(
     if repair_ready {
         methods.push(BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN);
     }
-
     methods
 }
 
@@ -2885,6 +2959,7 @@ mod tests {
         RawClockProvenance, ResourceVector, RevocationScopeId, SandboxId, TrustScopeId,
         descriptor_for_bytes, encode_sandbox_spec, sign_statement,
     };
+    use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
     use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
     use aos_sandbox_protocol::{
         AuthorizationArtifactBytes, MINIMUM_HOST_IDENTITY_RANGE, decode_request_envelope,
@@ -2900,7 +2975,7 @@ mod tests {
         SealedZfsProgram, SystemdZfsProcessBackend, ZfsHelperError, ZfsPostconditionObservation,
         ZfsProcessOutput,
     };
-    use crate::resolver::inventory::ProtectedStorageInventoryV2;
+    use crate::resolver::inventory::ProtectedStorageInventoryV1;
     use crate::resolver::policy::ProtectedStorageResolverPolicyV1;
     use crate::resolver::protected_catalog::{
         ProtectedStorageResolverPolicyDirectoryV1, encode_catalog_for_test,
@@ -2909,9 +2984,10 @@ mod tests {
     use crate::workspace_pin::derive_attempt_id;
     use crate::workspace_repair::StorageWorkspacePinRepairIntentV1;
     use crate::{
-        CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
-        ReservationPolicy, ResolvedDataset, StorageAdmissionError, StorageDomainsV1,
-        StorageStateKey, WorkspaceSpacePolicyV1, ZfsHelperContract,
+        ActiveHoldEvidence, CatalogPlanV1, HoldId, ManagedDatasetRoot, PlannedDataset,
+        ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset, ResolvedSnapshot,
+        StorageAdmissionError, StorageDomainsV1, StorageStateKey, WorkspaceSpacePolicyV1,
+        ZfsHelperContract,
     };
 
     fn private_tempdir_in(parent: &Path) -> std::io::Result<TempDir> {
@@ -3109,6 +3185,28 @@ mod tests {
             self.artifacts_authorizing(request, catalog, &[request], expires, audience, protocol)
         }
 
+        fn storage_artifacts_at_protocol(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            protocol_version: ProtocolVersion,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between_at_head_and_protocol(
+                request,
+                catalog,
+                &[request],
+                None,
+                true,
+                true,
+                100,
+                300,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                protocol_version,
+            )
+        }
+
         fn artifacts_at_head(
             &self,
             request: &[u8],
@@ -3293,7 +3391,7 @@ mod tests {
                 current_wall_seconds + 600,
                 BrokerAudience::Storage,
                 ProtocolId::StorageBroker,
-                ProtocolVersion::new(1, 4),
+                ProtocolVersion::new(1, 0),
             )
         }
 
@@ -3327,7 +3425,7 @@ mod tests {
                 current_wall_seconds + 600,
                 BrokerAudience::Storage,
                 ProtocolId::StorageBroker,
-                ProtocolVersion::new(1, 4),
+                ProtocolVersion::new(1, 0),
             )
         }
 
@@ -3370,7 +3468,7 @@ mod tests {
                 lease_expires,
                 BrokerAudience::Storage,
                 ProtocolId::StorageBroker,
-                ProtocolVersion::new(1, 4),
+                ProtocolVersion::new(1, 0),
             )
         }
 
@@ -3388,6 +3486,38 @@ mod tests {
             lease_expires: i64,
             audience: BrokerAudience,
             protocol: ProtocolId,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between_at_head_and_protocol(
+                request,
+                catalog,
+                authorized,
+                expected_head,
+                include_apply,
+                include_prepare,
+                valid_after,
+                expires,
+                lease_expires,
+                audience,
+                protocol,
+                ProtocolVersion::new(1, 0),
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn artifacts_authorizing_between_at_head_and_protocol(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            authorized: &[&[u8]],
+            expected_head: Option<crate::CatalogBindingV1>,
+            include_apply: bool,
+            include_prepare: bool,
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+            protocol_version: ProtocolVersion,
         ) -> ValidatedUntrustedAuthorizationArtifacts {
             let semantics = decode_resolved(request, catalog, peer(), peer_policy(), 100).unwrap();
             let assignment = decode_assignment(request).unwrap();
@@ -3458,7 +3588,7 @@ mod tests {
                 lease_expires,
                 audience,
                 protocol,
-                ProtocolVersion::new(1, 3),
+                protocol_version,
             )
         }
 
@@ -3610,6 +3740,7 @@ mod tests {
             dataset_guid,
             54,
             55,
+            WorkspaceRootPolicyV1::create_initialize().root_attributes(),
         )
         .unwrap()
     }
@@ -3670,7 +3801,7 @@ mod tests {
             ..Default::default()
         };
         let header = request.header.get_or_insert_default();
-        header.protocol_minor = 3;
+        header.protocol_minor = 0;
         let operation_marker = apply.operation_id.first().copied().unwrap();
         header.request_id = vec![operation_marker.wrapping_add(128); 16];
         request.fence = apply.fence.clone();
@@ -3747,6 +3878,24 @@ mod tests {
         catalog: &ResolvedCatalogCommitmentV1,
         current_clock: &RawPairedClockSample,
     ) -> StorageCatalogPreparationOutcomeV1 {
+        prepare_for_apply_at_protocol(
+            coordinator,
+            request,
+            artifacts,
+            catalog,
+            ProtocolVersion::new(1, 0),
+            current_clock,
+        )
+    }
+
+    fn prepare_for_apply_at_protocol(
+        coordinator: &mut StorageAdmissionCoordinator,
+        request: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+    ) -> StorageCatalogPreparationOutcomeV1 {
         let expected_head = coordinator.transactions.catalog_head_binding().unwrap();
         let (preparation, inventory, _) =
             preparation_request_at_head(request, catalog, expected_head);
@@ -3756,7 +3905,7 @@ mod tests {
                 artifacts,
                 inventory,
                 &StaticCatalogResolver { catalog },
-                ProtocolVersion::new(1, 3),
+                protocol_version,
                 peer(),
                 peer_policy(),
                 current_clock,
@@ -3768,7 +3917,7 @@ mod tests {
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 3;
+        header.protocol_minor = 0;
         header.request_id = vec![operation; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 200;
@@ -3796,7 +3945,7 @@ mod tests {
         let mut value = RepairStorageWorkspacePinRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 4;
+        header.protocol_minor = 0;
         header.request_id = vec![request_id; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 200;
@@ -3879,7 +4028,7 @@ mod tests {
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 3;
+        header.protocol_minor = 0;
         header.request_id = vec![operation; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 200;
@@ -3897,10 +4046,12 @@ mod tests {
     }
 
     fn create_request(operation: u8, assignment_digest: ObjectDigest) -> Vec<u8> {
+        let specification = sandbox_spec(72);
+        let manifest = assignment_manifest(&specification);
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 3;
+        header.protocol_minor = 0;
         header.request_id = vec![operation; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 200;
@@ -3914,6 +4065,8 @@ mod tests {
         value.action = StorageAction::STORAGE_ACTION_CREATE_WORKSPACE.into();
         value.operation_id = vec![operation; 16];
         value.quota_bytes = 4096;
+        value.assignment_manifest = manifest.canonical_bytes().to_vec();
+        value.sandbox_spec = encode_sandbox_spec(&specification);
         value.encode_to_vec()
     }
 
@@ -3932,7 +4085,7 @@ mod tests {
         let dataset =
             ResolvedDataset::from_catalog(root, "tank/aos/project/work", 11, [handle; 32], domains)
                 .unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             generation,
             domains,
             CatalogPlanV1::SetQuota {
@@ -3960,7 +4113,7 @@ mod tests {
             domains,
         )
         .unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             generation,
             domains,
             CatalogPlanV1::DestroyDataset { dataset },
@@ -3982,7 +4135,7 @@ mod tests {
                 .unwrap();
         let destination =
             PlannedDataset::from_catalog(root, "tank/aos/project/work", domains).unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             generation,
             domains,
             CatalogPlanV1::CreateWorkspace {
@@ -3992,6 +4145,87 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    fn portable_create_catalog(generation: u64) -> ResolvedCatalogCommitmentV1 {
+        let base = create_catalog(generation);
+        ResolvedCatalogCommitmentV1::new_execution_v1(
+            generation,
+            base.domains(),
+            base.plan().clone(),
+            Some(WorkspaceRootPolicyV1::create_initialize()),
+        )
+        .unwrap()
+    }
+
+    fn clone_catalog(generation: u64) -> ResolvedCatalogCommitmentV1 {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
+        let ancestor =
+            ResolvedDataset::from_catalog(root.clone(), "tank/aos/project", 15, [9; 32], domains)
+                .unwrap();
+        let source = ResolvedDataset::from_catalog(
+            root.clone(),
+            "tank/aos/project/source",
+            11,
+            [31; 32],
+            domains,
+        )
+        .unwrap();
+        let snapshot = ResolvedSnapshot::from_catalog(source, "revision-1", 12, [32; 32]).unwrap();
+        let destination =
+            PlannedDataset::from_catalog(root, "tank/aos/project/clone", domains).unwrap();
+        ResolvedCatalogCommitmentV1::new_for_test(
+            generation,
+            domains,
+            CatalogPlanV1::Clone {
+                source: Box::new(snapshot),
+                origin_hold: ActiveHoldEvidence::from_catalog(
+                    12,
+                    HoldId::from_bytes([33; 16]).unwrap(),
+                )
+                .unwrap(),
+                destination,
+                space: WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1)).unwrap(),
+                ancestor: ProjectAncestorPolicyV1::new(ancestor, 65_536, 8, 16).unwrap(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn workspace_request(action: StorageAction, operation: u8) -> Vec<u8> {
+        let specification = sandbox_spec(72);
+        let manifest = assignment_manifest(&specification);
+        let mut request = ApplyStorageRequest::default();
+        let header = request.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![operation; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = 200;
+        header.maximum_response_bytes = 4096;
+        let fence = request.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = 5;
+        fence.assignment_digest = manifest.digest().as_bytes().to_vec();
+        request.action = action.into();
+        request.operation_id = vec![operation; 16];
+        request.quota_bytes = 4096;
+        if action == StorageAction::STORAGE_ACTION_CLONE {
+            request.storage_handle = vec![31; 32];
+            request.source_version_handle = vec![32; 32];
+        }
+        request.assignment_manifest = manifest.canonical_bytes().to_vec();
+        request.sandbox_spec = encode_sandbox_spec(&specification);
+        request.encode_to_vec()
     }
 
     fn vm_clock() -> RawPairedClockSample {
@@ -4011,10 +4245,12 @@ mod tests {
         assignment_digest: ObjectDigest,
         effect_deadline_boottime_nanoseconds: u64,
     ) -> Vec<u8> {
+        let specification = sandbox_spec(72);
+        let manifest = assignment_manifest(&specification);
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 3;
+        header.protocol_minor = 0;
         header.request_id = vec![7; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = effect_deadline_boottime_nanoseconds;
@@ -4028,6 +4264,8 @@ mod tests {
         value.action = StorageAction::STORAGE_ACTION_CREATE_WORKSPACE.into();
         value.operation_id = vec![7; 16];
         value.quota_bytes = 67_108_864;
+        value.assignment_manifest = manifest.canonical_bytes().to_vec();
+        value.sandbox_spec = encode_sandbox_spec(&specification);
         value.encode_to_vec()
     }
 
@@ -4035,10 +4273,12 @@ mod tests {
         assignment_digest: ObjectDigest,
         effect_deadline_boottime_nanoseconds: u64,
     ) -> Vec<u8> {
+        let specification = sandbox_spec(72);
+        let manifest = assignment_manifest_at(&specification, 7);
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 4;
+        header.protocol_minor = 0;
         header.request_id = vec![86; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = effect_deadline_boottime_nanoseconds;
@@ -4052,6 +4292,8 @@ mod tests {
         value.action = StorageAction::STORAGE_ACTION_CREATE_WORKSPACE.into();
         value.operation_id = vec![86; 16];
         value.quota_bytes = 33_554_432;
+        value.assignment_manifest = manifest.canonical_bytes().to_vec();
+        value.sandbox_spec = encode_sandbox_spec(&specification);
         value.encode_to_vec()
     }
 
@@ -4063,7 +4305,7 @@ mod tests {
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 3;
+        header.protocol_minor = 0;
         header.request_id = vec![8; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = effect_deadline_boottime_nanoseconds;
@@ -4103,7 +4345,7 @@ mod tests {
         .unwrap();
         let destination = PlannedDataset::from_catalog(root, dataset_name, domains).unwrap();
 
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             9,
             domains,
             CatalogPlanV1::CreateWorkspace {
@@ -4126,7 +4368,7 @@ mod tests {
             policy.domains(),
         )
         .unwrap();
-        ResolvedCatalogCommitmentV1::new_execution_v3(
+        ResolvedCatalogCommitmentV1::new_execution_v1(
             generation,
             policy.domains(),
             CatalogPlanV1::CreateWorkspace {
@@ -4162,8 +4404,12 @@ mod tests {
         )
         .unwrap();
 
-        ResolvedCatalogCommitmentV1::new(11, domains, CatalogPlanV1::DestroyDataset { dataset })
-            .unwrap()
+        ResolvedCatalogCommitmentV1::new_for_test(
+            11,
+            domains,
+            CatalogPlanV1::DestroyDataset { dataset },
+        )
+        .unwrap()
     }
 
     fn object_descriptor(kind: PortableMediaType, marker: u8) -> ObjectDescriptor {
@@ -4357,7 +4603,7 @@ mod tests {
             space: policy.space(4_096, 1).unwrap(),
             ancestor: policy.project_ancestor().clone(),
         };
-        ResolvedCatalogCommitmentV1::new_execution_v3(
+        ResolvedCatalogCommitmentV1::new_execution_v1(
             generation,
             policy.domains(),
             plan,
@@ -4408,7 +4654,7 @@ mod tests {
             300,
             BrokerAudience::Storage,
             ProtocolId::StorageBroker,
-            ProtocolVersion::new(1, 3),
+            ProtocolVersion::new(1, 0),
         )
     }
 
@@ -4473,7 +4719,7 @@ mod tests {
         let policy = production_resolver_policy(&request, &bootstrap_catalog);
         let broker = initialized_coordinator(&state, &fixture, &bootstrap_catalog);
         let journal = broker.transactions.verified_resolver_journal().unwrap();
-        let inventory = ProtectedStorageInventoryV2::from_verified_journal(journal, &policy)
+        let inventory = ProtectedStorageInventoryV1::from_verified_journal(journal, &policy)
             .unwrap()
             .binding();
         let head = broker.transactions.catalog_head_binding().unwrap();
@@ -4513,7 +4759,7 @@ mod tests {
             .verified_resolver_journal()
             .unwrap();
         let inventory =
-            ProtectedStorageInventoryV2::from_verified_journal(journal, &production.policy)
+            ProtectedStorageInventoryV1::from_verified_journal(journal, &production.policy)
                 .unwrap()
                 .binding();
         let request = production_preparation_request(
@@ -4579,7 +4825,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4612,6 +4858,79 @@ mod tests {
             .unwrap()
         else {
             panic!("workspace pin worker fixture was not dispatched")
+        };
+
+        (coordinator, *dispatch, result)
+    }
+
+    fn portable_workspace_pin_ensure_dispatch(
+        directory: &TempDir,
+        fixture: &Fixture,
+    ) -> (
+        StorageAdmissionCoordinator,
+        FreshWorkspacePinDispatchV1,
+        CommittedStorageResultV1,
+    ) {
+        let request = workspace_request(StorageAction::STORAGE_ACTION_CREATE_WORKSPACE, 73);
+        let catalog = portable_create_catalog(9);
+        let artifacts =
+            fixture.storage_artifacts_at_protocol(&request, &catalog, ProtocolVersion::new(1, 0));
+        let semantics = CanonicalStorageSemanticsV1::decode(
+            &request,
+            catalog.binding(),
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let metadata = semantics.workspace_metadata().unwrap();
+        let mut coordinator = initialized_coordinator(directory, fixture, &catalog);
+        prepare_for_apply_at_protocol(
+            &mut coordinator,
+            &request,
+            &artifacts,
+            &catalog,
+            ProtocolVersion::new(1, 0),
+            &clock(),
+        );
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = coordinator
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                metadata.manifest(),
+                metadata.sandbox_spec(),
+            )
+            .unwrap()
+        else {
+            panic!("portable workspace pin worker fixture was not prepared")
+        };
+        coordinator
+            .transactions
+            .mark_mutation_ambiguous([73; 16], mutation_digest)
+            .unwrap();
+        let result = coordinator
+            .transactions
+            .commit_observed(
+                [73; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(11),
+                ObjectDigest::from_bytes([62; 32]),
+            )
+            .unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let AuthorizedWorkspacePinAttemptV1::Dispatch(dispatch) = coordinator
+            .begin_workspace_pin_ensure(result, host_scope, &mut || Ok(clock()))
+            .unwrap()
+        else {
+            panic!("portable workspace pin worker fixture was not dispatched")
         };
 
         (coordinator, *dispatch, result)
@@ -4652,7 +4971,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4714,7 +5033,7 @@ mod tests {
                 &artifacts,
                 &semantics,
                 &request_body,
-                ProtocolVersion::new(1, 4),
+                ProtocolVersion::new(1, 0),
                 &clock(),
                 Some(&prior_fence),
             )
@@ -4759,6 +5078,7 @@ mod tests {
             initial_attempt.dataset_guid(),
             initial_attempt.identity_range_start(),
             initial_attempt.identity_range_size(),
+            initial_attempt.root_policy(),
             None,
         )
         .unwrap();
@@ -4919,7 +5239,7 @@ mod tests {
                 &excessive_artifacts,
                 &excessive_semantics,
                 &excessive_preparation,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &admission_clock,
@@ -4940,7 +5260,7 @@ mod tests {
                 &excessive_artifacts,
                 inventory,
                 &StaticCatalogResolver { catalog: &catalog },
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &admission_clock,
@@ -5021,7 +5341,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &admission_clock,
@@ -5177,7 +5497,7 @@ mod tests {
                 &destroy_request,
                 &destroy_artifacts,
                 &destroy_catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &destroy_clock,
@@ -5270,7 +5590,7 @@ mod tests {
                 &observation_request,
                 &observation_artifacts,
                 &observation_catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &observation_clock,
@@ -5340,7 +5660,7 @@ mod tests {
                 &advanced_request,
                 &advanced_artifacts,
                 &advanced_catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &advanced_clock,
@@ -5498,7 +5818,7 @@ mod tests {
                 .repair_workspace_pin(
                     &wrong_target_request,
                     &wrong_target_artifacts,
-                    ProtocolVersion::new(1, 4),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &mut || Ok(vm_clock()),
@@ -5522,7 +5842,7 @@ mod tests {
                 .repair_workspace_pin(
                     &stale_request,
                     &stale_artifacts,
-                    ProtocolVersion::new(1, 4),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &mut || Ok(vm_clock()),
@@ -5590,7 +5910,7 @@ mod tests {
             runtime.repair_workspace_pin(
                 &repair_request,
                 &repair_artifacts,
-                ProtocolVersion::new(1, 4),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(vm_clock()),
@@ -5600,7 +5920,10 @@ mod tests {
         assert!(!observation_pin_path.exists());
         assert!(runtime.requires_reopen());
         assert!(!runtime.is_prepare_ready());
-        assert!(!runtime.is_apply_ready());
+        assert_eq!(
+            runtime.apply_readiness(),
+            crate::runtime::StorageApplyReadiness::WorkspaceBackendUnavailable
+        );
         assert!(!runtime.is_repair_ready());
         assert!(!runtime.is_inventory_ready());
         let fatal = crate::service::finish_dispatched_response(
@@ -5819,7 +6142,7 @@ mod tests {
                 .repair_workspace_pin(
                     &repair_request,
                     &repair_artifacts,
-                    ProtocolVersion::new(1, 4),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &mut || Ok(vm_clock()),
@@ -5862,7 +6185,7 @@ mod tests {
                 .repair_workspace_pin(
                     &resumed_request,
                     &resumed_artifacts,
-                    ProtocolVersion::new(1, 4),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &mut || Ok(vm_clock()),
@@ -5873,7 +6196,10 @@ mod tests {
         assert!(observation_pin_path.is_dir());
         assert!(runtime.requires_reopen());
         assert!(!runtime.is_prepare_ready());
-        assert!(!runtime.is_apply_ready());
+        assert_eq!(
+            runtime.apply_readiness(),
+            crate::runtime::StorageApplyReadiness::WorkspaceBackendUnavailable
+        );
         assert!(!runtime.is_repair_ready());
         assert!(!runtime.is_inventory_ready());
         let fatal = crate::service::finish_dispatched_response(
@@ -6020,7 +6346,7 @@ mod tests {
                 .repair_workspace_pin(
                     &resumed_request,
                     &resumed_artifacts,
-                    ProtocolVersion::new(1, 4),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &mut || Ok(vm_clock()),
@@ -6070,7 +6396,7 @@ mod tests {
                 .repair_workspace_pin(
                     &present_request,
                     &present_artifacts,
-                    ProtocolVersion::new(1, 4),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &mut || Ok(vm_clock()),
@@ -6270,7 +6596,7 @@ mod tests {
                 &create_request,
                 &create_artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &admission_clock,
@@ -6343,7 +6669,7 @@ mod tests {
             .verified_resolver_journal()
             .unwrap();
         let inventory =
-            ProtectedStorageInventoryV2::from_verified_journal(verified_journal, &resolver_policy)
+            ProtectedStorageInventoryV1::from_verified_journal(verified_journal, &resolver_policy)
                 .unwrap()
                 .binding();
         let head = coordinator.transactions.catalog_head_binding().unwrap();
@@ -6367,7 +6693,7 @@ mod tests {
         prepare_request
             .header
             .get_or_insert_default()
-            .protocol_minor = 4;
+            .protocol_minor = 0;
         let prepare_request = prepare_request.encode_to_vec();
         let prepare_artifacts = fixture.preparation_artifacts_for_rpc(
             &prepare_apply_request,
@@ -6839,7 +7165,7 @@ mod tests {
         let mut request = InventoryStorageRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 4;
+        header.protocol_minor = 0;
         header.request_id = vec![request_marker; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = now.checked_add(30_000_000_000).unwrap();
@@ -6911,7 +7237,7 @@ mod tests {
             response.payload(),
             ProtocolId::StorageBroker,
             Audience::AUDIENCE_NODE_CONTROLLER,
-            ProtocolVersion::new(1, 4),
+            ProtocolVersion::new(1, 0),
             &[feature],
             &[method],
             STORAGE_RPC_RESPONSE_BYTES,
@@ -6956,7 +7282,7 @@ mod tests {
     }
 
     #[test]
-    fn production_prepare_resolves_and_retains_an_authenticated_v3_record() {
+    fn production_prepare_resolves_and_retains_the_authenticated_v1_record() {
         let mut production = production_preparation_fixture(7);
         let before = production.broker.transactions.journal_sequence_for_test();
         let mut samples = 0;
@@ -6967,7 +7293,7 @@ mod tests {
                 &production.request,
                 &production.artifacts,
                 &production.policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || {
@@ -6998,7 +7324,7 @@ mod tests {
             .open_catalog_preparation_record(&[7; 16], sealed_record)
             .unwrap();
         assert_eq!(&payload[..8], b"AOSSPR01");
-        assert_eq!(u16::from_be_bytes(payload[8..10].try_into().unwrap()), 3);
+        assert_eq!(u16::from_be_bytes(payload[8..10].try_into().unwrap()), 1);
         let retained = RetainedStorageCatalogPreparationV1::decode_payload(payload).unwrap();
         assert_eq!(retained.encode_payload().unwrap(), payload);
         let selected_binding = production
@@ -7008,7 +7334,7 @@ mod tests {
             .select(production.policy.assignment())
             .unwrap()
             .binding();
-        assert_eq!(retained.resolver_policy_binding(), Some(selected_binding));
+        assert_eq!(retained.resolver_policy_binding(), selected_binding);
         assert_ne!(selected_binding.entry_digest().as_bytes(), &[0; 32]);
         production
             .broker
@@ -7062,7 +7388,7 @@ mod tests {
                 &production.request,
                 &production.artifacts,
                 &production.policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || {
@@ -7137,7 +7463,7 @@ mod tests {
                 &production.request,
                 &revoked_artifacts,
                 &production.policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(clock()),
@@ -7169,7 +7495,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &production.policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(clock()),
@@ -7216,7 +7542,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &production.policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(clock()),
@@ -7272,7 +7598,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &production.policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(clock()),
@@ -7297,7 +7623,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &production.policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(clock()),
@@ -7313,7 +7639,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_prepare_reopens_and_replays_under_a_newer_floor_without_resolution() {
+    fn v1_prepare_reopens_and_replays_under_a_newer_floor_without_resolution() {
         let mut production = production_preparation_fixture(7);
         let prepared = production
             .broker
@@ -7321,7 +7647,7 @@ mod tests {
                 &production.request,
                 &production.artifacts,
                 &production.policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(clock()),
@@ -7379,7 +7705,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || {
@@ -7418,7 +7744,7 @@ mod tests {
                 &production.request,
                 &production.artifacts,
                 &production.policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(clock()),
@@ -7465,7 +7791,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(clock()),
@@ -7485,7 +7811,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(clock()),
@@ -7518,7 +7844,7 @@ mod tests {
                 &production.request,
                 &production.artifacts,
                 &production.policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || Ok(clock()),
@@ -7572,7 +7898,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &policies,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &mut || {
@@ -7598,7 +7924,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_preparation_requires_its_policy_floor_on_reopen() {
+    fn v1_preparation_requires_its_policy_floor_on_reopen() {
         for floor_mutation in 0..3 {
             let mut production = production_preparation_fixture(7);
             production
@@ -7607,7 +7933,7 @@ mod tests {
                     &production.request,
                     &production.artifacts,
                     &production.policies,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &mut || Ok(clock()),
@@ -7679,7 +8005,7 @@ mod tests {
                     &original_request,
                     &artifacts,
                     &original_catalog,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -7693,7 +8019,7 @@ mod tests {
                     &original_request,
                     &artifacts,
                     &original_catalog,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -7704,6 +8030,198 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn generic_apply_rejects_workspace_actions_without_mutating_the_journal() {
+        let fixture = Fixture::new();
+        let cases = [
+            (
+                workspace_request(StorageAction::STORAGE_ACTION_CREATE_WORKSPACE, 71),
+                create_catalog(9),
+            ),
+            (
+                workspace_request(StorageAction::STORAGE_ACTION_CLONE, 72),
+                clone_catalog(9),
+            ),
+        ];
+
+        for (request, catalog) in cases {
+            let directory = TempDir::new().unwrap();
+            let artifacts = fixture.storage_artifacts_at_protocol(
+                &request,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+            );
+            let preparation_artifacts = fixture.artifacts(
+                &request,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            prepare_for_apply(
+                &mut broker,
+                &request,
+                &preparation_artifacts,
+                &catalog,
+                &clock(),
+            );
+            let operation_id = ApplyStorageRequest::decode_from_slice(&request)
+                .unwrap()
+                .operation_id
+                .try_into()
+                .unwrap();
+            let before = broker.transactions.journal_sequence_for_test();
+
+            assert!(matches!(
+                broker.admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                ),
+                Err(StorageBrokerError::Request)
+            ));
+            assert_eq!(broker.transactions.journal_sequence_for_test(), before);
+            assert_eq!(broker.transactions.phase(operation_id).unwrap(), None);
+            assert!(
+                broker
+                    .transactions
+                    .workspace_publication_intent(operation_id)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn portable_workspace_admission_replays_live_and_across_reopen() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = workspace_request(StorageAction::STORAGE_ACTION_CREATE_WORKSPACE, 73);
+        let catalog = portable_create_catalog(9);
+        let artifacts =
+            fixture.storage_artifacts_at_protocol(&request, &catalog, ProtocolVersion::new(1, 0));
+        let semantics = CanonicalStorageSemanticsV1::decode(
+            &request,
+            catalog.binding(),
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let metadata = semantics.workspace_metadata().unwrap();
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply_at_protocol(
+            &mut broker,
+            &request,
+            &artifacts,
+            &catalog,
+            ProtocolVersion::new(1, 0),
+            &clock(),
+        );
+
+        assert!(matches!(
+            broker
+                .admit_workspace_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    65_536,
+                    metadata.manifest(),
+                    metadata.sandbox_spec(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::Prepared { .. }
+        ));
+        let retained_sequence = broker.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            broker
+                .admit_workspace_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    65_536,
+                    metadata.manifest(),
+                    metadata.sandbox_spec(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Prepared,
+                ..
+            }
+        ));
+        assert_eq!(
+            broker.transactions.journal_sequence_for_test(),
+            retained_sequence
+        );
+
+        let mut altered = request.clone();
+        *altered.last_mut().unwrap() ^= 1;
+        assert!(
+            broker
+                .admit_workspace_apply_intent(
+                    &altered,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    65_536,
+                    metadata.manifest(),
+                    metadata.sandbox_spec(),
+                )
+                .is_err()
+        );
+        assert_eq!(
+            broker.transactions.journal_sequence_for_test(),
+            retained_sequence
+        );
+
+        drop(broker);
+        let mut reopened = coordinator(&directory, &fixture);
+        crate::runtime::authenticate_startup_authority(&reopened).unwrap();
+        assert!(matches!(
+            reopened
+                .admit_workspace_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    65_536,
+                    metadata.manifest(),
+                    metadata.sandbox_spec(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Prepared,
+                ..
+            }
+        ));
+        assert_eq!(
+            reopened
+                .transactions
+                .workspace_identity_range([73; 16])
+                .unwrap(),
+            Some((65_536, 65_536))
+        );
     }
 
     #[test]
@@ -7733,7 +8251,7 @@ mod tests {
                     &request,
                     &artifacts,
                     &catalog,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -7751,7 +8269,7 @@ mod tests {
                     &request,
                     &artifacts,
                     &catalog,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -7782,7 +8300,7 @@ mod tests {
                 &apply_only,
                 inventory,
                 &StaticCatalogResolver { catalog: &catalog },
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -7819,7 +8337,7 @@ mod tests {
                 &request,
                 &prepare_only,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -7862,7 +8380,7 @@ mod tests {
                     &artifacts,
                     &semantics,
                     &sibling_body,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -7899,7 +8417,7 @@ mod tests {
                         expected,
                         catalog: &catalog,
                     },
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -7924,7 +8442,7 @@ mod tests {
                     expected,
                     catalog: &catalog,
                 },
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -7959,7 +8477,7 @@ mod tests {
                 &StaticCatalogResolver {
                     catalog: &stale_catalog,
                 },
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8000,7 +8518,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock_at([50; 16], 150, 199),
@@ -8021,7 +8539,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock_at([60; 16], 150, 100),
@@ -8051,7 +8569,7 @@ mod tests {
                 &request,
                 &revoked_artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8081,7 +8599,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8127,7 +8645,7 @@ mod tests {
                 &artifacts,
                 inventory,
                 &StaticCatalogResolver { catalog: &catalog },
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8178,7 +8696,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8213,7 +8731,7 @@ mod tests {
                 &same_id_request,
                 &same_id_artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8251,7 +8769,7 @@ mod tests {
                     &request,
                     &artifacts,
                     &catalog,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -8272,7 +8790,7 @@ mod tests {
                     &request,
                     &artifacts,
                     &catalog,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -8371,7 +8889,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8405,7 +8923,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8444,7 +8962,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8545,7 +9063,7 @@ mod tests {
                 &original_request,
                 &original_artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8583,7 +9101,7 @@ mod tests {
                 &superseding_artifacts,
                 &superseding_semantics,
                 &superseding_request,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 &clock(),
                 Some(&prior_fence),
             )
@@ -8637,7 +9155,7 @@ mod tests {
                 &create_request,
                 &create_artifacts,
                 &create_catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8717,7 +9235,7 @@ mod tests {
                     &wrong_head_artifacts,
                     &preparation,
                     &preparation_bytes,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &current_clock,
@@ -8734,7 +9252,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &current_clock,
@@ -8844,21 +9362,19 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
             ),
-            Err(StorageBrokerError::State(
-                crate::StorageStateError::MissingAuthorityLink
-            ))
+            Err(StorageBrokerError::Request)
         ));
         let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
             .admit_workspace_apply_intent(
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -8921,7 +9437,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -9082,6 +9598,7 @@ mod tests {
             initial_pin.dataset_guid(),
             initial_pin.root_device() + 10,
             initial_pin.root_inode() + 10,
+            initial_pin.root_attributes(),
         )
         .unwrap();
         retain_satisfied_workspace_pin_repair(
@@ -9160,6 +9677,7 @@ mod tests {
             initial_pin.dataset_guid(),
             initial_pin.root_device() + 20,
             initial_pin.root_inode() + 20,
+            initial_pin.root_attributes(),
         )
         .unwrap();
         crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::write_active_record_for_test(
@@ -9265,7 +9783,7 @@ mod tests {
                 &repair_artifacts,
                 &repair_semantics,
                 &repair_request_bytes,
-                ProtocolVersion::new(1, 4),
+                ProtocolVersion::new(1, 0),
                 &clock(),
                 Some(&prior_fence),
             )
@@ -9310,6 +9828,7 @@ mod tests {
             initial_attempt.dataset_guid(),
             initial_attempt.identity_range_start(),
             initial_attempt.identity_range_size(),
+            initial_attempt.root_policy(),
             None,
         )
         .unwrap();
@@ -9558,7 +10077,7 @@ mod tests {
             .workspace_publication_intent(creation.operation_id())
             .unwrap()
             .unwrap();
-        let substituted_publication =
+        assert!(matches!(
             crate::workspace_catalog::StorageWorkspacePublicationIntentV1::from_authenticated_parts(
                 publication.operation_id(),
                 publication.request_catalog(),
@@ -9566,38 +10085,10 @@ mod tests {
                 publication.root_image().clone(),
                 publication.identity_range_start(),
                 publication.identity_range_size(),
-            )
-            .unwrap();
-        let substituted_publication = StorageStateKey::new([51; 16], [52; 32])
-            .unwrap()
-            .seal_workspace_publication_intent_for_test(&substituted_publication)
-            .unwrap();
-        let substituted_publication_authority = WorkspacePinWorkerAuthorityV1::new(
-            *repair_semantics.header().request_id(),
-            repair_attempt_record,
-            current_fence,
-            valid_pending_effect.clone(),
-            operation_fence,
-        )
-        .unwrap();
-        let substituted_publication_request =
-            crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1::new(
-                contract.executable().to_path_buf(),
-                worker_catalog,
-                substituted_publication_authority,
-                repair_intent_record,
-                substituted_publication,
-            )
-            .unwrap();
-        assert!(
-            crate::workspace_repair_worker::authenticate_request(
-                &fixture.authority(),
-                &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
-                &contract,
-                substituted_publication_request,
-            )
-            .is_err()
-        );
+                publication.portable_metadata().clone(),
+            ),
+            Err(crate::workspace_catalog::StorageWorkspaceCatalogError::InvalidCandidate)
+        ));
         let cross_boot_scope = WorkspacePinHostScopeV1::new([0x91; 16], 0x92, 0x93).unwrap();
         let host_scope = WorkspacePinHostScopeV1::new(
             repair_attempt.host_boot_id(),
@@ -9722,6 +10213,7 @@ mod tests {
             11,
             0x95,
             0x96,
+            initial_attempt.root_policy().root_attributes(),
         )
         .unwrap();
         let cross_boot_present_result = WorkspacePinRepairObserverResultV1::new(
@@ -9938,7 +10430,7 @@ mod tests {
                 &destroy_request,
                 &destroy_artifacts,
                 &destroy_catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -10058,7 +10550,7 @@ mod tests {
                     &wrong_artifacts,
                     &wrong_semantics,
                     &wrong_request,
-                    ProtocolVersion::new(1, 4),
+                    ProtocolVersion::new(1, 0),
                     &clock(),
                     None,
                 )
@@ -10199,6 +10691,31 @@ mod tests {
     }
 
     #[test]
+    fn portable_publication_intent_rejects_cross_bound_assignment_at_construction() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (coordinator, _dispatch, _) =
+            portable_workspace_pin_ensure_dispatch(&directory, &fixture);
+        let publication = coordinator
+            .transactions
+            .workspace_publication_intent([73; 16])
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            crate::workspace_catalog::StorageWorkspacePublicationIntentV1::from_authenticated_parts(
+                publication.operation_id(),
+                publication.request_catalog(),
+                ObjectDigest::from_bytes([0xef; 32]),
+                publication.root_image().clone(),
+                publication.identity_range_start(),
+                publication.identity_range_size(),
+                publication.portable_metadata().clone(),
+            ),
+            Err(crate::workspace_catalog::StorageWorkspaceCatalogError::InvalidCandidate)
+        ));
+    }
+
+    #[test]
     fn historical_observer_authenticates_superseded_ambiguous_attempt_without_effect_authority() {
         let directory = TempDir::new().unwrap();
         let fixture = Fixture::new();
@@ -10232,7 +10749,7 @@ mod tests {
                 &superseding_artifacts,
                 &superseding_semantics,
                 &superseding_request,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 &clock(),
                 Some(&prior_fence),
             )
@@ -10330,7 +10847,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -10471,6 +10988,83 @@ mod tests {
             Err(crate::ZfsWorkerError::Authority)
         ));
 
+        let base_publication = crate::pin_worker::decode_request(&ensure_bytes)
+            .unwrap()
+            .authority
+            .publication_intent()
+            .unwrap()
+            .to_vec();
+        let media_length = usize::from(u16::from_be_bytes(
+            base_publication[114..116].try_into().unwrap(),
+        ));
+        let root_image_digest_offset = 116 + media_length;
+        let range_start_offset = root_image_digest_offset + 32 + 8;
+        let range_size_offset = range_start_offset + 4;
+        let root_policy_offset = range_size_offset + 4 + 16 + 32 + 80 + 16;
+
+        let mut outer_assignment = base_publication.clone();
+        outer_assignment[82] ^= 1;
+        let mut root_image = base_publication.clone();
+        root_image[root_image_digest_offset] ^= 1;
+        let mut range_size = base_publication.clone();
+        range_size[range_size_offset..range_size_offset + 4]
+            .copy_from_slice(&131_072_u32.to_be_bytes());
+        let mut range_start = base_publication.clone();
+        range_start[range_start_offset..range_start_offset + 4]
+            .copy_from_slice(&131_072_u32.to_be_bytes());
+        let mut root_policy = base_publication.clone();
+        let clone_policy = WorkspaceRootPolicyV1::clone_preserve(
+            91,
+            crate::root_policy::PortableRootAttributesV1::new(1000, 1001, 0o2750).unwrap(),
+            ObjectDigest::from_bytes([92; 32]),
+        )
+        .unwrap();
+        root_policy[root_policy_offset..root_policy_offset + 64]
+            .copy_from_slice(&clone_policy.canonical_bytes());
+        let mut request_catalog = base_publication.clone();
+        request_catalog[50] ^= 1;
+
+        for (relationship, mut publication) in [
+            ("outer assignment/fence", outer_assignment),
+            ("root image/manifest", root_image),
+            ("range size/spec", range_size),
+            ("range start/attempt", range_start),
+            ("root policy/catalog/attempt", root_policy),
+            ("request catalog/worker catalog", request_catalog),
+        ] {
+            state_key
+                .retag_workspace_publication_intent_for_test(&mut publication)
+                .unwrap();
+            let donor =
+                crate::pin_worker::WorkspacePinWorkerAuthorityV1::new_with_publication_intent(
+                    [1; 16],
+                    vec![1],
+                    vec![1],
+                    vec![1],
+                    vec![1],
+                    publication,
+                )
+                .unwrap();
+            let mut substituted = crate::pin_worker::decode_request(&ensure_bytes).unwrap();
+            substituted.authority.substitute_record_from(
+                WorkspacePinWorkerAuthorityRecord::PublicationIntent,
+                &donor,
+            );
+
+            assert!(
+                matches!(
+                    crate::pin_worker::authenticate_request(
+                        &fixture.authority(),
+                        &state_key,
+                        &contract,
+                        substituted,
+                    ),
+                    Err(crate::ZfsWorkerError::Authority)
+                ),
+                "authenticated publication substitution escaped {relationship} binding"
+            );
+        }
+
         let mut substituted_executable = crate::pin_worker::decode_request(&ensure_bytes).unwrap();
         substituted_executable.executable = "/nix/store/substituted-zfs/sbin/zfs".into();
         assert!(matches!(
@@ -10541,7 +11135,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -10622,7 +11216,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -10706,7 +11300,7 @@ mod tests {
                 &original_request,
                 &artifacts,
                 &original_catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -10718,7 +11312,7 @@ mod tests {
                     &request(9, 8),
                     &artifacts,
                     &original_catalog,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -10731,7 +11325,7 @@ mod tests {
                     &original_request,
                     &artifacts,
                     &catalog(9, 10),
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -10752,7 +11346,7 @@ mod tests {
                     &original_request,
                     &expired,
                     &original_catalog,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -10772,7 +11366,7 @@ mod tests {
                     &original_request,
                     &wrong,
                     &original_catalog,
-                    ProtocolVersion::new(1, 3),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -10801,7 +11395,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -10817,7 +11411,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock()
@@ -10848,7 +11442,7 @@ mod tests {
                 &original,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -10863,7 +11457,7 @@ mod tests {
                 &artifacts,
                 &semantics,
                 &substituted,
-                ProtocolVersion::new(1, 3),
+                ProtocolVersion::new(1, 0),
                 &clock(),
                 broker
                     .transactions

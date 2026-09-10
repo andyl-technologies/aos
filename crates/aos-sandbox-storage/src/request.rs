@@ -190,7 +190,7 @@ mod tests {
         let dataset =
             ResolvedDataset::from_catalog(root, "tank/aos/project/work", 11, [8; 32], domains)
                 .unwrap();
-        ResolvedCatalogCommitmentV1::new(
+        ResolvedCatalogCommitmentV1::new_for_test(
             9,
             domains,
             CatalogPlanV1::SetQuota {

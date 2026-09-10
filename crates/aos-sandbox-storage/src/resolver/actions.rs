@@ -6,12 +6,12 @@ use crate::root_policy::WorkspaceRootPolicyV1;
 use crate::{ActiveHoldEvidence, CatalogPlanV1, HoldId, PlannedDataset, PlannedSnapshot};
 
 use super::StorageCatalogResolverErrorV1;
-use super::inventory::ProtectedStorageInventoryV2;
+use super::inventory::ProtectedStorageInventoryV1;
 use super::policy::ProtectedStorageResolverPolicyV1;
 
 pub(super) fn resolve_action(
     policy: &ProtectedStorageResolverPolicyV1,
-    inventory: &ProtectedStorageInventoryV2,
+    inventory: &ProtectedStorageInventoryV1,
     operation: StoragePreparationOperationV1,
     sandbox_id: [u8; 16],
     operation_id: [u8; 16],
@@ -157,7 +157,7 @@ pub(super) fn resolve_action(
 
 fn workspace_dataset<'a>(
     policy: &ProtectedStorageResolverPolicyV1,
-    inventory: &'a ProtectedStorageInventoryV2,
+    inventory: &'a ProtectedStorageInventoryV1,
     storage_handle: &[u8; 32],
 ) -> Result<&'a crate::ResolvedDataset, StorageCatalogResolverErrorV1> {
     let dataset = inventory
@@ -175,10 +175,10 @@ fn workspace_dataset<'a>(
 
 fn project_snapshot<'a>(
     policy: &ProtectedStorageResolverPolicyV1,
-    inventory: &'a ProtectedStorageInventoryV2,
+    inventory: &'a ProtectedStorageInventoryV1,
     storage_handle: &[u8; 32],
     version_handle: &[u8; 32],
-) -> Result<&'a super::inventory::ProtectedSnapshotInventoryV2, StorageCatalogResolverErrorV1> {
+) -> Result<&'a super::inventory::ProtectedSnapshotInventoryV1, StorageCatalogResolverErrorV1> {
     let snapshot = inventory
         .snapshot(storage_handle, version_handle)
         .ok_or(StorageCatalogResolverErrorV1::UnknownHandle)?;
@@ -187,7 +187,7 @@ fn project_snapshot<'a>(
 }
 
 fn ensure_absent(
-    inventory: &ProtectedStorageInventoryV2,
+    inventory: &ProtectedStorageInventoryV1,
     name: &str,
 ) -> Result<(), StorageCatalogResolverErrorV1> {
     if inventory.name_is_occupied(name) {

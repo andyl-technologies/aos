@@ -66,7 +66,7 @@ enum BrokerMethod {
   BROKER_METHOD_MOUNT_INVENTORY = 5;
   BROKER_METHOD_MOUNT_INVENTORY_RESOURCES = 6;
   BROKER_METHOD_STORAGE_APPLY = 7;
-  BROKER_METHOD_STORAGE_INVENTORY = 8;
+  reserved 8;
   BROKER_METHOD_NETWORK_APPLY = 9;
   BROKER_METHOD_NETWORK_INVENTORY = 10;
   BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT = 11;
@@ -364,9 +364,12 @@ message ApplyStorageRequest {
   bytes source_version_handle = 5;
   uint64 quota_bytes = 6;
   bytes operation_id = 7;
+  // Create/Clone only: exact canonical portable metadata.
+  bytes assignment_manifest = 8;
+  bytes sandbox_spec = 9;
 }
 
-// Storage 1.3 resolves one future operation from protected physical state.
+// Resolves one future operation from protected physical state.
 // This independently authorized request cannot execute the operation. UID,
 // GID, cgroup, ZFS names, GUIDs, roots, and policy domains are deliberately
 // absent: the broker observes or derives them locally.
@@ -397,7 +400,7 @@ message PrepareStorageCatalogResponse {
   bytes non_authorizing_receipt = 5;
 }
 
-// Requests one freshly authorized, bounded Storage 1.4 attempt to repair an
+// Requests one freshly authorized, bounded attempt to repair an
 // absent workspace root pin after exact local observation. Dataset names,
 // GUIDs, mount points, attempt ordinals, and observations are derived from
 // protected broker state; this message grants no authority by itself.
@@ -417,9 +420,8 @@ message StorageResult {
 }
 
 message InventoryStorageRequest { RequestHeader header = 1; }
-message InventoryStorageResponse { repeated StorageResult resources = 1; }
 
-// Storage 1.2 authoritative launch-resource inventory. The workspace pin path
+// Authoritative launch-resource inventory. The workspace pin path
 // is derived from workspace_handle beneath the fixed root-owned publisher;
 // caller-selected paths never cross this boundary.
 message StorageWorkspaceInventoryRecord {
@@ -447,7 +449,6 @@ service StorageBroker {
   rpc PrepareCatalog(PrepareStorageCatalogRequest) returns (PrepareStorageCatalogResponse);
   rpc RepairWorkspacePin(RepairStorageWorkspacePinRequest) returns (StorageResult);
   rpc ApplyStorage(ApplyStorageRequest) returns (StorageResult);
-  rpc InventoryStorage(InventoryStorageRequest) returns (InventoryStorageResponse);
   rpc InventoryStorageResources(InventoryStorageRequest)
       returns (InventoryStorageResourcesResponse);
 }

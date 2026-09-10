@@ -23,6 +23,9 @@ use crate::observation_protocol::{
     WorkspaceCatalogCustodyBindingV1, WorkspaceCatalogObservationExpectationV1,
     WorkspaceCatalogObservationRequestV1,
 };
+use crate::root_policy::{
+    PortableRootAttributesV1, WorkspaceRootDispositionV1, WorkspaceRootPolicyV1,
+};
 use crate::workspace_pin::{
     WORKSPACE_PIN_ROOT, WorkspaceDatasetObservationV1, WorkspacePinAttemptV1,
     WorkspacePinHostScopeV1, WorkspacePinObservationV1, WorkspaceRootPinProofV1,
@@ -40,6 +43,7 @@ struct WorkspacePinObservationTargetV1<'a> {
     workspace_handle: [u8; 32],
     dataset_name: &'a str,
     dataset_guid: u64,
+    root_policy: WorkspaceRootPolicyV1,
     expected_pin: Option<&'a WorkspaceRootPinProofV1>,
     satisfied_pin: Option<&'a WorkspaceRootPinProofV1>,
 }
@@ -57,6 +61,7 @@ impl<'a> TryFrom<&'a WorkspacePinAttemptV1> for WorkspacePinObservationTargetV1<
             workspace_handle: attempt.workspace_handle(),
             dataset_name: attempt.dataset_name(),
             dataset_guid: attempt.dataset_guid(),
+            root_policy: attempt.root_policy(),
             expected_pin: attempt.expected_pin(),
             satisfied_pin: attempt.satisfied_pin(),
         })
@@ -168,6 +173,7 @@ pub(crate) fn observe_workspace_pin_repair(
         workspace_handle: probe.workspace_handle(),
         dataset_name: probe.dataset_name(),
         dataset_guid: probe.dataset_guid(),
+        root_policy: probe.root_policy(),
         expected_pin: None,
         satisfied_pin: None,
     };
@@ -186,6 +192,7 @@ pub(crate) fn observe_workspace_pin_repair_admission(
         workspace_handle: probe.workspace_handle(),
         dataset_name: probe.dataset_name(),
         dataset_guid: probe.dataset_guid(),
+        root_policy: probe.root_policy(),
         expected_pin: None,
         satisfied_pin: None,
     };
@@ -240,7 +247,7 @@ fn observe_workspace_pin_for_target(
         target,
         dataset,
         mount_namespace.identity(),
-        slot.identity(),
+        &slot_metadata,
         &observed_mount,
     )?;
 
@@ -592,9 +599,20 @@ fn classify_mounted_slot(
     target: &WorkspacePinObservationTargetV1<'_>,
     dataset: &WorkspaceDatasetObservationV1,
     namespace: NamespaceIdentity,
-    root_identity: FileIdentity,
+    root_metadata: &rustix::fs::Stat,
     mount: &MountObservation,
 ) -> Result<WorkspacePinObservationV1, WorkspacePinObserverError> {
+    let root_identity = FileIdentity {
+        device: root_metadata.st_dev,
+        inode: root_metadata.st_ino,
+        file_type: aos_sandbox_linux::path::FileType::Directory,
+    };
+    let root_attributes = PortableRootAttributesV1::new(
+        root_metadata.st_uid,
+        root_metadata.st_gid,
+        root_metadata.st_mode & 0o7777,
+    )
+    .map_err(|_| WorkspacePinObserverError::HostScopeMismatch)?;
     let exact_dataset = matches!(
         dataset,
         WorkspaceDatasetObservationV1::Exact { name, guid }
@@ -611,6 +629,12 @@ fn classify_mounted_slot(
         return Ok(WorkspacePinObservationV1::Mismatch);
     }
 
+    if matches!(
+        target.root_policy.classify_observed_root(root_attributes),
+        Err(_) | Ok(WorkspaceRootDispositionV1::Initialize(_))
+    ) {
+        return Ok(WorkspacePinObservationV1::Mismatch);
+    }
     let proof = WorkspaceRootPinProofV1::new(
         target.host_scope.kernel_boot_id(),
         namespace.device,
@@ -623,6 +647,7 @@ fn classify_mounted_slot(
         target.dataset_guid,
         root_identity.device,
         root_identity.inode,
+        root_attributes,
     )?;
     if target
         .expected_pin
@@ -766,6 +791,7 @@ mod tests {
             16,
             100_000,
             65_536,
+            WorkspaceRootPolicyV1::create_initialize(),
             expected_pin,
         )
         .unwrap()
@@ -794,12 +820,14 @@ mod tests {
         }
     }
 
-    fn root_identity() -> FileIdentity {
-        FileIdentity {
-            device: rustix::fs::makedev(8, 1),
-            inode: 22,
-            file_type: aos_sandbox_linux::path::FileType::Directory,
-        }
+    fn root_metadata() -> rustix::fs::Stat {
+        let mut metadata = rustix::fs::stat(".").unwrap();
+        metadata.st_dev = rustix::fs::makedev(8, 1);
+        metadata.st_ino = 22;
+        metadata.st_uid = 0;
+        metadata.st_gid = 0;
+        metadata.st_mode = (metadata.st_mode & !0o7777) | 0o755;
+        metadata
     }
 
     fn exact_dataset() -> WorkspaceDatasetObservationV1 {
@@ -823,7 +851,7 @@ mod tests {
                 device: 12,
                 inode: 13,
             },
-            root_identity(),
+            &root_metadata(),
             &mount(21),
         )
         .unwrap();
@@ -848,7 +876,7 @@ mod tests {
                 device: 12,
                 inode: 13,
             },
-            root_identity(),
+            &root_metadata(),
             &mount(21),
         )
         .unwrap() else {
@@ -875,6 +903,7 @@ mod tests {
             baseline.dataset_guid(),
             baseline.identity_range_start(),
             baseline.identity_range_size(),
+            baseline.root_policy(),
             Some(proof),
         )
         .unwrap()
@@ -888,7 +917,7 @@ mod tests {
                 device: 12,
                 inode: 13,
             },
-            root_identity(),
+            &root_metadata(),
             &mount(23),
         )
         .unwrap();
@@ -925,7 +954,7 @@ mod tests {
                         device: 12,
                         inode: 13,
                     },
-                    root_identity(),
+                    &root_metadata(),
                     &candidate,
                 )
                 .unwrap(),
@@ -940,7 +969,7 @@ mod tests {
                     device: 12,
                     inode: 13,
                 },
-                root_identity(),
+                &root_metadata(),
                 &mount(21),
             )
             .unwrap(),
@@ -962,7 +991,7 @@ mod tests {
                     device: 12,
                     inode: 13,
                 },
-                root_identity(),
+                &root_metadata(),
                 &candidate,
             )
             .unwrap(),

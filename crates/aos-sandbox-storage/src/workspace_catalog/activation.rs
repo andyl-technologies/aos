@@ -487,6 +487,7 @@ mod tests {
             dataset_guid,
             u64::from(marker) + 30,
             u64::from(marker) + 40,
+            crate::root_policy::WorkspaceRootPolicyV1::create_initialize().root_attributes(),
         )
         .unwrap();
 

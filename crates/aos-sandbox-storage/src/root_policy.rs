@@ -21,6 +21,7 @@
 //! linkage on the resolver's behalf.
 
 use aos_sandbox_core::ObjectDigest;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 const MAGIC: &[u8; 8] = b"AOSSRP01";
@@ -64,7 +65,8 @@ pub(crate) enum WorkspaceRootPolicyError {
 }
 
 /// Stores one portable, unshifted workspace-root UID, GID, and mode.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PortableRootAttributesV1 {
     uid: u32,
     gid: u32,
@@ -106,6 +108,15 @@ impl PortableRootAttributesV1 {
     /// Returns the exact portable permission and special mode bits.
     pub(crate) const fn mode(self) -> u16 {
         self.mode
+    }
+
+    /// Revalidates attributes reconstructed from a durable representation.
+    pub(crate) fn validate(self) -> Result<(), WorkspaceRootPolicyError> {
+        if Self::new(self.uid, self.gid, u32::from(self.mode))? == self {
+            Ok(())
+        } else {
+            Err(WorkspaceRootPolicyError::MalformedEncoding)
+        }
     }
 }
 
@@ -442,31 +453,31 @@ mod tests {
     }
 
     #[test]
-    fn clone_policy_preserves_root_identities_and_set_id_bits_exactly() {
-        let source_attributes = PortableRootAttributesV1::new(501, 20, 0o6750).unwrap();
+    fn clone_policy_preserves_restrictive_root_identities_and_mode_exactly() {
+        let source_attributes = PortableRootAttributesV1::new(501, 20, 0).unwrap();
         let policy =
             WorkspaceRootPolicyV1::clone_preserve(41, source_attributes, digest(7)).unwrap();
 
         assert_eq!(policy.root_attributes(), source_attributes);
-        assert_eq!(policy.root_attributes().mode(), 0o6750);
+        assert_eq!(policy.root_attributes().mode(), 0);
         assert_eq!(
             policy.classify_observed_root(source_attributes),
             Ok(WorkspaceRootDispositionV1::PreserveAuthenticated)
         );
 
-        let changed_mode = PortableRootAttributesV1::new(501, 20, 0o750).unwrap();
+        let changed_mode = PortableRootAttributesV1::new(501, 20, 0o6750).unwrap();
         assert_eq!(
             policy.classify_observed_root(changed_mode),
             Err(WorkspaceRootPolicyError::CloneMetadataMismatch)
         );
 
-        let changed_uid = PortableRootAttributesV1::new(502, 20, 0o6750).unwrap();
+        let changed_uid = PortableRootAttributesV1::new(502, 20, 0).unwrap();
         assert_eq!(
             policy.classify_observed_root(changed_uid),
             Err(WorkspaceRootPolicyError::CloneMetadataMismatch)
         );
 
-        let changed_gid = PortableRootAttributesV1::new(501, 21, 0o6750).unwrap();
+        let changed_gid = PortableRootAttributesV1::new(501, 21, 0).unwrap();
         assert_eq!(
             policy.classify_observed_root(changed_gid),
             Err(WorkspaceRootPolicyError::CloneMetadataMismatch)

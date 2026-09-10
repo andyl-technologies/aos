@@ -1,6 +1,6 @@
 //! Versioned codec for the private fixed-ZFS-worker protocol.
 //!
-//! The closed version-two records are:
+//! The closed version-one records are:
 //!
 //! ```text
 //! REQUEST  = magic | version | verb | executable | operation | catalog
@@ -17,11 +17,11 @@ use crate::{ResolvedCatalogCommitmentV1, StorageOperation, ZfsHelperContract, Zf
 
 use super::{Decoder, WorkerObservationOutcome, WorkerProcessOutput};
 
-const REQUEST_MAGIC: &[u8; 8] = b"AOSZREQ2";
-const MUTATION_RESPONSE_MAGIC: &[u8; 8] = b"AOSZRSP2";
-const OBSERVATION_RESPONSE_MAGIC: &[u8; 8] = b"AOSZOBS2";
+const REQUEST_MAGIC: &[u8; 8] = b"AOSZREQ1";
+const MUTATION_RESPONSE_MAGIC: &[u8; 8] = b"AOSZRSP1";
+const OBSERVATION_RESPONSE_MAGIC: &[u8; 8] = b"AOSZOBS1";
 
-pub(super) const WIRE_VERSION: u16 = 2;
+pub(super) const WIRE_VERSION: u16 = 1;
 pub(super) const MAXIMUM_REQUEST_BYTES: usize = 24 * 1024;
 pub(super) const MAXIMUM_RESPONSE_BYTES: usize = 132 * 1024;
 pub(super) const MAXIMUM_OBSERVATION_RESPONSE_BYTES: usize = 52;

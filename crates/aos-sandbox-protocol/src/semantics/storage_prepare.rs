@@ -44,7 +44,6 @@ use crate::{
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSPRP1";
 const FORMAT_VERSION: u16 = 1;
-const MINIMUM_PROTOCOL_MINOR: u16 = 3;
 const MAXIMUM_CANONICAL_BYTES: usize = 32 * 1024;
 
 /// Reports a preparation request that has no single closed portable meaning.
@@ -256,9 +255,6 @@ impl CanonicalStoragePreparationSemanticsV1 {
             ProtocolId::StorageBroker,
             now_boottime_nanoseconds,
         )?;
-        if header.protocol_version().minor() < MINIMUM_PROTOCOL_MINOR {
-            return Err(ProtocolValidationError::InvalidField("header.protocol_minor").into());
-        }
         let fence = validate_fence(
             request
                 .fence
@@ -628,7 +624,7 @@ mod tests {
         let mut request = PrepareStorageCatalogRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = MINIMUM_PROTOCOL_MINOR.into();
+        header.protocol_minor = 0;
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 200;
@@ -878,12 +874,15 @@ mod tests {
             ))
         ));
 
-        let mut old_version = clone_request();
-        old_version.header.get_or_insert_default().protocol_minor = 2;
+        let mut unsupported_version = clone_request();
+        unsupported_version
+            .header
+            .get_or_insert_default()
+            .protocol_minor = 1;
         assert!(matches!(
-            decode(&old_version),
+            decode(&unsupported_version),
             Err(StoragePreparationSemanticsError::Protocol(
-                ProtocolValidationError::InvalidField("header.protocol_minor")
+                ProtocolValidationError::Protocol(_)
             ))
         ));
 

@@ -5,7 +5,7 @@
 //! catalog, recompiles [`ZfsTransaction`], and invokes only its configured
 //! immutable AOS-store executable. Raw argv never crosses the socket.
 //!
-//! The version-two bounded wire sequence is:
+//! The sole version-one bounded wire sequence is:
 //!
 //! ```text
 //! worker -> broker: READY  = magic | version | cgroup-length | cgroup
@@ -57,8 +57,8 @@ use wire::{
     decode_request, encode_mutation_response, encode_observation_response, encode_request,
 };
 
-const READY_MAGIC: &[u8; 8] = b"AOSZRDY2";
-const ACK_MAGIC: &[u8; 8] = b"AOSZACK2";
+const READY_MAGIC: &[u8; 8] = b"AOSZRDY1";
+const ACK_MAGIC: &[u8; 8] = b"AOSZACK1";
 const MAXIMUM_READY_BYTES: usize = 4096;
 const MAXIMUM_ACK_BYTES: usize = 10;
 const MAXIMUM_CGROUP_TEXT_BYTES: usize = 4096;
@@ -1157,7 +1157,7 @@ mod tests {
             PlannedDataset::from_catalog(root, "tank/aos/project/work", domains).unwrap();
         let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
         (
-            ResolvedCatalogCommitmentV1::new(
+            ResolvedCatalogCommitmentV1::new_for_test(
                 7,
                 domains,
                 CatalogPlanV1::CreateWorkspace {
@@ -1368,7 +1368,7 @@ mod tests {
             )
             .unwrap();
             let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
-            let catalog = ResolvedCatalogCommitmentV1::new(
+            let catalog = ResolvedCatalogCommitmentV1::new_for_test(
                 7,
                 domains,
                 CatalogPlanV1::SetQuota {
@@ -1547,7 +1547,7 @@ mod tests {
             ),
             _ => panic!("unknown worker VM case"),
         };
-        let catalog = ResolvedCatalogCommitmentV1::new(7, domains, plan).unwrap();
+        let catalog = ResolvedCatalogCommitmentV1::new_for_test(7, domains, plan).unwrap();
         let preconditions = executor
             .observe_preconditions(&contract, operation, &catalog)
             .unwrap();
