@@ -1473,6 +1473,176 @@ fn triage_result_artifact_dedups_diffs_and_self_checks_offline() -> Result<(), B
 }
 
 #[test]
+fn triage_result_accepts_one_minimization_per_cluster_member() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let policy = SignaturePolicy::default_policy();
+    let first_decision = override_decision("triage-member-first-decision", "fail");
+    let second_decision = override_decision("triage-member-second-decision", "fail");
+    let first_finding = finding_artifact(
+        &scenario,
+        Schedule::from_decisions([first_decision.clone()]),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("triage-member-first"),
+    )?;
+    let second_finding = finding_artifact(
+        &scenario,
+        Schedule::from_decisions([second_decision.clone()]),
+        FindingDiscoveryPath::CoverageGuidedFuzzing,
+        finding_hash("triage-member-second"),
+    )?;
+    let first_entries = recorded_event_log(first_decision);
+    let second_entries = recorded_event_log(second_decision);
+    let first_log = recorded_event_log_for_finding(&first_finding, &first_entries)?;
+    let second_log = recorded_event_log_for_finding(&second_finding, &second_entries)?;
+    let first_signature = FailureSignature::from_recorded_property_violation(
+        &first_finding,
+        &first_log,
+        &property_violation_record(first_finding.artifact.id()),
+    )?;
+    let second_signature = FailureSignature::from_recorded_property_violation(
+        &second_finding,
+        &second_log,
+        &property_violation_record(second_finding.artifact.id()),
+    )?;
+    assert_ne!(first_finding.artifact.id(), second_finding.artifact.id());
+    assert_eq!(
+        policy.signature_key(&first_signature)?,
+        policy.signature_key(&second_signature)?
+    );
+
+    let clustering = FailureClusteringResult::from_findings(
+        policy,
+        [
+            FailureClusterFinding::new(first_finding.artifact.id(), first_signature.clone()),
+            FailureClusterFinding::new(second_finding.artifact.id(), second_signature.clone()),
+        ],
+    )?;
+    let cluster = clustering
+        .clusters
+        .first()
+        .ok_or("same-signature findings should produce one cluster")?
+        .clone();
+    let representative_artifact = cluster
+        .representative_member()
+        .ok_or("two-member cluster should have a representative")?
+        .reproduction_artifact;
+    let (representative_finding, representative_log, other_finding) =
+        if representative_artifact == first_finding.artifact.id() {
+            (&first_finding, &first_log, &second_finding)
+        } else {
+            (&second_finding, &second_log, &first_finding)
+        };
+    let representative_run = no_op_minimization_run(policy, &cluster, representative_finding)?;
+    let other_run = no_op_minimization_run(policy, &cluster, other_finding)?;
+    let report = FailureClusterReport::from_cluster(
+        policy,
+        &cluster,
+        &representative_run,
+        FailureClusterReportFailure::property(property_violation_record(
+            representative_finding.artifact.id(),
+        )),
+        representative_log,
+        &FailureSignatureNormalization::identity(),
+        8,
+    )?;
+    let report_set = FailureClusterReportSet::from_reports(policy, [report.clone()])?;
+    let self_check = FailureTriageSignatureSelfCheck::from_signature_pairs([
+        FailureTriageSignatureSelfCheckInput::new(
+            first_finding.artifact.id(),
+            first_signature.clone(),
+            first_signature.clone(),
+        ),
+        FailureTriageSignatureSelfCheckInput::new(
+            second_finding.artifact.id(),
+            second_signature.clone(),
+            second_signature.clone(),
+        ),
+    ]);
+    let ledger = FailureFindingsLedger::from_artifacts([
+        first_finding.artifact.id(),
+        second_finding.artifact.id(),
+    ]);
+
+    let representative_only = FailureSignaturePreservingMinimizationResult {
+        policy,
+        runs: vec![representative_run.clone()],
+    };
+    FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        representative_only,
+        report_set.clone(),
+        self_check.clone(),
+    )?;
+
+    let all_members = FailureSignaturePreservingMinimizationResult {
+        policy,
+        runs: vec![representative_run.clone(), other_run.clone()],
+    };
+    let result = FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        all_members.clone(),
+        report_set.clone(),
+        self_check.clone(),
+    )?;
+    assert_eq!(result.minimization.cluster_count(), 1);
+    assert_eq!(result.minimization.minimized_count(), 2);
+    assert_eq!(result.report_set.reports[0], report);
+    assert_eq!(
+        result.report_set.reports[0].minimal_representative,
+        representative_run.minimized_artifact()
+    );
+
+    let mut duplicate_member = all_members.clone();
+    duplicate_member.runs.push(other_run.clone());
+    FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        duplicate_member,
+        report_set.clone(),
+        self_check.clone(),
+    )
+    .expect_err("duplicate minimization runs for one cluster member must be rejected");
+
+    let mut nonmember = all_members.clone();
+    nonmember.runs[1].representative_artifact = finding_hash("triage-nonmember");
+    FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        nonmember,
+        report_set.clone(),
+        self_check.clone(),
+    )
+    .expect_err("minimization runs for artifacts outside the cluster must be rejected");
+
+    let mut wrong_original = all_members.clone();
+    wrong_original.runs[1].minimization.original = representative_finding.clone();
+    FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering.clone(),
+        wrong_original,
+        report_set.clone(),
+        self_check.clone(),
+    )
+    .expect_err("minimization originals must match their selected cluster members");
+
+    let mut wrong_signature = all_members;
+    wrong_signature.runs[1].target_signature_key =
+        SignaturePolicy::fine().signature_key(&second_signature)?;
+    FailureTriageResult::from_parts(
+        ledger.content_hash(),
+        clustering,
+        wrong_signature,
+        report_set,
+        self_check,
+    )
+    .expect_err("minimization signatures must match their cluster signature");
+
+    Ok(())
+}
+
+#[test]
 fn failure_signature_rejects_static_artifact_identity_mismatch() -> Result<(), Box<dyn Error>> {
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
