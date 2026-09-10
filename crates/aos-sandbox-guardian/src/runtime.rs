@@ -23,6 +23,7 @@ use rustix::net::{
 use rustix::time::{ClockId, Timespec, clock_gettime};
 use sha2::{Digest as _, Sha256};
 
+use crate::state::systemd_managed_state_path;
 use crate::{
     GuardianArtifacts, GuardianAuthority, GuardianAuthorityError, GuardianStateStore,
     GuardianStateStoreError, ReadinessConfirmedGuardian,
@@ -87,8 +88,10 @@ pub fn run_from_environment() -> Result<(), GuardianRuntimeError> {
         SingleThreadedProcess::verify().map_err(|_| GuardianRuntimeError::InvalidActivation)?;
     let activation = ActivatedGuardianInputs::take(&single_threaded)?;
     let expected_incarnation = environment_incarnation("AOS_GUARDIAN_INCARNATION")?;
-    let state_directory = single_environment_path("STATE_DIRECTORY")?;
-    let mut store = GuardianStateStore::open(&state_directory)?;
+    let state_directory =
+        environment_systemd_state_directory("STATE_DIRECTORY", expected_incarnation)?;
+    let mut store =
+        GuardianStateStore::open_systemd_managed(&state_directory, expected_incarnation)?;
     let prior = store.load()?;
     let authority = activation.authority()?;
     let artifacts = activation.artifacts();
@@ -570,6 +573,10 @@ fn environment_u32(name: &'static str) -> Result<u32, GuardianRuntimeError> {
 
 fn environment_incarnation(name: &'static str) -> Result<[u8; 16], GuardianRuntimeError> {
     let value = std::env::var(name).map_err(|_| GuardianRuntimeError::InvalidActivation)?;
+    parse_incarnation(&value)
+}
+
+fn parse_incarnation(value: &str) -> Result<[u8; 16], GuardianRuntimeError> {
     if value.len() != 32
         || !value
             .bytes()
@@ -587,17 +594,30 @@ fn environment_incarnation(name: &'static str) -> Result<[u8; 16], GuardianRunti
     Ok(incarnation)
 }
 
-fn single_environment_path(name: &'static str) -> Result<std::path::PathBuf, GuardianRuntimeError> {
+fn environment_systemd_state_directory(
+    name: &'static str,
+    expected_incarnation: [u8; 16],
+) -> Result<std::path::PathBuf, GuardianRuntimeError> {
     let value = std::env::var_os(name).ok_or(GuardianRuntimeError::InvalidActivation)?;
-    let path = Path::new(&value);
-    if !path.is_absolute() || value.as_encoded_bytes().contains(&b':') {
+    validate_systemd_state_directory(&value, expected_incarnation)
+}
+
+fn validate_systemd_state_directory(
+    value: &std::ffi::OsStr,
+    expected_incarnation: [u8; 16],
+) -> Result<std::path::PathBuf, GuardianRuntimeError> {
+    let expected = systemd_managed_state_path(expected_incarnation);
+    if value.as_encoded_bytes().contains(&b':')
+        || value.as_encoded_bytes() != expected.as_os_str().as_encoded_bytes()
+    {
         return Err(GuardianRuntimeError::InvalidActivation);
     }
-    Ok(path.to_owned())
+    Ok(expected)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::sync::mpsc;
 
     use super::*;
@@ -630,5 +650,51 @@ mod tests {
             result,
             Err(GuardianRuntimeError::InvalidActivation)
         ));
+    }
+
+    #[test]
+    fn incarnation_requires_exact_nonzero_lowercase_hex() {
+        let expected = [0xabu8; 16];
+        let observed = parse_incarnation("abababababababababababababababab")
+            .unwrap_or_else(|error| panic!("exact incarnation was rejected: {error}"));
+        assert_eq!(observed, expected);
+
+        for rejected in [
+            "ABABABABABABABABABABABABABABABAB",
+            "ababababababababababababababababaB",
+            "ababababababababababababababababa",
+            "ababababababababababababababababab",
+            "00000000000000000000000000000000",
+        ] {
+            assert!(matches!(
+                parse_incarnation(rejected),
+                Err(GuardianRuntimeError::InvalidActivation)
+            ));
+        }
+    }
+
+    #[test]
+    fn systemd_state_directory_requires_the_exact_incarnation_path() {
+        let incarnation = [0xabu8; 16];
+        let exact = OsStr::new("/var/lib/aos/lease-guards/abababababababababababababababab");
+        let observed = validate_systemd_state_directory(exact, incarnation)
+            .unwrap_or_else(|error| panic!("exact state path was rejected: {error}"));
+        assert_eq!(observed, Path::new(exact));
+
+        for rejected in [
+            "/var/lib/aos/lease-guards/ABABABABABABABABABABABABABABABAB",
+            "/var/lib/aos/lease-guards/01010101010101010101010101010101",
+            "/var/lib/aos/lease-guards/./abababababababababababababababab",
+            "/var/lib/aos//lease-guards/abababababababababababababababab",
+            "/var/lib/aos/lease-guards/abababababababababababababababab/",
+            "/var/lib/aos/lease-guards/../lease-guards/abababababababababababababababab",
+            "/var/lib/aos/lease-guards:abababababababababababababababab",
+            "var/lib/aos/lease-guards/abababababababababababababababab",
+        ] {
+            assert!(matches!(
+                validate_systemd_state_directory(OsStr::new(rejected), incarnation),
+                Err(GuardianRuntimeError::InvalidActivation)
+            ));
+        }
     }
 }
