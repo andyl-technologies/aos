@@ -41,6 +41,10 @@ use crate::guest_selectable::{
     GuestSelectableBoundaryDiagnosticStage, GuestSelectableError,
     record_guest_selectable_boundary_diagnostic, resolve_guest_selectable, selected_guest_reply,
 };
+use crate::qemu_campaign_lifecycle::{
+    GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
+    GuardedCampaignFindingOracleEvaluation,
+};
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
     CrucibleAttemptExecution, CrucibleFindingReplayEvidence, CrucibleMeasurementError,
@@ -50,10 +54,6 @@ use crate::{
     encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
     evaluate_crucible_measurement_publication,
     evaluate_crucible_observation_measurement_publication,
-};
-use crate::qemu_campaign_lifecycle::{
-    GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
-    GuardedCampaignFindingOracleEvaluation,
 };
 #[cfg(target_os = "linux")]
 use crate::{QemuHotForkAttemptDriver, QemuHotForkLiveExecution};
@@ -212,9 +212,7 @@ impl QemuFreshSupplementalModeledDriver {
     /// Binds a supplemental property oracle to its exact retained trace leaf.
     #[must_use]
     pub(crate) fn new(oracle: Option<Arc<dyn GuardedCampaignFindingOracle>>) -> Self {
-        let source = oracle.as_ref().map(|oracle| {
-            oracle.source().content_id()
-        });
+        let source = oracle.as_ref().map(|oracle| oracle.source().content_id());
         Self { oracle, source }
     }
 }
@@ -801,9 +799,7 @@ impl QemuFreshAttemptDriver for QemuFreshSupplementalModeledDriver {
                 build_observation_candidate_with_supplemental(pending, oracle, source)
             }
             (None, None) => build_observation_candidate(pending),
-            (Some(_), None) | (None, Some(_)) => {
-                Err(QemuFreshModeledDriverError::ScenarioMismatch)
-            }
+            (Some(_), None) | (None, Some(_)) => Err(QemuFreshModeledDriverError::ScenarioMismatch),
         }
         .map_err(AttemptWorkerFailure::Terminal)
     }
@@ -1832,7 +1828,7 @@ fn reached_requested_stop(
             if !discoveries.is_empty() || !outcome.discovered_choices.is_empty() {
                 return Ok(Some(ModeledStop::Reached(requested.clone())));
             }
-            return Ok((completed_quanta >= execution_quanta)
+            return Ok((*completed_quanta >= *execution_quanta)
                 .then(|| ModeledStop::ModeledTimeout(String::from("execution-quanta"))));
         }
         StopCondition::NamedBoundary(name) => outcome.event_log_entries.iter().any(|entry| {
