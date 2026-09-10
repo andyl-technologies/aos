@@ -6,14 +6,15 @@
 //! resource and cancellation incarnation, and transfers that authority into
 //! [`QemuAttemptProductionVmNodeLauncher`]. [`QemuFreshExecutionRunner`] keeps
 //! final drain and teardown outside the modeled driver and seals a result only
-//! after those final events are available. The fresh path never silently
-//! substitutes for an exact-checkpoint resume.
+//! after those final events are available. Exact roots normally retain their
+//! physical resume path; newly selected continuation control cold executes
+//! because an older checkpoint cannot contain that semantic input.
 
 use crucible::{
     CheckpointTerminalCause, Configuration, ContentHash, Decision, FingerprintSample, NodeId,
     QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
-    ScenarioDefForm, SchedulerError, SchedulerEventLogEntry, SchedulerOperationalFailureClass,
-    SchedulerQuiescence, SelectionDecision, VirtualTime,
+    ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry,
+    SchedulerOperationalFailureClass, SchedulerQuiescence, Seed, SelectionDecision, VirtualTime,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
@@ -22,7 +23,8 @@ use crucible_api::{
     build_production_vm_lifecycle_loop_with_launcher,
 };
 use crucible_campaign::{
-    AttemptStartMode, CampaignHash, ConfigurationId, ExactCheckpointId, SelectionOrigin,
+    AttemptContinuationInput, AttemptStartMode, CampaignHash, ConfigurationId, ExactCheckpointId,
+    SelectionOrigin, StopCondition,
 };
 use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
@@ -96,6 +98,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// The authenticated promoted signal-fault plan names a different start.
     #[error("derive exact signal-fault branch replay: {0}")]
     InvalidSignalFaultBranchReplay(String),
+    /// The modeled continuation control is malformed for the authenticated scenario.
+    #[error("derive modeled continuation control")]
+    InvalidContinuationInput,
 }
 
 mod resource_admission;
@@ -107,6 +112,14 @@ pub use resource_admission::{
 pub struct QemuAttemptProductionVmLifecycleFactory<R> {
     config: ProductionVmLifecycleConfig,
     resources: R,
+    continuation: Option<OwnedQemuAttemptContinuation>,
+}
+
+/// Owned continuation state retained between admission and lifecycle startup.
+#[derive(Clone, Debug)]
+pub(super) struct OwnedQemuAttemptContinuation {
+    input: AttemptContinuationInput,
+    source: Configuration,
 }
 
 /// Runner-owned fresh lifecycle operations hidden from modeled drivers.
@@ -413,7 +426,8 @@ pub use legacy_run::test_support::{
     run_guarded_default_campaign_test_fixture_with_trace,
 };
 pub use legacy_run::{
-    GuardedCampaignBranchAcceptance, GuardedCampaignExploration,
+    GuardedCampaignBranchAcceptance, GuardedCampaignContinuationControl,
+    GuardedCampaignContinuationControlError, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
@@ -540,12 +554,44 @@ impl QemuFreshAttemptLifecycle<'_> {
     }
 }
 
+/// Validated modeled control for one selected continuation boundary.
+#[derive(Clone, Copy, Debug)]
+pub struct QemuAttemptContinuation<'a> {
+    input: &'a AttemptContinuationInput,
+    source: &'a Configuration,
+}
+
+impl<'a> QemuAttemptContinuation<'a> {
+    /// Returns the modeled control applied after the source boundary.
+    #[must_use]
+    pub const fn input(self) -> &'a AttemptContinuationInput {
+        self.input
+    }
+
+    /// Returns the authenticated configuration at the source boundary.
+    #[must_use]
+    pub const fn source(self) -> &'a Configuration {
+        self.source
+    }
+}
+
 /// Factory for one guarded scenario-genesis lifecycle used by the campaign runner.
 pub trait QemuFreshAttemptLifecycleFactory {
     /// Exact lifecycle owner created for one attempt.
     type Lifecycle: QemuFreshAttemptLifecycleOwner;
     /// Factory-specific admission or construction failure.
     type Error;
+
+    /// Selects modeled continuation control for the next semantic attempt.
+    ///
+    /// The default rejects a present input. Supporting factories must retain
+    /// the exact value and consume it before allocating guest resources.
+    fn configure_attempt_continuation(
+        &mut self,
+        continuation: Option<QemuAttemptContinuation<'_>>,
+    ) -> bool {
+        continuation.is_none()
+    }
 
     /// Starts one scenario-genesis lifecycle under the admitted attempt context.
     ///
@@ -673,6 +719,12 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
 /// Failure from one phase of [`QemuFreshExecutionRunner`].
 #[derive(Debug, Error)]
 pub enum QemuFreshExecutionRunnerError<F, D> {
+    /// The modeled continuation input does not name its authenticated time boundary.
+    #[error("fresh production QEMU runner received invalid modeled continuation input")]
+    InvalidContinuationInput,
+    /// The lifecycle factory cannot consume this attempt's modeled continuation input.
+    #[error("fresh production QEMU runner does not support modeled continuation input")]
+    ContinuationInputUnsupported,
     /// The fresh runner was asked to execute a durable resume incarnation.
     #[error("fresh production QEMU runner cannot resume exact checkpoint `{0}`")]
     ResumeCheckpointUnsupported(ExactCheckpointId),
@@ -1121,7 +1173,11 @@ impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
     /// Creates a factory from trusted lifecycle configuration and host resources.
     #[must_use]
     pub const fn new(config: ProductionVmLifecycleConfig, resources: R) -> Self {
-        Self { config, resources }
+        Self {
+            config,
+            resources,
+            continuation: None,
+        }
     }
 
     /// Returns the trusted lifecycle configuration.
@@ -1369,6 +1425,17 @@ where
     type Lifecycle = ProductionVmLifecycleLoop;
     type Error = QemuAttemptProductionVmLifecycleError;
 
+    fn configure_attempt_continuation(
+        &mut self,
+        continuation: Option<QemuAttemptContinuation<'_>>,
+    ) -> bool {
+        self.continuation = continuation.map(|continuation| OwnedQemuAttemptContinuation {
+            input: continuation.input().clone(),
+            source: continuation.source().clone(),
+        });
+        true
+    }
+
     fn start_fresh_lifecycle(
         &mut self,
         scenario: &ScenarioDef,
@@ -1384,8 +1451,108 @@ where
             Some(signal_fault_replay),
         )
         .map_err(AttemptWorkerFailure::Terminal)?;
+        let config = production_lifecycle_config_for_continuation(
+            config,
+            source,
+            self.continuation.as_ref(),
+        )
+        .map_err(AttemptWorkerFailure::Terminal)?;
         self.begin_fresh_with_config(scenario, source, context, config)
             .map_err(classify_production_lifecycle_failure)
+    }
+}
+
+pub(super) fn production_lifecycle_config_for_continuation(
+    config: ProductionVmLifecycleConfig,
+    source: &ScenarioDefForm,
+    continuation: Option<&OwnedQemuAttemptContinuation>,
+) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
+    production_continuation_plan(source, continuation).map(|plan| plan.apply(config))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProductionContinuationPlan {
+    Unchanged,
+    Reseed {
+        base: Configuration,
+        frontier: VirtualTime,
+        seed: Seed,
+    },
+    NetworkOverrides {
+        base: Configuration,
+        frontier: VirtualTime,
+        overrides: Vec<crucible::OverrideDecision>,
+    },
+}
+
+impl ProductionContinuationPlan {
+    fn apply(self, config: ProductionVmLifecycleConfig) -> ProductionVmLifecycleConfig {
+        match self {
+            Self::Unchanged => config,
+            Self::Reseed {
+                base,
+                frontier,
+                seed,
+            } => config.with_branch_reseed(base, frontier, seed),
+            Self::NetworkOverrides {
+                base,
+                frontier,
+                overrides,
+            } => config
+                .with_branch_prefix_overrides(base, frontier, Vec::new())
+                .with_branch_network_choices(overrides),
+        }
+    }
+}
+
+fn production_continuation_plan(
+    source: &ScenarioDefForm,
+    continuation: Option<&OwnedQemuAttemptContinuation>,
+) -> Result<ProductionContinuationPlan, QemuAttemptProductionVmLifecycleError> {
+    let Some(continuation) = continuation else {
+        return Ok(ProductionContinuationPlan::Unchanged);
+    };
+    let input = &continuation.input;
+    let frontier = VirtualTime {
+        ticks: input.source_frontier_ticks(),
+    };
+
+    match input {
+        AttemptContinuationInput::SchedulerReseed { seed, .. } => {
+            Ok(ProductionContinuationPlan::Reseed {
+                base: continuation.source.clone(),
+                frontier,
+                seed: Seed::from_bytes(*seed),
+            })
+        }
+        AttemptContinuationInput::SchedulerOverrides { decisions, .. } => {
+            let mut overrides = Vec::new();
+            overrides
+                .try_reserve(decisions.len())
+                .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidContinuationInput)?;
+            let mut points = BTreeSet::new();
+            for bytes in decisions {
+                let schedule = Schedule::from_compact_binary(bytes)
+                    .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidContinuationInput)?;
+                if schedule.to_compact_binary() != *bytes {
+                    return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
+                }
+                let [Decision::Override(decision)] = schedule.decisions() else {
+                    return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
+                };
+                if !crucible::live_world_network_override_matches_world(source.world(), decision)
+                    || !points.insert(decision.point.key.clone())
+                {
+                    return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
+                }
+                overrides.push(decision.clone());
+            }
+            Ok(ProductionContinuationPlan::NetworkOverrides {
+                base: continuation.source.clone(),
+                frontier,
+                overrides,
+            })
+        }
     }
 }
 
@@ -1440,6 +1607,14 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        let continuation = validated_attempt_continuation(input).map_err(|()| {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
+        })?;
+        if !self.lifecycles.configure_attempt_continuation(continuation) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
+            ));
+        }
         if let Some(checkpoint) = context.resume_checkpoint() {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::ResumeCheckpointUnsupported(checkpoint),
@@ -1620,6 +1795,30 @@ where
     }
 }
 
+fn validated_attempt_continuation(
+    input: &CrucibleAttemptExecution,
+) -> Result<Option<QemuAttemptContinuation<'_>>, ()> {
+    let Some(continuation_input) = input.attempt().continuation_input() else {
+        return Ok(None);
+    };
+    let CrucibleResolvedAttemptStart::AfterAttempt { origins, .. } = input.start() else {
+        return Err(());
+    };
+    let source = origins.last();
+    let StopCondition::VirtualTimeNanoseconds(source_frontier_ticks) = source.attempt().stop()
+    else {
+        return Err(());
+    };
+    if *source_frontier_ticks != continuation_input.source_frontier_ticks() {
+        return Err(());
+    }
+
+    Ok(Some(QemuAttemptContinuation {
+        input: continuation_input,
+        source: source.reached(),
+    }))
+}
+
 impl<F, D> QemuAttemptStartVerifier for QemuFreshExecutionRunner<F, D>
 where
     F: QemuFreshAttemptLifecycleFactory,
@@ -1630,6 +1829,11 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<QemuAttemptStartReplayProof, AttemptWorkerFailure<Self::Error>> {
+        if !self.lifecycles.configure_attempt_continuation(None) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
+            ));
+        }
         let start = match input.start() {
             CrucibleResolvedAttemptStart::Discover { configuration } => configuration,
             CrucibleResolvedAttemptStart::Branch { selected, .. } => selected,
@@ -1697,6 +1901,11 @@ where
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>> {
+        if !self.lifecycles.configure_attempt_continuation(None) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
+            ));
+        }
         let CrucibleResolvedAttemptStart::AfterAttempt {
             base,
             base_signal_fault_replay,
@@ -2335,6 +2544,7 @@ pub(crate) fn classify_production_lifecycle_failure(
         | QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary
         | QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(_)
         | QemuAttemptProductionVmLifecycleError::InvalidSignalFaultBranchReplay(_)
+        | QemuAttemptProductionVmLifecycleError::InvalidContinuationInput
         | QemuAttemptProductionVmLifecycleError::ResourceInstallation(_)
         | QemuAttemptProductionVmLifecycleError::ResourceContractMismatch
         | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)

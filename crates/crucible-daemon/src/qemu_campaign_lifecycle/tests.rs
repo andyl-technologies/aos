@@ -23,11 +23,12 @@ use crucible_api::{
     ProductionVmNodeLauncher,
 };
 use crucible_campaign::{
-    Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode, BooleanDomain, BranchPath,
-    BranchPathSegment, CampaignFactId, CampaignHash, CampaignLineage, CampaignRepository,
-    ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationArtifact,
-    ConfigurationId, ExecutionId, ExecutionRetentionIntent, ScenarioArtifact, ScenarioDefId,
-    SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatchKind, StopCondition,
+    Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, AttemptStartMode,
+    BooleanDomain, BranchPath, BranchPathSegment, CampaignFactId, CampaignHash, CampaignLineage,
+    CampaignRepository, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
+    ConfigurationArtifact, ConfigurationId, ExecutionId, ExecutionRetentionIntent,
+    ScenarioArtifact, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
+    SelectionReplayMismatchKind, StopCondition,
 };
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
@@ -50,9 +51,9 @@ use crate::{
     CheckpointHandoffFailure, CrucibleAttemptExecution, CrucibleExecutionOutcome,
     CrucibleExecutionRunner, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
     ExactCheckpointStore, ExecutionCancellation, ExecutionCheckpointRequest,
-    PreparedAttemptCheckpoint, QemuAttemptExecutionRouter, QemuAttemptOperationalBoundary,
-    QemuAttemptResourceGuard, QemuFreshModeledDriver, QemuSavepointReplayProof,
-    QemuSelectedOriginResumeRunner,
+    PreparedAttemptCheckpoint, QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError,
+    QemuAttemptOperationalBoundary, QemuAttemptResourceGuard, QemuFreshModeledDriver,
+    QemuSavepointReplayProof, QemuSelectedOriginResumeRunner,
 };
 
 #[derive(Debug)]
@@ -956,6 +957,11 @@ struct FakeFreshLifecycleFactory {
     checkpoint_ready: bool,
 }
 
+struct ContinuationAcceptingFreshLifecycleFactory {
+    inner: FakeFreshLifecycleFactory,
+    continuations: Arc<Mutex<Vec<(u64, crucible::ContentHash)>>>,
+}
+
 struct FingerprintFailingFreshLifecycleFactory {
     inner: FakeFreshLifecycleFactory,
 }
@@ -1151,6 +1157,39 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
             fingerprint_error: false,
             fingerprint_node_override: Arc::new(Mutex::new(None)),
         })
+    }
+}
+
+impl QemuFreshAttemptLifecycleFactory for ContinuationAcceptingFreshLifecycleFactory {
+    type Lifecycle = FakeFreshLifecycle;
+    type Error = &'static str;
+
+    fn configure_attempt_continuation(
+        &mut self,
+        continuation: Option<crate::QemuAttemptContinuation<'_>>,
+    ) -> bool {
+        if let Some(continuation) = continuation {
+            self.continuations
+                .lock()
+                .expect("accepted continuation trace")
+                .push((
+                    continuation.input().source_frontier_ticks(),
+                    continuation.source().id(),
+                ));
+        }
+        true
+    }
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        scenario: &ScenarioDef,
+        source: &crucible::ScenarioDefForm,
+        start: &Configuration,
+        signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
+        context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        self.inner
+            .start_fresh_lifecycle(scenario, source, start, signal_fault_replay, context)
     }
 }
 
@@ -1502,6 +1541,7 @@ impl QemuFreshAttemptDriver for FakeFreshDriver {
 
 struct AbsentSelectedSourceResume {
     authentications: Arc<AtomicUsize>,
+    authentication_failure: Option<&'static str>,
 }
 
 impl CrucibleExecutionRunner for AbsentSelectedSourceResume {
@@ -1531,6 +1571,9 @@ impl QemuSelectedOriginResumeRunner for AbsentSelectedSourceResume {
         ));
         assert!(context.resume_checkpoint().is_some());
         self.authentications.fetch_add(1, Ordering::SeqCst);
+        if let Some(error) = self.authentication_failure {
+            return Err(AttemptWorkerFailure::Terminal(error));
+        }
         Ok(None)
     }
 
@@ -1575,6 +1618,7 @@ fn router_cold_executes_an_initial_selected_origin_when_its_source_is_absent() {
         fresh,
         AbsentSelectedSourceResume {
             authentications: Arc::clone(&authentications),
+            authentication_failure: None,
         },
     );
     let (input, source_attempt, source_checkpoint) = selected_after_genesis_input();
@@ -1602,6 +1646,124 @@ fn router_cold_executes_an_initial_selected_origin_when_its_source_is_absent() {
         order.lock().expect("fresh lifecycle order").as_slice(),
         ["begin", "replay", "drive", "shutdown", "seal"]
     );
+}
+
+#[test]
+fn router_cold_executes_continuation_control_after_authenticating_exact_source() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let continuations = Arc::new(Mutex::new(Vec::new()));
+    let authentications = Arc::new(AtomicUsize::new(0));
+    let fresh = QemuFreshExecutionRunner::new(
+        ContinuationAcceptingFreshLifecycleFactory {
+            inner: FakeFreshLifecycleFactory {
+                order: Arc::clone(&order),
+                cleanup_error: false,
+                terminal_after_replay: false,
+                checkpoint_ready: true,
+            },
+            continuations: Arc::clone(&continuations),
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let mut router = QemuAttemptExecutionRouter::new(
+        fresh,
+        AbsentSelectedSourceResume {
+            authentications: Arc::clone(&authentications),
+            authentication_failure: None,
+        },
+    );
+    let continuation = AttemptContinuationInput::scheduler_reseed(1, [0x5a; 32]);
+    let (input, source_attempt, source_checkpoint) =
+        selected_after_genesis_input_with_continuation(Some(continuation));
+    let source = input.start().configuration().id();
+    let origin = AttemptExecutionOrigin::SelectedSavepoint {
+        certificate: campaign_fact_id(0xa1),
+        request: campaign_fact_id(0xa2),
+        source_attempt,
+        source_execution: crucible_campaign::ExecutionId::from_bytes([0xa3; 16])
+            .expect("source execution"),
+        source_checkpoint,
+        resume: None,
+    };
+    let context = fresh_runner_context().with_execution_origin(origin);
+
+    let outcome = router
+        .execute(&input, &context)
+        .expect("controlled continuation should cold execute");
+
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::ExactCheckpoint(_)
+    ));
+    assert_eq!(authentications.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        continuations
+            .lock()
+            .expect("accepted continuation trace")
+            .as_slice(),
+        [(1, source)]
+    );
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "drive", "shutdown", "seal"]
+    );
+}
+
+#[test]
+fn router_rejects_invalid_exact_source_before_cold_continuation_allocation() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let authentications = Arc::new(AtomicUsize::new(0));
+    let fresh = QemuFreshExecutionRunner::new(
+        ContinuationAcceptingFreshLifecycleFactory {
+            inner: FakeFreshLifecycleFactory {
+                order: Arc::clone(&order),
+                cleanup_error: false,
+                terminal_after_replay: false,
+                checkpoint_ready: true,
+            },
+            continuations: Arc::new(Mutex::new(Vec::new())),
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let mut router = QemuAttemptExecutionRouter::new(
+        fresh,
+        AbsentSelectedSourceResume {
+            authentications: Arc::clone(&authentications),
+            authentication_failure: Some("invalid exact continuation source"),
+        },
+    );
+    let continuation = AttemptContinuationInput::scheduler_reseed(1, [0x5a; 32]);
+    let (input, source_attempt, source_checkpoint) =
+        selected_after_genesis_input_with_continuation(Some(continuation));
+    let origin = AttemptExecutionOrigin::SelectedSavepoint {
+        certificate: campaign_fact_id(0xa1),
+        request: campaign_fact_id(0xa2),
+        source_attempt,
+        source_execution: crucible_campaign::ExecutionId::from_bytes([0xa3; 16])
+            .expect("source execution"),
+        source_checkpoint,
+        resume: None,
+    };
+    let context = fresh_runner_context().with_execution_origin(origin);
+
+    let error = router
+        .execute(&input, &context)
+        .expect_err("invalid exact source must reject cold continuation");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuAttemptExecutionRouterError::Resume(
+            "invalid exact continuation source"
+        ))
+    ));
+    assert_eq!(authentications.load(Ordering::SeqCst), 1);
+    assert!(order.lock().expect("fresh lifecycle order").is_empty());
 }
 
 #[test]
@@ -2220,6 +2382,77 @@ fn fresh_runner_rejects_resume_origin_before_factory_invocation() {
         AttemptWorkerFailure::Terminal(
             QemuFreshExecutionRunnerError::ResumeCheckpointUnsupported(actual)
         ) if actual == checkpoint
+    ));
+    assert!(order.lock().expect("fresh lifecycle order").is_empty());
+}
+
+#[test]
+fn fresh_runner_rejects_unconsumed_continuation_input_before_factory_invocation() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: false,
+            checkpoint_ready: true,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let continuation_input = AttemptContinuationInput::scheduler_reseed(1, [0x5a; 32]);
+    let (input, _, _) = selected_after_genesis_input_with_continuation(Some(continuation_input));
+
+    let error = runner
+        .execute(&input, &fresh_runner_context())
+        .expect_err("default factory must reject modeled continuation input");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::ContinuationInputUnsupported)
+    ));
+    assert!(order.lock().expect("fresh lifecycle order").is_empty());
+}
+
+#[test]
+fn fresh_runner_rejects_continuation_without_exact_virtual_time_source() {
+    assert_invalid_continuation_source(StopCondition::ExecutionQuanta(1));
+}
+
+#[test]
+fn fresh_runner_rejects_continuation_at_a_different_virtual_time() {
+    assert_invalid_continuation_source(StopCondition::VirtualTimeNanoseconds(2));
+}
+
+fn assert_invalid_continuation_source(source_stop: StopCondition) {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        ContinuationAcceptingFreshLifecycleFactory {
+            inner: FakeFreshLifecycleFactory {
+                order: Arc::clone(&order),
+                cleanup_error: false,
+                terminal_after_replay: false,
+                checkpoint_ready: true,
+            },
+            continuations: Arc::new(Mutex::new(Vec::new())),
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let continuation = AttemptContinuationInput::scheduler_reseed(1, [0x5a; 32]);
+    let (input, _, _) =
+        selected_after_genesis_input_with_continuation_source_stop(continuation, source_stop);
+
+    let error = runner
+        .execute(&input, &fresh_runner_context())
+        .expect_err("invalid source must not admit continuation control");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
     ));
     assert!(order.lock().expect("fresh lifecycle order").is_empty());
 }
@@ -3078,6 +3311,36 @@ fn production_lifecycle_resource_admission_keeps_retry_and_cancel_classes() {
     assert!(matches!(terminal, AttemptWorkerFailure::Terminal(_)));
 }
 
+#[test]
+fn production_continuation_plan_consumes_the_authenticated_reseed() {
+    let input = fresh_runner_input();
+    let source = step(
+        input.start().configuration(),
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("continuation-plan-source"),
+            value: 7,
+        }),
+    );
+    let frontier = VirtualTime { ticks: 37 };
+    let seed = Seed::from_u64(0x51ec_7ed0);
+    let continuation = OwnedQemuAttemptContinuation {
+        input: AttemptContinuationInput::scheduler_reseed(frontier.ticks, seed.bytes()),
+        source: source.clone(),
+    };
+
+    let plan = production_continuation_plan(input.scenario(), Some(&continuation))
+        .expect("production continuation plan");
+
+    assert_eq!(
+        plan,
+        ProductionContinuationPlan::Reseed {
+            base: source,
+            frontier,
+            seed,
+        }
+    );
+}
+
 fn fresh_runner_input() -> CrucibleAttemptExecution {
     fresh_runner_input_for_stop(StopCondition::Terminal)
 }
@@ -3141,6 +3404,48 @@ fn selected_after_genesis_input() -> (
     crucible_campaign::AttemptId,
     ExactCheckpointId,
 ) {
+    selected_after_genesis_input_with_continuation(None)
+}
+
+fn selected_after_genesis_input_with_continuation(
+    continuation_input: Option<AttemptContinuationInput>,
+) -> (
+    CrucibleAttemptExecution,
+    crucible_campaign::AttemptId,
+    ExactCheckpointId,
+) {
+    let source_stop = continuation_input
+        .as_ref()
+        .map(|input| StopCondition::VirtualTimeNanoseconds(input.source_frontier_ticks()))
+        .unwrap_or(StopCondition::ExecutionQuanta(1));
+    selected_after_genesis_input_with_optional_continuation_source_stop(
+        continuation_input,
+        source_stop,
+    )
+}
+
+fn selected_after_genesis_input_with_continuation_source_stop(
+    continuation_input: AttemptContinuationInput,
+    source_stop: StopCondition,
+) -> (
+    CrucibleAttemptExecution,
+    crucible_campaign::AttemptId,
+    ExactCheckpointId,
+) {
+    selected_after_genesis_input_with_optional_continuation_source_stop(
+        Some(continuation_input),
+        source_stop,
+    )
+}
+
+fn selected_after_genesis_input_with_optional_continuation_source_stop(
+    continuation_input: Option<AttemptContinuationInput>,
+    source_stop: StopCondition,
+) -> (
+    CrucibleAttemptExecution,
+    crucible_campaign::AttemptId,
+    ExactCheckpointId,
+) {
     let base = fresh_runner_input();
     let configuration = base.start().configuration().clone();
     let reached = step(
@@ -3161,7 +3466,7 @@ fn selected_after_genesis_input() -> (
             configuration: configuration_artifact,
         },
         base.attempt().path(),
-        StopCondition::ExecutionQuanta(1),
+        source_stop,
     )
     .expect("selected origin attempt");
     let source_attempt = origin.id().expect("selected origin attempt ID");
@@ -3176,14 +3481,23 @@ fn selected_after_genesis_input() -> (
     .expect("selected reached configuration artifact")
     .id()
     .expect("selected reached configuration artifact ID");
-    let continuation = Attempt::new(
-        AttemptStart::AfterAttempt {
-            origin: source_attempt,
-            reached: reached_artifact,
-        },
-        base.attempt().path(),
-        StopCondition::Terminal,
-    )
+    let continuation_start = AttemptStart::AfterAttempt {
+        origin: source_attempt,
+        reached: reached_artifact,
+    };
+    let continuation = match continuation_input {
+        Some(input) => Attempt::new_with_continuation_input(
+            continuation_start,
+            base.attempt().path(),
+            StopCondition::Terminal,
+            input,
+        ),
+        None => Attempt::new(
+            continuation_start,
+            base.attempt().path(),
+            StopCondition::Terminal,
+        ),
+    }
     .expect("selected continuation attempt");
     let base_replay = crucible::SignalFaultCampaignReplayPlan::empty(configuration.clone());
     let reached_replay = crucible::SignalFaultCampaignReplayPlan::empty(reached.clone());

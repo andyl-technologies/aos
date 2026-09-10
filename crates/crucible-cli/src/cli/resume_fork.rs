@@ -40,7 +40,7 @@ pub(super) fn run_local_qemu_fork_workflow(
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU fork requires a resolved backend"))?;
     let evidence = fork_handle_evidence(fork_plan)?;
-    if guarded_campaign_fork_eligible(fork_plan, &evidence) {
+    if fork_plan.execution_mode == RunExecutionMode::ToCompletion {
         let report = run_local_qemu_campaign_fork_workflow(backend, fork_plan, &evidence)?;
         let mut outcome = finish_fork_workflow_outcome(
             thin_plan,

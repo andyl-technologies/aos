@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::io;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
@@ -568,6 +568,42 @@ impl QemuFreshAttemptLifecycleFactory for ResumeLifecycleFactory {
     }
 }
 
+struct ContinuationInputRecordingFactory<F> {
+    inner: F,
+    inputs: Arc<Mutex<Vec<Option<crucible_campaign::AttemptContinuationInput>>>>,
+}
+
+impl<F> QemuFreshAttemptLifecycleFactory for ContinuationInputRecordingFactory<F>
+where
+    F: QemuFreshAttemptLifecycleFactory,
+{
+    type Lifecycle = F::Lifecycle;
+    type Error = F::Error;
+
+    fn configure_attempt_continuation(
+        &mut self,
+        continuation: Option<crate::QemuAttemptContinuation<'_>>,
+    ) -> bool {
+        self.inputs
+            .lock()
+            .expect("continuation-config trace")
+            .push(continuation.map(|continuation| continuation.input().clone()));
+        true
+    }
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        start: &Configuration,
+        signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
+        context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        self.inner
+            .start_fresh_lifecycle(scenario, source, start, signal_fault_replay, context)
+    }
+}
+
 #[test]
 fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
     let (request, node) = request();
@@ -1118,6 +1154,189 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
         watched_observations,
         vec![resume.source_observation(), completed.terminal().id()]
     );
+}
+
+#[test]
+fn controlled_resume_preserves_source_capture_and_applies_after_continuation_admission() {
+    let first_seed = Seed::from_u64(0x1111);
+    let second_seed = Seed::from_u64(0x2222);
+    let (first, first_inputs) = controlled_resume(first_seed);
+    let (second, second_inputs) = controlled_resume(second_seed);
+    let first_resume = first.resume().expect("first controlled resume proof");
+    let second_resume = second.resume().expect("second controlled resume proof");
+
+    assert_eq!(
+        first_inputs,
+        [
+            None,
+            None,
+            Some(
+                crucible_campaign::AttemptContinuationInput::scheduler_reseed(
+                    5,
+                    first_seed.bytes(),
+                )
+            ),
+        ]
+    );
+    assert_eq!(
+        second_inputs,
+        [
+            None,
+            None,
+            Some(
+                crucible_campaign::AttemptContinuationInput::scheduler_reseed(
+                    5,
+                    second_seed.bytes(),
+                )
+            ),
+        ]
+    );
+    assert_eq!(
+        first_resume.source_checkpoint(),
+        second_resume.source_checkpoint()
+    );
+    assert_eq!(
+        first_resume.source_configuration(),
+        second_resume.source_configuration()
+    );
+    assert_eq!(
+        first_resume.source_observation(),
+        second_resume.source_observation()
+    );
+    assert_eq!(
+        first_resume
+            .source_savepoint()
+            .expect("first source capture")
+            .evidence(),
+        second_resume
+            .source_savepoint()
+            .expect("second source capture")
+            .evidence()
+    );
+    assert_ne!(
+        first_resume.continuation().expect("first continuation"),
+        second_resume.continuation().expect("second continuation")
+    );
+}
+
+fn controlled_resume(
+    continuation_seed: Seed,
+) -> (
+    GuardedDefaultCampaignRun,
+    Vec<Option<crucible_campaign::AttemptContinuationInput>>,
+) {
+    let source_frontier = VirtualTime { ticks: 5 };
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = request();
+    let schedule = Schedule::empty();
+    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
+        .expect("selection-free replay closure");
+    let control = GuardedCampaignContinuationControl::reseed(source_frontier, continuation_seed);
+    let request = request.with_controlled_resume_source(
+        schedule,
+        closure,
+        checkpoint,
+        StopCondition::Terminal,
+        checkpoints,
+        control,
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let inputs = Arc::new(Mutex::new(Vec::new()));
+    let recording = ContinuationInputRecordingFactory {
+        inner: ResumeLifecycleFactory {
+            node,
+            starts,
+            mode: TerminalLifecycleMode::Resume {
+                source_frontier: source_frontier.ticks,
+                terminal_frontier: 9,
+            },
+            offer_continuation_choice: false,
+        },
+        inputs: Arc::clone(&inputs),
+    };
+    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(recording);
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect("controlled resume should complete");
+    let inputs = inputs.lock().expect("continuation-config trace").clone();
+    (completed, inputs)
+}
+
+#[test]
+fn controlled_resume_rejects_mismatched_or_unsupported_input_before_runner_allocation() {
+    let mismatched = GuardedCampaignContinuationControl::reseed(
+        VirtualTime { ticks: 6 },
+        Seed::from_u64(0x3333),
+    );
+    let (error, starts) = rejected_control(mismatched);
+    assert_eq!(starts, 0);
+    assert!(matches!(
+        error,
+        GuardedDefaultCampaignRunError::Invariant(
+            GuardedDefaultCampaignInvariantError::ContinuationInputMismatch
+        )
+    ));
+
+    let unsupported = GuardedCampaignContinuationControl::scheduler_overrides(
+        VirtualTime { ticks: 5 },
+        vec![crucible::OverrideDecision {
+            point: crucible::SchedulingPoint {
+                key: String::from("undeclared/network-point"),
+            },
+            choice: crucible::ChoiceTag {
+                name: String::from("alternate"),
+            },
+        }],
+    )
+    .expect("bounded unsupported override control");
+    let (error, starts) = rejected_control(unsupported);
+    assert_eq!(starts, 0);
+    assert!(matches!(
+        error,
+        GuardedDefaultCampaignRunError::Invariant(
+            GuardedDefaultCampaignInvariantError::InvalidContinuationInput
+        )
+    ));
+}
+
+fn rejected_control(
+    control: GuardedCampaignContinuationControl,
+) -> (TestGuardedDefaultCampaignRunError, usize) {
+    let source_frontier = VirtualTime { ticks: 5 };
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = request();
+    let schedule = Schedule::empty();
+    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
+        .expect("selection-free replay closure");
+    let request = request.with_controlled_resume_source(
+        schedule,
+        closure,
+        checkpoint,
+        StopCondition::Terminal,
+        checkpoints,
+        control,
+    );
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(ResumeLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            mode: TerminalLifecycleMode::Resume {
+                source_frontier: source_frontier.ticks,
+                terminal_frontier: 9,
+            },
+            offer_continuation_choice: false,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let error = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect_err("invalid continuation control should fail before runner allocation");
+    (error, starts.load(Ordering::Relaxed))
 }
 
 #[test]

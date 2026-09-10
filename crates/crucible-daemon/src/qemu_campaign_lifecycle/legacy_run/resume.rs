@@ -6,10 +6,67 @@
 
 use super::*;
 
+/// Modeled scheduler control for one campaign-owned continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedCampaignContinuationControl {
+    input: crucible_campaign::AttemptContinuationInput,
+}
+
+impl GuardedCampaignContinuationControl {
+    /// Re-seeds every post-boundary deterministic scheduler stream.
+    #[must_use]
+    pub fn reseed(frontier: VirtualTime, seed: Seed) -> Self {
+        Self {
+            input: crucible_campaign::AttemptContinuationInput::scheduler_reseed(
+                frontier.ticks,
+                seed.bytes(),
+            ),
+        }
+    }
+
+    /// Applies an ordered set of post-boundary live-network overrides.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuardedCampaignContinuationControlError`] when the set is
+    /// empty, duplicated, or exceeds the campaign attempt-input bounds.
+    pub fn scheduler_overrides(
+        frontier: VirtualTime,
+        overrides: Vec<crucible::OverrideDecision>,
+    ) -> Result<Self, GuardedCampaignContinuationControlError> {
+        let decisions = overrides
+            .into_iter()
+            .map(|decision| {
+                Schedule::from_decisions([crucible::Decision::Override(decision)])
+                    .to_compact_binary()
+            })
+            .collect();
+        Ok(Self {
+            input: crucible_campaign::AttemptContinuationInput::scheduler_overrides(
+                frontier.ticks,
+                decisions,
+            )?,
+        })
+    }
+
+    pub(super) const fn input(&self) -> &crucible_campaign::AttemptContinuationInput {
+        &self.input
+    }
+}
+
+/// Failure while constructing a campaign-owned continuation control.
+#[derive(Debug, Error)]
+pub enum GuardedCampaignContinuationControlError {
+    /// The bounded campaign attempt input rejected the control set.
+    #[error("campaign continuation input is invalid: {0}")]
+    Campaign(#[from] CampaignCodecError),
+}
+
 pub(super) struct GuardedDefaultCampaignResumeSource {
     pub(super) checkpoint: Checkpoint,
     pub(super) final_stop: StopCondition,
     pub(super) checkpoints: Arc<ExactCheckpointStore>,
+    pub(super) continuation_control: Option<GuardedCampaignContinuationControl>,
 }
 
 /// Authenticated source admission for a legacy checkpoint resumed by the campaign owner.
@@ -119,6 +176,11 @@ where
     {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
+    if source.continuation_control.as_ref().is_some_and(|control| {
+        control.input().source_frontier_ticks() != source.checkpoint.virtual_time.ticks
+    }) {
+        return Err(GuardedDefaultCampaignInvariantError::ContinuationInputMismatch.into());
+    }
     let closure = request
         .initial_replay_closure
         .as_ref()
@@ -198,6 +260,39 @@ where
     Ok(())
 }
 
+pub(super) fn continuation_lifecycle_config<E>(
+    request: &GuardedDefaultCampaignRunRequest,
+) -> Result<ProductionVmLifecycleConfig, GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
+    let Some(source) = &request.resume_source else {
+        return Ok(request.lifecycle.clone());
+    };
+    let Some(control) = &source.continuation_control else {
+        return Ok(request.lifecycle.clone());
+    };
+    if control.input().source_frontier_ticks() != source.checkpoint.virtual_time.ticks {
+        return Err(GuardedDefaultCampaignInvariantError::ContinuationInputMismatch.into());
+    }
+
+    // Both the attempt input and live branch use this authenticated source.
+    let base = Configuration {
+        def: request.scenario.scenario_def(),
+        schedule: request.initial_schedule.clone(),
+    };
+    let continuation = super::super::OwnedQemuAttemptContinuation {
+        input: control.input().clone(),
+        source: base,
+    };
+    super::super::production_lifecycle_config_for_continuation(
+        request.lifecycle.clone(),
+        &request.scenario,
+        Some(&continuation),
+    )
+    .map_err(|_| GuardedDefaultCampaignInvariantError::InvalidContinuationInput.into())
+}
+
 // crucible-lint: allow rust-allow -- the explicit inputs keep every repository, lineage, terminal-evidence, and source binding visible at resume-proof materialization.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn materialize_resume_proof<E>(
@@ -273,6 +368,11 @@ where
                 || capture.reached != expected_configuration
                 || capture.evidence != proof.source_evidence
                 || continuation_attempt.stop() != &source.final_stop
+                || continuation_attempt.continuation_input()
+                    != source
+                        .continuation_control
+                        .as_ref()
+                        .map(GuardedCampaignContinuationControl::input)
                 || continuation_source.selection() != selection
                 || continuation_source.provenance().request != capture.request
                 || continuation_source.provenance().ready != ready

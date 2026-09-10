@@ -548,10 +548,10 @@ pub use qemu_campaign_driver::{
 #[cfg(target_os = "linux")]
 pub use qemu_campaign_driver::{QemuHotForkModeledDriver, QemuHotForkModeledDriverError};
 pub use qemu_campaign_lifecycle::{
-    QemuAttemptProductionVmLifecycleError, QemuAttemptProductionVmLifecycleFactory,
-    QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshAttemptLifecycleFactory,
-    QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome, QemuFreshExecutionRunner,
-    QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
+    QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,
+    QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
+    QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome,
+    QemuFreshExecutionRunner, QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
     QemuFreshGenesisCheckpointCaptureFailure, QemuFreshGenesisCheckpointError,
     QemuFreshStartMaterialization, QemuFreshStartReplayError,
     capture_fresh_genesis_checkpoint_candidate,

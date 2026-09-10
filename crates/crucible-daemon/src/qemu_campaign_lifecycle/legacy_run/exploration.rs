@@ -221,7 +221,8 @@ where
         | StopCondition::EventCount(_)
         | StopCondition::Terminal
         | StopCondition::ExecutionQuanta(_)
-        | StopCondition::VirtualTimeOrExecutionQuanta { .. } => BTreeSet::new(),
+        | StopCondition::VirtualTimeOrExecutionQuanta { .. }
+        | StopCondition::Observation(_) => BTreeSet::new(),
     };
     let explorer = match exploration.map(GuardedCampaignExploration::strategy) {
         Some(GuardedCampaignExplorationStrategy::CanonicalFrontier) => ExplorerPolicy::Exhaustive {

@@ -1104,6 +1104,38 @@ fn empty_branch_override_retains_its_scheduler_event_and_quantum() {
     assert!(lifecycle.branch.is_none());
 }
 
+#[test]
+fn branch_reseed_changes_the_live_scheduler_seed_at_its_source_boundary() {
+    let source = nonterminal_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let configuration = lifecycle.inner.loop_impl().configuration().clone();
+    let frontier = lifecycle.inner.loop_impl().frontier();
+    let seed = Seed::from_u64(0x51ec_7ed0);
+    assert_ne!(lifecycle.inner.loop_impl().future_decision_seed(), seed);
+    lifecycle.branch = Some(ProductionVmBranchConfig {
+        base: configuration.clone(),
+        frontier,
+        decisions: Vec::new(),
+        seed: Some(seed),
+    });
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_branch_frontier_cap(frontier)
+        .unwrap_or_else(|error| panic!("branch frontier should install: {error}"));
+
+    lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("branch reseed should apply: {error}"));
+
+    assert_eq!(lifecycle.inner.loop_impl().future_decision_seed(), seed);
+    assert!(lifecycle.branch.is_none());
+}
+
 pub(in crate::vm_lifecycle) fn nonterminal_signal_replay_scenario() -> ScenarioDefForm {
     let base = crucible::crash_restart_scenario()
         .unwrap_or_else(|error| panic!("built-in scenario should validate: {error}"))

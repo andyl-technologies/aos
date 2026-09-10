@@ -41,14 +41,6 @@ pub(crate) fn guarded_campaign_resume_eligible(
     legacy_campaign::guarded_campaign_resume_eligible(plan, evidence)
 }
 
-// crucible-lint: allow host-nondeterminism-state -- this thin command boundary reads authenticated fork evidence only to choose the daemon-owned route.
-pub(crate) fn guarded_campaign_fork_eligible(
-    plan: &ForkInvocationPlan,
-    evidence: &ResumeHandleEvidence,
-) -> bool {
-    legacy_campaign::guarded_campaign_fork_eligible(plan, evidence)
-}
-
 // crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated legacy checkpoint evidence to the daemon owner and only renders its accepted result.
 pub(crate) fn run_local_qemu_campaign_resume_workflow(
     backend: &ResolvedLocalBackend,
