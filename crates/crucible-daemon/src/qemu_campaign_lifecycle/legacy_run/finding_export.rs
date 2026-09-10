@@ -29,6 +29,14 @@ struct FindingExportBudget {
     exchanges: usize,
 }
 
+struct FindingExportContext<'a, C> {
+    client: &'a C,
+    principal: &'a CampaignPrincipal,
+    campaign: &'a CampaignName,
+    snapshot: CampaignSnapshotId,
+    cancellation: &'a ExecutionCancellation,
+}
+
 pub(super) trait FindingExportClient {
     fn query_campaign_findings(
         &self,
@@ -314,6 +322,13 @@ where
     E: std::error::Error + 'static,
 {
     let mut budget = FindingExportBudget::new()?;
+    let context = FindingExportContext {
+        client,
+        principal,
+        campaign,
+        snapshot,
+        cancellation,
+    };
     let mut query_pages = Vec::new();
     let mut findings = Vec::new();
     let mut after = None;
@@ -347,24 +362,12 @@ where
                 .id()
                 .map_err(GuardedDefaultCampaignRunError::Codec)?;
             let objects = capture_finding_objects(
-                client,
-                principal,
-                campaign,
-                snapshot,
+                &context,
                 finding_id,
                 finding.minimized().is_some(),
                 &mut budget,
-                cancellation,
             )?;
-            let occurrences = capture_finding_occurrences(
-                client,
-                principal,
-                campaign,
-                snapshot,
-                finding_id,
-                &mut budget,
-                cancellation,
-            )?;
+            let occurrences = capture_finding_occurrences(&context, finding_id, &mut budget)?;
             findings.push(GuardedCampaignFindingProof {
                 finding: finding_id,
                 request,
@@ -390,14 +393,10 @@ where
 }
 
 fn capture_finding_objects<C, E>(
-    client: &C,
-    principal: &CampaignPrincipal,
-    campaign: &CampaignName,
-    snapshot: CampaignSnapshotId,
+    context: &FindingExportContext<'_, C>,
     finding: FindingId,
     has_minimized: bool,
     budget: &mut FindingExportBudget,
-    cancellation: &ExecutionCancellation,
 ) -> Result<Vec<GuardedCampaignFindingObjectProof>, GuardedDefaultCampaignRunError<E>>
 where
     C: FindingExportClient,
@@ -415,15 +414,16 @@ where
     for kind in kinds {
         budget.check()?;
         let request = GetCampaignFindingObjectRequest::new(
-            principal.clone(),
-            campaign.clone(),
-            snapshot,
+            context.principal.clone(),
+            context.campaign.clone(),
+            context.snapshot,
             finding,
             kind,
         )
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
-        check_cancellation(cancellation)?;
-        let response = client
+        check_cancellation(context.cancellation)?;
+        let response = context
+            .client
             .get_campaign_finding_object(&request)
             .map_err(GuardedDefaultCampaignRunError::Service)?;
         budget.retain_exchange(
@@ -436,13 +436,9 @@ where
 }
 
 fn capture_finding_occurrences<C, E>(
-    client: &C,
-    principal: &CampaignPrincipal,
-    campaign: &CampaignName,
-    snapshot: CampaignSnapshotId,
+    context: &FindingExportContext<'_, C>,
     finding: FindingId,
     budget: &mut FindingExportBudget,
-    cancellation: &ExecutionCancellation,
 ) -> Result<Vec<GuardedCampaignFindingOccurrenceProof>, GuardedDefaultCampaignRunError<E>>
 where
     C: FindingExportClient,
@@ -453,16 +449,17 @@ where
     loop {
         budget.check()?;
         let request = QueryCampaignFindingOccurrencesRequest::new(
-            principal.clone(),
-            campaign.clone(),
-            snapshot,
+            context.principal.clone(),
+            context.campaign.clone(),
+            context.snapshot,
             finding,
             after,
             1,
         )
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
-        check_cancellation(cancellation)?;
-        let response = client
+        check_cancellation(context.cancellation)?;
+        let response = context
+            .client
             .query_campaign_finding_occurrences(&request)
             .map_err(GuardedDefaultCampaignRunError::Service)?;
         budget.retain_exchange(
@@ -471,16 +468,9 @@ where
         )?;
         let next_after = response.next_after();
         let objects = match response.entries().first() {
-            Some(occurrence) => capture_occurrence_objects(
-                client,
-                principal,
-                campaign,
-                snapshot,
-                finding,
-                occurrence.bundle(),
-                budget,
-                cancellation,
-            )?,
+            Some(occurrence) => {
+                capture_occurrence_objects(context, finding, occurrence.bundle(), budget)?
+            }
             None => Vec::new(),
         };
         pages.push(GuardedCampaignFindingOccurrenceProof {
@@ -498,14 +488,10 @@ where
 }
 
 fn capture_occurrence_objects<C, E>(
-    client: &C,
-    principal: &CampaignPrincipal,
-    campaign: &CampaignName,
-    snapshot: CampaignSnapshotId,
+    context: &FindingExportContext<'_, C>,
     finding: FindingId,
     bundle: &crucible_campaign::FindingCandidateBundle,
     budget: &mut FindingExportBudget,
-    cancellation: &ExecutionCancellation,
 ) -> Result<Vec<GuardedCampaignFindingOccurrenceObjectProof>, GuardedDefaultCampaignRunError<E>>
 where
     C: FindingExportClient,
@@ -530,16 +516,17 @@ where
     for kind in kinds {
         budget.check()?;
         let request = GetCampaignFindingOccurrenceObjectRequest::new(
-            principal.clone(),
-            campaign.clone(),
-            snapshot,
+            context.principal.clone(),
+            context.campaign.clone(),
+            context.snapshot,
             finding,
             bundle,
             kind,
         )
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
-        check_cancellation(cancellation)?;
-        let response = client
+        check_cancellation(context.cancellation)?;
+        let response = context
+            .client
             .get_campaign_finding_occurrence_object(&request)
             .map_err(GuardedDefaultCampaignRunError::Service)?;
         budget.retain_exchange(
@@ -568,12 +555,15 @@ mod tests {
     // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
+    use std::collections::BTreeSet;
     use std::io;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crucible_campaign::{
-        CampaignLineageId, CampaignPolicyId, CampaignRoots, CampaignSnapshot, MerkleMap,
+        CampaignHash, CampaignLineageId, CampaignPolicyId, CampaignRoots, CampaignSnapshot,
+        Finding, FindingKind, FindingOccurrenceSet, FindingSignature, MerkleMap, ObservationId,
+        ReproductionArtifactId,
     };
     use crucible_cas::content_store::{ContentId, MemoryBlobBackend, ObjectKind};
 
@@ -584,7 +574,8 @@ mod tests {
         response: QueryCampaignFindingsResponse,
         cancellation: ExecutionCancellation,
         cancel_on_query: bool,
-        transfers: AtomicUsize,
+        query_transfers: AtomicUsize,
+        object_transfers: AtomicUsize,
     }
 
     impl FindingExportClient for CountingQueryClient {
@@ -593,7 +584,7 @@ mod tests {
             request: &QueryCampaignFindingsRequest,
         ) -> Result<QueryCampaignFindingsResponse, CampaignClientError> {
             assert_eq!(request, &self.expected_request);
-            self.transfers.fetch_add(1, Ordering::SeqCst);
+            self.query_transfers.fetch_add(1, Ordering::SeqCst);
             if self.cancel_on_query {
                 self.cancellation.cancel();
             }
@@ -604,7 +595,8 @@ mod tests {
             &self,
             _request: &GetCampaignFindingObjectRequest,
         ) -> Result<GetCampaignFindingObjectResponse, CampaignClientError> {
-            unreachable!("empty finding page has no object transfer")
+            self.object_transfers.fetch_add(1, Ordering::SeqCst);
+            unreachable!("cancellation must prevent a finding-object transfer")
         }
 
         fn query_campaign_finding_occurrences(
@@ -631,19 +623,55 @@ mod tests {
         CampaignSnapshotId,
         CountingQueryClient,
     ) {
+        query_fixture(cancellation, cancel_on_query, false)
+    }
+
+    fn nonempty_query_fixture(
+        cancellation: &ExecutionCancellation,
+    ) -> (
+        CampaignPrincipal,
+        CampaignName,
+        CampaignSnapshotId,
+        CountingQueryClient,
+    ) {
+        query_fixture(cancellation, true, true)
+    }
+
+    fn query_fixture(
+        cancellation: &ExecutionCancellation,
+        cancel_on_query: bool,
+        include_finding: bool,
+    ) -> (
+        CampaignPrincipal,
+        CampaignName,
+        CampaignSnapshotId,
+        CountingQueryClient,
+    ) {
         let backend = Arc::new(MemoryBlobBackend::new(
             "finding-export-cancellation",
             u64::MAX,
         ));
         let map = MerkleMap::new(backend);
         let empty = map.empty().expect("empty campaign index");
+        let finding = include_finding.then(|| finding_for_test(empty.content_id()));
+        let findings_root = match finding.as_ref() {
+            Some(finding) => map
+                .insert(
+                    empty.content_id(),
+                    finding_signature_key_for_test(finding.signature().cluster_key()),
+                    finding.id().expect("finding ID").content_id(),
+                )
+                .expect("finding index")
+                .content_id(),
+            None => empty.content_id(),
+        };
         let roots = CampaignRoots {
             graph: empty.content_id(),
             exploration: empty.content_id(),
             observations: empty.content_id(),
             corpus: empty.content_id(),
             coverage: empty.content_id(),
-            findings: empty.content_id(),
+            findings: findings_root,
             pins: empty.content_id(),
             accounting: empty.content_id(),
             coordination: empty.content_id(),
@@ -675,24 +703,77 @@ mod tests {
         )
         .expect("finding query");
         let (page, proof) = map
-            .scan_with_proof(empty.content_id(), None, 1)
-            .expect("empty finding proof");
+            .scan_with_proof(findings_root, None, 1)
+            .expect("finding proof");
         let response = QueryCampaignFindingsResponse::new(
             &request,
             snapshot,
-            Vec::new(),
+            finding.into_iter().collect(),
             page.next_after(),
             proof,
         )
-        .expect("empty finding response");
+        .expect("finding response");
         let client = CountingQueryClient {
             expected_request: request,
             response,
             cancellation: cancellation.clone(),
             cancel_on_query,
-            transfers: AtomicUsize::new(0),
+            query_transfers: AtomicUsize::new(0),
+            object_transfers: AtomicUsize::new(0),
         };
         (principal, campaign, snapshot_id, client)
+    }
+
+    fn finding_for_test(occurrence_root: ContentId) -> Finding {
+        let observation = ObservationId::parse(&format!(
+            "crucible.campaign.observation@{}",
+            ContentId::for_bytes(ObjectKind::Observation, 1, b"finding-export-observation")
+                .encode()
+        ))
+        .expect("observation ID");
+        let first_seen = CampaignSnapshotId::parse(&format!(
+            "crucible.campaign.snapshot@{}",
+            ContentId::for_bytes(
+                ObjectKind::CampaignSnapshot,
+                2,
+                b"finding-export-first-seen"
+            )
+            .encode()
+        ))
+        .expect("first-seen snapshot");
+        Finding::new(
+            FindingSignature::new(
+                FindingKind::Timeout,
+                CampaignHash::derive("finding-export-fingerprint", b"timeout"),
+                None,
+                String::from("finding-export.timeout"),
+                None,
+                BTreeSet::new(),
+            )
+            .expect("finding signature"),
+            observation,
+            ReproductionArtifactId::parse(&format!(
+                "crucible.campaign.reproduction-artifact@{}",
+                ContentId::for_bytes(ObjectKind::Finding, 1, b"finding-export-reproduction")
+                    .encode()
+            ))
+            .expect("reproduction ID"),
+            first_seen,
+            FindingOccurrenceSet::new(occurrence_root, 1, observation)
+                .expect("finding occurrence set"),
+            None,
+            BTreeSet::new(),
+        )
+        .expect("finding")
+    }
+
+    fn finding_signature_key_for_test(signature: CampaignHash) -> CampaignHash {
+        let namespace = "findings.signature";
+        let mut bytes = Vec::with_capacity(namespace.len() + 40);
+        bytes.extend_from_slice(&(namespace.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(namespace.as_bytes());
+        bytes.extend_from_slice(&signature.as_bytes());
+        CampaignHash::derive("crucible.campaign-map-key.v1", &bytes)
     }
 
     #[test]
@@ -715,7 +796,7 @@ mod tests {
                 super::super::GuardedDefaultCampaignInvariantError::FindingExportCanceled
             ))
         ));
-        assert_eq!(client.transfers.load(Ordering::SeqCst), 0);
+        assert_eq!(client.query_transfers.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -738,7 +819,7 @@ mod tests {
         assert!(export.query_pages()[0].response().entries().is_empty());
         assert_eq!(export.query_pages()[0].response().next_after(), None);
         assert!(export.findings().is_empty());
-        assert_eq!(client.transfers.load(Ordering::SeqCst), 1);
+        assert_eq!(client.query_transfers.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -760,6 +841,29 @@ mod tests {
                 super::super::GuardedDefaultCampaignInvariantError::FindingExportCanceled
             ))
         ));
-        assert_eq!(client.transfers.load(Ordering::SeqCst), 1);
+        assert_eq!(client.query_transfers.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancellation_after_nonempty_query_prevents_pending_object_transfer() {
+        let cancellation = ExecutionCancellation::default();
+        let (principal, campaign, snapshot, client) = nonempty_query_fixture(&cancellation);
+
+        let result = capture_final_finding_export::<_, io::Error>(
+            &client,
+            &principal,
+            &campaign,
+            snapshot,
+            &cancellation,
+        );
+
+        assert!(matches!(
+            result,
+            Err(GuardedDefaultCampaignRunError::Invariant(
+                super::super::GuardedDefaultCampaignInvariantError::FindingExportCanceled
+            ))
+        ));
+        assert_eq!(client.query_transfers.load(Ordering::SeqCst), 1);
+        assert_eq!(client.object_transfers.load(Ordering::SeqCst), 0);
     }
 }

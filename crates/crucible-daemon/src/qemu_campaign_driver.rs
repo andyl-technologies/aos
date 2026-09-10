@@ -286,17 +286,18 @@ pub(crate) struct QemuFindingCandidateTriageInputs {
     paired_divergence_logs: Option<(Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>)>,
 }
 
+/// Owned components retained from one candidate replay's triage projection.
+pub(crate) type QemuFindingCandidateTriageParts = (
+    Vec<FailureClusterReportFailure>,
+    Vec<SchedulerEventLogEntry>,
+    ContentHash,
+    Vec<Vec<u8>>,
+    Option<(Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>)>,
+);
+
 impl QemuFindingCandidateTriageInputs {
     /// Consumes the raw inputs retained from one private QEMU execution.
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        Vec<FailureClusterReportFailure>,
-        Vec<SchedulerEventLogEntry>,
-        ContentHash,
-        Vec<Vec<u8>>,
-        Option<(Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>)>,
-    ) {
+    pub(crate) fn into_parts(self) -> QemuFindingCandidateTriageParts {
         (
             self.failures,
             self.causal_entries,
