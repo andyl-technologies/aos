@@ -7,9 +7,13 @@
 //! ordinary modeled execution, shuts down every adopted node, and retains the
 //! source and aggregate target authorities until durable publication.
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+// crucible-lint: allow host-nondeterminism-state -- Wall time bounds operational cleanup while no modeled execution capability is exposed.
+use std::thread;
+use std::time::Instant;
 
 // crucible-lint: allow host-nondeterminism-state -- The factory authenticates and forwards an unchanged captured scheduler continuation; operational source availability cannot mutate it.
 use crucible::{ContentHash, ScenarioDef, SchedulerError, SchedulerOperationalFailureClass};
@@ -40,8 +44,8 @@ use crate::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
     QemuAttemptResourceGuardFactory, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
     QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome, QemuFreshExecutionRunnerError,
-    QemuHotForkAttemptReconciliation, QemuHotForkWorldAssembly, QemuHotForkWorldNodeTarget,
-    QemuHotForkWorldResourceOwner, QemuProductionHotForkWorldLifecycle,
+    QemuHotForkAttemptReconciliation, QemuHotForkReconciliationStep, QemuHotForkWorldAssembly,
+    QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner, QemuProductionHotForkWorldLifecycle,
 };
 
 /// Exact semantic and executor basis of one retained source world.
@@ -591,11 +595,11 @@ pub enum QemuProductionHotForkWorldLifecycleFactoryError<P> {
     Lifecycle(#[source] crucible_api::LifecycleApiError),
 }
 
-type ProductionAssembly<G> = QemuHotForkWorldAssembly<
-    QemuHotForkAttemptReconciliation<
-        LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
-    >,
+type ProductionChild<G> = QemuHotForkAttemptReconciliation<
+    LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
 >;
+
+type ProductionAssembly<G> = QemuHotForkWorldAssembly<ProductionChild<G>>;
 
 type ProductionLifecycleStartResult<G, P> = Result<
     QemuHotForkWorldLifecycleStart<QemuProductionHotForkWorldLifecycle<G>>,
@@ -870,13 +874,14 @@ where
             ) {
                 Ok(child) => child,
                 Err(error) => {
-                    let message = error.to_string();
+                    let mut message = error.to_string();
                     let source = self.recover_proven_no_child_launch(
                         &checkout_identity,
                         source_world,
                         resources,
                         assembly,
                         error,
+                        &mut message,
                     );
                     return ProductionLifecycleStartOutcome::failed(
                         AttemptWorkerFailure::Retryable(
@@ -966,6 +971,7 @@ where
         mut resources: QemuHotForkWorldResourceOwner<R::Guard>,
         assembly: ProductionAssembly<R::Guard>,
         error: LinuxQemuHotForkSourceWorldAttemptLaunchError,
+        failure_message: &mut String,
     ) -> CheckedOutSourceDisposition {
         // Only the typed no-child outcome plus successful reservation rollback
         // permits source reuse. Every other launch state retains all authority.
@@ -976,7 +982,7 @@ where
                 QemuHotForkLaunchError::Rejected { .. }
             )
         );
-        if !proven_rejection || assembly.admitted_child_count() != 0 {
+        if !proven_rejection {
             drop(owner);
             quarantine_failed_assembly(source_world, resources, assembly, None);
             return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
@@ -991,18 +997,33 @@ where
             }
         };
         drop(run_directory);
-        let source_is_unchanged = Arc::ptr_eq(&source_world, &recovered_source)
-            && recovered_source.lock().is_ok_and(|mut source| {
-                checkout_identity.matches(&source) && source.fork_continuation().is_ok()
-            });
-        if !source_is_unchanged || resources.finish().is_err() {
-            drop(recovered_source);
-            quarantine_failed_assembly(source_world, resources, assembly, None);
+
+        if !Arc::ptr_eq(&source_world, &recovered_source) {
+            failure_message.push_str("; clean rejection returned another source-world owner");
+            let children = assembly.into_rollback_children();
+            quarantine_failed_rollback(source_world, Some(recovered_source), resources, children);
             return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
         }
 
+        let children = assembly.into_rollback_children();
+        if let Err((children, rollback)) =
+            rollback_hot_fork_children(children, self.shutdown_policy)
+        {
+            failure_message.push_str(&format!("; clean-rejection rollback failed: {rollback}"));
+            drop(recovered_source);
+            quarantine_failed_rollback(source_world, None, resources, children);
+            return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
+        }
+
+        if let Err(error) = resources.finish() {
+            failure_message.push_str(&format!(
+                "; aggregate target release failed after rollback: {error}"
+            ));
+            drop(recovered_source);
+            quarantine_failed_rollback(source_world, None, resources, BTreeMap::new());
+            return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
+        }
         drop(resources);
-        drop(assembly);
         drop(source_world);
         let source = match Arc::try_unwrap(recovered_source) {
             Ok(source) => source,
@@ -1018,9 +1039,165 @@ where
                 return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
             }
         };
+        let mut source = match source.into_reusable() {
+            Ok(source) => source,
+            Err(failure) => {
+                failure_message.push_str(&format!(
+                    "; exact source-world reauthentication failed after rollback: {failure}"
+                ));
+                let _retained_for_process_lifetime = Box::leak(Box::new(failure));
+                return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
+            }
+        };
+        let source_reauthentication = if checkout_identity.matches(&source) {
+            source
+                .fork_continuation()
+                .map(|_continuation| ())
+                .map_err(|error| error.to_string())
+        } else {
+            Err(String::from("checkout identity changed"))
+        };
+        if let Err(error) = source_reauthentication {
+            failure_message.push_str(&format!(
+                "; exact source-world reauthentication failed after rollback: {error}"
+            ));
+            let _retained_for_process_lifetime = Box::leak(Box::new(source));
+            return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
+        }
         self.sources.restore(source);
         CheckedOutSourceDisposition::Restored
     }
+}
+
+trait HotForkRollbackChild {
+    fn request_rollback_termination(&mut self) -> Result<(), String>;
+
+    fn rollback_step(&mut self) -> Result<QemuHotForkReconciliationStep, String>;
+
+    fn reconcile_rollback_cancellation(
+        &mut self,
+    ) -> Result<AttemptExecutionReconciliationStep, String>;
+
+    fn quarantine_rollback(&mut self);
+}
+
+impl<G> HotForkRollbackChild for ProductionChild<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn request_rollback_termination(&mut self) -> Result<(), String> {
+        self.request_termination()
+            .map_err(|error| error.to_string())
+    }
+
+    fn rollback_step(&mut self) -> Result<QemuHotForkReconciliationStep, String> {
+        self.reconcile_step().map_err(|error| error.to_string())
+    }
+
+    fn reconcile_rollback_cancellation(
+        &mut self,
+    ) -> Result<AttemptExecutionReconciliationStep, String> {
+        self.reconcile_execution_disposition(AttemptExecutionDisposition::Canceled)
+            .map_err(|error| error.to_string())
+    }
+
+    fn quarantine_rollback(&mut self) {
+        self.quarantine();
+    }
+}
+
+fn rollback_hot_fork_children<C>(
+    mut children: BTreeMap<crucible::NodeId, C>,
+    shutdown_policy: QemuShutdownPolicy,
+) -> Result<(), (BTreeMap<crucible::NodeId, C>, String)>
+where
+    C: HotForkRollbackChild,
+{
+    let mut termination_failures = Vec::new();
+    for (node, child) in &mut children {
+        if let Err(error) = child.request_rollback_termination() {
+            termination_failures.push(format!("request termination for `{}`: {error}", node.name));
+        }
+    }
+    if !termination_failures.is_empty() {
+        return Err((children, termination_failures.join("; ")));
+    }
+
+    let running_wait = shutdown_policy
+        .sigkill_wait
+        .saturating_add(shutdown_policy.reap_wait);
+    let poll_wait = if shutdown_policy.reap_wait.is_zero() {
+        shutdown_policy.sigkill_wait
+    } else {
+        shutdown_policy.reap_wait
+    };
+    let nodes = children.keys().cloned().collect::<Vec<_>>();
+    for node in nodes {
+        let deadline = Instant::now().checked_add(running_wait);
+        let Some(child) = children.get_mut(&node) else {
+            return Err((
+                children,
+                format!("retained rollback child `{}` disappeared", node.name),
+            ));
+        };
+        loop {
+            let Some(remaining) = deadline
+                .and_then(|limit| limit.checked_duration_since(Instant::now()))
+                .filter(|remaining| !remaining.is_zero())
+            else {
+                let failure = format!(
+                    "reconcile `{}` within configured SIGKILL and reap waits",
+                    node.name
+                );
+                return Err((children, failure));
+            };
+            match child.rollback_step() {
+                Ok(QemuHotForkReconciliationStep::ChildRunning) => {
+                    thread::sleep(poll_wait.min(remaining));
+                }
+                Ok(QemuHotForkReconciliationStep::AwaitingPublication) => break,
+                Ok(QemuHotForkReconciliationStep::ChildDiagnosticsDrained)
+                | Ok(QemuHotForkReconciliationStep::Advanced(_)) => {}
+                Ok(QemuHotForkReconciliationStep::Complete) => {
+                    let failure = format!(
+                        "child `{}` completed before rollback cancellation was recorded",
+                        node.name
+                    );
+                    return Err((children, failure));
+                }
+                Err(error) => {
+                    let failure = format!(
+                        "reconcile child `{}` before publication: {error}",
+                        node.name
+                    );
+                    return Err((children, failure));
+                }
+            }
+        }
+        loop {
+            let Some(_remaining) = deadline
+                .and_then(|limit| limit.checked_duration_since(Instant::now()))
+                .filter(|remaining| !remaining.is_zero())
+            else {
+                let failure = format!(
+                    "reconcile cancellation for `{}` within configured SIGKILL and reap waits",
+                    node.name
+                );
+                return Err((children, failure));
+            };
+            match child.reconcile_rollback_cancellation() {
+                Ok(AttemptExecutionReconciliationStep::Progressed) => {}
+                Ok(AttemptExecutionReconciliationStep::Complete) => break,
+                Err(error) => {
+                    let failure = format!("reconcile cancellation for `{}`: {error}", node.name);
+                    return Err((children, failure));
+                }
+            }
+        }
+        children.remove(&node);
+    }
+
+    Ok(())
 }
 
 struct QuarantinedHotForkWorld<G>
@@ -1030,6 +1207,37 @@ where
     _source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
     _resources: QemuHotForkWorldResourceOwner<G>,
     _assembly: ProductionAssembly<G>,
+}
+
+struct QuarantinedHotForkRollbackWorld<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    _source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+    _recovered_source: Option<Arc<Mutex<ProductionVmHotForkSourceWorld>>>,
+    _resources: QemuHotForkWorldResourceOwner<G>,
+    _children: BTreeMap<crucible::NodeId, ProductionChild<G>>,
+}
+
+fn quarantine_failed_rollback<G>(
+    source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+    recovered_source: Option<Arc<Mutex<ProductionVmHotForkSourceWorld>>>,
+    mut resources: QemuHotForkWorldResourceOwner<G>,
+    mut children: BTreeMap<crucible::NodeId, ProductionChild<G>>,
+) where
+    G: QemuAttemptProcessResourceGuard + Send + 'static,
+{
+    for child in children.values_mut() {
+        child.quarantine_rollback();
+    }
+    resources.quarantine();
+    let quarantine = QuarantinedHotForkRollbackWorld {
+        _source_world: source_world,
+        _recovered_source: recovered_source,
+        _resources: resources,
+        _children: children,
+    };
+    let _retained_for_process_lifetime = Box::leak(Box::new(quarantine));
 }
 
 fn quarantine_failed_assembly<G>(

@@ -57,6 +57,7 @@ enum TestShape {
     BranchPointModel,
     LazyFrontier,
     ControlResponsiveness,
+    WorldForkAtomicity,
     CampaignComponentContract,
     AttemptIdempotence,
     CampaignMutationScaling,
@@ -87,13 +88,22 @@ struct CrateTestingOwnership {
 // Library-exact campaign gates are absent from the RFC-0010 integration-target
 // table. Keep them in the same layer, backend, and ownership checks without
 // claiming that the selector is an integration-test target.
-const CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS: &[GateTargetSpec] = &[GateTargetSpec {
-    gate: "gate:control-responsiveness",
-    package: "crucible-daemon",
-    test_target: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
-    required_features: &[],
-    placeholder: false,
-}];
+const CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS: &[GateTargetSpec] = &[
+    GateTargetSpec {
+        gate: "gate:control-responsiveness",
+        package: "crucible-daemon",
+        test_target: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
+        gate: "gate:world-fork-atomicity",
+        package: "crucible-daemon",
+        test_target: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_clean_rejection_is_atomic_at_every_launch_index",
+        required_features: &[],
+        placeholder: false,
+    },
+];
 
 const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     GateTestingStandard {
@@ -191,6 +201,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         layers: &[Layer::L4],
         shape: TestShape::ControlResponsiveness,
         backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:world-fork-atomicity",
+        owner_packages: &["crucible-daemon"],
+        layers: &[Layer::L4],
+        shape: TestShape::WorldForkAtomicity,
+        backend: TestBackend::SimDouble,
     },
     GateTestingStandard {
         gate: "gate:campaign-component-contract",
@@ -466,6 +483,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:control-responsive",
             "gate:control-responsiveness",
             "gate:campaign-component-contract",
+            "gate:world-fork-atomicity",
         ],
     },
     CrateTestingOwnership {
@@ -571,6 +589,47 @@ fn control_responsiveness_standard_requires_daemon_proofs() -> Result<(), Box<dy
         assert!(
             !source_shape_failures(target, standard, &without_proof).is_empty(),
             "control-responsiveness standard accepted a gate missing {proof}",
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn world_fork_atomicity_standard_requires_production_transaction_proofs()
+-> Result<(), Box<dyn Error>> {
+    let target = CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS
+        .iter()
+        .find(|target| target.gate == "gate:world-fork-atomicity")
+        .ok_or("world-fork-atomicity library target is missing")?;
+    let standard =
+        standard_for_gate(target.gate).ok_or("world-fork-atomicity testing standard is missing")?;
+    let source = fs::read_to_string(workspace_root().join(
+        "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
+    ))?;
+    assert!(source_shape_failures(target, standard, &source).is_empty());
+    assert!(backend_failures(target, standard).is_empty());
+
+    let wrong_layer = GateTargetSpec {
+        package: "crucible-qemu",
+        ..*target
+    };
+    assert!(!backend_failures(&wrong_layer, standard).is_empty());
+
+    for proof in [
+        "QemuProductionHotForkWorldLifecycleFactory",
+        "production_three_node_clean_rejection_is_atomic_at_every_launch_index",
+        "production_three_node_ambiguous_launch_is_fail_closed_at_every_index",
+        "production_three_node_adoption_failure_retains_the_complete_world",
+        "production_aggregate_release_failure_blocks_source_restore",
+        "production_source_identity_drift_blocks_restore_after_complete_rollback",
+        "rollback_retains_every_unfinished_owner_on_termination_failure",
+        "rollback_deadline_covers_reap_private_release_and_cancellation_progress",
+    ] {
+        let without_proof = source.replace(proof, "missing_world_fork_atomicity_proof");
+        assert!(
+            !source_shape_failures(target, standard, &without_proof).is_empty(),
+            "world-fork-atomicity standard accepted a gate missing {proof}",
         );
     }
 

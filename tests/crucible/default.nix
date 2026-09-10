@@ -1207,6 +1207,7 @@ in rec {
         "checks.crucible.phase5.gates.campaignStoreComposition" = phase5.gates.campaignStoreComposition;
         "checks.crucible.phase5.gates.campaignStoreEquivalence" = phase5.gates.campaignStoreEquivalence;
         "checks.crucible.phase7.gates.hotForkIsolation.rawGate" = phase7.gates.hotForkIsolation.rawGate;
+        "checks.crucible.phase7.gates.worldForkAtomicity.rawGate" = phase7.gates.worldForkAtomicity.rawGate;
         "checks.crucible.phase7.qemuHotForkEquivalenceVm" = phase7.qemuHotForkEquivalenceVm;
       };
     };
@@ -2973,6 +2974,22 @@ in rec {
         reason = "native resource isolation acceptance remains incomplete";
         taskIds = ["T-CAM-7.1" "T-CAM-7.3" "T-CAM-7.6"];
         gateName = "gate:hot-fork-isolation";
+        owner = "crucible-daemon";
+      };
+      worldForkAtomicity = redBeforeAdvance {
+        attrPath = "checks.crucible.phase7.gates.worldForkAtomicity";
+        # lint needle: worldForkAtomicity = import ./phase7-world-fork-atomicity.nix
+        gate = import ./phase7-world-fork-atomicity.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase7.gates.worldForkAtomicity.rawGate";
+          taskIds = [];
+          dependencies = [];
+        };
+        dependencies = [];
+        phase = "phase7";
+        reason = "the native real-QEMU atomic world-fork matrix remains incomplete";
+        taskIds = ["T-CAM-7.4"];
+        gateName = "gate:world-fork-atomicity";
         owner = "crucible-daemon";
       };
       perfBench = greenBeforeAdvance {
