@@ -658,7 +658,7 @@ mod container_release_tests {
         platform_manifest.platform = Some(Platform::linux_amd64());
         ContainerRelease {
             schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
-            media_type: MediaType::AosContainerRelease,
+            media_type: MediaType::AosContainerReleaseV2,
             identity: ContainerReleaseIdentity {
                 release: "1.0.0".to_string(),
                 package: "aos".to_string(),
@@ -699,6 +699,10 @@ mod container_release_tests {
                 ready_for_verified_publication: true,
             },
             evidence: ContainerReleaseEvidence {
+                abilities: Some(evidence_descriptor(
+                    MediaType::AosContainerStaticAbilities,
+                    "abilities",
+                )),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),

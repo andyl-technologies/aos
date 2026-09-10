@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context as _, Result};
 use aos_oci_types::{
     ContainerRelease, ContainerSignatureInput, Descriptor, ImageIndex, ImageManifest, MediaType,
-    CONTAINER_RELEASE_SIDECAR_PATH,
+    CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
+    CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1, CONTAINER_SIGNATURE_INPUT_SCHEMA_V1,
 };
 use aos_release::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression};
 use aos_release::digest::Sha256Digest;
@@ -53,7 +54,7 @@ pub(super) fn assemble(
     }
 
     let layout = root.join("layout");
-    let roots = [
+    let mut roots = vec![
         &release.oci.index,
         &release.nix.closure,
         &release.evidence.sbom,
@@ -62,6 +63,9 @@ pub(super) fn assemble(
         &release.evidence.provenance,
         &release.evidence.signature,
     ];
+    if let Some(abilities) = &release.evidence.abilities {
+        roots.push(abilities);
+    }
     let mut graph = BTreeMap::new();
     for descriptor in roots {
         visit(&layout, descriptor, &mut graph)?;
@@ -142,7 +146,7 @@ pub(super) fn assemble(
             relation: ArtifactRelation::Contains,
             target: ids[&index_digest].clone(),
         }],
-        ..ArtifactAttributes::plain("application/vnd.aos.container-release.v1+json")
+        ..ArtifactAttributes::plain(release.media_type.as_str())
     };
     payload.copy(
         &release_path,
@@ -162,12 +166,17 @@ pub(super) fn assemble(
         "provenance/container-signature-input".to_owned(),
         ArtifactKind::Provenance,
         "oci/signature-input.json".to_owned(),
-        ArtifactAttributes::exact(
-            "application/vnd.aos.container.signature-input.v1+json",
-            &input_bytes,
-        )?,
+        ArtifactAttributes::exact(signature_input_media_type(&input), &input_bytes)?,
     )?;
     Ok(())
+}
+
+fn signature_input_media_type(input: &ContainerSignatureInput) -> &'static str {
+    if input.schema == CONTAINER_SIGNATURE_INPUT_SCHEMA_V1 {
+        CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE_V1
+    } else {
+        CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE
+    }
 }
 
 pub(super) fn require_absent(registry: &Path) -> Result<()> {

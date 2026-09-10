@@ -449,6 +449,10 @@
           abilityTemplateJson = preparedAbilityPackage.templateJson;
           abilityGraphSpecsJson = preparedAbilityPackage.graphSpecsJson;
           abilityInterfacesJson = preparedAbilityPackage.interfacesJson;
+          passthru = {
+            abilityPackage = true;
+            abilityPackagePayload = drv;
+          };
           dontNukeRefs = true;
           phases = [
             {

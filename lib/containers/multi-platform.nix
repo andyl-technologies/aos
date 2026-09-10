@@ -78,10 +78,15 @@
 
   primaryImages = map (build: build.qualification.primaryImage) sortedBuilds;
   repeatImages = map (build: build.qualification.repeatImage) sortedBuilds;
+  staticAbilityContract = oci.mkStaticAbilityContract {
+    pname = "aos-container-${name}-production-static-abilities";
+    contracts = map (build: build.coordination.staticAbilityContract) sortedBuilds;
+  };
   referenceName = "${first.coordination.repository}:${first.coordination.referenceTag}";
   primaryIndex = oci.mkMultiPlatformIndex {
     pname = "aos-container-${name}-production-index";
     images = primaryImages;
+    abilityContract = staticAbilityContract;
     inherit referenceName;
     annotations = first.coordination.indexAnnotations;
   };
@@ -90,6 +95,7 @@
   repeatIndex = oci.mkMultiPlatformIndex {
     pname = "aos-container-${name}-production-index-repeat";
     images = builtins.reverseList repeatImages;
+    abilityContract = staticAbilityContract;
     inherit referenceName;
     annotations = first.coordination.indexAnnotations;
   };
@@ -141,6 +147,7 @@
       # graph independently rebuilds every evidence input around those stable
       # subject bytes instead of claiming a different release identity.
       image = primaryIndex;
+      abilityContract = staticAbilityContract;
       inherit (graphs) referenceGraph sourceGraph;
       definitionAttribute = first.coordination.definitionAttribute;
       releaseIdentity = first.coordination.releaseIdentity;
@@ -192,7 +199,7 @@
 in
   builtins.deepSeq validated {
     ociIndex = primaryIndex;
-    inherit evidence publicationInputs check;
+    inherit evidence publicationInputs check staticAbilityContract;
     qualification = {
       inherit
         primaryIndex

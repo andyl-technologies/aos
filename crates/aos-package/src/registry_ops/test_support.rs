@@ -361,7 +361,7 @@ pub(in crate::registry_ops) fn container_release_inputs(
     };
     let release = ContainerRelease {
         schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
-        media_type: MediaType::AosContainerRelease,
+        media_type: MediaType::AosContainerReleaseV2,
         identity: ContainerReleaseIdentity {
             release: version.to_string(),
             package: "aos".to_string(),
@@ -386,6 +386,10 @@ pub(in crate::registry_ops) fn container_release_inputs(
         },
         qualification: qualification.clone(),
         evidence: ContainerReleaseEvidence {
+            abilities: Some(evidence_descriptor(
+                MediaType::AosContainerStaticAbilities,
+                "abilities",
+            )),
             sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
             source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
             license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
@@ -399,6 +403,7 @@ pub(in crate::registry_ops) fn container_release_inputs(
         oci: release.oci.clone(),
         nix: release.nix.clone(),
         evidence: ContainerSignatureInputEvidence {
+            abilities: release.evidence.abilities.clone(),
             sbom: release.evidence.sbom.clone(),
             source: release.evidence.source.clone(),
             license: release.evidence.license.clone(),

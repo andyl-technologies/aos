@@ -16,6 +16,7 @@
   common,
 }: {
   image,
+  abilityContract,
   referenceGraph,
   sourceGraph,
   closureLayers,
@@ -46,6 +47,14 @@
     if builtins.isAttrs image && (image.passthru.ociImageIndex or false)
     then image
     else common.fail "image must be produced by mkMultiPlatformIndex";
+  checkedAbilityContract =
+    if builtins.isAttrs abilityContract && (abilityContract.passthru.ociStaticAbilityContract or false)
+    then abilityContract
+    else common.fail "abilityContract must be produced by mkStaticAbilityContract";
+  subjectAbilityContractCheck =
+    if builtins.toString checkedImage.passthru.checkedAbilityContract == builtins.toString checkedAbilityContract
+    then true
+    else common.fail "abilityContract must be the exact contract bound to the subject image";
   checkedReferenceGraph =
     if builtins.isAttrs referenceGraph && (referenceGraph.passthru.referenceGraph or false)
     then referenceGraph
@@ -79,17 +88,22 @@
       outputPath = builtins.unsafeDiscardStringContext (builtins.toString checkedImage);
     };
     packageCatalog = checkedCatalog;
+    abilityContract = {
+      path = builtins.unsafeDiscardStringContext (builtins.toString checkedAbilityContract);
+      mediaType = checkedAbilityContract.passthru.mediaType;
+      schema = "aos.container.static-abilities/v1";
+    };
   };
   layerArguments =
     lib.concatMapStringsSep " "
     (layer: lib.escapeShellArg (builtins.toString layer))
     checkedLayers;
 in
-  builtins.deepSeq [checkedImage checkedReferenceGraph checkedSourceGraph checkedLayers evidenceSpec] (mkDerivation {
+  builtins.deepSeq [checkedImage checkedAbilityContract subjectAbilityContractCheck checkedReferenceGraph checkedSourceGraph checkedLayers evidenceSpec] (mkDerivation {
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils findutils gzip jq tar checkedImage checkedReferenceGraph checkedSourceGraph] ++ checkedLayers;
+    buildDeps = [coreutils findutils gzip jq tar checkedImage checkedAbilityContract checkedReferenceGraph checkedSourceGraph] ++ checkedLayers;
 
     outputChecks.out = {};
     inherit evidenceSpec;
@@ -102,6 +116,7 @@ in
         name = "assemble";
         script = ''
           export AOS_EVIDENCE_IMAGE=${lib.escapeShellArg (builtins.toString checkedImage)}
+          export AOS_EVIDENCE_ABILITY_CONTRACT=${lib.escapeShellArg (builtins.toString checkedAbilityContract)}
           export AOS_EVIDENCE_REFERENCE_GRAPH=${lib.escapeShellArg (builtins.toString checkedReferenceGraph)}
           export AOS_EVIDENCE_SOURCE_GRAPH=${lib.escapeShellArg (builtins.toString checkedSourceGraph)}
           printf '%s\n' ${layerArguments} > evidence-layer-paths

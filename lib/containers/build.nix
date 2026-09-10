@@ -196,6 +196,26 @@
     destination = "/init";
     executable = true;
   };
+  abilityPackages =
+    builtins.filter
+    (package:
+      builtins.isAttrs package
+      && package ? abilities
+      && (package.abilities.passthru.abilityPackage or false))
+    container.packageRoots;
+  staticAbilityContract = oci.mkStaticAbilityContract {
+    pname = "aos-container-${container.name}-static-abilities";
+    platform = {
+      inherit (container.platform) os architecture;
+    };
+    packages =
+      map (package: {
+        payload = package;
+        manifest = package.abilities;
+      })
+      abilityPackages;
+    runtimeRoots = auditRoots;
+  };
   osRelease = ''
     NAME="${systemIdentity.name}"
     ID=aos
@@ -298,6 +318,11 @@
         source = "${bakedRootInventory}/baked-roots";
       }
       {
+        path = "/usr/lib/aos-container/static-ability-contract.json";
+        mode = "0444";
+        source = "${staticAbilityContract}/contract.json";
+      }
+      {
         path = "/usr/lib/aos-container/store-paths";
         mode = "0444";
         source = "${referenceGraph}/store-paths";
@@ -326,6 +351,7 @@
       pname = "aos-container-${container.name}-${container.platform.architecture}${suffixPart}";
       layers = closureLayers ++ [facadeLayer metadataLayer];
       inherit runtimeAudit;
+      abilityContract = staticAbilityContract;
       platform = {
         inherit (container.platform) os architecture;
       };
@@ -350,6 +376,7 @@
     ociIndex = oci.mkMultiPlatformIndex {
       pname = "aos-container-${container.name}-${container.platform.architecture}-index${suffixPart}";
       images = [image];
+      abilityContract = staticAbilityContract;
       inherit referenceName;
       annotations = releaseAnnotations;
     };
@@ -372,6 +399,7 @@
     oci.mkEvidenceLayout {
       inherit pname;
       image = primary.ociIndex;
+      abilityContract = staticAbilityContract;
       inherit (platformBuild) referenceGraph sourceGraph closureLayers;
       packageCatalog = packageEvidence.catalog;
       inherit definitionAttribute;
@@ -518,11 +546,11 @@ in {
     ociArchive = primary.image;
     dockerArchive = primary.dockerArchive;
     image = primary.image;
-    inherit metadata evidence;
+    inherit metadata evidence staticAbilityContract;
     inherit publicationInputs;
   };
   ociIndex = primary.ociIndex;
-  inherit evidence publicationInputs;
+  inherit evidence publicationInputs staticAbilityContract;
   qualification = {
     primaryImage = primary.image;
     repeatImage = repeat.image;
@@ -547,6 +575,7 @@ in {
     packageVersion = pkgs.aos.version;
     inherit definitionAttribute;
     indexAnnotations = builtins.removeAttrs releaseAnnotations ["dev.andyl.aos.system"];
+    inherit staticAbilityContract;
   };
   checks = {
     inherit runtimeAudit evidence evidenceRepeat reproducibility;

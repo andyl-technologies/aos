@@ -406,11 +406,12 @@ async fn process_publish_finalizes_complete_signed_graph_without_a_data_plane_ta
     .expect("release sidecar");
     let release_value = serde_json::to_value(&release).expect("release JSON");
     let signature_input = serde_json::json!({
-        "schema": "aos.container.signature-input/v1",
+        "schema": "aos.container.signature-input/v2",
         "identity": release_value["identity"].clone(),
         "oci": release_value["oci"].clone(),
         "nix": release_value["nix"].clone(),
         "evidence": {
+            "abilities": release_value["evidence"]["abilities"].clone(),
             "sbom": release_value["evidence"]["sbom"].clone(),
             "source": release_value["evidence"]["source"].clone(),
             "license": release_value["evidence"]["license"].clone(),
@@ -463,7 +464,7 @@ async fn process_publish_finalizes_complete_signed_graph_without_a_data_plane_ta
         "pending-control-plane-commit"
     );
     assert_eq!(staged_output["tag_updated"], false);
-    assert_eq!(staged_output["object_count"], 18);
+    assert_eq!(staged_output["object_count"], 20);
     assert_output_is_redacted(&staged);
     assert!(
         registry
@@ -513,7 +514,7 @@ async fn process_publish_finalizes_complete_signed_graph_without_a_data_plane_ta
     let output = successful_json("publish", &publish);
     assert_eq!(output["operation"], "publish");
     assert_eq!(output["verification"], "verified");
-    assert_eq!(output["object_count"], 18);
+    assert_eq!(output["object_count"], 20);
     assert_eq!(
         output["verified_release_root"],
         release.oci.index.digest.to_string()
