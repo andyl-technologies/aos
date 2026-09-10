@@ -1312,6 +1312,8 @@ mod ancestry;
 mod attempt_closure;
 mod budget;
 mod closure;
+#[cfg(feature = "test-support")]
+pub use closure::CampaignValidationCheckpointMetrics;
 mod discovery;
 mod execution;
 mod executor_driver;
