@@ -617,7 +617,11 @@ fn validate_fault_build_isolation(contract: &Contract, root: &Path, failures: &m
     }
 
     let expected_features = [
-        ("crates/crucible-campaign/Cargo.toml", Vec::<&str>::new()),
+        ("crates/crucible-cas/Cargo.toml", Vec::<&str>::new()),
+        (
+            "crates/crucible-campaign/Cargo.toml",
+            vec!["crucible-cas/destructive-recovery-faults"],
+        ),
         (
             "crates/crucible-daemon/Cargo.toml",
             vec!["crucible-campaign/destructive-recovery-faults"],

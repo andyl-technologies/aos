@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::io::{self, Read};
 use std::sync::Arc;
+#[cfg(feature = "destructive-recovery-faults")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
     BackendCapabilities, BlobHandle, BlobSource, ByteRange, ContentId, ImmutableBlobBackend,
@@ -36,6 +38,13 @@ const MAX_MULTIPART_TOKEN_BYTES: usize = 4_096;
 const MAX_MULTIPART_PARTS: u32 = 10_000;
 const MIN_MULTIPART_PART_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_MULTIPART_PART_BYTES: u64 = 64 * 1024 * 1024;
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+#[cfg(feature = "destructive-recovery-faults")]
+const MULTIPART_REMOVE_LEAF_TRIGGER: &str = "crucible.destructive-recovery.multipart-remove-leaf";
+#[cfg(feature = "destructive-recovery-faults")]
+static MULTIPART_REMOVE_LEAF_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
 /// Maximum unfinished multipart uploads returned or reclaimed by one call.
 pub const MAX_S3_MULTIPART_LIST_ITEMS: u16 = 1_000;
@@ -805,6 +814,9 @@ impl S3BlobBackend {
                 return Err(StoreError::Incompatible);
             }
             parts.push(part);
+            #[cfg(feature = "destructive-recovery-faults")]
+            // Inject the missing-leaf failure only after the remote upload has a partial effect.
+            inject_multipart_remove_leaf(id, part_number)?;
             part_number = part_number.checked_add(1).ok_or(StoreError::Quota)?;
         }
         let mut extra = [0_u8; 1];
@@ -819,6 +831,21 @@ impl S3BlobBackend {
         self.client
             .complete_multipart_if_absent(&self.bucket, key, upload, &parts)
     }
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn inject_multipart_remove_leaf(id: ContentId, part_number: u32) -> Result<(), StoreError> {
+    if part_number != 1 {
+        return Ok(());
+    }
+    let requested = std::env::var_os(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT);
+    if requested.as_deref() != Some(std::ffi::OsStr::new(MULTIPART_REMOVE_LEAF_TRIGGER))
+        || MULTIPART_REMOVE_LEAF_TRIGGERED.swap(true, Ordering::AcqRel)
+    {
+        return Ok(());
+    }
+
+    Err(StoreError::NotFound { id })
 }
 
 impl ImmutableBlobBackend for S3BlobBackend {
@@ -1035,6 +1062,15 @@ mod tests {
         StoreS3ObjectListCursor, StoreS3ObjectListPage, StoreS3ObjectScan, StoreS3ObjectVersion,
         StoreS3StrongCasClient, StoreS3VersionedObject, StoreS3VersionedObjectMetadata,
     };
+
+    #[cfg(feature = "destructive-recovery-faults")]
+    const MULTIPART_REMOVE_LEAF_CHILD_ENVIRONMENT: &str =
+        "CRUCIBLE_DESTRUCTIVE_RECOVERY_MULTIPART_REMOVE_LEAF_CHILD";
+    #[cfg(feature = "destructive-recovery-faults")]
+    const MULTIPART_REMOVE_LEAF_TEST_NAME: &str =
+        "content_store::s3::tests::multipart_remove_leaf_aborts_before_completion_and_retries";
+    #[cfg(feature = "destructive-recovery-faults")]
+    const MULTIPART_REMOVE_LEAF_CHILD_EXIT_CODE: i32 = 88;
 
     struct UploadState {
         bucket: String,
@@ -1803,6 +1839,71 @@ mod tests {
         assert_eq!(cleanup.aborted(), 1);
         assert!(cleanup.next().is_none());
         assert!(client.uploads.lock().expect("upload lock").is_empty());
+    }
+
+    #[cfg(feature = "destructive-recovery-faults")]
+    #[test]
+    fn multipart_remove_leaf_aborts_before_completion_and_retries() {
+        if std::env::var_os(MULTIPART_REMOVE_LEAF_CHILD_ENVIRONMENT).is_some() {
+            run_multipart_remove_leaf_child();
+            panic!("multipart remove-leaf child returned without recording recovery");
+        }
+
+        let child =
+            std::process::Command::new(std::env::current_exe().expect("current test binary"))
+                .arg("--exact")
+                .arg(MULTIPART_REMOVE_LEAF_TEST_NAME)
+                .arg("--nocapture")
+                .env(MULTIPART_REMOVE_LEAF_CHILD_ENVIRONMENT, "1")
+                .env(
+                    DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
+                    MULTIPART_REMOVE_LEAF_TRIGGER,
+                )
+                .output()
+                .expect("run multipart remove-leaf child");
+        assert_eq!(
+            child.status.code(),
+            Some(MULTIPART_REMOVE_LEAF_CHILD_EXIT_CODE),
+            "multipart remove-leaf child did not recover:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr),
+        );
+    }
+
+    #[cfg(feature = "destructive-recovery-faults")]
+    fn run_multipart_remove_leaf_child() {
+        let endpoint = StoreS3EndpointId::new("minio/multipart-remove-leaf").expect("endpoint");
+        let client = Arc::new(FakeS3Client::new(endpoint));
+        let backend = backend(client.clone());
+        let mut bytes = vec![0x5a; 5 * 1024 * 1024 + 37];
+        bytes[5 * 1024 * 1024 + 11] = 0xa5;
+        let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+
+        assert!(matches!(
+            backend.put_if_absent(id, &BlobHandle::from_bytes(bytes.clone())),
+            Err(StoreError::NotFound { id: missing }) if missing == id
+        ));
+        assert_eq!(client.upload_parts.load(Ordering::SeqCst), 1);
+        assert_eq!(client.aborts.load(Ordering::SeqCst), 1);
+        assert!(client.uploads.lock().expect("upload lock").is_empty());
+        assert!(!backend.contains(id).expect("incomplete object absent"));
+
+        let receipt = backend
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes.clone()))
+            .expect("retry selected leaf transfer");
+        assert_eq!(receipt.id, id);
+        assert!(receipt.is_durable());
+        assert_eq!(client.upload_parts.load(Ordering::SeqCst), 3);
+        assert_eq!(client.aborts.load(Ordering::SeqCst), 1);
+        assert!(client.uploads.lock().expect("upload lock").is_empty());
+        let restored = backend
+            .read(id, None)
+            .expect("read retried leaf")
+            .read_all(bytes.len() as u64)
+            .expect("authenticate retried leaf");
+        assert_eq!(restored, bytes);
+
+        std::process::exit(MULTIPART_REMOVE_LEAF_CHILD_EXIT_CODE);
     }
 
     #[test]

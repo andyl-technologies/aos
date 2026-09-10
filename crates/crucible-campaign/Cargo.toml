@@ -9,7 +9,7 @@ publish = false
 workspace = true
 
 [features]
-destructive-recovery-faults = []
+destructive-recovery-faults = ["crucible-cas/destructive-recovery-faults"]
 test-support = []
 
 [dependencies]
