@@ -8,18 +8,19 @@ use crucible::model::{
     MeasurementId, MetricDefinition, MetricId, MetricSource, MetricValueType, UnitId,
 };
 use crucible::{
-    Configuration, EventLog, EventLogOffset, GuestMeasurementEvent, GuestMeasurementValue, Icount,
-    MarkerId, NodeId, NodeTemplate, ObservableEvent, Plan, Properties, QuantumOutcome,
-    QuantumTerminalVerdict, ReadyPoint, ScenarioDefForm, ScenarioSelectableLimits,
-    ScenarioSelectables, SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    AssertionDef, AssertionId, AssertionPhase, Configuration, ContentHash, EventLog,
+    EventLogOffset, GuestMeasurementEvent, GuestMeasurementValue, Icount, MarkerId, NodeId,
+    NodeTemplate, ObservableEvent, Plan, Predicate, Properties, Property, QuantumOutcome,
+    QuantumTerminalVerdict, ReachableDisposition, ReadyPoint, ScenarioDefForm,
+    ScenarioSelectableLimits, ScenarioSelectables, SchedulerError, SchedulerEventLogEntry,
+    SchedulerQuiescence, Seed, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain, BranchPath, CampaignFactId,
     CampaignHash, CampaignLineage, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery,
     ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifactId,
-    ConfigurationId, ExecutionRetentionIntent, PropertyVerdict, ScenarioDefId,
-    SelectableDeclaration, StopCondition, StopOutcome,
+    ConfigurationId, ExecutionRetentionIntent, ObservationCondition, PropertyVerdict,
+    ScenarioDefId, SelectableDeclaration, StopCondition, StopOutcome,
 };
 use crucible_cas::content_store::ObjectKind;
 use crucible_protocol::SelectionRequest;
@@ -2472,6 +2473,794 @@ fn zero_progress_choice_discovery_does_not_consume_execution_quanta() {
 }
 
 #[test]
+fn assertion_observation_drives_past_nonmatching_quanta_to_a_new_violation() {
+    let assertion = AssertionId::from_name("safety");
+    let input = input_with_assertions(
+        StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
+            assertion.name.clone(),
+        )),
+        ["safety", "another-assertion"],
+    );
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let first_nonmatching = log
+        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
+            0,
+            VirtualTime { ticks: 1 },
+            assertion.clone(),
+            AssertionPhase::Satisfied,
+        )])
+        .expect("first nonmatching assertion segment");
+    let second_nonmatching = log
+        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
+            1,
+            VirtualTime { ticks: 2 },
+            AssertionId::from_name("another-assertion"),
+            AssertionPhase::Violated,
+        )])
+        .expect("second nonmatching assertion segment");
+    let matching = log
+        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
+            2,
+            VirtualTime { ticks: 3 },
+            assertion,
+            AssertionPhase::Violated,
+        )])
+        .expect("matching assertion segment");
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([
+            Ok(outcome(
+                configuration.clone(),
+                first_nonmatching.entries,
+                first_nonmatching.offset,
+                1,
+            )),
+            Ok(outcome(
+                configuration.clone(),
+                second_nonmatching.entries,
+                second_nonmatching.offset,
+                2,
+            )),
+            Ok(outcome(configuration, matching.entries, matching.offset, 3)),
+        ]),
+        terminal: None,
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let pending = expect_observation(
+        QemuFreshModeledDriver::new()
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("new violation transition stop"),
+    );
+
+    let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
+        panic!("assertion transition must carry an observation proof")
+    };
+    assert_eq!(owner.drives, 3);
+    assert_eq!(proof.boundary().start_completed_quanta(), 2);
+    assert_eq!(proof.boundary().completed_quanta(), 3);
+    assert_eq!(proof.boundary().start_events(), 2);
+    assert_eq!(
+        proof
+            .assertion_witness()
+            .expect("assertion witness")
+            .sequence(),
+        2
+    );
+}
+
+#[test]
+fn any_assertion_observation_accepts_the_second_declared_assertion() {
+    let input = input_with_assertions(
+        StopCondition::Observation(ObservationCondition::AnyAssertionViolationTransition),
+        ["first-safety", "second-safety"],
+    );
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let matching = log
+        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
+            0,
+            VirtualTime { ticks: 1 },
+            AssertionId::from_name("second-safety"),
+            AssertionPhase::Violated,
+        )])
+        .expect("second assertion transition");
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(outcome(
+            configuration,
+            matching.entries,
+            matching.offset,
+            1,
+        ))]),
+        terminal: None,
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let pending = expect_observation(
+        QemuFreshModeledDriver::new()
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("any declared assertion transition"),
+    );
+
+    let ModeledStop::ObservationReached { proof, .. } = pending.stop else {
+        panic!("assertion transition must carry an observation proof")
+    };
+    assert_eq!(
+        proof
+            .assertion_witness()
+            .expect("assertion witness")
+            .assertion(),
+        "second-safety"
+    );
+}
+
+#[test]
+fn named_assertion_observation_rejects_an_undeclared_event() {
+    let input = input(StopCondition::Observation(
+        ObservationCondition::AssertionViolationTransition(String::from("undeclared")),
+    ));
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let matching = log
+        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
+            0,
+            VirtualTime { ticks: 1 },
+            AssertionId::from_name("undeclared"),
+            AssertionPhase::Violated,
+        )])
+        .expect("synthetic undeclared transition");
+    let quantum = outcome(configuration, matching.entries, matching.offset, 1);
+
+    assert!(
+        observation_stop_proof(
+            &ObservationCondition::AssertionViolationTransition(String::from("undeclared")),
+            input.scenario().properties(),
+            &quantum,
+            0,
+            1,
+            &[],
+        )
+        .expect("structural proof evaluation")
+        .is_none()
+    );
+}
+
+#[test]
+fn scheduler_quiescence_observation_is_post_source_and_evidence_backed() {
+    let stop = StopCondition::Observation(ObservationCondition::SchedulerQuiescent);
+    let input = input(stop.clone());
+    let configuration = starting_configuration(&input);
+    let empty_event_offset = EventLog::new().offset();
+    let first = outcome(configuration.clone(), Vec::new(), empty_event_offset, 1);
+    let mut second = outcome(configuration, Vec::new(), empty_event_offset, 2);
+    second.scheduler_quiescence = Some(SchedulerQuiescence::default());
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(first), Ok(second)]),
+        terminal: None,
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::from_test_parts(
+                    Vec::new(),
+                    VirtualTime::default(),
+                    Some(SchedulerQuiescence::default()),
+                    None,
+                ),
+            )
+            .expect("post-source scheduler quiescence"),
+    );
+    assert_eq!(owner.drives, 2);
+
+    let result = driver
+        .seal(pending, Vec::new())
+        .expect("authenticated quiescence proof");
+    let candidate = prepared_semantic_observation(result);
+    assert!(matches!(
+        candidate.observation().stop(),
+        StopOutcome::ObservationReached(proof)
+            if proof.condition() == &ObservationCondition::SchedulerQuiescent
+                && proof.boundary().start_completed_quanta() == 1
+                && proof.boundary().completed_quanta() == 2
+    ));
+    assert!(candidate.observation().stop().reaches(&stop));
+}
+
+#[test]
+fn compound_observation_uses_an_absolute_bound_from_a_nonzero_source() {
+    let condition = ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
+        execution_quanta: 11,
+    };
+    let input = input(StopCondition::Observation(condition.clone()));
+    let configuration = starting_configuration(&input);
+    let offset = EventLog::new().offset();
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([
+            Ok(outcome(configuration.clone(), Vec::new(), offset, 1)),
+            Ok(outcome(configuration, Vec::new(), offset, 2)),
+        ]),
+        terminal: None,
+        initial_quanta: 9,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let pending = expect_observation(
+        QemuFreshModeledDriver::new()
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::at_quanta(9),
+            )
+            .expect("compound quantum bound"),
+    );
+
+    let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
+        panic!("quantum bound must carry an observation proof")
+    };
+    assert_eq!(owner.drives, 2);
+    assert_eq!(proof.condition(), &condition);
+    assert_eq!(
+        proof.satisfaction(),
+        ObservationStopSatisfaction::ExecutionQuanta
+    );
+    assert_eq!(proof.boundary().start_completed_quanta(), 10);
+    assert_eq!(proof.boundary().completed_quanta(), 11);
+    QemuFreshModeledDriver::new()
+        .seal(pending, Vec::new())
+        .expect("authenticated compound quantum boundary");
+}
+
+#[test]
+fn compound_observation_prefers_quiescence_at_the_exact_bound() {
+    let condition = ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
+        execution_quanta: 2,
+    };
+    let input = input(StopCondition::Observation(condition));
+    let configuration = starting_configuration(&input);
+    let offset = EventLog::new().offset();
+    let first = outcome(configuration.clone(), Vec::new(), offset, 1);
+    let mut coincident = outcome(configuration, Vec::new(), offset, 2);
+    coincident.scheduler_quiescence = Some(SchedulerQuiescence::default());
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(first), Ok(coincident)]),
+        terminal: None,
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let pending = expect_observation(
+        QemuFreshModeledDriver::new()
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("coincident compound stop"),
+    );
+
+    let ModeledStop::ObservationReached { proof, .. } = pending.stop else {
+        panic!("quiescence must carry an observation proof")
+    };
+    assert_eq!(owner.drives, 2);
+    assert_eq!(
+        proof.satisfaction(),
+        ObservationStopSatisfaction::SchedulerQuiescent
+    );
+}
+
+#[test]
+fn restored_violation_does_not_fake_a_new_assertion_transition() {
+    let assertion = AssertionId::from_name("safety");
+    let input = input_with_assertions(
+        StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
+            assertion.name.clone(),
+        )),
+        ["safety", "another-assertion"],
+    );
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let inherited = log
+        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
+            0,
+            VirtualTime { ticks: 1 },
+            assertion.clone(),
+            AssertionPhase::Violated,
+        )])
+        .expect("inherited violation segment");
+    let nonmatching = log
+        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
+            1,
+            VirtualTime { ticks: 2 },
+            assertion.clone(),
+            AssertionPhase::Satisfied,
+        )])
+        .expect("post-source nonmatching segment");
+    let matching = log
+        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
+            2,
+            VirtualTime { ticks: 3 },
+            assertion,
+            AssertionPhase::Violated,
+        )])
+        .expect("post-source matching segment");
+    let inherited_bytes = inherited
+        .entries
+        .iter()
+        .map(SchedulerEventLogEntry::canonical_material_len)
+        .sum();
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([
+            Ok(outcome(
+                configuration.clone(),
+                nonmatching.entries,
+                nonmatching.offset,
+                2,
+            )),
+            Ok(outcome(
+                configuration.clone(),
+                matching.entries,
+                matching.offset,
+                3,
+            )),
+        ]),
+        terminal: None,
+        initial_quanta: 3,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let pending = expect_observation(
+        QemuFreshModeledDriver::new()
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::from_resume_parts(
+                    configuration,
+                    inherited.entries,
+                    inherited_bytes,
+                    3,
+                    VirtualTime { ticks: 1 },
+                    SchedulerQuiescence::default(),
+                    None,
+                ),
+            )
+            .expect("new post-source violation"),
+    );
+
+    let ModeledStop::ObservationReached { proof, .. } = pending.stop else {
+        panic!("new violation must carry an observation proof")
+    };
+    assert_eq!(owner.drives, 2);
+    assert_eq!(proof.boundary().start_completed_quanta(), 4);
+    assert_eq!(proof.boundary().completed_quanta(), 5);
+    assert_eq!(proof.boundary().start_events(), 2);
+    assert_eq!(
+        proof
+            .assertion_witness()
+            .expect("new assertion witness")
+            .sequence(),
+        2
+    );
+}
+
+#[test]
+fn terminal_verdict_preempts_a_coincident_assertion_observation() {
+    let assertion = AssertionId::from_name("safety");
+    let input = input_with_assertions(
+        StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
+            assertion.name.clone(),
+        )),
+        ["safety"],
+    );
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let matching = log
+        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
+            0,
+            VirtualTime { ticks: 1 },
+            assertion,
+            AssertionPhase::Violated,
+        )])
+        .expect("coincident violation segment");
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(outcome(
+            configuration,
+            matching.entries,
+            matching.offset,
+            1,
+        ))]),
+        terminal: Some(QuantumTerminalVerdict::Passed),
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let pending = expect_observation(
+        QemuFreshModeledDriver::new()
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("terminal verdict wins"),
+    );
+
+    assert_eq!(owner.drives, 1);
+    assert!(matches!(pending.stop, ModeledStop::TerminalPassed));
+}
+
+#[test]
+fn terminal_only_never_reached_failure_is_not_an_observation_match() {
+    let assertion = AssertionId::from_name("must-arrive");
+    let node = node("router-a");
+    let world = World::from_nodes(vec![WorldNode {
+        id: node,
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::from("never-reached-observation-test"),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])
+    .expect("never-reached world");
+    let properties = Properties::from_assertions_for_world(
+        &world,
+        vec![AssertionDef::guest_reachable(
+            assertion.clone(),
+            "must arrive",
+            ReachableDisposition::Fail,
+        )],
+    )
+    .expect("never-reached property");
+    let scenario =
+        ScenarioDefForm::from_components(&world, &Plan::empty(), &properties, Seed::from_u64(7))
+            .expect("never-reached scenario");
+    let input = input_for_scenario(
+        scenario,
+        StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
+            assertion.name.clone(),
+        )),
+    );
+    let configuration = starting_configuration(&input);
+    let mut quantum = outcome(configuration, Vec::new(), EventLogOffset::default(), 1);
+    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(quantum)]),
+        terminal: Some(QuantumTerminalVerdict::Passed),
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("terminal before observation transition"),
+    );
+    assert!(matches!(pending.stop, ModeledStop::TerminalPassed));
+
+    let candidate = prepared_semantic_observation(
+        driver
+            .seal(pending, Vec::new())
+            .expect("terminal never-reached projection"),
+    );
+    assert_eq!(
+        candidate.observation().stop(),
+        &StopOutcome::AssertionFailure(assertion.name)
+    );
+}
+
+#[test]
+fn matching_observation_does_not_mutate_configuration_with_a_default_guest_reply() {
+    let (input, node) = input_with_guest_selectable(StopCondition::Observation(
+        ObservationCondition::SchedulerQuiescent,
+    ));
+    let configuration = starting_configuration(&input);
+    let mut quantum = outcome(
+        configuration.clone(),
+        Vec::new(),
+        EventLogOffset::default(),
+        1,
+    );
+    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
+    let mut owner = PendingSelectableLifecycle {
+        frontier: configuration.clone(),
+        outcomes: VecDeque::from([quantum]),
+        completed_coordinates: VecDeque::from([1]),
+        pending: VecDeque::from([vec![pending_guest_request(node, None)]]),
+        active_pending: Vec::new(),
+        reply_entries: VecDeque::new(),
+        replies: Vec::new(),
+        completed_quanta: 0,
+        drives: 0,
+    };
+
+    let pending = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        expect_observation(
+            QemuFreshModeledDriver::new()
+                .drive(
+                    &mut lifecycle,
+                    &input,
+                    &context(),
+                    QemuFreshStartMaterialization::genesis(),
+                )
+                .expect("observation before default reply"),
+        )
+    };
+
+    assert!(matches!(
+        pending.stop,
+        ModeledStop::ObservationReached { .. }
+    ));
+    assert_eq!(pending.configuration, configuration);
+    assert!(owner.replies.is_empty());
+}
+
+#[test]
+fn matching_observation_rejects_a_nonadvancing_quantum_coordinate() {
+    let input = input(StopCondition::Observation(
+        ObservationCondition::SchedulerQuiescent,
+    ));
+    let configuration = starting_configuration(&input);
+    let mut quantum = outcome(
+        configuration.clone(),
+        Vec::new(),
+        EventLogOffset::default(),
+        1,
+    );
+    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
+    let mut owner = PendingSelectableLifecycle {
+        frontier: configuration,
+        outcomes: VecDeque::from([quantum]),
+        completed_coordinates: VecDeque::from([0]),
+        pending: VecDeque::from([Vec::new()]),
+        active_pending: Vec::new(),
+        reply_entries: VecDeque::new(),
+        replies: Vec::new(),
+        completed_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let error = QemuFreshModeledDriver::new()
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
+        .expect_err("observation proof requires an advancing quantum coordinate");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::QuantumCounterDidNotAdvance {
+            before: 0,
+            after: 0,
+        })
+    ));
+}
+
+fn pending_assertion_observation() -> QemuFreshPendingObservation {
+    let assertion = AssertionId::from_name("safety");
+    let input = input_with_assertions(
+        StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
+            assertion.name.clone(),
+        )),
+        ["safety"],
+    );
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let matching = log
+        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
+            0,
+            VirtualTime { ticks: 1 },
+            assertion,
+            AssertionPhase::Violated,
+        )])
+        .expect("matching assertion segment");
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(outcome(
+            configuration,
+            matching.entries,
+            matching.offset,
+            1,
+        ))]),
+        terminal: None,
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+    expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("assertion observation"),
+    )
+}
+
+fn replace_observation_event_log(
+    pending: &mut QemuFreshPendingObservation,
+    event_log: ObservationEventLogProof,
+) {
+    let ModeledStop::ObservationReached { proof, .. } = &mut pending.stop else {
+        panic!("fixture must stop on an observation")
+    };
+    **proof = ObservationStopProof::new(
+        proof.condition().clone(),
+        proof.satisfaction(),
+        proof.child(),
+        proof.boundary(),
+        event_log,
+        proof.assertion_witness().cloned(),
+    )
+    .expect("structurally valid mutated proof");
+}
+
+fn assert_observation_boundary_rejected(pending: QemuFreshPendingObservation) {
+    let error = QemuFreshModeledDriver::new()
+        .seal(pending, Vec::new())
+        .expect_err("raw evidence must authenticate the observation boundary");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::PreparedResult(
+            PreparedSemanticResultCodecError::Inconsistent {
+                component: "observation stop execution boundary"
+            }
+        ))
+    ));
+}
+
+#[test]
+fn observation_seal_rejects_a_bytes_only_offset_mutation() {
+    let mut pending = pending_assertion_observation();
+    let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
+        panic!("fixture must stop on an observation")
+    };
+    let event_log = proof.event_log();
+    replace_observation_event_log(
+        &mut pending,
+        ObservationEventLogProof::new(
+            event_log.prefix(),
+            event_log.appended_segment(),
+            event_log.bytes() + 1,
+            event_log.events(),
+            event_log.digest(),
+        ),
+    );
+
+    assert_observation_boundary_rejected(pending);
+}
+
+#[test]
+fn observation_seal_rejects_an_empty_segment_with_a_nonempty_prefix() {
+    let mut pending = pending_assertion_observation();
+    let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
+        panic!("fixture must stop on an observation")
+    };
+    let event_log = proof.event_log();
+    replace_observation_event_log(
+        &mut pending,
+        ObservationEventLogProof::new(
+            CampaignHash::derive("test", b"nonempty forged prefix"),
+            None,
+            event_log.bytes(),
+            event_log.events(),
+            event_log.digest(),
+        ),
+    );
+
+    assert_observation_boundary_rejected(pending);
+}
+
+#[test]
+fn observation_seal_rejects_a_forged_prefix_with_a_coherent_segment() {
+    let mut pending = pending_assertion_observation();
+    let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
+        panic!("fixture must stop on an observation")
+    };
+    let digest = proof.event_log().digest();
+    let entry = SchedulerEventLogEntry::assertion_state_observation(
+        0,
+        VirtualTime { ticks: 1 },
+        AssertionId::from_name("safety"),
+        AssertionPhase::Violated,
+    );
+    let forged_prefix = ContentHash::from_bytes(b"forged observation prefix");
+    let mut forged_log = EventLog::from_offset(EventLogOffset::new(forged_prefix, 0, 0));
+    let forged = forged_log
+        .append_entries(vec![entry])
+        .expect("coherent forged-prefix segment");
+    replace_observation_event_log(
+        &mut pending,
+        ObservationEventLogProof::new(
+            CampaignHash::from_bytes(forged.offset.prefix.bytes),
+            forged
+                .offset
+                .appended_segment
+                .map(|hash| CampaignHash::from_bytes(hash.bytes)),
+            forged.offset.bytes,
+            forged.offset.events,
+            digest,
+        ),
+    );
+
+    assert_observation_boundary_rejected(pending);
+}
+
+#[test]
+fn observation_seal_rejects_shifted_quantum_coordinates() {
+    let mut pending = pending_assertion_observation();
+    let ModeledStop::ObservationReached { proof, .. } = &mut pending.stop else {
+        panic!("fixture must stop on an observation")
+    };
+    let boundary = proof.boundary();
+    **proof = ObservationStopProof::new(
+        proof.condition().clone(),
+        proof.satisfaction(),
+        proof.child(),
+        ObservationQuantumBoundary::new(
+            boundary.frontier_nanoseconds() + 1,
+            boundary.start_completed_quanta() + 1,
+            boundary.completed_quanta() + 1,
+            boundary.start_events(),
+        )
+        .expect("structurally valid shifted boundary"),
+        proof.event_log(),
+        proof.assertion_witness().cloned(),
+    )
+    .expect("structurally valid shifted proof");
+
+    assert_observation_boundary_rejected(pending);
+}
+
+#[test]
 fn terminal_run_projects_offline_property_verdicts() {
     let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
     let input = input_for_scenario(fixture.scenario.clone(), StopCondition::Terminal);
@@ -2688,6 +3477,29 @@ fn input(stop: StopCondition) -> CrucibleAttemptExecution {
         Seed::from_u64(7),
     )
     .expect("minimal scenario");
+    input_for_scenario(scenario, stop)
+}
+
+fn input_with_assertions(
+    stop: StopCondition,
+    assertions: impl IntoIterator<Item = &'static str>,
+) -> CrucibleAttemptExecution {
+    let world = World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty world");
+    let assertions = assertions
+        .into_iter()
+        .map(|name| AssertionDef {
+            id: AssertionId::from_name(name),
+            message: format!("{name} failed"),
+            property: Property::Always {
+                predicate: Predicate::named(format!("{name}-predicate")),
+            },
+        })
+        .collect();
+    let properties =
+        Properties::from_assertions_for_world(&world, assertions).expect("test properties");
+    let scenario =
+        ScenarioDefForm::from_components(&world, &Plan::empty(), &properties, Seed::from_u64(7))
+            .expect("scenario with assertions");
     input_for_scenario(scenario, stop)
 }
 

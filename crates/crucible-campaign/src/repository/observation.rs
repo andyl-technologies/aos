@@ -1,6 +1,7 @@
 //! Exact observation publication and imported root-owner validation.
 
 use super::*;
+use crate::ObservationCondition;
 
 struct ObservationProjection {
     disposition: ObservationDisposition,
@@ -1124,7 +1125,10 @@ impl CampaignRepository {
             || attempt.path() != observation.path()
             || child.scenario() != start.scenario()
             || child.scenario_artifact() != start.scenario_artifact()
-            || matches!(observation.stop(), StopOutcome::Reached(stop) if stop != attempt.stop())
+            || (matches!(
+                observation.stop(),
+                StopOutcome::Reached(_) | StopOutcome::ObservationReached(_)
+            ) && !observation.stop().reaches(attempt.stop()))
         {
             return Err(integrity("observation-candidate-bundle-mismatch"));
         }
@@ -1190,6 +1194,26 @@ impl CampaignRepository {
                 .is_none_or(|evidence| evidence.verdict() != PropertyVerdict::Failed)
         {
             return Err(integrity("assertion-outcome-has-no-failed-property"));
+        }
+        if let StopOutcome::ObservationReached(proof) = observation.stop()
+            && let Some(property) = match proof.condition() {
+                ObservationCondition::AssertionViolationTransition(property) => {
+                    Some(property.as_str())
+                }
+                ObservationCondition::AnyAssertionViolationTransition => {
+                    proof.assertion_witness().map(|witness| witness.assertion())
+                }
+                _ => None,
+            }
+            && candidate
+                .properties()
+                .properties()
+                .get(property)
+                .is_none_or(|evidence| evidence.verdict() != PropertyVerdict::Failed)
+        {
+            return Err(integrity(
+                "assertion-observation-stop-has-no-failed-property",
+            ));
         }
 
         // The final observation closure contains five fixed not-yet-published

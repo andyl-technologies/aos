@@ -52,6 +52,78 @@ impl Canonical for BranchBudget {
     }
 }
 
+/// One scheduler observation that can terminate an attempt after a new quantum.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ObservationCondition {
+    /// Stop when the completed quantum reports scheduler-owned quiescence.
+    SchedulerQuiescent,
+    /// Stop when the completed quantum emits this assertion's violation transition.
+    AssertionViolationTransition(String),
+    /// Stop when any assertion declared by the scenario newly becomes violated.
+    AnyAssertionViolationTransition,
+    /// Stop on scheduler quiescence or at an absolute completed-quantum coordinate.
+    SchedulerQuiescentOrExecutionQuanta {
+        /// Absolute scheduler-quantum coordinate from scenario genesis.
+        execution_quanta: u64,
+    },
+}
+
+impl ObservationCondition {
+    pub(crate) fn validate(&self) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::SchedulerQuiescent => Ok(()),
+            Self::AssertionViolationTransition(assertion) => {
+                validate_identifier(assertion, "observation assertion is invalid")
+            }
+            Self::AnyAssertionViolationTransition => Ok(()),
+            Self::SchedulerQuiescentOrExecutionQuanta {
+                execution_quanta: 0,
+            } => Err(CampaignCodecError::InvalidValue {
+                reason: "observation stop has a zero execution-quantum bound",
+            }),
+            Self::SchedulerQuiescentOrExecutionQuanta { .. } => Ok(()),
+        }
+    }
+}
+
+impl Canonical for ObservationCondition {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::SchedulerQuiescent => encoder.u8(0),
+            Self::AssertionViolationTransition(assertion) => {
+                encoder.u8(1);
+                assertion.encode(encoder);
+            }
+            Self::SchedulerQuiescentOrExecutionQuanta { execution_quanta } => {
+                encoder.u8(2);
+                execution_quanta.encode(encoder);
+            }
+            Self::AnyAssertionViolationTransition => encoder.u8(3),
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let condition = match decoder.u8()? {
+            0 => Self::SchedulerQuiescent,
+            1 => Self::AssertionViolationTransition(
+                decoder.string_bounded(MAX_IDENTIFIER_BYTES, "observation-assertion-bytes")?,
+            ),
+            2 => Self::SchedulerQuiescentOrExecutionQuanta {
+                execution_quanta: u64::decode(decoder)?,
+            },
+            3 => Self::AnyAssertionViolationTransition,
+            tag => {
+                return Err(CampaignCodecError::UnknownTag {
+                    kind: "observation-condition",
+                    tag,
+                });
+            }
+        };
+        condition.validate()?;
+        Ok(condition)
+    }
+}
+
 /// Semantic execution boundary for an attempt.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StopCondition {
@@ -74,6 +146,8 @@ pub enum StopCondition {
         /// Absolute scheduler-quantum coordinate from scenario genesis.
         execution_quanta: u64,
     },
+    /// Stop only after a newly completed quantum satisfies an observation.
+    Observation(ObservationCondition),
 }
 
 impl StopCondition {
@@ -93,6 +167,7 @@ impl StopCondition {
             } => Err(CampaignCodecError::InvalidValue {
                 reason: "stop condition has a zero bound",
             }),
+            Self::Observation(condition) => condition.validate(),
             _ => Ok(()),
         }
     }
@@ -102,6 +177,10 @@ impl StopCondition {
             self,
             Self::ExecutionQuanta(_) | Self::VirtualTimeOrExecutionQuanta { .. }
         )
+    }
+
+    pub(crate) const fn uses_observation_wire_schema(&self) -> bool {
+        matches!(self, Self::Observation(_))
     }
 }
 
@@ -134,6 +213,10 @@ impl Canonical for StopCondition {
                 virtual_time_nanoseconds.encode(encoder);
                 execution_quanta.encode(encoder);
             }
+            Self::Observation(condition) => {
+                encoder.u8(8);
+                condition.encode(encoder);
+            }
         }
     }
 
@@ -151,6 +234,7 @@ impl Canonical for StopCondition {
                 virtual_time_nanoseconds: u64::decode(decoder)?,
                 execution_quanta: u64::decode(decoder)?,
             },
+            8 => Self::Observation(ObservationCondition::decode(decoder)?),
             tag => {
                 return Err(CampaignCodecError::UnknownTag {
                     kind: "stop-condition",
@@ -793,8 +877,9 @@ impl BranchRequest {
     /// schema version 3; the established uniform, explicit, and generated
     /// forms continue to emit version 2 so their keyed identities do not drift.
     /// A modeled generated source emits schema version 4. Extended execution-
-    /// budget stops emit schema version 6 while versions 1 through 5 retain
-    /// their established stop-condition bytes and identities.
+    /// budget stops emit schema version 6, and post-quantum observation stops
+    /// emit schema version 9. Earlier versions retain their established bytes
+    /// and identities.
     ///
     /// # Errors
     ///
@@ -813,6 +898,9 @@ impl BranchRequest {
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
         let schema_version = match (&cause, &source) {
+            _ if stop.uses_observation_wire_schema() => {
+                OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION
+            }
             (_, CandidateSource::StatisticalSmc(_)) => SMC_BRANCH_REQUEST_SCHEMA_VERSION,
             (_, CandidateSource::StatisticalFinite(_)) => STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION,
             _ if stop.uses_extended_wire_schema() => BRANCH_REQUEST_SCHEMA_VERSION,
@@ -853,24 +941,31 @@ impl BranchRequest {
             (CandidateSource::Finite(source), RECORD_SCHEMA_VERSION) => {
                 source.prior_weights().is_some()
             }
-            (CandidateSource::ModeledFinite(_), version) => {
-                !matches!(version, 3 | BRANCH_REQUEST_SCHEMA_VERSION)
-            }
-            (CandidateSource::ModeledGenerated(_), version) => {
-                !matches!(version, 4 | BRANCH_REQUEST_SCHEMA_VERSION)
-            }
-            (CandidateSource::StatisticalFinite(_), version) => {
-                version != STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
-            }
-            (CandidateSource::StatisticalSmc(_), version) => {
-                version != SMC_BRANCH_REQUEST_SCHEMA_VERSION
-            }
+            (CandidateSource::ModeledFinite(_), version) => !matches!(
+                version,
+                3 | BRANCH_REQUEST_SCHEMA_VERSION | OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION
+            ),
+            (CandidateSource::ModeledGenerated(_), version) => !matches!(
+                version,
+                4 | BRANCH_REQUEST_SCHEMA_VERSION | OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION
+            ),
+            (CandidateSource::StatisticalFinite(_), version) => !matches!(
+                version,
+                STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
+                    | OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION
+            ),
+            (CandidateSource::StatisticalSmc(_), version) => !matches!(
+                version,
+                SMC_BRANCH_REQUEST_SCHEMA_VERSION | OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION
+            ),
             (CandidateSource::Finite(_) | CandidateSource::Generated(_), _) => false,
         };
         let incompatible_cause = match cause {
             BranchRequestCause::ScenarioDefault(_) => !matches!(
                 schema_version,
-                SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION | BRANCH_REQUEST_SCHEMA_VERSION
+                SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION
+                    | BRANCH_REQUEST_SCHEMA_VERSION
+                    | OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION
             ),
             BranchRequestCause::Planner(_)
             | BranchRequestCause::Operator(_)
@@ -882,8 +977,12 @@ impl BranchRequest {
         let extended_stop_schema = schema_version == BRANCH_REQUEST_SCHEMA_VERSION
             || schema_version == STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
             || schema_version == SMC_BRANCH_REQUEST_SCHEMA_VERSION;
-        if !matches!(schema_version, 1..=SMC_BRANCH_REQUEST_SCHEMA_VERSION)
-            || incompatible_source
+        let observation_stop_schema =
+            schema_version == OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION;
+        if !matches!(
+            schema_version,
+            1..=OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION
+        ) || incompatible_source
             || incompatible_cause
             || (schema_version == STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
                 && !matches!(source, CandidateSource::StatisticalFinite(_)))
@@ -892,6 +991,7 @@ impl BranchRequest {
             || (stop.uses_extended_wire_schema() && !extended_stop_schema)
             || (!stop.uses_extended_wire_schema()
                 && schema_version == BRANCH_REQUEST_SCHEMA_VERSION)
+            || (stop.uses_observation_wire_schema() != observation_stop_schema)
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported branch-request schema or source",

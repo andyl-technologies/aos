@@ -249,6 +249,7 @@ impl Attempt {
     ) -> Result<Self, CampaignCodecError> {
         stop.validate()?;
         let schema_version = match start {
+            _ if stop.uses_observation_wire_schema() => OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION,
             AttemptStart::AfterAttempt { .. } => AFTER_ATTEMPT_SCHEMA_VERSION,
             AttemptStart::Discover { .. } | AttemptStart::Branch { .. }
                 if stop.uses_extended_wire_schema() =>
@@ -353,7 +354,10 @@ impl Canonical for Attempt {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            RECORD_SCHEMA_VERSION | ATTEMPT_SCHEMA_VERSION | AFTER_ATTEMPT_SCHEMA_VERSION
+            RECORD_SCHEMA_VERSION
+                | ATTEMPT_SCHEMA_VERSION
+                | AFTER_ATTEMPT_SCHEMA_VERSION
+                | OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported attempt schema version",
@@ -372,8 +376,12 @@ impl Canonical for Attempt {
                     && !matches!(start, AttemptStart::AfterAttempt { .. })
             }
             AFTER_ATTEMPT_SCHEMA_VERSION => matches!(start, AttemptStart::AfterAttempt { .. }),
+            OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION => stop.uses_observation_wire_schema(),
             _ => false,
         };
+        let compatible = compatible
+            && (stop.uses_observation_wire_schema()
+                == (schema_version == OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION));
         if !compatible {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "attempt schema disagrees with start or stop semantics",

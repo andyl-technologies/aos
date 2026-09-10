@@ -98,7 +98,7 @@ impl CampaignRepository {
                 };
                 let observation = self.read_observation(observation_content)?;
                 if observation.attempt() != admission.attempt()
-                    || observation.stop() != &StopOutcome::Reached(parent_request.stop().clone())
+                    || !observation.stop().reaches(parent_request.stop())
                 {
                     return Err(integrity("statistical-parent-draw-cannot-continue"));
                 }
@@ -292,7 +292,7 @@ impl CampaignRepository {
                 )?
                 .ok_or_else(|| integrity("SMC initial transition observation is missing"))?;
             let observation = self.read_observation(observation_content)?;
-            if observation.stop() != &StopOutcome::Reached(request.stop().clone()) {
+            if !observation.stop().reaches(request.stop()) {
                 return Err(integrity(
                     "SMC initial transition did not reach its declared stop",
                 ));
@@ -320,7 +320,7 @@ impl CampaignRepository {
         let source_request = self.read_branch_request(source_proposal.request().content_id())?;
         if observation.id()? != particle.observation()
             || observation.path() != particle.path()
-            || observation.stop() != &StopOutcome::Reached(source_request.stop().clone())
+            || !observation.stop().reaches(source_request.stop())
         {
             return Err(integrity(
                 "SMC particle source observation identity mismatch",
@@ -476,7 +476,7 @@ impl CampaignRepository {
             if design
                 .stage(generation.next_stage().saturating_add(1))
                 .is_some()
-                && observation.stop() != &StopOutcome::Reached(request.stop().clone())
+                && !observation.stop().reaches(request.stop())
             {
                 return Err(integrity(
                     "nonfinal SMC transition did not reach its declared stop",

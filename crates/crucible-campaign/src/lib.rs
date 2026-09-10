@@ -126,12 +126,13 @@ pub use exploration::{
     MAX_BRANCH_NOVELTY_OBSERVATIONS, MAX_BRANCH_NOVELTY_PROJECTION_BYTES,
     MAX_BRANCH_NOVELTY_ROOT_ENTRIES, MAX_BRANCH_OBJECTIVE_EVALUATIONS,
     MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES, MAX_BRANCH_PRIOR_NORMALIZATION_VISITS,
-    MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, PlannerBeamBarrier, PlannerBeamCandidate,
-    PlannerBeamClosureSummary, PlannerBeamCohortState, PlannerCandidateBudget,
-    PlannerCandidateGuidance, PlannerDisposition, PlannerProposalDisposition, PlannerStep,
-    PlannerStepProposal, PlanningAccounting, PlanningScanCursor, PlanningScanPage,
-    PlanningScanPosition, PlanningUsage, ProgressiveWideningDecision, Proposal, PuctEdgeStatistics,
-    PuctScore, StatisticalFiniteCandidateSource, StatisticalProposalEvidence, StopCondition,
+    MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, ObservationCondition, PlannerBeamBarrier,
+    PlannerBeamCandidate, PlannerBeamClosureSummary, PlannerBeamCohortState,
+    PlannerCandidateBudget, PlannerCandidateGuidance, PlannerDisposition,
+    PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
+    PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
+    ProgressiveWideningDecision, Proposal, PuctEdgeStatistics, PuctScore,
+    StatisticalFiniteCandidateSource, StatisticalProposalEvidence, StopCondition,
 };
 pub use finding::{
     Finding, FindingExactPins, FindingKind, FindingMinimizationAttempt,
@@ -184,8 +185,10 @@ pub use objective::{
     SurvivorSelectionBundle, evaluate_objectives, rank_survivors,
 };
 pub use observation::{
-    CoverageProjection, MeasurementEvaluationPayload, MeasurementSeries, MeasurementSet,
-    MetricValue, Observation, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, StopOutcome,
+    AssertionViolationWitness, CoverageProjection, MeasurementEvaluationPayload, MeasurementSeries,
+    MeasurementSet, MetricValue, Observation, ObservationEventLogProof, ObservationQuantumBoundary,
+    ObservationStopProof, ObservationStopSatisfaction, PropertyEvidence, PropertyVerdict,
+    PropertyVerdictSet, StopOutcome,
 };
 pub use planner_service::{
     AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_BEAM_SURVIVORS_CAPABILITY,
@@ -265,5 +268,7 @@ pub use statistics::{
 
 #[cfg(test)]
 mod extended_stop_tests;
+#[cfg(test)]
+mod observation_stop_tests;
 #[cfg(test)]
 mod tests;

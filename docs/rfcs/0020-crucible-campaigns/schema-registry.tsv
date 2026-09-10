@@ -20,7 +20,7 @@ crucible.content-store.pack-repack-plan	1	crucible-cas::content_store	administra
 crucible.campaign.lineage	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.policy	4	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.snapshot	3	crucible-campaign::object	campaign-snapshot	gate:campaign-model,gate:content-address
-crucible.campaign.fact	13	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
+crucible.campaign.fact	14	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.budget-ledger	2	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planning-view	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planner-engine	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
@@ -42,10 +42,10 @@ crucible.campaign.merkle-node	1	crucible-campaign::merkle	merkle-node	gate:campa
 crucible.campaign.candidate-generator-spec	1	crucible-campaign::object	policy	gate:lazy-frontier,gate:content-address
 crucible.campaign.scenario-artifact	1	crucible-campaign::artifact	scenario	gate:campaign-model,gate:content-address
 crucible.campaign.configuration-artifact	1	crucible-campaign::artifact	configuration	gate:campaign-model,gate:content-address
-crucible.campaign.branch-request	7	crucible-campaign::exploration	campaign-fact	gate:branch-point-model,gate:content-address
+crucible.campaign.branch-request	9	crucible-campaign::exploration	campaign-fact	gate:branch-point-model,gate:content-address
 crucible.campaign.proposal	2	crucible-campaign::exploration	campaign-fact	gate:lazy-frontier,gate:content-address
 crucible.campaign.branch-path	2	crucible-campaign::exploration	campaign-fact	gate:campaign-replay,gate:content-address
-crucible.campaign.attempt	3	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
+crucible.campaign.attempt	4	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.attempt-admission	2	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.planner-step	4	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
 crucible.campaign.planner-step-proposal	1	crucible-campaign::exploration	component-message	gate:component-contract
@@ -120,7 +120,7 @@ crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operati
 crucible.executor.attempt-state-record	11	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.prepared-semantic-attempt-result	2	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:component-contract,gate:campaign-replay
 crucible.executor.prepared-result-journal-state	2	crucible-daemon::prepared_result_journal	operational-record	gate:component-contract,gate:campaign-replay
-crucible.executor.measurement-replay-evidence	1	crucible-daemon::crucible_measurement::evidence	trace	gate:campaign-model,gate:campaign-replay,gate:content-address
+crucible.executor.measurement-replay-evidence	2	crucible-daemon::crucible_measurement::evidence	trace	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition
 crucible.executor.exact-pin-materialization-selection	1	crucible-daemon::exact_pin_retention	administrative-record	gate:campaign-store-composition
 crucible.executor.hot-checkpoint-fallback	1	crucible-daemon::hot_checkpoint_retention	operational-record	gate:campaign-store-composition
@@ -163,7 +163,7 @@ crucible.campaign.expansion-credit	1	crucible-campaign::exploration	campaign-fac
 crucible.campaign.measurement-set	2	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.coverage-projection	1	crucible-campaign::observation	projection	gate:campaign-replay,gate:content-address
-crucible.campaign.observation	8	crucible-campaign::observation	observation	gate:attempt-idempotence,gate:campaign-replay,gate:content-address
+crucible.campaign.observation	12	crucible-campaign::observation	observation	gate:attempt-idempotence,gate:campaign-replay,gate:content-address
 crucible.campaign.objective-evaluation	2	crucible-campaign::objective	observation	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.ranking-explanation	2	crucible-campaign::objective	projection	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.survivor-selection	1	crucible-campaign::objective	campaign-fact	gate:campaign-model,gate:campaign-replay,gate:content-address

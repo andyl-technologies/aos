@@ -8,6 +8,8 @@
 //! v12 = 12:u32be | 19:u8 | command | expected-snapshot | request-fact | outcome
 //! v13 = 13:u32be | 20:u8 | command | expected-snapshot | request-fact |
 //!       ready-resolution-fact | continuation-attempt
+//! v14 = 14:u32be | 17:u8 | command | expected-snapshot |
+//!       configuration-artifact | observation-stop
 //! ```
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
@@ -32,6 +34,7 @@ const TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 10;
 const SAVEPOINT_CAPTURE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 11;
 const SAVEPOINT_CAPTURE_RESOLUTION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 12;
 const SAVEPOINT_CONTINUATION_SELECTION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 13;
+const OBSERVATION_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 14;
 
 #[derive(Clone, Copy)]
 enum CampaignFactDecodeExtension {
@@ -817,6 +820,10 @@ impl DiscoveryRequest {
     pub(crate) const fn uses_extended_stop_schema(&self) -> bool {
         self.stop.uses_extended_wire_schema()
     }
+
+    pub(crate) const fn uses_observation_stop_schema(&self) -> bool {
+        self.stop.uses_observation_wire_schema()
+    }
 }
 
 impl Canonical for DiscoveryRequest {
@@ -956,6 +963,9 @@ impl CampaignFact {
             Self::PinCommandAccepted(_) => PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION,
             Self::ObjectiveEvaluationPublished(_) => CAMPAIGN_FACT_SCHEMA_VERSION,
             Self::BranchRequestAccepted { .. } => BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION,
+            Self::DiscoveryRequested(request) if request.uses_observation_stop_schema() => {
+                OBSERVATION_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION
+            }
             Self::DiscoveryRequested(request) if request.uses_extended_stop_schema() => {
                 EXTENDED_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION
             }
@@ -1079,6 +1089,7 @@ impl CampaignFact {
                             fact,
                             CampaignFact::DiscoveryRequested(ref request)
                                 if !request.uses_extended_stop_schema()
+                                    && !request.uses_observation_stop_schema()
                         ) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
@@ -1150,6 +1161,22 @@ impl CampaignFact {
                             CampaignFactDecodeExtension::SavepointContinuationSelection,
                         )?;
                         if !matches!(fact, CampaignFact::SavepointContinuationSelected(_)) {
+                            return Err(CampaignCodecError::InvalidValue {
+                                reason: "campaign fact variant requires its original schema version",
+                            });
+                        }
+                        Ok(Self { version, fact })
+                    }
+                    OBSERVATION_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(
+                            decoder,
+                            CampaignFactDecodeExtension::DiscoveryRequest,
+                        )?;
+                        if !matches!(
+                            fact,
+                            CampaignFact::DiscoveryRequested(ref request)
+                                if request.uses_observation_stop_schema()
+                        ) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
                             });

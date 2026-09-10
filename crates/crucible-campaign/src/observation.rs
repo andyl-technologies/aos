@@ -15,7 +15,7 @@ use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     AttemptId, BranchPathId, CampaignCodecError, CampaignHash, ChoiceOpportunityId,
     ConfigurationArtifactId, ConfigurationId, CoverageProjectionId, MeasurementSetId,
-    ObservationId, PropertyVerdictSetId, SelectionId, StopCondition,
+    ObservationCondition, ObservationId, PropertyVerdictSetId, SelectionId, StopCondition,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
@@ -23,7 +23,8 @@ const SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION: u32 = 2;
 const PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION: u32 = 3;
 const SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION: u32 = 4;
 const EXTENDED_STOP_OBSERVATION_SCHEMA_OFFSET: u32 = 4;
-const OBSERVATION_SCHEMA_VERSION: u32 = 8;
+const OBSERVATION_STOP_SCHEMA_OFFSET: u32 = 8;
+const OBSERVATION_SCHEMA_VERSION: u32 = 12;
 const MEASUREMENT_SET_SCHEMA_VERSION: u32 = 2;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MEASUREMENT_EVALUATION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -808,6 +809,399 @@ impl Canonical for CoverageProjection {
     }
 }
 
+/// Exact authenticated event-log position at an observation stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ObservationEventLogProof {
+    prefix: CampaignHash,
+    appended_segment: Option<CampaignHash>,
+    bytes: u64,
+    events: u64,
+    digest: CampaignHash,
+}
+
+impl ObservationEventLogProof {
+    /// Builds the exact scheduler offset and retained-prefix digest.
+    #[must_use]
+    pub const fn new(
+        prefix: CampaignHash,
+        appended_segment: Option<CampaignHash>,
+        bytes: u64,
+        events: u64,
+        digest: CampaignHash,
+    ) -> Self {
+        Self {
+            prefix,
+            appended_segment,
+            bytes,
+            events,
+            digest,
+        }
+    }
+
+    /// Returns the shared prefix immediately before the appended segment.
+    #[must_use]
+    pub const fn prefix(self) -> CampaignHash {
+        self.prefix
+    }
+
+    /// Returns the final segment appended after the parent checkpoint, if any.
+    #[must_use]
+    pub const fn appended_segment(self) -> Option<CampaignHash> {
+        self.appended_segment
+    }
+
+    /// Returns the byte offset after the matching quantum.
+    #[must_use]
+    pub const fn bytes(self) -> u64 {
+        self.bytes
+    }
+
+    /// Returns the event count after the matching quantum.
+    #[must_use]
+    pub const fn events(self) -> u64 {
+        self.events
+    }
+
+    /// Returns the digest of each retained entry through this offset.
+    #[must_use]
+    pub const fn digest(self) -> CampaignHash {
+        self.digest
+    }
+}
+
+impl Canonical for ObservationEventLogProof {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.prefix.encode(encoder);
+        self.appended_segment.encode(encoder);
+        self.bytes.encode(encoder);
+        self.events.encode(encoder);
+        self.digest.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self::new(
+            CampaignHash::decode(decoder)?,
+            Option::<CampaignHash>::decode(decoder)?,
+            u64::decode(decoder)?,
+            u64::decode(decoder)?,
+            CampaignHash::decode(decoder)?,
+        ))
+    }
+}
+
+/// Exact assertion-state event that satisfied an observation condition.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AssertionViolationWitness {
+    assertion: String,
+    sequence: u64,
+    entry: CampaignHash,
+}
+
+impl AssertionViolationWitness {
+    /// Builds a witness from one named retained assertion-state event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the assertion identifier is invalid.
+    pub fn new(
+        assertion: impl Into<String>,
+        sequence: u64,
+        entry: CampaignHash,
+    ) -> Result<Self, CampaignCodecError> {
+        let assertion = assertion.into();
+        validate_identifier(&assertion, "observation assertion witness is invalid")?;
+        Ok(Self {
+            assertion,
+            sequence,
+            entry,
+        })
+    }
+
+    /// Returns the exact assertion identifier carried by the event.
+    #[must_use]
+    pub fn assertion(&self) -> &str {
+        &self.assertion
+    }
+
+    /// Returns the exact scheduler event sequence.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the exact event content hash.
+    #[must_use]
+    pub const fn entry(&self) -> CampaignHash {
+        self.entry
+    }
+}
+
+impl Canonical for AssertionViolationWitness {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.assertion.encode(encoder);
+        self.sequence.encode(encoder);
+        self.entry.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            decoder.string_bounded(MAX_IDENTIFIER_BYTES, "observation-assertion-bytes")?,
+            u64::decode(decoder)?,
+            CampaignHash::decode(decoder)?,
+        )
+    }
+}
+
+/// Exact coordinates before and after the quantum that satisfied a stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ObservationQuantumBoundary {
+    frontier_nanoseconds: u64,
+    start_completed_quanta: u64,
+    completed_quanta: u64,
+    start_events: u64,
+}
+
+impl ObservationQuantumBoundary {
+    /// Builds one strictly advancing quantum boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the completed coordinate is not
+    /// exactly one greater than the coordinate recorded before the drive.
+    pub fn new(
+        frontier_nanoseconds: u64,
+        start_completed_quanta: u64,
+        completed_quanta: u64,
+        start_events: u64,
+    ) -> Result<Self, CampaignCodecError> {
+        if start_completed_quanta.checked_add(1) != Some(completed_quanta) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation stop quantum coordinate did not advance exactly once",
+            });
+        }
+        Ok(Self {
+            frontier_nanoseconds,
+            start_completed_quanta,
+            completed_quanta,
+            start_events,
+        })
+    }
+
+    /// Returns the exact virtual-time frontier in nanoseconds.
+    #[must_use]
+    pub const fn frontier_nanoseconds(self) -> u64 {
+        self.frontier_nanoseconds
+    }
+
+    /// Returns the absolute quantum coordinate immediately before the drive.
+    #[must_use]
+    pub const fn start_completed_quanta(self) -> u64 {
+        self.start_completed_quanta
+    }
+
+    /// Returns the absolute completed-quantum coordinate after the drive.
+    #[must_use]
+    pub const fn completed_quanta(self) -> u64 {
+        self.completed_quanta
+    }
+
+    /// Returns the event count immediately before the matching quantum.
+    #[must_use]
+    pub const fn start_events(self) -> u64 {
+        self.start_events
+    }
+}
+
+impl Canonical for ObservationQuantumBoundary {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.frontier_nanoseconds.encode(encoder);
+        self.start_completed_quanta.encode(encoder);
+        self.completed_quanta.encode(encoder);
+        self.start_events.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            u64::decode(decoder)?,
+            u64::decode(decoder)?,
+            u64::decode(decoder)?,
+            u64::decode(decoder)?,
+        )
+    }
+}
+
+/// Authenticated clause that satisfied an observation stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ObservationStopSatisfaction {
+    /// The matching quantum reported scheduler-owned quiescence.
+    SchedulerQuiescent,
+    /// The matching quantum emitted the requested assertion violation.
+    AssertionViolationTransition,
+    /// The matching quantum reached the authored absolute quantum bound.
+    ExecutionQuanta,
+}
+
+impl Canonical for ObservationStopSatisfaction {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u8(match self {
+            Self::SchedulerQuiescent => 0,
+            Self::AssertionViolationTransition => 1,
+            Self::ExecutionQuanta => 2,
+        });
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::SchedulerQuiescent),
+            1 => Ok(Self::AssertionViolationTransition),
+            2 => Ok(Self::ExecutionQuanta),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "observation-stop-satisfaction",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Proof that one newly completed quantum satisfied an observation stop.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ObservationStopProof {
+    condition: ObservationCondition,
+    satisfaction: ObservationStopSatisfaction,
+    child: ConfigurationId,
+    boundary: ObservationQuantumBoundary,
+    event_log: ObservationEventLogProof,
+    assertion_witness: Option<AssertionViolationWitness>,
+}
+
+impl ObservationStopProof {
+    /// Builds one structurally valid observation-stop proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the condition is invalid or its
+    /// assertion witness is absent, unexpected, or outside the matching quantum.
+    pub fn new(
+        condition: ObservationCondition,
+        satisfaction: ObservationStopSatisfaction,
+        child: ConfigurationId,
+        boundary: ObservationQuantumBoundary,
+        event_log: ObservationEventLogProof,
+        assertion_witness: Option<AssertionViolationWitness>,
+    ) -> Result<Self, CampaignCodecError> {
+        condition.validate()?;
+        let witness_is_valid = match (&condition, satisfaction, assertion_witness.as_ref()) {
+            (
+                ObservationCondition::SchedulerQuiescent,
+                ObservationStopSatisfaction::SchedulerQuiescent,
+                None,
+            ) => true,
+            (
+                ObservationCondition::AssertionViolationTransition(_),
+                ObservationStopSatisfaction::AssertionViolationTransition,
+                Some(witness),
+            ) => {
+                matches!(
+                    &condition,
+                    ObservationCondition::AssertionViolationTransition(assertion)
+                        if witness.assertion() == assertion
+                ) && witness.sequence() >= boundary.start_events()
+                    && witness.sequence() < event_log.events()
+            }
+            (
+                ObservationCondition::AnyAssertionViolationTransition,
+                ObservationStopSatisfaction::AssertionViolationTransition,
+                Some(witness),
+            ) => {
+                witness.sequence() >= boundary.start_events()
+                    && witness.sequence() < event_log.events()
+            }
+            (
+                ObservationCondition::SchedulerQuiescentOrExecutionQuanta { .. },
+                ObservationStopSatisfaction::SchedulerQuiescent,
+                None,
+            ) => true,
+            (
+                ObservationCondition::SchedulerQuiescentOrExecutionQuanta { execution_quanta },
+                ObservationStopSatisfaction::ExecutionQuanta,
+                None,
+            ) => boundary.completed_quanta() >= *execution_quanta,
+            _ => false,
+        };
+        if boundary.start_events() > event_log.events() || !witness_is_valid {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation stop has an invalid assertion witness",
+            });
+        }
+        Ok(Self {
+            condition,
+            satisfaction,
+            child,
+            boundary,
+            event_log,
+            assertion_witness,
+        })
+    }
+
+    /// Returns the requested observation condition.
+    #[must_use]
+    pub const fn condition(&self) -> &ObservationCondition {
+        &self.condition
+    }
+
+    /// Returns the exact clause satisfied by the matching quantum.
+    #[must_use]
+    pub const fn satisfaction(&self) -> ObservationStopSatisfaction {
+        self.satisfaction
+    }
+
+    /// Returns the exact child configuration reached by the quantum.
+    #[must_use]
+    pub const fn child(&self) -> ConfigurationId {
+        self.child
+    }
+
+    /// Returns the exact pre-drive and post-drive quantum boundary.
+    #[must_use]
+    pub const fn boundary(&self) -> ObservationQuantumBoundary {
+        self.boundary
+    }
+
+    /// Returns the exact event-log offset and retained-prefix digest.
+    #[must_use]
+    pub const fn event_log(&self) -> ObservationEventLogProof {
+        self.event_log
+    }
+
+    /// Returns the matching assertion event, when the condition requires one.
+    #[must_use]
+    pub fn assertion_witness(&self) -> Option<&AssertionViolationWitness> {
+        self.assertion_witness.as_ref()
+    }
+}
+
+impl Canonical for ObservationStopProof {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.condition.encode(encoder);
+        self.satisfaction.encode(encoder);
+        self.child.encode(encoder);
+        self.boundary.encode(encoder);
+        self.event_log.encode(encoder);
+        self.assertion_witness.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            ObservationCondition::decode(decoder)?,
+            ObservationStopSatisfaction::decode(decoder)?,
+            ConfigurationId::decode(decoder)?,
+            ObservationQuantumBoundary::decode(decoder)?,
+            ObservationEventLogProof::decode(decoder)?,
+            Option::<AssertionViolationWitness>::decode(decoder)?,
+        )
+    }
+}
+
 /// Canonical modeled reason that execution stopped.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StopOutcome {
@@ -823,11 +1217,16 @@ pub enum StopOutcome {
     AssertionFailure(String),
     /// Scenario actions declared failure with reasons in firing order.
     ScenarioFailure(Vec<String>),
+    /// A newly completed quantum satisfied an authenticated observation condition.
+    ObservationReached(Box<ObservationStopProof>),
 }
 
 impl StopOutcome {
     fn validate(&self) -> Result<(), CampaignCodecError> {
         match self {
+            Self::Reached(StopCondition::Observation(_)) => Err(CampaignCodecError::InvalidValue {
+                reason: "observation stop requires an authenticated reached proof",
+            }),
             Self::Reached(stop) => stop.validate(),
             Self::ModeledTimeout(name) => validate_identifier(name, "timeout name is invalid"),
             Self::GuestCrash(class) => validate_identifier(class, "guest crash class is invalid"),
@@ -835,12 +1234,33 @@ impl StopOutcome {
                 validate_identifier(property, "assertion property is invalid")
             }
             Self::ScenarioFailure(reasons) => validate_scenario_failure_reasons(reasons),
+            Self::ObservationReached(proof) => proof.condition().validate(),
             Self::TerminalSuccess => Ok(()),
         }
     }
 
     const fn uses_extended_stop_schema(&self) -> bool {
         matches!(self, Self::Reached(stop) if stop.uses_extended_wire_schema())
+    }
+
+    const fn uses_observation_stop_schema(&self) -> bool {
+        matches!(self, Self::ObservationReached(_))
+    }
+
+    /// Returns whether this outcome proves the attempt's requested stop.
+    #[must_use]
+    pub fn reaches(&self, requested: &StopCondition) -> bool {
+        match (self, requested) {
+            (Self::Reached(actual), requested)
+                if !matches!(actual, StopCondition::Observation(_)) =>
+            {
+                actual == requested
+            }
+            (Self::ObservationReached(proof), StopCondition::Observation(condition)) => {
+                proof.condition() == condition
+            }
+            _ => false,
+        }
     }
 }
 
@@ -868,6 +1288,10 @@ impl Canonical for StopOutcome {
                 encoder.u8(5);
                 reasons.encode(encoder);
             }
+            Self::ObservationReached(proof) => {
+                encoder.u8(6);
+                proof.encode(encoder);
+            }
         }
     }
 
@@ -894,6 +1318,7 @@ impl Canonical for StopOutcome {
                     )
                 },
             )?),
+            6 => Self::ObservationReached(Box::new(ObservationStopProof::decode(decoder)?)),
             tag => {
                 return Err(CampaignCodecError::UnknownTag {
                     kind: "stop-outcome",
@@ -1022,6 +1447,12 @@ impl Observation {
 
     fn from_versioned(value: Self) -> Result<Self, CampaignCodecError> {
         value.stop.validate()?;
+        if matches!(&value.stop, StopOutcome::ObservationReached(proof) if proof.child() != value.child)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation stop proof disagrees with child configuration",
+            });
+        }
         if value.discovered_choices.len() > MAX_DISCOVERED_CHOICES {
             return Err(CampaignCodecError::LimitExceeded {
                 limit: "observation-discovered-choice-count",
@@ -1191,13 +1622,7 @@ impl Canonical for Observation {
         self.properties.encode(encoder);
         self.coverage.encode(encoder);
         self.discovered_choices.encode(encoder);
-        if matches!(
-            self.schema_version,
-            PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-                | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-                | 7
-                | OBSERVATION_SCHEMA_VERSION
-        ) {
+        if observation_schema_has_produced_selections(self.schema_version) {
             self.produced_selections.encode(encoder);
         }
     }
@@ -1224,13 +1649,7 @@ impl Canonical for Observation {
             MAX_DISCOVERED_CHOICES,
             "observation-discovered-choice-count",
         )?;
-        let produced_selections = if matches!(
-            schema_version,
-            PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-                | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-                | 7
-                | OBSERVATION_SCHEMA_VERSION
-        ) {
+        let produced_selections = if observation_schema_has_produced_selections(schema_version) {
             decoder.set_bounded(
                 MAX_DISCOVERED_CHOICES,
                 "observation-produced-selection-count",
@@ -1266,8 +1685,22 @@ fn observation_schema_version(stop: &StopOutcome, has_produced_selections: bool)
     };
     if stop.uses_extended_stop_schema() {
         version += EXTENDED_STOP_OBSERVATION_SCHEMA_OFFSET;
+    } else if stop.uses_observation_stop_schema() {
+        version += OBSERVATION_STOP_SCHEMA_OFFSET;
     }
     version
+}
+
+const fn observation_schema_has_produced_selections(schema_version: u32) -> bool {
+    matches!(
+        schema_version,
+        PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+            | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+            | 7
+            | 8
+            | 11
+            | 12
+    )
 }
 
 fn require_schema(actual: u32) -> Result<(), CampaignCodecError> {

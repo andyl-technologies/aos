@@ -6,7 +6,7 @@
 use super::*;
 
 use crucible::model::{Aggregation, MeasurementDefinition, MetricSource, UnitId};
-use crucible::{MarkerId, NodeTemplate, ReadyPoint, WhiteBoxPolicy};
+use crucible::{EventLog, MarkerId, NodeTemplate, ReadyPoint, WhiteBoxPolicy};
 
 fn node(name: &str) -> NodeId {
     NodeId {
@@ -173,6 +173,18 @@ fn replace_empty_container_length(bytes: &[u8], field: &str, major: u8, declared
     mutated
 }
 
+fn decode_frozen_hex(value: &str) -> Vec<u8> {
+    value
+        .trim()
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|digits| {
+            let digits = std::str::from_utf8(digits).expect("ASCII hex pair");
+            u8::from_str_radix(digits, 16).expect("valid frozen hex pair")
+        })
+        .collect()
+}
+
 fn evidence_encoding_reason(
     result: Result<CrucibleMeasurementReplayEvidence, CrucibleMeasurementError>,
 ) -> String {
@@ -248,10 +260,27 @@ fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
         MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
     .expect("v2 publication");
+    assert_eq!(
+        publication.evidence().schema_version(),
+        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1
+    );
     let evidence_bytes = publication
         .evidence()
         .canonical_bytes()
         .expect("canonical evidence");
+    assert_eq!(
+        evidence_bytes,
+        decode_frozen_hex(include_str!("../testdata/replay-evidence-v1.hex")),
+        "v1 replay-evidence bytes must remain frozen"
+    );
+    assert_eq!(
+        publication
+            .evidence()
+            .id()
+            .expect("evidence ID")
+            .to_string(),
+        "trace.1.8a18c3eebc853704a6ea14991338e32ced4df1cf2729e076e22bc4ead839e531"
+    );
     let decoded = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&evidence_bytes)
         .expect("decoded evidence");
     assert_eq!(&decoded, publication.evidence());
@@ -280,6 +309,61 @@ fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
             .payload_schema(),
         CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
     );
+}
+
+#[test]
+fn observation_boundary_evidence_uses_v2_and_round_trips_exact_coordinates() {
+    let definitions = definitions();
+    let (scenario, configuration) = identities(b"observation-boundary");
+    let entries = entries();
+    let mut log = EventLog::new();
+    let append = log
+        .append_entries(entries.clone())
+        .expect("observation event segment");
+    let boundary = CrucibleObservationBoundaryEvidence::new(
+        VirtualTime { ticks: 5 },
+        7,
+        8,
+        0,
+        append.offset,
+        true,
+    )
+    .expect("observation boundary");
+
+    let publication = evaluate_crucible_observation_measurement_publication(
+        scenario,
+        configuration,
+        &definitions,
+        entries,
+        terminal(),
+        boundary,
+        MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    )
+    .expect("observation publication");
+    assert_eq!(
+        publication.evidence().schema_version(),
+        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+    );
+    assert_eq!(
+        publication.evidence().observation_boundary(),
+        Some(boundary)
+    );
+    assert_eq!(
+        publication
+            .evidence()
+            .id()
+            .expect("evidence ID")
+            .schema_version(),
+        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+    );
+
+    let bytes = publication
+        .evidence()
+        .canonical_bytes()
+        .expect("canonical v2 evidence");
+    let decoded = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)
+        .expect("decoded v2 evidence");
+    assert_eq!(decoded, *publication.evidence());
 }
 
 #[test]
@@ -421,15 +505,15 @@ fn evidence_decode_rejects_noncanonical_unknown_and_unsupported_input() {
         .find(|(key, _)| key == &ciborium::Value::Text("schema_version".to_owned()))
         .map(|(_, value)| value)
         .expect("schema field");
-    *schema = ciborium::Value::Integer(2.into());
+    *schema = ciborium::Value::Integer(3.into());
     let mut unsupported = Vec::new();
     ciborium::ser::into_writer(&unsupported_value, &mut unsupported)
         .expect("unsupported-schema CBOR");
     assert!(matches!(
         CrucibleMeasurementReplayEvidence::from_canonical_bytes(&unsupported),
         Err(CrucibleMeasurementError::UnsupportedEvidenceSchema {
-            actual: 2,
-            expected: CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1,
+            actual: 3,
+            expected: CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2,
         })
     ));
 }

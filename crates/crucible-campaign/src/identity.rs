@@ -471,9 +471,9 @@ content_object_id!(
 content_object_id!(
     CampaignFactId,
     ObjectKind::CampaignFact,
-    [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+    [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
     "crucible.campaign.fact",
-    "Identifies one immutable campaign fact; versions 2 through 12 remain decodable for history compatibility, and version 13 selects a ready savepoint continuation."
+    "Identifies one immutable campaign fact; versions 2 through 13 remain decodable for history compatibility, and version 14 requests an observation stop."
 );
 semantic_id!(
     CampaignCommandId,
@@ -549,9 +549,9 @@ semantic_id!(
 content_object_id!(
     BranchRequestId,
     ObjectKind::CampaignFact,
-    [1, 2, 3, 4, 5, 6, 7, 8],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9],
     "crucible.campaign.branch-request",
-    "Identifies one bounded request for branch candidates; versions 1 through 7 remain decodable for history compatibility."
+    "Identifies one bounded request for branch candidates; versions 1 through 8 remain decodable for history compatibility, and version 9 requests an observation stop."
 );
 content_object_id!(
     CandidateGeneratorSpecId,
@@ -580,9 +580,9 @@ content_object_id!(
 content_object_id!(
     AttemptId,
     ObjectKind::CampaignFact,
-    [1, 2, 3],
+    [1, 2, 3, 4],
     "crucible.campaign.attempt",
-    "Identifies one immutable semantic execution attempt; versions 1 and 2 remain decodable for history compatibility."
+    "Identifies one immutable semantic execution attempt; versions 1 through 3 remain decodable for history compatibility, and version 4 requests an observation stop."
 );
 content_object_id!(
     AttemptAdmissionId,
@@ -594,9 +594,9 @@ content_object_id!(
 content_object_id!(
     ObservationId,
     ObjectKind::Observation,
-    [1, 2, 3, 4, 5, 6, 7, 8],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     "crucible.campaign.observation",
-    "Identifies one canonical attempt observation; versions 1 through 7 remain decodable for history compatibility."
+    "Identifies one canonical attempt observation; versions 1 through 8 remain decodable for history compatibility, and versions 9 through 12 carry authenticated observation stops."
 );
 content_object_id!(
     ObjectiveEvaluationId,

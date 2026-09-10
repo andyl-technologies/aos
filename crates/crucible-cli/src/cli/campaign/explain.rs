@@ -841,6 +841,12 @@ fn stop_outcome_label(outcome: &StopOutcome) -> String {
         StopOutcome::ScenarioFailure(reasons) => {
             format!("scenario-failure:{}", reasons.join(" | "))
         }
+        StopOutcome::ObservationReached(proof) => format!(
+            "reached:{}",
+            campaign_stop_condition_label(&crucible_campaign::StopCondition::Observation(
+                proof.condition().clone(),
+            ))
+        ),
     }
 }
 

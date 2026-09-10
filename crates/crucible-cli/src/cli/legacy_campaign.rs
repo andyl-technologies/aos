@@ -11,7 +11,10 @@ use std::sync::Arc;
 use super::packaged_executor::{
     load_guarded_campaign_run_deployment, resolve_guarded_campaign_deployment_path,
 };
-use crucible_campaign::{AttemptResourceLimits, CampaignState, StopCondition, StopOutcome};
+use crucible_campaign::{
+    AttemptResourceLimits, CampaignState, ObservationCondition, ObservationStopSatisfaction,
+    StopCondition, StopOutcome,
+};
 // crucible-lint: allow host-nondeterminism-state -- rendering projects accepted scheduler evidence into the existing CLI wire-frame contract without influencing execution.
 use crucible_api as campaign_output_api;
 use crucible_daemon::ExactCheckpointStore;
@@ -560,6 +563,11 @@ fn campaign_resume_status(
                 "campaign resume ended at an unexpected nonterminal boundary",
             ));
         }
+        StopOutcome::ObservationReached(_) => {
+            return Err(campaign_run_error_message(
+                "campaign resume ended at an unsupported observation boundary",
+            ));
+        }
     })
 }
 
@@ -940,6 +948,11 @@ fn campaign_stop_status(
                 "campaign default run ended at an unexpected nonterminal boundary",
             ));
         }
+        StopOutcome::ObservationReached(_) => {
+            return Err(backend_error(
+                "campaign default run ended at an unsupported observation boundary",
+            ));
+        }
     })
 }
 
@@ -1078,6 +1091,32 @@ fn campaign_stop_label(stop: &StopOutcome) -> String {
         StopOutcome::ScenarioFailure(reasons) => {
             format!("scenario-failure:{}", reasons.join(" | "))
         }
+        StopOutcome::ObservationReached(proof) => match proof.condition() {
+            ObservationCondition::SchedulerQuiescent => {
+                String::from("observation-reached:scheduler-quiescent")
+            }
+            ObservationCondition::AssertionViolationTransition(assertion) => {
+                format!("observation-reached:assertion-violation-transition:{assertion}")
+            }
+            ObservationCondition::AnyAssertionViolationTransition => {
+                let assertion = proof
+                    .assertion_witness()
+                    .map_or("unknown", |witness| witness.assertion());
+                format!("observation-reached:any-assertion-violation-transition:{assertion}")
+            }
+            ObservationCondition::SchedulerQuiescentOrExecutionQuanta { execution_quanta } => {
+                let satisfaction = match proof.satisfaction() {
+                    ObservationStopSatisfaction::SchedulerQuiescent => "scheduler-quiescent",
+                    ObservationStopSatisfaction::ExecutionQuanta => "execution-quanta",
+                    ObservationStopSatisfaction::AssertionViolationTransition => {
+                        "invalid-assertion-transition"
+                    }
+                };
+                format!(
+                    "observation-reached:scheduler-quiescent-or-execution-quanta:{execution_quanta}:{satisfaction}"
+                )
+            }
+        },
     }
 }
 

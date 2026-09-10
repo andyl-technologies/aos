@@ -5,7 +5,7 @@ use super::*;
 use crucible_campaign::{
     CampaignChoiceObject, CampaignChoiceObjectKind, ChoiceDomain, ChoiceOpportunity, ChoiceSource,
     ConfigurationArtifact, GetCampaignChoiceObjectRequest, GetCampaignFrontierObjectRequest,
-    GetCampaignGraphObjectRequest, SelectableDeclaration,
+    GetCampaignGraphObjectRequest, ObservationCondition, SelectableDeclaration,
 };
 
 const CAMPAIGN_OBJECT_REPORT_SCHEMA: &str = "crucible.cli.campaign-object.v1";
@@ -421,6 +421,18 @@ pub(super) fn campaign_stop_condition_label(stop: &StopCondition) -> String {
         } => format!(
             "virtual-time-or-execution-quanta:{virtual_time_nanoseconds}:{execution_quanta}"
         ),
+        StopCondition::Observation(ObservationCondition::SchedulerQuiescent) => {
+            String::from("observation:scheduler-quiescent")
+        }
+        StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
+            assertion,
+        )) => format!("observation:assertion-violation-transition:{assertion}"),
+        StopCondition::Observation(ObservationCondition::AnyAssertionViolationTransition) => {
+            String::from("observation:any-assertion-violation-transition")
+        }
+        StopCondition::Observation(ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
+            execution_quanta,
+        }) => format!("observation:scheduler-quiescent-or-execution-quanta:{execution_quanta}"),
     }
 }
 
