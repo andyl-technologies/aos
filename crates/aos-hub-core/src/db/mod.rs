@@ -277,7 +277,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::Digest as _;
 
 use crate::backend::{Backend, CheckedStatement, Statement};
@@ -484,8 +484,8 @@ fn extend_release_documentation_inserts(
 #[cfg(test)]
 mod snapshot_insert_tests {
     use super::{
-        extend_multirow_insert, extend_release_artifact_inserts, Statement, Value,
-        SNAPSHOT_MAX_BOUND_PARAMETERS,
+        SNAPSHOT_MAX_BOUND_PARAMETERS, Statement, Value, extend_multirow_insert,
+        extend_release_artifact_inserts,
     };
 
     #[test]
@@ -496,9 +496,11 @@ mod snapshot_insert_tests {
         extend_multirow_insert(&mut statements, "INSERT INTO example", &rows, "").unwrap();
 
         assert_eq!(statements.len(), 12);
-        assert!(statements
-            .iter()
-            .all(|statement| statement.params.len() <= SNAPSHOT_MAX_BOUND_PARAMETERS));
+        assert!(
+            statements
+                .iter()
+                .all(|statement| statement.params.len() <= SNAPSHOT_MAX_BOUND_PARAMETERS)
+        );
     }
 
     #[test]
@@ -509,9 +511,11 @@ mod snapshot_insert_tests {
         extend_release_artifact_inserts(&mut statements, "snapshot", &rows).unwrap();
 
         assert_eq!(statements.len(), 8);
-        assert!(statements
-            .iter()
-            .all(|statement| statement.params.len() <= SNAPSHOT_MAX_BOUND_PARAMETERS));
+        assert!(
+            statements
+                .iter()
+                .all(|statement| statement.params.len() <= SNAPSHOT_MAX_BOUND_PARAMETERS)
+        );
     }
 }
 
@@ -819,13 +823,11 @@ impl From<&BindingRecord> for BindingReadSummary {
     }
 }
 
-const BINDING_READ_DETAIL_SQL: &str =
-    "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key, \
+const BINDING_READ_DETAIL_SQL: &str = "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key, \
      resource_version, created_at, updated_at \
      FROM bindings WHERE stable_id = ?1";
 
-const BINDING_READ_SUMMARY_SQL: &str =
-    "SELECT id, org_id, name, kind, is_instance_default, stable_id \
+const BINDING_READ_SUMMARY_SQL: &str = "SELECT id, org_id, name, kind, is_instance_default, stable_id \
      FROM bindings WHERE org_id = ?1 ORDER BY name";
 
 /// One immutable credential-version reference attached to a binding.
@@ -6796,22 +6798,24 @@ impl Database {
         if expires_at <= now {
             bail!("publication multipart expiry must be in the future");
         }
-        let mut statements = vec![Statement::new(
-            "INSERT INTO registry_publication_multipart_uploads
+        let mut statements = vec![
+            Statement::new(
+                "INSERT INTO registry_publication_multipart_uploads
                  (upload_id, publication_id, registry_id, surface_object_id,
                   state, active_object_slot, expires_at,
                   created_at, finished_at)
                  VALUES (?1, ?2, ?3, ?4, 'active', 1, ?5, ?6, NULL)",
-            vals![
-                upload_id,
-                publication_id,
-                registry_id,
-                surface_object_id,
-                expires_at,
-                now
-            ],
-        )
-        .expecting(1)];
+                vals![
+                    upload_id,
+                    publication_id,
+                    registry_id,
+                    surface_object_id,
+                    expires_at,
+                    now
+                ],
+            )
+            .expecting(1),
+        ];
         for (placement_id, placement_resource_version) in placements {
             statements.push(
                 Statement::new(
@@ -20399,11 +20403,7 @@ impl Database {
                     )
                     .await?
                     .is_some();
-                if still_matches {
-                    Err(error)
-                } else {
-                    Ok(false)
-                }
+                if still_matches { Err(error) } else { Ok(false) }
             }
         }
     }
@@ -24861,24 +24861,26 @@ impl Database {
                 event.payload_json.len() <= 1024 * 1024,
                 "topology event payload exceeds webhook materialization limit"
             );
-            let mut statements = vec![Statement::new(
-                "INSERT INTO audit_log
+            let mut statements = vec![
+                Statement::new(
+                    "INSERT INTO audit_log
                  (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
                   action, scope, result_commit, result_tag, detail, created_at)
                  SELECT ?1, NULL, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, ?8
                   WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE outbox_event_id = ?1)",
-                vals![
-                    event.event_id,
-                    event.actor_kind,
-                    event.actor_id,
-                    event.actor_label,
-                    event.event_name,
-                    event.owner_scope_key,
-                    event.payload_json,
-                    event.occurred_at
-                ],
-            )
-            .unchecked()];
+                    vals![
+                        event.event_id,
+                        event.actor_kind,
+                        event.actor_id,
+                        event.actor_label,
+                        event.event_name,
+                        event.owner_scope_key,
+                        event.payload_json,
+                        event.occurred_at
+                    ],
+                )
+                .unchecked(),
+            ];
             if let Some(org_id) = event.org_id {
                 for hook in self.list_webhooks(org_id).await? {
                     if hook.active && hook.subscribes_to(&event.event_name) {
@@ -25307,8 +25309,7 @@ pub struct BinaryCache {
 }
 
 /// `binary_caches` columns in the canonical order [`row_to_binary_cache`] expects.
-const BINARY_CACHE_COLUMNS: &str =
-    "id, stable_id, scope_key, owner_scope_key, org_id, slug, name, \
+const BINARY_CACHE_COLUMNS: &str = "id, stable_id, scope_key, owner_scope_key, org_id, slug, name, \
      visibility, priority, compression, want_mass_query, \
      created_at, deleted_at, purge_after, resource_version, updated_at";
 
@@ -26691,10 +26692,11 @@ mod tests {
             .get(0)
             .unwrap();
         assert_eq!(count, 1);
-        assert!(db
-            .ensure_instance_default_binding("deployment_r2", None, Some("different"))
-            .await
-            .is_err());
+        assert!(
+            db.ensure_instance_default_binding("deployment_r2", None, Some("different"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -26714,8 +26716,8 @@ mod tests {
             .unwrap();
         let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
 
-        assert!(db
-            .load_consumer_scope_grant(
+        assert!(
+            db.load_consumer_scope_grant(
                 crate::db::GrantResource::NetworkPolicy {
                     id: "instance:public"
                 },
@@ -26723,12 +26725,14 @@ mod tests {
             )
             .await
             .unwrap()
-            .is_none());
-        assert!(db
-            .list_bindings_available_to_scope(&scope)
-            .await
-            .unwrap()
-            .is_empty());
+            .is_none()
+        );
+        assert!(
+            db.list_bindings_available_to_scope(&scope)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let registry_id = db
             .create_managed_registry(org_id, "", "main", "public", &[], false)
             .await
@@ -26825,11 +26829,12 @@ mod tests {
         let binding_id = create_test_binding(&db, org, "archive", "objects").await;
         create_valid_write_credential(&db, binding_id, "native://archive/write/v1").await;
 
-        assert!(db
-            .binding_delete_blockers(binding_id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.binding_delete_blockers(binding_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(db.delete_topology_binding(binding_id, 1).await.unwrap());
         assert!(!db.delete_topology_binding(binding_id, 1).await.unwrap());
     }
@@ -26892,9 +26897,8 @@ mod tests {
 
     fn signed_image_package() -> aos_registry_surface::manifest::PackageToml {
         use aos_registry_surface::manifest::{
-            immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
-            ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-            ImageVerificationState,
+            ImageCompression, ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
+            ImageVerificationState, immutable_image_info_object_key, immutable_image_object_key,
         };
 
         #[derive(serde::Serialize)]
@@ -27360,11 +27364,12 @@ source_nar_hash = ""
             ),
         ];
 
-        assert!(db
-            .backend
-            .migration_batch(current, current + 1, &statements)
-            .await
-            .is_err());
+        assert!(
+            db.backend
+                .migration_batch(current, current + 1, &statements)
+                .await
+                .is_err()
+        );
 
         let version: i64 = db
             .backend
@@ -27672,10 +27677,11 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(!db
-            .release_documentation_projection_complete(id)
-            .await
-            .unwrap());
+        assert!(
+            !db.release_documentation_projection_complete(id)
+                .await
+                .unwrap()
+        );
         db.backend
             .execute(
                 "UPDATE registry_index SET documentation_projection_generation = 1
@@ -27746,9 +27752,11 @@ source_nar_hash = ""
                 && artifact.store_path
                     == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
         }));
-        assert!(current_artifacts
-            .iter()
-            .all(|artifact| artifact.package_name == "curl"));
+        assert!(
+            current_artifacts
+                .iter()
+                .all(|artifact| artifact.package_name == "curl")
+        );
         let exact = db
             .package_documentation_locator(id, "curl", "8.5.0", "x86_64-linux")
             .await
@@ -27781,19 +27789,22 @@ source_nar_hash = ""
         assert_eq!(browse[0].summary, "URL transfers");
         let retention_releases = db.list_retention_release_snapshots(id).await.unwrap();
         assert_eq!(retention_releases.len(), 1);
-        assert!(retention_releases[0]
-            .artifacts
-            .iter()
-            .any(|artifact| artifact.artifact_kind == "output" && artifact.store_hash == "abc"));
+        assert!(
+            retention_releases[0]
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.artifact_kind == "output" && artifact.store_hash == "abc")
+        );
         assert_eq!(
             db.list_complete_package_snapshots(id).await.unwrap(),
             [("1.0.0".to_string(), "c".repeat(64))]
         );
-        assert!(db
-            .list_complete_package_snapshots(id + 1000)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.list_complete_package_snapshots(id + 1000)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         // A moved tag must not select a stale, formerly complete snapshot.
         db.backend
             .execute(
@@ -27802,11 +27813,12 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(db
-            .list_complete_package_snapshots(id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.list_complete_package_snapshots(id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         db.backend
             .execute(
                 "UPDATE releases SET commit_oid = ?1 WHERE registry_id = ?2",
@@ -27867,21 +27879,24 @@ source_nar_hash = ""
 
         snapshot.package_documentation.clear();
         db.apply_snapshot(id, &snapshot).await.unwrap();
-        assert!(db
-            .package_documentation_locator(id, "curl", "8.5.0", "x86_64-linux")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(db
-            .search_package_documentation(id, "listen", None, 10)
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(db
-            .browse_package_documentation(id, None, 10)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.package_documentation_locator(id, "curl", "8.5.0", "x86_64-linux")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.search_package_documentation(id, "listen", None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.browse_package_documentation(id, None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let retained = db
             .package_documentation_locator_by_digest(id, &"b".repeat(64))
             .await
@@ -27890,10 +27905,11 @@ source_nar_hash = ""
         assert_eq!(retained.release.as_deref(), Some("1.0.0"));
         assert_eq!(retained.verified_tag_oid, Some("a".repeat(64)));
         assert_eq!(retained.indexed_commit, "c".repeat(64));
-        assert!(db
-            .release_documentation_projection_complete(id)
-            .await
-            .unwrap());
+        assert!(
+            db.release_documentation_projection_complete(id)
+                .await
+                .unwrap()
+        );
         let metadata_digest: String = db
             .backend
             .query_opt(
@@ -27914,10 +27930,11 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(db
-            .release_documentation_projection_complete(id)
-            .await
-            .is_err());
+        assert!(
+            db.release_documentation_projection_complete(id)
+                .await
+                .is_err()
+        );
         db.backend
             .execute(
                 "UPDATE release_package_documentation
@@ -27933,20 +27950,23 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(!db
-            .release_documentation_projection_complete(id)
-            .await
-            .unwrap());
+        assert!(
+            !db.release_documentation_projection_complete(id)
+                .await
+                .unwrap()
+        );
         db.apply_snapshot(id, &snapshot).await.unwrap();
-        assert!(db
-            .release_documentation_projection_complete(id)
-            .await
-            .unwrap());
-        assert!(db
-            .package_documentation_locator_by_digest(id, &"b".repeat(64))
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            db.release_documentation_projection_complete(id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            db.package_documentation_locator_by_digest(id, &"b".repeat(64))
+                .await
+                .unwrap()
+                .is_some()
+        );
         snapshot.package_documentation.push(documentation);
         db.apply_snapshot(id, &snapshot).await.unwrap();
 
@@ -28396,10 +28416,12 @@ source_nar_hash = ""
         assert_eq!(provenance.package, "aos");
         assert_eq!(provenance.closure_members.len(), 1);
         assert_eq!(provenance.evidence.len(), 6);
-        assert!(provenance
-            .evidence
-            .iter()
-            .all(|evidence| evidence.verification == "verified"));
+        assert!(
+            provenance
+                .evidence
+                .iter()
+                .all(|evidence| evidence.verification == "verified")
+        );
 
         let epoch_before_shared_root: i64 = db
             .backend
@@ -28472,10 +28494,11 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(db
-            .apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
-            .await
-            .is_err());
+        assert!(
+            db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+                .await
+                .is_err()
+        );
         db.backend
             .execute(
                 "UPDATE object_placements SET state = 'present'
@@ -28500,10 +28523,11 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(db
-            .apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
-            .await
-            .is_err());
+        assert!(
+            db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+                .await
+                .is_err()
+        );
         let retained_after_object_interleaving: i64 = db
             .backend
             .query_opt(
@@ -28533,10 +28557,11 @@ source_nar_hash = ""
             .as_mut()
             .unwrap()
             .index_size += 1;
-        assert!(db
-            .apply_snapshot_from_placement(registry_id, &mismatched, Some(placement.id))
-            .await
-            .is_err());
+        assert!(
+            db.apply_snapshot_from_placement(registry_id, &mismatched, Some(placement.id))
+                .await
+                .is_err()
+        );
         let retained: i64 = db
             .backend
             .query_opt(
@@ -28554,10 +28579,11 @@ source_nar_hash = ""
         db.observe_surface_placement(placement.id, "ready", "complete", 2)
             .await
             .unwrap();
-        assert!(db
-            .apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
-            .await
-            .is_err());
+        assert!(
+            db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+                .await
+                .is_err()
+        );
         let retained_after_placement_interleaving: i64 = db
             .backend
             .query_opt(
@@ -28926,10 +28952,11 @@ source_nar_hash = ""
             .observe_surface_placement(replica.id, "ready", "complete", 1)
             .await
             .unwrap();
-        assert!(db
-            .mark_index_empty_from_placement(registry_id, replica.id)
-            .await
-            .is_err());
+        assert!(
+            db.mark_index_empty_from_placement(registry_id, replica.id)
+                .await
+                .is_err()
+        );
         assert_eq!(
             db.index_status(registry_id).await.unwrap().unwrap().state,
             "fresh",
@@ -28938,11 +28965,12 @@ source_nar_hash = ""
         db.record_registry_image_presence(registry_id, replica.id, &identities, unix_now())
             .await
             .unwrap();
-        assert!(db
-            .collectible_image_snapshots(100)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.collectible_image_snapshots(100)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let visible = db.list_system_images(registry_id).await.unwrap();
         assert_eq!(visible.len(), 2);
         let mut formats = visible
@@ -29029,26 +29057,29 @@ source_nar_hash = ""
         assert!(empty.description.is_none());
         assert!(empty.readme.is_none());
         assert!(db.refs_digest(registry_id).await.unwrap().is_none());
-        assert!(db
-            .registry_cache_stack(registry_id)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.registry_cache_stack(registry_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(db.collectible_image_snapshots(100).await.unwrap().len(), 4);
         assert!(db.list_packages(registry_id).await.unwrap().is_empty());
         assert!(db.list_releases(registry_id).await.unwrap().is_empty());
         assert!(db.list_channels(registry_id).await.unwrap().is_empty());
         assert!(db.list_roster(registry_id).await.unwrap().is_empty());
-        assert!(db
-            .registry_cache_stack_entries(registry_id)
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(db
-            .list_system_image_root_keys(registry_id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.registry_cache_stack_entries(registry_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.list_system_image_root_keys(registry_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             db.channel_floor(registry_id, "stable")
                 .await
@@ -29146,11 +29177,12 @@ source_nar_hash = ""
             vec![("curl".to_string(), "8.5.0".to_string())]
         );
         // Nothing references a hash that appears in no closure.
-        assert!(db
-            .reverse_dependencies(id, "nope")
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.reverse_dependencies(id, "nope")
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         // primary_store_hash prefers the named platform and falls back.
         assert_eq!(
@@ -29503,10 +29535,11 @@ source_nar_hash = ""
     #[tokio::test]
     async fn audit_exists_for_commit_is_specific_to_action_and_commit() {
         let db = Database::open_in_memory().await.unwrap();
-        assert!(!db
-            .audit_exists_for_commit("index.external_commit", "oid-1")
-            .await
-            .unwrap());
+        assert!(
+            !db.audit_exists_for_commit("index.external_commit", "oid-1")
+                .await
+                .unwrap()
+        );
         db.record_audit(
             "key",
             None,
@@ -29520,15 +29553,17 @@ source_nar_hash = ""
         )
         .await
         .unwrap();
-        assert!(db
-            .audit_exists_for_commit("index.external_commit", "oid-1")
-            .await
-            .unwrap());
+        assert!(
+            db.audit_exists_for_commit("index.external_commit", "oid-1")
+                .await
+                .unwrap()
+        );
         // A different commit, or a different action, does not match.
-        assert!(!db
-            .audit_exists_for_commit("index.external_commit", "oid-2")
-            .await
-            .unwrap());
+        assert!(
+            !db.audit_exists_for_commit("index.external_commit", "oid-2")
+                .await
+                .unwrap()
+        );
         assert!(!db.audit_exists_for_commit("index", "oid-1").await.unwrap());
     }
 
@@ -29579,8 +29614,8 @@ source_nar_hash = ""
         assert_eq!(db.list_revisions(&create_id).await.unwrap().len(), 1);
 
         let stale_delete = uuid::Uuid::new_v4().to_string();
-        assert!(!db
-            .delete_project_at_version(
+        assert!(
+            !db.delete_project_at_version(
                 org,
                 project_id,
                 2,
@@ -29590,12 +29625,13 @@ source_nar_hash = ""
                 "owner@acme.test",
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
         assert!(db.changeset(&stale_delete).await.unwrap().is_none());
 
         let delete_id = uuid::Uuid::new_v4().to_string();
-        assert!(db
-            .delete_project_at_version(
+        assert!(
+            db.delete_project_at_version(
                 org,
                 project_id,
                 1,
@@ -29605,7 +29641,8 @@ source_nar_hash = ""
                 "owner@acme.test",
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
         assert!(db.project_by_path(org, "infra").await.unwrap().is_none());
         assert_eq!(db.list_revisions(&delete_id).await.unwrap().len(), 1);
         assert_eq!(db.materialize_topology_events().await.unwrap(), 2);
@@ -29709,8 +29746,8 @@ source_nar_hash = ""
         .await
         .unwrap();
         assert!(db.has_pending_invitation("new@acme.com").await.unwrap());
-        assert!(db
-            .create_invitation(
+        assert!(
+            db.create_invitation(
                 org,
                 "new@acme.com",
                 &project_scope,
@@ -29719,7 +29756,8 @@ source_nar_hash = ""
                 far_future,
             )
             .await
-            .is_err());
+            .is_err()
+        );
         let invitee = db.create_user("new@acme.com", None).await.unwrap();
         let accepted = db
             .accept_invitation("hash-a", org, invitee, "new@acme.com")
@@ -29735,11 +29773,12 @@ source_nar_hash = ""
         );
         assert!(!db.has_pending_invitation("new@acme.com").await.unwrap());
         // A second accept of the same hash is rejected (already accepted).
-        assert!(db
-            .accept_invitation("hash-a", org, invitee, "new@acme.com")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.accept_invitation("hash-a", org, invitee, "new@acme.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(!db.has_pending_invitation("late@acme.com").await.unwrap());
 
         let cancelled_id = db
@@ -29759,14 +29798,16 @@ source_nar_hash = ""
             .unwrap()
             .unwrap()
             .created_at;
-        assert!(db
-            .cancel_invitation(cancelled_id, created_at)
-            .await
-            .unwrap());
-        assert!(!db
-            .has_pending_invitation("cancelled@acme.com")
-            .await
-            .unwrap());
+        assert!(
+            db.cancel_invitation(cancelled_id, created_at)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !db.has_pending_invitation("cancelled@acme.com")
+                .await
+                .unwrap()
+        );
         db.create_invitation(
             org,
             "cancelled@acme.com",
@@ -29778,11 +29819,12 @@ source_nar_hash = ""
         .await
         .unwrap();
         // Unknown hash is rejected.
-        assert!(db
-            .accept_invitation("hash-missing", org, invitee, "new@acme.com")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.accept_invitation("hash-missing", org, invitee, "new@acme.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         // An already-expired invitation cannot be accepted.
         let past = unix_now() - 10;
@@ -29812,21 +29854,23 @@ source_nar_hash = ""
             .get(0)
             .unwrap();
         assert!(expired_secret.is_none());
-        assert!(db
-            .backend
-            .query_opt(
-                "SELECT invitation_id FROM live_invitations WHERE invitation_id = ?1",
-                &vals![expired_id],
-            )
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.backend
+                .query_opt(
+                    "SELECT invitation_id FROM live_invitations WHERE invitation_id = ?1",
+                    &vals![expired_id],
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
         let late = db.create_user("late@acme.com", None).await.unwrap();
-        assert!(db
-            .accept_invitation("hash-b", org, late, "late@acme.com")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.accept_invitation("hash-b", org, late, "late@acme.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -30020,11 +30064,12 @@ source_nar_hash = ""
         let secret = db.create_session(user, 3600, 0).await.unwrap();
         let now = unix_now() + 1;
 
-        assert!(db
-            .validate_session_at(&secret, now)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            db.validate_session_at(&secret, now)
+                .await
+                .unwrap()
+                .is_some()
+        );
         let changes_before: i64 = db
             .backend
             .query_opt("SELECT total_changes()", &[])
@@ -30035,11 +30080,12 @@ source_nar_hash = ""
             .unwrap();
 
         for _ in 0..100 {
-            assert!(db
-                .validate_session_at(&secret, now)
-                .await
-                .unwrap()
-                .is_some());
+            assert!(
+                db.validate_session_at(&secret, now)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
         }
         let changes_after: i64 = db
             .backend
@@ -30051,11 +30097,12 @@ source_nar_hash = ""
             .unwrap();
         assert_eq!(changes_after, changes_before);
 
-        assert!(db
-            .validate_session_at(&secret, now + 1)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            db.validate_session_at(&secret, now + 1)
+                .await
+                .unwrap()
+                .is_some()
+        );
         let advanced: i64 = db
             .backend
             .query_opt(
@@ -30070,11 +30117,12 @@ source_nar_hash = ""
         assert_eq!(advanced, now + 1);
 
         db.revoke_session(&secret).await.unwrap();
-        assert!(db
-            .validate_session_at(&secret, now + 1)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.validate_session_at(&secret, now + 1)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -30208,10 +30256,11 @@ source_nar_hash = ""
         ));
 
         // Approve as the maintainer.
-        assert!(db
-            .approve_device(&user_code, Principal::user(approver), &grants)
-            .await
-            .unwrap());
+        assert!(
+            db.approve_device(&user_code, Principal::user(approver), &grants)
+                .await
+                .unwrap()
+        );
 
         // Simulate the client's advertised five-second polling interval.
         db.backend
@@ -30268,10 +30317,11 @@ source_nar_hash = ""
         ));
 
         // An unknown user_code cannot be approved or denied.
-        assert!(!db
-            .approve_device("ZZZZ-9999", crate::domain::Principal::user(1), &[])
-            .await
-            .unwrap());
+        assert!(
+            !db.approve_device("ZZZZ-9999", crate::domain::Principal::user(1), &[])
+                .await
+                .unwrap()
+        );
         assert!(!db.deny_device("ZZZZ-9999").await.unwrap());
         // An unknown device_code is terminal rather than polling forever.
         assert!(matches!(
@@ -30296,10 +30346,11 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(!db
-            .approve_device(&user_code, crate::domain::Principal::user(1), &[])
-            .await
-            .unwrap());
+        assert!(
+            !db.approve_device(&user_code, crate::domain::Principal::user(1), &[])
+                .await
+                .unwrap()
+        );
     }
 
     /// M-3: a second approval of an already-approved `user_code` is a no-op —
@@ -30323,10 +30374,11 @@ source_nar_hash = ""
             .unwrap();
 
         // First approval mints exactly one token.
-        assert!(db
-            .approve_device(&user_code, principal, &grants)
-            .await
-            .unwrap());
+        assert!(
+            db.approve_device(&user_code, principal, &grants)
+                .await
+                .unwrap()
+        );
         assert_eq!(db.list_tokens_for(principal).await.unwrap().len(), 1);
         let DevicePollResult::Approved(first_grant) = db.poll_device(&device_code).await.unwrap()
         else {
@@ -30334,10 +30386,11 @@ source_nar_hash = ""
         };
 
         // A second approval of the same user_code is refused and mints nothing.
-        assert!(!db
-            .approve_device(&user_code, principal, &grants)
-            .await
-            .unwrap());
+        assert!(
+            !db.approve_device(&user_code, principal, &grants)
+                .await
+                .unwrap()
+        );
         assert_eq!(
             db.list_tokens_for(principal).await.unwrap().len(),
             1,
@@ -30364,10 +30417,11 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert!(db.deny_device(&user_code).await.unwrap());
-        assert!(!db
-            .approve_device(&user_code, principal, &grants)
-            .await
-            .unwrap());
+        assert!(
+            !db.approve_device(&user_code, principal, &grants)
+                .await
+                .unwrap()
+        );
         assert!(
             db.list_tokens_for(principal).await.unwrap().is_empty(),
             "a denied grant mints no token"
@@ -30484,10 +30538,11 @@ source_nar_hash = ""
         assert_eq!(first.state, "pending");
         assert_eq!(first.resource_version, 4);
         assert_eq!(replay.resource_version, first.resource_version);
-        assert!(db
-            .mutate_topology_operation("retry-op", 3, "cancel", "retry-key")
-            .await
-            .is_err());
+        assert!(
+            db.mutate_topology_operation("retry-op", 3, "cancel", "retry-key")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -30582,10 +30637,11 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert_eq!(instance.records.len(), 3);
-        assert!(db
-            .list_scope_topology_operations_page(&acme_scope, None, 10, Some("operation-b"),)
-            .await
-            .is_err());
+        assert!(
+            db.list_scope_topology_operations_page(&acme_scope, None, 10, Some("operation-b"),)
+                .await
+                .is_err()
+        );
     }
 
     /// M-2: the transactional owner-safe role change refuses to demote an org's
@@ -30680,10 +30736,11 @@ source_nar_hash = ""
             .unwrap();
 
         assert!(db.delete_user(remaining).await.is_err());
-        assert!(db
-            .revoke_membership("user", remaining, &scope)
-            .await
-            .is_err());
+        assert!(
+            db.revoke_membership("user", remaining, &scope)
+                .await
+                .is_err()
+        );
         assert_eq!(owner_count(&db, &scope).await, 1);
     }
 
@@ -30719,11 +30776,12 @@ source_nar_hash = ""
 
         assert!(db.validate_token(&token).await.unwrap().is_none());
         assert!(db.validate_session(&session).await.unwrap().is_none());
-        assert!(db
-            .effective_scopes(Principal::user(user))
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.effective_scopes(Principal::user(user))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -30804,11 +30862,12 @@ source_nar_hash = ""
 
         // Submitting that known challenge value through the *assertion* endpoint
         // (wrong kind) consumes nothing and leaves the row intact.
-        assert!(db
-            .take_webauthn_challenge("chal-abc", "assertion")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.take_webauthn_challenge("chal-abc", "assertion")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         // The registration challenge is still consumable via its own kind.
         let taken = db
@@ -30819,11 +30878,12 @@ source_nar_hash = ""
         assert_eq!(taken.kind, "registration");
 
         // And it is single-use: a second take finds nothing.
-        assert!(db
-            .take_webauthn_challenge("chal-abc", "registration")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.take_webauthn_challenge("chal-abc", "registration")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -30917,11 +30977,12 @@ source_nar_hash = ""
             .unwrap();
         let reg = db.registry_by_slug("acme/team/cdn").await.unwrap().unwrap();
         assert_eq!(reg.id, id);
-        assert!(db
-            .list_surface_placements(SurfaceTarget::Registry(id))
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.list_surface_placements(SurfaceTarget::Registry(id))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// Set up an org + binding and return `(db, org_id, binding_id)`.
@@ -30948,10 +31009,11 @@ source_nar_hash = ""
             .await
             .unwrap();
         // Duplicate slug is rejected independently of physical placement.
-        assert!(db
-            .create_binary_cache(None, "acme-cache", "x", "public", 40, "zstd", true)
-            .await
-            .is_err());
+        assert!(
+            db.create_binary_cache(None, "acme-cache", "x", "public", 40, "zstd", true)
+                .await
+                .is_err()
+        );
         let c = db
             .binary_cache_by_slug("acme-cache")
             .await
@@ -30982,10 +31044,11 @@ source_nar_hash = ""
         assert!(!c.want_mass_query);
 
         // Soft-delete drops it from the servable list; hard-delete removes the row.
-        assert!(db
-            .soft_delete_binary_cache(id, unix_now() + 100)
-            .await
-            .unwrap());
+        assert!(
+            db.soft_delete_binary_cache(id, unix_now() + 100)
+                .await
+                .unwrap()
+        );
         assert_eq!(db.list_binary_caches().await.unwrap().len(), 1);
         assert!(db.delete_binary_cache(id).await.unwrap());
         assert!(db.binary_cache_by_id(id).await.unwrap().is_none());
@@ -31071,19 +31134,21 @@ source_nar_hash = ""
         );
 
         // Duplicate canonical path is rejected.
-        assert!(db
-            .create_managed_registry(org, "infra/prod", "cdn", "public", &[], true)
-            .await
-            .is_err());
+        assert!(
+            db.create_managed_registry(org, "infra/prod", "cdn", "public", &[], true)
+                .await
+                .is_err()
+        );
 
         // A flat phase-1 slug coexists and resolves by its bare slug.
         db.register_registry("legacy", &[], false).await.unwrap();
         assert!(db.registry_by_slug("legacy").await.unwrap().is_some());
-        assert!(db
-            .registry_by_scope("acme", "", "legacy")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.registry_by_scope("acme", "", "legacy")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -31247,8 +31312,8 @@ source_nar_hash = ""
 
         // Registry configuration round-trips through the exact-version atomic path.
         let change_id = uuid::Uuid::new_v4().to_string();
-        assert!(db
-            .apply_registry_configuration_change(
+        assert!(
+            db.apply_registry_configuration_change(
                 reg.id,
                 reg.resource_version,
                 &reg.visibility,
@@ -31261,13 +31326,14 @@ source_nar_hash = ""
                 "test",
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
         let reg = db.registry_by_slug("demo").await.unwrap().unwrap();
         assert_eq!(reg.crawl_policy, "deny_all");
         assert_eq!(reg.llms_txt_body, Some("# custom\n".to_string()));
         let clear_id = uuid::Uuid::new_v4().to_string();
-        assert!(db
-            .apply_registry_configuration_change(
+        assert!(
+            db.apply_registry_configuration_change(
                 reg.id,
                 reg.resource_version,
                 &reg.visibility,
@@ -31280,7 +31346,8 @@ source_nar_hash = ""
                 "test",
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
         assert_eq!(
             db.registry_by_slug("demo")
                 .await
@@ -31298,8 +31365,8 @@ source_nar_hash = ""
         let before = db.registry_by_slug("demo").await.unwrap().unwrap();
         let change_id = uuid::Uuid::new_v4().to_string();
 
-        assert!(db
-            .apply_registry_configuration_change(
+        assert!(
+            db.apply_registry_configuration_change(
                 before.id,
                 before.resource_version,
                 "private",
@@ -31312,7 +31379,8 @@ source_nar_hash = ""
                 "operator@example.test",
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
 
         let after = db.registry_by_slug("demo").await.unwrap().unwrap();
         assert_eq!(after.resource_version, before.resource_version + 1);
@@ -31325,8 +31393,8 @@ source_nar_hash = ""
         assert_eq!(revisions[0].object_id, before.stable_id.as_str());
         assert_eq!(revisions[0].op, "update");
 
-        assert!(db
-            .apply_registry_configuration_change(
+        assert!(
+            db.apply_registry_configuration_change(
                 before.id,
                 before.resource_version,
                 "private",
@@ -31339,7 +31407,8 @@ source_nar_hash = ""
                 "operator@example.test",
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
         assert_eq!(db.list_revisions(&change_id).await.unwrap().len(), 1);
 
         assert_eq!(db.materialize_topology_events().await.unwrap(), 1);
@@ -31350,8 +31419,8 @@ source_nar_hash = ""
         assert_eq!(audit[0].action, "registry.configuration.updated");
 
         let stale_change_id = uuid::Uuid::new_v4().to_string();
-        assert!(!db
-            .apply_registry_configuration_change(
+        assert!(
+            !db.apply_registry_configuration_change(
                 before.id,
                 before.resource_version,
                 "public",
@@ -31364,7 +31433,8 @@ source_nar_hash = ""
                 "operator@example.test",
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
         assert!(db.changeset(&stale_change_id).await.unwrap().is_none());
         assert_eq!(
             db.registry_by_slug("demo")
@@ -31635,16 +31705,17 @@ source_nar_hash = ""
         })
         .await
         .unwrap();
-        assert!(!db
-            .oci_registry_purge_blockers(id, purge_now + 4)
-            .await
-            .unwrap()
-            .any());
+        assert!(
+            !db.oci_registry_purge_blockers(id, purge_now + 4)
+                .await
+                .unwrap()
+                .any()
+        );
 
         let change_id = uuid::Uuid::new_v4().to_string();
 
-        assert!(db
-            .delete_registry_at_version(
+        assert!(
+            db.delete_registry_at_version(
                 id,
                 registry.resource_version,
                 &change_id,
@@ -31653,7 +31724,8 @@ source_nar_hash = ""
                 "release-controller",
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
         assert!(db.registry_by_id(id).await.unwrap().is_none());
         let changeset = db.changeset(&change_id).await.unwrap().unwrap();
         assert_eq!(changeset.status, "applied");
@@ -31764,11 +31836,12 @@ source_nar_hash = ""
         assert!(db.list_registries().await.unwrap().is_empty());
         assert!(!db.org_is_active(org).await.unwrap());
         // ...but still visible to the admin/restore path.
-        assert!(db
-            .org_by_slug_including_deleted("acme")
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            db.org_by_slug_including_deleted("acme")
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         assert!(db.restore_org(org).await.unwrap());
         assert!(db.org_by_slug("acme").await.unwrap().is_some());
@@ -31793,24 +31866,28 @@ source_nar_hash = ""
             .unwrap();
 
         // A file:// or loopback mirror upstream is rejected at creation.
-        assert!(db
-            .create_mirror_source(reg, "file:///srv/secret", "full", true, 3600)
-            .await
-            .is_err());
-        assert!(db
-            .create_mirror_source(reg, "http://127.0.0.1/", "full", true, 3600)
-            .await
-            .is_err());
-        assert!(db
-            .create_mirror_source(reg, "http://169.254.169.254/", "full", true, 3600)
-            .await
-            .is_err());
+        assert!(
+            db.create_mirror_source(reg, "file:///srv/secret", "full", true, 3600)
+                .await
+                .is_err()
+        );
+        assert!(
+            db.create_mirror_source(reg, "http://127.0.0.1/", "full", true, 3600)
+                .await
+                .is_err()
+        );
+        assert!(
+            db.create_mirror_source(reg, "http://169.254.169.254/", "full", true, 3600)
+                .await
+                .is_err()
+        );
 
         // A public literal mirror passes creation (no DNS needed).
-        assert!(db
-            .create_mirror_source(reg, "https://93.184.216.34/", "full", true, 3600)
-            .await
-            .is_ok());
+        assert!(
+            db.create_mirror_source(reg, "https://93.184.216.34/", "full", true, 3600)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -31886,11 +31963,12 @@ source_nar_hash = ""
         let purgeable = db.list_purgeable_orgs(now + 200).await.unwrap();
         assert_eq!(purgeable.len(), 1);
         assert!(db.hard_purge_org(org, now + 200).await.unwrap());
-        assert!(db
-            .org_by_slug_including_deleted("acme")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.org_by_slug_including_deleted("acme")
+                .await
+                .unwrap()
+                .is_none()
+        );
         let pin_count: i64 = db
             .backend
             .query_opt(
@@ -31933,11 +32011,12 @@ source_nar_hash = ""
             .unwrap();
         assert_eq!(revoke_events, 1);
         assert!(db.validate_token(&old_secret).await.unwrap().is_none());
-        assert!(db
-            .list_memberships_for("user", user)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.list_memberships_for("user", user)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let recreated = db.create_org("acme", "Acme Recreated").await.unwrap();
         let recreated_scope = db.org_by_id(recreated).await.unwrap().unwrap().stable_id;
         assert_ne!(original_scope, recreated_scope);
@@ -32023,9 +32102,11 @@ source_nar_hash = ""
             .effective_scopes(crate::domain::Principal::user(user))
             .await
             .unwrap();
-        assert!(grants_after_delete
-            .iter()
-            .all(|(scope, _)| scope.as_str() != old_scope));
+        assert!(
+            grants_after_delete
+                .iter()
+                .all(|(scope, _)| scope.as_str() != old_scope)
+        );
         let replacement_id = db
             .create_managed_registry(org_id, "infra", "packages", "private", &[], true)
             .await
@@ -32097,8 +32178,8 @@ source_nar_hash = ""
         .await
         .unwrap();
         db.soft_delete_org(org_id, 100).await.unwrap();
-        assert!(db
-            .grant_consumer_scope(
+        assert!(
+            db.grant_consumer_scope(
                 crate::db::GrantResource::NetworkPolicy {
                     id: "instance:public",
                 },
@@ -32108,7 +32189,8 @@ source_nar_hash = ""
                 "request:forbidden-regrant",
             )
             .await
-            .is_err());
+            .is_err()
+        );
         let events: i64 = db
             .backend
             .query_opt(
@@ -32158,10 +32240,11 @@ source_nar_hash = ""
         assert!(db.validate_token(&secret).await.unwrap().is_some());
         assert!(db.validate_session(&session).await.unwrap().is_some());
 
-        assert!(db
-            .transfer_org_ownership(org, alice, i64::MAX)
-            .await
-            .is_err());
+        assert!(
+            db.transfer_org_ownership(org, alice, i64::MAX)
+                .await
+                .is_err()
+        );
         assert_eq!(db.sole_owned_orgs(alice).await.unwrap(), vec!["acme"]);
 
         // Transfer ownership to Bob, then Alice is deletable.
@@ -32175,9 +32258,11 @@ source_nar_hash = ""
         let _ = token_id;
         // Bob now owns acme.
         let grants = db.effective_scopes(Principal::user(bob)).await.unwrap();
-        assert!(grants
-            .iter()
-            .any(|(s, r)| s.as_str() == org_scope && *r == Role::Owner));
+        assert!(
+            grants
+                .iter()
+                .any(|(s, r)| s.as_str() == org_scope && *r == Role::Owner)
+        );
     }
 
     #[tokio::test]
@@ -32238,11 +32323,12 @@ source_nar_hash = ""
             );
         }
         // The user gained no grant from any rejected call.
-        assert!(db
-            .effective_scopes(Principal::user(user))
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.effective_scopes(Principal::user(user))
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         for good in ["instance", org_scope.as_str(), project_scope.as_str()] {
             db.grant_membership("user", user, good, Role::Viewer.as_str())
@@ -32367,11 +32453,12 @@ source_nar_hash = ""
         )
         .await
         .unwrap();
-        assert!(db
-            .registry_publication_write_placements(registry_id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.registry_publication_write_placements(registry_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[allow(dead_code)]
@@ -32475,10 +32562,11 @@ source_nar_hash = ""
         .await
         .unwrap();
 
-        assert!(!db
-            .delete_registry_surface_placement(placement.id, placement.resource_version)
-            .await
-            .unwrap());
+        assert!(
+            !db.delete_registry_surface_placement(placement.id, placement.resource_version)
+                .await
+                .unwrap()
+        );
         assert!(db.surface_placement(placement.id).await.unwrap().is_some());
         assert_eq!(
             db.registry_publication_placement_records(publication_id)
@@ -32515,22 +32603,25 @@ source_nar_hash = ""
         assert!(blockers.object_presence);
         assert!(blockers.publication);
         assert!(!blockers.active_publication);
-        assert!(db
-            .delete_registry_surface_placement(placement.id, placement.resource_version)
-            .await
-            .unwrap());
+        assert!(
+            db.delete_registry_surface_placement(placement.id, placement.resource_version)
+                .await
+                .unwrap()
+        );
         assert!(db.surface_placement(placement.id).await.unwrap().is_none());
-        assert!(db
-            .registry_publication(publication_id)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            db.registry_publication(publication_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
         assert!(db.surface_object(object.id).await.unwrap().is_some());
-        assert!(db
-            .registry_publication_placement_records(publication_id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.registry_publication_placement_records(publication_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -32572,10 +32663,11 @@ source_nar_hash = ""
         })
         .await
         .unwrap();
-        assert!(db
-            .advance_registry_publication(publication_id, "preparing", "writing_pointers", 2)
-            .await
-            .unwrap());
+        assert!(
+            db.advance_registry_publication(publication_id, "preparing", "writing_pointers", 2)
+                .await
+                .unwrap()
+        );
 
         let watermark_version = placement.watermark_resource_version.unwrap();
         let advanced = db
@@ -32858,11 +32950,12 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(db
-            .pending_surface_write_authorities(1)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.pending_surface_write_authorities(1)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let _pending = db
             .request_surface_write_promotion(
                 restored.id,
@@ -32875,10 +32968,11 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(db
-            .retire_binding_write_revision(binding, revision.revision)
-            .await
-            .is_err());
+        assert!(
+            db.retire_binding_write_revision(binding, revision.revision)
+                .await
+                .is_err()
+        );
         assert_eq!(
             crate::topology_probe::reconcile_colocated_write_authorities(&db, 1)
                 .await
@@ -32894,28 +32988,31 @@ source_nar_hash = ""
             rotated.observed_binding_write_revision,
             Some(rotated_revision.revision)
         );
-        assert!(db
-            .retire_binding_write_revision(binding, revision.revision)
-            .await
-            .unwrap());
-        assert!(!db
-            .remove_surface_write_authority(
+        assert!(
+            db.retire_binding_write_revision(binding, revision.revision)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !db.remove_surface_write_authority(
                 rotated.id,
                 &rotated.incarnation_id,
                 rotated.resource_version,
                 rotated.observed_generation.unwrap() + 1,
             )
             .await
-            .unwrap());
-        assert!(db
-            .remove_surface_write_authority(
+            .unwrap()
+        );
+        assert!(
+            db.remove_surface_write_authority(
                 rotated.id,
                 &rotated.incarnation_id,
                 rotated.resource_version,
                 rotated.observed_generation.unwrap(),
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
         let replacement = db
             .create_surface_write_authority(
                 SurfaceTarget::Registry(registry),
@@ -32927,15 +33024,16 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(!db
-            .remove_surface_write_authority(
+        assert!(
+            !db.remove_surface_write_authority(
                 rotated.id,
                 &rotated.incarnation_id,
                 rotated.resource_version,
                 rotated.observed_generation.unwrap(),
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
         assert_eq!(
             db.surface_write_authority(SurfaceTarget::Registry(registry))
                 .await
@@ -32944,15 +33042,16 @@ source_nar_hash = ""
                 .incarnation_id,
             replacement.incarnation_id
         );
-        assert!(db
-            .remove_surface_write_authority(
+        assert!(
+            db.remove_surface_write_authority(
                 replacement.id,
                 &replacement.incarnation_id,
                 replacement.resource_version,
                 replacement.observed_generation.unwrap(),
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
         assert!(
             !db.surface_placement(first.id)
                 .await
@@ -32974,8 +33073,8 @@ source_nar_hash = ""
             .unwrap();
         assert_eq!(drained.desired_state, "draining");
         assert_eq!(drained.write_spec_version, first.write_spec_version + 1);
-        assert!(db
-            .create_surface_write_authority(
+        assert!(
+            db.create_surface_write_authority(
                 SurfaceTarget::Registry(registry),
                 "authority-registry-v2",
                 first.id,
@@ -32984,7 +33083,8 @@ source_nar_hash = ""
                 rotated_revision.revision,
             )
             .await
-            .is_err());
+            .is_err()
+        );
 
         let mut conditional = topology_placement(
             SurfaceTarget::BinaryCache(cache),
@@ -33018,8 +33118,8 @@ source_nar_hash = ""
         db.bind_surface_placement_write_capability(conditional.id, ordinary_only.revision)
             .await
             .unwrap();
-        assert!(db
-            .create_surface_write_authority(
+        assert!(
+            db.create_surface_write_authority(
                 SurfaceTarget::BinaryCache(cache),
                 "authority-cache-v1",
                 conditional.id,
@@ -33028,7 +33128,8 @@ source_nar_hash = ""
                 ordinary_only.revision,
             )
             .await
-            .is_err());
+            .is_err()
+        );
 
         let mut invalid_shard = topology_placement(
             SurfaceTarget::BinaryCache(cache),
@@ -33243,10 +33344,11 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert_eq!(updated.resource_version, selected.resource_version + 1);
-        assert!(db
-            .update_surface_placement(selected.id, &update)
-            .await
-            .is_err());
+        assert!(
+            db.update_surface_placement(selected.id, &update)
+                .await
+                .is_err()
+        );
 
         let owner = db.org_by_id(org).await.unwrap().unwrap();
         let binding = db.binding(binding).await.unwrap().unwrap();
@@ -33265,8 +33367,8 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        assert!(db
-            .set_stable_topology_defaults(
+        assert!(
+            db.set_stable_topology_defaults(
                 "organization",
                 Some(org),
                 &owner.stable_id,
@@ -33279,7 +33381,8 @@ source_nar_hash = ""
                 Some(defaults.resource_version + 1),
             )
             .await
-            .is_err());
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -33324,20 +33427,22 @@ source_nar_hash = ""
             .unwrap();
         assert_eq!(failed.records.len(), 1);
         assert_eq!(failed.records[0].publication_id, "publication-history-2");
-        assert!(db
-            .list_registry_publications_page(registry_id, Some("failed"), 10, Some(3))
-            .await
-            .is_err());
+        assert!(
+            db.list_registry_publications_page(registry_id, Some("failed"), 10, Some(3))
+                .await
+                .is_err()
+        );
 
         let retried = db
             .retry_failed_registry_publication("publication-history-2", unix_now())
             .await
             .unwrap();
         assert_eq!(retried.state, "preparing");
-        assert!(db
-            .retry_failed_registry_publication("publication-history-2", unix_now())
-            .await
-            .is_err());
+        assert!(
+            db.retry_failed_registry_publication("publication-history-2", unix_now())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -33365,16 +33470,18 @@ source_nar_hash = ""
         .await
         .unwrap();
 
-        assert!(db
-            .registry_has_active_publication(registry_id)
-            .await
-            .unwrap());
+        assert!(
+            db.registry_has_active_publication(registry_id)
+                .await
+                .unwrap()
+        );
         assert!(db.mark_index_pending(registry_id).await.is_err());
         assert!(db.mark_index_stale(registry_id, "transient").await.is_err());
-        assert!(db
-            .mark_index_failed(registry_id, "replacement")
-            .await
-            .is_err());
+        assert!(
+            db.mark_index_failed(registry_id, "replacement")
+                .await
+                .is_err()
+        );
         let retained = db.index_status(registry_id).await.unwrap().unwrap();
         assert_eq!(retained.state, prior.state);
         assert_eq!(retained.error, prior.error);
@@ -33383,10 +33490,11 @@ source_nar_hash = ""
         db.fail_registry_publication(publication_id, unix_now())
             .await
             .unwrap();
-        assert!(!db
-            .registry_has_active_publication(registry_id)
-            .await
-            .unwrap());
+        assert!(
+            !db.registry_has_active_publication(registry_id)
+                .await
+                .unwrap()
+        );
         db.mark_index_pending(registry_id).await.unwrap();
         assert_eq!(
             db.index_status(registry_id).await.unwrap().unwrap().state,
@@ -33517,15 +33625,17 @@ source_nar_hash = ""
         assert_eq!(selected.surface_object_id, pointer_id);
         assert_eq!(selected.object_kind, "mutable_pointer");
         assert!(!selected.verified);
-        assert!(db
-            .registry_publication_upload_object(publication_id, i64::MAX)
-            .await
-            .unwrap()
-            .is_none());
-        assert!(!db
-            .registry_publication_class_is_complete(publication_id, "immutable")
-            .await
-            .unwrap());
+        assert!(
+            db.registry_publication_upload_object(publication_id, i64::MAX)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !db.registry_publication_class_is_complete(publication_id, "immutable")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -33571,14 +33681,16 @@ source_nar_hash = ""
         .await
         .unwrap();
 
-        assert!(db
-            .registry_publication_class_is_complete(publication_id, "immutable")
-            .await
-            .unwrap());
-        assert!(db
-            .registry_publication_class_is_complete(publication_id, "mutable_pointer")
-            .await
-            .unwrap());
+        assert!(
+            db.registry_publication_class_is_complete(publication_id, "immutable")
+                .await
+                .unwrap()
+        );
+        assert!(
+            db.registry_publication_class_is_complete(publication_id, "mutable_pointer")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -33956,8 +34068,8 @@ source_nar_hash = ""
         )
         .await
         .unwrap();
-        assert!(db
-            .claim_registry_publication_multipart_part(
+        assert!(
+            db.claim_registry_publication_multipart_part(
                 "multipart-upload-1",
                 1,
                 &part_hash,
@@ -33966,9 +34078,10 @@ source_nar_hash = ""
                 101,
             )
             .await
-            .is_err());
-        assert!(db
-            .claim_registry_publication_multipart_part(
+            .is_err()
+        );
+        assert!(
+            db.claim_registry_publication_multipart_part(
                 "multipart-upload-1",
                 1,
                 &"f".repeat(64),
@@ -33977,7 +34090,8 @@ source_nar_hash = ""
                 702,
             )
             .await
-            .is_err());
+            .is_err()
+        );
         let claimed = db
             .registry_publication_multipart_upload("multipart-upload-1")
             .await
@@ -34025,15 +34139,16 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert_eq!(retry.completion_since, Some(201));
-        assert!(db
-            .begin_registry_publication_multipart_completion(
+        assert!(
+            db.begin_registry_publication_multipart_completion(
                 "multipart-upload-1",
                 "completion-token-2",
                 202,
                 0,
             )
             .await
-            .is_err());
+            .is_err()
+        );
         let stolen = db
             .begin_registry_publication_multipart_completion(
                 "multipart-upload-1",
@@ -34051,11 +34166,12 @@ source_nar_hash = ""
         db.finish_registry_publication_multipart_upload("multipart-upload-1", "aborted", 3)
             .await
             .unwrap();
-        assert!(db
-            .active_registry_publication_multipart_upload(publication_id, object.id)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.active_registry_publication_multipart_upload(publication_id, object.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// Test helper: register a managed registry owned by `org` at `slug` with a
