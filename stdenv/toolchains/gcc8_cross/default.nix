@@ -193,6 +193,9 @@
 in
   (import ../lib/finalize-cross.nix {
     bootstrapPerl = true;
+    binutilsSource = ./binutils-export.nix;
+    # GCC's own runtime directory is searched independently of lib/lib64 layout.
+    gccBuildOverrides.installCxxRuntimeWithCompiler = true;
     # Complete libc with the finished cross compiler and build-host generators.
     libcBuildPerl = prev.perl;
     libcBuildOverrides = {crossGccStage1 = scope.crossGccStage2;};
