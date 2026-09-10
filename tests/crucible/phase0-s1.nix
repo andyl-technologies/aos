@@ -274,6 +274,7 @@ in
     BOUNDED_PREEMPTION_HARNESS = ./_bounded-scheduler-preemption.sh;
     BOUNDED_PREEMPTION_TARGET_WRAPPER = ./_bounded-scheduler-preemption-target.sh;
     BOUNDED_PREEMPTION_CHECK = boundedSchedulerPreemptionCheck;
+    BOUNDED_FAILURE_DIAGNOSTIC = ./_bounded-failure-diagnostic.sh;
 
     phases = [
       {
@@ -298,6 +299,7 @@ in
           printf 'crucible-phase0-s1-seed-v2\n' > "$seed"
 
           . "$BOUNDED_PREEMPTION_HARNESS"
+          . "$BOUNDED_FAILURE_DIAGNOSTIC"
           trap 'bounded_preemption_cleanup' EXIT
           trap 'bounded_preemption_cleanup; exit 143' TERM
           trap 'bounded_preemption_cleanup; exit 130' INT
@@ -487,7 +489,15 @@ in
                 || fail "guest $label scheduler adversary did not start"
             fi
 
-            wait_for_horizon_pause "$label" "$qmp_socket" || fail "guest $label did not pause at horizon"
+            if ! wait_for_horizon_pause "$label" "$qmp_socket"; then
+              crucible_failure_diagnostic \
+                "$label" \
+                "$TMPDIR/qemu-args-$label.txt" \
+                "$serial_path" \
+                "$trace_path" \
+                "$TMPDIR/qmp-status-$label.json"
+              fail "guest $label did not pause at horizon"
+            fi
 
             migrate_state "$label" "$qmp_socket"
             if [ "$label" = b ] && [ "$ENABLE_SCHEDULER_PREEMPTION" = 1 ]; then
