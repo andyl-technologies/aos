@@ -817,7 +817,7 @@ fn failed_node_authority_round_trips_through_the_v8_closure() {
 }
 
 #[test]
-fn all_failed_v8_closure_cold_restores_without_launching_qemu() {
+fn all_failed_v8_closure_cold_restores_without_launching_guest_processes() {
     let root = tempfile::tempdir().expect("create all-failed cold-restore store");
     let (source, mut checkpoint, node, _) = build_one_node_raw_checkpoint(root.path(), None);
     checkpoint.targets.remove(&node);
@@ -906,15 +906,21 @@ fn all_failed_v8_closure_cold_restores_without_launching_qemu() {
 
     let assets = root.path().join("cold-restore-assets");
     fs::create_dir(&assets).expect("create cold-restore asset directory");
-    let qemu = assets.join("qemu");
+    let emulator_executable = assets.join("qemu");
     let plugin = assets.join("plugin");
     let kernel = assets.join("kernel");
     let root_image = assets.join("root");
-    for path in [&qemu, &plugin, &kernel, &root_image] {
+    for path in [&emulator_executable, &plugin, &kernel, &root_image] {
         fs::write(path, path.as_os_str().as_encoded_bytes())
             .expect("write cold-restore asset fixture");
     }
-    let config = ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image, root.path());
+    let config = ProductionVmLifecycleConfig::new(
+        emulator_executable,
+        plugin,
+        kernel,
+        root_image,
+        root.path(),
+    );
     let launches = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let finishes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let launcher = RecordingColdRestoreLauncher {
