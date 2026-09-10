@@ -270,8 +270,10 @@ fn finite_and_generated_sources_converge_and_resume_after_restart() -> Result<()
     let observed = publish_observation(
         &repository,
         &lineage,
-        BRANCH_CAMPAIGN,
-        generated_admitted.new_snapshot,
+        CampaignHead {
+            name: BRANCH_CAMPAIGN,
+            snapshot: generated_admitted.new_snapshot,
+        },
         &generated_request,
         &generated_path,
         generated_admitted.attempt,
@@ -545,8 +547,10 @@ fn statistical_estimate_only_includes_policy_predeclared_executions() -> Result<
     let statistical_observed = publish_observation(
         repository.as_ref(),
         &lineage,
-        STATISTICAL_CAMPAIGN,
-        statistical_admitted.new_snapshot,
+        CampaignHead {
+            name: STATISTICAL_CAMPAIGN,
+            snapshot: statistical_admitted.new_snapshot,
+        },
         &statistical_request,
         &statistical_path,
         statistical_attempt.id()?,
@@ -608,8 +612,10 @@ fn statistical_estimate_only_includes_policy_predeclared_executions() -> Result<
     let operator_observed = publish_observation(
         repository.as_ref(),
         &lineage,
-        STATISTICAL_CAMPAIGN,
-        operator_admitted.new_snapshot,
+        CampaignHead {
+            name: STATISTICAL_CAMPAIGN,
+            snapshot: operator_admitted.new_snapshot,
+        },
         &operator_request,
         &operator_path,
         operator_admitted.attempt,
@@ -668,8 +674,10 @@ fn statistical_estimate_only_includes_policy_predeclared_executions() -> Result<
     let debugger_observed = publish_observation(
         repository.as_ref(),
         &lineage,
-        STATISTICAL_CAMPAIGN,
-        debugger_admitted.new_snapshot,
+        CampaignHead {
+            name: STATISTICAL_CAMPAIGN,
+            snapshot: debugger_admitted.new_snapshot,
+        },
         &debugger_request,
         &debugger_path,
         debugger_admitted.attempt,
@@ -1196,11 +1204,15 @@ fn assert_additional_cause(
     Ok(())
 }
 
+struct CampaignHead<'a> {
+    name: &'a str,
+    snapshot: crucible_campaign::CampaignSnapshotId,
+}
+
 fn publish_observation(
     repository: &CampaignRepository,
     lineage: &CampaignLineage,
-    campaign: &str,
-    snapshot: crucible_campaign::CampaignSnapshotId,
+    head: CampaignHead<'_>,
     request: &BranchRequest,
     path: &BranchPath,
     attempt: crucible_campaign::AttemptId,
@@ -1236,7 +1248,7 @@ fn publish_observation(
     )?;
 
     Ok(repository
-        .publish_observation(campaign, snapshot, &observation)?
+        .publish_observation(head.name, head.snapshot, &observation)?
         .new_snapshot)
 }
 
