@@ -18,6 +18,11 @@ name = "machine_readable"
 path = "tests/machine_readable.rs"
 required-features = ["test-double"]
 
+[[test]]
+name = "gate_campaign_store_composition"
+path = "tests/gate_campaign_store_composition.rs"
+required-features = ["test-double"]
+
 [lints]
 workspace = true
 

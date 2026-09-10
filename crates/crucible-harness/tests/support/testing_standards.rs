@@ -274,6 +274,83 @@ pub(super) fn source_shape_failures(
         }
     }
 
+    if standard.shape == TestShape::AttemptIdempotence {
+        for required in [
+            "CampaignRepository::new",
+            "ExecutorClient::new",
+            "SubmitAttemptDisposition::AlreadyRunning",
+            "CampaignRepositoryError::RefConflict",
+            "publish_observation",
+            "project_branch_edge_visits",
+            "replayed",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove admission, executor, publication, restart, conflict, and credit idempotence through public seams",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::CampaignMutationScaling {
+        for required in [
+            "const MUTATIONS: u64 = 10_000;",
+            "ReadCountingBackend",
+            "validation_checkpoint_metrics",
+            "has_retained_validation_checkpoint",
+            "MAX_INCREMENTAL_READS",
+            "MAX_LOCATOR_REPLAY_READS",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must run 10,000 instrumented mutations and prove hot, cold, failure-atomic, deep-closure, and locator bounds",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::CampaignStoreEquivalence {
+        for required in [
+            "assert_blob_leaf_conformance",
+            "assert_blob_leaf_conformance_with_durability",
+            "assert_ref_leaf_conformance",
+            "MemoryBlobBackend",
+            "DirectoryBlobBackend",
+            "PackedBlobBackend",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must apply one shared immutable/ref semantic suite to every supported local leaf",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::CampaignStoreComposition {
+        let required = if target.package == "crucible-cas" {
+            &[
+                "ALLOWED_LAYER_ORDERS",
+                "StoreGraph",
+                "PackedBlobBackend",
+                "DurabilityRequirement",
+            ][..]
+        } else {
+            &["mod campaign_store_process;"][..]
+        };
+        if required.iter().any(|needle| !code.contains(needle)) {
+            failures.push(format!(
+                "{}:{} must exercise its owned store-graph or public-process composition surface",
+                target.package, target.test_target,
+            ));
+        }
+    }
+
     if standard.shape == TestShape::CampaignContinuity {
         for required in [
             "seed_next_run_for_provenance",

@@ -15,7 +15,8 @@
 //! Module map: [`abi`] compares golden vectors, [`adversarial`] compares
 //! hostile-profile runs, [`divergence`] localizes mismatches, [`e2e`] runs the
 //! mock end-to-end determinism gate, [`fingerprint`] compares fingerprint
-//! streams, [`gate_targets`] indexes Cargo gate targets, [`perf`] owns the
+//! streams, [`campaign_gates`] records RFC-0020 execution contracts,
+//! [`gate_targets`] indexes Cargo gate targets, [`perf`] owns the
 //! cost-model perf-bench gate substrate, [`phase_plan`] records the ordered gate
 //! occurrences, [`replay_oracle`] compares replay hashes, [`reproduction`] owns
 //! the versioned reproduction artifact format, [`segment_replay`] coordinates
@@ -27,6 +28,7 @@
 
 pub mod abi;
 pub mod adversarial;
+pub mod campaign_gates;
 pub mod divergence;
 pub mod e2e;
 pub mod fingerprint;

@@ -25,3 +25,8 @@ zstd = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[[test]]
+name = "gate_campaign_store_equivalence"
+path = "tests/gate_campaign_store_equivalence.rs"
+required-features = ["test-support"]

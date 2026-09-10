@@ -212,7 +212,7 @@ fn public_repository_and_executor_seams_cover_the_idempotence_matrix() {
             .expect("exact assignment replay"),
         accepted
     );
-    let retry_assignment = SubmitAttemptRequest::new(
+    let same_basis_assignment = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0x43; 16]).expect("retry assignment"),
         first_assignment.daemon_epoch(),
         first_assignment.lineage(),
@@ -222,7 +222,7 @@ fn public_repository_and_executor_seams_cover_the_idempotence_matrix() {
     )
     .expect("retry assignment request");
     let during_execution = executor
-        .submit_attempt(&retry_assignment)
+        .submit_attempt(&same_basis_assignment)
         .expect("retry during execution");
     assert_eq!(
         during_execution.disposition(),
@@ -265,13 +265,13 @@ fn public_repository_and_executor_seams_cover_the_idempotence_matrix() {
         Err(CampaignRepositoryError::RefConflict { .. })
     ));
     drop(before_publication);
-    let publication_retry = CampaignRepository::new(blobs.clone(), refs.clone());
-    let published = publication_retry
+    let publication_recovery = CampaignRepository::new(blobs.clone(), refs.clone());
+    let published = publication_recovery
         .publish_observation(CAMPAIGN, admitted.new_snapshot, &observation)
         .expect("publish after pre-CAS death");
     assert_eq!(published.disposition, ObservationDisposition::Canonical);
     assert!(!published.replayed);
-    let credited = publication_retry
+    let credited = publication_recovery
         .project_branch_edge_visits(published.new_snapshot, request.branch_point())
         .expect("canonical visit credit");
     assert_eq!(credited.parent_visits(), 1);
@@ -279,7 +279,7 @@ fn public_repository_and_executor_seams_cover_the_idempotence_matrix() {
 
     // Daemon death after the ref CAS but before acknowledgement replays the
     // canonical publication, produces an equal completion, and adds no credit.
-    drop(publication_retry);
+    drop(publication_recovery);
     let after_publication = CampaignRepository::new(blobs.clone(), refs.clone());
     let equal = after_publication
         .publish_observation(CAMPAIGN, admitted.new_snapshot, &observation)

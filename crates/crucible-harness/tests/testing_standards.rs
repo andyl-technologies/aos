@@ -53,6 +53,10 @@ enum TestShape {
     CampaignContinuity,
     CampaignModel,
     CampaignStatistics,
+    AttemptIdempotence,
+    CampaignMutationScaling,
+    CampaignStoreEquivalence,
+    CampaignStoreComposition,
     BasicBlockCoverage,
     CheckpointMaterialization,
     StateSpaceSearch,
@@ -149,6 +153,34 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         owner_packages: &["crucible-campaign"],
         layers: &[Layer::L3],
         shape: TestShape::CampaignStatistics,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:attempt-idempotence",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::AttemptIdempotence,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-mutation-scaling",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignMutationScaling,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-store-equivalence",
+        owner_packages: &["crucible-cas"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignStoreEquivalence,
+        backend: TestBackend::Mixed,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-store-composition",
+        owner_packages: &["crucible-cas", "crucible-cli"],
+        layers: &[Layer::L3, Layer::L4],
+        shape: TestShape::CampaignStoreComposition,
         backend: TestBackend::InProcess,
     },
     GateTestingStandard {
@@ -348,12 +380,23 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
         gates: &["gate:campaign-continuity"],
     },
     CrateTestingOwnership {
+        package: "crucible-cas",
+        gates: &[
+            "gate:campaign-store-equivalence",
+            "gate:campaign-store-composition",
+        ],
+    },
+    CrateTestingOwnership {
         package: "crucible-campaign",
         gates: &[
             "gate:campaign-model",
             "gate:campaign-statistics",
             "gate:typed-choice",
         ],
+    },
+    CrateTestingOwnership {
+        package: "crucible-campaign",
+        gates: &["gate:attempt-idempotence", "gate:campaign-mutation-scaling"],
     },
     CrateTestingOwnership {
         package: "crucible-session",
@@ -370,6 +413,10 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     CrateTestingOwnership {
         package: "crucible-cli",
         gates: &["gate:e2e-determinism"],
+    },
+    CrateTestingOwnership {
+        package: "crucible-cli",
+        gates: &["gate:campaign-store-composition"],
     },
     CrateTestingOwnership {
         package: "crucible-harness",

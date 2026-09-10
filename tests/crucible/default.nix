@@ -1188,6 +1188,22 @@ in rec {
       attrPath = "checks.crucible.phase4.workloadParameterization";
       taskIds = ["T-WL-6"];
     };
+    campaignRfcTraceability = import ./phase4-campaign-rfc-traceability.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.campaignRfcTraceability";
+      automatedTargets = {
+        "checks.crucible.phase1.gates.campaignModel" = phase1.gates.campaignModel;
+        "checks.crucible.phase1.gates.contentAddress" = phase1.gates.contentAddress;
+        "checks.crucible.phase1.gates.licenseBoundary" = phase1.gates.licenseBoundary;
+        "checks.crucible.phase2.gates.abiConformance" = phase2.gates.abiConformance;
+        "checks.crucible.phase2.gates.typedChoice" = phase2.gates.typedChoice;
+        "checks.crucible.phase4.gates.attemptIdempotence" = phase4.gates.attemptIdempotence;
+        "checks.crucible.phase4.gates.campaignMutationScaling" = phase4.gates.campaignMutationScaling;
+        "checks.crucible.phase4.gates.campaignStatistics" = phase4.gates.campaignStatistics;
+        "checks.crucible.phase5.gates.campaignStoreComposition" = phase5.gates.campaignStoreComposition;
+        "checks.crucible.phase5.gates.campaignStoreEquivalence" = phase5.gates.campaignStoreEquivalence;
+      };
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
@@ -1214,6 +1230,29 @@ in rec {
           ];
         };
         dependencies = [replayOracle phase1.gates.campaignModel phase2.gates.typedChoice];
+      };
+      attemptIdempotence = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase4.gates.attemptIdempotence";
+        # lint needle: attemptIdempotence = import ./phase4-attempt-idempotence.nix
+        gate = import ./phase4-attempt-idempotence.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase4.gates.attemptIdempotence";
+          dependencies = [
+            phase1.gates.campaignModel.rawGate
+            phase2.gates.typedChoice.rawGate
+          ];
+        };
+        dependencies = [phase1.gates.campaignModel phase2.gates.typedChoice];
+      };
+      campaignMutationScaling = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase4.gates.campaignMutationScaling";
+        # lint needle: campaignMutationScaling = import ./phase4-campaign-mutation-scaling.nix
+        gate = import ./phase4-campaign-mutation-scaling.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase4.gates.campaignMutationScaling";
+          dependencies = [attemptIdempotence.rawGate];
+        };
+        dependencies = [attemptIdempotence];
       };
       e2eDeterminism = redBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
@@ -1317,7 +1356,7 @@ in rec {
       attrPath = "checks.crucible.phase5.cliSkeleton";
       taskIds = ["T-CLI-1"];
     };
-    gates = {
+    gates = rec {
       controlResponsive = greenBeforeAdvance {
         attrPath = "checks.crucible.phase5.gates.controlResponsive";
         # lint needle: controlResponsive = import ./phase5-control-responsive.nix
@@ -1328,6 +1367,25 @@ in rec {
           dependencies = [phase4.gates.e2eDeterminism.rawGate];
         };
         dependencies = [phase4.gates.e2eDeterminism];
+      };
+      campaignStoreEquivalence = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase5.gates.campaignStoreEquivalence";
+        # lint needle: campaignStoreEquivalence = import ./phase5-campaign-store-equivalence.nix
+        gate = import ./phase5-campaign-store-equivalence.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase5.gates.campaignStoreEquivalence";
+        };
+        dependencies = [];
+      };
+      campaignStoreComposition = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase5.gates.campaignStoreComposition";
+        # lint needle: campaignStoreComposition = import ./phase5-campaign-store-composition.nix
+        gate = import ./phase5-campaign-store-composition.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase5.gates.campaignStoreComposition";
+          dependencies = [campaignStoreEquivalence.rawGate];
+        };
+        dependencies = [campaignStoreEquivalence];
       };
     };
     sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix {
