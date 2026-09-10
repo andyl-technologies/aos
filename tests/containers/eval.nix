@@ -150,7 +150,7 @@ in
     enable = true;
     bakedGcRoots = true;
   };
-  assert aos.filesystem.allowedFacadeCollisions == ["kill"];
+  assert aos.filesystem.allowedFacadeCollisions == [];
   assert map (entry: entry.name) aos.filesystem.facade == ["aos" "apm" "apr"];
   assert map (entry: entry.target) aos.filesystem.facade
   == ["${pkgs.aos}/bin/aos" "${pkgs.aos.apm}/bin/apm" "${pkgs.aos.apr}/bin/apr"];
