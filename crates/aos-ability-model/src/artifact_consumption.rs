@@ -1,10 +1,9 @@
 //! Realized artifact-consumption evidence produced by build gates.
 //!
-//! Version 1 proves one ELF executable's startup linkage to one exact shared
-//! library artifact. It does not describe plugins, explicit runtime loads,
-//! helper execution, build-tool execution, or immutable data inputs. Those
-//! mechanisms require distinct evidence because `DT_NEEDED` and startup-loader
-//! facts cannot establish them.
+//! Version 1 distinguishes startup linkage, runtime plugin loading, helper
+//! execution, build-tool execution, and immutable data reads. Each mechanism
+//! carries observations from an actual hermetic invocation; metadata alone is
+//! not evidence that the provider was consumed.
 //!
 //! ```json
 //! {"consumer":{"artifact":{"closure":"sha256:<digest>","content":"sha256:<digest>","nar_hash":"sha256:<digest>","store_path":"/nix/store/<hash>-consumer"},"path":"/bin/consumer","sha256":"sha256:<digest>"},"contract":{"loader":"/nix/store/<hash>-glibc/lib/ld-linux-x86-64.so.2","needed":["libexample.so.1"],"search_path":["/nix/store/<hash>-provider/lib"],"search_path_kind":"runpath","soname":"libexample.so.1","symbols":[{"name":"example","version":"EXAMPLE_1"}]},"id":"example-linkage","mechanism":"elf-startup-linkage","observation":{"abi_version":"0","data_encoding":"2's complement, little endian","elf_class":"ELF64","loader":"/nix/store/<hash>-glibc/lib/ld-linux-x86-64.so.2","loader_elf_compatible":true,"machine":"Advanced Micro Devices X86-64","needed":["libexample.so.1"],"os_abi":"UNIX - System V","provider_elf_compatible":true,"provider_retained_by_consumer":true,"search_path":["/nix/store/<hash>-provider/lib"],"search_path_kind":"runpath","search_resolves_exact_provider":true,"soname":"libexample.so.1","symbols":[{"name":"example","version":"EXAMPLE_1"}]},"platforms":{"build":{"architecture":"x86_64","system":"linux"},"host":{"architecture":"x86_64","system":"linux"},"target":{"architecture":"x86_64","system":"linux"}},"provider":{"artifact":{"closure":"sha256:<digest>","content":"sha256:<digest>","nar_hash":"sha256:<digest>","store_path":"/nix/store/<hash>-provider"},"path":"/lib/libexample.so.1","sha256":"sha256:<digest>"},"required_features":["elf-startup-linkage-v1"],"schema":"aos.artifact-consumption.evidence/v1"}
@@ -23,12 +22,42 @@ pub const ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA: &str = "aos.artifact-consumption
 /// Required semantic feature for version-1 ELF startup-linkage evidence.
 pub const ELF_STARTUP_LINKAGE_FEATURE: &str = "elf-startup-linkage-v1";
 
+/// Required semantic feature for a directly observed runtime plugin load.
+pub const RUNTIME_PLUGIN_LOAD_FEATURE: &str = "runtime-plugin-load-v1";
+
+/// Required semantic feature for a directly observed helper execution.
+pub const HELPER_EXECUTION_FEATURE: &str = "helper-execution-v1";
+
+/// Required semantic feature for a directly observed build-tool execution.
+pub const BUILD_TOOL_EXECUTION_FEATURE: &str = "build-tool-execution-v1";
+
+/// Required semantic feature for a directly observed immutable data read.
+pub const IMMUTABLE_DATA_INPUT_FEATURE: &str = "immutable-data-input-v1";
+
 /// Selects the concrete mechanism established by an evidence document.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ArtifactConsumptionMechanism {
     /// A dynamic executable names the provider through `DT_NEEDED` at startup.
     ElfStartupLinkage,
+    /// A host process loads one exact shared object during an observed invocation.
+    RuntimePluginLoad,
+    /// A host process executes one exact helper during an observed invocation.
+    HelperExecution,
+    /// A build action executes one exact tool to produce the consumer artifact.
+    BuildToolExecution,
+    /// A host process reads one exact immutable data file during an observed invocation.
+    ImmutableDataInput,
+}
+
+/// States whether the realized consumer closure must retain the provider.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArtifactRetentionRequirement {
+    /// The provider must be reachable from the consumer's runtime closure.
+    Required,
+    /// The provider must stay outside the consumer's runtime closure.
+    Forbidden,
 }
 
 /// Identifies the platforms involved in constructing and consuming an artifact.
@@ -37,9 +66,9 @@ pub enum ArtifactConsumptionMechanism {
 pub struct ArtifactConsumptionPlatforms {
     /// Identifies the platform on which the build action executed.
     pub build: PlatformIdentity,
-    /// Identifies the platform on which the consumer executable will run.
+    /// Identifies the platform on which the consumer runs or is consumed.
     pub host: PlatformIdentity,
-    /// Identifies the code platform of the consumer and provider ELF objects.
+    /// Identifies the target platform of the consumer artifact.
     pub target: PlatformIdentity,
 }
 
@@ -119,6 +148,54 @@ pub struct ElfStartupLinkageObservation {
     pub provider_retained_by_consumer: bool,
 }
 
+/// States the expected result of one hermetic path-consumption invocation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedPathConsumptionContract {
+    /// Lists the exact arguments after the invoked executable's path.
+    pub arguments: Vec<String>,
+    /// Pins the SHA-256 of standard output from the successful invocation.
+    pub output_sha256: Sha256Digest,
+    /// States the required runtime-closure relationship for this mechanism.
+    pub retention: ArtifactRetentionRequirement,
+}
+
+/// Records facts captured while invoking one path-consumption relationship.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedPathConsumptionObservation {
+    /// Records the exact arguments supplied to the invoked executable.
+    pub arguments: Vec<String>,
+    /// Records the invocation's successful exit status.
+    pub exit_code: i32,
+    /// Pins the SHA-256 of the captured standard output.
+    pub output_sha256: Sha256Digest,
+    /// Confirms that syscall evidence observed the mechanism-specific provider access.
+    pub provider_access_observed: bool,
+    /// States whether the realized consumer closure contains the provider.
+    pub provider_retained_by_consumer: bool,
+}
+
+/// Carries the mechanism-specific authored consumption contract.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ArtifactConsumptionContract {
+    /// Describes startup ELF linkage.
+    ElfStartupLinkage(ElfStartupLinkageContract),
+    /// Describes an invocation whose provider access is observed through syscalls.
+    ObservedPath(ObservedPathConsumptionContract),
+}
+
+/// Carries mechanism-specific observations from realized artifacts or execution.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ArtifactConsumptionObservation {
+    /// Records startup ELF facts.
+    ElfStartupLinkage(ElfStartupLinkageObservation),
+    /// Records one actual path-consumption invocation.
+    ObservedPath(ObservedPathConsumptionObservation),
+}
+
 /// Distinguishes the dynamic linker's two non-equivalent embedded search tags.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -143,14 +220,14 @@ pub struct ArtifactConsumptionEvidenceDocument {
     pub mechanism: ArtifactConsumptionMechanism,
     /// Identifies the build, host, and code-target platforms.
     pub platforms: ArtifactConsumptionPlatforms,
-    /// Pins the exact consuming ELF executable.
+    /// Pins the exact consuming executable or produced file.
     pub consumer: ArtifactFileEvidence,
-    /// Pins the exact shared-library provider.
+    /// Pins the exact library, executable, or data provider.
     pub provider: ArtifactFileEvidence,
-    /// States the linkage contract supplied to the build gate.
-    pub contract: ElfStartupLinkageContract,
-    /// Records facts inspected from realized outputs and their closure.
-    pub observation: ElfStartupLinkageObservation,
+    /// States the mechanism-specific contract supplied to the build gate.
+    pub contract: ArtifactConsumptionContract,
+    /// Records mechanism-specific facts inspected from execution and realized outputs.
+    pub observation: ArtifactConsumptionObservation,
 }
 
 impl VersionedDocument for ArtifactConsumptionEvidenceDocument {

@@ -5,15 +5,15 @@ use std::fs::File;
 use std::io::{Read as _, Take};
 use std::num::NonZeroU64;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_ability_inspect::{
-    ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES, ArtifactConsumptionExplanation,
+    render, render_projection, render_slice, ArtifactConsumptionExplanation,
     ArtifactConsumptionQuery, CheckedArtifactConsumptionEvidence, DiagnosticBundle,
-    DiagnosticBundleAudience, ExecutionTimeline, GraphQuery, INSPECTION_BUNDLE_MAX_BYTES,
-    INSPECTION_QUERY_MAX_BYTES, InspectionBundle, InspectionView, OPERATOR_OBSERVATION_MAX_BYTES,
-    OPERATOR_QUERY_MAX_BYTES, OperatorObservation, OperatorQuery, OperatorView,
-    PendingStateAvailability, ProjectionKind, RenderFormat, TimelineEventInput, TimelineEventKind,
-    TimelineProvenance, TimelineTiming, ViewAnchor, render, render_projection, render_slice,
+    DiagnosticBundleAudience, ExecutionTimeline, GraphQuery, InspectionBundle, InspectionView,
+    OperatorObservation, OperatorQuery, OperatorView, PendingStateAvailability, ProjectionKind,
+    RenderFormat, TimelineEventInput, TimelineEventKind, TimelineProvenance, TimelineTiming,
+    ViewAnchor, ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES, INSPECTION_BUNDLE_MAX_BYTES,
+    INSPECTION_QUERY_MAX_BYTES, OPERATOR_OBSERVATION_MAX_BYTES, OPERATOR_QUERY_MAX_BYTES,
 };
 use aos_ability_model::{LocalKey, PlanNodeKey, RequiredFeature, TransactionId};
 use aos_ability_runtime::execution::{
@@ -160,29 +160,47 @@ fn render_artifact_consumption_text(explanation: &ArtifactConsumptionExplanation
         "{}{}",
         explanation.provider.artifact.store_path, explanation.provider.path
     );
-    let symbols = explanation
-        .linkage
-        .symbols
+    let detail = match &explanation.contract {
+        aos_ability_model::ArtifactConsumptionContract::ElfStartupLinkage(linkage) => {
+            let symbols = linkage
+                .symbols
+                .iter()
+                .map(|symbol| format!("{}@{}", symbol.name, symbol.version))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "  mechanism: ELF startup DT_NEEDED ({})\n  loader: {}\n  search path ({}): {}\n  symbol versions: {symbols}\n  provider ELF compatible: {}\n  loader ELF compatible: {}\n  search resolves exact provider: {}\n",
+                linkage.soname,
+                linkage.loader,
+                match linkage.search_path_kind {
+                    aos_ability_model::ElfSearchPathKind::Runpath => "DT_RUNPATH",
+                    aos_ability_model::ElfSearchPathKind::Rpath => "DT_RPATH",
+                },
+                linkage.search_path.join(":"),
+                explanation.provider_elf_compatible.unwrap_or(false),
+                explanation.loader_elf_compatible.unwrap_or(false),
+                explanation.search_resolves_exact_provider.unwrap_or(false),
+            )
+        }
+        aos_ability_model::ArtifactConsumptionContract::ObservedPath(contract) => format!(
+            "  mechanism: {:?}\n  arguments: {}\n  output: {}\n  exact provider access observed: {}\n",
+            explanation.mechanism,
+            contract.arguments.join(" "),
+            contract.output_sha256,
+            explanation.provider_access_observed.unwrap_or(false),
+        ),
+    };
+    let limitations = explanation
+        .limitations
         .iter()
-        .map(|symbol| format!("{}@{}", symbol.name, symbol.version))
+        .map(|limitation| format!("{limitation:?}"))
         .collect::<Vec<_>>()
         .join(", ");
 
     format!(
-        "{consumer}\n  consumes: {provider}\n  mechanism: ELF startup DT_NEEDED ({})\n  exact provider: {}\n  loader: {}\n  search path ({}): {}\n  symbol versions: {symbols}\n  provider ELF compatible: {}\n  loader ELF compatible: {}\n  search resolves exact provider: {}\n  provider retained by consumer closure: {}\n",
-        explanation.linkage.soname,
-        explanation.provider.artifact.content,
-        explanation.linkage.loader,
-        match explanation.linkage.search_path_kind {
-            aos_ability_model::ElfSearchPathKind::Runpath => "DT_RUNPATH",
-            aos_ability_model::ElfSearchPathKind::Rpath => "DT_RPATH",
-        },
-        explanation.linkage.search_path.join(":"),
-        explanation.provider_elf_compatible,
-        explanation.loader_elf_compatible,
-        explanation.search_resolves_exact_provider,
-        explanation.provider_retained_by_consumer,
-    ) + "  provenance: reported realized-build gate observation\n  limits: no publication authentication, live loader enforcement, runtime rebinding, plugin or explicit-load, helper-execution, build-tool, or data-input claim\n"
+        "{consumer}\n  consumes: {provider}\n  exact provider: {}\n{detail}  provider retained by consumer closure: {}\n  provenance: reported realized-build gate observation\n  limits: {limitations}\n",
+        explanation.provider.artifact.content, explanation.provider_retained_by_consumer,
+    )
 }
 
 fn diagnostic(args: &AbilityDiagnosticArgs, printer: &Printer) -> Result<()> {
