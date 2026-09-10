@@ -22,10 +22,7 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps =
-      if stdenv.hostPlatform.isDarwin
-      then [bash]
-      else [];
+    runtimeDeps = [bash];
     propagatedDeps = [];
 
     # libgpg-error ships and installs the yat2m man-page generator
@@ -97,15 +94,12 @@ in
       }
       {
         name = "install";
-        script =
-          if stdenv.hostPlatform.isDarwin
-          then ''
-            make install
-            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/gpgrt-config"
-          ''
-          else ''
-            make install
-          '';
+        script = ''
+          make install
+
+          # Consumers execute this installed script during configuration.
+          sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/gpgrt-config"
+        '';
       }
     ];
 
