@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  patch,
   bzip2,
   ncurses,
   readline,
@@ -48,6 +49,7 @@ in
       [
         gnumake
         pkg-config
+        patch
       ]
       ++ (
         if isDarwinCross
@@ -91,6 +93,14 @@ in
         script = ''
           tar xf $src
           cd Python-${version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          # OpenSSL 4 makes ASN.1 strings opaque; preserve certificate decoding
+          # through the public data and length accessors.
+          patch -p1 < ${./python3-3_12-openssl4.patch}
         '';
       }
       {
