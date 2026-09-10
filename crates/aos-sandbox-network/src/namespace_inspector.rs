@@ -50,6 +50,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 
+mod launch_contract;
+mod manager_query;
 mod runtime;
 mod store;
 
