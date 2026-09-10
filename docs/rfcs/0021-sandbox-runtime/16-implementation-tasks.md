@@ -5584,6 +5584,32 @@ missing parser and direct-execution boundary; it does not qualify the Storage
 RPC composition, stable Host mount-namespace custody, enforcing MAC, or
 Storage Apply. All corresponding Storage and P0 checkboxes remain open.
 
+### Authenticated Storage workspace projection planning (source qualification)
+
+Commit `74ecbfbf34256ad175c32e414337380c9e40119c` replaces the
+ready-only Storage catalog adapter with a deterministic plan bound to the
+authenticated transaction snapshot and physical catalog head. The plan
+accounts for every managed workspace handle, sorts and collision-checks
+handles and dataset GUIDs, preserves valid pending recovery states instead of
+silently omitting them, and rejects corrupt publication, result, pin-attempt,
+repair-intent, ordinal, or creation/retirement authority links. Genuine
+non-workspace physical tombstones remain outside the managed handle set but
+are included in the snapshot digest. The existing adapter exposes only the
+plan's validated ready rows.
+
+The exact isolated Storage library run passed 187 tests with no failures and
+three installed-systemd fixtures ignored; the focused planner run passed all
+10 tests. Added journal-backed cases cover initialized emptiness, complete
+sorted multi-workspace accounting, pending initial, repair, removal, and
+incomplete-retirement histories, non-workspace tombstones, authenticated GUID
+substitution, record loss, digest sensitivity, and reopen.
+
+This is source-level logical-planning evidence only. It does not establish
+stable host mount-namespace and pin-root custody, fresh physical observation,
+a pending catalog typestate, production runtime use, installed-systemd
+behavior, enforcing MAC, ownership initialization, or Apply readiness.
+Storage Apply remains unadvertised and no Storage or P0 checkbox closes.
+
 ### Verified Storage resolution and execution metadata (in progress)
 
 Commit `ac8196c5fa0aa107374131b9803bc14a9f5de565` adds the protected,
