@@ -20,6 +20,7 @@ pub mod bundle;
 pub mod compare;
 pub mod diagnostic_bundle;
 pub mod explanation;
+pub mod operator_view;
 pub mod projection;
 pub mod query;
 pub mod render;
@@ -45,6 +46,15 @@ pub use explanation::{
     BINDING_EXPLANATION_MAX_BYTES, BINDING_EXPLANATION_SCHEMA, BindingExplanation,
     BindingExplanationAudience, BindingExplanationError, BindingExplanationOutcome,
     ExplainedObligation, ExplanationLimitation, ProtectedValue, RejectedCandidateHistory,
+};
+pub use operator_view::{
+    ExpansionHint, GenerationAxis, GenerationConvergence, GenerationObservation, NodeObservation,
+    OPERATOR_OBSERVATION_MAX_BYTES, OPERATOR_OBSERVATION_SCHEMA, OPERATOR_QUERY_MAX_BYTES,
+    OPERATOR_QUERY_SCHEMA, OPERATOR_VIEW_MAX_BYTES, OPERATOR_VIEW_SCHEMA, ObservedNodeState,
+    OperatorFocus, OperatorGroup, OperatorGroupKey, OperatorNodeState, OperatorNodeStatus,
+    OperatorObservation, OperatorObservationError, OperatorObservationProvenance,
+    OperatorObservationSummary, OperatorQuery, OperatorQueryError, OperatorView, OperatorViewError,
+    TransactionObservation,
 };
 pub use projection::{
     INSPECTION_PROJECTION_SCHEMA, InspectionProjection, InspectionProjectionError, ProjectionKind,
