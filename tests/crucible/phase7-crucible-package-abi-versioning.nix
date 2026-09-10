@@ -88,6 +88,7 @@
     libgcrypt = null;
     gnutls = null;
     fuse3 = null;
+    samba-smbd = "/aos-samba-smbd";
   };
   qemuPackageShmemAbi = qemuPackageMetadataProbe.shmemAbi;
   qemuPackageShmemAbiVersion = qemuPackageMetadataProbe.shmemAbiVersion;

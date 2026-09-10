@@ -14,6 +14,7 @@
   pixman,
   zlib,
   libslirp,
+  samba-smbd,
   dtc,
   libcap-ng,
   libusb1,
@@ -186,6 +187,8 @@
       "--enable-gnutls"
       "--enable-vhost-net"
       "--enable-fuse"
+      "--enable-slirp-smbd"
+      "--smbd=${samba-smbd}/sbin/smbd"
     ]
     ++ lib.optionals isDarwinCross [
       "--disable-cap-ng"
@@ -350,6 +353,7 @@ in
           libgcrypt
           gnutls
           fuse3
+          samba-smbd
         ];
       propagatedDeps = [];
       # The Darwin install is finalized and signed below. Either generic
@@ -460,6 +464,12 @@ in
               --prefix=$out \
               --extra-cflags='-DQEMU_CRUCIBLE_BUILD_ID="${qemuBuildIdentity}" -DQEMU_CRUCIBLE_PATCH_SERIES_HASH="${patchSeriesHash}" -DQEMU_CRUCIBLE_SHMEM_HEADER_HASH="${shmemHeaderHash}"' \
               ${qemuConfigureFlagsScript}
+
+            ${lib.optionalString (!isDarwinCross) ''
+              test -x ${samba-smbd}/sbin/smbd
+              grep -F '#define CONFIG_SMBD_COMMAND "${samba-smbd}/sbin/smbd"' \
+                build/config-host.h
+            ''}
           '';
         }
         {
