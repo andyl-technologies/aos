@@ -28,9 +28,10 @@ use crucible_campaign::{
     CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
     CandidateSource, CreateCampaignRequest, DaemonEpoch, DebuggerAuthorityKey, DiscoveryRequest,
     ExactCheckpointId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, Observation,
-    ObservationId, PlannerAuthorityKey, PlannerDisposition, RepositoryCampaignService,
-    SavepointCaptureOutcome, SavepointCaptureRequest, SavepointContinuationSelection,
-    StopCondition, StopOutcome, SubmitCampaignBranchRequest, SubmitCampaignDiscoveryRequest,
+    ObservationId, ObservationStopProof, PlannerAuthorityKey, PlannerDisposition,
+    RepositoryCampaignService, SavepointCaptureOutcome, SavepointCaptureRequest,
+    SavepointContinuationSelection, StopCondition, StopOutcome, SubmitCampaignBranchRequest,
+    SubmitCampaignDiscoveryRequest,
 };
 use crucible_cas::content_store::{
     ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, MutableRefBackend,
@@ -47,9 +48,10 @@ use super::{
 use crate::{
     ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleExecutionModel, CrucibleExecutionModelError, CrucibleExecutionRunner,
-    ExactCheckpointStore, ExactCheckpointStoreError, ExecutorCapacityError,
-    LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostResourceFactory, QemuFreshModeledDriver,
-    QemuFreshModeledDriverError, RepositoryAttemptAdmission,
+    CrucibleMeasurementError, CrucibleMeasurementReplayEvidence, ExactCheckpointStore,
+    ExactCheckpointStoreError, ExecutorCapacityError, LinuxQemuAttemptHostConfig,
+    LinuxQemuAttemptHostResourceFactory, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    QemuFreshModeledDriver, QemuFreshModeledDriverError, RepositoryAttemptAdmission,
     decode_crucible_configuration_artifact_with_selections,
 };
 
@@ -131,6 +133,28 @@ where
 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(self.0.as_ref())
+    }
+}
+
+/// Groups a portable observation proof with its retained raw source evidence.
+///
+/// The pair remains a caller-supplied claim until campaign execution validates
+/// its internal bindings and independently reproduces both records from
+/// scenario genesis.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedDefaultCampaignObservationSource {
+    proof: ObservationStopProof,
+    evidence: CrucibleMeasurementReplayEvidence,
+}
+
+impl GuardedDefaultCampaignObservationSource {
+    /// Creates a pending source claim for campaign-owned replay authentication.
+    #[must_use]
+    pub const fn new(
+        proof: ObservationStopProof,
+        evidence: CrucibleMeasurementReplayEvidence,
+    ) -> Self {
+        Self { proof, evidence }
     }
 }
 
@@ -270,6 +294,8 @@ impl GuardedDefaultCampaignRunRequest {
             final_stop,
             checkpoints,
             continuation_control: None,
+            source_observation_proof: None,
+            source_observation_evidence: None,
         });
         self
     }
@@ -298,6 +324,71 @@ impl GuardedDefaultCampaignRunRequest {
             final_stop,
             checkpoints,
             continuation_control: Some(continuation_control),
+            source_observation_proof: None,
+            source_observation_evidence: None,
+        });
+        self
+    }
+
+    /// Resumes a portable observation savepoint through an exact source replay.
+    ///
+    /// The source attempt uses the proof's observation condition instead of a
+    /// coordinate stop. Campaign ingestion authenticates the newly produced
+    /// proof from retained scheduler evidence, and the owner requires it to
+    /// equal the source claim before capturing the physical continuation point.
+    #[must_use]
+    pub fn with_observation_resume_source(
+        mut self,
+        // crucible-lint: allow host-nondeterminism-state -- the caller-supplied replay schedule is forwarded unchanged into exact source authentication.
+        schedule: Schedule,
+        closure: GuardedCampaignReplayClosure,
+        checkpoint: Checkpoint,
+        source_observation: GuardedDefaultCampaignObservationSource,
+        final_stop: StopCondition,
+        checkpoints: Arc<ExactCheckpointStore>,
+    ) -> Self {
+        self.initial_schedule = schedule;
+        self.initial_replay_closure = Some(closure);
+        self.discovery_stop =
+            StopCondition::Observation(source_observation.proof.condition().clone());
+        self.resume_source = Some(GuardedDefaultCampaignResumeSource {
+            checkpoint,
+            final_stop,
+            checkpoints,
+            continuation_control: None,
+            source_observation_proof: Some(source_observation.proof),
+            source_observation_evidence: Some(source_observation.evidence),
+        });
+        self
+    }
+
+    /// Forks a portable observation savepoint under modeled branch control.
+    ///
+    /// Source replay authenticates the observation proof and retained scheduler
+    /// evidence before the campaign admits the controlled continuation.
+    #[must_use]
+    pub fn with_controlled_observation_resume_source(
+        mut self,
+        // crucible-lint: allow host-nondeterminism-state -- the caller-supplied replay schedule is forwarded unchanged into exact source authentication.
+        schedule: Schedule,
+        closure: GuardedCampaignReplayClosure,
+        checkpoint: Checkpoint,
+        source_observation: GuardedDefaultCampaignObservationSource,
+        final_stop: StopCondition,
+        checkpoints: Arc<ExactCheckpointStore>,
+        continuation_control: GuardedCampaignContinuationControl,
+    ) -> Self {
+        self.initial_schedule = schedule;
+        self.initial_replay_closure = Some(closure);
+        self.discovery_stop =
+            StopCondition::Observation(source_observation.proof.condition().clone());
+        self.resume_source = Some(GuardedDefaultCampaignResumeSource {
+            checkpoint,
+            final_stop,
+            checkpoints,
+            continuation_control: Some(continuation_control),
+            source_observation_proof: Some(source_observation.proof),
+            source_observation_evidence: Some(source_observation.evidence),
         });
         self
     }
@@ -313,6 +404,7 @@ pub struct GuardedDefaultCampaignObservation {
     properties: crucible_campaign::PropertyVerdictSet,
     coverage: crucible_campaign::CoverageProjection,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
+    observation_evidence: Option<CrucibleMeasurementReplayEvidence>,
     replay_closure: GuardedCampaignReplayClosure,
 }
 
@@ -358,6 +450,12 @@ impl GuardedDefaultCampaignObservation {
     #[must_use]
     pub const fn evidence(&self) -> &QemuAttemptExecutionEvidenceSnapshot {
         &self.evidence
+    }
+
+    /// Returns the raw replay evidence for an authenticated observation stop.
+    #[must_use]
+    pub const fn observation_evidence(&self) -> Option<&CrucibleMeasurementReplayEvidence> {
+        self.observation_evidence.as_ref()
     }
 
     /// Returns the exact choice-record closure for this accepted configuration.
@@ -620,6 +718,9 @@ where
     /// Reading the bounded terminal-attempt evidence failed.
     #[error("guarded default campaign evidence failed: {0}")]
     Evidence(#[source] crucible::SchedulerError),
+    /// Decoding or authenticating retained measurement evidence failed.
+    #[error("guarded default campaign measurement evidence failed: {0}")]
+    Measurement(#[source] CrucibleMeasurementError),
     /// A selected replay schedule did not have an exact authenticated choice closure.
     #[error("guarded default campaign replay closure failed: {0}")]
     ReplayClosure(#[source] GuardedCampaignReplayClosureError),
@@ -688,6 +789,9 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// The source replay stopped at a different scheduler frontier.
     #[error("the legacy resume source replay differs from its checkpoint frontier")]
     ResumeSourceBoundaryMismatch,
+    /// The source replay produced different raw observation evidence.
+    #[error("the legacy resume source replay differs from its retained observation evidence")]
+    ResumeSourceEvidenceMismatch,
     /// The source attempt ended at an unrelated nonterminal boundary.
     #[error("the legacy resume source attempt ended before its checkpoint boundary")]
     ResumeSourceStopNotReached,
@@ -1148,7 +1252,7 @@ struct DefaultRunSavepointCapture {
 }
 
 struct DefaultRunContext<'a, S> {
-    repository: &'a CampaignRepository,
+    repository: &'a Arc<CampaignRepository>,
     client: &'a CampaignClient<S>,
     execution_evidence: &'a QemuAttemptExecutionEvidence,
     principal: &'a CampaignPrincipal,
@@ -1482,8 +1586,35 @@ where
                     GuardedDefaultCampaignInvariantError::ResumeSourceBoundaryMismatch.into(),
                 );
             }
+            if let Some(expected) = source.source_observation_proof.as_ref()
+                && !matches!(
+                    observation.stop(),
+                    StopOutcome::ObservationReached(actual) if actual.as_ref() == expected
+                )
+            {
+                return Err(
+                    GuardedDefaultCampaignInvariantError::ResumeSourceObservationMismatch.into(),
+                );
+            }
+            if let Some(expected) = source.source_observation_evidence.as_ref() {
+                let actual = load_observation_stop_evidence(context.repository, &observation)?
+                    .ok_or(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch)?;
+                let StopOutcome::ObservationReached(proof) = observation.stop() else {
+                    return Err(
+                        GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch.into(),
+                    );
+                };
+                actual
+                    .verify_observation_stop_proof(proof)
+                    .map_err(GuardedDefaultCampaignRunError::Measurement)?;
+                if &actual != expected {
+                    return Err(
+                        GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch.into(),
+                    );
+                }
+            }
 
-            if observation.stop() == &StopOutcome::Reached(context.discovery_stop.clone()) {
+            if observation.stop().reaches(context.discovery_stop) {
                 pending_capture = Some(request_default_savepoint_capture(
                     &context,
                     snapshot,
@@ -1548,7 +1679,7 @@ where
                 .zip(resume_progress.as_ref())
                 .is_some_and(|(source, progress)| {
                     matches!(progress, DefaultRunResumeProgress::Continuing(_))
-                        && observation.stop() == &StopOutcome::Reached(source.final_stop.clone())
+                        && observation.stop().reaches(&source.final_stop)
                 });
         if let Some(exploration) = context.exploration
             && exploration.stop_on_finding()
@@ -1694,7 +1825,7 @@ where
         }
 
         if capture_reached_stop {
-            if observation.stop() != &StopOutcome::Reached(context.discovery_stop.clone()) {
+            if !observation.stop().reaches(context.discovery_stop) {
                 return Err(GuardedDefaultCampaignInvariantError::SavepointStopNotReached.into());
             }
             if pending_capture.is_some() {
@@ -1939,6 +2070,7 @@ where
         let replay_closure =
             GuardedCampaignReplayClosure::collect(&store, &scenario, &configuration.schedule)
                 .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
+        let observation_evidence = load_observation_stop_evidence(repository, &observation)?;
         if index + 1 == observation_count {
             terminal_configuration = Some(configuration.clone());
         }
@@ -1950,6 +2082,7 @@ where
             properties,
             coverage,
             evidence: accepted.evidence,
+            observation_evidence,
             replay_closure,
         });
     }
@@ -2046,6 +2179,54 @@ where
         savepoint,
         resume,
     })
+}
+
+fn load_observation_stop_evidence<E>(
+    repository: &Arc<CampaignRepository>,
+    observation: &Observation,
+) -> Result<Option<CrucibleMeasurementReplayEvidence>, GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
+    let StopOutcome::ObservationReached(proof) = observation.stop() else {
+        return Ok(None);
+    };
+    let store = CampaignExecutorStore::new(Arc::clone(repository));
+    let measurements = repository
+        .load_measurement_set(observation.measurements())
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let retained = measurements
+        .evaluation()
+        .ok_or(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch)?;
+    let mut evidence_ids = retained.evidence().iter();
+    let evidence_id = evidence_ids
+        .next()
+        .copied()
+        .ok_or(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch)?;
+    if evidence_ids.next().is_some() {
+        return Err(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch.into());
+    }
+    let bytes = store
+        .read_measurement_evidence_leaf(
+            observation.measurements(),
+            evidence_id,
+            MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES as u64,
+        )
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let evidence = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)
+        .map_err(GuardedDefaultCampaignRunError::Measurement)?;
+    if evidence
+        .id()
+        .map_err(GuardedDefaultCampaignRunError::Measurement)?
+        != evidence_id
+    {
+        return Err(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch.into());
+    }
+    evidence
+        .verify_observation_stop_proof(proof)
+        .map_err(GuardedDefaultCampaignRunError::Measurement)?;
+
+    Ok(Some(evidence))
 }
 
 fn capture_evidence_reaches_stop(

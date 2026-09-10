@@ -20,7 +20,8 @@ use crucible_api as campaign_output_api;
 use crucible_daemon::ExactCheckpointStore;
 use crucible_daemon::campaign_store_composition::{DirectoryBlobBackend, ImmutableBlobBackend};
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignContinuationControl, GuardedCampaignReplayClosure, GuardedDefaultCampaignRun,
+    GuardedCampaignContinuationControl, GuardedCampaignReplayClosure,
+    GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignRun,
     GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
     GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
 };
@@ -34,17 +35,7 @@ pub(super) fn guarded_campaign_resume_eligible(
         && plan.startup_commands == [SessionCommandKind::Start, SessionCommandKind::Continue]
         && plan.initial_control_commands == [SessionCommandKind::Query]
         && plan.accepted_interactive_commands.is_empty()
-        && matches!(
-            plan.terminal_condition,
-            RunTerminalCondition::Quiescence
-                | RunTerminalCondition::VirtualTime
-                | RunTerminalCondition::Property
-                | RunTerminalCondition::Stopped
-        )
-        && (plan.terminal_condition != RunTerminalCondition::VirtualTime
-            || plan.max_virtual_time_ticks.is_some())
-        && (plan.terminal_condition != RunTerminalCondition::Property
-            || !evidence.scenario_form.properties().assertions().is_empty())
+        && guarded_resume_stop(plan, evidence).is_ok()
         && campaign_resume_evidence_supported(evidence)
 }
 
@@ -57,17 +48,12 @@ pub(super) fn guarded_campaign_fork_eligible(
         && plan.startup_commands == [SessionCommandKind::Fork, SessionCommandKind::Continue]
         && plan.initial_control_commands == [SessionCommandKind::Query]
         && plan.accepted_interactive_commands.is_empty()
-        && matches!(
+        && guarded_continuation_stop(
             plan.terminal_condition,
-            RunTerminalCondition::Quiescence
-                | RunTerminalCondition::VirtualTime
-                | RunTerminalCondition::Property
-                | RunTerminalCondition::Stopped
+            plan.max_virtual_time_ticks,
+            &evidence.scenario_form,
         )
-        && (plan.terminal_condition != RunTerminalCondition::VirtualTime
-            || plan.max_virtual_time_ticks.is_some())
-        && (plan.terminal_condition != RunTerminalCondition::Property
-            || !evidence.scenario_form.properties().assertions().is_empty())
+        .is_ok()
         && campaign_resume_evidence_supported(evidence)
 }
 
@@ -158,23 +144,13 @@ fn run_local_qemu_campaign_continuation_workflow(
         deployment.host,
         resources,
     );
-    let request = match continuation_control {
-        Some(control) => request.with_controlled_resume_source(
-            evidence.schedule.clone(),
-            evidence.replay_closure.clone(),
-            evidence.checkpoint.clone(),
-            final_stop,
-            Arc::clone(&checkpoints),
-            control,
-        ),
-        None => request.with_resume_source(
-            evidence.schedule.clone(),
-            evidence.replay_closure.clone(),
-            evidence.checkpoint.clone(),
-            final_stop,
-            Arc::clone(&checkpoints),
-        ),
-    };
+    let request = attach_guarded_resume_source(
+        request,
+        evidence,
+        final_stop,
+        Arc::clone(&checkpoints),
+        continuation_control,
+    );
     let request = if resume_plan.watch_streams_live_status {
         request.with_watch_frames()
     } else {
@@ -189,6 +165,59 @@ fn run_local_qemu_campaign_continuation_workflow(
         &checkpoint_root,
         result,
     )
+}
+
+fn attach_guarded_resume_source(
+    request: GuardedDefaultCampaignRunRequest,
+    evidence: &ResumeHandleEvidence,
+    final_stop: StopCondition,
+    checkpoints: Arc<ExactCheckpointStore>,
+    continuation_control: Option<GuardedCampaignContinuationControl>,
+) -> GuardedDefaultCampaignRunRequest {
+    if let (Some(proof), Some(source_evidence)) = (
+        evidence.source_observation_proof.as_deref(),
+        evidence.source_observation_evidence.as_deref(),
+    ) {
+        let source =
+            GuardedDefaultCampaignObservationSource::new(proof.clone(), source_evidence.clone());
+        return match continuation_control {
+            Some(control) => request.with_controlled_observation_resume_source(
+                evidence.schedule.clone(),
+                evidence.replay_closure.clone(),
+                evidence.checkpoint.clone(),
+                source,
+                final_stop,
+                checkpoints,
+                control,
+            ),
+            None => request.with_observation_resume_source(
+                evidence.schedule.clone(),
+                evidence.replay_closure.clone(),
+                evidence.checkpoint.clone(),
+                source,
+                final_stop,
+                checkpoints,
+            ),
+        };
+    }
+
+    match continuation_control {
+        Some(control) => request.with_controlled_resume_source(
+            evidence.schedule.clone(),
+            evidence.replay_closure.clone(),
+            evidence.checkpoint.clone(),
+            final_stop,
+            checkpoints,
+            control,
+        ),
+        None => request.with_resume_source(
+            evidence.schedule.clone(),
+            evidence.replay_closure.clone(),
+            evidence.checkpoint.clone(),
+            final_stop,
+            checkpoints,
+        ),
+    }
 }
 
 /// Forks one local-QEMU checkpoint through campaign-owned continuation control.
@@ -273,21 +302,30 @@ fn guarded_resume_stop(
     plan: &ResumeInvocationPlan,
     evidence: &ResumeHandleEvidence,
 ) -> Result<StopCondition, CliError> {
-    match plan.terminal_condition {
+    guarded_continuation_stop(
+        plan.terminal_condition,
+        plan.max_virtual_time_ticks,
+        &evidence.scenario_form,
+    )
+}
+
+fn guarded_continuation_stop(
+    terminal_condition: RunTerminalCondition,
+    max_virtual_time_ticks: Option<u64>,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<StopCondition, CliError> {
+    match terminal_condition {
         RunTerminalCondition::Quiescence => Ok(StopCondition::Observation(
             ObservationCondition::SchedulerQuiescent,
         )),
-        RunTerminalCondition::VirtualTime => plan
-            .max_virtual_time_ticks
+        RunTerminalCondition::VirtualTime => max_virtual_time_ticks
             .map(StopCondition::VirtualTimeNanoseconds)
             .ok_or_else(|| usage_error("resume --until virtual-time requires --max-virtual-time")),
         RunTerminalCondition::Stopped => Ok(StopCondition::Terminal),
-        RunTerminalCondition::Property
-            if evidence.scenario_form.properties().assertions().is_empty() =>
-        {
+        RunTerminalCondition::Property if scenario.properties().assertions().is_empty() => {
             Err(invalid_scenario(format!(
                 "resume --until property requires scenario {} to declare at least one assertion",
-                evidence.scenario.id().to_hex()
+                scenario.id().to_hex()
             )))
         }
         RunTerminalCondition::Property => Ok(StopCondition::Observation(
@@ -344,8 +382,11 @@ pub(super) fn run_local_qemu_campaign_replay(
 
 /// Returns whether the shared campaign owner can execute this run exactly.
 pub(super) fn guarded_campaign_run_eligible(plan: &RunInvocationPlan) -> bool {
-    guarded_discovery_stop(plan).is_ok()
-        && plan.execution_mode == RunExecutionMode::ToCompletion
+    guarded_discovery_stop(plan).is_ok() && guarded_campaign_execution_shape_eligible(plan)
+}
+
+fn guarded_campaign_execution_shape_eligible(plan: &RunInvocationPlan) -> bool {
+    plan.execution_mode == RunExecutionMode::ToCompletion
         && plan.save_policy == RunSavePolicy::Never
         && plan.startup_commands == [SessionCommandKind::Start, SessionCommandKind::Continue]
         && plan.initial_control_commands == [SessionCommandKind::Query]
@@ -356,7 +397,8 @@ pub(super) fn guarded_campaign_run_eligible(plan: &RunInvocationPlan) -> bool {
 
 /// Returns whether the shared campaign owner can capture this save exactly.
 pub(super) fn guarded_campaign_save_eligible(plan: &SaveInvocationPlan) -> bool {
-    guarded_campaign_save_stop(plan).is_ok() && guarded_campaign_run_eligible(&plan.run_plan)
+    guarded_campaign_save_stop(plan).is_ok()
+        && guarded_campaign_execution_shape_eligible(&plan.run_plan)
 }
 
 /// Runs one local-QEMU semantic save through campaign savepoint capture.
@@ -498,7 +540,12 @@ fn campaign_save_workflow_report(
             selector: save_plan.selector.clone(),
             frontier_ticks: frontier.ticks,
             quanta: evidence.quanta(),
-            proof: campaign_save_boundary_proof(save_plan, evidence)?,
+            proof: campaign_save_boundary_proof(
+                save_plan,
+                campaign.terminal().observation().stop(),
+                evidence,
+                campaign.terminal().observation_evidence(),
+            )?,
         },
     })
 }
@@ -559,6 +606,7 @@ fn campaign_resume_workflow_report(
             )));
         }
     }
+    validate_replayed_source_observation(evidence, campaign, resume.source_observation())?;
 
     let configuration = campaign.terminal_configuration();
     validate_resume_terminal_source_ancestor(evidence, configuration)?;
@@ -576,12 +624,7 @@ fn campaign_resume_workflow_report(
         &checkpoint,
         frontier,
     )?;
-    let final_state = match resume_plan.terminal_condition {
-        RunTerminalCondition::Quiescence => String::from("quiescent"),
-        RunTerminalCondition::VirtualTime => String::from("virtual-time"),
-        RunTerminalCondition::Property => String::from("property-failed"),
-        RunTerminalCondition::Stopped => String::from("stopped"),
-    };
+    let final_state = campaign_resume_final_state(resume_plan, stop, terminal_outcome);
     let mut run = campaign_run_report_with_state(
         campaign,
         terminal_outcome,
@@ -599,6 +642,53 @@ fn campaign_resume_workflow_report(
         scenario_label: resume_plan.savepoint.label(),
         terminal_oracle,
     })
+}
+
+fn validate_replayed_source_observation(
+    evidence: &ResumeHandleEvidence,
+    campaign: &GuardedDefaultCampaignRun,
+    source_observation: crucible_campaign::ObservationId,
+) -> Result<(), CliError> {
+    let (Some(expected), Some(expected_evidence)) = (
+        evidence.source_observation_proof.as_deref(),
+        evidence.source_observation_evidence.as_deref(),
+    ) else {
+        return Ok(());
+    };
+    let actual = campaign
+        .observations()
+        .iter()
+        .find(|observation| observation.id() == source_observation)
+        .ok_or_else(|| {
+            CliError::Identity(String::from(
+                "campaign resume omitted the replayed source observation",
+            ))
+        })?;
+    if !matches!(
+        actual.observation().stop(),
+        StopOutcome::ObservationReached(proof) if proof.as_ref() == expected
+    ) {
+        return Err(CliError::Identity(String::from(
+            "campaign resume did not reproduce the portable source observation proof",
+        )));
+    }
+    let actual_evidence = actual.observation_evidence().ok_or_else(|| {
+        CliError::Identity(String::from(
+            "campaign resume omitted the replayed source observation evidence",
+        ))
+    })?;
+    actual_evidence
+        .verify_observation_stop_proof(expected)
+        .map_err(|error| {
+            campaign_run_error("authenticate replayed source observation evidence", error)
+        })?;
+    if actual_evidence != expected_evidence {
+        return Err(CliError::Identity(String::from(
+            "campaign resume did not reproduce the portable source observation evidence",
+        )));
+    }
+
+    Ok(())
 }
 
 fn campaign_resume_status(
@@ -623,19 +713,18 @@ fn campaign_resume_status(
                 "campaign resume ended at an unexpected nonterminal boundary",
             ));
         }
-        outcome
+        StopOutcome::ObservationReached(proof)
             if plan.terminal_condition == RunTerminalCondition::Quiescence
-                && outcome.reaches(&StopCondition::Observation(
-                    ObservationCondition::SchedulerQuiescent,
-                )) =>
+                && proof.condition() == &ObservationCondition::SchedulerQuiescent
+                && proof.satisfaction() == ObservationStopSatisfaction::SchedulerQuiescent =>
         {
             (BackendCommandStatus::Passed, OutcomeKind::Passed)
         }
-        outcome
+        StopOutcome::ObservationReached(proof)
             if plan.terminal_condition == RunTerminalCondition::Property
-                && outcome.reaches(&StopCondition::Observation(
-                    ObservationCondition::AnyAssertionViolationTransition,
-                )) =>
+                && proof.condition() == &ObservationCondition::AnyAssertionViolationTransition
+                && proof.satisfaction()
+                    == ObservationStopSatisfaction::AssertionViolationTransition =>
         {
             (BackendCommandStatus::Failed, OutcomeKind::Failed)
         }
@@ -645,6 +734,27 @@ fn campaign_resume_status(
             ));
         }
     })
+}
+
+fn campaign_resume_final_state(
+    plan: &ResumeInvocationPlan,
+    stop: &StopOutcome,
+    outcome: OutcomeKind,
+) -> String {
+    match (plan.terminal_condition, stop) {
+        (RunTerminalCondition::Quiescence, StopOutcome::ObservationReached(_)) => {
+            String::from("quiescent")
+        }
+        (RunTerminalCondition::Property, StopOutcome::ObservationReached(_)) => {
+            String::from("property-failed")
+        }
+        (
+            RunTerminalCondition::VirtualTime,
+            StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(_)),
+        ) => String::from("virtual-time"),
+        (RunTerminalCondition::Stopped, _) => String::from("stopped"),
+        _ => terminal_outcome_label(Some(outcome)).to_owned(),
+    }
 }
 
 fn validate_campaign_resume_frontier(
@@ -658,6 +768,17 @@ fn validate_campaign_resume_frontier(
             "campaign resume terminal frontier {} precedes authenticated source frontier {}",
             frontier.ticks, source_frontier.ticks
         )));
+    }
+
+    if let StopOutcome::ObservationReached(proof) = stop {
+        let proof_frontier = proof.boundary().frontier_nanoseconds();
+        if proof_frontier != frontier.ticks {
+            return Err(CliError::Identity(format!(
+                "campaign resume observation proof frontier {proof_frontier} differs from terminal frontier {}",
+                frontier.ticks
+            )));
+        }
+        return Ok(());
     }
 
     let StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline)) = stop else {
@@ -692,6 +813,14 @@ fn guarded_campaign_save_stop(plan: &SaveInvocationPlan) -> Result<StopCondition
         (SaveAtArg::Marker, Some(SaveAtSelector::Marker { name })) => {
             Ok(StopCondition::NamedBoundary(name.clone()))
         }
+        (SaveAtArg::Quiescence, None) => Ok(StopCondition::Observation(
+            ObservationCondition::SchedulerQuiescent,
+        )),
+        (SaveAtArg::Property, Some(SaveAtSelector::PropertyViolation { assertion })) => {
+            Ok(StopCondition::Observation(
+                ObservationCondition::AssertionViolationTransition(assertion.clone()),
+            ))
+        }
         _ => Err(backend_error(
             "the requested save boundary does not have an exact campaign-backed QEMU adapter",
         )),
@@ -700,10 +829,49 @@ fn guarded_campaign_save_stop(plan: &SaveInvocationPlan) -> Result<StopCondition
 
 fn campaign_save_boundary_proof(
     plan: &SaveInvocationPlan,
+    terminal: &StopOutcome,
     evidence: &crucible_daemon::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+    observation_evidence: Option<&crucible_daemon::CrucibleMeasurementReplayEvidence>,
 ) -> Result<SaveBoundaryProof, CliError> {
+    match (plan.at, plan.selector.as_ref(), terminal) {
+        (SaveAtArg::VirtualTime, None, _) => return Ok(SaveBoundaryProof::Coordinate),
+        (SaveAtArg::Quiescence, None, StopOutcome::ObservationReached(proof))
+        | (
+            SaveAtArg::Property,
+            Some(SaveAtSelector::PropertyViolation { .. }),
+            StopOutcome::ObservationReached(proof),
+        ) => {
+            let observation_evidence = observation_evidence.ok_or_else(|| {
+                campaign_run_error_message(
+                    "campaign observation save lost its authenticated raw boundary evidence",
+                )
+            })?;
+            observation_evidence
+                .verify_observation_stop_proof(proof)
+                .map_err(|error| {
+                    campaign_run_error(
+                        "authenticate campaign observation save boundary evidence",
+                        error,
+                    )
+                })?;
+            return Ok(SaveBoundaryProof::CampaignObservation {
+                proof: proof.clone(),
+                evidence: observation_evidence.canonical_bytes().map_err(|error| {
+                    campaign_run_error("encode campaign observation boundary evidence", error)
+                })?,
+            });
+        }
+        (SaveAtArg::Marker, Some(SaveAtSelector::Marker { .. }), _) => {}
+        _ => {
+            return Err(campaign_run_error_message(
+                "campaign save terminal outcome does not carry its requested boundary proof",
+            ));
+        }
+    };
     let Some(SaveAtSelector::Marker { name }) = plan.selector.as_ref() else {
-        return Ok(SaveBoundaryProof::Coordinate);
+        return Err(campaign_run_error_message(
+            "campaign marker save has no marker selector",
+        ));
     };
     let marker = crucible::MarkerId::from_name(name);
     let entry = evidence
@@ -755,7 +923,7 @@ fn validate_campaign_savepoint(
     stop: &StopCondition,
 ) -> Result<(), CliError> {
     let observation = campaign.terminal().observation();
-    if observation.stop() != &StopOutcome::Reached(stop.clone())
+    if !observation.stop().reaches(stop)
         || savepoint.attempt() != observation.attempt()
         || savepoint.configuration() != observation.child()
         || savepoint.stop() != stop
@@ -1224,9 +1392,10 @@ mod tests {
     use clap::Parser;
     use crucible_api::ProductionVmLifecycleConfig;
     use crucible_campaign::{
-        BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-        ChoiceOpportunity, ChoiceSource, ChoiceValue, SelectableDeclaration, Selection,
-        SelectionOrigin,
+        AssertionViolationWitness, BooleanDomain, CampaignHash, ChoiceClassContext,
+        ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue,
+        ObservationEventLogProof, ObservationQuantumBoundary, ObservationStopProof,
+        SelectableDeclaration, Selection, SelectionOrigin,
     };
     use crucible_core::AppRandomDecision;
     use crucible_daemon::LinuxQemuAttemptHostConfig;
@@ -1324,6 +1493,8 @@ mod tests {
             configuration,
             checkpoint,
             replay_closure,
+            source_observation_proof: None,
+            source_observation_evidence: None,
         }
     }
 
@@ -1415,6 +1586,16 @@ mod tests {
         final_stop: StopCondition,
         watch_frames: bool,
     ) -> ResumeCampaignFixture {
+        try_resume_campaign_fixture(temporary, evidence, final_stop, watch_frames)
+            .expect("campaign fixture should resume through exact capture")
+    }
+
+    fn try_resume_campaign_fixture(
+        temporary: &TempDir,
+        evidence: &ResumeHandleEvidence,
+        final_stop: StopCondition,
+        watch_frames: bool,
+    ) -> Result<ResumeCampaignFixture, Box<dyn Error + Send + Sync>> {
         let resources = AttemptResourceLimits::new(1, 256 * 1024 * 1024, 1024 * 1024, 16)
             .expect("campaign fixture resources");
         let checkpoint_directory = tempfile::Builder::new()
@@ -1451,29 +1632,28 @@ mod tests {
             ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
             host,
             resources,
-        )
-        .with_resume_source(
-            evidence.schedule.clone(),
-            evidence.replay_closure.clone(),
-            evidence.checkpoint.clone(),
+        );
+        let request = attach_guarded_resume_source(
+            request,
+            evidence,
             final_stop,
             Arc::clone(&checkpoints),
+            None,
         );
         let request = if watch_frames {
             request.with_watch_frames()
         } else {
             request
         };
-        let (campaign, trace) = run_guarded_default_campaign_test_fixture_with_trace(request)
-            .expect("campaign fixture should resume through exact capture");
+        let (campaign, trace) = run_guarded_default_campaign_test_fixture_with_trace(request)?;
 
-        ResumeCampaignFixture {
+        Ok(ResumeCampaignFixture {
             campaign,
             trace,
             checkpoints,
             checkpoint_directory,
             checkpoint_root,
-        }
+        })
     }
 
     #[test]
@@ -1797,6 +1977,86 @@ mod tests {
         assert!(proof.continuation().is_some());
 
         assert!(!checkpoint_root.exists());
+    }
+
+    #[test]
+    fn campaign_resume_projects_quiescence_observation() {
+        let temporary = TempDir::new().expect("resume observation workspace");
+        let evidence = resume_evidence(Schedule::empty(), VirtualTime { ticks: 5 });
+        let mut plan = default_resume_plan(&evidence, temporary.path());
+        plan.terminal_condition = RunTerminalCondition::Quiescence;
+        let fixture = resume_campaign_fixture(
+            &temporary,
+            &evidence,
+            StopCondition::Observation(ObservationCondition::SchedulerQuiescent),
+            false,
+        );
+
+        let report = campaign_resume_workflow_report(&plan, &evidence, &fixture.campaign)
+            .expect("project quiescence observation resume");
+        let stop = fixture.campaign.terminal().observation().stop();
+        let StopOutcome::ObservationReached(proof) = stop else {
+            panic!("quiescence resume requires an observation proof");
+        };
+
+        assert_eq!(proof.condition(), &ObservationCondition::SchedulerQuiescent);
+        assert_eq!(
+            proof.satisfaction(),
+            ObservationStopSatisfaction::SchedulerQuiescent
+        );
+        assert_eq!(report.run.status, BackendCommandStatus::Passed);
+        assert_eq!(report.run.outcome, Some(OutcomeKind::Passed));
+        assert_eq!(report.run.final_state, "quiescent");
+    }
+
+    #[test]
+    fn campaign_resume_projects_property_violation_observation() {
+        let temporary = TempDir::new().expect("resume property workspace");
+        let cli = Cli::parse_from(["crucible", "run", "builtin:fault-campaign"]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+        let scenario = plan_run_invocation(args, Path::new("."))
+            .expect("fault campaign plan")
+            .scenario
+            .scenario_form()
+            .clone();
+        let evidence =
+            resume_evidence_for_scenario(scenario, Schedule::empty(), VirtualTime { ticks: 5 });
+        let mut plan = default_resume_plan(&evidence, temporary.path());
+        plan.terminal_condition = RunTerminalCondition::Property;
+        let fixture = resume_campaign_fixture(
+            &temporary,
+            &evidence,
+            StopCondition::Observation(ObservationCondition::AnyAssertionViolationTransition),
+            false,
+        );
+
+        let report = campaign_resume_workflow_report(&plan, &evidence, &fixture.campaign)
+            .expect("project property observation resume");
+        let stop = fixture.campaign.terminal().observation().stop();
+        let StopOutcome::ObservationReached(proof) = stop else {
+            panic!("property resume requires an observation proof");
+        };
+
+        assert_eq!(
+            proof.condition(),
+            &ObservationCondition::AnyAssertionViolationTransition
+        );
+        assert_eq!(
+            proof.satisfaction(),
+            ObservationStopSatisfaction::AssertionViolationTransition
+        );
+        assert_eq!(
+            proof
+                .assertion_witness()
+                .expect("property observation witness")
+                .assertion(),
+            "no-split-brain"
+        );
+        assert_eq!(report.run.status, BackendCommandStatus::Failed);
+        assert_eq!(report.run.outcome, Some(OutcomeKind::Failed));
+        assert_eq!(report.run.final_state, "property-failed");
     }
 
     #[test]
@@ -2138,12 +2398,16 @@ mod tests {
             StopCondition::NamedBoundary(String::from("checkpoint"))
         );
 
-        let mut unsupported = plan.clone();
-        unsupported.at = SaveAtArg::Quiescence;
-        unsupported.run_plan.terminal_condition = RunTerminalCondition::Quiescence;
-        unsupported.run_plan.max_virtual_time = None;
-        unsupported.run_plan.max_virtual_time_ticks = None;
-        assert!(!guarded_campaign_save_eligible(&unsupported));
+        let mut quiescence = plan.clone();
+        quiescence.at = SaveAtArg::Quiescence;
+        quiescence.run_plan.terminal_condition = RunTerminalCondition::Quiescence;
+        quiescence.run_plan.max_virtual_time = None;
+        quiescence.run_plan.max_virtual_time_ticks = None;
+        assert!(guarded_campaign_save_eligible(&quiescence));
+        assert_eq!(
+            guarded_campaign_save_stop(&quiescence).expect("quiescence campaign stop"),
+            StopCondition::Observation(ObservationCondition::SchedulerQuiescent)
+        );
 
         let mut unsupported = plan.clone();
         unsupported.selector = Some(SaveAtSelector::Marker {
@@ -2206,6 +2470,26 @@ mod tests {
     }
 
     #[test]
+    fn campaign_quiescence_save_after_a_typed_choice_replays_its_observation_proof() {
+        assert_campaign_save_exports_closure(
+            &["--at", "quiescence"],
+            StopCondition::Observation(ObservationCondition::SchedulerQuiescent),
+            true,
+        );
+    }
+
+    #[test]
+    fn campaign_property_save_after_a_typed_choice_replays_its_observation_proof() {
+        assert_campaign_save_exports_closure(
+            &["--at", "property", "--property", "no-split-brain"],
+            StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
+                String::from("no-split-brain"),
+            )),
+            true,
+        );
+    }
+
+    #[test]
     fn campaign_typed_save_without_a_replay_closure_fails_before_export() {
         let marker = "guarded-campaign-save-fixture-marker";
         let stop = StopCondition::NamedBoundary(String::from(marker));
@@ -2252,11 +2536,22 @@ mod tests {
         let temporary = TempDir::new().expect("temporary save workspace");
         let artifact_directory = temporary.path().join("artifacts");
         let output = temporary.path().join("campaign.crucible-savepoint");
-        let scenario = if marker_with_selection || matches!(&stop, StopCondition::NamedBoundary(_))
-        {
-            campaign_marker_save_scenario(&temporary, marker_with_selection)
-        } else {
-            String::from("builtin:happy-path")
+        let scenario = match &stop {
+            StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
+                assertion,
+            )) => {
+                campaign_portable_save_scenario(&temporary, marker_with_selection, Some(assertion))
+            }
+            _ if marker_with_selection
+                || matches!(
+                    &stop,
+                    StopCondition::NamedBoundary(_)
+                        | StopCondition::Observation(ObservationCondition::SchedulerQuiescent)
+                ) =>
+            {
+                campaign_portable_save_scenario(&temporary, marker_with_selection, None)
+            }
+            _ => String::from("builtin:happy-path"),
         };
         let mut arguments = vec![
             String::from("crucible"),
@@ -2334,6 +2629,159 @@ mod tests {
             save_plan,
             campaign,
         }
+    }
+
+    fn handle_with_observation_proof(handle: &str, proof: &ObservationStopProof) -> String {
+        let proof_bytes = proof.canonical_bytes();
+        handle
+            .lines()
+            .map(|line| {
+                if line.starts_with("boundary-proof\tcampaign-observation\t") {
+                    let fields = line.split('\t').collect::<Vec<_>>();
+                    assert_eq!(fields.len(), 6, "v6 observation proof fields");
+                    format!(
+                        "boundary-proof\tcampaign-observation\t{}\t{}\t{}\t{}",
+                        content_address_bytes(&proof_bytes),
+                        hex_bytes(&proof_bytes),
+                        fields[4],
+                        fields[5],
+                    )
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    fn handle_with_observation_claim(
+        handle: &str,
+        proof: &ObservationStopProof,
+        evidence: &crucible_daemon::CrucibleMeasurementReplayEvidence,
+    ) -> String {
+        let proof_bytes = proof.canonical_bytes();
+        let evidence_bytes = evidence
+            .canonical_bytes()
+            .expect("canonical forged observation evidence");
+        handle
+            .lines()
+            .map(|line| {
+                if line.starts_with("boundary-proof\tcampaign-observation\t") {
+                    format!(
+                        "boundary-proof\tcampaign-observation\t{}\t{}\t{}\t{}",
+                        content_address_bytes(&proof_bytes),
+                        hex_bytes(&proof_bytes),
+                        content_address_bytes(&evidence_bytes),
+                        hex_bytes(&evidence_bytes),
+                    )
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    fn rebuilt_observation_proof(
+        source: &ObservationStopProof,
+        boundary: ObservationQuantumBoundary,
+        event_log: ObservationEventLogProof,
+        witness: Option<AssertionViolationWitness>,
+    ) -> ObservationStopProof {
+        ObservationStopProof::new(
+            source.condition().clone(),
+            source.satisfaction(),
+            source.child(),
+            boundary,
+            event_log,
+            witness,
+        )
+        .expect("structurally valid forged observation proof")
+    }
+
+    fn recomputed_observation_proof_forgeries(
+        source: &ObservationStopProof,
+        retained_entries: &[crucible::SchedulerEventLogEntry],
+    ) -> Vec<(&'static str, ObservationStopProof)> {
+        let event_log = source.event_log();
+        let wrong_event_log = ObservationEventLogProof::new(
+            event_log.prefix(),
+            event_log.appended_segment(),
+            event_log.bytes(),
+            event_log.events(),
+            CampaignHash::derive("test.observation-forgery", b"event-log"),
+        );
+        let mut forgeries = vec![(
+            "event-log",
+            rebuilt_observation_proof(
+                source,
+                source.boundary(),
+                wrong_event_log,
+                source.assertion_witness().cloned(),
+            ),
+        )];
+
+        let boundary = source.boundary();
+        let shifted_boundary = ObservationQuantumBoundary::new(
+            boundary.frontier_nanoseconds(),
+            boundary.start_completed_quanta() + 1,
+            boundary.completed_quanta() + 1,
+            boundary.start_events(),
+        )
+        .expect("shifted quantum boundary remains structurally valid");
+        forgeries.push((
+            "quanta",
+            rebuilt_observation_proof(
+                source,
+                shifted_boundary,
+                event_log,
+                source.assertion_witness().cloned(),
+            ),
+        ));
+
+        if let Some(witness) = source.assertion_witness() {
+            let wrong_state = crucible::SchedulerEventLogEntry::assertion_state_observation(
+                witness.sequence(),
+                VirtualTime {
+                    ticks: boundary.frontier_nanoseconds(),
+                },
+                crucible::AssertionId::from_name(witness.assertion()),
+                crucible::AssertionPhase::Satisfied,
+            );
+            let wrong_state_witness = AssertionViolationWitness::new(
+                witness.assertion(),
+                witness.sequence(),
+                CampaignHash::from_bytes(wrong_state.content_hash().bytes),
+            )
+            .expect("wrong-state witness remains structurally valid");
+            forgeries.push((
+                "assertion-state",
+                rebuilt_observation_proof(source, boundary, event_log, Some(wrong_state_witness)),
+            ));
+
+            let other_entry = retained_entries
+                .iter()
+                .find(|entry| {
+                    entry.sequence() >= boundary.start_events()
+                        && entry.sequence() < event_log.events()
+                        && entry.sequence() != witness.sequence()
+                })
+                .expect("property fixture emits a second event in the matching quantum");
+            let wrong_witness = AssertionViolationWitness::new(
+                witness.assertion(),
+                other_entry.sequence(),
+                CampaignHash::from_bytes(other_entry.content_hash().bytes),
+            )
+            .expect("wrong event witness remains structurally valid");
+            forgeries.push((
+                "assertion-witness",
+                rebuilt_observation_proof(source, boundary, event_log, Some(wrong_witness)),
+            ));
+        }
+
+        forgeries
     }
 
     fn assert_campaign_save_exports_closure(
@@ -2569,6 +3017,94 @@ mod tests {
                         .expect("historical v3 coordinate evidence synthesizes an empty closure");
                 }
             }
+            StopCondition::Observation(condition) => {
+                let boundary = outcome
+                    .save_boundary_evidence
+                    .as_ref()
+                    .expect("observation save boundary evidence");
+                let SaveBoundaryProof::CampaignObservation { proof, evidence } = &boundary.proof
+                else {
+                    panic!("expected authenticated campaign observation proof");
+                };
+                let retained_evidence =
+                    crucible_daemon::CrucibleMeasurementReplayEvidence::from_canonical_bytes(
+                        evidence,
+                    )
+                    .expect("decode retained campaign observation evidence");
+                assert_eq!(proof.condition(), condition);
+                assert_eq!(proof.child(), campaign.terminal().observation().child());
+                assert_eq!(
+                    proof.boundary().frontier_nanoseconds(),
+                    campaign.evidence().frontier().ticks
+                );
+                assert_eq!(
+                    campaign.terminal().observation().stop(),
+                    &StopOutcome::ObservationReached(proof.clone())
+                );
+
+                let handle = std::fs::read_to_string(&output).expect("observation v6 handle");
+                assert!(handle.contains("schema\tcrucible.savepoint-handle.v6\n"));
+                assert!(handle.contains("campaign-replay-closure\tcrucible-hash:"));
+                assert!(handle.contains("boundary-proof\tcampaign-observation\t"));
+                let decoded = decode_savepoint_handle(handle.as_bytes())
+                    .expect("decode authenticated campaign observation handle");
+                assert_eq!(
+                    decoded.boundary_proof,
+                    Some(SavepointBoundaryProof::CampaignObservation {
+                        proof: proof.clone(),
+                        evidence: Box::new(retained_evidence.clone()),
+                    })
+                );
+                let pending = savepoint_handle_evidence("resume", &decoded)
+                    .expect("campaign observation handle reconstructs its checkpoint");
+                assert_eq!(
+                    pending.source_observation_proof.as_deref(),
+                    Some(proof.as_ref())
+                );
+                assert_eq!(
+                    pending.source_observation_evidence.as_deref(),
+                    Some(&retained_evidence)
+                );
+
+                let mislabeled = handle.replace(
+                    "schema\tcrucible.savepoint-handle.v6",
+                    "schema\tcrucible.savepoint-handle.v5",
+                );
+                assert!(decode_savepoint_handle(mislabeled.as_bytes()).is_err());
+
+                let wrong_checkpoint = handle
+                    .lines()
+                    .map(|line| {
+                        if line.starts_with("checkpoint\t") {
+                            format!(
+                                "checkpoint\t{}",
+                                format_content_hash_ref(crucible::ContentHash::default())
+                            )
+                        } else {
+                            line.to_owned()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n";
+                let error = decode_savepoint_handle(wrong_checkpoint.as_bytes())
+                    .expect_err("observation proof child must bind the checkpoint");
+                assert!(error.to_string().contains("proof child"));
+
+                let missing_predicate = handle
+                    .lines()
+                    .map(|line| {
+                        if line.starts_with("boundary-predicate\t") {
+                            String::from("boundary-predicate\tnone")
+                        } else {
+                            line.to_owned()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n";
+                assert!(decode_savepoint_handle(missing_predicate.as_bytes()).is_err());
+            }
             other => panic!("unsupported campaign save test boundary: {other:?}"),
         }
 
@@ -2592,8 +3128,11 @@ mod tests {
         );
 
         assert_eq!(handle_evidence, handle_fork_evidence);
-        assert_eq!(handle_evidence, store_evidence);
-        assert_eq!(handle_evidence, store_fork_evidence);
+        assert_eq!(store_evidence, store_fork_evidence);
+        let mut handle_without_source_claim = handle_evidence.clone();
+        handle_without_source_claim.source_observation_proof = None;
+        handle_without_source_claim.source_observation_evidence = None;
+        assert_eq!(handle_without_source_claim, store_evidence);
         assert_eq!(handle_evidence.checkpoint.id, checkpoint);
         assert!(guarded_campaign_resume_eligible(
             &handle_resume_plan,
@@ -2603,14 +3142,130 @@ mod tests {
             &store_resume_plan,
             &store_evidence
         ));
-        assert!(!guarded_campaign_fork_eligible(
+        assert!(guarded_campaign_fork_eligible(
             &handle_fork_plan,
             &handle_fork_evidence
         ));
-        assert!(!guarded_campaign_fork_eligible(
+        assert!(guarded_campaign_fork_eligible(
             &store_fork_plan,
             &store_fork_evidence
         ));
+
+        if let Some(source_proof) = handle_evidence.source_observation_proof.as_deref() {
+            assert!(
+                handle_evidence
+                    .schedule
+                    .decisions()
+                    .iter()
+                    .any(|decision| { matches!(decision, crucible::Decision::Selection(_)) })
+            );
+            let source_frontier = handle_evidence.checkpoint.virtual_time.ticks;
+            let terminal_frontier = source_frontier.saturating_add(1);
+            let mut replay_plan = handle_resume_plan.clone();
+            replay_plan.terminal_condition = RunTerminalCondition::VirtualTime;
+            replay_plan.max_virtual_time = Some(format!("{terminal_frontier}ticks"));
+            replay_plan.max_virtual_time_ticks = Some(terminal_frontier);
+            let replay = resume_campaign_fixture(
+                &temporary,
+                &handle_evidence,
+                StopCondition::VirtualTimeNanoseconds(terminal_frontier),
+                true,
+            );
+            let source = replay
+                .campaign
+                .resume()
+                .expect("v6 replay retains its source authentication");
+            let accepted_source = replay
+                .campaign
+                .observations()
+                .iter()
+                .find(|observation| observation.id() == source.source_observation())
+                .expect("v6 replay retains its accepted source observation");
+            assert!(matches!(
+                accepted_source.observation().stop(),
+                StopOutcome::ObservationReached(actual) if actual.as_ref() == source_proof
+            ));
+            assert!(source.source_savepoint().is_some());
+            campaign_resume_workflow_report(&replay_plan, &handle_evidence, &replay.campaign)
+                .expect("v6 source observation is reproduced before continuation");
+
+            let handle = std::fs::read_to_string(&output).expect("read v6 handle for tampering");
+            for (mutation, forged) in recomputed_observation_proof_forgeries(
+                source_proof,
+                campaign.evidence().event_log_entries(),
+            ) {
+                let forged_handle = handle_with_observation_proof(&handle, &forged);
+                let error = decode_savepoint_handle(forged_handle.as_bytes())
+                    .expect_err("proof-only forgery must disagree with retained raw evidence");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("campaign observation proof and evidence disagree"),
+                    "{mutation}: {error}"
+                );
+            }
+
+            let source_evidence = handle_evidence
+                .source_observation_evidence
+                .as_deref()
+                .expect("v6 handle retains raw source evidence");
+            let source_boundary = source_evidence
+                .observation_boundary()
+                .expect("v6 raw evidence retains an observation boundary");
+            let shifted_boundary = crucible_daemon::CrucibleObservationBoundaryEvidence::new(
+                source_boundary.frontier(),
+                source_boundary.quantum_start_completed_quanta() + 1,
+                source_boundary.completed_quanta() + 1,
+                source_boundary.quantum_start_events(),
+                source_boundary.event_log_offset(),
+                source_boundary.scheduler_quiescent(),
+            )
+            .expect("shifted raw boundary remains structurally valid");
+            let shifted_proof = recomputed_observation_proof_forgeries(
+                source_proof,
+                campaign.evidence().event_log_entries(),
+            )
+            .into_iter()
+            .find_map(|(mutation, proof)| (mutation == "quanta").then_some(proof))
+            .expect("quantum-coordinate proof forgery");
+            let (shifted_evidence, _, _) =
+                crucible_daemon::evaluate_crucible_observation_measurement_publication(
+                    source_evidence.scenario(),
+                    source_evidence.configuration(),
+                    handle_evidence.scenario_form.measurements(),
+                    source_evidence.entries().to_vec(),
+                    source_evidence.terminal().clone(),
+                    shifted_boundary,
+                    crucible_daemon::MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+                )
+                .expect("build coherent shifted raw evidence")
+                .into_parts();
+            shifted_evidence
+                .verify_observation_stop_proof(&shifted_proof)
+                .expect("shifted proof and raw evidence agree with each other");
+            let forged_handle =
+                handle_with_observation_claim(&handle, &shifted_proof, &shifted_evidence);
+            let decoded = decode_savepoint_handle(forged_handle.as_bytes())
+                .expect("coherent proof and raw evidence pass portable structural checks");
+            let forged_evidence = savepoint_handle_evidence("resume", &decoded)
+                .expect("coherent forged claim remains pending until actual replay");
+            let error = match try_resume_campaign_fixture(
+                &temporary,
+                &forged_evidence,
+                StopCondition::VirtualTimeNanoseconds(terminal_frontier),
+                true,
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("actual source replay accepted coherent portable forgery"),
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("legacy resume source observation differs"),
+                "{error}"
+            );
+        }
+
         let fork_frontier = handle_evidence
             .checkpoint
             .virtual_time
@@ -2642,55 +3297,57 @@ mod tests {
                 )
                 .is_err()
             );
-            let lifecycle_starts = Arc::new(AtomicUsize::new(0));
-            let counted_starts = Arc::clone(&lifecycle_starts);
-            let source_frontier = handle_evidence.checkpoint.virtual_time;
-            let control_plane = LifecycleControlPlane::new(
-                "typed-selection-remote-resume",
-                Vec::new(),
-                move |_scenario: &crucible::ScenarioDef, _seed| {
-                    counted_starts.fetch_add(1, Ordering::Relaxed);
-                    ResumeRecordingLifecycleLoop::new(source_frontier)
-                },
-            )
-            .with_resume_replay_closure_validator(
-                |scenario, configuration, checkpoint, envelope| {
-                    crucible_daemon::qemu_campaign_lifecycle::validate_remote_resume_replay_closure(
-                        scenario,
-                        configuration,
-                        checkpoint,
-                        envelope,
-                    )
-                    .map_err(|error| {
-                        crucible_api::ResumeReplayClosureValidationError::new(error.to_string())
-                    })
-                },
-            );
-            let client = InProcessLifecycleClient::new(control_plane);
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("typed remote resume test runtime");
-            let mut remote_plan = handle_resume_plan.clone();
-            let remote_target = source_frontier.ticks.saturating_add(1);
-            remote_plan.terminal_condition = RunTerminalCondition::VirtualTime;
-            remote_plan.max_virtual_time = Some(format!("{remote_target}ticks"));
-            remote_plan.max_virtual_time_ticks = Some(remote_target);
-            let report = runtime
-                .block_on(
-                    run_remote_control_client_resume_from_evidence_with_driver_async(
-                        &client,
-                        &remote_plan,
-                        handle_evidence.clone(),
-                        ResumeInteractiveCommandDriver::Preparsed(&[]),
-                        false,
-                    ),
+            if handle_evidence.source_observation_proof.is_none() {
+                let lifecycle_starts = Arc::new(AtomicUsize::new(0));
+                let counted_starts = Arc::clone(&lifecycle_starts);
+                let source_frontier = handle_evidence.checkpoint.virtual_time;
+                let control_plane = LifecycleControlPlane::new(
+                    "typed-selection-remote-resume",
+                    Vec::new(),
+                    move |_scenario: &crucible::ScenarioDef, _seed| {
+                        counted_starts.fetch_add(1, Ordering::Relaxed);
+                        ResumeRecordingLifecycleLoop::new(source_frontier)
+                    },
                 )
-                .expect("remote session path should consume authenticated typed evidence");
-            assert_eq!(report.source_checkpoint, checkpoint);
-            assert_eq!(report.run.final_frontier_ticks, remote_target);
-            assert_eq!(runtime.block_on(client.session_count()), 0);
-            assert_eq!(lifecycle_starts.load(Ordering::Relaxed), 1);
+                .with_resume_replay_closure_validator(
+                    |scenario, configuration, checkpoint, envelope| {
+                        crucible_daemon::qemu_campaign_lifecycle::validate_remote_resume_replay_closure(
+                            scenario,
+                            configuration,
+                            checkpoint,
+                            envelope,
+                        )
+                        .map_err(|error| {
+                            crucible_api::ResumeReplayClosureValidationError::new(error.to_string())
+                        })
+                    },
+                );
+                let client = InProcessLifecycleClient::new(control_plane);
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("typed remote resume test runtime");
+                let mut remote_plan = handle_resume_plan.clone();
+                let remote_target = source_frontier.ticks.saturating_add(1);
+                remote_plan.terminal_condition = RunTerminalCondition::VirtualTime;
+                remote_plan.max_virtual_time = Some(format!("{remote_target}ticks"));
+                remote_plan.max_virtual_time_ticks = Some(remote_target);
+                let report = runtime
+                    .block_on(
+                        run_remote_control_client_resume_from_evidence_with_driver_async(
+                            &client,
+                            &remote_plan,
+                            handle_evidence.clone(),
+                            ResumeInteractiveCommandDriver::Preparsed(&[]),
+                            false,
+                        ),
+                    )
+                    .expect("remote session path should consume authenticated typed evidence");
+                assert_eq!(report.source_checkpoint, checkpoint);
+                assert_eq!(report.run.final_frontier_ticks, remote_target);
+                assert_eq!(runtime.block_on(client.session_count()), 0);
+                assert_eq!(lifecycle_starts.load(Ordering::Relaxed), 1);
+            }
 
             for (reader, mut plan, mut fork_plan, evidence) in [
                 (
@@ -2745,7 +3402,7 @@ mod tests {
                 assert_eq!(selection_applications.len(), 3);
                 assert!(selection_applications.iter().enumerate().all(
                     |(generation, (actual_generation, frontier))| {
-                        *actual_generation == generation as u64 && frontier.ticks == source_frontier
+                        *actual_generation == generation as u64 && frontier.ticks == 0
                     }
                 ));
                 assert!(
@@ -2868,6 +3525,9 @@ mod tests {
                 .join("\n")
                 + "\n";
             assert!(decode_savepoint_handle(missing_closure.as_bytes()).is_err());
+            if handle_evidence.source_observation_proof.is_some() {
+                return;
+            }
             let historical_schema = match stop {
                 StopCondition::NamedBoundary(_) => "crucible.savepoint-handle.v4",
                 StopCondition::VirtualTimeNanoseconds(_) => "crucible.savepoint-handle.v3",
@@ -2950,7 +3610,11 @@ mod tests {
         }
     }
 
-    fn campaign_marker_save_scenario(temporary: &TempDir, with_selection: bool) -> String {
+    fn campaign_portable_save_scenario(
+        temporary: &TempDir,
+        with_selection: bool,
+        assertion: Option<&str>,
+    ) -> String {
         let node = crucible::NodeId {
             name: String::from("campaign-marker-save-node"),
         };
@@ -2990,25 +3654,39 @@ mod tests {
             vec![declaration],
         )
         .expect("campaign marker save selectables");
+        let properties = assertion
+            .map_or_else(
+                || Ok(crucible::Properties::empty()),
+                |assertion| {
+                    crucible::Properties::from_assertions_for_world(
+                        &world,
+                        vec![crucible::AssertionDef::guest_unreachable(
+                            crucible::AssertionId::from_name(assertion),
+                            "the campaign save fixture must retain its violation",
+                        )],
+                    )
+                },
+            )
+            .expect("campaign portable save properties");
         let mut form = crucible::ScenarioDefForm::from_components(
             &world,
             &crucible::Plan::empty(),
-            &crucible::Properties::empty(),
+            &properties,
             crucible::Seed::from_u64(8_004),
         )
-        .expect("campaign marker save scenario");
+        .expect("campaign portable save scenario");
         if with_selection {
             form = form
                 .with_selectables(selectables)
-                .expect("attach campaign marker save selectables");
+                .expect("attach campaign portable save selectables");
         }
-        let path = temporary.path().join("campaign-marker-save.toml");
+        let path = temporary.path().join("campaign-portable-save.toml");
         std::fs::write(
             &path,
             form.to_canonical_toml()
-                .expect("canonical campaign marker save scenario"),
+                .expect("canonical campaign portable save scenario"),
         )
-        .expect("write campaign marker save scenario");
+        .expect("write campaign portable save scenario");
         path.display().to_string()
     }
 

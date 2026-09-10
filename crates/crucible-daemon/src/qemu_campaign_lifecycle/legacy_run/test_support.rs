@@ -10,11 +10,13 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, EventLog, ExecutionFingerprint,
-    FingerprintSample, Icount, MarkerId, NodeId, ObservableEvent, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, Schedule, SchedulerError, SchedulerEventLogEntry, VirtualTime,
+    AssertionId, AssertionPhase, Checkpoint, CheckpointKind, Configuration, ContentHash, EventLog,
+    ExecutionFingerprint, FingerprintSample, GuestAssertionDetail, GuestAssertionKind,
+    GuestAssertionMarker, Icount, MarkerId, NodeId, ObservableEvent, QuantumOutcome,
+    QuantumRequest, QuantumTerminalVerdict, Schedule, SchedulerError, SchedulerEventLogEntry,
+    SchedulerQuiescence, VirtualTime,
 };
-use crucible_campaign::StopCondition;
+use crucible_campaign::{ObservationCondition, ObservationStopProof, StopCondition};
 use crucible_cas::content_store::BlobHandle;
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
@@ -33,9 +35,18 @@ use crate::{
 const TEST_EFFECT_TRACE: &[u8] = b"guarded-default-run-test-support-effect-trace";
 const TEST_SELECTION_APPLIED_MARKER: &str = "campaign-save-fixture-selection-applied";
 
+#[derive(Clone)]
+enum TestObservation {
+    SchedulerQuiescent,
+    AssertionViolation(AssertionId),
+}
+
 struct TestLifecycle {
     node: NodeId,
     marker: MarkerId,
+    source_observation: Option<TestObservation>,
+    continuation_observation: Option<TestObservation>,
+    continuation_start_generation: u64,
     event_log: EventLog,
     replay_target: Schedule,
     choice_required: bool,
@@ -87,14 +98,49 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
         } else {
             self.marker.clone()
         };
-        let observed = vec![ObservableEvent::guest_marker(
-            Icount {
-                retired: self.frontier.ticks,
-            },
-            self.node.clone(),
-            marker,
-        )];
-        let append = self.event_log.append_observable_events(observed)?;
+        let active_observation = if self.lifecycle_generation >= self.continuation_start_generation
+            && self.completed_quanta > 1
+        {
+            self.continuation_observation.as_ref()
+        } else {
+            self.source_observation.as_ref()
+        };
+        let observation = (!self.choice_required || self.selection_received)
+            .then_some(active_observation)
+            .flatten();
+        let append = if let Some(TestObservation::AssertionViolation(assertion)) = observation {
+            self.event_log.append_observable_events([
+                ObservableEvent::guest_assertion_marker(
+                    Icount {
+                        retired: self.frontier.ticks,
+                    },
+                    self.node.clone(),
+                    GuestAssertionMarker::new(
+                        assertion.clone(),
+                        "campaign observation fixture violation",
+                        GuestAssertionKind::Unreachable,
+                        true,
+                        true,
+                        vec![GuestAssertionDetail::new("fixture", "observation-stop")],
+                        "campaign-observation-fixture",
+                    ),
+                ),
+                ObservableEvent::assertion_state_changed(
+                    self.frontier,
+                    assertion.clone(),
+                    AssertionPhase::Violated,
+                ),
+            ])?
+        } else {
+            self.event_log
+                .append_observable_events([ObservableEvent::guest_marker(
+                    Icount {
+                        retired: self.frontier.ticks,
+                    },
+                    self.node.clone(),
+                    marker,
+                )])?
+        };
         let mut configuration = request.configuration;
         let replay_index = configuration.schedule.len();
         let next_replay_decision = self.replay_target.decisions().get(replay_index);
@@ -122,7 +168,8 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
             event_log_segment_text: append.segment_text,
             event_log_segment_hash: append.segment_hash,
             event_log_offset: append.offset,
-            scheduler_quiescence: None,
+            scheduler_quiescence: matches!(observation, Some(TestObservation::SchedulerQuiescent))
+                .then(SchedulerQuiescence::default),
         })
     }
 
@@ -260,6 +307,9 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
 struct TestLifecycleFactory {
     node: NodeId,
     marker: MarkerId,
+    source_observation: Option<TestObservation>,
+    continuation_observation: Option<TestObservation>,
+    continuation_start_generation: u64,
     offer_choice: bool,
     quantum_nanoseconds: u64,
     next_lifecycle_generation: u64,
@@ -283,6 +333,9 @@ impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
         Ok(TestLifecycle {
             node: self.node.clone(),
             marker: self.marker.clone(),
+            source_observation: self.source_observation.clone(),
+            continuation_observation: self.continuation_observation.clone(),
+            continuation_start_generation: self.continuation_start_generation,
             event_log: EventLog::new(),
             replay_target: start.schedule.clone(),
             choice_required: self.offer_choice,
@@ -300,14 +353,15 @@ impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
 
 /// Runs a deterministic modeled lifecycle through the campaign capture owner.
 ///
-/// The request must name a virtual-time or marker discovery stop and a scenario
-/// with one or more VM nodes. The fixture reaches that boundary deterministically
-/// so the accepted attempt and its capture replay produce identical evidence.
+/// The request must name a supported coordinate, marker, or observation stop
+/// and a scenario with one or more VM nodes. The fixture reaches that boundary
+/// deterministically so the accepted attempt and its capture replay produce
+/// identical evidence.
 ///
 /// # Errors
 ///
-/// Returns an error when the request does not name a supported save boundary or
-/// the guarded campaign cannot complete and authenticate its exact checkpoint.
+/// Returns an error when the request does not name a supported boundary or the
+/// guarded campaign cannot complete and authenticate its exact checkpoint.
 pub fn run_guarded_default_campaign_test_fixture(
     request: GuardedDefaultCampaignRunRequest,
 ) -> Result<GuardedDefaultCampaignRun, Box<dyn Error + Send + Sync>> {
@@ -335,10 +389,14 @@ pub fn run_guarded_default_campaign_test_fixture_with_trace(
             MarkerId::from_name("guarded-campaign-save-fixture-quantum"),
         ),
         StopCondition::NamedBoundary(name) => (1, MarkerId::from_name(name)),
+        StopCondition::Observation(_) => (
+            1,
+            MarkerId::from_name("guarded-campaign-observation-fixture-quantum"),
+        ),
         _ => {
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "the guarded campaign fixture requires a nonzero virtual-time or marker stop",
+                "the guarded campaign fixture requires a nonzero virtual-time, marker, or observation stop",
             )));
         }
     };
@@ -354,11 +412,66 @@ pub fn run_guarded_default_campaign_test_fixture_with_trace(
                 "the guarded campaign fixture requires at least one VM node",
             )
         })?;
+    let observation_for = |condition: Option<&ObservationCondition>| {
+        let Some(condition) = condition else {
+            return Ok(None);
+        };
+        let observation = match condition {
+            ObservationCondition::SchedulerQuiescent => Some(TestObservation::SchedulerQuiescent),
+            ObservationCondition::AssertionViolationTransition(assertion) => Some(
+                TestObservation::AssertionViolation(AssertionId::from_name(assertion)),
+            ),
+            ObservationCondition::AnyAssertionViolationTransition => {
+                let assertion = request
+                    .scenario
+                    .properties()
+                    .assertions()
+                    .first()
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "the guarded campaign fixture requires a declared assertion",
+                        )
+                    })?;
+                Some(TestObservation::AssertionViolation(assertion.id.clone()))
+            }
+            ObservationCondition::SchedulerQuiescentOrExecutionQuanta { .. } => {
+                Some(TestObservation::SchedulerQuiescent)
+            }
+        };
+        Ok::<_, io::Error>(observation)
+    };
+    let (source_observation, continuation_observation, continuation_start_generation) =
+        if let Some(source) = request.resume_source.as_ref() {
+            let source_condition = source
+                .source_observation_proof
+                .as_ref()
+                .map(ObservationStopProof::condition);
+            let continuation_condition = match &source.final_stop {
+                StopCondition::Observation(condition) => Some(condition),
+                _ => None,
+            };
+            (
+                observation_for(source_condition)?,
+                observation_for(continuation_condition)?,
+                2,
+            )
+        } else {
+            let condition = match &request.discovery_stop {
+                StopCondition::Observation(condition) => Some(condition),
+                _ => None,
+            };
+            let observation = observation_for(condition)?;
+            (observation.clone(), observation, u64::MAX)
+        };
     let trace = GuardedDefaultCampaignTestTrace::default();
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TestLifecycleFactory {
             node,
             marker,
+            source_observation,
+            continuation_observation,
+            continuation_start_generation,
             offer_choice,
             quantum_nanoseconds,
             next_lifecycle_generation: 0,
