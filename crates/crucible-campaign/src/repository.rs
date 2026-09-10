@@ -1396,6 +1396,8 @@ mod discovery;
 mod execution;
 mod executor_driver;
 mod fact_references;
+#[cfg(feature = "destructive-recovery-faults")]
+mod fault_injection;
 mod finding;
 mod finding_candidate;
 mod objective;

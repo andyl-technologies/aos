@@ -262,7 +262,12 @@ impl CampaignRepository {
         snapshot: &CampaignSnapshot,
     ) -> Result<ContentId, CampaignRepositoryError> {
         let envelope = ObjectEnvelope::for_snapshot(snapshot)?;
-        self.put_envelope(envelope)
+        let content = self.put_envelope(envelope)?;
+        #[cfg(feature = "destructive-recovery-faults")]
+        super::super::fault_injection::terminate_if_requested(
+            super::super::fault_injection::DestructiveRecoveryFault::DaemonDuringSnapshotPublication,
+        );
+        Ok(content)
     }
 
     pub(in crate::repository) fn put_envelope(

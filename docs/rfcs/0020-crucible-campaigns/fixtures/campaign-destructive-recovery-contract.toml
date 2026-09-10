@@ -98,9 +98,10 @@ id = "kill-daemon-during-snapshot-publication"
 title = "Kill the daemon during snapshot publication"
 failure_class = "campaign-ref-publication"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-required"
+implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.daemon-during-snapshot-publication"
+fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.daemon-during-snapshot-publication {fault_build_command}"
 prior_state = "The complete old snapshot is authenticated and all prospective new snapshot objects are either staged or durable."
@@ -111,7 +112,7 @@ recovery_gap = "No repository-owned daemon restart command is exposed; CMAN-16 r
 observables = ["old snapshot", "new snapshot", "resolved ref", "reachable object closure", "staging inventory"]
 post_recovery_invariant = "The named ref never exposes a mixed or incomplete snapshot and unreachable staging is reclaimable."
 backend_scope = "constrained-host-and-each-targeted-backend"
-prerequisites = ["publication-ledger-conditionality", "publishing-restart-recovery"]
+prerequisites = ["daemon-snapshot-publication-crash", "publication-ledger-conditionality", "publishing-restart-recovery"]
 
 [[injections]]
 id = "reboot-paused-or-hibernating"
@@ -304,6 +305,12 @@ id = "coordinator-pre-observation-commit-crash"
 package = "crucible-campaign"
 source = "crates/crucible-campaign/src/repository/tests/execution/driver.rs"
 selector = "repository::tests::execution::driver::coordinator_fault_before_observation_commit_recovers_exactly_once"
+
+[[prerequisite_tests]]
+id = "daemon-snapshot-publication-crash"
+package = "crucible-campaign"
+source = "crates/crucible-campaign/src/repository/tests/destructive_recovery.rs"
+selector = "repository::tests::destructive_recovery::daemon_fault_during_snapshot_publication_recovers_complete_ref"
 
 [[prerequisite_tests]]
 id = "worker-operational-requeue"
