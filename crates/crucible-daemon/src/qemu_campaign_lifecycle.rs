@@ -772,9 +772,12 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
 
 // crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
 #[cfg_attr(not(test), allow(dead_code))]
-impl<F> QemuFreshExecutionRunner<F, crate::QemuFreshModeledDriver>
+// crucible-lint: allow rust-allow -- a crate-private capability deliberately gates this public runner's private replay method.
+#[allow(private_bounds)]
+impl<F, D> QemuFreshExecutionRunner<F, D>
 where
     F: QemuFreshAttemptLifecycleFactory,
+    D: crate::qemu_campaign_driver::QemuFindingReplayDriver,
 {
     /// Reconstructs and evaluates one exact candidate without publishing an observation.
     // crucible-lint: allow rust-allow -- the existing runner error preserves phase and cleanup diagnostics.
@@ -900,13 +903,11 @@ where
                 ));
             }
         };
-        let evidence = crate::qemu_campaign_driver::build_finding_candidate_boundary_evidence(
-            pending,
-            candidate,
-            final_events,
-        )
-        .map_err(AttemptWorkerFailure::Terminal)
-        .map_err(map_fresh_driver_failure)?;
+        let evidence = self
+            .driver
+            .build_finding_candidate_boundary_evidence(pending, candidate, final_events)
+            .map_err(AttemptWorkerFailure::Terminal)
+            .map_err(map_fresh_driver_failure)?;
         let evidence = match expected_replay {
             Some(expected) => evidence.compare_against_expected_replay(expected),
             None => evidence,

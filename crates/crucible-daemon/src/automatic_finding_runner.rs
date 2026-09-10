@@ -26,7 +26,7 @@ use crate::{
     AttemptExecutionReconciliationStep, AttemptWorkerFailure, AutomaticFindingPreparationError,
     AutomaticFindingReplayOutcome, CrucibleArtifactError, CrucibleAttemptExecution,
     CrucibleExecutionOutcome, CrucibleExecutionRunner, FindingReplayIncompatibility,
-    QemuFreshExecutionRunner, QemuFreshModeledDriver, encode_crucible_configuration_artifact,
+    QemuFreshExecutionRunner, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact,
     prepare_automatic_signature_preserving_finding_with_outcomes,
 };
@@ -125,11 +125,15 @@ pub enum AutomaticFindingDeterminismProbeDisposition {
     Incomplete,
 }
 
-impl<F> private::Sealed for QemuFreshExecutionRunner<F, QemuFreshModeledDriver> {}
+impl<F, D> private::Sealed for QemuFreshExecutionRunner<F, D> where
+    D: crate::qemu_campaign_driver::QemuFindingReplayDriver
+{
+}
 
-impl<F> PrivateFindingReplayRunner for QemuFreshExecutionRunner<F, QemuFreshModeledDriver>
+impl<F, D> PrivateFindingReplayRunner for QemuFreshExecutionRunner<F, D>
 where
     F: crate::QemuFreshAttemptLifecycleFactory,
+    D: crate::qemu_campaign_driver::QemuFindingReplayDriver,
 {
     fn probe_finding_candidate_determinism(
         &mut self,
