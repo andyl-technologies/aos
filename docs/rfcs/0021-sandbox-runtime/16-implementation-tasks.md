@@ -6771,6 +6771,48 @@ broker capability has been accepted. The narrow independently authenticated
 inspection runtime and its enforcing MAC policy remain unimplemented. Apply
 remains unadvertised and no Network task checkbox is closed.
 
+### Authenticated Network preparation execution and finalization (source-qualified)
+
+Commit `a333267721a065873ecbb1f336a17974fa3b70d4` connects the authenticated
+one-shot preparation worker to the durable operation and namespace catalogs
+without advertising Network Apply. The broker consumes the sole move-only
+effect permit only after durably advancing the exact request from `Prepared` to
+`Ambiguous`. The executor then authenticates the fixed systemd worker exchange,
+binds the resulting namespace and canonical kernel-plan digest into the
+operation journal, and requires exact systemd descriptor-store custody before
+accepting the effect result. A successful result is not released until the
+complete worker cgroup is observed quiescent.
+
+Finalization subjects the retained namespace to two independent complete
+kernel observations. Both snapshots must match the canonical plan and each
+other before the broker constructs a verified result. The broker durably
+commits that result before publishing the fixed namespace pin and authoritative
+namespace-catalog row. A crash after `Ambiguous` can recover only a read-only
+observation token bound to the original request, effect, boot, namespace, and
+plan; it cannot reconstruct worker-dispatch authority. A crash after the
+durable commit resumes only fixed-pin and catalog publication, whose exact
+result replays after both catalogs reopen.
+
+The combined source on parent
+`04ce194eeba39d4c85929405efeb68e3a9fada21` passed all 275 Network library
+tests after this commit candidate was applied. The eight focused finalization
+tests cover every observe/commit/publish boundary, first-versus-second snapshot
+mismatch, ambiguity before custody, observation-only restart, committed
+publication recovery, exact replay after reopen, and fixed-pin inode
+substitution. A separate regression proves that failed whole-cgroup quiescence
+releases no prepared worker output. Offline all-target compilation also passed
+for `aos-sandbox-network` and the real-systemd custody fixture. The retained
+library test executable had SHA-256
+`7b5ad7eb3797e792395fcab8f6a2f8cac4033805b137c16ab89b61aa9b3628f9`.
+
+These are source-level checks, not finalization-specific Nix or VM
+qualification. The deployed nondumpable-worker namespace-retention conflict
+described above remains unresolved. Public Apply remains unadvertised, and
+production lifecycle-effect execution and teardown, controller and Guardian
+composition, enforcing MAC, and end-to-end VM qualification remain open. This
+advances `SBX-NET-01` and `SBX-RT-03` without closing either checkbox or any
+other task.
+
 ### Per-assignment Guardian authority and timer foundation (partial)
 
 Commit `fefe8993f` records the first isolated Guardian foundation. The portable
