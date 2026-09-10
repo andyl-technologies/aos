@@ -371,7 +371,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.attempt-state-record",
-            "11",
+            "13",
             "operational-record",
         ),
         (
@@ -403,20 +403,22 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(hot_fallback[1], "1");
     assert_eq!(hot_fallback[2], "crucible-daemon::hot_checkpoint_retention");
     assert_eq!(hot_fallback[3], "operational-record");
-    for (schema, owner) in [
+    for (schema, version, owner) in [
         (
             "crucible.executor.prepared-semantic-attempt-result",
+            "6",
             "crucible-daemon::crucible_artifact::prepared_result",
         ),
         (
             "crucible.executor.prepared-result-journal-state",
+            "2",
             "crucible-daemon::prepared_result_journal",
         ),
     ] {
         let record = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing prepared-result schema {schema}"));
-        assert_eq!(record[1], "2");
+        assert_eq!(record[1], version);
         assert_eq!(record[2], owner);
         assert_eq!(record[3], "operational-record");
     }
@@ -471,6 +473,15 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[2], owner);
         assert_eq!(record[3], kind);
     }
+    let replay_capture = rows
+        .get("crucible.executor.finding-replay-capture-manifest")
+        .unwrap_or_else(|| panic!("missing finding replay capture manifest schema"));
+    assert_eq!(replay_capture[1], "1");
+    assert_eq!(
+        replay_capture[2],
+        "crucible-daemon::finding_replay_capture_store"
+    );
+    assert_eq!(replay_capture[3], "exact-manifest");
     let loopback = rows
         .get("crucible.executor.loopback-frame")
         .unwrap_or_else(|| panic!("missing executor loopback frame schema"));
