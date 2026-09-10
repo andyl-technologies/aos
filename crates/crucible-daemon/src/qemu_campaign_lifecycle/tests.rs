@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex};
 
 use crucible::model::{BindingSearchChoice, SearchChoiceId};
 use crucible::{
-    AppRandomDecision, AppRandomSelectable, Checkpoint, CheckpointKind, Configuration, Decision,
-    EventLog, Icount, NodeId, NodeTemplate, Plan, Properties, ReadyPoint, RngDecision, RngStreamId,
-    ScenarioDef, ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables,
+    AppRandomDecision, AppRandomSelectable, AssertionDef, AssertionId, AssertionPhase, Checkpoint,
+    CheckpointKind, Configuration, Decision, EventLog, Icount, NodeId, NodeTemplate, Plan,
+    Predicate, Properties, Property, ReadyPoint, RngDecision, RngStreamId, ScenarioDef,
+    ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SearchFrontierChoices,
     SearchRuntimeFrontier, Seed, SelectionDecision, SignalFaultSelectable, VirtualTime,
     WhiteBoxPolicy, World, WorldNode, step,
@@ -28,7 +29,7 @@ use crucible_campaign::{
     Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, AttemptStartMode,
     BooleanDomain, BranchPath, BranchPathSegment, CampaignFactId, CampaignHash, CampaignLineage,
     CampaignRepository, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
-    ConfigurationArtifact, ConfigurationId, ExecutionId, ExecutionRetentionIntent,
+    ConfigurationArtifact, ConfigurationId, ExecutionId, ExecutionRetentionIntent, PropertyVerdict,
     ScenarioArtifact, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
     SelectionReplayMismatchKind, StopCondition,
 };
@@ -982,6 +983,8 @@ struct BoundaryCaptureLifecycle {
     event_log: EventLog,
     events: Vec<SchedulerEventLogEntry>,
     captured: Arc<Mutex<Vec<CapturedBoundary>>>,
+    final_events: Vec<SchedulerEventLogEntry>,
+    replay_decisions: VecDeque<Decision>,
 }
 
 impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
@@ -1008,8 +1011,14 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
         )?;
         self.quanta += 1;
         self.events.extend(append.entries.iter().cloned());
+        let configuration = self
+            .replay_decisions
+            .pop_front()
+            .map_or(request.configuration.clone(), |decision| {
+                step(&request.configuration, decision)
+            });
         Ok(crucible::QuantumOutcome {
-            configuration: request.configuration,
+            configuration,
             frontier: at,
             advanced_node: None,
             resolved_events: Vec::new(),
@@ -1116,12 +1125,14 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, crucible::SchedulerError> {
-        Ok(Vec::new())
+        Ok(std::mem::take(&mut self.final_events))
     }
 }
 
 struct BoundaryCaptureLifecycleFactory {
     captured: Arc<Mutex<Vec<CapturedBoundary>>>,
+    final_events: Vec<SchedulerEventLogEntry>,
+    replay_decisions: VecDeque<Decision>,
 }
 
 impl QemuFreshAttemptLifecycleFactory for BoundaryCaptureLifecycleFactory {
@@ -1142,6 +1153,8 @@ impl QemuFreshAttemptLifecycleFactory for BoundaryCaptureLifecycleFactory {
             event_log: EventLog::new(),
             events: Vec::new(),
             captured: Arc::clone(&self.captured),
+            final_events: self.final_events.clone(),
+            replay_decisions: self.replay_decisions.clone(),
         })
     }
 }
@@ -1873,7 +1886,11 @@ fn savepoint_captures_same_start_at_q100_and_q200_as_distinct_physical_prefixes(
         ))
         .expect("capture request ID");
         let mut runner = QemuFreshExecutionRunner::new(
-            BoundaryCaptureLifecycleFactory { captured },
+            BoundaryCaptureLifecycleFactory {
+                captured,
+                final_events: Vec::new(),
+                replay_decisions: VecDeque::new(),
+            },
             QemuFreshModeledDriver::new(),
         );
         let checkpoint_directory = tempfile::tempdir().expect("savepoint checkpoint directory");
@@ -2391,6 +2408,8 @@ fn terminal_evidence_runner_attaches_the_fresh_terminal_world_set_after_shutdown
     let input = modeled_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(1));
     let factory = BoundaryCaptureLifecycleFactory {
         captured: Arc::new(Mutex::new(Vec::new())),
+        final_events: Vec::new(),
+        replay_decisions: VecDeque::new(),
     };
     let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver::new());
@@ -2429,6 +2448,251 @@ fn terminal_evidence_runner_attaches_the_fresh_terminal_world_set_after_shutdown
     );
 }
 
+fn finding_candidate_artifact(input: &CrucibleAttemptExecution) -> ConfigurationArtifact {
+    let scenario = crate::encode_crucible_scenario_artifact(input.scenario())
+        .expect("candidate scenario artifact");
+    crate::encode_crucible_configuration_artifact(
+        &scenario,
+        &input.start().configuration().schedule,
+    )
+    .expect("candidate configuration artifact")
+}
+
+#[test]
+fn finding_candidate_replay_evaluates_the_exact_materialized_boundary() {
+    let input = modeled_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(4));
+    let candidate = finding_candidate_artifact(&input);
+    let mut runner = QemuFreshExecutionRunner::new(
+        BoundaryCaptureLifecycleFactory {
+            captured: Arc::new(Mutex::new(Vec::new())),
+            final_events: Vec::new(),
+            replay_decisions: VecDeque::new(),
+        },
+        QemuFreshModeledDriver::new(),
+    );
+
+    let outcome = runner
+        .replay_finding_candidate_boundary(&input, &candidate, &fresh_runner_context())
+        .expect("candidate boundary replay");
+    let QemuFindingCandidateReplayOutcome::Observed(evidence) = outcome else {
+        panic!("genesis candidate must be observable")
+    };
+
+    assert_eq!(evidence.replay().configuration(), &candidate);
+    assert_eq!(evidence.measurement_replay_evidence().len(), 1);
+    assert!(evidence.final_events().is_empty());
+    let (replay, measurements, final_events) = (*evidence).into_parts();
+    assert_eq!(replay.configuration(), &candidate);
+    assert_eq!(measurements.len(), 1);
+    assert!(final_events.is_empty());
+}
+
+#[test]
+fn finding_candidate_replay_stops_after_reaching_a_nonempty_schedule() {
+    let input = modeled_non_genesis_fresh_runner_input();
+    let candidate = finding_candidate_artifact(&input);
+    let context = fresh_runner_context();
+    let mut runner = QemuFreshExecutionRunner::new(
+        BoundaryCaptureLifecycleFactory {
+            captured: Arc::new(Mutex::new(Vec::new())),
+            final_events: Vec::new(),
+            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+                value: 7,
+            })]),
+        },
+        QemuFreshModeledDriver::new(),
+    );
+
+    let outcome = runner
+        .replay_finding_candidate_boundary(&input, &candidate, &context)
+        .expect("nonempty candidate replay");
+    let QemuFindingCandidateReplayOutcome::Observed(evidence) = outcome else {
+        panic!("matching nonempty candidate must be observable")
+    };
+
+    assert_eq!(evidence.replay().configuration(), &candidate);
+    assert_eq!(
+        context.consumed_execution_quanta(),
+        1,
+        "candidate evaluation must not run a continuation quantum"
+    );
+}
+
+#[test]
+fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
+    let assertion = AssertionId::from_name("candidate-safety");
+
+    for (predicate_at, expected) in [(1, PropertyVerdict::Passed), (2, PropertyVerdict::Failed)] {
+        let input = modeled_assertion_candidate_input(assertion.clone(), predicate_at);
+        let candidate = finding_candidate_artifact(&input);
+        let final_event = SchedulerEventLogEntry::assertion_state_observation(
+            0,
+            VirtualTime { ticks: 1 },
+            assertion.clone(),
+            AssertionPhase::Satisfied,
+        );
+        let mut runner = QemuFreshExecutionRunner::new(
+            BoundaryCaptureLifecycleFactory {
+                captured: Arc::new(Mutex::new(Vec::new())),
+                final_events: vec![final_event],
+                replay_decisions: VecDeque::new(),
+            },
+            QemuFreshModeledDriver::new(),
+        );
+
+        let outcome = runner
+            .replay_finding_candidate_boundary(&input, &candidate, &fresh_runner_context())
+            .expect("candidate assertion replay");
+        let QemuFindingCandidateReplayOutcome::Observed(evidence) = outcome else {
+            panic!("materializable candidate must produce semantic evidence")
+        };
+        let actual = evidence
+            .property_verdicts()
+            .properties()
+            .get(assertion.name.as_str())
+            .expect("candidate assertion verdict")
+            .verdict();
+
+        assert_eq!(actual, expected);
+        assert_eq!(evidence.final_events().len(), 1);
+    }
+}
+
+#[test]
+fn finding_candidate_replay_reports_prefix_divergence_after_cleanup() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+        value: 8,
+    }));
+    let candidate = finding_candidate_artifact(&input);
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: false,
+            checkpoint_ready: true,
+        },
+        QemuFreshModeledDriver::new(),
+    );
+
+    let outcome = runner
+        .replay_finding_candidate_boundary(&input, &candidate, &fresh_runner_context())
+        .expect("incompatible replay is a modeled outcome");
+
+    assert_eq!(
+        outcome,
+        QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
+            QemuFindingCandidateIncompatibility::PrefixDiverged,
+        )
+    );
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "shutdown"]
+    );
+}
+
+#[test]
+fn finding_candidate_replay_reports_terminal_prefix_after_cleanup() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let decision = Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+        value: 7,
+    });
+    let input = non_genesis_fresh_runner_input_with_decisions(vec![decision.clone(), decision]);
+    let candidate = finding_candidate_artifact(&input);
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: true,
+            checkpoint_ready: true,
+        },
+        QemuFreshModeledDriver::new(),
+    );
+
+    let outcome = runner
+        .replay_finding_candidate_boundary(&input, &candidate, &fresh_runner_context())
+        .expect("terminal prefix is a modeled incompatibility");
+
+    assert_eq!(
+        outcome,
+        QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
+            QemuFindingCandidateIncompatibility::PrefixTerminated,
+        )
+    );
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "shutdown"]
+    );
+}
+
+#[test]
+fn finding_candidate_replay_preserves_cleanup_failure_over_incompatibility() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+        value: 8,
+    }));
+    let candidate = finding_candidate_artifact(&input);
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: true,
+            terminal_after_replay: false,
+            checkpoint_ready: true,
+        },
+        QemuFreshModeledDriver::new(),
+    );
+
+    let error = runner
+        .replay_finding_candidate_boundary(&input, &candidate, &fresh_runner_context())
+        .expect_err("cleanup failure overrides deterministic incompatibility");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CleanupAfterRunner { .. })
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "shutdown"]
+    );
+}
+
+#[test]
+fn finding_candidate_replay_shares_cancellation_and_still_cleans_up() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let input = non_genesis_fresh_runner_input();
+    let candidate = finding_candidate_artifact(&input);
+    let cancellation = ExecutionCancellation::default();
+    cancellation.cancel_for_test();
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: false,
+            checkpoint_ready: true,
+        },
+        QemuFreshModeledDriver::new(),
+    );
+
+    let error = runner
+        .replay_finding_candidate_boundary(&input, &candidate, &context(resources(4), cancellation))
+        .expect_err("canceled candidate replay remains operational failure");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::StartReplay(
+            QemuFreshStartReplayError::Canceled
+        ))
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "shutdown"]
+    );
+}
+
 struct PreparedSemanticResultRunner {
     result: Option<PreparedSemanticAttemptResult>,
 }
@@ -2458,6 +2722,8 @@ fn terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_res
     let captured = Arc::new(Mutex::new(Vec::new()));
     let factory = BoundaryCaptureLifecycleFactory {
         captured: Arc::clone(&captured),
+        final_events: Vec::new(),
+        replay_decisions: VecDeque::new(),
     };
     let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver::new());
@@ -2477,7 +2743,11 @@ fn terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_res
     )
     .expect("next prepared result without terminal evidence");
     let resetting_factory = QemuObservedFreshAttemptLifecycleFactory::with_shared_evidence(
-        BoundaryCaptureLifecycleFactory { captured },
+        BoundaryCaptureLifecycleFactory {
+            captured,
+            final_events: Vec::new(),
+            replay_decisions: VecDeque::new(),
+        },
         evidence.clone(),
     );
     resetting_factory
@@ -2880,6 +3150,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         );
     let execution_context =
         fresh_runner_context().with_guest_selectable_boundary_diagnostics(diagnostics);
+    let mut materialization = QemuFreshStartMaterialization::genesis();
     apply_replayed_guest_selectables::<(), ()>(
         &mut lifecycle,
         &execution_context,
@@ -2893,6 +3164,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         &source,
         &target,
         &mut current,
+        &mut materialization,
     )
     .expect("exact guest branch replay");
 
@@ -2940,6 +3212,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         fingerprint_node_override: Arc::new(Mutex::new(None)),
     };
     let mut drift_current = parent.clone();
+    let mut drift_materialization = QemuFreshStartMaterialization::genesis();
 
     let failure = apply_replayed_guest_selectables::<std::io::Error, std::io::Error>(
         &mut drift_lifecycle,
@@ -2954,6 +3227,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         &source,
         &target,
         &mut drift_current,
+        &mut drift_materialization,
     )
     .expect_err("drifted runtime opportunity must fail replay");
 
@@ -2963,6 +3237,10 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
     else {
         panic!("replay mismatch must retain its typed production error chain")
     };
+    assert_eq!(
+        finding_candidate_incompatibility(&failure),
+        Some(QemuFindingCandidateIncompatibility::SelectionMismatch)
+    );
     assert_eq!(
         mismatch.mismatch().kind(),
         SelectionReplayMismatchKind::OpportunityIdentity
@@ -3560,6 +3838,43 @@ fn modeled_fresh_runner_input_for_stop(stop: StopCondition) -> CrucibleAttemptEx
     let scenario = crucible::crash_restart_scenario()
         .expect("built-in scenario")
         .scenario;
+    modeled_fresh_runner_input_for_scenario(scenario, stop)
+}
+
+fn modeled_assertion_candidate_input(
+    assertion: AssertionId,
+    predicate_at: u64,
+) -> CrucibleAttemptExecution {
+    let world = World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty World");
+    let properties = Properties::from_assertions_for_world(
+        &world,
+        vec![AssertionDef {
+            id: assertion,
+            message: String::from("candidate safety failed"),
+            property: Property::Always {
+                predicate: Predicate::At {
+                    at: VirtualTime {
+                        ticks: predicate_at,
+                    },
+                },
+            },
+        }],
+    )
+    .expect("candidate properties");
+    let scenario = ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &properties,
+        Seed::from_u64(0x51a7_5afe),
+    )
+    .expect("candidate assertion scenario");
+    modeled_fresh_runner_input_for_scenario(scenario, StopCondition::Terminal)
+}
+
+fn modeled_fresh_runner_input_for_scenario(
+    scenario: ScenarioDefForm,
+    stop: StopCondition,
+) -> CrucibleAttemptExecution {
     let definition = scenario.scenario_def();
     let scenario_artifact =
         crate::encode_crucible_scenario_artifact(&scenario).expect("encoded scenario artifact");
@@ -3744,6 +4059,42 @@ fn non_genesis_fresh_runner_input() -> CrucibleAttemptExecution {
         stream: RngStreamId::from_name("fresh-runner-non-genesis"),
         value: 7,
     }))
+}
+
+fn modeled_non_genesis_fresh_runner_input() -> CrucibleAttemptExecution {
+    let base = modeled_fresh_runner_input_for_stop(StopCondition::Terminal);
+    let scenario = base.scenario().clone();
+    let configuration = step(
+        &Configuration::genesis(scenario.scenario_def()),
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+            value: 7,
+        }),
+    );
+    let scenario_artifact =
+        crate::encode_crucible_scenario_artifact(&scenario).expect("modeled scenario artifact");
+    let configuration_artifact =
+        crate::encode_crucible_configuration_artifact(&scenario_artifact, &configuration.schedule)
+            .expect("modeled non-genesis configuration artifact");
+    let path = BranchPath::new(Vec::new()).expect("genesis branch path");
+    let attempt = Attempt::new(
+        AttemptStart::Discover {
+            configuration: configuration_artifact
+                .id()
+                .expect("modeled non-genesis artifact ID"),
+        },
+        path.id().expect("branch path ID"),
+        StopCondition::Terminal,
+    )
+    .expect("modeled non-genesis attempt");
+
+    CrucibleAttemptExecution::from_test_parts(
+        base.lineage().clone(),
+        scenario,
+        attempt,
+        path,
+        CrucibleResolvedAttemptStart::Discover { configuration },
+    )
 }
 
 fn non_genesis_fresh_runner_input_with_decision(decision: Decision) -> CrucibleAttemptExecution {

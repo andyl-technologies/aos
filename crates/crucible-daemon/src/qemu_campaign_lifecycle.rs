@@ -23,13 +23,14 @@ use crucible_api::{
     build_production_vm_lifecycle_loop_with_launcher,
 };
 use crucible_campaign::{
-    AttemptContinuationInput, AttemptStartMode, CampaignHash, ConfigurationId, ExactCheckpointId,
-    SelectionOrigin, StopCondition,
+    AttemptContinuationInput, AttemptStartMode, CampaignHash, ChoiceDiscovery, ChoiceOpportunityId,
+    ConfigurationArtifact, ConfigurationId, ExactCheckpointId, MAX_OBSERVATION_CHOICE_DISCOVERIES,
+    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, SelectionOrigin, StopCondition,
 };
 use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuVmRealizationError};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::guest_selectable::{
@@ -49,7 +50,8 @@ use crate::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
     QemuAttemptStartReplayProof, QemuAttemptStartVerifier, QemuSavepointReplayProof,
-    QemuSelectedOriginVerifier, install_attempt_production_resume_checkpoint,
+    QemuSelectedOriginVerifier, encode_crucible_configuration_artifact,
+    encode_crucible_scenario_artifact, install_attempt_production_resume_checkpoint,
 };
 
 mod app_random_branch_replay;
@@ -683,6 +685,25 @@ pub struct QemuFreshExecutionRunner<F, D> {
     driver: D,
 }
 
+/// Stable reasons an exact finding candidate cannot be reconstructed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum QemuFindingCandidateIncompatibility {
+    PrefixDiverged,
+    PrefixTerminated,
+    SelectionMismatch,
+}
+
+/// Result of one private exact finding-candidate replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum QemuFindingCandidateReplayOutcome {
+    Observed(Box<crate::qemu_campaign_driver::QemuFindingCandidateBoundaryEvidence>),
+    DeterministicallyIncompatible(QemuFindingCandidateIncompatibility),
+}
+
 impl<F, D> QemuFreshExecutionRunner<F, D> {
     /// Creates a genesis-start runner from its guarded lifecycle factory and modeled driver.
     #[must_use]
@@ -721,6 +742,168 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
     }
 }
 
+// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
+#[cfg_attr(not(test), allow(dead_code))]
+impl<F> QemuFreshExecutionRunner<F, crate::QemuFreshModeledDriver>
+where
+    F: QemuFreshAttemptLifecycleFactory,
+{
+    /// Reconstructs and evaluates one exact candidate without publishing an observation.
+    // crucible-lint: allow rust-allow -- the existing runner error preserves phase and cleanup diagnostics.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn replay_finding_candidate_boundary(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        candidate: &ConfigurationArtifact,
+        context: &AttemptExecutionContext,
+    ) -> Result<
+        QemuFindingCandidateReplayOutcome,
+        AttemptWorkerFailure<
+            QemuFreshExecutionRunnerError<F::Error, crate::QemuFreshModeledDriverError>,
+        >,
+    > {
+        let continuation = validated_attempt_continuation(input).map_err(|()| {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
+        })?;
+        if !self.lifecycles.configure_attempt_continuation(continuation) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
+            ));
+        }
+        if let Some(checkpoint) = context.resume_checkpoint() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::ResumeCheckpointUnsupported(checkpoint),
+            ));
+        }
+
+        let scenario = input.scenario().scenario_def();
+        let CrucibleResolvedAttemptStart::Discover {
+            configuration: target,
+        } = input.start()
+        else {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::FindingCandidateStartUnsupported,
+            ));
+        };
+        let signal_fault_replay = input.signal_fault_replay();
+        let scenario_artifact = encode_crucible_scenario_artifact(input.scenario())
+            .map_err(crate::QemuFreshModeledDriverError::Artifact)
+            .map_err(AttemptWorkerFailure::Terminal)
+            .map_err(map_fresh_driver_failure)?;
+        let encoded_candidate =
+            encode_crucible_configuration_artifact(&scenario_artifact, &target.schedule)
+                .map_err(crate::QemuFreshModeledDriverError::Artifact)
+                .map_err(AttemptWorkerFailure::Terminal)
+                .map_err(map_fresh_driver_failure)?;
+        if encoded_candidate != *candidate {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::Driver(
+                    crate::QemuFreshModeledDriverError::Artifact(
+                        crate::CrucibleArtifactError::SemanticIdentityMismatch {
+                            artifact: "finding replay candidate configuration",
+                        },
+                    ),
+                ),
+            ));
+        }
+        if let Some(decision) = unsupported_fresh_replay_decision(target, signal_fault_replay) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartDecisionUnsupported {
+                    configuration: target.id(),
+                    decision,
+                },
+            ));
+        }
+
+        let mut lifecycle = self
+            .lifecycles
+            .start_fresh_lifecycle(
+                &scenario,
+                input.scenario(),
+                target,
+                signal_fault_replay,
+                context,
+            )
+            .map_err(map_fresh_lifecycle_failure)?;
+        let materialization = materialize_fresh_start(&mut lifecycle, input, target, context, true)
+            .and_then(|materialization| {
+                replay_selected_origins(&mut lifecycle, input, context, materialization)
+            });
+
+        let pending = materialization.and_then(|materialization| {
+            crate::qemu_campaign_driver::finding_candidate_boundary_pending(
+                input,
+                target.clone(),
+                materialization,
+            )
+            .map_err(AttemptWorkerFailure::Terminal)
+            .map_err(map_fresh_driver_failure)
+        });
+        let pending = pending.and_then(|pending| {
+            lifecycle
+                .prepare_terminal_fingerprints()
+                .map(|()| pending)
+                .map_err(map_terminal_fingerprint_capture_failure)
+        });
+        let cleanup = lifecycle.shutdown();
+
+        let (pending, final_events) = match (pending, cleanup) {
+            (Ok(pending), Ok(events)) => (pending, events),
+            (Err(failure), Ok(_)) => {
+                if let Some(reason) = finding_candidate_incompatibility(&failure) {
+                    return Ok(
+                        QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(reason),
+                    );
+                }
+                return Err(failure);
+            }
+            (Ok(_), Err(cleanup)) => {
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuFreshExecutionRunnerError::Cleanup(cleanup),
+                ));
+            }
+            (Err(failure), Err(cleanup)) => {
+                return Err(AttemptWorkerFailure::Terminal(
+                    cleanup_after_fresh_runner_failure(failure, cleanup),
+                ));
+            }
+        };
+        let evidence = crate::qemu_campaign_driver::build_finding_candidate_boundary_evidence(
+            pending,
+            candidate,
+            final_events,
+        )
+        .map_err(AttemptWorkerFailure::Terminal)
+        .map_err(map_fresh_driver_failure)?;
+        Ok(QemuFindingCandidateReplayOutcome::Observed(Box::new(
+            evidence,
+        )))
+    }
+}
+
+// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
+#[cfg_attr(not(test), allow(dead_code))]
+fn finding_candidate_incompatibility<F, D>(
+    failure: &AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
+) -> Option<QemuFindingCandidateIncompatibility> {
+    let AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(error)) = failure
+    else {
+        return None;
+    };
+    match error {
+        QemuFreshStartReplayError::Diverged => {
+            Some(QemuFindingCandidateIncompatibility::PrefixDiverged)
+        }
+        QemuFreshStartReplayError::Terminated => {
+            Some(QemuFindingCandidateIncompatibility::PrefixTerminated)
+        }
+        QemuFreshStartReplayError::GuestSelectable(GuestSelectableError::ReplayMismatch(_)) => {
+            Some(QemuFindingCandidateIncompatibility::SelectionMismatch)
+        }
+        _ => None,
+    }
+}
+
 /// Failure from one phase of [`QemuFreshExecutionRunner`].
 #[derive(Debug, Error)]
 pub enum QemuFreshExecutionRunnerError<F, D> {
@@ -733,6 +916,9 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// The fresh runner was asked to execute a durable resume incarnation.
     #[error("fresh production QEMU runner cannot resume exact checkpoint `{0}`")]
     ResumeCheckpointUnsupported(ExactCheckpointId),
+    /// Private finding replay received a branch edge or selected continuation input.
+    #[error("finding candidate replay requires a resolved discovery start")]
+    FindingCandidateStartUnsupported,
     /// The target contains a producer-owned override with no live injection path.
     #[error(
         "fresh production QEMU runner cannot inject decision {decision} of configuration `{configuration:?}`"
@@ -804,6 +990,9 @@ pub struct QemuFreshStartMaterialization {
     terminal_quiescence: Option<SchedulerQuiescence>,
     terminal_verdict: Option<QuantumTerminalVerdict>,
     attempt_event_count: usize,
+    replayed_discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
+    replayed_discovery_bytes: usize,
+    retain_replayed_discoveries: bool,
 }
 
 impl QemuFreshStartMaterialization {
@@ -822,6 +1011,9 @@ impl QemuFreshStartMaterialization {
             terminal_quiescence: None,
             terminal_verdict: None,
             attempt_event_count: 0,
+            replayed_discoveries: BTreeMap::new(),
+            replayed_discovery_bytes: 0,
+            retain_replayed_discoveries: false,
         }
     }
 
@@ -832,6 +1024,49 @@ impl QemuFreshStartMaterialization {
     pub(crate) const fn with_attempt_event_count(mut self, event_count: usize) -> Self {
         self.attempt_event_count = event_count;
         self
+    }
+
+    fn retain_replayed_discovery(
+        &mut self,
+        discovery: ChoiceDiscovery,
+    ) -> Result<(), GuestSelectableError> {
+        if !self.retain_replayed_discoveries {
+            return Ok(());
+        }
+        let opportunity = discovery.opportunity().id()?;
+        if let Some(existing) = self.replayed_discoveries.get(&opportunity) {
+            if existing.opportunity() == discovery.opportunity() {
+                return Ok(());
+            }
+            return Err(GuestSelectableError::Campaign(
+                crucible_campaign::CampaignCodecError::InvalidValue {
+                    reason: "replayed guest selectable changed an existing opportunity",
+                },
+            ));
+        }
+        if self.replayed_discoveries.len() == MAX_OBSERVATION_CHOICE_DISCOVERIES {
+            return Err(GuestSelectableError::Campaign(
+                crucible_campaign::CampaignCodecError::LimitExceeded {
+                    limit: "finding-replay-choice-discovery-count",
+                },
+            ));
+        }
+        let bytes = discovery
+            .declaration()
+            .canonical_bytes()
+            .len()
+            .checked_add(discovery.domain().canonical_bytes().len())
+            .and_then(|bytes| bytes.checked_add(discovery.opportunity().canonical_bytes().len()))
+            .and_then(|bytes| self.replayed_discovery_bytes.checked_add(bytes))
+            .filter(|bytes| *bytes <= MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES)
+            .ok_or(GuestSelectableError::Campaign(
+                crucible_campaign::CampaignCodecError::LimitExceeded {
+                    limit: "finding-replay-choice-discovery-bytes",
+                },
+            ))?;
+        self.replayed_discovery_bytes = bytes;
+        self.replayed_discoveries.insert(opportunity, discovery);
+        Ok(())
     }
 
     /// Consumes the materialization into cumulative replay evidence and state.
@@ -861,6 +1096,32 @@ impl QemuFreshStartMaterialization {
         )
     }
 
+    // crucible-lint: allow rust-allow -- the tuple mirrors the existing modeled-parts boundary plus discoveries.
+    #[allow(clippy::type_complexity)]
+    // crucible-lint: allow rust-allow -- consumed by private finding-candidate replay in the composed change.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn into_candidate_parts(
+        self,
+    ) -> (
+        Vec<SchedulerEventLogEntry>,
+        usize,
+        u64,
+        crucible::VirtualTime,
+        Option<SchedulerQuiescence>,
+        Option<QuantumTerminalVerdict>,
+        BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
+    ) {
+        (
+            self.event_log,
+            self.event_log_bytes,
+            self.completed_quanta,
+            self.frontier,
+            self.terminal_quiescence,
+            self.terminal_verdict,
+            self.replayed_discoveries,
+        )
+    }
+
     pub(crate) fn from_resume_parts(
         restored_configuration: Configuration,
         event_log: Vec<SchedulerEventLogEntry>,
@@ -879,6 +1140,9 @@ impl QemuFreshStartMaterialization {
             terminal_quiescence: Some(terminal_quiescence),
             terminal_verdict,
             attempt_event_count: 0,
+            replayed_discoveries: BTreeMap::new(),
+            replayed_discovery_bytes: 0,
+            retain_replayed_discoveries: false,
         }
     }
 
@@ -899,6 +1163,9 @@ impl QemuFreshStartMaterialization {
             terminal_quiescence,
             terminal_verdict: None,
             attempt_event_count: 0,
+            replayed_discoveries: BTreeMap::new(),
+            replayed_discovery_bytes: 0,
+            retain_replayed_discoveries: false,
         }
     }
 
@@ -948,6 +1215,9 @@ impl QemuFreshStartMaterialization {
             terminal_quiescence,
             terminal_verdict,
             attempt_event_count: 0,
+            replayed_discoveries: BTreeMap::new(),
+            replayed_discovery_bytes: 0,
+            retain_replayed_discoveries: false,
         }
     }
 }
@@ -1666,7 +1936,7 @@ where
                 context,
             )
             .map_err(map_fresh_lifecycle_failure)?;
-        let materialization = materialize_fresh_start(&mut lifecycle, input, start, context)
+        let materialization = materialize_fresh_start(&mut lifecycle, input, start, context, false)
             .and_then(|materialization| {
                 replay_selected_origins(&mut lifecycle, input, context, materialization)
             });
@@ -1872,7 +2142,7 @@ where
                 &replay_context,
             )
             .map_err(map_fresh_lifecycle_failure)?;
-        let replay = materialize_fresh_start(&mut lifecycle, input, start, &replay_context)
+        let replay = materialize_fresh_start(&mut lifecycle, input, start, &replay_context, false)
             .and_then(|materialization| {
                 materialization.attempt_start_proof(start).map_err(|error| {
                     AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
@@ -1945,7 +2215,7 @@ where
                 &replay_context,
             )
             .map_err(map_fresh_lifecycle_failure)?;
-        let replay = materialize_fresh_start(&mut lifecycle, input, start, &replay_context)
+        let replay = materialize_fresh_start(&mut lifecycle, input, start, &replay_context, false)
             .and_then(|materialization| {
                 replay_selected_origins(&mut lifecycle, input, &replay_context, materialization)
             })
@@ -2124,6 +2394,7 @@ fn materialize_fresh_start<F, D>(
     input: &CrucibleAttemptExecution,
     target: &Configuration,
     context: &AttemptExecutionContext,
+    retain_replayed_discoveries: bool,
 ) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
 {
     let completed_quanta = lifecycle.completed_quanta();
@@ -2133,7 +2404,10 @@ fn materialize_fresh_start<F, D>(
         Configuration::genesis(target.def.clone()),
         target,
         context,
-        QemuFreshStartMaterialization::at_quanta(completed_quanta),
+        QemuFreshStartMaterialization {
+            retain_replayed_discoveries,
+            ..QemuFreshStartMaterialization::at_quanta(completed_quanta)
+        },
     )
 }
 
@@ -2231,6 +2505,7 @@ pub(crate) fn materialize_start_from<F, D>(
                 input.scenario(),
                 target,
                 &mut next,
+                &mut replay,
             )?
         } else {
             Vec::new()
@@ -2266,6 +2541,7 @@ fn apply_replayed_guest_selectables<F, D>(
     source: &ScenarioDefForm,
     target: &Configuration,
     current: &mut Configuration,
+    materialization: &mut QemuFreshStartMaterialization,
 ) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
 {
     let pending = lifecycle
@@ -2277,6 +2553,9 @@ fn apply_replayed_guest_selectables<F, D>(
         let discovery =
             resolve_guest_selectable(scenario, source, pending.node(), pending.pending())
                 .map_err(start_replay_guest_selectable_failure)?;
+        materialization
+            .retain_replayed_discovery(discovery.clone())
+            .map_err(start_replay_guest_selectable_failure)?;
         let Some(Decision::Selection(decision)) =
             target.schedule.decisions().get(replayed.schedule.len())
         else {
