@@ -136,9 +136,10 @@ id = "enospc-during-exact-capture"
 title = "Exhaust campaign-store space during exact capture"
 failure_class = "storage-capacity"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-required"
+implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.exact-capture-enospc"
+fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.exact-capture-enospc {fault_build_command}"
 prior_state = "The prior campaign ref, finding, and capture source are authenticated before any exact-capture write."
@@ -148,7 +149,7 @@ recovery_commands = ["crucible --format jsonl store status {store_deployment}", 
 observables = ["ENOSPC classification", "prior ref", "finding identity", "staging inventory", "store capacity"]
 post_recovery_invariant = "The prior ref and finding remain valid; no partial exact closure is reachable; staging is reclaimable."
 backend_scope = "constrained-host-and-each-targeted-backend"
-prerequisites = ["exact-capture-cancel-before-write", "failed-source-staging-cleanup"]
+prerequisites = ["exact-capture-enospc-restart", "exact-capture-cancel-before-write", "failed-source-staging-cleanup"]
 
 [[injections]]
 id = "remove-archival-leaf-during-multipart"
@@ -311,6 +312,12 @@ id = "daemon-snapshot-publication-crash"
 package = "crucible-campaign"
 source = "crates/crucible-campaign/src/repository/tests/destructive_recovery.rs"
 selector = "repository::tests::destructive_recovery::daemon_fault_during_snapshot_publication_recovers_complete_ref"
+
+[[prerequisite_tests]]
+id = "exact-capture-enospc-restart"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/exact_checkpoint_store/tests.rs"
+selector = "exact_checkpoint_store::tests::exact_capture_enospc_restart_retries_root_last_publication"
 
 [[prerequisite_tests]]
 id = "worker-operational-requeue"
