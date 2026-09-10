@@ -228,17 +228,17 @@ impl CampaignRecordKind {
         match self {
             Self::Policy => 4,
             Self::Snapshot => 3,
-            Self::Fact => 13,
+            Self::Fact => 14,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
-            Self::BranchRequest => 7,
+            Self::BranchRequest => 9,
             Self::Proposal => 2,
             Self::BranchPath => 2,
-            Self::Attempt => 3,
+            Self::Attempt => 4,
             Self::AttemptAdmission => 2,
             Self::MeasurementSet => 2,
-            Self::Observation => 8,
+            Self::Observation => 12,
             Self::ObjectiveEvaluation | Self::RankingExplanation => 2,
             Self::ReproductionArtifact => 2,
             Self::Finding => 3,
@@ -736,7 +736,7 @@ impl ObjectEnvelope {
                 && matches!(envelope.schema_version(), 1..=3)
             || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
-                && matches!(envelope.schema_version(), 2..=12)
+                && matches!(envelope.schema_version(), 2..=13)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::BranchRequest
                 && matches!(
@@ -746,11 +746,11 @@ impl ObjectEnvelope {
             || record_kind == CampaignRecordKind::Proposal
                 && matches!(envelope.schema_version(), 1..=2)
             || record_kind == CampaignRecordKind::Attempt
-                && matches!(envelope.schema_version(), 1..=2)
+                && matches!(envelope.schema_version(), 1..=3)
             || record_kind == CampaignRecordKind::AttemptAdmission
                 && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::Observation
-                && matches!(envelope.schema_version(), 1..=7)
+                && matches!(envelope.schema_version(), 1..=11)
             || record_kind == CampaignRecordKind::PlannerBeamCandidate
                 && envelope.schema_version() == 1
             || matches!(

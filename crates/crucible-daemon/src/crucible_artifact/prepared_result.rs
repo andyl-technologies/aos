@@ -25,20 +25,26 @@
 //!
 //! Raw-leaf validation here proves structural ownership: exact trace identity,
 //! singleton measurement edge, and scenario, configuration, and definition
-//! bindings. This codec does not possess authenticated scenario measurement
-//! definitions and therefore does not replay the leaf or compare the retained
-//! evaluation payload. Production preparation and recovery must call
+//! bindings. It also authenticates an observation-stop proof against the owned
+//! raw event prefix and terminal evidence. This codec does not possess
+//! authenticated scenario measurement definitions and therefore does not
+//! replay the leaf or compare the retained evaluation payload. Production
+//! preparation and recovery must call
 //! [`crate::verify_crucible_measurement_publication`] for the observation and
 //! every finding replay before any child-first publication.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crucible::ScenarioDefForm;
+use crucible::{
+    AssertionPhase, ObservableEventPayload, ScenarioDefForm, SchedulerEventLogEntry,
+    SchedulerEventLogPayload,
+};
 use crucible_campaign::{
-    CampaignCodecError, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ConfigurationArtifact,
-    CoverageProjection, FindingCandidateBundle, FindingKind, FindingTarget, MeasurementSet,
-    Observation, ObservationCandidate, PropertyVerdict, PropertyVerdictSet, ReproductionArtifact,
-    ScenarioArtifact, SelectableDeclaration, Selection,
+    CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity,
+    ConfigurationArtifact, CoverageProjection, FindingCandidateBundle, FindingKind, FindingTarget,
+    MeasurementSet, Observation, ObservationCandidate, ObservationCondition,
+    ObservationStopSatisfaction, PropertyVerdict, PropertyVerdictSet, ReproductionArtifact,
+    ScenarioArtifact, SelectableDeclaration, Selection, StopOutcome,
 };
 use thiserror::Error;
 
@@ -90,9 +96,9 @@ impl PreparedSemanticAttemptResult {
     /// The leaves are retained in content-identity order, and duplicates are
     /// rejected. The supplied set must exactly cover every Crucible measurement
     /// payload v2 referenced by the observation and both finding replay passes.
-    /// This authenticates closure ownership only; callers must separately run
-    /// [`crate::verify_crucible_measurement_publication`] with the authenticated
-    /// scenario definitions before publication.
+    /// This authenticates closure ownership and any observation-stop proof;
+    /// callers must separately run [`crate::verify_crucible_measurement_publication`]
+    /// with the authenticated scenario definitions before publication.
     ///
     /// # Errors
     ///
@@ -580,6 +586,7 @@ fn validate_measurement_evidence(
         &evidence_by_id,
         &mut owned,
     )?;
+    validate_observation_stop_evidence(observation, &evidence_by_id)?;
 
     if let Some(finding) = finding {
         let referenced_measurements = finding
@@ -645,6 +652,173 @@ fn measurement_requires_replay_evidence(measurement: &MeasurementSet) -> bool {
     measurement.evaluation().is_some_and(|evaluation| {
         evaluation.payload_schema() == CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
     })
+}
+
+fn validate_observation_stop_evidence(
+    candidate: &ObservationCandidate,
+    evidence_by_id: &BTreeMap<
+        crucible_cas::content_store::ContentId,
+        &CrucibleMeasurementReplayEvidence,
+    >,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    let StopOutcome::ObservationReached(proof) = candidate.observation().stop() else {
+        return Ok(());
+    };
+    let boundary = proof.boundary();
+    if proof.child() != candidate.child().configuration()
+        || boundary.start_completed_quanta().checked_add(1) != Some(boundary.completed_quanta())
+    {
+        return Err(inconsistent("observation stop boundary"));
+    }
+
+    let evaluation = candidate
+        .measurements()
+        .evaluation()
+        .ok_or_else(|| inconsistent("observation stop measurement evaluation"))?;
+    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
+        || evaluation.evidence().len() != 1
+    {
+        return Err(inconsistent("observation stop measurement evidence"));
+    }
+    let evidence_id = *evaluation
+        .evidence()
+        .first()
+        .ok_or_else(|| inconsistent("observation stop measurement evidence"))?;
+    let evidence = evidence_by_id
+        .get(&evidence_id)
+        .copied()
+        .ok_or_else(|| inconsistent("observation stop measurement evidence"))?;
+    if evidence.configuration() != proof.child() {
+        return Err(inconsistent("observation stop configuration"));
+    }
+
+    let event_log = proof.event_log();
+    let retained_boundary = evidence
+        .observation_boundary()
+        .ok_or_else(|| inconsistent("observation stop execution boundary"))?;
+    let retained_offset = retained_boundary.event_log_offset();
+    if retained_boundary.frontier().ticks != boundary.frontier_nanoseconds()
+        || retained_boundary.quantum_start_completed_quanta() != boundary.start_completed_quanta()
+        || retained_boundary.completed_quanta() != boundary.completed_quanta()
+        || retained_boundary.quantum_start_events() != boundary.start_events()
+        || CampaignHash::from_bytes(retained_offset.prefix.bytes) != event_log.prefix()
+        || retained_offset
+            .appended_segment
+            .map(|hash| CampaignHash::from_bytes(hash.bytes))
+            != event_log.appended_segment()
+        || retained_offset.bytes != event_log.bytes()
+        || retained_offset.events != event_log.events()
+    {
+        return Err(inconsistent("observation stop execution boundary"));
+    }
+    let event_count = usize::try_from(event_log.events())
+        .map_err(|_| inconsistent("observation stop event count"))?;
+    let quantum_start = usize::try_from(boundary.start_events())
+        .map_err(|_| inconsistent("observation stop quantum event count"))?;
+    let prefix = evidence
+        .entries()
+        .get(..event_count)
+        .ok_or_else(|| inconsistent("observation stop event prefix"))?;
+    if quantum_start > event_count
+        || observation_event_prefix_digest(prefix) != event_log.digest()
+        || prefix
+            .iter()
+            .any(|entry| entry.at().ticks > boundary.frontier_nanoseconds())
+        || evidence.terminal().at.ticks < boundary.frontier_nanoseconds()
+    {
+        return Err(inconsistent("observation stop event prefix"));
+    }
+
+    match proof.condition() {
+        ObservationCondition::SchedulerQuiescent => {
+            if proof.satisfaction() != ObservationStopSatisfaction::SchedulerQuiescent
+                || proof.assertion_witness().is_some()
+                || !retained_boundary.scheduler_quiescent()
+            {
+                return Err(inconsistent("scheduler-quiescent observation stop"));
+            }
+        }
+        ObservationCondition::AssertionViolationTransition(assertion) => {
+            if proof.satisfaction() != ObservationStopSatisfaction::AssertionViolationTransition {
+                return Err(inconsistent("assertion observation stop witness"));
+            }
+            let witness = proof
+                .assertion_witness()
+                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
+            let entry = prefix
+                .get(quantum_start..)
+                .and_then(|entries| {
+                    entries
+                        .iter()
+                        .find(|entry| entry.sequence() == witness.sequence())
+                })
+                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
+            if CampaignHash::from_bytes(entry.content_hash().bytes) != witness.entry()
+                || !matches!(
+                    entry.payload(),
+                    SchedulerEventLogPayload::Observable(
+                        ObservableEventPayload::AssertionStateChanged { name, state }
+                    ) if name.name == *assertion
+                        && name.name == witness.assertion()
+                        && *state == AssertionPhase::Violated
+                )
+            {
+                return Err(inconsistent("assertion observation stop witness"));
+            }
+        }
+        ObservationCondition::AnyAssertionViolationTransition => {
+            if proof.satisfaction() != ObservationStopSatisfaction::AssertionViolationTransition {
+                return Err(inconsistent("assertion observation stop witness"));
+            }
+            let witness = proof
+                .assertion_witness()
+                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
+            let entry = prefix
+                .get(quantum_start..)
+                .and_then(|entries| {
+                    entries
+                        .iter()
+                        .find(|entry| entry.sequence() == witness.sequence())
+                })
+                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
+            if CampaignHash::from_bytes(entry.content_hash().bytes) != witness.entry()
+                || !matches!(
+                    entry.payload(),
+                    SchedulerEventLogPayload::Observable(
+                        ObservableEventPayload::AssertionStateChanged { name, state }
+                    ) if name.name == witness.assertion()
+                        && *state == AssertionPhase::Violated
+                )
+            {
+                return Err(inconsistent("assertion observation stop witness"));
+            }
+        }
+        ObservationCondition::SchedulerQuiescentOrExecutionQuanta { execution_quanta } => {
+            let expected_satisfaction = if retained_boundary.scheduler_quiescent() {
+                ObservationStopSatisfaction::SchedulerQuiescent
+            } else if boundary.completed_quanta() >= *execution_quanta {
+                ObservationStopSatisfaction::ExecutionQuanta
+            } else {
+                return Err(inconsistent("compound observation stop"));
+            };
+            if proof.satisfaction() != expected_satisfaction || proof.assertion_witness().is_some()
+            {
+                return Err(inconsistent("compound observation stop"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn observation_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> CampaignHash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.savepoint-replay-event-prefix.v1\0");
+    hasher.update(&(entries.len() as u64).to_be_bytes());
+    for entry in entries {
+        hasher.update(&entry.sequence().to_be_bytes());
+        hasher.update(&entry.content_hash().bytes);
+    }
+    CampaignHash::from_bytes(*hasher.finalize().as_bytes())
 }
 
 fn verify_measurement_record(

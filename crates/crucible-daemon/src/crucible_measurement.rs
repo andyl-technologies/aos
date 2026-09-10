@@ -23,10 +23,11 @@ mod evidence;
 
 pub use evidence::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
-    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1, CrucibleMeasurementPublication,
-    CrucibleMeasurementReplayEvidence, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1, CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2,
+    CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence,
+    CrucibleObservationBoundaryEvidence, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     derive_crucible_measurement_samples, evaluate_crucible_measurement_publication,
-    verify_crucible_measurement_publication,
+    evaluate_crucible_observation_measurement_publication, verify_crucible_measurement_publication,
 };
 
 /// Payload schema for a canonical Crucible measurement evaluation v1 body.

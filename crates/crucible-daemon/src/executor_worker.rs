@@ -2386,22 +2386,18 @@ fn validate_prepared_observation_candidate(
         .measurement_replay_evidence()
         .iter()
         .filter_map(|evidence| match evidence.id() {
-            Ok(content) if observation_trace_leaves.contains(&content) => {
-                Some(evidence.canonical_bytes().map(|bytes| (content, bytes)))
-            }
+            Ok(content) if observation_trace_leaves.contains(&content) => Some(
+                evidence
+                    .canonical_bytes()
+                    .map(|bytes| (content, evidence.schema_version(), bytes)),
+            ),
             Ok(_) => None,
             Err(source) => Some(Err(source)),
         })
         .collect::<Result<Vec<_>, crate::CrucibleMeasurementError>>()?;
     let owned_trace_leaf_bytes = owned_trace_leaves
         .iter()
-        .map(|(content, bytes)| {
-            (
-                *content,
-                crate::CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1,
-                bytes.as_slice(),
-            )
-        })
+        .map(|(content, schema_version, bytes)| (*content, *schema_version, bytes.as_slice()))
         .collect::<Vec<_>>();
     store.validate_observation_candidate_with_owned_trace_leaf_bytes(
         result.observation(),
@@ -2673,11 +2669,7 @@ pub(crate) fn publish_prepared_semantic_attempt_result(
             Ok(bytes) => bytes,
             Err(source) => return Err(AttemptResultPublicationFailure::Measurement(source)),
         };
-        store.publish_executor_trace_leaf(
-            expected,
-            crate::CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1,
-            &bytes,
-        )?;
+        store.publish_executor_trace_leaf(expected, evidence.schema_version(), &bytes)?;
     }
     let observation = store.publish_observation_candidate(result.observation())?;
     if let Some(finding) = result.finding() {
