@@ -7,6 +7,7 @@ publish = false
 
 [features]
 default = []
+destructive-recovery-faults = ["crucible-daemon/destructive-recovery-faults"]
 test-double = ["crucible-session/test-double"]
 
 [[bin]]

@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [features]
+destructive-recovery-faults = []
 test-support = []
 
 [dependencies]

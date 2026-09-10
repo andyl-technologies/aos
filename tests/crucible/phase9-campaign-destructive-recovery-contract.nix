@@ -66,18 +66,25 @@ in
           run_exact_lib_test() {
             package=$1
             name=$2
-            listing=$(cargo test \
+            if listing=$(cargo test \
               --frozen \
               --offline \
               --target-dir "$target" \
               --manifest-path crates/Cargo.toml \
               -p "$package" \
               --lib "$name" \
-              -- --exact --list)
+              -- --exact --list 2>&1)
+            then
+              :
+            else
+              status=$?
+              printf '%s\n' "$listing"
+              return "$status"
+            fi
             count=$(printf '%s\n' "$listing" | grep -Fxc "$name: test" || true)
             test "$count" -eq 1
 
-            output=$(cargo test \
+            if output=$(cargo test \
               --frozen \
               --offline \
               --target-dir "$target" \
@@ -85,9 +92,64 @@ in
               -p "$package" \
               --lib "$name" \
               -- --exact --test-threads=1 2>&1)
+            then
+              :
+            else
+              status=$?
+              printf '%s\n' "$output"
+              return "$status"
+            fi
             printf '%s\n' "$output"
             printf '%s\n' "$output" | grep -Fq 'test result: ok. 1 passed;'
           }
+
+          run_exact_feature_lib_test() {
+            package=$1
+            feature=$2
+            name=$3
+            if listing=$(cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p "$package" \
+              --features "$feature" \
+              --lib "$name" \
+              -- --exact --list 2>&1)
+            then
+              :
+            else
+              status=$?
+              printf '%s\n' "$listing"
+              return "$status"
+            fi
+            count=$(printf '%s\n' "$listing" | grep -Fxc "$name: test" || true)
+            test "$count" -eq 1
+
+            if output=$(cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p "$package" \
+              --features "$feature" \
+              --lib "$name" \
+              -- --exact --test-threads=1 2>&1)
+            then
+              :
+            else
+              status=$?
+              printf '%s\n' "$output"
+              return "$status"
+            fi
+            printf '%s\n' "$output"
+            printf '%s\n' "$output" | grep -Fq 'test result: ok. 1 passed;'
+          }
+
+          run_exact_feature_lib_test \
+            crucible-campaign \
+            destructive-recovery-faults \
+            repository::tests::execution::driver::coordinator_fault_before_observation_commit_recovers_exactly_once
 
           for cas_test in \
             content_store::tests::changing_and_failing_sources_leave_no_published_object_or_staging_file \
@@ -125,9 +187,9 @@ in
           tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:campaign-destructive-recovery
           injection_classes=14
-          prerequisite_tests=19
+          prerequisite_tests=20
           operator_commands=contract-validated
-          fault_build_hooks=contract-required
+          fault_build_hooks=coordinator-before-observation-commit-implemented;remaining-required
           manual_evidence=required
           acceptance=not-evaluated
           RESULT

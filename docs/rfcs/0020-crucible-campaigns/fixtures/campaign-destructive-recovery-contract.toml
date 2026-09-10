@@ -60,9 +60,10 @@ id = "kill-coordinator-before-observation-commit"
 title = "Kill the coordinator before observation commit"
 failure_class = "process-coordinator-publication"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-required"
+implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.coordinator-before-observation-commit"
+fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.coordinator-before-observation-commit {fault_build_command}"
 prior_state = "The attempt assignment and completion facts are durable while observation incorporation is unpublished."
@@ -73,7 +74,7 @@ recovery_gap = "No repository-owned coordinator restart command is exposed; CMAN
 observables = ["prior snapshot", "assignment ledger", "completion facts", "reservation count", "resubmission identity", "observation count"]
 post_recovery_invariant = "Exactly one modeled observation may be incorporated and the attempt is never credited twice."
 backend_scope = "constrained-host-and-each-targeted-backend"
-prerequisites = ["publication-ledger-conditionality", "publishing-restart-recovery"]
+prerequisites = ["coordinator-pre-observation-commit-crash", "publication-ledger-conditionality", "publishing-restart-recovery"]
 
 [[injections]]
 id = "kill-local-executor"
@@ -297,6 +298,12 @@ observables = ["cancellation command", "runtime incarnation", "process signal ou
 post_recovery_invariant = "Outcome and accounting are explicit and no child process, cgroup, ring, overlay, or descriptor remains orphaned."
 backend_scope = "constrained-host-and-each-targeted-backend"
 prerequisites = ["cancellation-before-begin", "cancellation-resource-reap"]
+
+[[prerequisite_tests]]
+id = "coordinator-pre-observation-commit-crash"
+package = "crucible-campaign"
+source = "crates/crucible-campaign/src/repository/tests/execution/driver.rs"
+selector = "repository::tests::execution::driver::coordinator_fault_before_observation_commit_recovers_exactly_once"
 
 [[prerequisite_tests]]
 id = "worker-operational-requeue"
