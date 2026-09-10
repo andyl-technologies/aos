@@ -1298,6 +1298,12 @@ branch on the verdict without parsing output:
   materialization. The same check also routes remote-daemon resume over
   `ResumeSession` RPC for handle-backed virtual-time runs and interactive
   command driving, instantiating the checkpoint through the session resume API,
+  and sends the savepoint's canonical campaign replay closure when its schedule
+  contains typed Selection decisions. The request binds the closure version,
+  byte length, and content identity to the exact scenario, configuration, and
+  checkpoint material. The daemon validates that envelope before backend and
+  session allocation, so restart and retry reconstruct the same authority while
+  selection-free requests retain their historical wire form. The remote route
   accepts runtime-only fat checkpoints whose decision schedule remains genesis
   while their frontier has advanced, thin-replays those checkpoints to the exact
   recorded frontier with bounded stagnation and overshoot rejection, rejects

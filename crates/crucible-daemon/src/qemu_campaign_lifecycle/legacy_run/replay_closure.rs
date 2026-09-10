@@ -43,6 +43,9 @@ struct GuardedCampaignReplaySelection {
 }
 
 impl GuardedCampaignReplayClosure {
+    /// Canonical schema version carried by the remote resume envelope.
+    pub const SCHEMA_VERSION: u32 = 1;
+
     pub(super) fn collect(
         store: &CampaignExecutorStore,
         scenario: &ScenarioDefForm,
@@ -326,6 +329,40 @@ impl GuardedCampaignReplayClosure {
     }
 }
 
+/// Authenticates a remote resume envelope against its exact checkpoint source.
+///
+/// # Errors
+///
+/// Returns [`GuardedCampaignReplayClosureError`] when the envelope uses an
+/// unknown schema, the restored checkpoint identity differs, or the canonical
+/// closure does not cover the exact supplied scenario and schedule.
+pub fn validate_remote_resume_replay_closure(
+    scenario: &ScenarioDefForm,
+    configuration: &Configuration,
+    checkpoint: &crucible::Checkpoint,
+    envelope: &crucible_api::ResumeReplayClosure,
+) -> Result<(), GuardedCampaignReplayClosureError> {
+    if envelope.schema_version() != GuardedCampaignReplayClosure::SCHEMA_VERSION {
+        return Err(GuardedCampaignReplayClosureError::UnsupportedSchema {
+            actual: envelope.schema_version(),
+            expected: GuardedCampaignReplayClosure::SCHEMA_VERSION,
+        });
+    }
+
+    let scenario_def = scenario.scenario_def();
+    let configuration_id = configuration.id();
+    if scenario_def != configuration.def
+        || checkpoint.id != configuration_id
+        || checkpoint.configuration != configuration_id
+        || checkpoint.scenario_ref != scenario_def.id()
+    {
+        return Err(GuardedCampaignReplayClosureError::ResumeSourceMismatch);
+    }
+
+    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(envelope.payload())?;
+    closure.validate_for_schedule(scenario, &configuration.schedule)
+}
+
 fn charge_resolved_selection(
     encoded_bytes: &mut usize,
     resolved: &crucible_campaign::ResolvedSelection,
@@ -368,6 +405,17 @@ impl GuardedCampaignReplaySelection {
 /// Failure while encoding, decoding, or authenticating a replay closure.
 #[derive(Debug, Error)]
 pub enum GuardedCampaignReplayClosureError {
+    /// The remote envelope uses a closure schema this daemon does not understand.
+    #[error("unsupported campaign replay closure schema version {actual}; expected {expected}")]
+    UnsupportedSchema {
+        /// Version supplied by the caller.
+        actual: u32,
+        /// Version supported by this daemon.
+        expected: u32,
+    },
+    /// The envelope source differs from the checkpoint configuration being restored.
+    #[error("campaign replay closure source differs from the restored checkpoint configuration")]
+    ResumeSourceMismatch,
     /// A canonical campaign choice record was invalid.
     #[error("campaign replay closure record is invalid: {0}")]
     Codec(#[from] CampaignCodecError),

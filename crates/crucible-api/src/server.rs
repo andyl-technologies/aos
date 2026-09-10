@@ -7,7 +7,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Extension, State};
-use axum::http::{Request, StatusCode, Version};
+use axum::http::{Request, StatusCode, Version, header::CONTENT_LENGTH};
 use axum::response::Response;
 use axum::routing::post;
 use bytes::Bytes;
@@ -41,8 +41,9 @@ use crate::event_log_stream::EventLogCursor;
 use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
     GetReproductionRequest, GetReproductionResponse, LifecycleApiError, LifecycleControlPlane,
-    ListScenariosResponse, ListSessionsResponse, ReproductionCommandRecord,
-    ReproductionCommandResult, ResumeSessionRequest, ResumeSessionResponse, SessionId, SessionRef,
+    ListScenariosResponse, ListSessionsResponse, RESUME_REPLAY_CLOSURE_MAX_BYTES,
+    ReproductionCommandRecord, ReproductionCommandResult, ResumeReplayClosure,
+    ResumeSessionRequest, ResumeSessionResponse, SessionId, SessionRef,
 };
 use crate::open_set::{
     OpenSetAttributeValue, OpenSetEventSource, open_set_command_kind,
@@ -63,6 +64,13 @@ use crate::{ControlClientError, DebugAuthorizationPolicy, HelloRequest};
 
 mod resource_limit;
 type SharedLifecycleControlPlane<L, F> = Arc<Mutex<LifecycleControlPlane<L, F>>>;
+
+// Resume carries hex-encoded model and checkpoint material. This retains a
+// fixed aggregate allowance for those existing fields and charges the replay
+// closure at its exact two-character-per-byte wire amplification.
+const RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES: usize = 512 * 1024 * 1024;
+const RESUME_SESSION_RPC_BODY_MAX_BYTES: usize =
+    RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES + RESUME_REPLAY_CLOSURE_MAX_BYTES * 2;
 
 /// Runtime policy for the HTTP/2 lifecycle server.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1291,7 +1299,7 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_resume_session_rpc_body(request).await {
         Ok(body) => body,
         Err(response) => return response,
     };
@@ -1571,6 +1579,48 @@ async fn read_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Response> {
         .map_err(|error| http2_response(StatusCode::BAD_REQUEST, error.to_string()))
 }
 
+async fn read_resume_session_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Response> {
+    read_bounded_resume_session_rpc_body(request, RESUME_SESSION_RPC_BODY_MAX_BYTES).await
+}
+
+async fn read_bounded_resume_session_rpc_body(
+    request: Request<Body>,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Response> {
+    if request.version() != Version::HTTP_2 {
+        return Err(http2_response(
+            StatusCode::BAD_REQUEST,
+            "Crucible RPC requires HTTP/2",
+        ));
+    }
+    let declared_too_large = request
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > u64::try_from(max_bytes).unwrap_or(u64::MAX));
+    if declared_too_large {
+        return Err(typed_rpc_status_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            RpcStatusCode::InvalidArgument,
+            "resume-session-request-too-large",
+            "resume-session request exceeds its bounded wire envelope",
+        ));
+    }
+
+    axum::body::to_bytes(request.into_body(), max_bytes)
+        .await
+        .map(|body| body.to_vec())
+        .map_err(|error| {
+            typed_rpc_status_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                RpcStatusCode::InvalidArgument,
+                "resume-session-request-too-large",
+                &error.to_string(),
+            )
+        })
+}
+
 async fn read_debug_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Response> {
     const DEBUG_RPC_BODY_MAX_BYTES: usize = DEBUG_RELAY_CHUNK_MAX_BYTES * 2 + 1024;
 
@@ -1704,10 +1754,74 @@ fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionRequest, Str
     let seed = parse_seed_line(lines.next(), "seed=")?;
     let schedule = parse_schedule_line(lines.next(), "schedule=")?;
     let checkpoint = parse_checkpoint_line(lines.next(), "checkpoint=")?;
+    let replay_closure = parse_optional_resume_replay_closure(
+        &scenario,
+        &schedule,
+        &checkpoint,
+        lines.next(),
+        &mut lines,
+    )?;
+    let mut request = ResumeSessionRequest::new(scenario, schedule, checkpoint, seed);
+    if let Some(replay_closure) = replay_closure {
+        request = request.with_replay_closure(replay_closure);
+    }
+    Ok(request)
+}
+
+fn parse_optional_resume_replay_closure<'a>(
+    scenario: &ScenarioDefForm,
+    schedule: &Schedule,
+    checkpoint: &Checkpoint,
+    first: Option<&'a str>,
+    lines: &mut impl Iterator<Item = &'a str>,
+) -> Result<Option<ResumeReplayClosure>, String> {
+    let Some(first) = first else {
+        return Ok(None);
+    };
+    let version = parse_u64_line(Some(first), "campaign-replay-closure-version=")?;
+    let version = u32::try_from(version)
+        .map_err(|_| String::from("campaign replay closure version exceeds u32"))?;
+    let expected_identity =
+        parse_content_hash_line(lines.next(), "campaign-replay-closure-identity=")?;
+    let expected_size = parse_u64_line(lines.next(), "campaign-replay-closure-size=")?;
+    let max_size = u64::try_from(RESUME_REPLAY_CLOSURE_MAX_BYTES)
+        .map_err(|_| String::from("campaign replay closure byte bound cannot be represented"))?;
+    if expected_size > max_size {
+        return Err(format!(
+            "campaign replay closure has {expected_size} bytes, maximum is {RESUME_REPLAY_CLOSURE_MAX_BYTES}"
+        ));
+    }
+    let payload_hex = parse_wire_line(lines.next(), "campaign-replay-closure-payload=")?;
+    let expected_hex_size = usize::try_from(expected_size)
+        .ok()
+        .and_then(|size| size.checked_mul(2))
+        .ok_or_else(|| String::from("campaign replay closure hex size overflowed"))?;
+    if payload_hex.len() != expected_hex_size {
+        return Err(format!(
+            "campaign replay closure payload has {} hex bytes, expected {expected_hex_size}",
+            payload_hex.len()
+        ));
+    }
+    let payload = parse_hex_bytes(payload_hex)?;
     reject_extra_line(lines.next())?;
-    Ok(ResumeSessionRequest::new(
-        scenario, schedule, checkpoint, seed,
-    ))
+
+    let actual_size = u64::try_from(payload.len())
+        .map_err(|_| String::from("campaign replay closure size cannot be represented"))?;
+    if actual_size != expected_size {
+        return Err(format!(
+            "campaign replay closure size {actual_size} did not match bound size {expected_size}"
+        ));
+    }
+    let closure = ResumeReplayClosure::new(scenario, schedule, checkpoint, version, payload)
+        .map_err(|error| error.to_string())?;
+    if closure.identity() != expected_identity {
+        return Err(format!(
+            "campaign replay closure identity {} did not match bound identity {}",
+            closure.identity().to_hex(),
+            expected_identity.to_hex(),
+        ));
+    }
+    Ok(Some(closure))
 }
 
 fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, String> {
@@ -2639,6 +2753,12 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
             StatusCode::BAD_REQUEST,
             RpcStatusCode::InvalidArgument,
             "invalid-argument",
+            &error.to_string(),
+        ),
+        LifecycleApiError::ResumeReplayClosure { .. } => typed_rpc_status_response(
+            StatusCode::BAD_REQUEST,
+            RpcStatusCode::InvalidArgument,
+            "resume-replay-closure",
             &error.to_string(),
         ),
         LifecycleApiError::DebugAccess { .. } | LifecycleApiError::DebugEndpointUnavailable => {
