@@ -467,7 +467,9 @@ fn inspect_objects(
                 .checked_add(1)
                 .ok_or_else(|| String::from("event segment count overflow"))?;
             let remaining_events = bounds.events.saturating_sub(event_entries);
-            for entry in segment::decode(&bytes, remaining_events)? {
+            for entry in
+                segment::decode(&bytes, remaining_events).map_err(|error| error.to_string())?
+            {
                 event_entries = event_entries
                     .checked_add(1)
                     .ok_or_else(|| String::from("event entry count overflow"))?;
