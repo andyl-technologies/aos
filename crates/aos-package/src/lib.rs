@@ -3706,12 +3706,7 @@ pub async fn run(
                 host_nix,
                 runtime_modules,
                 runtime_module_root: runtime_module_root.clone(),
-                expected_current_generation: runtime_module_root
-                    .as_ref()
-                    .map(|_| expected_current_generation)
-                    .or_else(|| {
-                        (!runtime_module.is_empty()).then_some(expected_current_generation)
-                    }),
+                expected_current_generation: Some(expected_current_generation),
                 base_lib,
                 facts_json: Some(facts_json.clone()),
                 desired: desired.clone(),
