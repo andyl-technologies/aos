@@ -514,16 +514,18 @@ quantum at a time. It tolerates bounded zero-time boot quanta, rejects sustained
 stagnation or an overshooting boundary, and exports only when the observed
 frontier equals the requested coordinate exactly. `--max-virtual-time` is valid
 only for that boundary; supplying it with quiescence, property, or marker is a
-usage error. Quiescence, property, and marker saves install one-shot suspending
-breakpoints and continue across scheduler quanta until the requested evidence
-appears. Property selectors match the named assertion's `Violated` phase. A
-companion quiescence breakpoint bounds property and marker selectors: if the
-scenario becomes quiescent without the requested evidence, the command fails
-without exporting a handle. Breakpoint-firing coordinates are checked against
-the paused save boundary before materialization. Save-boundary observation uses
-the production backend completion window rather than the short streaming
-acknowledgement yield budget, so a valid long-running QEMU quantum cannot be
-misreported as a missing breakpoint.
+usage error. Session-owned quiescence, property, and marker saves install
+one-shot suspending breakpoints and continue across scheduler quanta until the
+requested evidence appears. Campaign-backed local-QEMU saves use the matching
+authenticated semantic stop. Property selectors match the named assertion's
+`Violated` phase. A companion quiescence breakpoint bounds session property and
+marker selectors: if the scenario becomes quiescent without the requested
+evidence, the command fails without exporting a handle. Breakpoint-firing
+coordinates are checked against the paused save boundary before
+materialization. Save-boundary observation uses the production backend
+completion window rather than the short streaming acknowledgement yield budget,
+so a valid long-running QEMU quantum cannot be misreported as a missing
+breakpoint.
 
 The exported `crucible.savepoint-handle.v3` records the selector kind and name
 (`property-violation` or `guest-marker`) plus the exact boundary proof. A
@@ -572,6 +574,21 @@ resources. Historical override and application-random decisions remain
 unsupported. Session-owned, remote, interactive, and fork execution paths
 reject typed Selection schedules before launch because they do not consume the
 campaign closure.
+
+Campaign-backed quiescence and property saves export
+`crucible.savepoint-handle.v6`. Its `campaign-observation` boundary proof
+carries two independently content-addressed canonical payloads: the campaign
+observation-stop proof and the retained v2 raw measurement evidence. Decode
+binds the proof to the evidence's configuration, absolute pre- and post-quantum
+coordinates, event-log offset and prefix, scheduler quiescence, and exact
+assertion-transition witness. Local-QEMU resume and fork retain both payloads
+as a pending source claim. They replay the authenticated schedule from scenario
+genesis, require the newly accepted observation proof and raw evidence to equal
+the retained claim, and capture the physical checkpoint only after that match.
+This second check rejects a portable artifact whose proof and evidence were
+forged together while preserving their internal hashes. Session-owned and
+remote paths reject v6 boundaries because they cannot perform that campaign
+source replay.
 
 When a property or marker selector reaches its quiescence guard without firing,
 the CLI returns the ordinary identity error and creates no handle. If `--trace`

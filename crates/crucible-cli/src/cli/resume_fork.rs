@@ -256,6 +256,11 @@ pub(super) fn ensure_session_replay_evidence_supported(
     context: &str,
     evidence: &ResumeHandleEvidence,
 ) -> Result<(), CliError> {
+    if evidence.source_observation_proof.is_some() {
+        return Err(backend_error(format!(
+            "{context} cannot authenticate a portable campaign observation boundary; use the campaign-owned local QEMU resume path"
+        )));
+    }
     if evidence
         .schedule
         .decisions()
@@ -327,6 +332,36 @@ pub(super) fn savepoint_handle_evidence(
     }
     let frontier = validate_resume_handle_frontier(&schedule, handle.frontier_ticks)?;
     let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)?;
+    let (source_observation_proof, source_observation_evidence) = handle
+        .boundary_proof
+        .as_ref()
+        .map_or((None, None), |proof| match proof {
+            SavepointBoundaryProof::CampaignObservation { proof, evidence } => {
+                (Some(proof.clone()), Some(evidence.clone()))
+            }
+            SavepointBoundaryProof::Coordinate { .. }
+            | SavepointBoundaryProof::Breakpoint { .. }
+            | SavepointBoundaryProof::CampaignMarkerEvent { .. } => (None, None),
+        });
+    if let Some(evidence) = source_observation_evidence.as_deref() {
+        let campaign_scenario = crucible_campaign::ScenarioDefId::from_hash(
+            crucible_campaign::CampaignHash::from_bytes(scenario.id().bytes),
+        );
+        let campaign_configuration = crucible_campaign::ConfigurationId::from_hash(
+            crucible_campaign::CampaignHash::from_bytes(configuration.id().bytes),
+        );
+        evidence
+            .replay(
+                campaign_scenario,
+                campaign_configuration,
+                scenario_form.measurements(),
+            )
+            .map_err(|error| {
+                artifact_error(format!(
+                    "savepoint campaign observation evidence is invalid for the embedded scenario: {error}"
+                ))
+            })?;
+    }
     Ok(ResumeHandleEvidence {
         scenario_form,
         scenario,
@@ -334,6 +369,8 @@ pub(super) fn savepoint_handle_evidence(
         configuration,
         checkpoint,
         replay_closure,
+        source_observation_proof,
+        source_observation_evidence,
     })
 }
 
@@ -480,6 +517,8 @@ pub(super) fn savepoint_store_evidence(
         configuration,
         checkpoint,
         replay_closure,
+        source_observation_proof: None,
+        source_observation_evidence: None,
     })
 }
 

@@ -902,6 +902,34 @@ impl CampaignExecutorStore {
         Ok(expected)
     }
 
+    /// Reads one authenticated raw evidence leaf owned by a measurement set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the measurement set does not name the leaf, the
+    /// leaf is not trace content, its declared size exceeds `max_bytes`, or the
+    /// backend cannot complete an authenticated read.
+    pub fn read_measurement_evidence_leaf(
+        &self,
+        measurements: MeasurementSetId,
+        evidence: ContentId,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, CampaignRepositoryError> {
+        let retained = self.repository.load_measurement_set(measurements)?;
+        let evaluation = retained
+            .evaluation()
+            .ok_or_else(|| integrity("measurement-set-has-no-verified-evaluation"))?;
+        if evidence.kind() != ObjectKind::Trace || !evaluation.evidence().contains(&evidence) {
+            return Err(integrity("measurement-evidence-leaf-is-not-owned"));
+        }
+
+        self.repository
+            .blobs
+            .read(evidence, None)?
+            .read_all(max_bytes)
+            .map_err(Into::into)
+    }
+
     /// Publishes one executor-verified replay choice domain.
     ///
     /// # Errors

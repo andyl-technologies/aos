@@ -439,11 +439,11 @@ pub use legacy_run::{
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
-    GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignResumeProof,
-    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
-    GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignSupervisorError,
-    GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
-    validate_remote_resume_replay_closure,
+    GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignProductionRunnerError,
+    GuardedDefaultCampaignResumeProof, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError,
+    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
+    GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
+    run_guarded_default_campaign, validate_remote_resume_replay_closure,
 };
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
@@ -2450,6 +2450,29 @@ pub(crate) fn materialize_start_from<F, D>(
         return Err(AttemptWorkerFailure::Terminal(
             QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
         ));
+    }
+
+    // A guest selectable can already be pending at lifecycle admission. Replay
+    // it at the current boundary before charging a quantum so a saved choice at
+    // genesis retains its original absolute quantum and event coordinates.
+    let initial_selection_entries = apply_replayed_guest_selectables(
+        lifecycle,
+        context,
+        GuestSelectableReplayContext {
+            phase: GuestSelectableReplayPhase::FreshStart,
+            attempt_role: GuestSelectableReplayAttemptRole::ExecutingAttempt,
+            attempt: input.attempt(),
+            start: input.start(),
+        },
+        input.lineage().scenario(),
+        input.scenario(),
+        target,
+        &mut current,
+        &mut replay,
+    )?;
+    append_start_replay_events(&mut replay, &initial_selection_entries)?;
+    if current == *target {
+        return Ok(replay);
     }
 
     loop {

@@ -155,6 +155,11 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     assert!(BranchRequest::from_canonical_bytes(&downgraded_branch).is_err());
 
     let proof = assertion_proof(child);
+    assert_eq!(
+        ObservationStopProof::from_canonical_bytes(&proof.canonical_bytes())
+            .expect("observation proof round trip"),
+        proof
+    );
     let outcome = StopOutcome::ObservationReached(Box::new(proof.clone()));
     assert!(outcome.reaches(&stop));
     assert!(!StopOutcome::Reached(stop.clone()).reaches(&stop));

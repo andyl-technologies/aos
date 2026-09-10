@@ -1178,6 +1178,26 @@ impl ObservationStopProof {
     pub fn assertion_witness(&self) -> Option<&AssertionViolationWitness> {
         self.assertion_witness.as_ref()
     }
+
+    /// Returns strict canonical proof bytes for portable boundary records.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes strict canonical proof bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, invalid, or oversized input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        if bytes.len() > MAX_RECORD_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "observation-stop-proof-encoded-bytes",
+            });
+        }
+        codec::decode(bytes)
+    }
 }
 
 impl Canonical for ObservationStopProof {

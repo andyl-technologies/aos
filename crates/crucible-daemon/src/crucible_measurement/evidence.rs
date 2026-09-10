@@ -39,7 +39,10 @@ use crucible::{
     EventLogOffset, GuestMeasurementEvent, GuestMeasurementValue, Icount, NodeId,
     ObservableEventPayload, SchedulerEventLogEntry, SchedulerEventLogPayload, VirtualTime,
 };
-use crucible_campaign::{CampaignHash, ConfigurationId, MeasurementSet, ScenarioDefId};
+use crucible_campaign::{
+    CampaignHash, ConfigurationId, MeasurementSet, ObservationCondition, ObservationStopProof,
+    ObservationStopSatisfaction, ScenarioDefId,
+};
 use crucible_cas::content_store::{ContentId, ObjectKind};
 use crucible_protocol::{
     WHITEBOX_MEASUREMENT_IDENTIFIER_MAX_BYTES, WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS,
@@ -229,6 +232,100 @@ impl CrucibleMeasurementReplayEvidence {
         self.observation_boundary
     }
 
+    /// Verifies an observation-stop proof against this retained raw boundary.
+    ///
+    /// The check binds the proof to the exact configuration, quantum counters,
+    /// event-log offset and prefix, scheduler quiescence state, and assertion
+    /// transition captured by the executor. It does not infer a later matching
+    /// observation from the replay schedule.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleMeasurementError`] when any proof field differs from
+    /// the retained v2 execution evidence.
+    pub fn verify_observation_stop_proof(
+        &self,
+        proof: &ObservationStopProof,
+    ) -> Result<(), CrucibleMeasurementError> {
+        let mismatch = |binding| CrucibleMeasurementError::EvidenceBindingMismatch { binding };
+        if self.configuration != proof.child() {
+            return Err(mismatch("observation-stop-configuration"));
+        }
+
+        let boundary = proof.boundary();
+        let event_log = proof.event_log();
+        let retained_boundary = self
+            .observation_boundary
+            .ok_or_else(|| mismatch("observation-stop-execution-boundary"))?;
+        let retained_offset = retained_boundary.event_log_offset();
+        if retained_boundary.frontier().ticks != boundary.frontier_nanoseconds()
+            || retained_boundary.quantum_start_completed_quanta()
+                != boundary.start_completed_quanta()
+            || retained_boundary.completed_quanta() != boundary.completed_quanta()
+            || retained_boundary.quantum_start_events() != boundary.start_events()
+            || CampaignHash::from_bytes(retained_offset.prefix.bytes) != event_log.prefix()
+            || retained_offset
+                .appended_segment
+                .map(|hash| CampaignHash::from_bytes(hash.bytes))
+                != event_log.appended_segment()
+            || retained_offset.bytes != event_log.bytes()
+            || retained_offset.events != event_log.events()
+        {
+            return Err(mismatch("observation-stop-execution-boundary"));
+        }
+
+        let event_count = usize::try_from(event_log.events())
+            .map_err(|_| mismatch("observation-stop-event-count"))?;
+        let quantum_start = usize::try_from(boundary.start_events())
+            .map_err(|_| mismatch("observation-stop-quantum-event-count"))?;
+        let prefix = self
+            .entries
+            .get(..event_count)
+            .ok_or_else(|| mismatch("observation-stop-event-prefix"))?;
+        if quantum_start > event_count
+            || observation_event_prefix_digest(prefix) != event_log.digest()
+            || prefix
+                .iter()
+                .any(|entry| entry.at().ticks > boundary.frontier_nanoseconds())
+            || self.terminal.at.ticks < boundary.frontier_nanoseconds()
+        {
+            return Err(mismatch("observation-stop-event-prefix"));
+        }
+
+        match proof.condition() {
+            ObservationCondition::SchedulerQuiescent => {
+                if proof.satisfaction() != ObservationStopSatisfaction::SchedulerQuiescent
+                    || proof.assertion_witness().is_some()
+                    || !retained_boundary.scheduler_quiescent()
+                {
+                    return Err(mismatch("scheduler-quiescent-observation-stop"));
+                }
+            }
+            ObservationCondition::AssertionViolationTransition(assertion) => {
+                verify_assertion_observation_stop(proof, prefix, quantum_start, Some(assertion))?;
+            }
+            ObservationCondition::AnyAssertionViolationTransition => {
+                verify_assertion_observation_stop(proof, prefix, quantum_start, None)?;
+            }
+            ObservationCondition::SchedulerQuiescentOrExecutionQuanta { execution_quanta } => {
+                let expected_satisfaction = if retained_boundary.scheduler_quiescent() {
+                    ObservationStopSatisfaction::SchedulerQuiescent
+                } else if boundary.completed_quanta() >= *execution_quanta {
+                    ObservationStopSatisfaction::ExecutionQuanta
+                } else {
+                    return Err(mismatch("compound-observation-stop"));
+                };
+                if proof.satisfaction() != expected_satisfaction
+                    || proof.assertion_witness().is_some()
+                {
+                    return Err(mismatch("compound-observation-stop"));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Returns the exact content-object schema used by this evidence leaf.
     #[must_use]
     pub const fn schema_version(&self) -> u32 {
@@ -395,6 +492,53 @@ impl CrucibleMeasurementReplayEvidence {
             &bytes,
         ))
     }
+}
+
+fn verify_assertion_observation_stop(
+    proof: &ObservationStopProof,
+    prefix: &[SchedulerEventLogEntry],
+    quantum_start: usize,
+    expected_assertion: Option<&String>,
+) -> Result<(), CrucibleMeasurementError> {
+    let mismatch = || CrucibleMeasurementError::EvidenceBindingMismatch {
+        binding: "assertion-observation-stop-witness",
+    };
+    if proof.satisfaction() != ObservationStopSatisfaction::AssertionViolationTransition {
+        return Err(mismatch());
+    }
+    let witness = proof.assertion_witness().ok_or_else(mismatch)?;
+    let entry = prefix
+        .get(quantum_start..)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.sequence() == witness.sequence())
+        })
+        .ok_or_else(mismatch)?;
+    if CampaignHash::from_bytes(entry.content_hash().bytes) != witness.entry()
+        || !matches!(
+            entry.payload(),
+            SchedulerEventLogPayload::Observable(
+                ObservableEventPayload::AssertionStateChanged { name, state }
+            ) if name.name == witness.assertion()
+                && expected_assertion.is_none_or(|expected| name.name == *expected)
+                && *state == crucible::AssertionPhase::Violated
+        )
+    {
+        return Err(mismatch());
+    }
+    Ok(())
+}
+
+fn observation_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> CampaignHash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.savepoint-replay-event-prefix.v1\0");
+    hasher.update(&(entries.len() as u64).to_be_bytes());
+    for entry in entries {
+        hasher.update(&entry.sequence().to_be_bytes());
+        hasher.update(&entry.content_hash().bytes);
+    }
+    CampaignHash::from_bytes(*hasher.finalize().as_bytes())
 }
 
 /// A derived measurement set paired with the raw leaf required to verify it.

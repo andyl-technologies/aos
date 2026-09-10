@@ -777,6 +777,8 @@ fn embedded_terminal_savepoint_evidence(
         configuration,
         checkpoint,
         replay_closure,
+        source_observation_proof: None,
+        source_observation_evidence: None,
     }))
 }
 

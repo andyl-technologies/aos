@@ -518,7 +518,12 @@ pub(crate) fn savepoint_handle_bytes(
         .save_boundary_evidence
         .as_ref()
         .map(|evidence| &evidence.proof);
-    let schema = if outcome.savepoint_replay_closure.is_some() {
+    let schema = if matches!(
+        boundary_proof,
+        Some(SaveBoundaryProof::CampaignObservation { .. })
+    ) {
+        CAMPAIGN_OBSERVATION_SAVEPOINT_HANDLE_SCHEMA
+    } else if outcome.savepoint_replay_closure.is_some() {
         REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA
     } else if matches!(
         boundary_proof,
@@ -633,6 +638,48 @@ pub(crate) fn savepoint_handle_bytes(
                     &hex_bytes(&predicate_payload),
                 ],
             );
+        }
+        Some(SaveBoundaryProof::CampaignObservation { proof, evidence }) => {
+            let proof_bytes = proof.canonical_bytes();
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-proof",
+                    "campaign-observation",
+                    &content_address_bytes(&proof_bytes),
+                    &hex_bytes(&proof_bytes),
+                    &content_address_bytes(evidence),
+                    &hex_bytes(evidence),
+                ],
+            );
+            let predicate = match proof.condition() {
+                crucible_campaign::ObservationCondition::SchedulerQuiescent => {
+                    Some(crucible::Predicate::quiescent())
+                }
+                crucible_campaign::ObservationCondition::AssertionViolationTransition(
+                    assertion,
+                ) => Some(crucible::Predicate::assertion_state(
+                    crucible::AssertionId::from_name(assertion),
+                    crucible::AssertionPhase::Violated,
+                )),
+                crucible_campaign::ObservationCondition::AnyAssertionViolationTransition
+                | crucible_campaign::ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
+                    ..
+                } => None,
+            };
+            if let Some(predicate) = predicate {
+                let predicate_payload = predicate.to_compact_binary();
+                artifact_line(
+                    &mut text,
+                    &[
+                        "boundary-predicate",
+                        &content_address_bytes(&predicate_payload),
+                        &hex_bytes(&predicate_payload),
+                    ],
+                );
+            } else {
+                artifact_line(&mut text, &["boundary-predicate", "none"]);
+            }
         }
         Some(SaveBoundaryProof::Coordinate) | None => {
             let quanta = outcome

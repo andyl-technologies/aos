@@ -611,13 +611,17 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     .expect_err("fixture QEMU save must reach live-guest discovery or production launch");
     let message = error.to_string();
     assert!(
-        matches!(error, CliError::Backend(_) | CliError::Identity(_)),
+        matches!(
+            error,
+            CliError::Backend(_) | CliError::Identity(_) | CliError::Serve(_)
+        ),
         "unexpected QEMU save error: {error}"
     );
     assert!(
         message.contains("requires the AOS kernel")
             || message.contains("requires the AOS root image")
-            || message.contains("session execution backend construction failed"),
+            || message.contains("session execution backend construction failed")
+            || message.contains("requires guarded campaign host authority"),
         "unexpected QEMU save error: {error}"
     );
     assert!(!message.contains("execution is unavailable"));
@@ -1387,6 +1391,8 @@ pub(super) fn cli_resume_terminal_oracle_rejects_non_descendant_snapshot()
         configuration: source_configuration,
         checkpoint: source_checkpoint,
         replay_closure,
+        source_observation_proof: None,
+        source_observation_evidence: None,
     };
     let sibling_schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
         crucible::DeliveryOrderDecision {
