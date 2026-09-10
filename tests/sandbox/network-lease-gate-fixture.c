@@ -106,6 +106,9 @@ static void usage(FILE *out)
           "       network-lease-gate-fixture update[-hold] "
           "arm|renew EPOCH GENERATION DEADLINE_NS LEASE_HEX\n"
           "       network-lease-gate-fixture update disarm\n"
+          "       network-lease-gate-fixture update-observer HANDLE_HEX "
+          "arm|renew EPOCH GENERATION DEADLINE_NS LEASE_HEX\n"
+          "       network-lease-gate-fixture update-observer HANDLE_HEX disarm\n"
           "       network-lease-gate-fixture inject ingress|egress "
           "stale-epoch|stale-digest|restore-peer\n"
           "       network-lease-gate-fixture delete-state\n"
@@ -117,8 +120,9 @@ static void usage(FILE *out)
           "       network-lease-gate-fixture detach-observers\n"
           "       network-lease-gate-fixture observer-status\n"
           "       network-lease-gate-fixture status\n"
+          "       network-lease-gate-fixture status-observer HANDLE_HEX\n"
           "       network-lease-gate-fixture clocks\n"
-          "       network-lease-gate-fixture receive PORT RESULT READY\n"
+          "       network-lease-gate-fixture receive ipv4|ipv6 PORT RESULT READY\n"
           "       network-lease-gate-fixture teardown HOST_IF\n"
           "       network-lease-gate-fixture force-observer-teardown HANDLE_HEX\n"
           "       network-lease-gate-fixture force-teardown\n");
@@ -626,14 +630,18 @@ static void hold_forever(void)
     pause();
 }
 
-static int receive_probe(__u64 port, const char *result_path,
+static int receive_probe(int family, __u64 port, const char *result_path,
                          const char *ready_path)
 {
   const struct timespec readiness_poll = {
       .tv_sec = 0,
       .tv_nsec = 10000000,
   };
-  struct sockaddr_in address;
+  union {
+    struct sockaddr_in ipv4;
+    struct sockaddr_in6 ipv6;
+  } address;
+  socklen_t address_size;
   struct pollfd poll_fd;
   char payload[4096];
   char *temporary_path;
@@ -657,17 +665,32 @@ static int receive_probe(__u64 port, const char *result_path,
   if (snprintf(temporary_path, path_size, "%s.tmp", result_path) < 0)
     goto out;
 
-  socket_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  socket_fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
   if (socket_fd < 0) {
     perror("network-lease-gate-fixture: create probe socket");
     goto out;
   }
 
   memset(&address, 0, sizeof(address));
-  address.sin_family = AF_INET;
-  address.sin_port = htons((uint16_t)port);
-  address.sin_addr.s_addr = htonl(INADDR_ANY);
-  if (bind(socket_fd, (const struct sockaddr *)&address, sizeof(address)) != 0) {
+  if (family == AF_INET) {
+    address.ipv4.sin_family = AF_INET;
+    address.ipv4.sin_port = htons((uint16_t)port);
+    address.ipv4.sin_addr.s_addr = htonl(INADDR_ANY);
+    address_size = sizeof(address.ipv4);
+  } else {
+    int ipv6_only = 1;
+
+    if (setsockopt(socket_fd, IPPROTO_IPV6, IPV6_V6ONLY, &ipv6_only,
+                   sizeof(ipv6_only)) != 0) {
+      perror("network-lease-gate-fixture: restrict probe socket to IPv6");
+      goto out;
+    }
+    address.ipv6.sin6_family = AF_INET6;
+    address.ipv6.sin6_port = htons((uint16_t)port);
+    address.ipv6.sin6_addr = in6addr_any;
+    address_size = sizeof(address.ipv6);
+  }
+  if (bind(socket_fd, (const struct sockaddr *)&address, address_size) != 0) {
     perror("network-lease-gate-fixture: bind probe socket");
     goto out;
   }
@@ -1577,24 +1600,33 @@ int main(int argc, char **argv)
   }
 
   if (strcmp(argv[1], "update") == 0 ||
-      strcmp(argv[1], "update-hold") == 0) {
+      strcmp(argv[1], "update-hold") == 0 ||
+      strcmp(argv[1], "update-observer") == 0) {
     bool hold = strcmp(argv[1], "update-hold") == 0;
+    bool observer = strcmp(argv[1], "update-observer") == 0;
+    int operation_index = observer ? 3 : 2;
 
-    if (argc == 3 && strcmp(argv[2], "disarm") == 0)
+    if (observer && (argc < 4 || select_observer_pin_root(argv[2]) != 0))
+      return 2;
+    if (argc == operation_index + 1 &&
+        strcmp(argv[operation_index], "disarm") == 0)
       return update_gate("disarm", 0, 0, 0, NULL, hold) == 0 ? 0 : 1;
-    if (argc == 7) {
+    if (argc == operation_index + 5) {
       struct aos_network_digest_v1 lease_digest;
       __u64 epoch;
       __u64 generation;
       __u64 deadline;
 
-      if (parse_u64(argv[3], "assignment epoch", &epoch) != 0 ||
-          parse_u64(argv[4], "lease generation", &generation) != 0 ||
-          parse_u64(argv[5], "deadline", &deadline) != 0 ||
-          parse_digest(argv[6], "lease digest", &lease_digest) != 0)
+      if (parse_u64(argv[operation_index + 1], "assignment epoch", &epoch) !=
+              0 ||
+          parse_u64(argv[operation_index + 2], "lease generation",
+                    &generation) != 0 ||
+          parse_u64(argv[operation_index + 3], "deadline", &deadline) != 0 ||
+          parse_digest(argv[operation_index + 4], "lease digest",
+                       &lease_digest) != 0)
         return 2;
-      return update_gate(argv[2], epoch, generation, deadline, &lease_digest,
-                         hold) == 0
+      return update_gate(argv[operation_index], epoch, generation, deadline,
+                         &lease_digest, hold) == 0
                  ? 0
                  : 1;
     }
@@ -1633,6 +1665,11 @@ int main(int argc, char **argv)
     return print_observer_status() == 0 ? 0 : 1;
   if (strcmp(argv[1], "status") == 0 && argc == 2)
     return print_status() == 0 ? 0 : 1;
+  if (strcmp(argv[1], "status-observer") == 0 && argc == 3) {
+    if (select_observer_pin_root(argv[2]) != 0)
+      return 2;
+    return print_status() == 0 ? 0 : 1;
+  }
   if (strcmp(argv[1], "clocks") == 0 && argc == 2) {
     __u64 monotonic = clock_nanoseconds(CLOCK_MONOTONIC);
     __u64 boottime = clock_nanoseconds(CLOCK_BOOTTIME);
@@ -1644,12 +1681,21 @@ int main(int argc, char **argv)
            (unsigned long long)monotonic, (unsigned long long)boottime);
     return 0;
   }
-  if (strcmp(argv[1], "receive") == 0 && argc == 5) {
+  if (strcmp(argv[1], "receive") == 0 && argc == 6) {
     __u64 port;
+    int family;
 
-    if (parse_u64(argv[2], "UDP port", &port) != 0)
+    if (strcmp(argv[2], "ipv4") == 0)
+      family = AF_INET;
+    else if (strcmp(argv[2], "ipv6") == 0)
+      family = AF_INET6;
+    else {
+      fprintf(stderr, "network-lease-gate-fixture: invalid address family\n");
       return 2;
-    return receive_probe(port, argv[3], argv[4]) == 0 ? 0 : 1;
+    }
+    if (parse_u64(argv[3], "UDP port", &port) != 0)
+      return 2;
+    return receive_probe(family, port, argv[4], argv[5]) == 0 ? 0 : 1;
   }
   if (strcmp(argv[1], "teardown") == 0 && argc == 3)
     return teardown(argv[2]) == 0 ? 0 : 1;

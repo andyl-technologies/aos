@@ -132,12 +132,86 @@ in {
     PEER_NS_PATH = f"/run/netns/{PEER_NS}"
     HOST_ADDRESS = "192.0.2.0"
     PEER_ADDRESS = "192.0.2.1"
+    HOST_ADDRESS_V6 = "2001:db8::"
+    PEER_ADDRESS_V6 = "2001:db8::1"
     ASSIGNMENT_EPOCH = 41
     ALLOCATION_GENERATION = 1
     probe_sequence = 0
 
     def clocks():
         return json.loads(vm.succeed(f"{FIXTURE} clocks"))
+
+    def restore_ipv6_state():
+        # Linux removes IPv6 addresses when an interface goes down unless the
+        # keep_addr_on_down sysctl is enabled. Restore the exact target state
+        # while both links remain down so every gate is attached before up.
+        vm.succeed(
+            f"{IP} -6 address replace {HOST_ADDRESS_V6}/127 "
+            f"nodad dev {HOST_IF}"
+        )
+        vm.succeed(
+            f"{IP} -n {PEER_NS} -6 address replace "
+            f"{PEER_ADDRESS_V6}/127 nodad dev {PEER_IF}"
+        )
+        vm.succeed(
+            f"{IP} -6 neigh replace {PEER_ADDRESS_V6} lladdr {peer_mac} "
+            f"nud permanent dev {HOST_IF}"
+        )
+        vm.succeed(
+            f"{IP} -n {PEER_NS} -6 neigh replace {HOST_ADDRESS_V6} "
+            f"lladdr {host_mac} nud permanent dev {PEER_IF}"
+        )
+
+    def assert_ipv6_state():
+        host_addresses = json.loads(
+            vm.succeed(f"{IP} -j -6 address show dev {HOST_IF}")
+        )
+        peer_addresses = json.loads(
+            vm.succeed(
+                f"{IP} netns exec {PEER_NS} "
+                f"{IP} -j -6 address show dev {PEER_IF}"
+            )
+        )
+        host_neighbors = json.loads(
+            vm.succeed(f"{IP} -j -6 neighbor show dev {HOST_IF}")
+        )
+        peer_neighbors = json.loads(
+            vm.succeed(
+                f"{IP} netns exec {PEER_NS} "
+                f"{IP} -j -6 neighbor show dev {PEER_IF}"
+            )
+        )
+
+        assert any(
+            address["local"] == HOST_ADDRESS_V6
+            and address["prefixlen"] == 127
+            and address.get("nodad") is True
+            and not address.get("tentative", False)
+            and not address.get("dadfailed", False)
+            for link in host_addresses
+            for address in link["addr_info"]
+        ), host_addresses
+        assert any(
+            address["local"] == PEER_ADDRESS_V6
+            and address["prefixlen"] == 127
+            and address.get("nodad") is True
+            and not address.get("tentative", False)
+            and not address.get("dadfailed", False)
+            for link in peer_addresses
+            for address in link["addr_info"]
+        ), peer_addresses
+        assert any(
+            neighbor["dst"] == PEER_ADDRESS_V6
+            and neighbor["lladdr"] == peer_mac
+            and neighbor["state"] == ["PERMANENT"]
+            for neighbor in host_neighbors
+        ), host_neighbors
+        assert any(
+            neighbor["dst"] == HOST_ADDRESS_V6
+            and neighbor["lladdr"] == host_mac
+            and neighbor["state"] == ["PERMANENT"]
+            for neighbor in peer_neighbors
+        ), peer_neighbors
 
     def kill_held_fixture(unit, arguments, ready_path):
         vm.succeed(f"rm -f {ready_path}")
@@ -159,29 +233,45 @@ in {
         vm.fail(f"test -e /proc/{pid}")
         return pid
 
-    def probe(direction, expected, observe=False):
+    def probe(direction, expected, observe=False, family="ipv4"):
         global probe_sequence
         probe_sequence += 1
         port = 42000 + probe_sequence
         result = f"/run/aos-gate-probe-{probe_sequence}"
         ready = f"{result}.ready"
         unit = f"aos-gate-receiver-{probe_sequence}"
-        token = f"lease-gate-{direction}-{probe_sequence}"
+        token = f"lease-gate-{family}-{direction}-{probe_sequence}"
+
+        if family == "ipv4":
+            receiver_family = "ipv4"
+            socat_address = "UDP4-DATAGRAM"
+            host_address = HOST_ADDRESS
+            peer_address = PEER_ADDRESS
+        else:
+            assert family == "ipv6", family
+            receiver_family = "ipv6"
+            socat_address = "UDP6-DATAGRAM"
+            host_address = f"[{HOST_ADDRESS_V6}]"
+            peer_address = f"[{PEER_ADDRESS_V6}]"
 
         if direction == "egress":
             receiver_command = (
                 f"{IP} netns exec {PEER_NS} {FIXTURE} receive "
+                f"{receiver_family} "
                 f"{port} {result} {ready}"
             )
             sender_command = (
                 f"printf '%s' '{token}' | {SOCAT} -u - "
-                f"UDP4-DATAGRAM:{PEER_ADDRESS}:{port}"
+                f"{socat_address}:{peer_address}:{port}"
             )
         else:
-            receiver_command = f"{FIXTURE} receive {port} {result} {ready}"
+            receiver_command = (
+                f"{FIXTURE} receive {receiver_family} "
+                f"{port} {result} {ready}"
+            )
             sender_command = (
                 f"printf '%s' '{token}' | {IP} netns exec {PEER_NS} "
-                f"{SOCAT} -u - UDP4-DATAGRAM:{HOST_ADDRESS}:{port}"
+                f"{SOCAT} -u - {socat_address}:{host_address}:{port}"
             )
 
         vm.succeed(f"rm -f {result} {result}.tmp {ready}")
@@ -243,10 +333,21 @@ in {
         f"{IP} link add {HOST_IF} type veth peer name {PEER_IF}"
     )
     vm.succeed(f"{IP} link set {PEER_IF} netns {PEER_NS}")
+    vm.succeed(f"{IP} link set dev {HOST_IF} addrgenmode none")
+    vm.succeed(
+        f"{IP} -n {PEER_NS} link set dev {PEER_IF} addrgenmode none"
+    )
     vm.succeed(f"{IP} address add {HOST_ADDRESS}/31 dev {HOST_IF}")
+    vm.succeed(
+        f"{IP} -6 address add {HOST_ADDRESS_V6}/127 nodad dev {HOST_IF}"
+    )
     vm.succeed(
         f"{IP} netns exec {PEER_NS} {IP} address add "
         f"{PEER_ADDRESS}/31 dev {PEER_IF}"
+    )
+    vm.succeed(
+        f"{IP} -n {PEER_NS} -6 address add {PEER_ADDRESS_V6}/127 "
+        f"nodad dev {PEER_IF}"
     )
     host_mac = json.loads(
         vm.succeed(f"{IP} -j link show dev {HOST_IF}")
@@ -266,10 +367,21 @@ in {
         f"{IP} netns exec {PEER_NS} {IP} neigh replace {HOST_ADDRESS} "
         f"lladdr {host_mac} nud permanent dev {PEER_IF}"
     )
+    vm.succeed(
+        f"{IP} -6 neigh replace {PEER_ADDRESS_V6} lladdr {peer_mac} "
+        f"nud permanent dev {HOST_IF}"
+    )
+    vm.succeed(
+        f"{IP} -n {PEER_NS} -6 neigh replace {HOST_ADDRESS_V6} "
+        f"lladdr {host_mac} nud permanent dev {PEER_IF}"
+    )
     probe("ingress", True)
     probe("egress", True)
+    probe("ingress", True, family="ipv6")
+    probe("egress", True, family="ipv6")
     vm.succeed(f"{IP} link set {HOST_IF} down")
     vm.succeed(f"{IP} netns exec {PEER_NS} {IP} link set {PEER_IF} down")
+    restore_ipv6_state()
 
     # Malformed frozen binding values remain default-drop even with an armed,
     # otherwise-current state. The fixture bypass is test-only.
@@ -289,6 +401,7 @@ in {
         vm.succeed(f"{IP} link set {HOST_IF} down")
         vm.succeed(f"{IP} netns exec {PEER_NS} {IP} link set {PEER_IF} down")
         vm.succeed(f"{FIXTURE} force-teardown")
+        restore_ipv6_state()
 
     installer_pid = kill_held_fixture(
         "aos-gate-installer",
@@ -298,11 +411,14 @@ in {
     )
     vm.succeed(f"{IP} link set {HOST_IF} up")
     vm.succeed(f"{IP} netns exec {PEER_NS} {IP} link set {PEER_IF} up")
+    assert_ipv6_state()
 
     # The pinned ingress and egress links survive actual loader death. With
     # the initialized unarmed state, each direction independently drops.
     probe("ingress", False)
     probe("egress", False)
+    probe("ingress", False, family="ipv6")
+    probe("egress", False, family="ipv6")
     status = json.loads(vm.succeed(f"{FIXTURE} status"))
     assert status["assignment_epoch"] == ASSIGNMENT_EPOCH, status
     assert status["allocation_generation"] == ALLOCATION_GENERATION, status
@@ -319,6 +435,8 @@ in {
     assert updater_pid != installer_pid
     probe("ingress", True, observe=True)
     probe("egress", True, observe=True)
+    probe("ingress", True, family="ipv6")
+    probe("egress", True, family="ipv6")
 
     # Stale state on one direction does not hide enforcement by the other.
     vm.succeed(f"{FIXTURE} inject ingress stale-epoch")
@@ -365,6 +483,8 @@ in {
     )
     probe("ingress", False)
     probe("egress", False)
+    probe("ingress", False, family="ipv6")
+    probe("egress", False, family="ipv6")
 
     second_deadline = clocks()["boottime_nanoseconds"] + 120_000_000_000
     vm.succeed(

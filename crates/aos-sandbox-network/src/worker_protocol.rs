@@ -83,6 +83,9 @@ pub enum NetworkWorkerProtocolError {
     /// The request identity already has a durable worker claim.
     #[error("Network worker request was already claimed")]
     Replay,
+    /// An ordered lifecycle attempt abandoned, failed, or skipped a pending step.
+    #[error("Network lifecycle execution is permanently poisoned")]
+    ExecutionPoisoned,
 }
 
 /// Carries one exact preparation effect from the broker to the fixed worker.
@@ -103,6 +106,28 @@ pub struct NetworkPrepareWorkerDispatchV1 {
 }
 
 impl NetworkPrepareWorkerDispatchV1 {
+    /// Returns the durable request identifier carried by this dispatch.
+    #[must_use]
+    pub const fn request_id(&self) -> [u8; 16] {
+        self.request_id
+    }
+
+    /// Returns the durable effect digest carried by this dispatch.
+    #[must_use]
+    pub const fn effect_digest(&self) -> ObjectDigest {
+        self.effect_digest
+    }
+
+    /// Returns the canonical kernel plan carried by this dispatch.
+    ///
+    /// These fields remain untrusted after wire decoding. Only the issuing
+    /// broker may use them for result correlation; a worker must call
+    /// [`Self::authenticate`] before allowing them to reach mutation code.
+    #[must_use]
+    pub const fn kernel_plan(&self) -> &NetworkKernelPlanV1 {
+        &self.kernel_plan
+    }
+
     /// Decodes one bounded canonical worker record without trusting its contents.
     ///
     /// # Errors
@@ -545,7 +570,7 @@ pub(crate) fn issue_prepare_dispatch(
     Ok(request)
 }
 
-fn check_freshness<F>(
+pub(crate) fn check_freshness<F>(
     authority: &NetworkAuthorityV1,
     fence: &BrokerAuthorizationFenceV1,
     effect: &BrokerEffectIntentV2,
@@ -560,7 +585,7 @@ where
         .map_err(|_| NetworkWorkerProtocolError::Authority)
 }
 
-fn kernel_plan_matches_catalog(
+pub(crate) fn kernel_plan_matches_catalog(
     plan: &NetworkKernelPlanV1,
     catalog: &ResolvedNetworkPreparationV1,
 ) -> bool {
@@ -580,7 +605,7 @@ fn kernel_plan_matches_catalog(
         && expectation.policy().endpoints().len() == catalog.endpoints().len()
 }
 
-fn decode_admitted_semantics(
+pub(crate) fn decode_admitted_semantics(
     bytes: &[u8],
 ) -> Result<CanonicalNetworkSemanticsV1, NetworkWorkerProtocolError> {
     let request = ApplyNetworkRequest::decode_from_slice(bytes)
@@ -658,7 +683,7 @@ fn copy_field<const N: usize>(target: &mut [u8; N], offset: &mut usize, field: &
     *offset = end;
 }
 
-fn decode_catalog(
+pub(crate) fn decode_catalog(
     bytes: &[u8],
 ) -> Result<(BrokerAssignment, ResolvedNetworkPreparationV1), NetworkWorkerProtocolError> {
     if bytes.len() > MAXIMUM_CATALOG_BYTES || bytes.len() < 154 {

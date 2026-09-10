@@ -1205,6 +1205,7 @@
     "aos-ebpf-net-policy"
     "aos-namespace-inspector-manager-query"
     "aos-sandbox-network-lease-gate"
+    "aos-sandbox-network-lease-gate-loader"
     "aos-sandbox-network-observer"
     "aos-sandbox-zfs-worker"
     "aos-hub"

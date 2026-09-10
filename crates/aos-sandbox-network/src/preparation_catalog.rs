@@ -414,7 +414,7 @@ impl NetworkPreparationCatalogV1 {
     }
 
     #[cfg(test)]
-    fn open_for_test(
+    pub(crate) fn open_for_test(
         directory: &Path,
         policy: NetworkPolicyCatalogV1,
         minimum_generation: u64,

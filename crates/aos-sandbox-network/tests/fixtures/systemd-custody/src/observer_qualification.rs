@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::num::NonZeroU32;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
@@ -15,6 +16,8 @@ use aos_proto::aos::sandbox::local::v1::{
     ApplyNetworkRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerMethod,
     BrokerRequestEnvelope, NetworkAction,
 };
+#[cfg(test)]
+use aos_sandbox_broker::{AdmissionRequest, BrokerAuthority, BrokerDomain};
 use aos_sandbox_core::format::{
     encode_broker_authorization_plan, encode_ownership_lease, encode_sandbox_spec,
     encode_signature, encode_trust_policy,
@@ -33,18 +36,25 @@ use aos_sandbox_core::{
     SandboxId, TrustScopeId, descriptor_for_bytes, sign_statement,
 };
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, SingleThreadedProcess};
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_network::{
-    FixedBpfObservationReader, FixedNftablesObservationReader, FixedRtnetlinkObservationReader,
-    NetworkAddressPoolV1, NetworkAdmissionCoordinator, NetworkAdmissionOutcome,
+    ActivatedNetworkDescriptors, AdmittedNetworkLifecycleWorkerV1,
+    AuthenticatedNetworkPreparationV1, FixedBpfObservationReader, FixedNftablesObservationReader,
+    FixedRtnetlinkObservationReader, NetworkAddressPoolV1, NetworkAdmissionOutcome,
     NetworkAllocationPolicyV1, NetworkIpAddressV1, NetworkIpPrefixV1,
-    NetworkKernelObservationReaders, NetworkKernelPlanV1, NetworkNamespaceCatalogOutcomeV1,
+    NetworkKernelObservationReaders, NetworkKernelPlanV1, NetworkLifecycleAdmissionCoordinator,
+    NetworkLifecycleAdmissionOutcome, NetworkLifecycleStateStore, NetworkNamespaceCatalogOutcomeV1,
     NetworkNamespaceCatalogV1, NetworkNamespaceStoreName, NetworkPolicyCatalogV1,
     NetworkPolicyProfileV1, NetworkPolicyProgramV1, NetworkPreparationCatalogOutcomeV1,
-    NetworkPreparationCatalogV1, NetworkPreparationReservationV1, NetworkStateStore,
-    StableRtnetlinkNamespaceInventoryV1, VerifiedNetworkResultV1, adopt_systemd_activation,
+    NetworkPreparationCatalogV1, NetworkPreparationFinalizationInput,
+    NetworkPreparationReservationV1, NetworkPrepareWorkerDispatchV1, NetworkStateStore,
+    ObservedIpAddressV1, PreparedNetworkWorkerOutput, StableRtnetlinkNamespaceInventoryV1,
+    SystemdNetworkLifecycleAdmissionExecutor, VerifiedNetworkResultV1, adopt_systemd_activation,
+    begin_network_preparation_once, finalize_executed_network_preparation,
     observe_stable_network_kernel, observe_stable_rtnetlink_namespace,
+    publish_committed_network_preparation,
 };
 use aos_sandbox_protocol::semantics::network::CanonicalNetworkSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -55,9 +65,55 @@ use sha2::{Digest as _, Sha256};
 
 const NODE: NodeId = NodeId::from_bytes([31; 16]);
 const REQUEST_ID: [u8; 16] = [7; 16];
+const LIFECYCLE_REQUEST_ID: [u8; 16] = [8; 16];
 const PREPARATION_DIRECTORY: &str = "preparation";
 const OPERATION_DIRECTORY: &str = "operations";
+const LIFECYCLE_DIRECTORY: &str = "lifecycle";
 const NAMESPACE_DIRECTORY: &str = "namespaces";
+
+/// Carries one fresh durable worker dispatch and its connectivity coordinates.
+pub(crate) struct PreparedWorkerQualification {
+    /// Owns the operation journal used across worker custody correlation.
+    pub(crate) coordinator: NetworkLifecycleAdmissionCoordinator,
+    /// Retains the exact preparation catalog needed for publication.
+    pub(crate) preparations: NetworkPreparationCatalogV1,
+    /// Retains the authority-authenticated preparation used by lifecycle admission.
+    pub(crate) preparation: AuthenticatedNetworkPreparationV1,
+    /// Carries the single-use authenticated effect request.
+    pub(crate) dispatch: NetworkPrepareWorkerDispatchV1,
+    /// Retains the exact authenticated plan for independent observation.
+    pub(crate) kernel_plan: NetworkKernelPlanV1,
+    /// Retains the exact resolved preparation bound into the dispatch.
+    pub(crate) resolution: aos_sandbox_network::ResolvedNetworkPreparationV1,
+    /// Retains the canonical request bytes committed by the operation journal.
+    pub(crate) request_body: Vec<u8>,
+    /// Names the plan-derived host veth.
+    pub(crate) host_name: String,
+    /// Names the plan-derived sandbox veth.
+    pub(crate) sandbox_name: String,
+    /// Holds the host endpoint of the point-to-point IPv6 pair.
+    pub(crate) host_ipv6: String,
+    /// Holds the sandbox endpoint of the point-to-point IPv6 pair.
+    pub(crate) sandbox_ipv6: String,
+    /// Holds the shared IPv6 prefix length.
+    pub(crate) prefix_length: u8,
+    /// Identifies the assignment checked by the lease gate.
+    pub(crate) assignment_epoch: u64,
+    /// Commits the exact portable assignment.
+    pub(crate) assignment_digest: String,
+    /// Names both the namespace custody record and scoped BPF pin root.
+    pub(crate) network_handle: String,
+    /// Fences reuse of deterministic link allocation.
+    pub(crate) allocation_generation: u64,
+}
+
+#[derive(Clone, Copy)]
+struct WorkerAuthorizationWindow {
+    clock: RawPairedClockSample,
+    request_deadline_boottime_nanoseconds: u64,
+    issued_wall_seconds: i64,
+    expires_wall_seconds: i64,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mode {
@@ -65,11 +121,388 @@ enum Mode {
     Managed,
 }
 
+impl WorkerAuthorizationWindow {
+    fn current() -> Result<Self> {
+        const REQUEST_HORIZON_NANOSECONDS: u64 = 120_000_000_000;
+        const AUTHORITY_HORIZON_SECONDS: i64 = 300;
+
+        let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+        let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+        let boottime_seconds =
+            u64::try_from(boottime.tv_sec).context("worker boottime seconds are negative")?;
+        let boottime_subseconds =
+            u64::try_from(boottime.tv_nsec).context("worker boottime nanoseconds are negative")?;
+        let boottime_nanoseconds = boottime_seconds
+            .checked_mul(1_000_000_000)
+            .and_then(|value| value.checked_add(boottime_subseconds))
+            .context("worker boottime overflows nanoseconds")?;
+        let request_deadline_boottime_nanoseconds = boottime_nanoseconds
+            .checked_add(REQUEST_HORIZON_NANOSECONDS)
+            .context("worker request deadline overflows boottime")?;
+        let expires_wall_seconds = realtime
+            .tv_sec
+            .checked_add(AUTHORITY_HORIZON_SECONDS)
+            .context("worker authority expiration overflows wall clock")?;
+        let issued_wall_seconds = realtime
+            .tv_sec
+            .checked_sub(30)
+            .context("worker authority issue time underflows wall clock")?;
+        let clock = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock")?,
+            KernelBootId::current()?.into_bytes(),
+            realtime.tv_sec,
+            boottime_nanoseconds,
+        )
+        .context("construct current worker qualification clock")?;
+
+        Ok(Self {
+            clock,
+            request_deadline_boottime_nanoseconds,
+            issued_wall_seconds,
+            expires_wall_seconds,
+        })
+    }
+}
+
 pub(crate) fn managed_policy_digest(gate_object: &Path) -> Result<ObjectDigest> {
     let profile = network_profile(Mode::Managed)?;
     let gate_digest = Some(artifact_digest(gate_object)?);
 
     Ok(policy_program(Mode::Managed, &profile, gate_digest)?.digest())
+}
+
+/// Writes the exact protected authority consumed by the production worker.
+pub(crate) fn provision_worker_authority(directory: &Path) -> Result<()> {
+    let fixture = AuthorityFixture::new()?;
+    fs::create_dir_all(directory).context("create worker authority directory")?;
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+        .context("protect worker authority directory")?;
+
+    let mut journal_key = Vec::with_capacity(48);
+    journal_key.extend_from_slice(&[46; 16]);
+    journal_key.extend_from_slice(&[47; 32]);
+    let plan_public_key = fixture.plan_key.verifying_key().to_bytes();
+    let lease_public_key = fixture.lease_key.verifying_key().to_bytes();
+    let revocation_scope = [45; 16];
+    for (name, bytes) in [
+        ("broker-plan-policy.cbor", fixture.plan_policy.as_slice()),
+        ("broker-plan-public-key", plan_public_key.as_slice()),
+        ("broker-revocation-scope", revocation_scope.as_slice()),
+        (
+            "ownership-lease-policy.cbor",
+            fixture.lease_policy.as_slice(),
+        ),
+        ("ownership-lease-public-key", lease_public_key.as_slice()),
+        ("node-id", NODE.as_bytes()),
+        ("journal-mac-key", journal_key.as_slice()),
+    ] {
+        let path = directory.join(name);
+        fs::write(&path, bytes).with_context(|| format!("write protected {name}"))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("protect {name}"))?;
+    }
+    Ok(())
+}
+
+/// Builds one signed, durable dispatch for the real production worker.
+pub(crate) fn prepare_worker_dispatch(
+    state_root: &Path,
+    enforcement_artifact: &Path,
+    gate_object: &Path,
+) -> Result<PreparedWorkerQualification> {
+    let authority_fixture = AuthorityFixture::new()?;
+    let authority = authority_fixture.authority()?;
+    let gate_digest = artifact_digest(gate_object)?;
+    let enforcement_digest = artifact_digest(enforcement_artifact)?;
+    let policy = worker_policy_catalog(enforcement_digest, gate_digest)?;
+    let mut preparations = NetworkPreparationCatalogV1::open_root_owned(
+        &state_root.join(PREPARATION_DIRECTORY),
+        policy,
+        1,
+    )
+    .context("open worker preparation catalog")?;
+    let prepared = reserve_preparation(Mode::Managed, &mut preparations, &authority)?;
+    let assignment = prepared.preparation().assignment();
+    let resolution = prepared.preparation().resolution();
+    let namespace_plan = preparations
+        .plan_for_resolution(*resolution.reserved_network_handle(), resolution)
+        .context("recover worker namespace plan")?;
+    let program = preparations
+        .program_for_resolution(*resolution.reserved_network_handle(), resolution)
+        .context("recover worker policy program")?;
+    let kernel_plan = NetworkKernelPlanV1::compile(assignment, namespace_plan, program)
+        .context("compile worker kernel plan")?;
+    let expectation = kernel_plan.observation_expectation();
+    let veth = expectation.veth().context("worker plan omitted its veth")?;
+    let ipv6 = expectation
+        .address_pairs()
+        .iter()
+        .find(|pair| matches!(pair.host, aos_sandbox_network::ObservedIpAddressV1::Ipv6(_)))
+        .context("worker plan omitted its IPv6 pair")?;
+    let host_name = veth.host_name.clone();
+    let sandbox_name = veth.sandbox_name.clone();
+    let host_ipv6 = format_observed_ip(ipv6.host);
+    let sandbox_ipv6 = format_observed_ip(ipv6.sandbox);
+    let prefix_length = ipv6.prefix_length;
+    let allocation_generation = expectation.allocation_generation();
+    let window = WorkerAuthorizationWindow::current()?;
+    let request =
+        apply_request_with_deadline(assignment, window.request_deadline_boottime_nanoseconds)?;
+    let artifacts = authority_fixture.artifacts_at(
+        &request,
+        assignment,
+        window.clock.boottime_nanoseconds(),
+        window.issued_wall_seconds,
+        window.expires_wall_seconds,
+    )?;
+    let operation_store =
+        NetworkStateStore::open_root_owned(&state_root.join(OPERATION_DIRECTORY), &authority, 0)
+            .context("open worker operation state")?;
+    let lifecycle_store = NetworkLifecycleStateStore::open_root_owned(
+        &state_root.join(LIFECYCLE_DIRECTORY),
+        &authority,
+    )
+    .context("open worker lifecycle state")?;
+    let mut coordinator =
+        NetworkLifecycleAdmissionCoordinator::new(authority, operation_store, lifecycle_store);
+    let outcome = coordinator.admit_apply_intent(
+        &request,
+        &artifacts,
+        prepared.preparation(),
+        ProtocolVersion::new(1, 1),
+        peer(),
+        peer_policy(),
+        &window.clock,
+    )?;
+    let NetworkAdmissionOutcome::Prepared { effect_digest } = outcome else {
+        bail!("worker qualification did not create a fresh prepared operation");
+    };
+    let durable_kernel_plan = kernel_plan.clone();
+    let dispatch = begin_network_preparation_once(
+        &mut coordinator,
+        REQUEST_ID,
+        effect_digest,
+        &request,
+        kernel_plan,
+    )?;
+    let durable_resolution = resolution.clone();
+    let summary = PreparedWorkerQualification {
+        coordinator,
+        preparations,
+        preparation: prepared.preparation().clone(),
+        dispatch,
+        kernel_plan: durable_kernel_plan,
+        resolution: durable_resolution,
+        request_body: request,
+        host_name,
+        sandbox_name,
+        host_ipv6,
+        sandbox_ipv6,
+        prefix_length,
+        assignment_epoch: assignment.epoch().get(),
+        assignment_digest: format_digest(assignment.digest()),
+        network_handle: format_digest(ObjectDigest::from_bytes(
+            *resolution.reserved_network_handle(),
+        )),
+        allocation_generation,
+    };
+    Ok(summary)
+}
+
+/// Observes, commits, and publishes one real worker-prepared namespace.
+pub(crate) fn commit_worker_preparation(
+    mut prepared: PreparedWorkerQualification,
+    output: &PreparedNetworkWorkerOutput,
+    state_root: &Path,
+    lifecycle_worker_socket: PathBuf,
+    lifecycle_cgroup_root: CgroupV2Root,
+    ip: PathBuf,
+    nft: PathBuf,
+    enforcement_loader: PathBuf,
+    bpf_observer: PathBuf,
+    gate_object: PathBuf,
+) -> Result<(ObjectDigest, AdmittedNetworkLifecycleWorkerV1)> {
+    let rtnetlink =
+        FixedRtnetlinkObservationReader::new(ip).context("retain worker rtnetlink observer")?;
+    let nftables = FixedNftablesObservationReader::new(nft, enforcement_loader)
+        .context("retain worker nftables observer")?;
+    let bpf = FixedBpfObservationReader::new(bpf_observer, gate_object)
+        .context("retain worker BPF observer")?;
+    let host = NamespaceFd::current_network().context("retain observer host namespace")?;
+    let worker = SingleThreadedProcess::verify().context("verify single-threaded observer")?;
+    let mut namespaces =
+        NetworkNamespaceCatalogV1::open_root_owned(&state_root.join(NAMESPACE_DIRECTORY))
+            .context("open worker namespace catalog")?;
+    let finalization = finalize_executed_network_preparation(
+        &mut prepared.coordinator,
+        &prepared.preparations,
+        &mut namespaces,
+        NetworkKernelObservationReaders::new(&rtnetlink, &nftables, Some(&bpf)),
+        NetworkPreparationFinalizationInput::new(
+            &prepared.request_body,
+            &prepared.resolution,
+            &prepared.kernel_plan,
+            output,
+        ),
+        &host,
+        &worker,
+    )
+    .context("finalize observed worker preparation")?;
+    let result = finalization.result();
+    ensure!(
+        finalization.publication() == NetworkNamespaceCatalogOutcomeV1::Published,
+        "fresh worker namespace publication was not new"
+    );
+    ensure!(
+        publish_committed_network_preparation(
+            &prepared.coordinator,
+            &prepared.preparations,
+            &mut namespaces,
+            result,
+        )? == NetworkNamespaceCatalogOutcomeV1::Replay,
+        "committed worker namespace publication did not replay exactly"
+    );
+
+    drop(namespaces);
+    let recovery_authority = AuthorityFixture::new()?.authority()?;
+    let recovery_store = NetworkStateStore::open_root_owned(
+        &state_root.join(OPERATION_DIRECTORY),
+        &recovery_authority,
+        0,
+    )
+    .context("reopen committed worker operation state")?;
+    let recovery = recovery_store.recovery_snapshot();
+    ensure!(
+        recovery.entries().len() == 1
+            && recovery.entries()[0].request_id() == output.request_id()
+            && recovery.entries()[0].result() == Some(result),
+        "reopened worker operation journal did not reproduce the commit"
+    );
+    let namespaces =
+        NetworkNamespaceCatalogV1::open_root_owned(&state_root.join(NAMESPACE_DIRECTORY))
+            .context("reopen published worker namespace catalog")?;
+    let store_name = NetworkNamespaceStoreName::from_network_handle(
+        *prepared.resolution.reserved_network_handle(),
+    )?;
+    let listener_path = state_root.join(format!(
+        "worker-observer-listener-{}.sock",
+        std::process::id()
+    ));
+    let listener = RecordSubjectListener::bind(&listener_path, 1)
+        .context("create worker observer listener")?;
+    let namespace_pin_name = format_digest(ObjectDigest::from_bytes(
+        *prepared.resolution.reserved_network_handle(),
+    ));
+    let namespace_path = Path::new("/run/aos/sandbox-pins/netns").join(namespace_pin_name);
+    let namespace_file = File::open(namespace_path).context("reopen fixed worker namespace pin")?;
+    let activation = adopt_systemd_activation(
+        listener,
+        &format!("aos-netd:{}", store_name.as_str()),
+        vec![namespace_file.into()],
+        1,
+        host.identity(),
+    )
+    .context("adopt published worker namespace custody")?;
+    let published_observation = observe_stable_network_kernel(
+        NetworkKernelObservationReaders::new(&rtnetlink, &nftables, Some(&bpf)),
+        prepared.kernel_plan.observation_expectation(),
+        &activation,
+        &namespaces,
+        &host,
+        &worker,
+    )
+    .context("reobserve catalog-authorized worker preparation")?;
+    ensure!(
+        published_observation.digest() == finalization.observation_digest(),
+        "catalog-authorized observation changed after publication"
+    );
+
+    let lifecycle_admission = admit_lifecycle_worker(
+        &mut prepared,
+        &namespaces,
+        &activation,
+        &store_name,
+        lifecycle_worker_socket,
+        lifecycle_cgroup_root,
+    )?;
+
+    Ok((finalization.observation_digest(), lifecycle_admission))
+}
+
+fn admit_lifecycle_worker(
+    prepared: &mut PreparedWorkerQualification,
+    namespaces: &NetworkNamespaceCatalogV1,
+    activation: &ActivatedNetworkDescriptors,
+    store_name: &NetworkNamespaceStoreName,
+    lifecycle_worker_socket: PathBuf,
+    cgroup_root: CgroupV2Root,
+) -> Result<AdmittedNetworkLifecycleWorkerV1> {
+    let target = activation
+        .namespaces
+        .get(store_name)
+        .context("re-adopted lifecycle target is absent")?;
+    ensure!(
+        target.network_handle() == *prepared.resolution.reserved_network_handle(),
+        "re-adopted lifecycle target handle changed"
+    );
+
+    let authority_fixture = AuthorityFixture::new()?;
+    let authority = authority_fixture.authority()?;
+    let window = WorkerAuthorizationWindow::current()?;
+    let request = lifecycle_destroy_request(
+        prepared.preparation.assignment(),
+        target.network_handle(),
+        window.request_deadline_boottime_nanoseconds,
+    )?;
+    let artifacts = authority_fixture.artifacts_at(
+        &request,
+        prepared.preparation.assignment(),
+        window.clock.boottime_nanoseconds(),
+        window.issued_wall_seconds,
+        window.expires_wall_seconds,
+    )?;
+    let outcome = prepared.coordinator.admit_lifecycle_intent(
+        &request,
+        &artifacts,
+        &prepared.preparation,
+        &prepared.kernel_plan,
+        namespaces,
+        ProtocolVersion::new(1, 1),
+        peer(),
+        peer_policy(),
+        &window.clock,
+    )?;
+    let NetworkLifecycleAdmissionOutcome::Prepared { effect_digest } = outcome else {
+        bail!("lifecycle worker qualification did not prepare a fresh operation");
+    };
+    let permit = prepared
+        .coordinator
+        .mark_effect_ambiguous(LIFECYCLE_REQUEST_ID, effect_digest)?;
+    let dispatch = prepared.coordinator.issue_lifecycle_worker_dispatch(
+        permit,
+        &request,
+        prepared.preparation.clone(),
+        prepared.kernel_plan.clone(),
+    )?;
+
+    let host = NamespaceFd::current_network().context("retain lifecycle broker host namespace")?;
+    let mut executor =
+        SystemdNetworkLifecycleAdmissionExecutor::new(lifecycle_worker_socket, cgroup_root, host)
+            .context("construct lifecycle admission executor")?;
+    let admitted = executor
+        .admit_once(&authority, &dispatch, target)
+        .context("complete lifecycle worker admission")?;
+    ensure!(
+        admitted.request_id() == LIFECYCLE_REQUEST_ID
+            && admitted.effect_digest() == effect_digest
+            && admitted.target_namespace() == target.identity(),
+        "lifecycle worker acknowledgement changed its authenticated transcript"
+    );
+
+    // Admission intentionally stops at Ambiguous. This qualification never
+    // authorizes execution, claims replay, mutates the namespace, or commits a
+    // lifecycle transition.
+    Ok(admitted)
 }
 
 impl Mode {
@@ -310,13 +743,20 @@ fn run_observation(
     let operation_store =
         NetworkStateStore::open_root_owned(&state_root.join(OPERATION_DIRECTORY), &authority, 0)
             .context("open protected operation state")?;
-    let mut coordinator = NetworkAdmissionCoordinator::new(authority, operation_store);
+    let lifecycle_store = NetworkLifecycleStateStore::open_root_owned(
+        &state_root.join(LIFECYCLE_DIRECTORY),
+        &authority,
+    )
+    .context("open protected lifecycle state")?;
+    let mut coordinator =
+        NetworkLifecycleAdmissionCoordinator::new(authority, operation_store, lifecycle_store);
     let result = commit_or_recover(
         &mut coordinator,
         &request,
         &artifacts,
         prepared.preparation(),
         &resolution,
+        kernel_plan.digest(),
         namespace_path,
     )?;
     let publication = coordinator
@@ -446,6 +886,60 @@ fn policy_catalog(mode: Mode, gate_digest: Option<ObjectDigest>) -> Result<Netwo
     let policy_profile = NetworkPolicyProfileV1::new(profile, program, allocation)?;
     NetworkPolicyCatalogV1::new(NODE, 1, vec![policy_profile])
         .context("construct qualification Network policy catalog")
+}
+
+fn worker_policy_catalog(
+    enforcement_digest: ObjectDigest,
+    gate_digest: ObjectDigest,
+) -> Result<NetworkPolicyCatalogV1> {
+    let profile = network_profile(Mode::Managed)?;
+    let remote_prefix = aos_sandbox_network::NetworkIpPrefixV1::ipv6(
+        [
+            0x20, 0x01, 0x0d, 0xb8, 0, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        113,
+    )?;
+    let ports = Some(aos_sandbox_network::NetworkPortRangeV1::new(
+        43_000, 43_127,
+    )?);
+    let endpoint = aos_sandbox_network::NetworkEndpointPolicyV1::new(
+        profile.endpoint_ids()[0],
+        vec![
+            aos_sandbox_network::NetworkFlowPolicyV1::new(
+                aos_sandbox_network::NetworkFlowDirectionV1::Ingress,
+                aos_sandbox_network::NetworkTransportProtocolV1::Udp,
+                remote_prefix,
+                ports,
+            )?,
+            aos_sandbox_network::NetworkFlowPolicyV1::new(
+                aos_sandbox_network::NetworkFlowDirectionV1::Egress,
+                aos_sandbox_network::NetworkTransportProtocolV1::Udp,
+                remote_prefix,
+                ports,
+            )?,
+        ],
+    )?;
+    let program = NetworkPolicyProgramV1::new(
+        Mode::Managed.network_kind(),
+        enforcement_digest,
+        Some(gate_digest),
+        vec![endpoint],
+    )?;
+    let allocation = NetworkAllocationPolicyV1::veth(
+        1_500,
+        [0x02, 0xaa, 0xbb],
+        vec![NetworkAddressPoolV1::new(NetworkIpPrefixV1::ipv6(
+            [
+                0x20, 0x01, 0x0d, 0xb8, 0, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+            113,
+        )?)?],
+        Vec::new(),
+    )?;
+    let policy_profile = NetworkPolicyProfileV1::new(profile, program, allocation)?;
+
+    NetworkPolicyCatalogV1::new(NODE, 1, vec![policy_profile])
+        .context("construct worker qualification Network policy catalog")
 }
 
 fn reserve_preparation(
@@ -594,13 +1088,20 @@ fn marker_descriptor(kind: PortableMediaType, marker: u8) -> Result<ObjectDescri
 }
 
 fn apply_request(assignment: aos_sandbox_core::BrokerAssignment) -> Result<Vec<u8>> {
+    apply_request_with_deadline(assignment, 180)
+}
+
+fn apply_request_with_deadline(
+    assignment: aos_sandbox_core::BrokerAssignment,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<Vec<u8>> {
     let mut request = ApplyNetworkRequest::default();
     let header = request.header.get_or_insert_default();
     header.protocol_major = 1;
     header.protocol_minor = 1;
     header.request_id = REQUEST_ID.to_vec();
     header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
-    header.deadline_boottime_nanoseconds = 180;
+    header.deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
     header.maximum_response_bytes = 4096;
     let fence = request.fence.get_or_insert_default();
     fence.sandbox_id = assignment.sandbox().as_bytes().to_vec();
@@ -615,12 +1116,38 @@ fn apply_request(assignment: aos_sandbox_core::BrokerAssignment) -> Result<Vec<u
     Ok(request.encode_to_vec())
 }
 
+fn lifecycle_destroy_request(
+    assignment: aos_sandbox_core::BrokerAssignment,
+    network_handle: [u8; 32],
+    deadline_boottime_nanoseconds: u64,
+) -> Result<Vec<u8>> {
+    let mut request = ApplyNetworkRequest::default();
+    let header = request.header.get_or_insert_default();
+    header.protocol_major = 1;
+    header.protocol_minor = 1;
+    header.request_id = LIFECYCLE_REQUEST_ID.to_vec();
+    header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+    header.deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
+    header.maximum_response_bytes = 4096;
+    let fence = request.fence.get_or_insert_default();
+    fence.sandbox_id = assignment.sandbox().as_bytes().to_vec();
+    fence.incarnation_id = assignment.incarnation().as_bytes().to_vec();
+    fence.assignment_epoch = assignment.epoch().get();
+    fence.desired_generation = assignment.desired_generation().get();
+    fence.assignment_digest = assignment.digest().as_bytes().to_vec();
+    request.action = NetworkAction::NETWORK_ACTION_DESTROY.into();
+    request.network_handle = network_handle.to_vec();
+
+    Ok(request.encode_to_vec())
+}
+
 fn commit_or_recover(
-    coordinator: &mut NetworkAdmissionCoordinator,
+    coordinator: &mut NetworkLifecycleAdmissionCoordinator,
     request: &[u8],
     artifacts: &ValidatedUntrustedAuthorizationArtifacts,
     preparation: &aos_sandbox_network::AuthenticatedNetworkPreparationV1,
     resolution: &aos_sandbox_network::ResolvedNetworkPreparationV1,
+    kernel_plan_digest: ObjectDigest,
     namespace_path: &Path,
 ) -> Result<aos_sandbox_network::CommittedNetworkResultV1> {
     let outcome = coordinator.admit_apply_intent(
@@ -638,7 +1165,7 @@ fn commit_or_recover(
     let NetworkAdmissionOutcome::Prepared { effect_digest } = outcome else {
         bail!("observer qualification found an unfinished non-replay operation");
     };
-    drop(coordinator.mark_effect_ambiguous(REQUEST_ID, effect_digest)?);
+    drop(coordinator.mark_prepare_effect_ambiguous(REQUEST_ID, effect_digest)?);
 
     let namespace_file = File::open(namespace_path).context("open observed namespace")?;
     let namespace = NamespaceFd::from_owned(namespace_file.into(), NamespaceKind::Network)
@@ -652,10 +1179,11 @@ fn commit_or_recover(
         boot_id,
         identity.device,
         identity.inode,
+        kernel_plan_digest,
         ObjectDigest::from_bytes([84; 32]),
     )?;
     coordinator
-        .commit_verified(REQUEST_ID, effect_digest, verified)
+        .commit_verified_preparation(REQUEST_ID, effect_digest, verified)
         .context("commit typed namespace result")
 }
 
@@ -699,7 +1227,14 @@ fn format_ip(address: NetworkIpAddressV1) -> String {
     }
 }
 
-fn format_digest(digest: ObjectDigest) -> String {
+fn format_observed_ip(address: ObservedIpAddressV1) -> String {
+    match address {
+        ObservedIpAddressV1::Ipv4(octets) => Ipv4Addr::from(octets).to_string(),
+        ObservedIpAddressV1::Ipv6(octets) => Ipv6Addr::from(octets).to_string(),
+    }
+}
+
+pub(crate) fn format_digest(digest: ObjectDigest) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let mut encoded = String::with_capacity(64);
@@ -798,13 +1333,53 @@ impl AuthorityFixture {
             .context("construct Network authority")
     }
 
+    #[cfg(test)]
+    fn broker_authority(&self) -> Result<BrokerAuthority> {
+        let plan = BrokerPlanTrustAnchor::from_trusted_configuration(
+            self.plan_policy.clone(),
+            self.plan_descriptor.clone(),
+            self.plan_scope,
+            self.plan_signer.clone(),
+            self.plan_key.verifying_key().to_bytes(),
+            self.revocation,
+            DecodeLimits::default(),
+        )?;
+        let lease = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+            self.lease_policy.clone(),
+            self.lease_descriptor.clone(),
+            self.lease_scope,
+            self.lease_signer.clone(),
+            self.lease_key.verifying_key().to_bytes(),
+            DecodeLimits::default(),
+        )?;
+
+        BrokerAuthority::new(BrokerDomain::Network, plan, lease, NODE, [46; 16], [47; 32])
+            .context("construct direct Network broker authority")
+    }
+
     fn artifacts(
         &self,
         request: &[u8],
         assignment: aos_sandbox_core::BrokerAssignment,
     ) -> Result<ValidatedUntrustedAuthorizationArtifacts> {
-        let candidate = CanonicalNetworkSemanticsV1::decode(request, peer(), peer_policy(), 100)
-            .context("decode canonical Network request")?;
+        self.artifacts_at(request, assignment, 100, 100, 300)
+    }
+
+    fn artifacts_at(
+        &self,
+        request: &[u8],
+        assignment: aos_sandbox_core::BrokerAssignment,
+        request_boottime_nanoseconds: u64,
+        issued_wall_seconds: i64,
+        expires_wall_seconds: i64,
+    ) -> Result<ValidatedUntrustedAuthorizationArtifacts> {
+        let candidate = CanonicalNetworkSemanticsV1::decode(
+            request,
+            peer(),
+            peer_policy(),
+            request_boottime_nanoseconds,
+        )
+        .context("decode canonical Network request")?;
         let grant = BrokerGrant::new(
             candidate.broker_verb(),
             candidate.grant_target(),
@@ -822,8 +1397,8 @@ impl AuthorityFixture {
             vec![grant],
             ObjectDigest::from_bytes([48; 32]),
             self.revocation,
-            100,
-            300,
+            issued_wall_seconds,
+            expires_wall_seconds,
             Vec::new(),
         )?;
         let plan_bytes = encode_broker_authorization_plan(&plan);
@@ -836,8 +1411,8 @@ impl AuthorityFixture {
             )?,
             NODE,
             1,
-            100,
-            300,
+            issued_wall_seconds,
+            expires_wall_seconds,
             10,
             [49; 16],
         )?;
@@ -851,6 +1426,8 @@ impl AuthorityFixture {
                 SignaturePurpose::BrokerAuthorization,
                 &self.plan_descriptor,
                 &self.plan_key,
+                issued_wall_seconds,
+                expires_wall_seconds,
             )?,
             broker_plan: plan_bytes,
             ownership_lease_signature: signed(
@@ -861,6 +1438,8 @@ impl AuthorityFixture {
                 SignaturePurpose::OwnershipLease,
                 &self.lease_descriptor,
                 &self.lease_key,
+                issued_wall_seconds,
+                expires_wall_seconds,
             )?,
             ownership_lease: lease_bytes,
             ..Default::default()
@@ -899,6 +1478,8 @@ fn signed(
     purpose: SignaturePurpose,
     policy: &ObjectDescriptor,
     key: &SigningKey,
+    issued_wall_seconds: i64,
+    expires_wall_seconds: i64,
 ) -> Result<Vec<u8>> {
     let subject = descriptor_for_bytes(MediaType::new(media.as_str().to_owned())?, bytes);
     let statement = SignatureStatement::new(
@@ -906,8 +1487,8 @@ fn signed(
         scope,
         signer,
         purpose,
-        100,
-        Some(300),
+        issued_wall_seconds,
+        Some(expires_wall_seconds),
         policy.clone(),
     )?;
     Ok(encode_signature(&sign_statement(statement, key)?))
@@ -937,5 +1518,78 @@ mod tests {
     fn both_observer_modes_have_valid_policy_catalogs() {
         assert!(policy_catalog(Mode::Isolated, None).is_ok());
         assert!(policy_catalog(Mode::Managed, Some(ObjectDigest::from_bytes([83; 32]))).is_ok());
+    }
+
+    #[test]
+    fn worker_dispatch_uses_a_current_clock_window() {
+        let profile = network_profile(Mode::Managed).unwrap();
+        let spec = sandbox_spec(profile).unwrap();
+        let manifest = assignment_manifest(&spec, Mode::Managed).unwrap();
+        let assignment = manifest.broker_assignment().unwrap();
+        let fixture = AuthorityFixture::new().unwrap();
+        let window = WorkerAuthorizationWindow::current().unwrap();
+        let request =
+            apply_request_with_deadline(assignment, window.request_deadline_boottime_nanoseconds)
+                .unwrap();
+
+        let semantics = CanonicalNetworkSemanticsV1::decode(
+            &request,
+            peer(),
+            peer_policy(),
+            window.clock.boottime_nanoseconds(),
+        )
+        .unwrap();
+        let artifacts = fixture
+            .artifacts_at(
+                &request,
+                assignment,
+                window.clock.boottime_nanoseconds(),
+                window.issued_wall_seconds,
+                window.expires_wall_seconds,
+            )
+            .unwrap();
+        fixture
+            .broker_authority()
+            .unwrap()
+            .admit(
+                &artifacts,
+                AdmissionRequest {
+                    audience: BrokerAudience::Network,
+                    protocol: ProtocolId::NetworkBroker,
+                    protocol_version: ProtocolVersion::new(1, 1),
+                    assignment,
+                    request_id: REQUEST_ID,
+                    request_body: &request,
+                    descriptor_count: 0,
+                    verb: semantics.broker_verb(),
+                    target: semantics.grant_target(),
+                    argument_commitment: semantics.argument_commitment(),
+                    request_deadline_boottime_nanoseconds: window
+                        .request_deadline_boottime_nanoseconds,
+                },
+                &window.clock,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            window
+                .request_deadline_boottime_nanoseconds
+                .checked_sub(window.clock.boottime_nanoseconds()),
+            Some(120_000_000_000),
+        );
+        assert_eq!(
+            window
+                .expires_wall_seconds
+                .checked_sub(window.clock.wall_seconds()),
+            Some(300),
+        );
+        assert_eq!(
+            window
+                .clock
+                .wall_seconds()
+                .checked_sub(window.issued_wall_seconds),
+            Some(30),
+        );
     }
 }

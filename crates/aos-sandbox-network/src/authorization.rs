@@ -6,7 +6,7 @@ use aos_proto::aos::sandbox::local::v1::ApplyNetworkRequest;
 use aos_sandbox::RecordNamespace;
 use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
-    BrokerDomain, BrokerLocalRecordDomain, VerifiedBrokerAdmission,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerLocalRecordDomain, VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, DesiredGeneration,
@@ -177,6 +177,29 @@ impl NetworkAuthorityV1 {
         Ok(admission)
     }
 
+    pub(crate) fn latest_fence(
+        &self,
+        sandbox_id: &[u8; 16],
+        candidates: [Option<&[u8]>; 2],
+    ) -> Result<Option<Vec<u8>>, NetworkAdmissionError> {
+        let mut latest: Option<(Vec<u8>, BrokerAuthorizationFenceV1)> = None;
+        for bytes in candidates.into_iter().flatten() {
+            let fence = self.open_fence(sandbox_id, bytes)?;
+            self.check_current_fence(&fence)?;
+            latest = match latest {
+                None => Some((bytes.to_vec(), fence)),
+                Some((_current_bytes, current)) if fence_follows(&fence, &current) => {
+                    Some((bytes.to_vec(), fence))
+                }
+                Some((current_bytes, current)) if fence_follows(&current, &fence) => {
+                    Some((current_bytes, current))
+                }
+                Some(_) => return Err(NetworkAdmissionError::FenceRejected),
+            };
+        }
+        Ok(latest.map(|(bytes, _)| bytes))
+    }
+
     pub(crate) fn seal_fence(
         &self,
         sandbox_id: &[u8; 16],
@@ -296,6 +319,43 @@ impl NetworkAuthorityV1 {
     {
         self.0.check_before_effect(effect, trusted_clock)
     }
+}
+
+fn fence_follows(
+    current: &BrokerAuthorizationFenceV1,
+    historical: &BrokerAuthorizationFenceV1,
+) -> bool {
+    let current_assignment = current.assignment();
+    let historical_assignment = historical.assignment();
+    if current.node() != historical.node()
+        || current_assignment.sandbox() != historical_assignment.sandbox()
+        || current_assignment.epoch() < historical_assignment.epoch()
+    {
+        return false;
+    }
+    if current_assignment.epoch() > historical_assignment.epoch() {
+        return true;
+    }
+    if current_assignment.incarnation() != historical_assignment.incarnation()
+        || current.ownership_authority() != historical.ownership_authority()
+        || current_assignment.desired_generation() < historical_assignment.desired_generation()
+    {
+        return false;
+    }
+    if current_assignment.desired_generation() > historical_assignment.desired_generation() {
+        return true;
+    }
+    if current_assignment != historical_assignment
+        || current.plan_digest() != historical.plan_digest()
+    {
+        return false;
+    }
+
+    let current_lease = current.local_lease_record();
+    let historical_lease = historical.local_lease_record();
+    current_lease.lease_generation() > historical_lease.lease_generation()
+        || (current_lease.lease_generation() == historical_lease.lease_generation()
+            && current_lease == historical_lease)
 }
 
 pub(crate) fn decode_assignment(body: &[u8]) -> Result<BrokerAssignment, NetworkAdmissionError> {

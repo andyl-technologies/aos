@@ -26,7 +26,7 @@ use serde_json::{Map, Value};
 
 use crate::kernel_observation::{
     NetworkKernelExpectationV1, ObservedAddressV1, ObservedIpAddressV1, ObservedIpFamilyV1,
-    ObservedIpPrefixV1, ObservedIpv6AddressGenerationV1, ObservedLinkV1,
+    ObservedIpPrefixV1, ObservedIpv6AddressGenerationV1, ObservedIpv6NeighborV1, ObservedLinkV1,
     ObservedNetworkNamespaceV1, ObservedPolicyRuleV1, ObservedRouteProtocolV1,
     ObservedRouteScopeV1, ObservedRouteTypeV1, ObservedRouteV1,
 };
@@ -34,6 +34,7 @@ use crate::kernel_reader::{NetworkKernelReaderError, PinnedArtifact, successful_
 
 const MAXIMUM_LINK_BYTES: usize = 64 * 1024;
 const MAXIMUM_ADDRESS_BYTES: usize = 64 * 1024;
+const MAXIMUM_NEIGHBOR_BYTES: usize = 64 * 1024;
 const MAXIMUM_ROUTE_BYTES: usize = 128 * 1024;
 const MAXIMUM_RULE_BYTES: usize = 16 * 1024;
 
@@ -44,6 +45,8 @@ pub struct RtnetlinkLinkInventoryV1 {
     pub link: ObservedLinkV1,
     /// Every address returned for that veth.
     pub addresses: Vec<ObservedAddressV1>,
+    /// Every permanent IPv6 neighbor returned for that veth.
+    pub ipv6_neighbors: Vec<ObservedIpv6NeighborV1>,
 }
 
 /// Carries one complete unfiltered sandbox rtnetlink snapshot.
@@ -53,6 +56,8 @@ pub struct RtnetlinkNamespaceInventoryV1 {
     pub links: Vec<ObservedLinkV1>,
     /// Every address on those links.
     pub addresses: Vec<ObservedAddressV1>,
+    /// Every permanent IPv6 neighbor on those links.
+    pub ipv6_neighbors: Vec<ObservedIpv6NeighborV1>,
     /// Every IPv4 and IPv6 route from every table.
     pub routes: Vec<ObservedRouteV1>,
     /// Every IPv4 and IPv6 policy-routing rule.
@@ -110,6 +115,10 @@ impl FixedRtnetlinkObservationReader {
             &["-j", "address", "show", "dev", name],
             MAXIMUM_ADDRESS_BYTES,
         )?;
+        let neighbor_json = self.run(
+            &["-j", "-6", "neighbor", "show", "dev", name],
+            MAXIMUM_NEIGHBOR_BYTES,
+        )?;
         let links = decode_links(&link_json)?;
         if links.len() != 1 || links[0].name != name || links[0].kind != "veth" {
             return Err(NetworkKernelReaderError::InvalidRtnetlink(
@@ -117,6 +126,8 @@ impl FixedRtnetlinkObservationReader {
             ));
         }
         let addresses = decode_addresses(&address_json, &links, ObservedNetworkNamespaceV1::Host)?;
+        let ipv6_neighbors =
+            decode_ipv6_neighbors(&neighbor_json, &links, ObservedNetworkNamespaceV1::Host)?;
 
         Ok(RtnetlinkLinkInventoryV1 {
             link: links
@@ -126,6 +137,7 @@ impl FixedRtnetlinkObservationReader {
                     "host veth result is empty",
                 ))?,
             addresses,
+            ipv6_neighbors,
         })
     }
 
@@ -145,6 +157,7 @@ impl FixedRtnetlinkObservationReader {
     ) -> Result<RtnetlinkNamespaceInventoryV1, NetworkKernelReaderError> {
         let link_json = self.run(&["-j", "-details", "link", "show"], MAXIMUM_LINK_BYTES)?;
         let address_json = self.run(&["-j", "address", "show"], MAXIMUM_ADDRESS_BYTES)?;
+        let neighbor_json = self.run(&["-j", "-6", "neighbor", "show"], MAXIMUM_NEIGHBOR_BYTES)?;
         let routes_v4 = self.run(
             &["-j", "-4", "route", "show", "table", "all"],
             MAXIMUM_ROUTE_BYTES,
@@ -159,6 +172,8 @@ impl FixedRtnetlinkObservationReader {
         let mut links = decode_links(&link_json)?;
         let addresses =
             decode_addresses(&address_json, &links, ObservedNetworkNamespaceV1::Sandbox)?;
+        let ipv6_neighbors =
+            decode_ipv6_neighbors(&neighbor_json, &links, ObservedNetworkNamespaceV1::Sandbox)?;
         let interface_indices = links
             .iter()
             .map(|link| (link.name.as_str(), link.ifindex))
@@ -182,6 +197,7 @@ impl FixedRtnetlinkObservationReader {
         Ok(RtnetlinkNamespaceInventoryV1 {
             links,
             addresses,
+            ipv6_neighbors,
             routes,
             policy_rules,
         })
@@ -403,12 +419,13 @@ pub(crate) fn decode_addresses(
             let local = parse_address(required_string(address, "local")?, family)?;
             let prefix_length = required_u8(address, "prefixlen")?;
             validate_prefix_length(local, prefix_length)?;
-            validate_address_metadata(address, ifname, family)?;
+            let ipv6_nodad = validate_address_metadata(address, ifname, family)?;
             addresses.push(ObservedAddressV1 {
                 namespace,
                 ifindex,
                 address: local,
                 prefix_length,
+                ipv6_nodad,
             });
         }
     }
@@ -447,6 +464,7 @@ const ADDRESS_FIELDS: &[&str] = &[
     "scope",
     "label",
     "protocol",
+    "nodad",
     "valid_life_time",
     "preferred_life_time",
 ];
@@ -498,7 +516,7 @@ fn validate_address_metadata(
     address: &Map<String, Value>,
     ifname: &str,
     family: ObservedIpFamilyV1,
-) -> Result<(), NetworkKernelReaderError> {
+) -> Result<bool, NetworkKernelReaderError> {
     let scope = required_string(address, "scope")?;
     let expected_scope = if ifname == "lo" { "host" } else { "global" };
     if scope != expected_scope {
@@ -520,7 +538,63 @@ fn validate_address_metadata(
         None if ifname != "lo" || family == ObservedIpFamilyV1::Ipv4 => {}
         _ => return invalid("address protocol differs from the fresh-namespace baseline"),
     }
-    Ok(())
+    match (family, ifname == "lo", address.get("nodad")) {
+        (ObservedIpFamilyV1::Ipv6, false, Some(Value::Bool(true))) => Ok(true),
+        (ObservedIpFamilyV1::Ipv4, _, None) | (ObservedIpFamilyV1::Ipv6, true, None) => Ok(false),
+        _ => invalid("address DAD suppression differs from its family and link role"),
+    }
+}
+
+pub(crate) fn decode_ipv6_neighbors(
+    bytes: &[u8],
+    links: &[ObservedLinkV1],
+    namespace: ObservedNetworkNamespaceV1,
+) -> Result<Vec<ObservedIpv6NeighborV1>, NetworkKernelReaderError> {
+    let links_by_name = links
+        .iter()
+        .map(|link| (link.name.as_str(), link.ifindex))
+        .collect::<BTreeMap<_, _>>();
+    let mut neighbors = decode_array(bytes)?
+        .iter()
+        .map(|value| {
+            let object = as_object(value)?;
+            reject_unknown_fields(
+                object,
+                &["dst", "dev", "lladdr", "state"],
+                "IPv6 neighbor has an unknown field",
+            )?;
+            let dev = optional_string(object, "dev")?;
+            let ifindex = match (namespace, dev, links) {
+                (ObservedNetworkNamespaceV1::Host, None, [link]) => link.ifindex,
+                (_, Some(dev), _) => links_by_name.get(dev).copied().ok_or(
+                    NetworkKernelReaderError::InvalidRtnetlink(
+                        "IPv6 neighbor refers to an unknown link",
+                    ),
+                )?,
+                _ => {
+                    return invalid("unfiltered IPv6 neighbor result does not identify its link");
+                }
+            };
+            let address =
+                match parse_address(required_string(object, "dst")?, ObservedIpFamilyV1::Ipv6)? {
+                    ObservedIpAddressV1::Ipv6(address) => address,
+                    ObservedIpAddressV1::Ipv4(_) => return invalid("neighbor address is not IPv6"),
+                };
+            let state = required_array(object, "state")?;
+            if !string_array_equals(state, &["PERMANENT"]) {
+                return invalid("IPv6 neighbor is not an unflagged permanent binding");
+            }
+            Ok(ObservedIpv6NeighborV1 {
+                namespace,
+                ifindex,
+                address,
+                mac: parse_mac(required_string(object, "lladdr")?)?,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    neighbors.sort_unstable();
+    reject_duplicates(&neighbors, "duplicate IPv6 neighbor")?;
+    Ok(neighbors)
 }
 
 pub(crate) fn decode_routes(
@@ -1000,6 +1074,12 @@ mod tests {
         include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/links.json");
     const MANAGED_ADDRESSES: &[u8] =
         include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/addresses.json");
+    const MANAGED_NEIGHBORS: &[u8] =
+        include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/neighbors.json");
+    const MANAGED_HOST_LINK: &[u8] =
+        include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/host-link.json");
+    const MANAGED_HOST_NEIGHBORS: &[u8] =
+        include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/host-neighbors.json");
     const MANAGED_ROUTES_V4: &[u8] =
         include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/routes-v4.json");
     const MANAGED_ROUTES_V6: &[u8] =
@@ -1014,6 +1094,12 @@ mod tests {
         let links = decode_links(MANAGED_LINKS).unwrap();
         let addresses = decode_addresses(
             MANAGED_ADDRESSES,
+            &links,
+            ObservedNetworkNamespaceV1::Sandbox,
+        )
+        .unwrap();
+        let neighbors = decode_ipv6_neighbors(
+            MANAGED_NEIGHBORS,
             &links,
             ObservedNetworkNamespaceV1::Sandbox,
         )
@@ -1034,6 +1120,12 @@ mod tests {
 
         assert_eq!(links.len(), 2);
         assert_eq!(addresses.len(), 4);
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(
+            neighbors[0].address,
+            [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(neighbors[0].mac, [0x02, 0xaa, 0xbb, 0, 0, 0x02]);
         assert_eq!(routes_v4.len(), 6);
         assert_eq!(routes_v6.len(), 5);
         assert!(routes_v4.iter().any(|route| route.table == 255));
@@ -1109,6 +1201,82 @@ mod tests {
             decode_addresses(
                 tentative.as_bytes(),
                 &links,
+                ObservedNetworkNamespaceV1::Sandbox,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn managed_ipv6_addresses_require_explicit_dad_suppression() {
+        let links = decode_links(MANAGED_LINKS).unwrap();
+        let missing_nodad = String::from_utf8(MANAGED_ADDRESSES.to_vec())
+            .unwrap()
+            .replace(",\"nodad\":true", "");
+
+        assert!(
+            decode_addresses(
+                missing_nodad.as_bytes(),
+                &links,
+                ObservedNetworkNamespaceV1::Sandbox,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn ipv6_neighbor_state_flags_and_link_are_exact() {
+        let links = decode_links(MANAGED_LINKS).unwrap();
+        for invalid in [
+            String::from_utf8(MANAGED_NEIGHBORS.to_vec())
+                .unwrap()
+                .replace("PERMANENT", "REACHABLE"),
+            String::from_utf8(MANAGED_NEIGHBORS.to_vec())
+                .unwrap()
+                .replace("\"state\":", "\"router\":null,\"state\":"),
+            String::from_utf8(MANAGED_NEIGHBORS.to_vec())
+                .unwrap()
+                .replace("aog000000000001", "unknown0"),
+        ] {
+            assert!(
+                decode_ipv6_neighbors(
+                    invalid.as_bytes(),
+                    &links,
+                    ObservedNetworkNamespaceV1::Sandbox,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn filtered_host_neighbor_binds_its_omitted_device_to_the_queried_link() {
+        let host_links = decode_links(MANAGED_HOST_LINK).unwrap();
+        let neighbors = decode_ipv6_neighbors(
+            MANAGED_HOST_NEIGHBORS,
+            &host_links,
+            ObservedNetworkNamespaceV1::Host,
+        )
+        .unwrap();
+
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(neighbors[0].ifindex, host_links[0].ifindex);
+
+        let mismatched_device = String::from_utf8(MANAGED_HOST_NEIGHBORS.to_vec())
+            .unwrap()
+            .replace("\"lladdr\"", "\"dev\":\"unknown0\",\"lladdr\"");
+        assert!(
+            decode_ipv6_neighbors(
+                mismatched_device.as_bytes(),
+                &host_links,
+                ObservedNetworkNamespaceV1::Host,
+            )
+            .is_err()
+        );
+        assert!(
+            decode_ipv6_neighbors(
+                MANAGED_HOST_NEIGHBORS,
+                &host_links,
                 ObservedNetworkNamespaceV1::Sandbox,
             )
             .is_err()

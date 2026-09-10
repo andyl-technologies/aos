@@ -16,14 +16,15 @@ use aos_sandbox_core::model::NetworkKind;
 use aos_sandbox_core::{BrokerAssignment, NetworkEndpointId, ObjectDigest};
 use sha2::{Digest as _, Sha256};
 
+use crate::namespace_catalog::NetworkNamespaceObservedStateKindV1;
 use crate::policy::{
     NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1, NetworkPolicyProgramV1,
     NetworkPortRangeV1, NetworkTransportProtocolV1,
 };
 
 const OBSERVATION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.kernel-observation.v1\0";
-// V3 commits each anti-spoof predicate as one complete same-family address set.
-const OBSERVATION_ENCODING_VERSION: u16 = 3;
+// V4 commits IPv6 DAD suppression and the exact permanent-neighbor inventory.
+const OBSERVATION_ENCODING_VERSION: u16 = 4;
 const BPF_ARRAY: u32 = 2;
 const BPF_HASH: u32 = 1;
 const BPF_F_RDONLY_PROG: u32 = 1 << 7;
@@ -43,6 +44,9 @@ pub enum NetworkKernelObservationError {
     /// The exact address inventory differs.
     #[error("Network kernel address inventory mismatched")]
     AddressMismatch,
+    /// The exact permanent IPv6 neighbor inventory differs.
+    #[error("Network kernel IPv6 neighbor inventory mismatched")]
+    NeighborMismatch,
     /// The exact route inventory differs.
     #[error("Network kernel route inventory mismatched")]
     RouteMismatch,
@@ -217,6 +221,7 @@ impl NetworkKernelExpectationV1 {
         &self,
         expected_boot_id: [u8; 16],
         expected_namespace: (u64, u64),
+        expected_state: NetworkNamespaceObservedStateKindV1,
         expected_lifecycle: &ObservedLeaseStateV1,
         first: &NetworkKernelObservationV1,
         second: &NetworkKernelObservationV1,
@@ -224,12 +229,14 @@ impl NetworkKernelExpectationV1 {
         self.validate_one(
             expected_boot_id,
             expected_namespace,
+            expected_state,
             expected_lifecycle,
             first,
         )?;
         self.validate_one(
             expected_boot_id,
             expected_namespace,
+            expected_state,
             expected_lifecycle,
             second,
         )?;
@@ -244,6 +251,7 @@ impl NetworkKernelExpectationV1 {
         &self,
         expected_boot_id: [u8; 16],
         expected_namespace: (u64, u64),
+        expected_state: NetworkNamespaceObservedStateKindV1,
         expected_lifecycle: &ObservedLeaseStateV1,
         observed: &NetworkKernelObservationV1,
     ) -> Result<(), NetworkKernelObservationError> {
@@ -257,7 +265,7 @@ impl NetworkKernelExpectationV1 {
         if observed.boot_id != expected_boot_id
             || (observed.namespace_device, observed.namespace_inode) != expected_namespace
             || &observed.lifecycle != expected_lifecycle
-            || !valid_lifecycle(self, expected_lifecycle)
+            || !valid_lifecycle(self, expected_state, expected_lifecycle)
         {
             return Err(NetworkKernelObservationError::NamespaceMismatch);
         }
@@ -269,12 +277,21 @@ impl NetworkKernelExpectationV1 {
             (None, None, None) if observed.sandbox_link_count == 1 => {}
             (Some(expected), Some(host), Some(sandbox))
                 if observed.sandbox_link_count == 2
-                    && valid_veth(expected, host, sandbox, observed.loopback.ifindex) => {}
+                    && valid_veth(
+                        expected,
+                        host,
+                        sandbox,
+                        observed.loopback.ifindex,
+                        expected_state,
+                    ) => {}
             _ => return Err(NetworkKernelObservationError::LinkMismatch),
         }
 
         if observed.addresses != expected_addresses(self, observed) {
             return Err(NetworkKernelObservationError::AddressMismatch);
+        }
+        if observed.ipv6_neighbors != expected_ipv6_neighbors(self, observed) {
+            return Err(NetworkKernelObservationError::NeighborMismatch);
         }
         if observed.routes != expected_routes(self, observed) {
             return Err(NetworkKernelObservationError::RouteMismatch);
@@ -294,11 +311,49 @@ impl NetworkKernelExpectationV1 {
 
 fn valid_lifecycle(
     expected: &NetworkKernelExpectationV1,
+    expected_state: NetworkNamespaceObservedStateKindV1,
     lifecycle: &ObservedLeaseStateV1,
 ) -> bool {
+    let state_matches = match expected_state {
+        NetworkNamespaceObservedStateKindV1::DefaultDrop => {
+            lifecycle.ingress.is_default_drop() && lifecycle.egress.is_default_drop()
+        }
+        NetworkNamespaceObservedStateKindV1::Armed => {
+            lifecycle.ingress.is_armed() && lifecycle.egress.is_armed()
+        }
+        NetworkNamespaceObservedStateKindV1::Fenced => {
+            lifecycle.ingress.is_fenced() && lifecycle.egress.is_fenced()
+        }
+        NetworkNamespaceObservedStateKindV1::Absent => false,
+    };
+
     lifecycle.format_version == 2
+        && state_matches
         && valid_lease_direction(expected, &lifecycle.ingress)
         && valid_lease_direction(expected, &lifecycle.egress)
+}
+
+impl ObservedLeaseDirectionV1 {
+    fn has_lease(&self) -> bool {
+        self.lease_generation != 0
+            && self.lease_digest.as_bytes() != &[0; 32]
+            && self.deadline_boottime_nanoseconds != 0
+    }
+
+    fn is_default_drop(&self) -> bool {
+        !self.armed
+            && self.lease_generation == 0
+            && self.lease_digest.as_bytes() == &[0; 32]
+            && self.deadline_boottime_nanoseconds == 0
+    }
+
+    fn is_armed(&self) -> bool {
+        self.armed && self.has_lease()
+    }
+
+    fn is_fenced(&self) -> bool {
+        !self.armed && self.has_lease()
+    }
 }
 
 fn valid_lease_direction(
@@ -390,6 +445,21 @@ pub struct ObservedAddressV1 {
     pub address: ObservedIpAddressV1,
     /// Prefix length.
     pub prefix_length: u8,
+    /// Whether IPv6 duplicate-address detection is explicitly disabled.
+    pub ipv6_nodad: bool,
+}
+
+/// Carries one exact static IPv6 neighbor entry.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ObservedIpv6NeighborV1 {
+    /// Namespace that gives the interface index meaning.
+    pub namespace: ObservedNetworkNamespaceV1,
+    /// Interface index owning the neighbor entry.
+    pub ifindex: u32,
+    /// Neighbor IPv6 address in network order.
+    pub address: [u8; 16],
+    /// Statically bound link-layer address.
+    pub mac: [u8; 6],
 }
 
 /// Carries one concrete route.
@@ -710,6 +780,8 @@ pub struct NetworkKernelObservationV1 {
     pub sandbox_link_count: u32,
     /// Exact loopback, host-peer, and sandbox-peer address inventory.
     pub addresses: Vec<ObservedAddressV1>,
+    /// Exact host-peer and sandbox-peer permanent IPv6 neighbor inventory.
+    pub ipv6_neighbors: Vec<ObservedIpv6NeighborV1>,
     /// Exact sandbox route inventory.
     pub routes: Vec<ObservedRouteV1>,
     /// Exact sandbox policy-routing rule inventory.
@@ -750,7 +822,12 @@ fn valid_veth(
     host: &ObservedLinkV1,
     sandbox: &ObservedLinkV1,
     loopback_ifindex: u32,
+    expected_state: NetworkNamespaceObservedStateKindV1,
 ) -> bool {
+    // Prepared and guardian-fenced resources remain down. Only a current
+    // armed lease raises the pair after policy and runtime readiness.
+    let expected_up = matches!(expected_state, NetworkNamespaceObservedStateKindV1::Armed);
+
     host.ifindex != 0
         && sandbox.ifindex != 0
         && sandbox.ifindex != loopback_ifindex
@@ -766,8 +843,8 @@ fn valid_veth(
         && sandbox.mtu == expected.mtu
         && host.mac == expected.host_mac
         && sandbox.mac == expected.sandbox_mac
-        && host.up
-        && sandbox.up
+        && host.up == expected_up
+        && sandbox.up == expected_up
         && host.ipv6_address_generation == ObservedIpv6AddressGenerationV1::None
         && sandbox.ipv6_address_generation == ObservedIpv6AddressGenerationV1::None
 }
@@ -782,12 +859,14 @@ fn expected_addresses(
             ifindex: observed.loopback.ifindex,
             address: ObservedIpAddressV1::Ipv4([127, 0, 0, 1]),
             prefix_length: 8,
+            ipv6_nodad: false,
         },
         ObservedAddressV1 {
             namespace: ObservedNetworkNamespaceV1::Sandbox,
             ifindex: observed.loopback.ifindex,
             address: ObservedIpAddressV1::Ipv6([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
             prefix_length: 128,
+            ipv6_nodad: false,
         },
     ];
     if let (Some(host), Some(sandbox)) = (&observed.host_veth, &observed.sandbox_veth) {
@@ -797,17 +876,52 @@ fn expected_addresses(
                 ifindex: host.ifindex,
                 address: pair.host,
                 prefix_length: pair.prefix_length,
+                ipv6_nodad: matches!(pair.host, ObservedIpAddressV1::Ipv6(_)),
             });
             addresses.push(ObservedAddressV1 {
                 namespace: ObservedNetworkNamespaceV1::Sandbox,
                 ifindex: sandbox.ifindex,
                 address: pair.sandbox,
                 prefix_length: pair.prefix_length,
+                ipv6_nodad: matches!(pair.sandbox, ObservedIpAddressV1::Ipv6(_)),
             });
         }
     }
     addresses.sort_unstable();
     addresses
+}
+
+fn expected_ipv6_neighbors(
+    expected: &NetworkKernelExpectationV1,
+    observed: &NetworkKernelObservationV1,
+) -> Vec<ObservedIpv6NeighborV1> {
+    let (Some(host), Some(sandbox), Some(veth)) =
+        (&observed.host_veth, &observed.sandbox_veth, &expected.veth)
+    else {
+        return Vec::new();
+    };
+    let mut neighbors = Vec::new();
+    for pair in &expected.address_pairs {
+        let (ObservedIpAddressV1::Ipv6(host_address), ObservedIpAddressV1::Ipv6(sandbox_address)) =
+            (pair.host, pair.sandbox)
+        else {
+            continue;
+        };
+        neighbors.push(ObservedIpv6NeighborV1 {
+            namespace: ObservedNetworkNamespaceV1::Host,
+            ifindex: host.ifindex,
+            address: sandbox_address,
+            mac: veth.sandbox_mac,
+        });
+        neighbors.push(ObservedIpv6NeighborV1 {
+            namespace: ObservedNetworkNamespaceV1::Sandbox,
+            ifindex: sandbox.ifindex,
+            address: host_address,
+            mac: veth.host_mac,
+        });
+    }
+    neighbors.sort_unstable();
+    neighbors
 }
 
 fn expected_routes(
@@ -1246,6 +1360,15 @@ fn encode_observation(digest: &mut Sha256, observation: &NetworkKernelObservatio
         encode_u32(digest, address.ifindex);
         encode_address(digest, address.address);
         digest.update([address.prefix_length]);
+        encode_bool(digest, address.ipv6_nodad);
+    }
+
+    encode_length(digest, observation.ipv6_neighbors.len());
+    for neighbor in &observation.ipv6_neighbors {
+        encode_namespace(digest, neighbor.namespace);
+        encode_u32(digest, neighbor.ifindex);
+        digest.update(neighbor.address);
+        digest.update(neighbor.mac);
     }
 
     encode_length(digest, observation.routes.len());
@@ -1696,7 +1819,7 @@ mod tests {
             kind: "veth".to_owned(),
             mtu: 1_500,
             mac,
-            up: true,
+            up: false,
             ipv6_address_generation: ObservedIpv6AddressGenerationV1::None,
         }
     }
@@ -1731,6 +1854,7 @@ mod tests {
                 ifindex: 1,
                 address: ObservedIpAddressV1::Ipv4([127, 0, 0, 1]),
                 prefix_length: 8,
+                ipv6_nodad: false,
             },
             ObservedAddressV1 {
                 namespace: ObservedNetworkNamespaceV1::Sandbox,
@@ -1739,18 +1863,21 @@ mod tests {
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
                 ]),
                 prefix_length: 128,
+                ipv6_nodad: false,
             },
             ObservedAddressV1 {
                 namespace: ObservedNetworkNamespaceV1::Host,
                 ifindex: HOST_IFINDEX,
                 address: ObservedIpAddressV1::Ipv4([192, 0, 0, 0]),
                 prefix_length: 31,
+                ipv6_nodad: false,
             },
             ObservedAddressV1 {
                 namespace: ObservedNetworkNamespaceV1::Sandbox,
                 ifindex: SANDBOX_IFINDEX,
                 address: ObservedIpAddressV1::Ipv4([192, 0, 0, 1]),
                 prefix_length: 31,
+                ipv6_nodad: false,
             },
         ];
         addresses.sort_unstable();
@@ -1833,6 +1960,7 @@ mod tests {
             sandbox_veth: Some(sandbox.clone()),
             sandbox_link_count: 2,
             addresses,
+            ipv6_neighbors: Vec::new(),
             routes,
             policy_rules: expected_policy_rules(&expectation()),
             nftables: ObservedNftablesPolicyV1 {
@@ -1938,13 +2066,44 @@ mod tests {
         }
     }
 
+    fn dual_stack_observation() -> (NetworkKernelExpectationV1, NetworkKernelObservationV1) {
+        let mut expected = expectation();
+        expected.address_pairs.push(ExpectedAddressPairV1 {
+            host: ObservedIpAddressV1::Ipv6([
+                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]),
+            sandbox: ObservedIpAddressV1::Ipv6([
+                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ]),
+            prefix_length: 127,
+        });
+        expected.address_pairs.sort_unstable();
+
+        let mut observed = observation();
+        observed.addresses = expected_addresses(&expected, &observed);
+        observed.ipv6_neighbors = expected_ipv6_neighbors(&expected, &observed);
+        observed.routes = expected_routes(&expected, &observed);
+        observed.nftables.anti_spoof_rules = expected_anti_spoof_rules(&expected, &observed);
+        observed.nftables.flows =
+            expected_flow_rules(&expected, &observed.nftables.anti_spoof_rules);
+
+        (expected, observed)
+    }
+
     #[test]
     fn exact_stable_snapshot_matches_with_namespace_local_equal_ifindexes() {
         let expected = expectation();
         let observed = observation();
 
         let digest = expected
-            .validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &observed, &observed)
+            .validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &observed,
+                &observed,
+            )
             .unwrap();
 
         assert_ne!(digest.as_bytes(), &[0; 32]);
@@ -1960,27 +2119,171 @@ mod tests {
         observed.lease_gate.as_mut().unwrap().lease_state = fenced.clone();
 
         expected
-            .validate_stable(BOOT_ID, NAMESPACE, &fenced, &observed, &observed)
+            .validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::Fenced,
+                &fenced,
+                &observed,
+                &observed,
+            )
             .unwrap();
+    }
+
+    #[test]
+    fn only_armed_lifecycle_accepts_raised_veths() {
+        let expected = expectation();
+        let armed = retained_lease_lifecycle(true, 7, object(0x91), 10_000);
+        let mut observed = observation();
+        observed.host_veth.as_mut().unwrap().up = true;
+        observed.sandbox_veth.as_mut().unwrap().up = true;
+        observed.lifecycle = armed.clone();
+        observed.lease_gate.as_mut().unwrap().lease_state = armed.clone();
+
+        expected
+            .validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::Armed,
+                &armed,
+                &observed,
+                &observed,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn default_drop_and_fenced_lifecycles_reject_raised_veths() {
+        let expected = expectation();
+        let mut raised = observation();
+        raised.host_veth.as_mut().unwrap().up = true;
+        raised.sandbox_veth.as_mut().unwrap().up = true;
+
+        assert_eq!(
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &raised,
+                &raised,
+            ),
+            Err(NetworkKernelObservationError::LinkMismatch)
+        );
+
+        let fenced = retained_lease_lifecycle(false, 7, object(0x91), 10_000);
+        raised.lifecycle = fenced.clone();
+        raised.lease_gate.as_mut().unwrap().lease_state = fenced.clone();
+        assert_eq!(
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::Fenced,
+                &fenced,
+                &raised,
+                &raised,
+            ),
+            Err(NetworkKernelObservationError::LinkMismatch)
+        );
+    }
+
+    #[test]
+    fn lifecycle_kind_tuple_and_link_state_cannot_be_cross_substituted() {
+        let expected = expectation();
+
+        let retained = retained_lease_lifecycle(false, 7, object(0x91), 10_000);
+        let mut retained_observation = observation();
+        retained_observation.lifecycle = retained.clone();
+        retained_observation
+            .lease_gate
+            .as_mut()
+            .unwrap()
+            .lease_state = retained.clone();
+        assert_eq!(
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &retained,
+                &retained_observation,
+                &retained_observation,
+            ),
+            Err(NetworkKernelObservationError::NamespaceMismatch)
+        );
+
+        let zero = lifecycle();
+        let zero_observation = observation();
+        assert_eq!(
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::Fenced,
+                &zero,
+                &zero_observation,
+                &zero_observation,
+            ),
+            Err(NetworkKernelObservationError::NamespaceMismatch)
+        );
+
+        let armed = retained_lease_lifecycle(true, 7, object(0x91), 10_000);
+        let mut down_observation = observation();
+        down_observation.lifecycle = armed.clone();
+        down_observation.lease_gate.as_mut().unwrap().lease_state = armed.clone();
+        assert_eq!(
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::Armed,
+                &armed,
+                &down_observation,
+                &down_observation,
+            ),
+            Err(NetworkKernelObservationError::LinkMismatch)
+        );
+
+        assert_eq!(
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::Absent,
+                &zero,
+                &zero_observation,
+                &zero_observation,
+            ),
+            Err(NetworkKernelObservationError::NamespaceMismatch)
+        );
     }
 
     #[test]
     fn partial_or_armed_zero_lease_tuples_do_not_alias_default_drop() {
         let expected = expectation();
         let malformed = [
-            retained_lease_lifecycle(false, 7, ObjectDigest::from_bytes([0; 32]), 10_000),
-            retained_lease_lifecycle(false, 0, object(0x91), 10_000),
-            retained_lease_lifecycle(false, 7, object(0x91), 0),
-            retained_lease_lifecycle(true, 0, ObjectDigest::from_bytes([0; 32]), 0),
+            (
+                NetworkNamespaceObservedStateKindV1::Fenced,
+                retained_lease_lifecycle(false, 7, ObjectDigest::from_bytes([0; 32]), 10_000),
+            ),
+            (
+                NetworkNamespaceObservedStateKindV1::Fenced,
+                retained_lease_lifecycle(false, 0, object(0x91), 10_000),
+            ),
+            (
+                NetworkNamespaceObservedStateKindV1::Fenced,
+                retained_lease_lifecycle(false, 7, object(0x91), 0),
+            ),
+            (
+                NetworkNamespaceObservedStateKindV1::Armed,
+                retained_lease_lifecycle(true, 0, ObjectDigest::from_bytes([0; 32]), 0),
+            ),
         ];
 
-        for lifecycle in malformed {
+        for (state, lifecycle) in malformed {
             let mut observed = observation();
             observed.lifecycle = lifecycle.clone();
             observed.lease_gate.as_mut().unwrap().lease_state = lifecycle.clone();
 
             assert_eq!(
-                expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle, &observed, &observed,),
+                expected
+                    .validate_stable(BOOT_ID, NAMESPACE, state, &lifecycle, &observed, &observed,),
                 Err(NetworkKernelObservationError::NamespaceMismatch)
             );
         }
@@ -1998,21 +2301,28 @@ mod tests {
             observed.lease_gate.as_mut().unwrap().lease_state = kernel;
 
             assert_eq!(
-                expected.validate_stable(BOOT_ID, NAMESPACE, &catalog, &observed, &observed),
+                expected.validate_stable(
+                    BOOT_ID,
+                    NAMESPACE,
+                    NetworkNamespaceObservedStateKindV1::Fenced,
+                    &catalog,
+                    &observed,
+                    &observed,
+                ),
                 Err(NetworkKernelObservationError::NamespaceMismatch)
             );
         }
     }
 
     #[test]
-    fn observation_encoding_v3_has_a_fixed_digest_vector() {
-        // This implementation-derived vector freezes the V3 encoding shape;
+    fn observation_encoding_v4_has_a_fixed_digest_vector() {
+        // This implementation-derived vector freezes the V4 encoding shape;
         // it is not an independent normative RFC conformance vector.
         assert_eq!(
             observation().digest().as_bytes(),
             &[
-                229, 1, 209, 92, 105, 161, 124, 125, 167, 112, 133, 205, 224, 120, 194, 150, 45,
-                160, 33, 68, 55, 146, 21, 60, 190, 27, 153, 30, 164, 0, 94, 139,
+                145, 9, 134, 198, 147, 16, 220, 79, 5, 206, 32, 226, 1, 105, 184, 36, 101, 223, 8,
+                79, 78, 76, 122, 135, 153, 66, 114, 211, 58, 225, 219, 15,
             ]
         );
     }
@@ -2022,7 +2332,7 @@ mod tests {
         use std::collections::BTreeMap;
 
         use crate::rtnetlink_reader::{
-            decode_addresses, decode_links, decode_routes, decode_rules,
+            decode_addresses, decode_ipv6_neighbors, decode_links, decode_routes, decode_rules,
         };
 
         let mut expected = expectation();
@@ -2065,12 +2375,24 @@ mod tests {
             ObservedNetworkNamespaceV1::Host,
         )
         .unwrap();
+        let mut host_neighbors = decode_ipv6_neighbors(
+            include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/host-neighbors.json"),
+            &host_links,
+            ObservedNetworkNamespaceV1::Host,
+        )
+        .unwrap();
         let sandbox_links = decode_links(include_bytes!(
             "../tests/fixtures/rtnetlink-managed-dual-stack/links.json"
         ))
         .unwrap();
         let mut sandbox_addresses = decode_addresses(
             include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/addresses.json"),
+            &sandbox_links,
+            ObservedNetworkNamespaceV1::Sandbox,
+        )
+        .unwrap();
+        let mut sandbox_neighbors = decode_ipv6_neighbors(
+            include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/neighbors.json"),
             &sandbox_links,
             ObservedNetworkNamespaceV1::Sandbox,
         )
@@ -2119,11 +2441,14 @@ mod tests {
             .clone();
         host_addresses.append(&mut sandbox_addresses);
         host_addresses.sort_unstable();
+        host_neighbors.append(&mut sandbox_neighbors);
+        host_neighbors.sort_unstable();
         observed.loopback = loopback;
         observed.host_veth = Some(host_veth.clone());
         observed.sandbox_veth = Some(sandbox_veth.clone());
         observed.sandbox_link_count = u32::try_from(sandbox_links.len()).unwrap();
         observed.addresses = host_addresses;
+        observed.ipv6_neighbors = host_neighbors;
         observed.routes = routes;
         observed.policy_rules = policy_rules;
         observed.nftables.anti_spoof_rules = expected_anti_spoof_rules(&expected, &observed);
@@ -2139,8 +2464,31 @@ mod tests {
         gate.egress.interface.ifindex = host_veth.ifindex;
 
         assert_eq!(observed.addresses, expected_addresses(&expected, &observed));
+        assert_eq!(
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &observed,
+                &observed,
+            ),
+            Err(NetworkKernelObservationError::LinkMismatch)
+        );
+
+        // The checked Linux fixture predates the prepared-down invariant. All
+        // other captured facts remain exact after lowering only the veth pair.
+        observed.host_veth.as_mut().unwrap().up = false;
+        observed.sandbox_veth.as_mut().unwrap().up = false;
         expected
-            .validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &observed, &observed)
+            .validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &observed,
+                &observed,
+            )
             .unwrap();
     }
 
@@ -2165,17 +2513,32 @@ mod tests {
             .push(base_chain("unexpected", "forward"));
 
         assert_eq!(
-            expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &extra_link, &extra_link),
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &extra_link,
+                &extra_link,
+            ),
             Err(NetworkKernelObservationError::LinkMismatch)
         );
         assert_eq!(
-            expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &extra_route, &extra_route),
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &extra_route,
+                &extra_route,
+            ),
             Err(NetworkKernelObservationError::RouteMismatch)
         );
         assert_eq!(
             expected.validate_stable(
                 BOOT_ID,
                 NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
                 &lifecycle(),
                 &extra_policy_rule,
                 &extra_policy_rule,
@@ -2183,9 +2546,93 @@ mod tests {
             Err(NetworkKernelObservationError::PolicyRuleMismatch)
         );
         assert_eq!(
-            expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &extra_chain, &extra_chain),
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &extra_chain,
+                &extra_chain,
+            ),
             Err(NetworkKernelObservationError::NftablesMismatch)
         );
+    }
+
+    #[test]
+    fn ipv6_dad_and_permanent_neighbor_facts_fail_closed_and_change_the_digest() {
+        let (expected, baseline) = dual_stack_observation();
+        expected
+            .validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &baseline,
+                &baseline,
+            )
+            .unwrap();
+
+        let mut missing_nodad = baseline.clone();
+        missing_nodad
+            .addresses
+            .iter_mut()
+            .find(|address| {
+                matches!(address.address, ObservedIpAddressV1::Ipv6(_)) && address.ipv6_nodad
+            })
+            .unwrap()
+            .ipv6_nodad = false;
+        assert_eq!(
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &missing_nodad,
+                &missing_nodad,
+            ),
+            Err(NetworkKernelObservationError::AddressMismatch)
+        );
+        assert_ne!(baseline.digest(), missing_nodad.digest());
+
+        let mut mutations = Vec::new();
+        let mut missing = baseline.clone();
+        missing.ipv6_neighbors.pop();
+        mutations.push(missing);
+
+        let mut extra = baseline.clone();
+        extra.ipv6_neighbors.push(extra.ipv6_neighbors[0]);
+        mutations.push(extra);
+
+        let mut wrong_namespace = baseline.clone();
+        wrong_namespace.ipv6_neighbors[0].namespace = ObservedNetworkNamespaceV1::Sandbox;
+        mutations.push(wrong_namespace);
+
+        let mut wrong_ifindex = baseline.clone();
+        wrong_ifindex.ipv6_neighbors[0].ifindex += 1;
+        mutations.push(wrong_ifindex);
+
+        let mut wrong_address = baseline.clone();
+        wrong_address.ipv6_neighbors[0].address[15] ^= 1;
+        mutations.push(wrong_address);
+
+        let mut wrong_mac = baseline.clone();
+        wrong_mac.ipv6_neighbors[0].mac[5] ^= 1;
+        mutations.push(wrong_mac);
+
+        for mutated in mutations {
+            assert_eq!(
+                expected.validate_stable(
+                    BOOT_ID,
+                    NAMESPACE,
+                    NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                    &lifecycle(),
+                    &mutated,
+                    &mutated,
+                ),
+                Err(NetworkKernelObservationError::NeighborMismatch)
+            );
+            assert_ne!(baseline.digest(), mutated.digest());
+        }
     }
 
     #[test]
@@ -2195,7 +2642,14 @@ mod tests {
         observed.nftables.anti_spoof_rules[1].inverted_match = false;
 
         assert_eq!(
-            expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &observed, &observed),
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &observed,
+                &observed,
+            ),
             Err(NetworkKernelObservationError::NftablesMismatch)
         );
     }
@@ -2225,7 +2679,14 @@ mod tests {
         let observed = observation();
 
         assert_eq!(
-            expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &observed, &observed),
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &observed,
+                &observed,
+            ),
             Err(NetworkKernelObservationError::NftablesMismatch)
         );
     }
@@ -2282,7 +2743,14 @@ mod tests {
 
         for observed in [wrong_measurement, wrong_map_size, wrong_map_order] {
             assert_eq!(
-                expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &observed, &observed),
+                expected.validate_stable(
+                    BOOT_ID,
+                    NAMESPACE,
+                    NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                    &lifecycle(),
+                    &observed,
+                    &observed,
+                ),
                 Err(NetworkKernelObservationError::BpfMismatch)
             );
         }
@@ -2296,7 +2764,14 @@ mod tests {
         second.lease_gate.as_mut().unwrap().ingress.program_tag = [0xb1; 8];
 
         assert_eq!(
-            expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &first, &second),
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                &lifecycle(),
+                &first,
+                &second,
+            ),
             Err(NetworkKernelObservationError::Changed)
         );
     }

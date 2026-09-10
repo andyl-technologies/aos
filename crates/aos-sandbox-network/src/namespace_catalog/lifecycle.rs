@@ -25,6 +25,17 @@ pub struct NetworkNamespaceIdentityV1 {
     namespace_inode: u64,
 }
 
+/// Carries the physically revalidated catalog head used by broker admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NetworkNamespaceLifecycleAuthorityV1 {
+    pub(crate) identity: NetworkNamespaceIdentityV1,
+    pub(crate) observed_state: NetworkNamespaceObservedStateV1,
+    pub(crate) resource_digest: ObjectDigest,
+    pub(crate) kernel_plan_digest: Option<ObjectDigest>,
+    pub(crate) highest_lease_generation: u64,
+    pub(crate) highest_lease_digest: ObjectDigest,
+}
+
 impl NetworkNamespaceIdentityV1 {
     /// Constructs a complete non-sentinel namespace identity.
     ///
@@ -424,6 +435,12 @@ impl NetworkNamespaceLifecycleTransitionV1 {
         } else {
             None
         }
+    }
+
+    /// Returns the canonical digest of the complete verified transition.
+    #[must_use]
+    pub const fn digest(self) -> ObjectDigest {
+        ObjectDigest::from_bytes(self.digest)
     }
 
     fn lease_transition(

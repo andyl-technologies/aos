@@ -14,12 +14,15 @@ mod observer_qualification;
 mod state;
 
 use std::ffi::OsString;
-use std::fs::File;
+use std::fs::{self, File};
 use std::net::IpAddr;
+use std::os::fd::{AsRawFd as _, OwnedFd};
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, bail, ensure};
+use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::netlink::network_namespace_id;
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 use aos_sandbox_network::{
@@ -28,7 +31,7 @@ use aos_sandbox_network::{
     NetworkPortRangeV1, NetworkTransportProtocolV1, ObservedFlowV1, ObservedInterfaceV1,
     ObservedIpAddressV1, ObservedNetworkNamespaceV1, ObservedNftAntiSpoofRuleV1,
     ObservedNftBaseChainV1, ObservedNftVerdictV1, SystemdNetworkNamespaceStore,
-    adopt_systemd_activation, validate_activation_replay,
+    SystemdNetworkPrepareExecutor, adopt_systemd_activation, validate_activation_replay,
 };
 
 use self::activation::take_systemd_activation;
@@ -65,10 +68,188 @@ fn run() -> Result<()> {
         Some(mode) if mode == "observer-kernel-run" => {
             observer_qualification::run_kernel(arguments)
         }
+        Some(mode) if mode == "worker-provision" => worker_provision(arguments),
+        Some(mode) if mode == "worker-serve" => worker_serve(arguments),
         _ => bail!(
-            "usage: aos-netd-custody-fixture serve CAPACITY | send COMMAND [FD_PATH ...] | fake-manager ADDRESS MODE READY_PATH | artifact-custody HELPER GATE_OBJECT | nft-observe IP NFT LOADER GATE_OBJECT IFINDEX LOCAL_ADDRESS LOCAL_ADDRESS | netnsid PEER_NAMESPACE | observer-plan MODE STATE_ROOT GATE_OBJECT | observer-run MODE STATE_ROOT NAMESPACE IP GATE_OBJECT | observer-kernel-run MODE STATE_ROOT NAMESPACE IP NFT ENFORCEMENT_LOADER BPF_OBSERVER GATE_OBJECT"
+            "usage: aos-netd-custody-fixture serve CAPACITY | send COMMAND [FD_PATH ...] | fake-manager ADDRESS MODE READY_PATH | artifact-custody HELPER GATE_OBJECT | nft-observe IP NFT LOADER GATE_OBJECT IFINDEX LOCAL_ADDRESS LOCAL_ADDRESS | netnsid PEER_NAMESPACE | observer-plan MODE STATE_ROOT GATE_OBJECT | observer-run MODE STATE_ROOT NAMESPACE IP GATE_OBJECT | observer-kernel-run MODE STATE_ROOT NAMESPACE IP NFT ENFORCEMENT_LOADER BPF_OBSERVER GATE_OBJECT | worker-provision AUTHORITY_DIRECTORY | worker-serve STATE_ROOT RESULT ENFORCEMENT GATE_OBJECT WORKER_SOCKET LIFECYCLE_WORKER_SOCKET IP NFT BPF_OBSERVER"
         ),
     }
+}
+
+fn worker_provision(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    let authority_directory = PathBuf::from(
+        arguments
+            .next()
+            .context("worker-provision requires AUTHORITY_DIRECTORY")?,
+    );
+    if arguments.next().is_some() {
+        bail!("worker-provision accepts exactly one argument");
+    }
+
+    observer_qualification::provision_worker_authority(&authority_directory)
+}
+
+fn worker_serve(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    let state_root = PathBuf::from(
+        arguments
+            .next()
+            .context("worker-serve requires STATE_ROOT")?,
+    );
+    let result_path = PathBuf::from(arguments.next().context("worker-serve requires RESULT")?);
+    let enforcement_artifact = PathBuf::from(
+        arguments
+            .next()
+            .context("worker-serve requires ENFORCEMENT")?,
+    );
+    let gate_object = PathBuf::from(
+        arguments
+            .next()
+            .context("worker-serve requires GATE_OBJECT")?,
+    );
+    let worker_socket = PathBuf::from(
+        arguments
+            .next()
+            .context("worker-serve requires WORKER_SOCKET")?,
+    );
+    let lifecycle_worker_socket = PathBuf::from(
+        arguments
+            .next()
+            .context("worker-serve requires LIFECYCLE_WORKER_SOCKET")?,
+    );
+    let ip = PathBuf::from(arguments.next().context("worker-serve requires IP")?);
+    let nft = PathBuf::from(arguments.next().context("worker-serve requires NFT")?);
+    let bpf_observer = PathBuf::from(
+        arguments
+            .next()
+            .context("worker-serve requires BPF_OBSERVER")?,
+    );
+    if arguments.next().is_some() {
+        bail!("worker-serve accepts exactly nine arguments");
+    }
+
+    // Own activation before opening any other descriptor: systemd transfers
+    // the broker listener at fd 3 and may append retained namespace custody.
+    let raw_activation = take_systemd_activation()?;
+    let host = NamespaceFd::current_network().context("retain worker-test host namespace")?;
+    let activation = adopt_systemd_activation(
+        raw_activation.listener,
+        &raw_activation.names,
+        raw_activation.retained,
+        1,
+        host.identity(),
+    )
+    .context("adopt worker-test systemd activation")?;
+    let namespace_store = SystemdNetworkNamespaceStore::from_environment(&activation)
+        .context("open production systemd namespace store")?;
+    for directory in [
+        state_root.join("preparation"),
+        state_root.join("operations"),
+        state_root.join("lifecycle"),
+        state_root.join("namespaces"),
+    ] {
+        fs::create_dir_all(&directory).context("create protected worker state directory")?;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .context("protect worker state directory")?;
+    }
+    let mut prepared = observer_qualification::prepare_worker_dispatch(
+        &state_root,
+        &enforcement_artifact,
+        &gate_object,
+    )?;
+    let cgroup_root = open_cgroup_root()?;
+    let mut executor = SystemdNetworkPrepareExecutor::new(worker_socket, cgroup_root, host)
+        .context("construct production one-shot Network executor")?;
+    let output = executor
+        .execute_once(
+            &prepared.dispatch,
+            &mut prepared.coordinator,
+            &namespace_store,
+        )
+        .context("execute production one-shot Network worker")?;
+    let coordinates = format!(
+        "{} {} {} {} {} {} {} {} {}",
+        prepared.host_name,
+        prepared.sandbox_name,
+        prepared.host_ipv6,
+        prepared.sandbox_ipv6,
+        prepared.prefix_length,
+        prepared.assignment_epoch,
+        prepared.assignment_digest,
+        prepared.network_handle,
+        prepared.allocation_generation,
+    );
+    let prepared_path = result_path.with_extension("prepared");
+    let observe_path = result_path.with_extension("observe");
+    fs::write(
+        &prepared_path,
+        format!(
+            "PREPARED {coordinates}\n{}\n",
+            output.namespace().as_fd().as_raw_fd()
+        ),
+    )
+    .context("publish retained worker preparation coordinates")?;
+    wait_for_observation_request(&observe_path)?;
+    let (observation_digest, lifecycle_admission) =
+        observer_qualification::commit_worker_preparation(
+            prepared,
+            &output,
+            &state_root,
+            lifecycle_worker_socket,
+            open_cgroup_root()?,
+            ip,
+            nft,
+            enforcement_artifact,
+            bpf_observer,
+            gate_object,
+        )?;
+    let bootstrap = lifecycle_admission.bootstrap_namespace();
+    let target = lifecycle_admission.target_namespace();
+    fs::write(
+        &result_path,
+        format!(
+            "WORKER_OK {coordinates}\n{}\n{}\nLIFECYCLE_ADMITTED {} {} {}:{} {}:{}\n",
+            output.namespace().as_fd().as_raw_fd(),
+            observer_qualification::format_digest(observation_digest),
+            observer_qualification::format_digest(lifecycle_admission.effect_digest()),
+            observer_qualification::format_digest(lifecycle_admission.dispatch_digest()),
+            bootstrap.device,
+            bootstrap.inode,
+            target.device,
+            target.inode,
+        ),
+    )
+    .context("publish committed worker qualification result")?;
+
+    // Keep the independently validated namespace descriptor live for the
+    // controller's direct packet qualification through /proc/PID/fd/FD.
+    loop {
+        std::thread::park();
+    }
+}
+
+fn wait_for_observation_request(path: &Path) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !path.exists() {
+        ensure!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for worker observation request"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+fn open_cgroup_root() -> Result<CgroupV2Root> {
+    let descriptor: OwnedFd = rustix::fs::open(
+        "/sys/fs/cgroup",
+        rustix::fs::OFlags::PATH
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+
+    CgroupV2Root::from_owned(descriptor).context("retain unified cgroup root")
 }
 
 fn nft_observe(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {

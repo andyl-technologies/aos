@@ -17,6 +17,7 @@ use crate::kernel_observation::{
     NetworkKernelExpectationV1, NetworkKernelObservationError, NetworkKernelObservationV1,
     ObservedLeaseDirectionV1, ObservedLeaseStateV1, ObservedLinkV1, valid_loopback,
 };
+use crate::kernel_plan::NetworkKernelPlanV1;
 use crate::kernel_reader::{FixedBpfObservationReader, NetworkKernelReaderError};
 use crate::namespace_catalog::{
     NetworkNamespaceCatalogError, NetworkNamespaceCatalogV1, NetworkNamespaceObservedStateKindV1,
@@ -27,6 +28,7 @@ use crate::nftables_reader::FixedNftablesObservationReader;
 use crate::rtnetlink_reader::{
     FixedRtnetlinkObservationReader, RtnetlinkLinkInventoryV1, RtnetlinkNamespaceInventoryV1,
 };
+use crate::worker_runtime::{PreparedNetworkWorkerOutput, RecoveredNetworkPreparationObservation};
 
 /// Reports missing authority, descriptor drift, peer mismatch, or unstable state.
 #[derive(Debug, thiserror::Error)]
@@ -146,7 +148,7 @@ impl StableNetworkKernelObservationV1 {
         &self.observation
     }
 
-    /// Returns the V3 digest of every normalized fact in the snapshot.
+    /// Returns the V4 digest of every normalized fact in the snapshot.
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
         self.digest
@@ -280,6 +282,7 @@ pub fn observe_stable_network_kernel(
             authority.sandbox.identity().device,
             authority.sandbox.identity().inode,
         ),
+        authority.lifecycle.kind(),
         &expected_lifecycle,
         &first,
         &second,
@@ -289,6 +292,161 @@ pub fn observe_stable_network_kernel(
         observation: first,
         digest,
     })
+}
+
+/// Observes and validates a newly prepared default-drop namespace.
+///
+/// This bootstrap observation runs only after the effect executor has bound
+/// and retained the worker's namespace custody, but before the first namespace
+/// catalog publication exists. Its opaque executor result binds the retained
+/// descriptor, current boot, and authenticated plan digest. Later observations must use
+/// [`observe_stable_network_kernel`] and its catalog-authorized lifecycle.
+///
+/// # Errors
+///
+/// Returns [`NetworkNamespaceObserverError`] for an unsupported reader shape,
+/// substituted namespace custody, a reader failure, reciprocal-peer mismatch,
+/// any default-drop plan postcondition mismatch, or unequal snapshots.
+pub fn observe_stable_prepared_network_kernel(
+    readers: NetworkKernelObservationReaders<'_>,
+    plan: &NetworkKernelPlanV1,
+    prepared: &PreparedNetworkWorkerOutput,
+    initial_host_namespace: &NamespaceFd,
+    worker: &SingleThreadedProcess,
+) -> Result<StableNetworkKernelObservationV1, NetworkNamespaceObserverError> {
+    observe_stable_preparation_network_kernel(
+        readers,
+        plan,
+        prepared.namespace(),
+        prepared.kernel_plan_digest(),
+        prepared.kernel_boot_id(),
+        initial_host_namespace,
+        worker,
+    )
+}
+
+/// Observes and validates an ambiguous preparation after broker restart.
+///
+/// The recovery authority is derived only from an exact ambiguous journal row,
+/// its pre-effect systemd-custody binding, and a matching retained namespace
+/// descriptor. It cannot authorize another worker dispatch.
+///
+/// # Errors
+///
+/// Returns [`NetworkNamespaceObserverError`] for substituted recovery custody,
+/// either failed or unequal snapshot, reciprocal-peer mismatch, or any
+/// default-drop plan postcondition mismatch.
+pub fn observe_stable_recovered_network_kernel(
+    readers: NetworkKernelObservationReaders<'_>,
+    plan: &NetworkKernelPlanV1,
+    recovered: RecoveredNetworkPreparationObservation<'_>,
+    initial_host_namespace: &NamespaceFd,
+    worker: &SingleThreadedProcess,
+) -> Result<StableNetworkKernelObservationV1, NetworkNamespaceObserverError> {
+    observe_stable_preparation_network_kernel(
+        readers,
+        plan,
+        recovered.namespace(),
+        recovered.kernel_plan_digest(),
+        recovered.kernel_boot_id(),
+        initial_host_namespace,
+        worker,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observe_stable_preparation_network_kernel(
+    readers: NetworkKernelObservationReaders<'_>,
+    plan: &NetworkKernelPlanV1,
+    target_namespace: &NamespaceFd,
+    prepared_plan_digest: ObjectDigest,
+    prepared_boot_id: [u8; 16],
+    initial_host_namespace: &NamespaceFd,
+    worker: &SingleThreadedProcess,
+) -> Result<StableNetworkKernelObservationV1, NetworkNamespaceObserverError> {
+    worker.disable_core_dumps()?;
+    let boot_id = KernelBootId::current()?.into_bytes();
+    let expectation = plan.observation_expectation();
+    initial_host_namespace.validate_current_network()?;
+    validate_prepared_observation_authority(
+        plan.digest(),
+        prepared_plan_digest,
+        prepared_boot_id,
+        target_namespace.identity(),
+        boot_id,
+        initial_host_namespace.identity(),
+    )?;
+
+    let valid_reader_shape = matches!(
+        (expectation.kind(), expectation.veth(), readers.bpf),
+        (NetworkKind::Isolated, None, None)
+            | (
+                NetworkKind::Project | NetworkKind::Outbound | NetworkKind::Published,
+                Some(_),
+                Some(_),
+            )
+    );
+    if !valid_reader_shape {
+        return Err(NetworkNamespaceObserverError::UnsupportedPlan);
+    }
+
+    let expected_lifecycle =
+        expected_lifecycle(expectation, NetworkNamespaceObservedStateV1::default_drop())?;
+    let authority = ObservationAuthority {
+        boot_id,
+        host: initial_host_namespace,
+        sandbox: target_namespace,
+        lifecycle: NetworkNamespaceObservedStateV1::default_drop(),
+    };
+    let first = observe_complete_once(
+        readers.rtnetlink,
+        readers.nftables,
+        readers.bpf,
+        expectation,
+        &expected_lifecycle,
+        authority,
+        worker,
+    )?;
+    let second = observe_complete_once(
+        readers.rtnetlink,
+        readers.nftables,
+        readers.bpf,
+        expectation,
+        &expected_lifecycle,
+        authority,
+        worker,
+    )?;
+    let identity = target_namespace.identity();
+    let digest = expectation.validate_stable(
+        boot_id,
+        (identity.device, identity.inode),
+        NetworkNamespaceObservedStateKindV1::DefaultDrop,
+        &expected_lifecycle,
+        &first,
+        &second,
+    )?;
+
+    Ok(StableNetworkKernelObservationV1 {
+        observation: first,
+        digest,
+    })
+}
+
+pub(crate) fn validate_prepared_observation_authority(
+    plan_digest: ObjectDigest,
+    prepared_plan_digest: ObjectDigest,
+    prepared_boot_id: [u8; 16],
+    target_identity: NamespaceIdentity,
+    boot_id: [u8; 16],
+    host_identity: NamespaceIdentity,
+) -> Result<(), NetworkNamespaceObserverError> {
+    if prepared_boot_id != boot_id
+        || prepared_plan_digest != plan_digest
+        || target_identity == host_identity
+    {
+        return Err(NetworkNamespaceObserverError::AuthorityMismatch);
+    }
+    Ok(())
 }
 
 /// Observes two equal reciprocal retained-descriptor rtnetlink snapshots.
@@ -529,6 +687,11 @@ fn observe_complete_once(
         .map_or_else(Vec::new, |inventory| inventory.addresses.clone());
     addresses.extend(sandbox.addresses);
     addresses.sort_unstable();
+    let mut ipv6_neighbors = host
+        .as_ref()
+        .map_or_else(Vec::new, |inventory| inventory.ipv6_neighbors.clone());
+    ipv6_neighbors.extend(sandbox.ipv6_neighbors);
+    ipv6_neighbors.sort_unstable();
     let lifecycle = lease_gate.as_ref().map_or_else(
         // Isolated namespaces have no lease map. Their disarmed lifecycle is
         // the protected catalog projection corroborated by default-drop nft.
@@ -547,6 +710,7 @@ fn observe_complete_once(
             NetworkKernelReaderError::InvalidRtnetlink("sandbox link count exceeds u32")
         })?,
         addresses,
+        ipv6_neighbors,
         routes: sandbox.routes,
         policy_rules: sandbox.policy_rules,
         nftables,

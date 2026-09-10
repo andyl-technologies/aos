@@ -3,10 +3,10 @@
 //! The catalog accepts only exact committed preparation results paired with
 //! their retained portable assignments. Each current-boot publication is
 //! checked against the fixed typed namespace pin before it enters a separate
-//! append-only journal. New and transitioned rows use canonical format 2:
+//! append-only journal. New and transitioned rows use canonical format 3:
 //!
 //! ```text
-//! {"version":2,"record":{...}}
+//! {"version":3,"record":{...}}
 //! ```
 //!
 //! Canonical format-1 default-drop rows remain readable with their original
@@ -44,6 +44,7 @@ use sha2::{Digest as _, Sha256};
 use crate::{CommittedNetworkResultV1, NetworkCatalogBindingV1, ResolvedNetworkPreparationV1};
 
 mod lifecycle;
+pub(crate) use lifecycle::NetworkNamespaceLifecycleAuthorityV1;
 pub use lifecycle::{
     NetworkNamespaceIdentityV1, NetworkNamespaceLifecycleActionV1,
     NetworkNamespaceLifecycleObservationV1, NetworkNamespaceLifecycleOutcomeV1,
@@ -56,9 +57,11 @@ const NAMESPACE_PIN_ROOT: &str = "/run/aos/sandbox-pins/netns";
 const HEAD_KEY: &[u8] = b"aos.network.namespace.head.v1\0";
 const RECORD_KEY_PREFIX: &[u8] = b"aos.network.namespace.v1\0";
 const HEAD_FORMAT_VERSION: u16 = 1;
-const RECORD_FORMAT_VERSION: u16 = 2;
+const RECORD_FORMAT_VERSION: u16 = 3;
+const PREVIOUS_RECORD_FORMAT_VERSION: u16 = 2;
 const LEGACY_RECORD_FORMAT_VERSION: u16 = 1;
 const RESOURCE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.namespace-resource.v1\0";
+const RESOURCE_DIGEST_DOMAIN_V3: &[u8] = b"aos.sandbox.network.namespace-resource.v3\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.network.namespace-transaction.v1\0";
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024;
 
@@ -101,6 +104,7 @@ pub struct NetworkNamespacePublicationV1 {
     kernel_boot_id: [u8; 16],
     namespace_device: u64,
     namespace_inode: u64,
+    kernel_plan_digest: ObjectDigest,
     result_digest: ObjectDigest,
 }
 
@@ -116,6 +120,7 @@ impl NetworkNamespacePublicationV1 {
             || result.kernel_boot_id() == [0; 16]
             || result.namespace_device() == 0
             || result.namespace_inode() == 0
+            || result.kernel_plan_digest().is_none()
             || result.result_digest().as_bytes() == &[0; 32]
         {
             return Err(NetworkNamespaceCatalogError::InvalidCandidate);
@@ -129,6 +134,9 @@ impl NetworkNamespacePublicationV1 {
             kernel_boot_id: result.kernel_boot_id(),
             namespace_device: result.namespace_device(),
             namespace_inode: result.namespace_inode(),
+            kernel_plan_digest: result
+                .kernel_plan_digest()
+                .ok_or(NetworkNamespaceCatalogError::InvalidCandidate)?,
             result_digest: result.result_digest(),
         })
     }
@@ -355,6 +363,47 @@ impl NetworkNamespaceCatalogV1 {
         Ok((identity, project_observed_state(record)?))
     }
 
+    /// Projects the exact protected row used for lifecycle admission.
+    ///
+    /// The retained assignment and preparation binding must match the
+    /// controller-authenticated preparation. The fixed pin is physically
+    /// revalidated before any catalog digest or lease high-water is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] when the handle is not a live
+    /// current-boot row, its pin changed, or either retained binding differs.
+    pub(crate) fn authorize_current_lifecycle(
+        &self,
+        network_handle: [u8; 32],
+        assignment: BrokerAssignment,
+        preparation: NetworkCatalogBindingV1,
+    ) -> Result<NetworkNamespaceLifecycleAuthorityV1, NetworkNamespaceCatalogError> {
+        let identity = self.current_namespace_identity(network_handle)?;
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?;
+        if record.assignment != AssignmentWire::from(assignment)
+            || record.preparation != CatalogBindingWire::from(preparation)
+        {
+            return Err(NetworkNamespaceCatalogError::IdentityConflict);
+        }
+
+        Ok(NetworkNamespaceLifecycleAuthorityV1 {
+            identity,
+            observed_state: project_observed_state(record)?,
+            resource_digest: ObjectDigest::from_bytes(record.resource_digest),
+            kernel_plan_digest: Some(ObjectDigest::from_bytes(
+                record
+                    .kernel_plan_digest
+                    .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?,
+            )),
+            highest_lease_generation: record.highest_lease_generation,
+            highest_lease_digest: ObjectDigest::from_bytes(record.highest_lease_digest),
+        })
+    }
+
     /// Publishes an exact committed namespace after reopening its fixed pin.
     ///
     /// Only current-boot default-drop creation results are accepted. A stale
@@ -407,6 +456,7 @@ impl NetworkNamespaceCatalogV1 {
             request_id: publication.request_id,
             preparation: CatalogBindingWire::from(publication.preparation),
             creation_result_digest: *publication.result_digest.as_bytes(),
+            kernel_plan_digest: Some(*publication.kernel_plan_digest.as_bytes()),
             network_handle: publication.network_handle,
             assignment,
             kernel_boot_id: publication.kernel_boot_id,
@@ -761,6 +811,8 @@ struct NamespaceRecordV2 {
     request_id: [u8; 16],
     preparation: CatalogBindingWire,
     creation_result_digest: [u8; 32],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kernel_plan_digest: Option<[u8; 32]>,
     network_handle: [u8; 32],
     assignment: AssignmentWire,
     kernel_boot_id: [u8; 16],
@@ -781,10 +833,15 @@ impl NamespaceRecordV2 {
     fn validate(&self) -> Result<(), NetworkNamespaceCatalogError> {
         if !matches!(
             self.format_version,
-            LEGACY_RECORD_FORMAT_VERSION | RECORD_FORMAT_VERSION
+            LEGACY_RECORD_FORMAT_VERSION | PREVIOUS_RECORD_FORMAT_VERSION | RECORD_FORMAT_VERSION
         ) || self.catalog_generation < 2
             || self.request_id == [0; 16]
             || self.creation_result_digest == [0; 32]
+            || (self.format_version == RECORD_FORMAT_VERSION
+                && self
+                    .kernel_plan_digest
+                    .is_none_or(|digest| digest == [0; 32]))
+            || (self.format_version != RECORD_FORMAT_VERSION && self.kernel_plan_digest.is_some())
             || self.network_handle == [0; 32]
             || self.kernel_boot_id == [0; 16]
             || self.namespace_device == 0
@@ -855,7 +912,12 @@ impl NamespaceRecordV2 {
         let bytes = serde_json::to_vec(&preimage)
             .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
         let mut digest = Sha256::new();
-        digest.update(RESOURCE_DIGEST_DOMAIN);
+        let domain = if self.format_version == RECORD_FORMAT_VERSION {
+            RESOURCE_DIGEST_DOMAIN_V3
+        } else {
+            RESOURCE_DIGEST_DOMAIN
+        };
+        digest.update(domain);
         digest.update(bytes);
         Ok(digest.finalize().into())
     }
@@ -882,6 +944,7 @@ impl NamespaceRecordV2 {
         self.request_id == publication.request_id
             && self.preparation == CatalogBindingWire::from(publication.preparation)
             && self.creation_result_digest == *publication.result_digest.as_bytes()
+            && self.kernel_plan_digest == Some(*publication.kernel_plan_digest.as_bytes())
             && self.network_handle == publication.network_handle
             && self.assignment == AssignmentWire::from(publication.assignment)
             && self.kernel_boot_id == publication.kernel_boot_id
@@ -984,6 +1047,7 @@ impl From<NamespaceRecordV1> for NamespaceRecordV2 {
             request_id: record.request_id,
             preparation: record.preparation,
             creation_result_digest: record.result_digest,
+            kernel_plan_digest: None,
             network_handle: record.network_handle,
             assignment: record.assignment,
             kernel_boot_id: record.kernel_boot_id,
@@ -1076,7 +1140,7 @@ fn encode_record(record: &NamespaceRecordV2) -> Result<Vec<u8>, NetworkNamespace
         })
     } else {
         serde_json::to_vec(&RecordEnvelopeV2 {
-            version: RECORD_FORMAT_VERSION,
+            version: record.format_version,
             record: record.clone(),
         })
     }
@@ -1106,7 +1170,7 @@ fn decode_record(bytes: &[u8]) -> Result<NamespaceRecordV2, NetworkNamespaceCata
             envelope.record.validate()?;
             NamespaceRecordV2::from(envelope.record)
         }
-        RECORD_FORMAT_VERSION => {
+        PREVIOUS_RECORD_FORMAT_VERSION | RECORD_FORMAT_VERSION => {
             let mut envelope: RecordEnvelopeV2 = serde_json::from_slice(bytes)
                 .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
             if serde_json::to_vec(&envelope)
@@ -1115,7 +1179,7 @@ fn decode_record(bytes: &[u8]) -> Result<NamespaceRecordV2, NetworkNamespaceCata
             {
                 return Err(NetworkNamespaceCatalogError::CorruptRecord);
             }
-            envelope.record.format_version = RECORD_FORMAT_VERSION;
+            envelope.record.format_version = version.version;
             envelope.record
         }
         _ => return Err(NetworkNamespaceCatalogError::CorruptRecord),
@@ -1307,6 +1371,7 @@ mod tests {
                 kernel_boot_id,
                 namespace_device: metadata.dev(),
                 namespace_inode: metadata.ino(),
+                kernel_plan_digest: ObjectDigest::from_bytes([handle.wrapping_add(25); 32]),
                 result_digest: ObjectDigest::from_bytes([handle.wrapping_add(30); 32]),
             }
         }
@@ -1755,7 +1820,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_default_drop_row_is_read_exactly_and_upgrades_on_transition() {
+    fn legacy_default_drop_row_is_read_exactly_but_cannot_authorize_lifecycle() {
         let fixture = Fixture::new();
         fixture.create_pin(1);
         let publication = fixture.publication(1, 1, [81; 16]);
@@ -1803,25 +1868,97 @@ mod tests {
         journal.commit(&transaction).unwrap();
         drop(journal);
 
-        let mut catalog = fixture.open([81; 16]).unwrap();
+        let catalog = fixture.open([81; 16]).unwrap();
         assert_eq!(
             network(&catalog, 1).resource_digest(),
             &legacy.resource_digest
         );
-        let arm = NetworkNamespaceLifecycleTransitionV1::arm(
-            armed_observation(&catalog, 1, 41, 51, 61, 7, 1_000),
-            ObjectDigest::from_bytes([61; 32]),
-            7,
-            1_000,
+        assert!(matches!(
+            catalog.authorize_current_lifecycle(
+                publication.network_handle,
+                publication.assignment,
+                publication.preparation,
+            ),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+    }
+
+    #[test]
+    fn previous_row_preserves_canonical_encoding_but_cannot_authorize_lifecycle() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let publication = fixture.publication(1, 1, [81; 16]);
+        let metadata = fs::metadata(fixture.pin_path(1)).unwrap();
+        let mut record = NamespaceRecordV2 {
+            format_version: PREVIOUS_RECORD_FORMAT_VERSION,
+            catalog_generation: 2,
+            request_id: publication.request_id,
+            preparation: CatalogBindingWire::from(publication.preparation),
+            creation_result_digest: *publication.result_digest.as_bytes(),
+            kernel_plan_digest: None,
+            network_handle: publication.network_handle,
+            assignment: AssignmentWire::from(publication.assignment),
+            kernel_boot_id: publication.kernel_boot_id,
+            namespace_device: metadata.dev(),
+            namespace_inode: metadata.ino(),
+            lifecycle: NamespaceLifecycleV1::DefaultDrop,
+            lease_generation: 0,
+            fail_stop_boottime_nanoseconds: 0,
+            highest_lease_generation: 0,
+            highest_lease_digest: [0; 32],
+            current_observation_digest: *publication.result_digest.as_bytes(),
+            last_transition_request_id: [0; 16],
+            last_transition_digest: [0; 32],
+            resource_digest: [0; 32],
+        };
+        record.refresh_digest().unwrap();
+        let encoded = encode_record(&record).unwrap();
+        assert!(encoded.starts_with(b"{\"version\":2,"));
+        assert_eq!(
+            encode_record(&decode_record(&encoded).unwrap()).unwrap(),
+            encoded
+        );
+
+        let (mut journal, _) = Journal::open(
+            fixture.state_directory.join(NAMESPACE_JOURNAL_FILE),
+            namespace_journal_limits(),
         )
         .unwrap();
-        catalog.apply_lifecycle_transition(arm).unwrap();
-        drop(catalog);
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [74; 16],
+                    vec![
+                        JournalRecord::put(
+                            RecordNamespace::NetworkResourceInventory,
+                            HEAD_KEY.to_vec(),
+                            encode_head(&CatalogHeadV1 { generation: 2 }).unwrap(),
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::NetworkResourceInventory,
+                            record_key(&publication.network_handle),
+                            encoded,
+                        ),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
 
-        let recovered = fixture.open([81; 16]).unwrap();
-        let armed = network(&recovered, 1);
-        assert_eq!(armed.state(), NetworkState::NETWORK_STATE_ARMED);
-        assert_ne!(armed.resource_digest(), &legacy.resource_digest);
+        let catalog = fixture.open([81; 16]).unwrap();
+        assert_eq!(
+            network(&catalog, 1).resource_digest(),
+            &record.resource_digest
+        );
+        assert!(matches!(
+            catalog.authorize_current_lifecycle(
+                publication.network_handle,
+                publication.assignment,
+                publication.preparation,
+            ),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
     }
 
     #[test]

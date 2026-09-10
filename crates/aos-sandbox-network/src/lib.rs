@@ -27,9 +27,14 @@ pub mod allocation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+pub mod kernel_mutator;
 pub mod kernel_observation;
 pub mod kernel_plan;
 pub mod kernel_reader;
+pub mod lifecycle_state;
+mod lifecycle_worker_process;
+pub mod lifecycle_worker_protocol;
+pub mod lifecycle_worker_runtime;
 pub mod namespace_catalog;
 #[allow(
     dead_code,
@@ -46,12 +51,19 @@ pub mod namespace_store;
 pub mod nftables_reader;
 pub mod policy;
 pub mod preparation_catalog;
+pub mod preparation_runtime;
 pub mod rtnetlink_reader;
 pub mod service;
 pub mod state;
 mod systemd_socket_instance;
+#[allow(
+    dead_code,
+    reason = "the authenticated worker wire contract is staged before runtime dispatch"
+)]
+mod worker_process;
 pub mod worker_protocol;
 pub mod worker_replay;
+pub mod worker_runtime;
 
 pub use allocation::{
     NetworkAddressPairV1, NetworkAddressPoolV1, NetworkAllocationError, NetworkAllocationPolicyV1,
@@ -60,8 +72,9 @@ pub use allocation::{
 };
 pub use authorization::{NetworkAdmissionError, NetworkAuthorityV1};
 pub use broker::{
-    NetworkAdmissionCoordinator, NetworkAdmissionOutcome, NetworkBrokerError,
-    NetworkEffectDispatchPermitV1, advertised_network_methods,
+    NetworkAdmissionOutcome, NetworkBrokerError, NetworkEffectDispatchPermitV1,
+    NetworkLifecycleAdmissionCoordinator, NetworkLifecycleAdmissionOutcome,
+    NetworkLifecycleEffectDispatchPermitV1, advertised_network_methods,
 };
 pub use catalog::{
     AuthenticatedNetworkPreparationV1, NetworkCatalogBindingV1, ResolvedEndpointV1,
@@ -72,11 +85,11 @@ pub use kernel_observation::{
     NetworkKernelObservationError, NetworkKernelObservationV1, ObservedAddressV1,
     ObservedBpfArtifactV1, ObservedBpfAttachmentV1, ObservedBpfBindingV1, ObservedBpfMapV1,
     ObservedFlowV1, ObservedInterfaceV1, ObservedIpAddressV1, ObservedIpFamilyV1,
-    ObservedIpPrefixV1, ObservedIpv6AddressGenerationV1, ObservedLeaseDirectionV1,
-    ObservedLeaseGateV1, ObservedLeaseStateV1, ObservedLinkV1, ObservedNetworkNamespaceV1,
-    ObservedNftAntiSpoofRuleV1, ObservedNftBaseChainV1, ObservedNftVerdictV1,
-    ObservedNftablesPolicyV1, ObservedPolicyRuleV1, ObservedRouteProtocolV1, ObservedRouteScopeV1,
-    ObservedRouteTypeV1, ObservedRouteV1,
+    ObservedIpPrefixV1, ObservedIpv6AddressGenerationV1, ObservedIpv6NeighborV1,
+    ObservedLeaseDirectionV1, ObservedLeaseGateV1, ObservedLeaseStateV1, ObservedLinkV1,
+    ObservedNetworkNamespaceV1, ObservedNftAntiSpoofRuleV1, ObservedNftBaseChainV1,
+    ObservedNftVerdictV1, ObservedNftablesPolicyV1, ObservedPolicyRuleV1, ObservedRouteProtocolV1,
+    ObservedRouteScopeV1, ObservedRouteTypeV1, ObservedRouteV1,
 };
 pub use kernel_plan::{
     NetworkKernelActionV1, NetworkKernelPlanError, NetworkKernelPlanV1,
@@ -84,6 +97,20 @@ pub use kernel_plan::{
 };
 pub use kernel_reader::{
     FixedBpfObservationReader, NetworkKernelReaderError, decode_bpf_observation,
+};
+pub use lifecycle_state::{
+    CommittedNetworkLifecycleResultV1, DurableNetworkLifecyclePhase,
+    NetworkLifecycleRecoveryEntryV1, NetworkLifecycleStateError, NetworkLifecycleStateStore,
+};
+pub use lifecycle_worker_protocol::{
+    AuthenticatedNetworkLifecycleWorkerDispatchV1, MAXIMUM_NETWORK_LIFECYCLE_WORKER_REQUEST_BYTES,
+    NetworkLifecycleAuthorizedStepV1, NetworkLifecycleDescriptorRoleV1,
+    NetworkLifecycleExecutionAuthorizationV1, NetworkLifecycleExecutionStepV1,
+    NetworkLifecycleWorkerDispatchV1, NetworkLifecycleWorkerRoleV1,
+};
+pub use lifecycle_worker_runtime::{
+    AdmittedNetworkLifecycleWorkerV1, NetworkLifecycleWorkerRuntimeError,
+    SystemdNetworkLifecycleAdmissionExecutor, run_inherited_network_lifecycle_admission_worker,
 };
 pub use namespace_catalog::{
     NetworkNamespaceCatalogError, NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogV1,
@@ -96,7 +123,8 @@ pub use namespace_observer::{
     NetworkKernelObservationReaders, NetworkNamespaceObserverError, NetworkNamespacePeerProofV1,
     RtnetlinkIsolatedNamespaceInventoryV1, RtnetlinkNamespacePairInventoryV1,
     StableNetworkKernelObservationV1, StableRtnetlinkNamespaceInventoryV1,
-    observe_stable_network_kernel, observe_stable_rtnetlink_namespace,
+    observe_stable_network_kernel, observe_stable_prepared_network_kernel,
+    observe_stable_recovered_network_kernel, observe_stable_rtnetlink_namespace,
     observe_stable_rtnetlink_pair,
 };
 pub use namespace_store::{
@@ -116,13 +144,19 @@ pub use preparation_catalog::{
     NetworkPreparationCatalogOutcomeV1, NetworkPreparationCatalogV1,
     NetworkPreparationReservationV1,
 };
+pub use preparation_runtime::{
+    FinalizedNetworkPreparationV1, NetworkPreparationFinalizationInput,
+    NetworkPreparationRecoveryInput, NetworkPreparationRuntimeError,
+    begin_network_preparation_once, finalize_executed_network_preparation,
+    finalize_recovered_ambiguous_network_preparation, publish_committed_network_preparation,
+};
 pub use rtnetlink_reader::{
     FixedRtnetlinkObservationReader, RtnetlinkLinkInventoryV1, RtnetlinkNamespaceInventoryV1,
 };
 pub use service::{NetworkConnectionOutcome, NetworkInventoryService, NetworkServiceError};
 pub use state::{
-    CommittedNetworkResultV1, DurableNetworkPhase, NetworkRecoveryEntry, NetworkRecoverySnapshotV1,
-    NetworkStateError, NetworkStateStore, VerifiedNetworkResultV1,
+    CommittedNetworkResultV1, DurableNetworkPhase, NetworkNamespaceCustodyV1, NetworkRecoveryEntry,
+    NetworkRecoverySnapshotV1, NetworkStateError, NetworkStateStore, VerifiedNetworkResultV1,
 };
 pub use worker_protocol::{
     AuthenticatedNetworkPrepareWorkerDispatchV1, MAXIMUM_NETWORK_WORKER_REQUEST_BYTES,
@@ -130,3 +164,8 @@ pub use worker_protocol::{
     NetworkPrepareWorkerDispatchV1, NetworkWorkerProtocolError,
 };
 pub use worker_replay::NetworkWorkerReplayLedger;
+pub use worker_runtime::{
+    NetworkWorkerConfiguration, NetworkWorkerRuntimeError, PreparedNetworkWorkerOutput,
+    RecoveredNetworkPreparationObservation, SystemdNetworkPrepareExecutor,
+    run_inherited_network_prepare_worker,
+};

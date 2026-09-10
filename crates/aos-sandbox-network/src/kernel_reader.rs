@@ -233,6 +233,29 @@ impl PinnedArtifact {
         self.digest
     }
 
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn validate_current_executable(&self) -> Result<(), NetworkKernelReaderError> {
+        self.validate_current()?;
+        let current = File::from(
+            rustix::fs::open(
+                "/proc/self/exe",
+                rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(kernel_io)?,
+        );
+        let identity = ArtifactIdentity::from_descriptor(&current, true)?;
+        if identity != self.identity || measure_file(&current, identity.size)? != self.digest {
+            return Err(NetworkKernelReaderError::InvalidArtifact(
+                "enforcement artifact is not the current executable",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn run(
         &self,
         arguments: &[OsString],

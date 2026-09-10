@@ -507,11 +507,17 @@ in {
       {IP} link set dev {managed_host} addrgenmode none
       {IP} -n aos-observe-managed link set dev {managed_sandbox} addrgenmode none
       {IP} address add {managed_host_address_1}/{managed_prefix_1} dev {managed_host}
-      {IP} address add {managed_host_address_2}/{managed_prefix_2} dev {managed_host}
+      {IP} -6 address add {managed_host_address_2}/{managed_prefix_2} \
+        nodad dev {managed_host}
+      {IP} -6 neighbor add {managed_sandbox_address_2} \
+        lladdr {managed_sandbox_mac} nud permanent dev {managed_host}
       {IP} -n aos-observe-managed address add \
         {managed_sandbox_address_1}/{managed_prefix_1} dev {managed_sandbox}
-      {IP} -n aos-observe-managed address add \
-        {managed_sandbox_address_2}/{managed_prefix_2} dev {managed_sandbox}
+      {IP} -n aos-observe-managed -6 address add \
+        {managed_sandbox_address_2}/{managed_prefix_2} \
+        nodad dev {managed_sandbox}
+      {IP} -n aos-observe-managed -6 neighbor add {managed_host_address_2} \
+        lladdr {managed_host_mac} nud permanent dev {managed_sandbox}
       touch {managed_pin}
       {MOUNT} --bind /run/netns/aos-observe-managed {managed_pin}
     """
@@ -542,6 +548,77 @@ in {
         f"{IP} -n aos-observe-managed -j address show dev {managed_sandbox} | "
         f"{JQ} -e {shlex.quote(addresses_are_settled)} >/dev/null",
         timeout=10,
+    )
+    assert lifecycle.succeed(
+        f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
+        f"{GATE_OBJECT}"
+    ).strip() == "OBSERVER_OK managed"
+
+    def assert_managed_observer_rejects(expected_fragment):
+        status, stdout, stderr = lifecycle.execute(
+            f"{FIXTURE} observer-run managed {managed_root} {managed_pin} "
+            f"{IP} {GATE_OBJECT}"
+        )
+        output = stdout + stderr
+        assert status != 0, output
+        assert expected_fragment in output, output
+
+    # The exact rtnetlink postcondition commits DAD suppression and both
+    # permanent IPv6 neighbor bindings. Qualify omission and substitution
+    # independently, restoring a passing observation after each mutation.
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 address change "
+        f"{managed_sandbox_address_2}/{managed_prefix_2} "
+        f"dev {managed_sandbox}"
+    )
+    lifecycle.wait_until_succeeds(
+        f"{IP} -n aos-observe-managed -j address show dev {managed_sandbox} | "
+        f"{JQ} -e {shlex.quote(addresses_are_settled)} >/dev/null",
+        timeout=10,
+    )
+    assert_managed_observer_rejects(
+        b"address DAD suppression differs from its family and link role"
+    )
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 address change "
+        f"{managed_sandbox_address_2}/{managed_prefix_2} nodad "
+        f"dev {managed_sandbox}"
+    )
+    assert lifecycle.succeed(
+        f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
+        f"{GATE_OBJECT}"
+    ).strip() == "OBSERVER_OK managed"
+
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 neighbor del "
+        f"{managed_host_address_2} dev {managed_sandbox}"
+    )
+    assert_managed_observer_rejects(
+        b"Network kernel IPv6 neighbor inventory mismatched"
+    )
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 neighbor add "
+        f"{managed_host_address_2} lladdr {managed_host_mac} "
+        f"nud permanent dev {managed_sandbox}"
+    )
+    assert lifecycle.succeed(
+        f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
+        f"{GATE_OBJECT}"
+    ).strip() == "OBSERVER_OK managed"
+
+    wrong_neighbor_mac = "02:aa:bb:cc:dd:ee"
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 neighbor replace "
+        f"{managed_host_address_2} lladdr {wrong_neighbor_mac} "
+        f"nud permanent dev {managed_sandbox}"
+    )
+    assert_managed_observer_rejects(
+        b"Network kernel IPv6 neighbor inventory mismatched"
+    )
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 neighbor replace "
+        f"{managed_host_address_2} lladdr {managed_host_mac} "
+        f"nud permanent dev {managed_sandbox}"
     )
     assert lifecycle.succeed(
         f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
