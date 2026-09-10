@@ -259,9 +259,10 @@ id = "alias-child-ring-or-overlay"
 title = "Alias one child ring or disk overlay in a fault build"
 failure_class = "world-resource-alias"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-required"
+implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.child-resource-alias"
+fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.child-resource-alias {fault_build_command}"
 prior_state = "The source world is authenticated and target node resource identities are unique before readiness."
@@ -271,7 +272,7 @@ recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket
 observables = ["ring identity", "overlay identity", "readiness verdict", "guest execution count", "resource quarantine"]
 post_recovery_invariant = "No child reaches guest execution with aliased writable or communication resources."
 backend_scope = "constrained-host-and-each-targeted-backend"
-prerequisites = ["world-resource-preflight"]
+prerequisites = ["child-resource-alias-readiness", "world-resource-preflight"]
 
 [[injections]]
 id = "exceed-host-resource-budget"
@@ -455,6 +456,12 @@ id = "world-resource-preflight"
 package = "crucible-daemon"
 source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs"
 selector = "qemu_hot_fork_world_factory::tests::target_world_resource_preflight_rejects_before_source_checkout_or_guard_installation"
+
+[[prerequisite_tests]]
+id = "child-resource-alias-readiness"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs"
+selector = "qemu_hot_fork_world_factory::tests::child_resource_alias_rejects_before_fork_and_restores_source_world"
 
 [[prerequisite_tests]]
 id = "deterministic-pressure-demotion"

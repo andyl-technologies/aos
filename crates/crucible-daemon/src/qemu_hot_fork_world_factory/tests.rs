@@ -87,13 +87,20 @@ mod world_fork_atomicity;
 const WORLD_FORK_ONE_VM_FAILURE_CHILD_ENVIRONMENT: &str =
     "CRUCIBLE_DESTRUCTIVE_RECOVERY_WORLD_FORK_ONE_VM_FAILURE_CHILD";
 #[cfg(feature = "destructive-recovery-faults")]
+const CHILD_RESOURCE_ALIAS_CHILD_ENVIRONMENT: &str =
+    "CRUCIBLE_DESTRUCTIVE_RECOVERY_CHILD_RESOURCE_ALIAS_CHILD";
+#[cfg(feature = "destructive-recovery-faults")]
 const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
 #[cfg(feature = "destructive-recovery-faults")]
 const WORLD_FORK_ONE_VM_FAILURE_TRIGGER: &str =
     "crucible.destructive-recovery.world-fork-one-vm-failure";
 #[cfg(feature = "destructive-recovery-faults")]
+const CHILD_RESOURCE_ALIAS_TRIGGER: &str = "crucible.destructive-recovery.child-resource-alias";
+#[cfg(feature = "destructive-recovery-faults")]
 const WORLD_FORK_ONE_VM_FAILURE_TEST_NAME: &str =
     "qemu_hot_fork_world_factory::tests::world_fork_one_vm_failure_quarantines_partial_world";
+#[cfg(feature = "destructive-recovery-faults")]
+const CHILD_RESOURCE_ALIAS_TEST_NAME: &str = "qemu_hot_fork_world_factory::tests::child_resource_alias_rejects_before_fork_and_restores_source_world";
 
 struct ScriptedWorldGuard {
     resources: AttemptResourceLimits,
@@ -2453,6 +2460,86 @@ fn second_child_indeterminate_failure_quarantines_first_child_and_complete_world
         .as_ref()
         .and_then(Weak::upgrade);
     assert!(guard.is_some());
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+#[test]
+fn child_resource_alias_rejects_before_fork_and_restores_source_world() {
+    if std::env::var_os(CHILD_RESOURCE_ALIAS_CHILD_ENVIRONMENT).is_none() {
+        let child =
+            std::process::Command::new(std::env::current_exe().expect("current test binary"))
+                .arg("--exact")
+                .arg(CHILD_RESOURCE_ALIAS_TEST_NAME)
+                .arg("--nocapture")
+                .env(CHILD_RESOURCE_ALIAS_CHILD_ENVIRONMENT, "1")
+                .env(
+                    DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
+                    CHILD_RESOURCE_ALIAS_TRIGGER,
+                )
+                .output()
+                .expect("run child-resource alias child");
+        assert!(
+            child.status.success(),
+            "child-resource alias child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr),
+        );
+        return;
+    }
+
+    let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
+    let source_process = source.process_id();
+    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_test(vec![source])
+        .expect("prepared source world");
+    let input = execution_input();
+    let context = execution_context(&input, 0x79);
+    let run_state = tempfile::tempdir().expect("run state");
+    let observations = ScriptedWorldObservations::new();
+    let mut factory = factory(
+        source_world,
+        input.lineage(),
+        run_state.path().to_path_buf(),
+        observations.clone(),
+    );
+
+    reset_hot_fork_adoption_count_for_test();
+    let failure = match factory.try_start(&input, &context) {
+        Err(failure) => failure,
+        Ok(_) => panic!("fault build must reject aliased child resources"),
+    };
+    let AttemptWorkerFailure::Retryable(QemuProductionHotForkWorldLifecycleFactoryError::Assembly(
+        message,
+    )) = failure
+    else {
+        panic!("child-resource alias must be a retryable assembly failure")
+    };
+    assert!(message.contains("child file destinations must name distinct roots and files"));
+    assert_eq!(hot_fork_adoption_count_for_test(), 0);
+    assert!(factory.sources().available());
+    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
+    assert!(linux_process_identity(source_process).is_ok_and(|identity| identity.is_some()));
+    let prepared_directories = observations
+        .prepared_run_directories
+        .lock()
+        .expect("prepared directory registry");
+    assert_eq!(prepared_directories.len(), 1);
+    assert!(!prepared_directories[0].exists());
+    drop(prepared_directories);
+    assert!(
+        observations
+            .retained_child_processes
+            .lock()
+            .expect("retained child registry")
+            .is_empty()
+    );
+    let guard = observations
+        .guard_liveness
+        .lock()
+        .expect("guard liveness registry")
+        .as_ref()
+        .and_then(Weak::upgrade);
+    assert!(guard.is_none());
 }
 
 #[cfg(feature = "destructive-recovery-faults")]
