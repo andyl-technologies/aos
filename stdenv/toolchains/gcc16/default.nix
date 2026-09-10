@@ -41,7 +41,15 @@
   # that is the only glibc that exists at this point. Consumed only by the
   # tier-internal builds (binutils, linuxHeaders, glibc, bzip2) and as the
   # host compiler for the final bootstrapped GCC — never exposed downstream.
-  gccRaw = callPackage ./gcc.nix {};
+  # GCC 16 emits RISC-V extension names that binutils 2.35 cannot parse.
+  # Build the newer assembler with the completed predecessor before GCC 16
+  # needs it for its own target libraries.
+  bootstrapBinutils = callPackage ./binutils.nix {gcc = prev.gcc;};
+  gccRaw = callPackage ./gcc.nix (
+    if hostPlatform.constraints.cpu == "riscv64"
+    then {prev = prev // {binutils = bootstrapBinutils;};}
+    else {}
+  );
 
   # Phase 4: final GCC 16.2.0 bootstrapped by gccRaw against THIS tier's
   # glibc-2.39 / binutils-2.41 / linux-headers-6.12. This is what the wrapper

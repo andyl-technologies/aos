@@ -46,6 +46,7 @@ in
   mkGcc {
     version = "16.2.0";
     src = gccSrc;
+    installRuntimeLibraryLink = hostPlatform.constraints.cpu == "riscv64";
     # Avoid a separate emulated process for each source file during fixup.
     sourceScriptFilter =
       if hostPlatform.constraints.cpu == "x86_64"
