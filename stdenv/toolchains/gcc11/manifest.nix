@@ -376,6 +376,15 @@ in {
     buildDeps = autotoolsDeps ++ [perl];
     makeInfo = "${texinfo}/bin/makeinfo";
     configureFlags = tripletNoNls;
+    postConfigure =
+      if hostPlatform.constraints.cpu == "aarch64"
+      then ''
+        # stdbuf preloads this shared library; it cannot embed static libc.
+        # Keep the executable link flags and select shared libc only here.
+        printf '\nsrc/libstdbuf.so: LDFLAGS := $(filter-out -static,$(LDFLAGS)) -Wl,-rpath,%s/lib\n' \
+          "$AOS_GLIBC" >> Makefile
+      ''
+      else "";
     meta = gnuMeta "GNU core utilities (ls, cat, cp, mv, etc.), version 8.32" "https://www.gnu.org/software/coreutils/" "GPL-3.0-or-later";
   };
 
