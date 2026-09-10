@@ -60,9 +60,15 @@ in
           run_exact_lib_test() {
             package="$1"
             expected="$2"
-            list_output=$(cargo test --frozen --offline \
+            if list_output=$(cargo test --frozen --offline \
               --manifest-path crates/Cargo.toml --target-dir "$target" \
-              -p "$package" --lib "$expected" -- --exact --list 2>&1)
+              -p "$package" --lib "$expected" -- --exact --list 2>&1); then
+              :
+            else
+              cargo_status=$?
+              printf '%s\n' "$list_output" >&2
+              exit "$cargo_status"
+            fi
             exact_count=$(printf '%s\n' "$list_output" | grep -Fxc "$expected: test" || true)
             if [ "$exact_count" -ne 1 ]; then
               printf '%s\n' "$list_output" >&2
@@ -70,10 +76,16 @@ in
               exit 1
             fi
 
-            test_output=$(cargo test --frozen --offline \
+            if test_output=$(cargo test --frozen --offline \
               --manifest-path crates/Cargo.toml --target-dir "$target" \
               -p "$package" --lib "$expected" -- \
-              --exact --test-threads=1 2>&1)
+              --exact --test-threads=1 2>&1); then
+              :
+            else
+              cargo_status=$?
+              printf '%s\n' "$test_output" >&2
+              exit "$cargo_status"
+            fi
             printf '%s\n' "$test_output"
             if ! printf '%s\n' "$test_output" \
               | grep -F "test result: ok. 1 passed;" >/dev/null; then
