@@ -18,15 +18,110 @@ use crucible::{
     FailurePropertyViolationRecord, FailureRecordedEventLog, FailureSignature,
     FailureSignatureNormalization, FailureSignaturePreservingMinimizationResult,
     FailureSignaturePreservingMinimizationRun, FailureTimeoutBudgetKind, FailureTimeoutRecord,
-    FailureTriageResult, FailureTriageResultIdentity, FailureTriageSignatureSelfCheck,
-    FailureTriageSignatureSelfCheckInput, FindingDiscoveryPath, FindingReproductionArtifact,
-    HostAssertionViolation, Icount, MarkerId, MemoryDagStore, MinimizationConfig, MinimizationRun,
-    NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Properties,
-    ReadyPoint, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy,
-    SignaturePolicyLevel, SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode,
+    FailureTriageReplayEvidence, FailureTriageResult, FailureTriageResultIdentity,
+    FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput, FindingDiscoveryPath,
+    FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, MemoryDagStore,
+    MinimizationConfig, MinimizationRun, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent,
+    OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy, SignaturePolicyLevel,
+    SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
+
+#[test]
+fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
+    let finding = finding_artifact(
+        &scenario,
+        schedule.clone(),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("replay-evidence"),
+    )?;
+    let causal_entries = recorded_event_log(schedule.clone().decisions()[0].clone());
+    let coverage_fingerprint = finding_hash("replay-evidence-coverage");
+    let failure =
+        FailureClusterReportFailure::property(property_violation_record(finding.artifact.id()));
+    let evidence = FailureTriageReplayEvidence::new(
+        finding.clone(),
+        failure.clone(),
+        causal_entries.clone(),
+        coverage_fingerprint,
+        vec![b"retained transport frame".to_vec()],
+    )?;
+    let bytes = evidence.to_compact_binary()?;
+    let decoded = FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &bytes)?;
+
+    assert_eq!(decoded, evidence);
+    assert_eq!(decoded.finding(), &finding);
+    assert_eq!(decoded.failure(), &failure);
+    assert_eq!(decoded.causal_entries(), causal_entries);
+    assert_eq!(decoded.coverage_fingerprint(), coverage_fingerprint);
+    assert_eq!(
+        decoded.recorded_event_frames(),
+        [b"retained transport frame".to_vec()]
+    );
+    assert_eq!(decoded.signature(), evidence.signature());
+
+    let wrong_finding = finding_artifact(
+        &scenario,
+        schedule,
+        FindingDiscoveryPath::CoverageGuidedFuzzing,
+        finding_hash("another-replay-evidence"),
+    )?;
+    assert!(
+        FailureTriageReplayEvidence::from_compact_binary(wrong_finding, &bytes).is_err(),
+        "the payload must bind its exact finding identity"
+    );
+
+    let mut tampered = bytes.clone();
+    let last = tampered.last_mut().ok_or("evidence cannot be empty")?;
+    *last ^= 1;
+    assert!(
+        FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &tampered).is_err(),
+        "signature-material tampering must be rejected"
+    );
+
+    let too_many_entries = vec![causal_entries[0].clone(); 65_537];
+    assert!(
+        FailureTriageReplayEvidence::new(
+            finding.clone(),
+            failure.clone(),
+            too_many_entries,
+            coverage_fingerprint,
+            Vec::new(),
+        )
+        .is_err(),
+        "causal entry count must be checked before projection"
+    );
+    assert!(
+        FailureTriageReplayEvidence::new(
+            finding.clone(),
+            failure.clone(),
+            causal_entries.clone(),
+            coverage_fingerprint,
+            vec![vec![0; 1024 * 1024 + 1]],
+        )
+        .is_err(),
+        "a retained frame cannot exceed its individual bound"
+    );
+
+    let mut oversized_failure = property_violation_record(finding.artifact.id());
+    oversized_failure.violation.detail = "x".repeat(1024 * 1024);
+    assert!(
+        FailureTriageReplayEvidence::new(
+            finding,
+            FailureClusterReportFailure::property(oversized_failure),
+            causal_entries,
+            coverage_fingerprint,
+            Vec::new(),
+        )
+        .is_err(),
+        "failure-source material must be bounded before signature construction"
+    );
+
+    Ok(())
+}
 
 #[test]
 fn failure_signature_uses_recorded_tuple_not_discovery_campaign() -> Result<(), Box<dyn Error>> {
