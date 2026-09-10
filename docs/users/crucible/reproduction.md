@@ -181,14 +181,16 @@ Other boundaries are:
 --at marker --marker <guest-marker-name>
 ```
 
-Quiescence, property, and marker saves continue across scheduler quanta until a
-one-shot suspending breakpoint observes the requested evidence. A property
-selector stops on the named assertion's violated phase. Marker and property
-selectors also stop at quiescence and fail without exporting a handle when the
-requested evidence never appeared. `--max-virtual-time` is accepted only with
-`--at virtual-time`; combining it with another boundary is a usage error. Live
-QEMU boundary observation can wait for the backend's production completion
-window and is not limited by the control stream's short acknowledgement poll.
+Session-owned quiescence, property, and marker saves continue across scheduler
+quanta until a one-shot suspending breakpoint observes the requested evidence.
+Campaign-backed local-QEMU saves use the corresponding authenticated semantic
+stop. A property selector stops on the named assertion's violated phase. Marker
+and property selectors also stop at quiescence and fail without exporting a
+handle when the requested evidence never appeared. `--max-virtual-time` is
+accepted only with `--at virtual-time`; combining it with another boundary is a
+usage error. Live QEMU boundary observation can wait for the backend's
+production completion window and is not limited by the control stream's short
+acknowledgement poll.
 
 New savepoint handles use schema `crucible.savepoint-handle.v3`. They include a
 `selector` line naming the property violation or guest marker (or `none`) and a
@@ -218,6 +220,20 @@ content-addressed canonical campaign replay closure needed for delivery-order,
 random-draw, preemption, and typed Selection schedules. Historical override or
 application-random decisions still fail before handle or closure storage is
 written because the portable format does not carry their replay authority.
+
+Campaign-backed quiescence and property saves use schema
+`crucible.savepoint-handle.v6`. Their `boundary-proof` line contains
+`campaign-observation`, followed by the content digest and canonical bytes of
+the observation-stop proof and then the content digest and canonical bytes of
+the retained raw measurement evidence. Admission checks that the two records
+name the same configuration, absolute quantum, frontier, event-log prefix, and
+quiescence or assertion transition. Local-QEMU resume and fork then replay the
+embedded schedule from scenario genesis, reproduce that exact observation and
+raw evidence, and only then capture the physical continuation point. A caller
+that rewrites both portable records coherently therefore still fails against
+the independently reconstructed source attempt. Session and remote resume
+paths reject v6 observation boundaries because they do not perform this source
+authentication.
 
 If a selector does not fire before quiescence, Crucible creates no handle and
 returns exit 3. With `--trace <path>`, it still writes the commands and state

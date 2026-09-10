@@ -67,6 +67,8 @@ pub(super) struct GuardedDefaultCampaignResumeSource {
     pub(super) final_stop: StopCondition,
     pub(super) checkpoints: Arc<ExactCheckpointStore>,
     pub(super) continuation_control: Option<GuardedCampaignContinuationControl>,
+    pub(super) source_observation_proof: Option<ObservationStopProof>,
+    pub(super) source_observation_evidence: Option<crate::CrucibleMeasurementReplayEvidence>,
 }
 
 /// Authenticated source admission for a legacy checkpoint resumed by the campaign owner.
@@ -168,18 +170,40 @@ where
         StopCondition::NextChoice
             | StopCondition::Terminal
             | StopCondition::VirtualTimeNanoseconds(_)
+            | StopCondition::Observation(_)
     ) {
         return Err(GuardedDefaultCampaignInvariantError::UnsupportedResumeStop.into());
     }
-    if request.discovery_stop
-        != StopCondition::VirtualTimeNanoseconds(source.checkpoint.virtual_time.ticks)
-    {
+    let source_stop_matches = source.source_observation_proof.as_ref().map_or_else(
+        || {
+            request.discovery_stop
+                == StopCondition::VirtualTimeNanoseconds(source.checkpoint.virtual_time.ticks)
+        },
+        |proof| {
+            request.discovery_stop == StopCondition::Observation(proof.condition().clone())
+                && proof.child().as_hash().as_bytes() == source.checkpoint.configuration.bytes
+                && proof.boundary().frontier_nanoseconds() == source.checkpoint.virtual_time.ticks
+        },
+    );
+    if !source_stop_matches {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
     if source.continuation_control.as_ref().is_some_and(|control| {
         control.input().source_frontier_ticks() != source.checkpoint.virtual_time.ticks
     }) {
         return Err(GuardedDefaultCampaignInvariantError::ContinuationInputMismatch.into());
+    }
+    match (
+        source.source_observation_proof.as_ref(),
+        source.source_observation_evidence.as_ref(),
+    ) {
+        (Some(proof), Some(evidence)) => evidence
+            .verify_observation_stop_proof(proof)
+            .map_err(GuardedDefaultCampaignRunError::Measurement)?,
+        (None, None) => {}
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch.into());
+        }
     }
     let closure = request
         .initial_replay_closure
@@ -327,6 +351,14 @@ where
         || source_observation.virtual_time_ticks() != source.checkpoint.virtual_time.ticks
         || source_observation.observation().child() != expected_configuration
         || source_observation.observation().child_content() != lineage.genesis_content()
+    {
+        return Err(GuardedDefaultCampaignInvariantError::ResumeSourceObservationMismatch.into());
+    }
+    if let Some(expected) = source.source_observation_proof.as_ref()
+        && !matches!(
+            source_observation.observation().stop(),
+            StopOutcome::ObservationReached(actual) if actual.as_ref() == expected
+        )
     {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceObservationMismatch.into());
     }

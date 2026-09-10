@@ -479,6 +479,10 @@ pub(crate) enum SavepointBoundaryProof {
         frontier_ticks: u64,
         quanta: u64,
     },
+    CampaignObservation {
+        proof: Box<crucible_campaign::ObservationStopProof>,
+        evidence: Box<crucible_daemon::CrucibleMeasurementReplayEvidence>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

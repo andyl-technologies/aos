@@ -71,6 +71,11 @@ pub(crate) enum SaveBoundaryProof {
         retired_icount: u64,
         marker: crucible::MarkerId,
     },
+    /// Uses the campaign owner's authenticated post-quantum observation proof.
+    CampaignObservation {
+        proof: Box<crucible_campaign::ObservationStopProof>,
+        evidence: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +156,20 @@ impl SaveBoundaryEvidence {
                 self.frontier_ticks,
                 self.quanta
             ),
+            SaveBoundaryProof::CampaignObservation { proof, .. } => {
+                let witness = proof
+                    .assertion_witness()
+                    .map_or("none", |witness| witness.assertion());
+                format!(
+                    "campaign_observation={:?} satisfaction={:?} child={} firing_frontier={} firing_quanta={} assertion={}",
+                    proof.condition(),
+                    proof.satisfaction(),
+                    proof.child(),
+                    proof.boundary().frontier_nanoseconds(),
+                    proof.boundary().completed_quanta(),
+                    encode_canonical_summary_value(witness),
+                )
+            }
         };
         format!(
             "at={} selector={} frontier={} quanta={} {}",
@@ -225,6 +244,11 @@ pub(super) struct ResumeHandleEvidence {
     pub(super) checkpoint: Checkpoint,
     pub(super) replay_closure:
         crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+    /// Retains a v6 source claim until campaign-owned replay reproduces it.
+    pub(super) source_observation_proof: Option<Box<crucible_campaign::ObservationStopProof>>,
+    /// Retains the original raw boundary for exact comparison with source replay.
+    pub(super) source_observation_evidence:
+        Option<Box<crucible_daemon::CrucibleMeasurementReplayEvidence>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
