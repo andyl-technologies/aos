@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/capability.h>
+#include <linux/securebits.h>
 #include <limits.h>
 #include <poll.h>
 #include <sched.h>
@@ -238,10 +239,16 @@ static int drop_child_authority(void)
   struct __user_cap_data_struct data[2] = {0};
 
   for (int capability = 0; capability <= 40; capability++) {
+    if (capability == CAP_SYS_PTRACE)
+      continue;
     if (prctl(PR_CAPBSET_DROP, capability, 0, 0, 0) != 0)
       return -1;
   }
-  if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0 ||
+  if (prctl(PR_SET_SECUREBITS,
+            SECBIT_NOROOT | SECBIT_NOROOT_LOCKED |
+                SECBIT_NO_SETUID_FIXUP | SECBIT_NO_SETUID_FIXUP_LOCKED,
+            0, 0, 0) != 0 ||
+      prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0 ||
       syscall(SYS_capset, &header, data) != 0 ||
       prctl(PR_SET_DUMPABLE, 0) != 0)
     return -1;
@@ -252,27 +259,28 @@ static int drop_child_authority(void)
 
 static int install_child_fds(int null_fd, int stdout_fd, int stderr_fd,
                              int bus_fd, int parent_pidfd, int control_fd,
+                             int executable_fd,
                              const struct aos_fixture_case *test_case)
 {
   int inherited_parent = test_case->fault == AOS_FIXTURE_ENTRY_BAD_PIDFD
                              ? null_fd
                              : parent_pidfd;
   int sources[] = {null_fd, stdout_fd, stderr_fd, bus_fd, inherited_parent,
-                   control_fd};
-  int copies[6];
+                   control_fd, executable_fd};
+  int copies[7];
 
-  for (size_t index = 0; index < 6; index++) {
+  for (size_t index = 0; index < 7; index++) {
     copies[index] = fcntl(sources[index], F_DUPFD_CLOEXEC, 64);
     if (copies[index] < 0)
       return -1;
   }
-  for (int target = 0; target < 6; target++) {
+  for (int target = 0; target < 7; target++) {
     if (dup2(copies[target], target) != target)
       return -1;
   }
-  if (syscall(SYS_close_range, 6U, UINT_MAX, 0U) != 0)
+  if (syscall(SYS_close_range, 7U, UINT_MAX, 0U) != 0)
     return -1;
-  if (test_case->fault == AOS_FIXTURE_ENTRY_EXTRA_FD && dup2(0, 6) != 6)
+  if (test_case->fault == AOS_FIXTURE_ENTRY_EXTRA_FD && dup2(0, 7) != 7)
     return -1;
   if (test_case->fault == AOS_FIXTURE_ENTRY_LOW_NOFILE) {
     struct rlimit limit = {.rlim_cur = 31, .rlim_max = 31};
@@ -318,13 +326,18 @@ static int spawn_helper(const char *helper, int bus_fd, int parent_pidfd,
                         const struct aos_fixture_case *test_case, pid_t *child)
 {
   int null_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+  int executable_fd = open(helper, O_RDONLY | O_CLOEXEC);
   pid_t pid;
 
-  if (null_fd < 0)
+  if (null_fd < 0 || executable_fd < 0) {
+    close(null_fd);
+    close(executable_fd);
     return -1;
+  }
   pid = fork();
   if (pid < 0) {
     close(null_fd);
+    close(executable_fd);
     return -1;
   }
   if (pid == 0) {
@@ -336,7 +349,7 @@ static int spawn_helper(const char *helper, int bus_fd, int parent_pidfd,
                                    : empty_environment;
 
     if (install_child_fds(null_fd, stdout_fd, stderr_fd, bus_fd, parent_pidfd,
-                          control_fd, test_case) != 0 ||
+                          control_fd, executable_fd, test_case) != 0 ||
         drop_child_authority() != 0)
       _exit(253);
     if (test_case->fault == AOS_FIXTURE_CONTROL_SEND_RETRY &&
@@ -346,6 +359,7 @@ static int spawn_helper(const char *helper, int bus_fd, int parent_pidfd,
     _exit(253);
   }
   close(null_fd);
+  close(executable_fd);
   *child = pid;
   return 0;
 }

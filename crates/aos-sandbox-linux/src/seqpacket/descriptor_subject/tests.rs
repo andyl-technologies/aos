@@ -19,6 +19,30 @@ fn pair() -> (DescriptorSubjectSocket, OwnedFd) {
 }
 
 #[test]
+fn accepted_endpoint_requires_the_exact_bound_filesystem_path() {
+    let directory = tempfile::tempdir().expect("create socket-path fixture directory");
+    let expected = directory.path().join("expected.sock");
+    let substituted = directory.path().join("substituted.sock");
+    let listener = uapi::bind_record_subject_listener(&expected, 1).expect("bind expected socket");
+    uapi::enable_seqpacket_identity(listener.as_fd()).expect("configure expected listener");
+    let _connector = uapi::connect_seqpacket(&expected).expect("connect expected socket");
+    let accepted = uapi::accept_record_subject_socket(listener.as_fd()).expect("accept endpoint");
+    let endpoint = DescriptorSubjectSocket::from_owned(accepted).expect("adopt accepted endpoint");
+
+    endpoint
+        .require_local_filesystem_path(&expected)
+        .expect("match expected local path");
+    assert!(
+        endpoint
+            .require_local_filesystem_path(&substituted)
+            .is_err()
+    );
+
+    let (unnamed, _peer) = pair();
+    assert!(unnamed.require_local_filesystem_path(&expected).is_err());
+}
+
+#[test]
 fn exact_descriptor_replies_retain_subject_and_cloexec_ownership() {
     let (mut receiver, sender) = pair();
     uapi::send_seqpacket(sender.as_fd(), b"hello").expect("send hello");

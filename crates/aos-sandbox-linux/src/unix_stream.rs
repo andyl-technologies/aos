@@ -15,6 +15,8 @@
 
 use std::num::{NonZeroU32, NonZeroU64};
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Component, Path};
 
 use crate::pidfd::{PidFd, PidFdInfo};
 use crate::{Error, Result, uapi};
@@ -28,6 +30,40 @@ pub struct RetainedUnixStream {
 }
 
 impl RetainedUnixStream {
+    /// Connects to one normalized absolute filesystem Unix stream socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-normalized or oversized path, connection
+    /// failure, or retained peer-identity failure.
+    pub fn connect(path: &Path) -> Result<Self> {
+        let bytes = path.as_os_str().as_bytes();
+        let normalized = path.is_absolute()
+            && bytes.len() > 1
+            // Linux reserves 108 bytes including the trailing NUL.
+            && bytes.len() < 108
+            && !bytes.contains(&0)
+            && bytes[1..]
+                .split(|byte| *byte == b'/')
+                .all(|component| !component.is_empty() && !matches!(component, b"." | b".."))
+            && path
+                .components()
+                .all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
+        if !normalized {
+            return Err(Error::invalid(
+                "Unix stream connection path",
+                "must be a normalized absolute filesystem path",
+            ));
+        }
+
+        let stream =
+            std::os::unix::net::UnixStream::connect(path).map_err(|source| Error::Syscall {
+                operation: "connect Unix stream",
+                source,
+            })?;
+        Self::from_owned(stream.into())
+    }
+
     /// Validates and adopts an owned connected Unix `SOCK_STREAM` descriptor.
     ///
     /// The descriptor is made close-on-exec without changing its file-status

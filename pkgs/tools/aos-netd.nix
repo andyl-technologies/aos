@@ -43,6 +43,7 @@
     cargoBuildCommands = [
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-netd"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-lifecycle-worker"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-namespace-inspector"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-worker"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network"
     ];
@@ -64,6 +65,7 @@ in
     postInstall = ''
       test -x "$out/bin/aos-netd"
       test -x "$out/bin/aos-sandbox-network-lifecycle-worker"
+      test -x "$out/bin/aos-sandbox-network-namespace-inspector"
       test -x "$out/bin/aos-sandbox-network-worker"
     '';
 

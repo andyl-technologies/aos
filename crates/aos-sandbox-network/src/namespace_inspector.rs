@@ -3,10 +3,11 @@
 //! This module defines the bounded request and response records for the fixed
 //! namespace-inspector process. Its [`runtime`] child authenticates retained
 //! pidfds against exact credentials, cgroups, executable inodes, and effective
-//! MAC domains. The adapter is not yet composed with a production executable or
-//! authenticated manager activation, so this module does not launch the
-//! process, acquire a namespace, or advertise effect readiness.
-//! In the eventual runtime, the authenticated broker is the sole writer of an
+//! MAC domains. The [`production`] child composes those checks with one
+//! systemd-activated inspector and the authenticated manager query. This
+//! evidence-only path acquires and returns a namespace but does not perform
+//! Network mutation or advertise effect readiness.
+//! The authenticated broker is the sole writer of an
 //! immutable expected-attempt record after validating `READY`. The inspector
 //! receives only lookup access to those records and may mutate only a separate,
 //! one-shot spent-nonce ledger protected by the deployment's MAC policy.
@@ -52,8 +53,13 @@ use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 
 mod launch_contract;
 mod manager_query;
+mod production;
 mod runtime;
 mod store;
+
+pub use production::{
+    NamespaceInspectorProductionError, run_inherited_network_namespace_inspector,
+};
 
 #[cfg(feature = "kernel-tests")]
 pub use store::fixture::{
@@ -200,7 +206,7 @@ pub(crate) struct ProvisionedInspectorPeerRoleV1 {
 
 /// Models the kernel-authenticated identity for one connection or record.
 ///
-/// The future transport adapter must create this value only after retaining the
+/// The transport adapter creates this value only after retaining the
 /// peer pidfd, validating the role's exact cgroup, executable, and effective
 /// MAC domain, and checking kernel-provided credentials. The role label is an
 /// output of those checks, never a caller or configuration input. There is
@@ -248,7 +254,7 @@ impl KernelAuthenticatedSystemdManagerV1 {
 /// Static role policy contains no process ID or cgroup inode. The manager
 /// identity is a separately retained boot-local kernel observation. This value
 /// cannot be decoded from caller wire; its production constructor remains
-/// pending alongside root-owned policy provisioning.
+/// supplied by root-owned policy provisioning.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProvisionedNetworkNamespaceInspectorV1 {
     boot_id: [u8; 16],
@@ -260,7 +266,7 @@ pub(crate) struct ProvisionedNetworkNamespaceInspectorV1 {
 
 /// Models an independently authenticated live systemd launch observation.
 ///
-/// The future inspector adapter must obtain this from the fixed manager and
+/// The inspector adapter obtains this from the fixed manager and
 /// validate the complete protected property allowlist. No caller-wire field can
 /// construct this observation.
 #[derive(Clone, Debug, Eq, PartialEq)]

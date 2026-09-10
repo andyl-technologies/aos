@@ -27,11 +27,11 @@
 //! surface with compensating syscall/kernel confinement, or replace these
 //! procfs observations with an independently reviewed mechanism.
 //!
-//! The production executable, systemd-manager property adapter, and checked
-//! enforcing-policy prerequisite are not composed yet. This module must remain
-//! unreachable from production role construction until that prerequisite is
-//! qualified. In particular, it does not construct
-//! [`super::AuthenticatedNamespaceInspectorActivationV1`].
+//! The production inspector composes this verifier with protected deployment
+//! credentials and the native systemd-manager query. Its SELinux deployment is
+//! still a qualification prerequisite: exact labels do not establish that the
+//! loaded policy is enforcing. This evidence-only path does not construct
+//! Network mutation or readiness authority.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -43,6 +43,7 @@ use aos_sandbox_linux::pidfd::{PidFd, PidFdCredentials, PidFdInfo, PidFdProcessI
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, PeerCredentials, RecordCredentials,
 };
+use aos_sandbox_linux::unix_stream::{UnixStreamPeerCredentials, UnixStreamPeerIdentity};
 
 use super::{
     InspectorProcessIdentityV1, KernelAuthenticatedInspectorPeerV1,
@@ -56,6 +57,8 @@ const INSPECTOR_CGROUP_PREFIX: &str =
 const INSPECTOR_CGROUP_SUFFIX: &str = ".service";
 const BROKER_MAC_CONTEXT: &[u8] = b"system_u:system_r:aos_sandbox_network_publisher_t";
 const INSPECTOR_MAC_CONTEXT: &[u8] = b"system_u:system_r:aos_sandbox_namespace_inspector_t";
+const LIFECYCLE_WORKER_MAC_CONTEXT: &[u8] =
+    b"system_u:system_r:aos_sandbox_network_lifecycle_worker_t";
 const MANAGER_MAC_CONTEXT: &[u8] = b"system_u:system_r:init_t";
 const MAXIMUM_MAC_CONTEXT_BYTES: usize = 256;
 const MAXIMUM_PROC_PATH_BYTES: usize = 64;
@@ -91,19 +94,20 @@ pub(crate) struct NamespaceInspectorKernelVerifierV1 {
     cgroup_root: CgroupV2Root,
     broker_executable: FixedExecutable,
     inspector_executable: FixedExecutable,
+    lifecycle_worker_executable: FixedExecutable,
     manager_executable: FixedExecutable,
 }
 
 impl NamespaceInspectorKernelVerifierV1 {
-    /// Adopts the global cgroup-v2 root and the three provisioned executables.
+    /// Adopts the global cgroup-v2 root and the four provisioned executables.
     ///
     /// The executable descriptors must be close-on-exec regular executable
     /// files. Their retained inode identities must be pairwise distinct. The
     /// caller remains responsible for obtaining them through protected local
     /// provisioning rather than caller-controlled paths. This staged
-    /// constructor is not a production authority boundary: its future caller
-    /// must first consume a checked deployment token proving that SELinux is
-    /// enabled, enforcing, and running the reviewed effective policy.
+    /// constructor is not independently a production authority boundary: its
+    /// caller must also consume protected deployment policy and run under the
+    /// reviewed enforcing SELinux deployment.
     ///
     /// # Errors
     ///
@@ -113,15 +117,24 @@ impl NamespaceInspectorKernelVerifierV1 {
         cgroup_root: OwnedFd,
         broker_executable: OwnedFd,
         inspector_executable: OwnedFd,
+        lifecycle_worker_executable: OwnedFd,
         manager_executable: OwnedFd,
     ) -> Result<Self, NamespaceInspectorKernelAuthenticationError> {
         let broker_executable = FixedExecutable::from_owned(broker_executable)?;
         let inspector_executable = FixedExecutable::from_owned(inspector_executable)?;
+        let lifecycle_worker_executable = FixedExecutable::from_owned(lifecycle_worker_executable)?;
         let manager_executable = FixedExecutable::from_owned(manager_executable)?;
 
-        if broker_executable.identity == inspector_executable.identity
-            || broker_executable.identity == manager_executable.identity
-            || inspector_executable.identity == manager_executable.identity
+        let identities = [
+            broker_executable.identity,
+            inspector_executable.identity,
+            lifecycle_worker_executable.identity,
+            manager_executable.identity,
+        ];
+        if identities
+            .iter()
+            .enumerate()
+            .any(|(index, identity)| identities[..index].contains(identity))
         {
             return Err(
                 NamespaceInspectorKernelAuthenticationError::InvalidProvisioning(
@@ -134,6 +147,7 @@ impl NamespaceInspectorKernelVerifierV1 {
             cgroup_root: CgroupV2Root::from_owned(cgroup_root)?,
             broker_executable,
             inspector_executable,
+            lifecycle_worker_executable,
             manager_executable,
         })
     }
@@ -231,6 +245,92 @@ impl NamespaceInspectorKernelVerifierV1 {
         )?;
 
         Ok(RetainedSystemdManagerConnectionV1 { peer, evidence })
+    }
+
+    /// Authenticates PID 1 on a retained connection to the private manager stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the stream peer is live PID 1 with the exact
+    /// root credentials, cgroup, executable, and effective MAC context.
+    pub(crate) fn authenticate_manager_stream<'peer>(
+        &self,
+        peer: &'peer UnixStreamPeerIdentity,
+    ) -> Result<RetainedSystemdManagerStreamV1<'peer>, NamespaceInspectorKernelAuthenticationError>
+    {
+        let evidence = self.authenticate(
+            peer.pidfd(),
+            peer.initial_info(),
+            TransportCredentials::from(peer.credentials()),
+            RoleExpectation::manager(&self.manager_executable),
+        )?;
+
+        Ok(RetainedSystemdManagerStreamV1 { peer, evidence })
+    }
+
+    /// Authenticates the invoking inspector through its independently opened pidfd.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed instance or any credential, cgroup,
+    /// executable, MAC, process-identity, or liveness mismatch.
+    pub(crate) fn authenticate_inspector_pidfd<'pidfd>(
+        &self,
+        pidfd: &'pidfd PidFd,
+        instance: &str,
+    ) -> Result<RetainedInspectorPidFdV1<'pidfd>, NamespaceInspectorKernelAuthenticationError> {
+        validate_systemd_socket_instance_fields(instance)
+            .map_err(|_| NamespaceInspectorKernelAuthenticationError::Mismatch)?;
+        let cgroup = inspector_cgroup(instance)?;
+        let initial_info = pidfd.info()?;
+        let transport = transport_from_pidfd_info(initial_info)?;
+        let evidence = self.authenticate(
+            pidfd,
+            initial_info,
+            transport,
+            RoleExpectation::inspector(&self.inspector_executable, &cgroup),
+        )?;
+
+        Ok(RetainedInspectorPidFdV1 {
+            pidfd,
+            initial_info,
+            transport,
+            evidence,
+        })
+    }
+
+    /// Authenticates one broker-transferred lifecycle-worker leader pidfd.
+    ///
+    /// The pidfd is already type-checked by the Linux boundary. Its cgroup
+    /// locator comes only from a canonical request that is subsequently
+    /// matched to protected expected-attempt policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any credential, cgroup, executable, MAC,
+    /// process-identity, or liveness mismatch.
+    pub(crate) fn authenticate_lifecycle_worker_pidfd<'pidfd>(
+        &self,
+        pidfd: &'pidfd PidFd,
+        cgroup: &str,
+    ) -> Result<RetainedInspectorPidFdV1<'pidfd>, NamespaceInspectorKernelAuthenticationError> {
+        super::validate_lifecycle_worker_cgroup(cgroup)
+            .map_err(|_| NamespaceInspectorKernelAuthenticationError::Mismatch)?;
+        let initial_info = pidfd.info()?;
+        let transport = transport_from_pidfd_info(initial_info)?;
+        let evidence = self.authenticate(
+            pidfd,
+            initial_info,
+            transport,
+            RoleExpectation::lifecycle_worker(&self.lifecycle_worker_executable, Path::new(cgroup)),
+        )?;
+
+        Ok(RetainedInspectorPidFdV1 {
+            pidfd,
+            initial_info,
+            transport,
+            evidence,
+        })
     }
 
     fn authenticate(
@@ -400,6 +500,100 @@ pub(crate) struct RetainedSystemdManagerConnectionV1<'peer> {
     evidence: RetainedKernelProcessEvidenceV1,
 }
 
+/// Retains the authenticated PID 1 Unix-stream connection.
+#[derive(Debug)]
+pub(crate) struct RetainedSystemdManagerStreamV1<'peer> {
+    peer: &'peer UnixStreamPeerIdentity,
+    evidence: RetainedKernelProcessEvidenceV1,
+}
+
+impl RetainedSystemdManagerStreamV1<'_> {
+    /// Projects fresh checked manager evidence into the pure model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless every retained PID 1 observation still matches.
+    pub(crate) fn authenticated_manager(
+        &self,
+    ) -> Result<KernelAuthenticatedSystemdManagerV1, NamespaceInspectorKernelAuthenticationError>
+    {
+        self.evidence.reauthenticate(
+            self.peer.pidfd(),
+            self.peer.initial_info(),
+            self.peer.credentials().into(),
+        )?;
+        self.evidence.systemd_manager()
+    }
+
+    /// Revalidates the retained PID 1 stream peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any retained PID 1 observation changed.
+    pub(crate) fn revalidate_retained(
+        &self,
+    ) -> Result<(), NamespaceInspectorKernelAuthenticationError> {
+        self.evidence.reauthenticate(
+            self.peer.pidfd(),
+            self.peer.initial_info(),
+            self.peer.credentials().into(),
+        )
+    }
+}
+
+/// Retains one pidfd-only role authentication across effect boundaries.
+#[derive(Debug)]
+pub(crate) struct RetainedInspectorPidFdV1<'pidfd> {
+    pidfd: &'pidfd PidFd,
+    initial_info: PidFdInfo,
+    transport: TransportCredentials,
+    evidence: RetainedKernelProcessEvidenceV1,
+}
+
+impl RetainedInspectorPidFdV1<'_> {
+    /// Projects an authenticated inspector role into the pure model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless this is the inspector role and every retained
+    /// kernel observation still matches.
+    pub(crate) fn authenticated_inspector(
+        &self,
+    ) -> Result<KernelAuthenticatedInspectorPeerV1, NamespaceInspectorKernelAuthenticationError>
+    {
+        self.revalidate_retained()?;
+        self.evidence.inspector_peer()
+    }
+
+    /// Returns the exact process identity after fresh reauthentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if credentials, cgroup, executable, MAC, process
+    /// identity, or liveness no longer matches admission.
+    pub(crate) fn process(
+        &self,
+    ) -> Result<InspectorProcessIdentityV1, NamespaceInspectorKernelAuthenticationError> {
+        self.revalidate_retained()?;
+        Ok(model_process(
+            self.evidence.process,
+            self.evidence.cgroup_id,
+        ))
+    }
+
+    /// Revalidates every retained pidfd-only role observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any admitted process property changed.
+    pub(crate) fn revalidate_retained(
+        &self,
+    ) -> Result<(), NamespaceInspectorKernelAuthenticationError> {
+        self.evidence
+            .reauthenticate(self.pidfd, self.initial_info, self.transport)
+    }
+}
+
 impl RetainedSystemdManagerConnectionV1<'_> {
     /// Projects the checked manager into the pure protocol model.
     ///
@@ -457,7 +651,7 @@ impl RetainedKernelProcessEvidenceV1 {
         let role = match self.role {
             AuthenticatedRole::Broker => NetworkNamespaceInspectorPeerRoleV1::Broker,
             AuthenticatedRole::Inspector => NetworkNamespaceInspectorPeerRoleV1::Inspector,
-            AuthenticatedRole::Manager => {
+            AuthenticatedRole::LifecycleWorker | AuthenticatedRole::Manager => {
                 return Err(NamespaceInspectorKernelAuthenticationError::Mismatch);
             }
         };
@@ -568,6 +762,7 @@ fn validate_retained_baseline(
 enum AuthenticatedRole {
     Broker,
     Inspector,
+    LifecycleWorker,
     Manager,
 }
 
@@ -602,6 +797,29 @@ impl From<RecordCredentials> for TransportCredentials {
             gid: credentials.gid(),
         }
     }
+}
+
+impl From<UnixStreamPeerCredentials> for TransportCredentials {
+    fn from(credentials: UnixStreamPeerCredentials) -> Self {
+        Self {
+            pid: credentials.pid().get(),
+            uid: credentials.uid(),
+            gid: credentials.gid(),
+        }
+    }
+}
+
+fn transport_from_pidfd_info(
+    info: PidFdInfo,
+) -> Result<TransportCredentials, NamespaceInspectorKernelAuthenticationError> {
+    let credentials = info
+        .credentials()
+        .ok_or(NamespaceInspectorKernelAuthenticationError::Mismatch)?;
+    Ok(TransportCredentials {
+        pid: info.pid(),
+        uid: credentials.effective_user_id(),
+        gid: credentials.effective_group_id(),
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -752,10 +970,22 @@ impl<'policy> RoleExpectation<'policy> {
         }
     }
 
+    fn lifecycle_worker(executable: &'policy FixedExecutable, cgroup: &'policy Path) -> Self {
+        Self {
+            role: AuthenticatedRole::LifecycleWorker,
+            cgroup,
+            executable: executable.identity,
+            mac_context: LIFECYCLE_WORKER_MAC_CONTEXT,
+            pid: None,
+            parent_pid: None,
+        }
+    }
+
     fn retained(role: AuthenticatedRole, executable: ExecutableIdentity) -> Self {
         let (mac_context, pid, parent_pid) = match role {
             AuthenticatedRole::Broker => (BROKER_MAC_CONTEXT, None, None),
             AuthenticatedRole::Inspector => (INSPECTOR_MAC_CONTEXT, None, None),
+            AuthenticatedRole::LifecycleWorker => (LIFECYCLE_WORKER_MAC_CONTEXT, None, None),
             AuthenticatedRole::Manager => (MANAGER_MAC_CONTEXT, Some(1), Some(0)),
         };
         Self {
@@ -1316,10 +1546,11 @@ mod tests {
     }
 
     #[test]
-    fn broker_inspector_and_manager_roles_are_not_interchangeable() {
+    fn authenticated_roles_are_not_interchangeable() {
         let broker = executable(11, 12);
         let inspector = executable(11, 13);
         let manager = executable(11, 14);
+        let lifecycle_worker = executable(11, 15);
         let observation = broker_observation();
 
         assert!(matches!(
@@ -1331,6 +1562,15 @@ mod tests {
         ));
         assert!(matches!(
             observation.authenticate(RoleExpectation::manager(&manager)),
+            Err(NamespaceInspectorKernelAuthenticationError::Mismatch)
+        ));
+        assert!(matches!(
+            observation.authenticate(RoleExpectation::lifecycle_worker(
+                &lifecycle_worker,
+                Path::new(
+                    "aos.slice/aos-control.slice/aos-sandbox-network-lifecycle-worker@0-1-2_3-0.service",
+                ),
+            )),
             Err(NamespaceInspectorKernelAuthenticationError::Mismatch)
         ));
         assert!(

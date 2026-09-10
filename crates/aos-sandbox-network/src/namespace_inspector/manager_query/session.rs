@@ -8,14 +8,15 @@
 //! START/A/CONTINUE/B/ACK/ABORT state machine.
 
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_linux::process::{
     ExchangeStep, FixedLiveChild, FixedProcessControlInterest, FixedProcessControlReadiness,
     FixedProcessRequest, FixedProcessSessionError, FixedProcessSessionExchange,
-    FixedProcessSessionOutcome, FixedProcessSessionRequest, run_fixed_process_session,
+    FixedProcessSessionOutcome, FixedProcessSessionRequest,
+    run_fixed_process_session_from_executable_descriptor,
 };
 use aos_sandbox_linux::seqpacket::{
     KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
@@ -28,7 +29,10 @@ use super::{
     NamespaceInspectorManagerQueryExpectedActivationV1,
     ObservedNamespaceInspectorActivationSnapshotV1, match_namespace_inspector_activation_snapshots,
 };
-use crate::namespace_inspector::launch_contract::ProtectedNamespaceInspectorDeploymentContractV1;
+use crate::namespace_inspector::launch_contract::{
+    NamespaceInspectorArtifactRoleV1, ProtectedNamespaceInspectorDeploymentContractError,
+    ProtectedNamespaceInspectorDeploymentContractV1,
+};
 use crate::systemd_socket_instance::SystemdSocketInstanceV1;
 
 const CONTROL_MAGIC: &[u8; 8] = b"AOSNIMS1";
@@ -70,6 +74,9 @@ pub(crate) enum NamespaceInspectorManagerQuerySessionError {
     /// Protected contract or snapshot model validation failed.
     #[error(transparent)]
     Model(#[from] NamespaceInspectorManagerQueryError),
+    /// A pinned deployment artifact could not be duplicated or revalidated.
+    #[error(transparent)]
+    ProtectedDeployment(#[from] ProtectedNamespaceInspectorDeploymentContractError),
     /// The fixed-process supervisor or protocol exchange failed.
     #[error(transparent)]
     Session(#[from] FixedProcessSessionError<ManagerQueryExchangeError>),
@@ -94,8 +101,8 @@ pub(crate) enum NamespaceInspectorManagerQuerySessionError {
 ///
 /// The caller must retain the accepted socket from which `activation` was
 /// derived and must have authenticated `manager_stream` as a fresh connection
-/// to the protected systemd private-manager socket. This staged API remains
-/// unreachable from production until those constructors are composed.
+/// to the protected systemd private-manager socket. The production inspector
+/// composes both retained constructors before calling this session.
 ///
 /// # Errors
 ///
@@ -119,6 +126,9 @@ pub(crate) fn run_namespace_inspector_manager_query_session(
             "helper invocation must contain exactly one absolute executable path",
         ),
     )?;
+    let helper_executable = request
+        .protected_contract
+        .duplicate_artifact(NamespaceInspectorArtifactRoleV1::ManagerQueryHelperExecutable)?;
 
     let parent_info = request.parent_pidfd.info()?;
     let parent_credentials = parent_info.credentials().ok_or(
@@ -176,7 +186,7 @@ pub(crate) fn run_namespace_inspector_manager_query_session(
         request.nonce,
     );
     let arguments = [];
-    let outcome = run_fixed_process_session(
+    let outcome = run_fixed_process_session_from_executable_descriptor(
         FixedProcessSessionRequest {
             process: FixedProcessRequest {
                 executable: Path::new(helper),
@@ -189,6 +199,7 @@ pub(crate) fn run_namespace_inspector_manager_query_session(
             inherited: vec![request.manager_stream, helper_parent_pidfd, helper_control],
             control: control_poll.as_fd(),
         },
+        helper_executable,
         &mut exchange,
     )?;
 
@@ -302,6 +313,7 @@ impl<'a> ManagerQueryExchange<'a> {
         ExchangeStep<MatchedNamespaceInspectorActivationSnapshotsV1>,
         ManagerQueryExchangeError,
     > {
+        validate_helper_executable(child, self.protected_contract)?;
         if matches!(self.state, ExchangeState::SendStart(_)) {
             let deadline_ns = u64::try_from(child.deadline().as_nanos())
                 .map_err(|_| ManagerQueryExchangeError::InvalidDeadline)?;
@@ -357,6 +369,7 @@ impl<'a> ManagerQueryExchange<'a> {
         ensure_no_queued_record(&mut self.control)?;
 
         let snapshot = decode_snapshot_phase(frame.payload, self.nonce, self.expected)?;
+        validate_helper_executable(child, self.protected_contract)?;
         match expected_phase {
             ControlPhase::SnapshotA => {
                 self.first = Some(snapshot);
@@ -437,13 +450,15 @@ impl FixedProcessSessionExchange for ManagerQueryExchange<'_> {
 
 /// Reports one authenticated-control or snapshot-exchange failure.
 #[derive(Debug, Error)]
-pub(super) enum ManagerQueryExchangeError {
+pub(in crate::namespace_inspector) enum ManagerQueryExchangeError {
     #[error(transparent)]
     Seqpacket(#[from] SeqpacketError),
     #[error(transparent)]
     Linux(#[from] aos_sandbox_linux::Error),
     #[error(transparent)]
     Snapshot(#[from] NamespaceInspectorManagerQueryError),
+    #[error(transparent)]
+    ProtectedDeployment(#[from] ProtectedNamespaceInspectorDeploymentContractError),
     #[error("invalid manager-query control record")]
     InvalidRecord,
     #[error("manager-query control record used an unexpected phase")]
@@ -605,6 +620,52 @@ fn validate_helper_subject(
     Ok(())
 }
 
+fn validate_helper_executable(
+    child: &FixedLiveChild<'_>,
+    protected_contract: &ProtectedNamespaceInspectorDeploymentContractV1,
+) -> Result<(), ManagerQueryExchangeError> {
+    let initial = child.initial_info();
+    let before = child.pidfd().info()?;
+    if before != initial || !child.pidfd().is_alive()? {
+        return Err(ManagerQueryExchangeError::HelperIdentityMismatch);
+    }
+
+    let first = open_process_executable(before.pid())?;
+    protected_contract.verify_artifact_descriptor(
+        NamespaceInspectorArtifactRoleV1::ManagerQueryHelperExecutable,
+        first.as_fd(),
+    )?;
+
+    let middle = child.pidfd().info()?;
+    if middle != before || !child.pidfd().is_alive()? {
+        return Err(ManagerQueryExchangeError::HelperIdentityMismatch);
+    }
+    let second = open_process_executable(middle.pid())?;
+    protected_contract.verify_artifact_descriptor(
+        NamespaceInspectorArtifactRoleV1::ManagerQueryHelperExecutable,
+        second.as_fd(),
+    )?;
+
+    let after = child.pidfd().info()?;
+    if after != middle || !child.pidfd().is_alive()? {
+        return Err(ManagerQueryExchangeError::HelperIdentityMismatch);
+    }
+    Ok(())
+}
+
+fn open_process_executable(pid: u32) -> Result<OwnedFd, aos_sandbox_linux::Error> {
+    let path = PathBuf::from(format!("/proc/{pid}/exe"));
+    rustix::fs::open(
+        &path,
+        rustix::fs::OFlags::PATH | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|source| aos_sandbox_linux::Error::Syscall {
+        operation: "open manager-query helper executable",
+        source: source.into(),
+    })
+}
+
 fn descriptor_inode(descriptor: BorrowedFd<'_>) -> Result<u64, aos_sandbox_linux::Error> {
     let status =
         rustix::fs::fstat(descriptor).map_err(|source| aos_sandbox_linux::Error::Syscall {
@@ -640,6 +701,7 @@ mod tests {
         CanonicalManagerPropertyValueV1, MANAGER_PROPERTY_TABLE_V1, ManagerPropertyObservationV1,
     };
     use aos_sandbox_linux::process::FixedProcessOutput;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     fn activation() -> NamespaceInspectorManagerQueryExpectedActivationV1<'static> {
         NamespaceInspectorManagerQueryExpectedActivationV1 {
@@ -708,6 +770,42 @@ mod tests {
 
     fn protected_contract() -> ProtectedNamespaceInspectorDeploymentContractV1 {
         ProtectedNamespaceInspectorDeploymentContractV1::for_test(contract()).unwrap()
+    }
+
+    #[test]
+    fn helper_pathname_substitution_preserves_descriptor_but_fails_revalidation() {
+        let directory = tempfile::tempdir().unwrap();
+        let helper = directory.path().join("manager-query-helper");
+        let substitute = directory.path().join("substitute-helper");
+        let current_executable = std::env::current_exe().unwrap();
+        std::fs::copy(&current_executable, &helper).unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let protected = ProtectedNamespaceInspectorDeploymentContractV1::for_test_with_helper(
+            contract(),
+            &helper,
+        )
+        .unwrap();
+        let retained = protected
+            .duplicate_artifact(NamespaceInspectorArtifactRoleV1::ManagerQueryHelperExecutable)
+            .unwrap();
+        let retained_status = rustix::fs::fstat(retained.as_fd()).unwrap();
+
+        std::fs::write(&substitute, b"hostile replacement").unwrap();
+        std::fs::set_permissions(&substitute, std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::rename(substitute, &helper).unwrap();
+        let replacement_status = std::fs::metadata(&helper).unwrap();
+
+        assert_ne!(
+            (retained_status.st_dev, retained_status.st_ino),
+            (replacement_status.dev(), replacement_status.ino())
+        );
+        assert!(matches!(
+            protected.verify_artifact_descriptor(
+                NamespaceInspectorArtifactRoleV1::ManagerQueryHelperExecutable,
+                retained.as_fd(),
+            ),
+            Err(ProtectedNamespaceInspectorDeploymentContractError::Mismatch)
+        ));
     }
 
     fn snapshot_phase(snapshot: &ObservedNamespaceInspectorActivationSnapshotV1) -> Vec<u8> {
@@ -992,6 +1090,24 @@ mod tests {
                 activation(),
                 first.clone(),
                 first,
+            ),
+            Err(NamespaceInspectorManagerQueryError::StaticPropertyMismatch)
+        );
+    }
+
+    #[test]
+    fn matcher_rejects_manager_environment_outside_the_protected_allowlist() {
+        let protected = protected_contract();
+        let mut observed = snapshot();
+        observed.properties[0].value =
+            CanonicalManagerPropertyValueV1::UnorderedSet(vec![b"HOME=/root".to_vec()]);
+
+        assert_eq!(
+            match_namespace_inspector_activation_snapshots(
+                &protected,
+                activation(),
+                observed.clone(),
+                observed,
             ),
             Err(NamespaceInspectorManagerQueryError::StaticPropertyMismatch)
         );

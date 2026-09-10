@@ -111,6 +111,39 @@ impl DescriptorSubjectSocket {
             .ok_or(SeqpacketError::Closed)
     }
 
+    /// Verifies the exact filesystem pathname bound to this connected endpoint.
+    ///
+    /// Abstract, unnamed, unterminated, and noncanonical local addresses are
+    /// rejected rather than compared as filesystem paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the channel is closed, `getsockname(2)` fails, or
+    /// either input is not one normalized Unix filesystem address.
+    pub fn require_local_filesystem_path(&self, expected: &Path) -> Result<(), SeqpacketError> {
+        let expected = expected.as_os_str().as_bytes();
+        if expected.len() <= 1
+            || expected.contains(&0)
+            || !expected.starts_with(b"/")
+            || !expected[1..]
+                .split(|byte| *byte == b'/')
+                .all(|component| !component.is_empty() && !matches!(component, b"." | b".."))
+        {
+            return Err(SeqpacketError::Kernel(Error::invalid(
+                "descriptor-subject local socket path",
+                "must be a normalized absolute filesystem path",
+            )));
+        }
+        let observed = uapi::unix_socket_local_filesystem_path(self.as_fd()?)?;
+        if observed != expected {
+            return Err(SeqpacketError::Kernel(Error::invalid(
+                "descriptor-subject local socket path",
+                "differs from the protected endpoint",
+            )));
+        }
+        Ok(())
+    }
+
     /// Irrevocably closes this one-shot channel.
     ///
     /// Higher-level multi-record protocols use this after any partial-transfer

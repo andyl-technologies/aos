@@ -653,6 +653,27 @@ fn decode_exec_command_projection(
     decoder.boolean()
 }
 
+pub(in crate::namespace_inspector) fn decode_fixed_exec_command_projection(
+    bytes: &[u8],
+) -> Result<(&str, Vec<&str>, bool), NamespaceInspectorManagerQueryError> {
+    let mut decoder = LeafDecoder::new(bytes);
+    let executable = decoder.text()?;
+    let arguments = decoder.string_array_values(false)?;
+    let ignore_failure = decoder.boolean_value()?;
+    decoder.finish()?;
+    Ok((executable, arguments, ignore_failure))
+}
+
+pub(in crate::namespace_inspector) fn decode_string_pair(
+    bytes: &[u8],
+) -> Result<(&str, &str), NamespaceInspectorManagerQueryError> {
+    let mut decoder = LeafDecoder::new(bytes);
+    let first = decoder.text()?;
+    let second = decoder.text()?;
+    decoder.finish()?;
+    Ok((first, second))
+}
+
 fn decode_exec_command_ex_projection(
     decoder: &mut LeafDecoder<'_>,
 ) -> Result<(), NamespaceInspectorManagerQueryError> {
@@ -743,6 +764,14 @@ impl<'bytes> LeafDecoder<'bytes> {
         validate_bool(self.take(1)?)
     }
 
+    fn boolean_value(&mut self) -> Result<bool, NamespaceInspectorManagerQueryError> {
+        match self.take(1)? {
+            [0] => Ok(false),
+            [1] => Ok(true),
+            _ => Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch),
+        }
+    }
+
     fn u16(&mut self) -> Result<u16, NamespaceInspectorManagerQueryError> {
         Ok(u16::from_le_bytes(self.array()?))
     }
@@ -791,6 +820,30 @@ impl<'bytes> LeafDecoder<'bytes> {
             previous = Some(current);
         }
         Ok(())
+    }
+
+    fn string_array_values(
+        &mut self,
+        require_sorted: bool,
+    ) -> Result<Vec<&'bytes str>, NamespaceInspectorManagerQueryError> {
+        let count = usize::from(self.u16()?);
+        if count > MAXIMUM_COLLECTION_ELEMENTS || count > self.remaining() / 2 {
+            return Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch);
+        }
+
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            let current = self.text()?;
+            if require_sorted
+                && values
+                    .last()
+                    .is_some_and(|previous: &&str| previous.as_bytes() >= current.as_bytes())
+            {
+                return Err(NamespaceInspectorManagerQueryError::NoncanonicalSet);
+            }
+            values.push(current);
+        }
+        Ok(values)
     }
 
     fn array<const SIZE: usize>(
@@ -996,6 +1049,24 @@ fn test_push_strings(bytes: &mut Vec<u8>, values: &[&str]) {
 }
 
 #[cfg(test)]
+fn test_inspector_exec_value(static_projection: bool) -> CanonicalManagerPropertyValueV1 {
+    let executable = "/bin/aos-sandbox-network-namespace-inspector";
+    let mut element = Vec::new();
+    test_push_text(&mut element, executable);
+    test_push_strings(&mut element, &[executable]);
+    element.push(0);
+    if !static_projection {
+        for value in [11_u64, 12, 13, 14] {
+            element.extend_from_slice(&value.to_le_bytes());
+        }
+        element.extend_from_slice(&113_u32.to_le_bytes());
+        element.extend_from_slice(&1_i32.to_le_bytes());
+        element.extend_from_slice(&2_i32.to_le_bytes());
+    }
+    CanonicalManagerPropertyValueV1::OrderedArray(vec![element])
+}
+
+#[cfg(test)]
 pub(in crate::namespace_inspector) fn test_properties(
     static_only: bool,
 ) -> Vec<ManagerPropertyObservationV1> {
@@ -1015,9 +1086,42 @@ pub(in crate::namespace_inspector) fn test_properties(
                 ),
                 18 => CanonicalManagerPropertyValueV1::Scalar(211_u64.to_le_bytes().to_vec()),
                 24 => CanonicalManagerPropertyValueV1::Scalar(113_u32.to_le_bytes().to_vec()),
+                7 => CanonicalManagerPropertyValueV1::Scalar(
+                    b"/etc/systemd/system/inspector-service.conf".to_vec(),
+                ),
+                9 => CanonicalManagerPropertyValueV1::OrderedArray(vec![
+                    b"/etc/systemd/system/inspector-service.conf".to_vec(),
+                ]),
+                34 => test_inspector_exec_value(static_only),
+                74 => CanonicalManagerPropertyValueV1::OrderedArray(vec![
+                    b"/var/lib/aos/sandbox-network/namespace-inspector/spent-staging".to_vec(),
+                    b"/var/lib/aos/sandbox-network/namespace-inspector/spent-final".to_vec(),
+                ]),
+                75 => CanonicalManagerPropertyValueV1::OrderedArray(vec![
+                    b"/var/lib/aos/sandbox-network/namespace-inspector/expected-final".to_vec(),
+                ]),
+                76 => CanonicalManagerPropertyValueV1::OrderedArray(vec![
+                    b"/var/lib/aos/sandbox-network/broker-state".to_vec(),
+                    b"/var/lib/aos/sandbox-network/namespace-inspector/expected-staging".to_vec(),
+                ]),
                 93 => CanonicalManagerPropertyValueV1::Scalar(
                     b"aos-sandbox-network-namespace-inspector.socket".to_vec(),
                 ),
+                99 => CanonicalManagerPropertyValueV1::Scalar(
+                    b"/etc/systemd/system/inspector-socket.conf".to_vec(),
+                ),
+                101 => CanonicalManagerPropertyValueV1::OrderedArray(vec![
+                    b"/etc/systemd/system/inspector-socket.conf".to_vec(),
+                ]),
+                107 => {
+                    let mut listener = Vec::new();
+                    test_push_text(&mut listener, "SequentialPacket");
+                    test_push_text(
+                        &mut listener,
+                        "/run/aos/sandbox-network-namespace-inspector/control.sock",
+                    );
+                    CanonicalManagerPropertyValueV1::OrderedArray(vec![listener])
+                }
                 _ => test_property_value(descriptor, static_only),
             },
         })

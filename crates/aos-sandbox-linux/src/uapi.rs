@@ -323,6 +323,7 @@ pub(crate) fn validate_child_reaping_disposition() -> Result<()> {
 
 pub(crate) fn posix_spawn_fixed(
     executable: &CStr,
+    argument_zero: &CStr,
     arguments: &[CString],
     stdin: BorrowedFd<'_>,
     stdout: BorrowedFd<'_>,
@@ -358,7 +359,7 @@ pub(crate) fn posix_spawn_fixed(
     }
 
     let mut argument_pointers = Vec::with_capacity(arguments.len() + 2);
-    argument_pointers.push(executable.as_ptr().cast_mut());
+    argument_pointers.push(argument_zero.as_ptr().cast_mut());
     argument_pointers.extend(
         arguments
             .iter()
@@ -393,6 +394,315 @@ pub(crate) fn posix_spawn_fixed(
     })?;
     guard.disarm();
     Ok(pid)
+}
+
+const FIXED_EXEC_ERROR_FD: libc::c_int = 7;
+const FIXED_DUPLICATE_MINIMUM: libc::c_int = 64;
+const SECURE_NOROOT_AND_NO_SETUID_FIXUP_LOCKED: libc::c_int = 0x0f;
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+#[repr(C)]
+struct RawCapabilityHeader {
+    version: u32,
+    pid: libc::c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawCapabilityData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+/// Forks one fixed descriptor-backed executable after removing child authority.
+///
+/// The exactly single-threaded caller has already duplicated every source
+/// descriptor above the destination range. The child performs only raw,
+/// async-signal-safe syscalls: it creates a process group, maps FDs 0 onward,
+/// closes every unassigned descriptor, enables no-new-privileges, clears all
+/// active capability sets, and executes the retained file with `execveat(2)`.
+/// It deliberately preserves the caller's bounding set for role-specific
+/// entry validation because the minimized caller may no longer have SETPCAP.
+pub(crate) fn fork_execveat_fixed_without_authority(
+    executable: BorrowedFd<'_>,
+    argument_zero: &CStr,
+    arguments: &[CString],
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+    inherited: &[BorrowedFd<'_>],
+) -> Result<rustix::process::Pid> {
+    // Locked NOROOT and NO_SETUID_FIXUP are what prevent UID 0 from regaining
+    // a permitted set when the dynamic loader is entered after capset(2).
+    // SAFETY: PR_GET_SECUREBITS consumes scalar arguments only.
+    let securebits = unsafe { libc::prctl(libc::PR_GET_SECUREBITS, 0, 0, 0, 0) };
+    if securebits < 0 {
+        return Err(Error::syscall("prctl(PR_GET_SECUREBITS)"));
+    }
+    // SAFETY: geteuid observes process credentials without pointer arguments.
+    validate_descriptor_exec_securebits(unsafe { libc::geteuid() }, securebits)?;
+
+    let mut argument_pointers = Vec::with_capacity(arguments.len() + 2);
+    argument_pointers.push(argument_zero.as_ptr().cast_mut());
+    argument_pointers.extend(
+        arguments
+            .iter()
+            .map(|argument| argument.as_ptr().cast_mut()),
+    );
+    argument_pointers.push(std::ptr::null_mut());
+    let environment = [std::ptr::null_mut::<libc::c_char>()];
+
+    let mut raw_pipe = [-1; 2];
+    // SAFETY: raw_pipe names writable storage for exactly two descriptors.
+    unit_result(
+        unsafe { libc::pipe2(raw_pipe.as_mut_ptr(), libc::O_CLOEXEC) }.into(),
+        "pipe2(fixed descriptor exec status)",
+    )?;
+    // SAFETY: both successful pipe descriptors have unique ownership here.
+    let raw_error_read = unsafe { OwnedFd::from_raw_fd(raw_pipe[0]) };
+    // SAFETY: as above, the second descriptor is independently owned.
+    let raw_error_write = unsafe { OwnedFd::from_raw_fd(raw_pipe[1]) };
+    let error_read = duplicate_raw_high(raw_error_read.as_fd(), "duplicate exec status reader")?;
+    let error_write = duplicate_raw_high(raw_error_write.as_fd(), "duplicate exec status writer")?;
+    drop(raw_error_read);
+    drop(raw_error_write);
+
+    let child = FixedExecveatChild {
+        executable,
+        arguments: argument_pointers.as_ptr(),
+        environment: environment.as_ptr(),
+        stdin,
+        stdout,
+        stderr,
+        inherited,
+        error_write: error_write.as_fd(),
+    };
+
+    // SAFETY: the caller proved it is single-threaded immediately before this
+    // call. Every child-side operation below is a raw async-signal-safe syscall
+    // over storage and pointers prepared before fork.
+    let raw_pid = unsafe { libc::fork() };
+    if raw_pid < 0 {
+        return Err(Error::syscall("fork fixed descriptor process"));
+    }
+    if raw_pid == 0 {
+        // This branch never returns to Rust. It uses only scalar raw
+        // syscalls and preallocated argv/env storage, then execs or calls _exit.
+        child.exec()
+    }
+
+    drop(error_write);
+    let mut guard = RawSpawnedChildGuard::new(raw_pid);
+    receive_exec_status(error_read.as_fd())?;
+    let pid = rustix::process::Pid::from_raw(raw_pid).ok_or_else(|| {
+        Error::invalid(
+            "fixed process PID",
+            "successful fork returned a nonpositive PID",
+        )
+    })?;
+    guard.disarm();
+    Ok(pid)
+}
+
+fn validate_descriptor_exec_securebits(
+    effective_uid: libc::uid_t,
+    securebits: libc::c_int,
+) -> Result<()> {
+    if effective_uid == 0 && securebits != SECURE_NOROOT_AND_NO_SETUID_FIXUP_LOCKED {
+        return Err(Error::invalid(
+            "fixed descriptor process securebits",
+            "UID 0 requires locked noroot and no-setuid-fixup",
+        ));
+    }
+    Ok(())
+}
+
+fn duplicate_raw_high(descriptor: BorrowedFd<'_>, operation: &'static str) -> Result<OwnedFd> {
+    // SAFETY: fcntl borrows the source and success returns a new descriptor.
+    let duplicated = unsafe {
+        libc::fcntl(
+            descriptor.as_raw_fd(),
+            libc::F_DUPFD_CLOEXEC,
+            FIXED_DUPLICATE_MINIMUM,
+        )
+    };
+    fd_result(duplicated.into(), operation)
+}
+
+struct FixedExecveatChild<'a> {
+    executable: BorrowedFd<'a>,
+    arguments: *const *mut libc::c_char,
+    environment: *const *mut libc::c_char,
+    stdin: BorrowedFd<'a>,
+    stdout: BorrowedFd<'a>,
+    stderr: BorrowedFd<'a>,
+    inherited: &'a [BorrowedFd<'a>],
+    error_write: BorrowedFd<'a>,
+}
+
+impl FixedExecveatChild<'_> {
+    fn exec(self) -> ! {
+        let error_source = self.error_write.as_raw_fd();
+        // SAFETY: the source is a live high-numbered descriptor and FD 7 is
+        // reserved exclusively for this close-on-exec error channel.
+        if unsafe { libc::dup3(error_source, FIXED_EXEC_ERROR_FD, libc::O_CLOEXEC) } < 0 {
+            child_exec_failure(error_source)
+        }
+        // SAFETY: scalar zero arguments create a group led by this child.
+        if unsafe { libc::setpgid(0, 0) } != 0 {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+
+        for (source, target) in [(self.stdin, 0), (self.stdout, 1), (self.stderr, 2)] {
+            // SAFETY: every borrowed source remains live through exec and each
+            // target is one fixed standard descriptor.
+            if unsafe { libc::dup2(source.as_raw_fd(), target) } < 0 {
+                child_exec_failure(FIXED_EXEC_ERROR_FD)
+            }
+        }
+        for (index, source) in self.inherited.iter().enumerate() {
+            let target = index as libc::c_int + 3;
+            // SAFETY: sources were duplicated above the target range before fork;
+            // the validated role ceiling keeps targets within FDs 3 through 5.
+            if unsafe { libc::dup2(source.as_raw_fd(), target) } < 0 {
+                child_exec_failure(FIXED_EXEC_ERROR_FD)
+            }
+        }
+        let executable_target = self.inherited.len() as libc::c_int + 3;
+        // SAFETY: the retained executable source is live and high-numbered; the
+        // validated role ceiling reserves the next target at or below FD 6.
+        if unsafe { libc::dup2(self.executable.as_raw_fd(), executable_target) } < 0 {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+
+        // SAFETY: close_range consumes only scalar bounds. These ranges leave
+        // exactly the mapped table and error FD 7 open.
+        if executable_target < FIXED_EXEC_ERROR_FD - 1
+            && unsafe {
+                libc::syscall(
+                    libc::SYS_close_range,
+                    executable_target + 1,
+                    FIXED_EXEC_ERROR_FD - 1,
+                    0,
+                )
+            } != 0
+        {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+        // SAFETY: the scalar range begins above the reserved error descriptor.
+        if unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                FIXED_EXEC_ERROR_FD + 1,
+                libc::c_uint::MAX,
+                0,
+            )
+        } != 0
+        {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+
+        // SAFETY: both prctl operations consume scalar arguments and only reduce
+        // the current child's privilege transition surface.
+        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0
+            || unsafe {
+                libc::prctl(
+                    libc::PR_CAP_AMBIENT,
+                    libc::PR_CAP_AMBIENT_CLEAR_ALL,
+                    0,
+                    0,
+                    0,
+                )
+            } != 0
+        {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+        let header = RawCapabilityHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
+        let data = [RawCapabilityData {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        }; 2];
+        // SAFETY: header and both data words have the Linux V3 layout and remain
+        // readable for this call, which clears only the current child's sets.
+        if unsafe { libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) } != 0 {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+
+        // SAFETY: FD `executable_target` names the retained regular file; the
+        // empty path selects AT_EMPTY_PATH; argv/envp are preallocated, live, and
+        // NUL-terminated pointer arrays. Success replaces this process image.
+        unsafe {
+            libc::syscall(
+                libc::SYS_execveat,
+                executable_target,
+                c"".as_ptr(),
+                self.arguments,
+                self.environment,
+                libc::AT_EMPTY_PATH,
+            )
+        };
+        child_exec_failure(FIXED_EXEC_ERROR_FD)
+    }
+}
+
+fn child_exec_failure(error_descriptor: libc::c_int) -> ! {
+    // Capture errno before write(2) can replace it. A four-byte write to a pipe
+    // is atomic and the parent treats every other shape as malformed failure.
+    // SAFETY: libc exposes thread-local errno storage for this live child.
+    let error = unsafe { *libc::__errno_location() };
+    let bytes = error.to_ne_bytes();
+    // SAFETY: the error FD is live and bytes is readable for one atomic record.
+    let _ = unsafe { libc::write(error_descriptor, bytes.as_ptr().cast(), bytes.len()) };
+    // SAFETY: the fork child must never unwind through inherited Rust frames.
+    unsafe { libc::_exit(127) }
+}
+
+fn receive_exec_status(descriptor: BorrowedFd<'_>) -> Result<()> {
+    let mut bytes = [0_u8; size_of::<libc::c_int>()];
+    let mut offset = 0;
+    loop {
+        // SAFETY: the remaining slice is writable for the supplied byte count.
+        let count = unsafe {
+            libc::read(
+                descriptor.as_raw_fd(),
+                bytes[offset..].as_mut_ptr().cast(),
+                bytes.len() - offset,
+            )
+        };
+        if count == 0 {
+            break;
+        }
+        if count < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(Error::syscall("read fixed descriptor exec status"));
+        }
+        offset += usize::try_from(count).map_err(|_| Error::MalformedKernelResponse {
+            object: "fixed descriptor exec status",
+            message: "negative status length".to_owned(),
+        })?;
+        if offset == bytes.len() {
+            let error = libc::c_int::from_ne_bytes(bytes);
+            return Err(Error::Syscall {
+                operation: "execveat fixed descriptor process",
+                source: std::io::Error::from_raw_os_error(error),
+            });
+        }
+    }
+    if offset == 0 {
+        Ok(())
+    } else {
+        Err(Error::MalformedKernelResponse {
+            object: "fixed descriptor exec status",
+            message: "child returned a partial error record".to_owned(),
+        })
+    }
 }
 
 fn configure_fixed_actions(
@@ -1739,6 +2049,45 @@ pub(crate) fn connect_seqpacket(path: &Path) -> Result<OwnedFd> {
     Ok(socket)
 }
 
+pub(crate) fn unix_socket_local_filesystem_path(fd: BorrowedFd<'_>) -> Result<Vec<u8>> {
+    // SAFETY: every field of sockaddr_un admits the all-zero bit pattern.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    // SAFETY: address and length name writable storage for the borrowed socket.
+    let result = unsafe {
+        libc::getsockname(
+            fd.as_raw_fd(),
+            (&raw mut address).cast::<libc::sockaddr>(),
+            &raw mut length,
+        )
+    };
+    unit_result(result.into(), "getsockname(Unix socket)")?;
+
+    let path_offset = std::mem::offset_of!(libc::sockaddr_un, sun_path);
+    let length = length as usize;
+    if address.sun_family != libc::AF_UNIX as libc::sa_family_t
+        || length <= path_offset + 1
+        || length > size_of::<libc::sockaddr_un>()
+    {
+        return Err(Error::MalformedKernelResponse {
+            object: "Unix socket local address",
+            message: "address has an invalid family or length".to_owned(),
+        });
+    }
+    let path_length = length - path_offset;
+    let path = &address.sun_path[..path_length];
+    if path[0] == 0 || *path.last().unwrap_or(&1) != 0 || path[..path.len() - 1].contains(&0) {
+        return Err(Error::MalformedKernelResponse {
+            object: "Unix socket local address",
+            message: "address is not one NUL-terminated filesystem path".to_owned(),
+        });
+    }
+    Ok(path[..path.len() - 1]
+        .iter()
+        .map(|byte| *byte as u8)
+        .collect())
+}
+
 pub(crate) fn bind_record_subject_listener(path: &Path, backlog: u32) -> Result<OwnedFd> {
     let bytes = path.as_os_str().as_bytes();
     if bytes.is_empty() || !path.is_absolute() {
@@ -2052,6 +2401,18 @@ mod tests {
         assert_eq!(SO_PASSPIDFD, 76);
         assert_eq!(SO_PEERPIDFD, 77);
         assert_eq!(SCM_PIDFD, 0x04);
+    }
+
+    #[test]
+    fn uid_zero_descriptor_exec_requires_locked_root_semantics() {
+        assert!(
+            validate_descriptor_exec_securebits(0, SECURE_NOROOT_AND_NO_SETUID_FIXUP_LOCKED)
+                .is_ok()
+        );
+        for incomplete in [0, 0x03, 0x0c, 0x07, 0x0e] {
+            assert!(validate_descriptor_exec_securebits(0, incomplete).is_err());
+        }
+        assert!(validate_descriptor_exec_securebits(1000, 0).is_ok());
     }
 
     #[test]

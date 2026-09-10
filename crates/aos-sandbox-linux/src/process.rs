@@ -24,6 +24,7 @@ pub use session::{
     ExchangeStep, FixedLiveChild, FixedProcessControlInterest, FixedProcessControlReadiness,
     FixedProcessSessionError, FixedProcessSessionExchange, FixedProcessSessionOutcome,
     FixedProcessSessionRequest, run_fixed_process_session,
+    run_fixed_process_session_from_executable_descriptor,
 };
 
 const MAXIMUM_EXECUTABLE_BYTES: usize = 4096;
@@ -187,6 +188,7 @@ fn validate_exclusive_reaping_owner() -> Result<()> {
 
 struct PreparedInvocation {
     executable: CString,
+    argument_zero: CString,
     arguments: Vec<CString>,
 }
 
@@ -195,6 +197,8 @@ impl PreparedInvocation {
         validate_request(request)?;
         let executable = CString::new(request.executable.as_os_str().as_bytes())
             .map_err(|_| Error::invalid("fixed process executable", "must not contain NUL"))?;
+        let argument_zero = CString::new(request.executable.as_os_str().as_bytes())
+            .map_err(|_| Error::invalid("fixed process argument zero", "must not contain NUL"))?;
         let arguments = request
             .arguments
             .iter()
@@ -205,6 +209,7 @@ impl PreparedInvocation {
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             executable,
+            argument_zero,
             arguments,
         })
     }
@@ -213,6 +218,24 @@ impl PreparedInvocation {
         &self,
         stdin: Option<BorrowedFd<'_>>,
         inherited: &[BorrowedFd<'_>],
+    ) -> Result<SpawnedProcess> {
+        self.spawn_internal(stdin, inherited, None)
+    }
+
+    fn spawn_from_executable_descriptor(
+        &self,
+        executable: BorrowedFd<'_>,
+        stdin: Option<BorrowedFd<'_>>,
+        inherited: &[BorrowedFd<'_>],
+    ) -> Result<SpawnedProcess> {
+        self.spawn_internal(stdin, inherited, Some(executable))
+    }
+
+    fn spawn_internal(
+        &self,
+        stdin: Option<BorrowedFd<'_>>,
+        inherited: &[BorrowedFd<'_>],
+        executable_descriptor: Option<BorrowedFd<'_>>,
     ) -> Result<SpawnedProcess> {
         let null = rustix::fs::open(
             "/dev/null",
@@ -233,6 +256,7 @@ impl PreparedInvocation {
             .copied()
             .map(duplicate_high)
             .collect::<Result<Vec<_>>>()?;
+        let executable_descriptor = executable_descriptor.map(duplicate_high).transpose()?;
         let stdin = supplied_stdin
             .as_ref()
             .map_or_else(|| null.as_fd(), |descriptor| descriptor.as_fd());
@@ -241,14 +265,26 @@ impl PreparedInvocation {
             .map(|descriptor| descriptor.as_fd())
             .collect::<Vec<_>>();
 
-        let pid = uapi::posix_spawn_fixed(
-            &self.executable,
-            &self.arguments,
-            stdin,
-            stdout_write.as_fd(),
-            stderr_write.as_fd(),
-            &inherited,
-        )?;
+        let pid = match executable_descriptor.as_ref() {
+            Some(executable) => uapi::fork_execveat_fixed_without_authority(
+                executable.as_fd(),
+                &self.argument_zero,
+                &self.arguments,
+                stdin,
+                stdout_write.as_fd(),
+                stderr_write.as_fd(),
+                &inherited,
+            )?,
+            None => uapi::posix_spawn_fixed(
+                &self.executable,
+                &self.argument_zero,
+                &self.arguments,
+                stdin,
+                stdout_write.as_fd(),
+                stderr_write.as_fd(),
+                &inherited,
+            )?,
+        };
         // Own cancellation immediately: pidfd and output setup can still fail.
         let mut guard = ChildGuard::new(pid);
 
@@ -557,21 +593,7 @@ fn set_nonblocking(fd: &OwnedFd) -> Result<()> {
 }
 
 fn validate_request(request: FixedProcessRequest<'_>) -> Result<()> {
-    let executable = request.executable.as_os_str().as_bytes();
-    let normalized = request
-        .executable
-        .components()
-        .all(|component| matches!(component, Component::RootDir | Component::Normal(_)));
-    if executable.is_empty()
-        || executable.len() > MAXIMUM_EXECUTABLE_BYTES
-        || !request.executable.is_absolute()
-        || !normalized
-    {
-        return Err(Error::invalid(
-            "fixed process executable",
-            "must be a normalized absolute path within 4096 bytes",
-        ));
-    }
+    validate_executable_path(request.executable)?;
     if request.arguments.len() > MAXIMUM_ARGUMENTS {
         return Err(Error::ObservationLimitExceeded {
             object: "fixed process arguments",
@@ -589,6 +611,24 @@ fn validate_request(request: FixedProcessRequest<'_>) -> Result<()> {
     }
     if request.timeout.is_zero() {
         return Err(Error::invalid("fixed process timeout", "must be nonzero"));
+    }
+    Ok(())
+}
+
+fn validate_executable_path(executable: &Path) -> Result<()> {
+    let bytes = executable.as_os_str().as_bytes();
+    let normalized = executable
+        .components()
+        .all(|component| matches!(component, Component::RootDir | Component::Normal(_)));
+    if bytes.is_empty()
+        || bytes.len() > MAXIMUM_EXECUTABLE_BYTES
+        || !executable.is_absolute()
+        || !normalized
+    {
+        return Err(Error::invalid(
+            "fixed process executable",
+            "must be a normalized absolute path within 4096 bytes",
+        ));
     }
     Ok(())
 }

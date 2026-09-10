@@ -41,9 +41,12 @@ pub mod lifecycle_worker_runtime;
 pub mod namespace_catalog;
 #[allow(
     dead_code,
-    reason = "the namespace-inspector protocol is staged before privileged runtime provisioning"
+    reason = "broker-side namespace-inspector completion remains staged before Apply integration"
 )]
 mod namespace_inspector;
+pub use namespace_inspector::{
+    NamespaceInspectorProductionError, run_inherited_network_namespace_inspector,
+};
 #[cfg(feature = "kernel-tests")]
 #[doc(hidden)]
 pub use namespace_inspector::{

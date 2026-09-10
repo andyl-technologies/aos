@@ -297,6 +297,57 @@ where
     spawn_and_supervise_session(request, deadline, exchange)
 }
 
+/// Runs one live-child exchange by executing a retained regular-file descriptor.
+///
+/// `request.process.executable` remains the exact argument-zero value, but the
+/// kernel resolves `executable` directly with `execveat(2)`. Before entering
+/// the executable or its dynamic loader, the child enables no-new-privileges
+/// and clears its effective, permitted, inheritable, and ambient capabilities.
+/// The caller must already have locked `noroot` and `no-setuid-fixup` securebits
+/// so UID 0 cannot regain those capabilities across exec. The descriptor is
+/// mapped immediately after the caller's inherited roles and remains open at
+/// entry so the program can authenticate and close it. The capability bounding
+/// set is inherited unchanged; a role-specific entrypoint must validate that
+/// separately because an already-minimized caller may lack `CAP_SETPCAP`.
+///
+/// # Errors
+///
+/// Returns the errors documented by [`run_fixed_process_session`]. It also
+/// rejects a non-regular, writable, non-executable, or non-CLOEXEC executable
+/// descriptor, a request that already uses all four inherited roles, or a
+/// caller without the required locked securebits.
+///
+/// # Panics
+///
+/// Propagates callback panics as documented by [`run_fixed_process_session`].
+pub fn run_fixed_process_session_from_executable_descriptor<X>(
+    request: FixedProcessSessionRequest<'_>,
+    executable: OwnedFd,
+    exchange: &mut X,
+) -> std::result::Result<FixedProcessSessionOutcome<X::Output>, FixedProcessSessionError<X::Error>>
+where
+    X: FixedProcessSessionExchange,
+{
+    let started = monotonic_now();
+    let Some(deadline) = started.checked_add(request.process.timeout) else {
+        return Err(process_error(Error::invalid(
+            "fixed process timeout",
+            "absolute deadline overflows CLOCK_MONOTONIC duration",
+        )));
+    };
+    if request.inherited.len() >= super::MAXIMUM_INHERITED_DESCRIPTORS {
+        return Err(process_error(Error::invalid(
+            "fixed process inherited descriptors",
+            "descriptor execution requires one free inherited role",
+        )));
+    }
+    validate_executable_descriptor(executable.as_fd()).map_err(process_error)?;
+
+    validate_session_request(&request).map_err(process_error)?;
+    validate_exclusive_reaping_owner().map_err(process_error)?;
+    spawn_and_supervise_descriptor_session(request, executable, deadline, exchange)
+}
+
 fn spawn_and_supervise_session<X>(
     request: FixedProcessSessionRequest<'_>,
     deadline: Duration,
@@ -329,6 +380,41 @@ where
     supervise_session(spawned, process, control, deadline, exchange)
 }
 
+fn spawn_and_supervise_descriptor_session<X>(
+    request: FixedProcessSessionRequest<'_>,
+    executable: OwnedFd,
+    deadline: Duration,
+    exchange: &mut X,
+) -> std::result::Result<FixedProcessSessionOutcome<X::Output>, FixedProcessSessionError<X::Error>>
+where
+    X: FixedProcessSessionExchange,
+{
+    let FixedProcessSessionRequest {
+        process,
+        stdin,
+        inherited,
+        control,
+    } = request;
+    let invocation = PreparedInvocation::new(process).map_err(process_error)?;
+    let inherited_borrows = inherited
+        .iter()
+        .map(|descriptor| descriptor.as_fd())
+        .collect::<Vec<_>>();
+    let spawned = invocation
+        .spawn_from_executable_descriptor(
+            executable.as_fd(),
+            stdin.as_ref().map(|descriptor| descriptor.as_fd()),
+            &inherited_borrows,
+        )
+        .map_err(process_error)?;
+
+    drop(inherited_borrows);
+    drop(executable);
+    drop(inherited);
+    drop(stdin);
+    supervise_session(spawned, process, control, deadline, exchange)
+}
+
 #[cfg(test)]
 fn run_fixed_process_session_under_libtest<X>(
     request: FixedProcessSessionRequest<'_>,
@@ -347,6 +433,28 @@ where
 
     validate_session_request(&request).map_err(process_error)?;
     spawn_and_supervise_session(request, deadline, exchange)
+}
+
+fn validate_executable_descriptor(descriptor: BorrowedFd<'_>) -> Result<()> {
+    let descriptor_flags = rustix::io::fcntl_getfd(descriptor)
+        .map_err(|source| kernel_error("inspect executable descriptor flags", source))?;
+    let status_flags = rustix::fs::fcntl_getfl(descriptor)
+        .map_err(|source| kernel_error("inspect executable status flags", source))?;
+    let status = rustix::fs::fstat(descriptor)
+        .map_err(|source| kernel_error("inspect executable descriptor", source))?;
+    if !descriptor_flags.contains(rustix::io::FdFlags::CLOEXEC)
+        || status_flags & rustix::fs::OFlags::ACCMODE != rustix::fs::OFlags::RDONLY
+        || status_flags.contains(rustix::fs::OFlags::PATH)
+        || status.st_mode & libc::S_IFMT != libc::S_IFREG
+        || status.st_mode & 0o222 != 0
+        || status.st_mode & 0o111 == 0
+    {
+        return Err(Error::invalid(
+            "fixed process executable descriptor",
+            "must be a CLOEXEC, read-only, immutable-mode executable regular file",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_session_request(request: &FixedProcessSessionRequest<'_>) -> Result<()> {

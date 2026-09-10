@@ -15,7 +15,7 @@
 //! accepted children; enabling them after an untrusted peer connects is not an
 //! equivalent authentication boundary.
 
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Component, Path};
 
@@ -283,15 +283,18 @@ pub struct ConnectionPeerIdentity {
     credentials: PeerCredentials,
     pidfd: PidFd,
     initial_info: PidFdInfo,
+    socket_cookie: NonZeroU64,
 }
 
 impl ConnectionPeerIdentity {
     /// Pins the establisher of a connected Unix sequenced-packet socket.
     ///
-    /// Captures `SO_PEERCRED` and `SO_PEERPIDFD` from the same borrowed socket,
-    /// never reopening a recyclable numeric PID. No socket options, descriptor
-    /// flags, or file-status flags are modified. This does not identify later
-    /// writers after socket delegation and requires no record-subject options.
+    /// Captures `SO_PEERCRED`, `SO_PEERPIDFD`, and `SO_COOKIE` from the same
+    /// borrowed socket, never reopening a recyclable numeric PID. The cookie
+    /// is observed around peer capture so inconsistent kernel evidence fails
+    /// closed. No socket options, descriptor flags, or file-status flags are
+    /// modified. This does not identify later writers after socket delegation
+    /// and requires no record-subject options.
     ///
     /// # Errors
     ///
@@ -299,18 +302,30 @@ impl ConnectionPeerIdentity {
     /// unavailable peer pidfd, invalid credentials, or inconsistent pidfd info.
     pub fn from_socket(fd: BorrowedFd<'_>) -> Result<Self, SeqpacketError> {
         uapi::validate_connected_seqpacket(fd)?;
+        let socket_cookie = NonZeroU64::new(uapi::socket_cookie(fd)?).ok_or(
+            SeqpacketError::PeerIdentity("SO_COOKIE returned the reserved zero value"),
+        )?;
         let credentials = PeerCredentials::from_raw(uapi::peer_credentials(fd)?)?;
         let pidfd = PidFd::from_owned(uapi::peer_pidfd(fd)?)?;
         let initial_info = pidfd.info()?;
+        let final_cookie = NonZeroU64::new(uapi::socket_cookie(fd)?).ok_or(
+            SeqpacketError::PeerIdentity("SO_COOKIE returned the reserved zero value"),
+        )?;
         if initial_info.pid() != credentials.pid().get() {
             return Err(SeqpacketError::PeerIdentity(
                 "SO_PEERCRED and SO_PEERPIDFD identify different processes",
+            ));
+        }
+        if final_cookie != socket_cookie {
+            return Err(SeqpacketError::PeerIdentity(
+                "SO_COOKIE changed during sequenced-packet peer capture",
             ));
         }
         Ok(Self {
             credentials,
             pidfd,
             initial_info,
+            socket_cookie,
         })
     }
 
@@ -330,6 +345,12 @@ impl ConnectionPeerIdentity {
     #[must_use]
     pub const fn pidfd(&self) -> &PidFd {
         &self.pidfd
+    }
+
+    /// Returns the nonzero kernel cookie of the connected socket endpoint.
+    #[must_use]
+    pub const fn socket_cookie(&self) -> NonZeroU64 {
+        self.socket_cookie
     }
 
     /// Tests whether the pinned connection-establisher process still exists.
@@ -628,6 +649,7 @@ mod tests {
             let identity = ConnectionPeerIdentity::from_socket(left.as_fd()).expect("capture peer");
             assert_eq!(identity.credentials().pid().get(), std::process::id());
             assert_eq!(identity.initial_info().pid(), std::process::id());
+            assert_ne!(identity.socket_cookie().get(), 0);
             assert!(uapi::is_cloexec(identity.pidfd().as_fd()).expect("peer pidfd CLOEXEC"));
             assert_eq!(
                 uapi::get_status_flags(left.as_fd()).expect("final status flags"),
@@ -698,6 +720,7 @@ mod tests {
         let (socket, _peer) = pair();
         assert_eq!(socket.peer().credentials().pid().get(), std::process::id());
         assert_eq!(socket.peer().initial_info().pid(), std::process::id());
+        assert_ne!(socket.peer().socket_cookie().get(), 0);
         assert!(socket.peer().is_alive().expect("test peer liveness"));
         assert!(uapi::is_cloexec(socket.peer().pidfd().as_fd()).expect("inspect peer pidfd flags"));
     }

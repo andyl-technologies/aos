@@ -318,6 +318,16 @@ impl InspectorProtectedStoreAccess {
     pub(crate) const fn spent(&self) -> &InspectorSpentNoncePublisher {
         &self.spent
     }
+
+    /// Borrows the disjoint lookup and mutation roles for one admission.
+    pub(crate) fn split(
+        &mut self,
+    ) -> (
+        &InspectorExpectedAttemptReader,
+        &mut InspectorSpentNoncePublisher,
+    ) {
+        (&self.expected, &mut self.spent)
+    }
 }
 
 /// Owns the globally admitted four-directory protected-store topology.

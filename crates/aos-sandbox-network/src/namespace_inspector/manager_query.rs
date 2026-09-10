@@ -1,8 +1,8 @@
 //! Pure manager-query schema for namespace-inspector activation evidence.
 //!
-//! The eventual privileged helper will query systemd 259 through its retained
-//! private-manager stream. This module deliberately owns only the closed query
-//! description, a bounded canonical response record, and pure A/B comparison.
+//! The fixed privileged helper queries systemd 259 through its retained
+//! private-manager stream. This module owns the closed query description, a
+//! bounded canonical response record, and pure A/B comparison.
 //! Decoding a record does not authenticate systemd, a unit, a process, or the
 //! protected deployment contract.
 //!
@@ -20,7 +20,7 @@ use super::launch_contract::{
 use crate::systemd_socket_instance::SystemdSocketInstanceV1;
 
 pub(super) mod codec;
-mod session;
+pub(super) mod session;
 
 #[cfg(test)]
 mod manifest_tests;
@@ -1505,6 +1505,16 @@ pub(crate) fn match_namespace_inspector_activation_snapshots(
 
     if first != second {
         return Err(NamespaceInspectorManagerQueryError::SnapshotMismatch);
+    }
+    let Some(ManagerPropertyObservationV1 {
+        descriptor_id: 0,
+        value: CanonicalManagerPropertyValueV1::UnorderedSet(manager_environment),
+    }) = first.properties.first()
+    else {
+        return Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch);
+    };
+    if !contract.manager_environment_is_allowed(manager_environment) {
+        return Err(NamespaceInspectorManagerQueryError::StaticPropertyMismatch);
     }
     let expected_instance = SystemdSocketInstanceV1::new(
         expected.accept_ordinal,

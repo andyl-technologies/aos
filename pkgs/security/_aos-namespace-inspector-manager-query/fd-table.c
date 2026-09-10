@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/capability.h>
+#include <linux/securebits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -181,6 +182,26 @@ static int validate_standard_descriptors(void)
   return 0;
 }
 
+static int validate_execution_descriptor(void)
+{
+  struct stat descriptor;
+  struct stat running;
+  int descriptor_flags;
+  int status_flags;
+
+  descriptor_flags = fcntl(AOS_QUERY_EXECUTABLE_FD, F_GETFD);
+  status_flags = fcntl(AOS_QUERY_EXECUTABLE_FD, F_GETFL);
+  if (descriptor_flags < 0 || (descriptor_flags & FD_CLOEXEC) != 0 ||
+      status_flags < 0 || (status_flags & O_ACCMODE) != O_RDONLY ||
+      fstat(AOS_QUERY_EXECUTABLE_FD, &descriptor) != 0 ||
+      stat("/proc/self/exe", &running) != 0 || !S_ISREG(descriptor.st_mode) ||
+      descriptor.st_dev != running.st_dev || descriptor.st_ino != running.st_ino)
+    return -1;
+  if (close(AOS_QUERY_EXECUTABLE_FD) != 0)
+    return -1;
+  return 0;
+}
+
 static int validate_parent(struct aos_query_context *context)
 {
   struct aos_pidfd_info info = {.mask = PIDFD_INFO_PID};
@@ -216,9 +237,15 @@ static int validate_process_state(void)
   int dumpable = prctl(PR_GET_DUMPABLE);
   int no_new_privileges = prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
 
+  /* The descriptor-backed launcher must remove active authority before the
+   * ELF interpreter runs. Locked root semantics prevent exec from recreating
+   * a permitted set merely because this helper retains UID 0. */
   if (dumpable != 0 && prctl(PR_SET_DUMPABLE, 0) == 0)
     dumpable = prctl(PR_GET_DUMPABLE);
-  if (dumpable != 0 || no_new_privileges != 1) {
+  if (dumpable != 0 || no_new_privileges != 1 ||
+      prctl(PR_GET_SECUREBITS, 0, 0, 0, 0) !=
+          (SECBIT_NOROOT | SECBIT_NOROOT_LOCKED |
+           SECBIT_NO_SETUID_FIXUP | SECBIT_NO_SETUID_FIXUP_LOCKED)) {
     fprintf(stderr, "aos-namespace-inspector-manager-query: process flags %d/%d\n",
             dumpable, no_new_privileges);
     return -1;
@@ -245,7 +272,7 @@ static int validate_process_state(void)
         break;
       return -1;
     }
-    if (bounding != 0 || ambient != 0)
+    if (bounding != (capability == CAP_SYS_PTRACE ? 1 : 0) || ambient != 0)
       return -1;
   }
   if (task_count() != 0) {
@@ -261,6 +288,8 @@ int aos_query_validate_entry(struct aos_query_context *context)
   int enabled;
   socklen_t length = sizeof(enabled);
 
+  if (validate_execution_descriptor() != 0)
+    return fail("entry executable descriptor is invalid");
   if (aos_query_capture_fd_table(&descriptors) != 0 || descriptors != 0x3fU)
     return fail("entry descriptor table is not exactly 0 through 5");
   if (validate_standard_descriptors() != 0 ||
