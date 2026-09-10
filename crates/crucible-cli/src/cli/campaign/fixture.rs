@@ -1,5 +1,8 @@
 //! Executable, verifier-backed campaign reference fixtures.
 
+#[path = "fixture/finding_triage.rs"]
+pub(super) mod finding_triage;
+
 use super::*;
 
 use std::collections::{BTreeMap, BTreeSet};
