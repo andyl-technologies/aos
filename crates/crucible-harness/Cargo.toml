@@ -9,9 +9,13 @@ publish = false
 workspace = true
 
 [dependencies]
-
-[dev-dependencies]
+blake3 = { workspace = true }
+libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 toml = { workspace = true }
+
+[dev-dependencies]
+rustix = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
