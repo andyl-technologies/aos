@@ -413,12 +413,16 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
 }
 
 mod evidence;
+#[cfg(test)]
+pub(crate) use evidence::QemuTerminalEvidenceExecutionRunnerError;
 pub use evidence::{
     QemuAttemptExecutionEvidence, QemuAttemptExecutionEvidenceSnapshot,
     QemuObservedFreshAttemptLifecycle, QemuObservedFreshAttemptLifecycleFactory,
     QemuObservedFreshAttemptLifecycleFactoryError,
 };
-pub(crate) use evidence::{map_observed_evidence_failure, map_observed_inner_failure};
+pub(crate) use evidence::{
+    QemuTerminalEvidenceExecutionRunner, map_observed_evidence_failure, map_observed_inner_failure,
+};
 
 mod legacy_run;
 #[cfg(any(test, feature = "test-support"))]

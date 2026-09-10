@@ -6,13 +6,14 @@
 //! callers that need to build a reproduction artifact after the campaign
 //! repository accepts the observation.
 //!
-//! The guarded portable-report owner attaches this observer to fresh production
-//! lifecycles. Exact-resume and hot-fork factory adapters preserve the same
-//! capture contract for owners that retain and consume the evidence handle.
+//! Packaged fresh, exact-resume, and hot-fork factories share one evidence
+//! handle for each worker. Their terminal execution wrapper consumes the
+//! completed capture and attaches its terminal fingerprints to the prepared
+//! semantic result before publication.
 
 use crucible::{
     Configuration, FingerprintSample, NodeId, QuantumTerminalVerdict, SchedulerError,
-    SchedulerEventLogEntry, SelectionDecision, VirtualTime,
+    SchedulerEventLogEntry, SchedulerOperationalFailureClass, SelectionDecision, VirtualTime,
 };
 
 // crucible-lint: allow host-nondeterminism-state -- the observer forwards scheduler-owned quantum requests and records successful outcomes without selecting modeled state.
@@ -24,11 +25,13 @@ use crucible_qemu::QemuNodeSelectablePendingRequest;
 use thiserror::Error;
 
 use super::{
-    AttemptExecutionContext, AttemptWorkerFailure, CapturedAttemptCheckpoint,
+    AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
+    CapturedAttemptCheckpoint, CrucibleExecutionOutcome, CrucibleExecutionRunner,
     MAX_QEMU_ATTEMPT_GENERATION_NODES, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
     MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuAttemptContinuation, QemuFreshAttemptLifecycleFactory,
     QemuFreshAttemptLifecycleOwner,
 };
+use crate::{AttemptExecutionDisposition, AttemptExecutionReconciliationStep};
 
 const MAX_EXECUTION_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES * 2;
 const MAX_TERMINAL_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES;
@@ -265,10 +268,22 @@ impl<F> QemuObservedFreshAttemptLifecycleFactory<F> {
         )
     }
 
+    /// Wraps a lifecycle factory with an existing per-worker evidence owner.
+    pub(crate) fn with_shared_evidence(inner: F, evidence: QemuAttemptExecutionEvidence) -> Self {
+        Self { inner, evidence }
+    }
+
+    /// Returns the wrapped factory for tier-specific forwarding.
     pub(crate) fn inner_mut(&mut self) -> &mut F {
         &mut self.inner
     }
 
+    /// Resets the worker evidence and derives the canonical VM-node sample set.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified scheduler failure when the evidence owner cannot be
+    /// reset or the authenticated world exceeds or violates the node bound.
     pub(crate) fn prepare_observation(
         &self,
         source: &crucible::ScenarioDefForm,
@@ -306,12 +321,116 @@ impl<F> QemuObservedFreshAttemptLifecycleFactory<F> {
         Ok(fingerprint_nodes)
     }
 
+    /// Wraps one started lifecycle with the prepared sample set.
     pub(crate) fn observe<L>(
         &self,
         lifecycle: L,
         fingerprint_nodes: Vec<NodeId>,
     ) -> QemuObservedFreshAttemptLifecycle<L> {
         QemuObservedFreshAttemptLifecycle::new(lifecycle, fingerprint_nodes, self.evidence.clone())
+    }
+}
+
+/// Attaches a completed lifecycle's terminal samples to its semantic result.
+pub(crate) struct QemuTerminalEvidenceExecutionRunner<R> {
+    inner: R,
+    evidence: QemuAttemptExecutionEvidence,
+}
+
+impl<R> QemuTerminalEvidenceExecutionRunner<R> {
+    /// Binds an execution router to its retained per-worker evidence owner.
+    pub(crate) const fn new(inner: R, evidence: QemuAttemptExecutionEvidence) -> Self {
+        Self { inner, evidence }
+    }
+
+    /// Consumes the wrapper into its runner and evidence owner.
+    #[cfg(test)]
+    pub(crate) fn into_parts(self) -> (R, QemuAttemptExecutionEvidence) {
+        (self.inner, self.evidence)
+    }
+}
+
+/// Failure to execute or attach one QEMU terminal evidence set.
+#[derive(Debug, Error)]
+pub(crate) enum QemuTerminalEvidenceExecutionRunnerError<E> {
+    /// The routed QEMU attempt failed before it produced a semantic result.
+    #[error("QEMU execution failed before terminal evidence publication")]
+    Inner(#[source] E),
+    /// The completed lifecycle evidence could not be read.
+    #[error("read completed QEMU terminal evidence: {0}")]
+    Evidence(#[source] SchedulerError),
+    /// The routed attempt succeeded without publishing a terminal set.
+    #[error("successful QEMU observation has no completed terminal fingerprints")]
+    MissingTerminalFingerprints,
+    /// The terminal set could not be bound to the prepared result.
+    #[error("attach QEMU terminal evidence to the prepared semantic result: {0}")]
+    Prepared(#[source] crate::PreparedSemanticResultCodecError),
+}
+
+impl<R> CrucibleExecutionRunner for QemuTerminalEvidenceExecutionRunner<R>
+where
+    R: CrucibleExecutionRunner,
+{
+    type Error = QemuTerminalEvidenceExecutionRunnerError<R::Error>;
+
+    fn execute(
+        &mut self,
+        input: &crate::CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        let outcome = self
+            .inner
+            .execute(input, context)
+            .map_err(map_terminal_evidence_inner_failure)?;
+        let (product, materialization) = outcome.into_parts();
+        let product = match product {
+            AttemptExecutionProduct::PreparedSemantic(result) => {
+                let attached = self
+                    .evidence
+                    .snapshot()
+                    .map_err(map_terminal_evidence_snapshot_failure)
+                    .and_then(|snapshot| {
+                        snapshot
+                            .terminal_fingerprints()
+                            .ok_or_else(|| {
+                                AttemptWorkerFailure::Terminal(
+                                    QemuTerminalEvidenceExecutionRunnerError::MissingTerminalFingerprints,
+                                )
+                            })
+                            .map(<[FingerprintSample]>::to_vec)
+                    })
+                    .and_then(|terminal_fingerprints| {
+                        result.with_terminal_fingerprints(terminal_fingerprints).map_err(|error| {
+                            AttemptWorkerFailure::Terminal(
+                                QemuTerminalEvidenceExecutionRunnerError::Prepared(error),
+                            )
+                        })
+                    });
+                match attached {
+                    Ok(result) => AttemptExecutionProduct::PreparedSemantic(Box::new(result)),
+                    Err(failure) => {
+                        self.inner.quarantine_pending_execution();
+                        return Err(failure);
+                    }
+                }
+            }
+            product => product,
+        };
+
+        Ok(CrucibleExecutionOutcome::new(product, materialization))
+    }
+
+    fn reconcile_execution(
+        &mut self,
+        disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        self.inner
+            .reconcile_execution(disposition)
+            .map_err(map_terminal_evidence_inner_failure)
+    }
+
+    fn quarantine_pending_execution(&mut self) {
+        self.inner.quarantine_pending_execution();
     }
 }
 
@@ -390,5 +509,43 @@ pub(crate) fn map_observed_evidence_failure<E>(
         AttemptWorkerFailure::Terminal(error) => AttemptWorkerFailure::Terminal(
             QemuObservedFreshAttemptLifecycleFactoryError::Evidence(error),
         ),
+    }
+}
+
+fn map_terminal_evidence_inner_failure<E>(
+    failure: AttemptWorkerFailure<E>,
+) -> AttemptWorkerFailure<QemuTerminalEvidenceExecutionRunnerError<E>> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(QemuTerminalEvidenceExecutionRunnerError::Inner(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(QemuTerminalEvidenceExecutionRunnerError::Inner(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(QemuTerminalEvidenceExecutionRunnerError::Inner(error))
+        }
+    }
+}
+
+fn map_terminal_evidence_snapshot_failure<E>(
+    error: SchedulerError,
+) -> AttemptWorkerFailure<QemuTerminalEvidenceExecutionRunnerError<E>> {
+    let class = match &error {
+        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::NotImplemented { .. }
+        | SchedulerError::Backend(_)
+        | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::ResourceLimit { .. }
+        | SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. } => None,
+    };
+    let error = QemuTerminalEvidenceExecutionRunnerError::Evidence(error);
+    match class {
+        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
+        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
+        Some(SchedulerOperationalFailureClass::Terminal) | None => {
+            AttemptWorkerFailure::Terminal(error)
+        }
     }
 }

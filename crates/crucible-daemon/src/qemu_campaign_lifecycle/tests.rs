@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::convert::Infallible;
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,10 +13,11 @@ use std::sync::{Arc, Mutex};
 use crucible::model::{BindingSearchChoice, SearchChoiceId};
 use crucible::{
     AppRandomDecision, AppRandomSelectable, Checkpoint, CheckpointKind, Configuration, Decision,
-    Icount, NodeId, NodeTemplate, Plan, Properties, ReadyPoint, RngDecision, RngStreamId,
+    EventLog, Icount, NodeId, NodeTemplate, Plan, Properties, ReadyPoint, RngDecision, RngStreamId,
     ScenarioDef, ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables,
-    SchedulerEventLogEntry, SearchFrontierChoices, SearchRuntimeFrontier, Seed, SelectionDecision,
-    SignalFaultSelectable, VirtualTime, WhiteBoxPolicy, World, WorldNode, step,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SearchFrontierChoices,
+    SearchRuntimeFrontier, Seed, SelectionDecision, SignalFaultSelectable, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode, step,
 };
 use crucible_api::vm_lifecycle::production_permanently_failed_loop_for_test;
 use crucible_api::{
@@ -47,11 +49,12 @@ use crate::crucible_execution::{CrucibleAttemptOrigin, CrucibleAttemptOrigins};
 use crate::exact_checkpoint_store::AttemptCheckpointResultState;
 use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::{
-    AttemptExecutionOrigin, AttemptExecutionProduct, CapturedAttemptCheckpoint,
-    CheckpointHandoffFailure, CrucibleAttemptExecution, CrucibleExecutionOutcome,
-    CrucibleExecutionRunner, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
-    ExactCheckpointStore, ExecutionCancellation, ExecutionCheckpointRequest,
-    PreparedAttemptCheckpoint, QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError,
+    AttemptExecutionDisposition, AttemptExecutionOrigin, AttemptExecutionProduct,
+    AttemptExecutionReconciliationStep, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
+    CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
+    CrucibleMaterializationTier, CrucibleResolvedAttemptStart, ExactCheckpointStore,
+    ExecutionCancellation, ExecutionCheckpointRequest, PreparedAttemptCheckpoint,
+    PreparedSemanticAttemptResult, QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError,
     QemuAttemptOperationalBoundary, QemuAttemptResourceGuard, QemuFreshModeledDriver,
     QemuSavepointReplayProof, QemuSelectedOriginResumeRunner,
 };
@@ -976,6 +979,7 @@ struct CapturedBoundary {
 struct BoundaryCaptureLifecycle {
     configuration: Configuration,
     quanta: u64,
+    event_log: EventLog,
     events: Vec<SchedulerEventLogEntry>,
     captured: Arc<Mutex<Vec<CapturedBoundary>>>,
 }
@@ -994,28 +998,28 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
         &mut self,
         request: crucible::QuantumRequest,
     ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
-        let sequence = self.quanta;
-        let entry = SchedulerEventLogEntry::execution_budget_exhausted(
-            sequence,
-            VirtualTime {
-                ticks: sequence + 1,
-            },
-            "savepoint-boundary",
-        );
+        let at = VirtualTime {
+            ticks: self.quanta + 1,
+        };
+        let append = self.event_log.append_observations_at_boundary(
+            std::iter::empty(),
+            at,
+            SchedulerEvaluationBoundaryKind::Quantum,
+        )?;
         self.quanta += 1;
-        self.events.push(entry.clone());
+        self.events.extend(append.entries.iter().cloned());
         Ok(crucible::QuantumOutcome {
             configuration: request.configuration,
-            frontier: VirtualTime { ticks: self.quanta },
+            frontier: at,
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: Vec::new(),
             discovered_choices: Vec::new(),
-            event_log_entries: vec![entry],
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: crucible::EventLogOffset::default(),
+            event_log_entries: append.entries,
+            event_log_segment_bytes: append.segment_bytes,
+            event_log_segment_text: append.segment_text,
+            event_log_segment_hash: append.segment_hash,
+            event_log_offset: append.offset,
             scheduler_quiescence: None,
         })
     }
@@ -1098,6 +1102,19 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
         0
     }
 
+    fn sample_fingerprint(
+        &mut self,
+        node: NodeId,
+    ) -> Result<crucible::FingerprintSample, crucible::SchedulerError> {
+        Ok(crucible::FingerprintSample {
+            fingerprint: crucible::ExecutionFingerprint {
+                hash: crucible::ContentHash::from_bytes(node.name.as_bytes()),
+            },
+            node,
+            at: VirtualTime { ticks: self.quanta },
+        })
+    }
+
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, crucible::SchedulerError> {
         Ok(Vec::new())
     }
@@ -1122,6 +1139,7 @@ impl QemuFreshAttemptLifecycleFactory for BoundaryCaptureLifecycleFactory {
         Ok(BoundaryCaptureLifecycle {
             configuration: start.clone(),
             quanta: 0,
+            event_log: EventLog::new(),
             events: Vec::new(),
             captured: Arc::clone(&self.captured),
         })
@@ -1646,6 +1664,18 @@ fn router_cold_executes_an_initial_selected_origin_when_its_source_is_absent() {
         order.lock().expect("fresh lifecycle order").as_slice(),
         ["begin", "replay", "drive", "shutdown", "seal"]
     );
+    assert_eq!(
+        router
+            .reconcile_execution(AttemptExecutionDisposition::Failed)
+            .expect("reconcile the initial selected cold route"),
+        AttemptExecutionReconciliationStep::Complete
+    );
+    assert!(matches!(
+        router.reconcile_execution(AttemptExecutionDisposition::Failed),
+        Err(AttemptWorkerFailure::Terminal(
+            QemuAttemptExecutionRouterError::NoPendingReconciliation
+        ))
+    ));
 }
 
 #[test]
@@ -1705,6 +1735,12 @@ fn router_cold_executes_continuation_control_after_authenticating_exact_source()
             .expect("accepted continuation trace")
             .as_slice(),
         [(1, source)]
+    );
+    assert_eq!(
+        router
+            .reconcile_execution(AttemptExecutionDisposition::Failed)
+            .expect("reconcile the controlled cold route"),
+        AttemptExecutionReconciliationStep::Complete
     );
     assert_eq!(
         order.lock().expect("fresh lifecycle order").as_slice(),
@@ -2347,6 +2383,127 @@ fn fresh_runner_seals_only_after_runner_owned_shutdown() {
     assert!(matches!(
         outcome.product(),
         AttemptExecutionProduct::ExactCheckpoint(_)
+    ));
+}
+
+#[test]
+fn terminal_evidence_runner_attaches_the_fresh_terminal_world_set_after_shutdown() {
+    let input = modeled_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(1));
+    let factory = BoundaryCaptureLifecycleFactory {
+        captured: Arc::new(Mutex::new(Vec::new())),
+    };
+    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver::new());
+    let mut runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence);
+
+    let outcome = runner
+        .execute(&input, &fresh_runner_context())
+        .expect("fresh modeled execution with terminal evidence");
+    let AttemptExecutionProduct::PreparedSemantic(result) = outcome.product() else {
+        panic!("fresh absolute stop must produce a prepared semantic result")
+    };
+    let terminal = result
+        .terminal_fingerprints()
+        .expect("prepared fresh terminal fingerprints");
+    let expected_nodes = input
+        .scenario()
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    let retained_nodes = terminal
+        .iter()
+        .map(|sample| sample.node.clone())
+        .collect::<BTreeSet<_>>();
+
+    assert!(!terminal.is_empty());
+    assert_eq!(retained_nodes, expected_nodes);
+    assert!(terminal.iter().all(|sample| sample.at.ticks == 1));
+    result
+        .verify_terminal_fingerprints(input.scenario())
+        .expect("fresh terminal set must match the authenticated World");
+    assert_eq!(
+        outcome.materialization(),
+        CrucibleMaterializationTier::ThinReplay
+    );
+}
+
+struct PreparedSemanticResultRunner {
+    result: Option<PreparedSemanticAttemptResult>,
+}
+
+impl CrucibleExecutionRunner for PreparedSemanticResultRunner {
+    type Error = Infallible;
+
+    fn execute(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        let result = self
+            .result
+            .take()
+            .expect("prepared semantic fixture executes once");
+        Ok(CrucibleExecutionOutcome::new(
+            AttemptExecutionProduct::PreparedSemantic(Box::new(result)),
+            CrucibleMaterializationTier::ThinReplay,
+        ))
+    }
+}
+
+#[test]
+fn terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_reset() {
+    let input = modeled_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(1));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let factory = BoundaryCaptureLifecycleFactory {
+        captured: Arc::clone(&captured),
+    };
+    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver::new());
+    let mut first = QemuTerminalEvidenceExecutionRunner::new(runner, evidence.clone());
+    let first_outcome = first
+        .execute(&input, &fresh_runner_context())
+        .expect("first attempt publishes terminal evidence");
+    let AttemptExecutionProduct::PreparedSemantic(first_result) = first_outcome.product() else {
+        panic!("first attempt must produce a prepared semantic result")
+    };
+    assert!(first_result.terminal_fingerprints().is_some());
+
+    let next_result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+        first_result.observation().clone(),
+        first_result.measurement_replay_evidence().to_vec(),
+        first_result.finding().cloned(),
+    )
+    .expect("next prepared result without terminal evidence");
+    let resetting_factory = QemuObservedFreshAttemptLifecycleFactory::with_shared_evidence(
+        BoundaryCaptureLifecycleFactory { captured },
+        evidence.clone(),
+    );
+    resetting_factory
+        .prepare_observation(input.scenario())
+        .expect("new fast-tier attempt resets per-worker evidence");
+    assert_eq!(
+        evidence
+            .snapshot()
+            .expect("reset evidence snapshot")
+            .terminal_fingerprints(),
+        None
+    );
+
+    let inner = PreparedSemanticResultRunner {
+        result: Some(next_result),
+    };
+    let mut next = QemuTerminalEvidenceExecutionRunner::new(inner, evidence);
+    let error = next
+        .execute(&input, &fresh_runner_context())
+        .expect_err("the next attempt cannot reuse the previous terminal set");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(
+            QemuTerminalEvidenceExecutionRunnerError::MissingTerminalFingerprints
+        )
     ));
 }
 
@@ -3377,6 +3534,54 @@ fn fresh_runner_input_for_stop(stop: StopCondition) -> CrucibleAttemptExecution 
         "qemu-test",
         BTreeMap::from([(String::from("control"), 1)]),
         1,
+        1,
+    )
+    .expect("campaign lineage");
+    let path = BranchPath::new(Vec::new()).expect("genesis branch path");
+    let attempt = Attempt::new(
+        AttemptStart::Discover {
+            configuration: configuration_content,
+        },
+        path.id().expect("branch path id"),
+        stop,
+    )
+    .expect("discovery attempt");
+
+    CrucibleAttemptExecution::from_test_parts(
+        lineage,
+        scenario,
+        attempt,
+        path,
+        CrucibleResolvedAttemptStart::Discover { configuration },
+    )
+}
+
+fn modeled_fresh_runner_input_for_stop(stop: StopCondition) -> CrucibleAttemptExecution {
+    let scenario = crucible::crash_restart_scenario()
+        .expect("built-in scenario")
+        .scenario;
+    let definition = scenario.scenario_def();
+    let scenario_artifact =
+        crate::encode_crucible_scenario_artifact(&scenario).expect("encoded scenario artifact");
+    let scenario_id = scenario_artifact.scenario();
+    let scenario_content = scenario_artifact.id().expect("scenario artifact id");
+    let configuration = Configuration::genesis(definition);
+    let configuration_artifact =
+        crate::encode_crucible_configuration_artifact(&scenario_artifact, &configuration.schedule)
+            .expect("encoded configuration artifact");
+    let configuration_id = configuration_artifact.configuration();
+    let configuration_content = configuration_artifact
+        .id()
+        .expect("configuration artifact id");
+    let lineage = CampaignLineage::new(
+        scenario_id,
+        scenario_content,
+        configuration_id,
+        configuration_content,
+        "crucible-test",
+        "qemu-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        scenario_artifact.payload_schema(),
         1,
     )
     .expect("campaign lineage");
