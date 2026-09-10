@@ -6562,6 +6562,37 @@ non-authorizing and cannot reach the existing move-only activation token.
 Those runtime and deployment prerequisites remain open, Network Apply remains
 unadvertised, and no readiness or task checkbox changes.
 
+Commit `8bac2237a` extends the fixed-process supervisor with explicit standard
+input and at most four ordered borrowed descriptor roles, mapped to child FDs
+3 through 6. Every standard and role source is first duplicated to a
+close-on-exec descriptor at or above FD 64, so a caller source that aliases a
+target number cannot be destroyed by an earlier `dup2`; the child then closes
+everything above its final fixed role. The legacy API retains `/dev/null`
+standard input and no inherited roles. Caller-provided standard input is not
+byte-bounded; the existing overall child supervision deadline bounds how long
+the child may wait or read before cancellation begins.
+
+Qualification used exact parent
+`ead2899d156c44d82fb92cbd8c2460809d2d8c9b` plus only `process.rs` and
+`uapi.rs`, whose SHA-256 digests were
+`e384628534705d12a0e6d81d61e2b8ea5ee87e77bcf147de5f242cc1bf20aa08`
+and `35d053d36848f23444e6810c20197f60ac62bfb06c939dc91663af8a57ef6fa2`.
+The pinned realized AOS development environment passed the exact two-file
+format check, 14 focused process tests with three fixture entries ignored, all
+142 non-ignored Linux library tests with four fixtures ignored, and the Linux
+all-target check. The descriptor regression runs in an isolated outer test
+process and deliberately aliases sources with FDs 0, 3, 4, and 7, repeats one
+source, and verifies the actual child receives only the ordered expected
+objects. It invokes the private supervisor path, so it proves collision-safe
+mapping and closure, not positive acceptance through the public single-thread
+entry point.
+
+This is only descriptor transport preparation. It does not expose an unreaped
+child session, interleave a control protocol with output collection, launch or
+authenticate the native manager helper, contact systemd, or mint activation
+evidence. Those boundaries and their public-entry tests remain open, and no
+readiness or task checkbox changes.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
