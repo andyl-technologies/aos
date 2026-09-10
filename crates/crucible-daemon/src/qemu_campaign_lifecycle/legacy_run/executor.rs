@@ -230,6 +230,7 @@ impl<M> SynchronousCampaignExecutor<M> {
         admission: RepositoryAttemptAdmission,
         daemon_epoch: DaemonEpoch,
         resources: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
     ) -> Self {
         Self {
             worker: RepositoryAttemptWorker::new(store.clone(), model),
@@ -237,7 +238,7 @@ impl<M> SynchronousCampaignExecutor<M> {
             admission,
             daemon_epoch,
             resources,
-            cancellation: ExecutionCancellation::default(),
+            cancellation,
             assignments: BTreeMap::new(),
             completed: BTreeMap::new(),
             checkpoint_capture: None,

@@ -6,19 +6,23 @@
 //! back to that exact artifact before exposing the recomputed signature.
 
 use super::*;
+use crate::compare_event_log_determinism;
 use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::io::{self, Write};
 
-/// Schema version encoded by [`FailureTriageReplayEvidence::to_compact_binary`].
-pub const FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+/// Latest schema version encoded by [`FailureTriageReplayEvidence::to_compact_binary`].
+pub const FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
 // The final magic byte is the payload schema. This assertion keeps the public
 // version used by campaign envelopes synchronized with the compact codec.
-const FAILURE_TRIAGE_REPLAY_EVIDENCE_MAGIC: &[u8] =
+const FAILURE_TRIAGE_REPLAY_EVIDENCE_V1_MAGIC: &[u8] =
     b"CRUCIBLE_FAILURE_TRIAGE_REPLAY_EVIDENCE\0\x01";
+const FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC: &[u8] =
+    b"CRUCIBLE_FAILURE_TRIAGE_REPLAY_EVIDENCE\0\x02";
 const _: () = assert!(
-    FAILURE_TRIAGE_REPLAY_EVIDENCE_MAGIC[FAILURE_TRIAGE_REPLAY_EVIDENCE_MAGIC.len() - 1] as u32
+    FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC[FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC.len() - 1]
+        as u32
         == FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
 );
 const MAX_FAILURE_SOURCE_BYTES: usize = 1024 * 1024;
@@ -28,13 +32,21 @@ const MAX_RECORDED_EVENT_FRAMES: usize = 65_536;
 const MAX_RECORDED_EVENT_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_RECORDED_EVENT_FRAME_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FAILURE_SIGNATURE_MATERIAL_BYTES: usize = 16 * 1024 * 1024;
+const MAX_V1_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES: usize = 48 * 1024 * 1024;
 
 /// Maximum canonical size of one portable failure replay-evidence payload.
-pub const MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES: usize = 48 * 1024 * 1024;
+pub const MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES: usize = 80 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PairedDivergenceLogs {
+    expected: Vec<SchedulerEventLogEntry>,
+    reproduced: Vec<SchedulerEventLogEntry>,
+}
 
 /// Replay-owned inputs and the full failure signature recomputed from them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailureTriageReplayEvidence {
+    schema_version: u32,
     finding: FindingReproductionArtifact,
     failure: FailureClusterReportFailure,
     causal_entries: Vec<SchedulerEventLogEntry>,
@@ -42,6 +54,7 @@ pub struct FailureTriageReplayEvidence {
     recorded_event_frames: Vec<Vec<u8>>,
     recorded_event_log: FailureRecordedEventLog,
     signature: FailureSignature,
+    paired_divergence_logs: Option<PairedDivergenceLogs>,
 }
 
 impl FailureTriageReplayEvidence {
@@ -70,6 +83,7 @@ impl FailureTriageReplayEvidence {
         )?;
         let signature = recompute_failure_signature(&finding, &recorded_event_log, &failure)?;
         let value = Self {
+            schema_version: 1,
             finding,
             failure,
             causal_entries,
@@ -77,6 +91,63 @@ impl FailureTriageReplayEvidence {
             recorded_event_frames,
             recorded_event_log,
             signature,
+            paired_divergence_logs: None,
+        };
+        if value.encode()?.len() > MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES {
+            return Err(scenario_serialization_error(
+                "failure triage replay evidence exceeds canonical size limit",
+            ));
+        }
+        Ok(value)
+    }
+
+    /// Builds divergence evidence from two logs attributed to one reproduction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the logs have identical causal projections,
+    /// either log exceeds its bound, or the reconstructed evidence is invalid.
+    pub fn new_paired_divergence(
+        finding: FindingReproductionArtifact,
+        expected: Vec<SchedulerEventLogEntry>,
+        reproduced: Vec<SchedulerEventLogEntry>,
+        coverage_fingerprint: ContentHash,
+        recorded_event_frames: Vec<Vec<u8>>,
+    ) -> Result<Self, EngineError> {
+        validate_causal_entry_bounds(&expected)?;
+        validate_causal_entry_bounds(&reproduced)?;
+        validate_frame_bounds(&recorded_event_frames)?;
+
+        let failure = divergence_failure_from_logs(&expected, &reproduced)?;
+        let comparison = compare_event_log_determinism(&expected, &reproduced);
+        let mismatch = comparison.mismatch().ok_or_else(|| {
+            scenario_serialization_error("paired divergence logs have equal causal projections")
+        })?;
+        let causal_entries = if mismatch.expected_location.is_some() {
+            expected.clone()
+        } else {
+            reproduced.clone()
+        };
+        let recorded_event_log = FailureRecordedEventLog::from_causal_entries_coverage_and_frames(
+            &finding,
+            &causal_entries,
+            coverage_fingerprint,
+            &recorded_event_frames,
+        )?;
+        let signature = recompute_failure_signature(&finding, &recorded_event_log, &failure)?;
+        let value = Self {
+            schema_version: FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
+            finding,
+            failure,
+            causal_entries,
+            coverage_fingerprint,
+            recorded_event_frames,
+            recorded_event_log,
+            signature,
+            paired_divergence_logs: Some(PairedDivergenceLogs {
+                expected,
+                reproduced,
+            }),
         };
         if value.encode()?.len() > MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES {
             return Err(scenario_serialization_error(
@@ -102,28 +173,29 @@ impl FailureTriageReplayEvidence {
                 "failure triage replay evidence exceeds canonical size limit",
             ));
         }
-        let mut reader = ScenarioBinaryReader::new(bytes, FAILURE_TRIAGE_REPLAY_EVIDENCE_MAGIC)?;
-        validate_finding_binding(&finding, &mut reader)?;
-        let failure = decode_failure_source(&mut reader, finding.artifact.id())?;
-        let causal_entries_bytes = reader
-            .read_binary_blob_bounded("failure triage causal entries", MAX_CAUSAL_ENTRIES_BYTES)?;
-        let BoundedSequence(causal_entries) = serde_json::from_slice::<
-            BoundedSequence<SchedulerEventLogEntry, MAX_CAUSAL_ENTRIES>,
-        >(causal_entries_bytes)
-        .map_err(|error| {
-            scenario_serialization_error(format!("decode failure triage causal entries: {error}"))
-        })?;
-        validate_causal_entry_bounds(&causal_entries)?;
-        let canonical_causal_entries = bounded_json_bytes(
-            &causal_entries,
-            MAX_CAUSAL_ENTRIES_BYTES,
-            "failure triage causal entries",
-        )?;
-        if canonical_causal_entries != causal_entries_bytes {
+        let schema_version = if bytes.starts_with(FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC) {
+            2
+        } else {
+            1
+        };
+        if schema_version == 1 && bytes.len() > MAX_V1_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES {
             return Err(scenario_serialization_error(
-                "failure triage causal entries are not canonically encoded",
+                "failure triage replay evidence exceeds schema-v1 canonical size limit",
             ));
         }
+        let magic = if schema_version == 2 {
+            FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC
+        } else {
+            FAILURE_TRIAGE_REPLAY_EVIDENCE_V1_MAGIC
+        };
+        let mut reader = ScenarioBinaryReader::new(bytes, magic)?;
+        validate_finding_binding(&finding, &mut reader)?;
+        let failure = decode_failure_source(&mut reader, finding.artifact.id())?;
+        let expected =
+            decode_causal_entries(&mut reader, "failure triage expected causal entries")?;
+        let reproduced = (schema_version == 2)
+            .then(|| decode_causal_entries(&mut reader, "failure triage reproduced causal entries"))
+            .transpose()?;
         let coverage_fingerprint = reader.read_hash()?;
         let frame_count = reader.read_collection_count("failure triage recorded frames")?;
         if frame_count > MAX_RECORDED_EVENT_FRAMES {
@@ -160,13 +232,30 @@ impl FailureTriageReplayEvidence {
             })?;
         reader.finish()?;
 
-        let value = Self::new(
-            finding,
-            failure,
-            causal_entries,
-            coverage_fingerprint,
-            recorded_event_frames,
-        )?;
+        let value = if let Some(reproduced) = reproduced {
+            let value = Self::new_paired_divergence(
+                finding,
+                expected,
+                reproduced,
+                coverage_fingerprint,
+                recorded_event_frames,
+            )?;
+            if value.failure != failure {
+                return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "failure-triage-replay-evidence",
+                    reason: "recorded divergence is not the paired logs' first causal mismatch",
+                });
+            }
+            value
+        } else {
+            Self::new(
+                finding,
+                failure,
+                expected,
+                coverage_fingerprint,
+                recorded_event_frames,
+            )?
+        };
         if value.signature.report_material() != expected_signature_material {
             return Err(EngineError::UnifiedOperationEvidenceMismatch {
                 operation: "failure-triage-replay-evidence",
@@ -189,6 +278,28 @@ impl FailureTriageReplayEvidence {
     /// or failure source cannot be encoded.
     pub fn to_compact_binary(&self) -> Result<Vec<u8>, EngineError> {
         self.encode()
+    }
+
+    /// Returns the encoded payload schema version.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Returns whether `schema_version` is supported by this decoder.
+    #[must_use]
+    pub const fn supports_schema(schema_version: u32) -> bool {
+        schema_version == 1 || schema_version == FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
+    }
+
+    /// Returns both complete execution logs retained for divergence evidence.
+    #[must_use]
+    pub fn paired_divergence_logs(
+        &self,
+    ) -> Option<(&[SchedulerEventLogEntry], &[SchedulerEventLogEntry])> {
+        self.paired_divergence_logs
+            .as_ref()
+            .map(|logs| (logs.expected.as_slice(), logs.reproduced.as_slice()))
     }
 
     /// Returns the exact reproduction whose replay produced this evidence.
@@ -241,11 +352,32 @@ impl FailureTriageReplayEvidence {
         let failure = FailureSourceWire::from_failure(&self.failure)?;
         let failure =
             bounded_json_bytes(&failure, MAX_FAILURE_SOURCE_BYTES, "failure triage source")?;
-        let causal_entries = bounded_json_bytes(
-            &self.causal_entries,
-            MAX_CAUSAL_ENTRIES_BYTES,
-            "failure triage causal entries",
-        )?;
+        let (expected_entries, reproduced_entries) = match &self.paired_divergence_logs {
+            Some(logs) => {
+                validate_causal_entry_bounds(&logs.expected)?;
+                validate_causal_entry_bounds(&logs.reproduced)?;
+                (
+                    bounded_json_bytes(
+                        &logs.expected,
+                        MAX_CAUSAL_ENTRIES_BYTES,
+                        "failure triage expected causal entries",
+                    )?,
+                    Some(bounded_json_bytes(
+                        &logs.reproduced,
+                        MAX_CAUSAL_ENTRIES_BYTES,
+                        "failure triage reproduced causal entries",
+                    )?),
+                )
+            }
+            None => (
+                bounded_json_bytes(
+                    &self.causal_entries,
+                    MAX_CAUSAL_ENTRIES_BYTES,
+                    "failure triage causal entries",
+                )?,
+                None,
+            ),
+        };
         let signature_material = self.signature.report_material();
         if signature_material.len() > MAX_FAILURE_SIGNATURE_MATERIAL_BYTES {
             return Err(scenario_serialization_error(
@@ -254,24 +386,39 @@ impl FailureTriageReplayEvidence {
         }
 
         let encoded_size = encoded_size(
+            self.schema_version,
             failure.len(),
-            causal_entries.len(),
+            expected_entries.len(),
+            reproduced_entries.as_ref().map_or(0, Vec::len),
             &self.recorded_event_frames,
             signature_material.len(),
         )?;
-        if encoded_size > MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES {
+        let maximum = if self.schema_version == 1 {
+            MAX_V1_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES
+        } else {
+            MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES
+        };
+        if encoded_size > maximum {
             return Err(scenario_serialization_error(
                 "failure triage replay evidence exceeds canonical size limit",
             ));
         }
 
-        let mut writer = ScenarioBinaryWriter::new(FAILURE_TRIAGE_REPLAY_EVIDENCE_MAGIC);
+        let magic = if self.schema_version == 2 {
+            FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC
+        } else {
+            FAILURE_TRIAGE_REPLAY_EVIDENCE_V1_MAGIC
+        };
+        let mut writer = ScenarioBinaryWriter::new(magic);
         writer.write_u8(discovery_path_tag(self.finding.discovery_path));
         writer.write_hash(self.finding.finding_fingerprint);
         writer.write_hash(self.finding.configuration);
         writer.write_hash(self.finding.artifact.id());
         writer.write_binary_blob(&failure);
-        writer.write_binary_blob(&causal_entries);
+        writer.write_binary_blob(&expected_entries);
+        if let Some(reproduced_entries) = reproduced_entries {
+            writer.write_binary_blob(&reproduced_entries);
+        }
         writer.write_hash(self.coverage_fingerprint);
         writer.write_count(self.recorded_event_frames.len());
         for frame in &self.recorded_event_frames {
@@ -466,6 +613,59 @@ fn decode_failure_source(
     wire.into_failure(reproduction_artifact)
 }
 
+fn decode_causal_entries(
+    reader: &mut ScenarioBinaryReader<'_>,
+    label: &'static str,
+) -> Result<Vec<SchedulerEventLogEntry>, EngineError> {
+    let bytes = reader.read_binary_blob_bounded(label, MAX_CAUSAL_ENTRIES_BYTES)?;
+    let BoundedSequence(entries) = serde_json::from_slice::<
+        BoundedSequence<SchedulerEventLogEntry, MAX_CAUSAL_ENTRIES>,
+    >(bytes)
+    .map_err(|error| scenario_serialization_error(format!("decode {label}: {error}")))?;
+    validate_causal_entry_bounds(&entries)?;
+    let canonical = bounded_json_bytes(&entries, MAX_CAUSAL_ENTRIES_BYTES, label)?;
+    if canonical != bytes {
+        return Err(scenario_serialization_error(format!(
+            "{label} are not canonically encoded"
+        )));
+    }
+    Ok(entries)
+}
+
+fn divergence_failure_from_logs(
+    expected: &[SchedulerEventLogEntry],
+    reproduced: &[SchedulerEventLogEntry],
+) -> Result<FailureClusterReportFailure, EngineError> {
+    let comparison = compare_event_log_determinism(expected, reproduced);
+    let mismatch = comparison.mismatch().ok_or_else(|| {
+        scenario_serialization_error("paired divergence logs have equal causal projections")
+    })?;
+    let point = mismatch.first_location().ok_or_else(|| {
+        scenario_serialization_error("paired divergence has no causal mismatch location")
+    })?;
+    Ok(FailureClusterReportFailure::divergence(
+        FailureClusterReportDivergence::from_bisected_first_diff(
+            point,
+            divergence_entry_summary(mismatch.expected_entry.as_ref()),
+            divergence_entry_summary(mismatch.reproduced_entry.as_ref()),
+        ),
+    ))
+}
+
+fn divergence_entry_summary(entry: Option<&SchedulerEventLogEntry>) -> String {
+    entry.map_or_else(
+        || String::from("entry=absent"),
+        |entry| {
+            format!(
+                "entry.content_hash={};entry.sequence={};entry.kind={}",
+                entry.content_hash().to_hex(),
+                entry.sequence(),
+                entry.event_payload().kind(),
+            )
+        },
+    )
+}
+
 fn validate_finding_binding(
     finding: &FindingReproductionArtifact,
     reader: &mut ScenarioBinaryReader<'_>,
@@ -593,22 +793,26 @@ fn validate_frame_bounds(frames: &[Vec<u8>]) -> Result<(), EngineError> {
 }
 
 fn encoded_size(
+    schema_version: u32,
     failure_bytes: usize,
-    causal_entry_bytes: usize,
+    expected_entry_bytes: usize,
+    reproduced_entry_bytes: usize,
     frames: &[Vec<u8>],
     signature_material_bytes: usize,
 ) -> Result<usize, EngineError> {
-    let fixed_size = FAILURE_TRIAGE_REPLAY_EVIDENCE_MAGIC
+    let length_fields = if schema_version == 1 { 4 } else { 5 };
+    let fixed_size = FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC
         .len()
         .checked_add(1)
         .and_then(|size| size.checked_add(4 * ContentHash::default().bytes.len()))
-        .and_then(|size| size.checked_add(4 * std::mem::size_of::<u64>()))
+        .and_then(|size| size.checked_add(length_fields * std::mem::size_of::<u64>()))
         .ok_or_else(|| {
             scenario_serialization_error("failure triage evidence encoded size overflow")
         })?;
     let variable_size = frames.iter().try_fold(
         failure_bytes
-            .checked_add(causal_entry_bytes)
+            .checked_add(expected_entry_bytes)
+            .and_then(|size| size.checked_add(reproduced_entry_bytes))
             .and_then(|size| size.checked_add(signature_material_bytes))
             .ok_or_else(|| {
                 scenario_serialization_error("failure triage evidence encoded size overflow")

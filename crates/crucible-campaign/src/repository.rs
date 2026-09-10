@@ -480,6 +480,55 @@ impl ObservationCandidate {
         discovered_choices: Vec<ChoiceDiscovery>,
         observation: Observation,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_structural(
+            child,
+            measurements,
+            properties,
+            coverage,
+            discovered_choices,
+            observation,
+            false,
+        )
+    }
+
+    /// Reconstructs a candidate whose observation already names produced selections.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same structural bounds as [`Self::new`], or
+    /// when the recorded selection bodies do not exactly match the observation.
+    pub fn from_recorded_parts(
+        child: ConfigurationArtifact,
+        measurements: MeasurementSet,
+        properties: PropertyVerdictSet,
+        coverage: CoverageProjection,
+        discovered_choices: Vec<ChoiceDiscovery>,
+        produced_selections: Vec<Selection>,
+        observation: Observation,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_structural(
+            child,
+            measurements,
+            properties,
+            coverage,
+            discovered_choices,
+            observation,
+            true,
+        )?
+        .attach_produced_selections(produced_selections, false)
+    }
+
+    // crucible-lint: allow rust-allow -- each authenticated observation component remains explicit at this structural boundary.
+    #[allow(clippy::too_many_arguments)]
+    fn new_structural(
+        child: ConfigurationArtifact,
+        measurements: MeasurementSet,
+        properties: PropertyVerdictSet,
+        coverage: CoverageProjection,
+        discovered_choices: Vec<ChoiceDiscovery>,
+        observation: Observation,
+        allow_recorded_selection_ids: bool,
+    ) -> Result<Self, CampaignCodecError> {
         if discovered_choices.len() > MAX_OBSERVATION_CHOICE_DISCOVERIES {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "observation candidate has too many discovered choices",
@@ -551,7 +600,7 @@ impl ObservationCandidate {
                 reason: "observation candidate choice bodies differ from observation IDs",
             });
         }
-        if !observation.produced_selections().is_empty() {
+        if !allow_recorded_selection_ids && !observation.produced_selections().is_empty() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "observation candidate must carry produced selection bodies",
             });
@@ -577,8 +626,16 @@ impl ObservationCandidate {
     /// discovered opportunity and domain, for invalid provenance, or for
     /// choice material beyond the observation count or aggregate-byte bound.
     pub fn with_produced_selections(
+        self,
+        selections: Vec<Selection>,
+    ) -> Result<Self, CampaignCodecError> {
+        self.attach_produced_selections(selections, true)
+    }
+
+    fn attach_produced_selections(
         mut self,
         selections: Vec<Selection>,
+        attach_to_observation: bool,
     ) -> Result<Self, CampaignCodecError> {
         if !self.produced_selections.is_empty() {
             return Err(CampaignCodecError::InvalidValue {
@@ -638,7 +695,13 @@ impl ObservationCandidate {
                 });
             }
         }
-        self.observation = self.observation.with_produced_selections(selection_ids)?;
+        if attach_to_observation {
+            self.observation = self.observation.with_produced_selections(selection_ids)?;
+        } else if self.observation.produced_selections() != &selection_ids {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "produced selection bodies differ from observation IDs",
+            });
+        }
         self.produced_selections = selections;
         Ok(self)
     }
@@ -845,6 +908,92 @@ impl CampaignExecutorStore {
         ids: &[SelectionId],
     ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
         self.repository.resolve_selections(ids)
+    }
+
+    /// Resolves selections against stored records and one unpublished observation candidate.
+    ///
+    /// An executor may need to replay a configuration produced by its current
+    /// execution before that observation has entered the repository. Selections
+    /// carried by `owned` are authenticated by [`ObservationCandidate`]'s
+    /// constructor; every other selection is resolved through the repository.
+    /// The result preserves the order and cardinality of `ids`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an owned selection cannot be identified, its
+    /// discovery closure is inconsistent, or a remaining selection cannot be
+    /// authenticated by the repository.
+    pub fn resolve_selections_with_owned_candidate(
+        &self,
+        ids: &[SelectionId],
+        owned: &ObservationCandidate,
+    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
+        let owned_discoveries = owned
+            .discovered_choices
+            .iter()
+            .map(|discovery| {
+                discovery
+                    .opportunity
+                    .id()
+                    .map(|id| (id, discovery))
+                    .map_err(CampaignRepositoryError::from)
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let owned_selections = owned
+            .produced_selections
+            .iter()
+            .map(|selection| {
+                selection
+                    .id()
+                    .map(|id| (id, selection))
+                    .map_err(CampaignRepositoryError::from)
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+        let stored_ids = ids
+            .iter()
+            .filter(|id| !owned_selections.contains_key(id))
+            .copied()
+            .collect::<Vec<_>>();
+        let stored = self
+            .repository
+            .resolve_selections(&stored_ids)?
+            .into_iter()
+            .map(|selection| {
+                selection
+                    .selection()
+                    .id()
+                    .map(|id| (id, selection))
+                    .map_err(CampaignRepositoryError::from)
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+        ids.iter()
+            .map(|id| {
+                if let Some(selection) = owned_selections.get(id) {
+                    let discovery = owned_discoveries.get(&selection.opportunity()).ok_or(
+                        CampaignRepositoryError::Integrity {
+                            reason: "owned-candidate-selection-opportunity-missing",
+                        },
+                    )?;
+                    selection
+                        .validate_resolved_references(&discovery.opportunity, &discovery.domain)?;
+                    Ok(ResolvedSelection {
+                        selection: (*selection).clone(),
+                        opportunity: Arc::new(discovery.opportunity.clone()),
+                        declaration: Arc::clone(&discovery.declaration),
+                        domain: Arc::clone(&discovery.domain),
+                    })
+                } else {
+                    stored
+                        .get(id)
+                        .cloned()
+                        .ok_or(CampaignRepositoryError::Integrity {
+                            reason: "owned-candidate-selection-resolution-inexact",
+                        })
+                }
+            })
+            .collect()
     }
 
     /// Resolves a bounded batch within a caller-supplied canonical byte limit.

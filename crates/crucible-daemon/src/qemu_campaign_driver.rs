@@ -15,11 +15,14 @@ use std::sync::{Arc, Mutex};
 
 use crucible::model::MeasurementTerminalState;
 use crucible::{
-    AssertionPhase, Configuration, ContentHash, Decision, EventLogCoverageObservation,
-    HostAssertionOutcomeKind, ObservableEventPayload, OfflineAssertionCheckError,
-    OfflineAssertionChecker, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
-    SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulerOperationalFailureClass, SchedulerQuiescence, SelectionDecision, VirtualTime, step,
+    AssertionPhase, Configuration, ContentHash, Decision, EngineError, EventLogCoverageObservation,
+    FailureClusterReportDivergence, FailureClusterReportFailure, FailurePropertyViolationRecord,
+    FailureTimeoutBudgetKind, FailureTimeoutRecord, HostAssertionOutcomeKind,
+    ObservableEventPayload, OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome,
+    QuantumRequest, QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerOperationalFailureClass, SchedulerQuiescence,
+    SelectionDecision, VirtualTime, compare_event_log_determinism,
+    coverage_fingerprint_from_event_log, step,
 };
 use crucible_campaign::{
     AssertionViolationWitness, AttemptStartMode, CampaignCodecError, CampaignHash, ChoiceDiscovery,
@@ -97,6 +100,9 @@ pub enum QemuFreshModeledDriverError {
     /// A bound supplemental property oracle could not evaluate the child configuration.
     #[error("fresh campaign supplemental property evaluation failed: {0}")]
     SupplementalFinding(#[source] GuardedCampaignFindingOracleError),
+    /// Full-signature triage evidence could not be reconstructed from the replay.
+    #[error("fresh campaign triage replay evidence failed: {0}")]
+    Triage(#[source] Box<EngineError>),
     /// A guest measurement or semantic-marker message violated the scenario contract.
     #[error("fresh campaign guest measurement protocol failed at sequence {sequence}: {reason}")]
     GuestMeasurementProtocol {
@@ -253,6 +259,7 @@ pub struct QemuFreshPendingObservation {
     discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
     terminal_quiescence: Option<SchedulerQuiescence>,
     terminal_at: VirtualTime,
+    completed_quanta: u64,
     attempt_event_count: usize,
 }
 
@@ -265,11 +272,121 @@ pub(crate) struct QemuFindingCandidateBoundaryEvidence {
     property_verdicts: PropertyVerdictSet,
     measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
     final_events: Vec<SchedulerEventLogEntry>,
+    triage: QemuFindingCandidateTriageInputs,
+    paired_reproduced_coverage: Option<CoverageProjection>,
+}
+
+/// Replay-owned failure inputs awaiting an exact reproduction binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QemuFindingCandidateTriageInputs {
+    failures: Vec<FailureClusterReportFailure>,
+    causal_entries: Vec<SchedulerEventLogEntry>,
+    coverage_fingerprint: ContentHash,
+    recorded_event_frames: Vec<Vec<u8>>,
+    paired_divergence_logs: Option<(Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>)>,
+}
+
+impl QemuFindingCandidateTriageInputs {
+    /// Consumes the raw inputs retained from one private QEMU execution.
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<FailureClusterReportFailure>,
+        Vec<SchedulerEventLogEntry>,
+        ContentHash,
+        Vec<Vec<u8>>,
+        Option<(Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>)>,
+    ) {
+        (
+            self.failures,
+            self.causal_entries,
+            self.coverage_fingerprint,
+            self.recorded_event_frames,
+            self.paired_divergence_logs,
+        )
+    }
+
+    /// Builds divergence inputs from two independently retained causal logs.
+    ///
+    /// Returns `None` when the logs have the same causal projection or contain
+    /// no side-specific first-difference coordinate.
+    pub(crate) fn from_replay_determinism_mismatch(
+        expected: &Self,
+        reproduced: &Self,
+    ) -> Option<(Self, bool)> {
+        let comparison =
+            compare_event_log_determinism(&expected.causal_entries, &reproduced.causal_entries);
+        let mismatch = comparison.mismatch()?;
+        let point = mismatch.first_location()?;
+        let selected = if mismatch.expected_location.is_some() {
+            expected
+        } else {
+            reproduced
+        };
+        let divergence = FailureClusterReportDivergence::from_bisected_first_diff(
+            point,
+            divergence_entry_summary(mismatch.expected_entry.as_ref()),
+            divergence_entry_summary(mismatch.reproduced_entry.as_ref()),
+        );
+
+        Some((
+            Self {
+                failures: vec![FailureClusterReportFailure::divergence(divergence)],
+                causal_entries: selected.causal_entries.clone(),
+                coverage_fingerprint: selected.coverage_fingerprint,
+                recorded_event_frames: selected.recorded_event_frames.clone(),
+                paired_divergence_logs: Some((
+                    expected.causal_entries.clone(),
+                    reproduced.causal_entries.clone(),
+                )),
+            },
+            std::ptr::eq(selected, expected),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replay_for_test(
+        causal_entries: Vec<SchedulerEventLogEntry>,
+        coverage_fingerprint: ContentHash,
+        recorded_event_frames: Vec<Vec<u8>>,
+    ) -> Self {
+        Self {
+            failures: Vec::new(),
+            causal_entries,
+            coverage_fingerprint,
+            recorded_event_frames,
+            paired_divergence_logs: None,
+        }
+    }
+}
+
+fn divergence_entry_summary(entry: Option<&SchedulerEventLogEntry>) -> String {
+    entry.map_or_else(
+        || String::from("entry=absent"),
+        |entry| {
+            format!(
+                "entry.content_hash={};entry.sequence={};entry.kind={}",
+                entry.content_hash().to_hex(),
+                entry.sequence(),
+                entry.event_payload().kind(),
+            )
+        },
+    )
 }
 
 // crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
 #[cfg_attr(not(test), allow(dead_code))]
 impl QemuFindingCandidateBoundaryEvidence {
+    /// Returns whether this replay observed a property failure or timeout.
+    pub(crate) fn has_higher_priority_failure_source(&self) -> bool {
+        self.triage.failures.iter().any(|failure| {
+            matches!(
+                failure,
+                FailureClusterReportFailure::Property(_) | FailureClusterReportFailure::Timeout(_)
+            )
+        })
+    }
+
     pub(crate) const fn replay(&self) -> &CrucibleFindingReplayEvidence {
         &self.replay
     }
@@ -292,12 +409,42 @@ impl QemuFindingCandidateBoundaryEvidence {
         CrucibleFindingReplayEvidence,
         Vec<CrucibleMeasurementReplayEvidence>,
         Vec<SchedulerEventLogEntry>,
+        QemuFindingCandidateTriageInputs,
     ) {
         (
             self.replay,
             self.measurement_replay_evidence,
             self.final_events,
+            self.triage,
         )
+    }
+
+    /// Returns the second replay's coverage after a paired comparison.
+    pub(crate) const fn paired_reproduced_coverage(&self) -> Option<&CoverageProjection> {
+        self.paired_reproduced_coverage.as_ref()
+    }
+
+    /// Replaces ordinary failure inputs when the same candidate replay diverged.
+    pub(crate) fn compare_against_expected_replay(mut self, expected: &Self) -> Self {
+        if !self.triage.failures.is_empty() {
+            return self;
+        }
+        let reproduced_coverage = self.replay.coverage().clone();
+        if let Some((divergence, selected_expected)) =
+            QemuFindingCandidateTriageInputs::from_replay_determinism_mismatch(
+                &expected.triage,
+                &self.triage,
+            )
+        {
+            if selected_expected {
+                self.replay = expected.replay.clone();
+                self.measurement_replay_evidence = expected.measurement_replay_evidence.clone();
+                self.final_events = expected.final_events.clone();
+            }
+            self.triage = divergence;
+            self.paired_reproduced_coverage = Some(reproduced_coverage);
+        }
+        self
     }
 }
 
@@ -973,8 +1120,15 @@ pub(crate) fn finding_candidate_boundary_pending(
     configuration: Configuration,
     materialization: QemuFreshStartMaterialization,
 ) -> Result<QemuFreshPendingObservation, QemuFreshModeledDriverError> {
-    let (event_log, event_log_bytes, _, terminal_at, terminal_quiescence, _, replayed_discoveries) =
-        materialization.into_candidate_parts();
+    let (
+        event_log,
+        event_log_bytes,
+        completed_quanta,
+        terminal_at,
+        terminal_quiescence,
+        _,
+        replayed_discoveries,
+    ) = materialization.into_candidate_parts();
     let discoveries = RetainedChoiceDiscoveries::from_replayed(replayed_discoveries)?;
     Ok(QemuFreshPendingObservation {
         input: input.clone(),
@@ -985,6 +1139,7 @@ pub(crate) fn finding_candidate_boundary_pending(
         discoveries: discoveries.discoveries,
         terminal_quiescence,
         terminal_at,
+        completed_quanta,
         attempt_event_count: 0,
     })
 }
@@ -1063,6 +1218,7 @@ fn drive_modeled_attempt_inner(
                 discoveries: discoveries.discoveries,
                 terminal_quiescence,
                 terminal_at,
+                completed_quanta,
                 attempt_event_count: observed_event_count,
             },
         );
@@ -1083,6 +1239,7 @@ fn drive_modeled_attempt_inner(
                 discoveries: discoveries.discoveries,
                 terminal_quiescence,
                 terminal_at,
+                completed_quanta,
                 attempt_event_count: observed_event_count,
             },
         );
@@ -1111,6 +1268,7 @@ fn drive_modeled_attempt_inner(
                 discoveries: discoveries.discoveries,
                 terminal_quiescence,
                 terminal_at,
+                completed_quanta,
                 attempt_event_count: observed_event_count,
             },
         );
@@ -1152,6 +1310,7 @@ fn drive_modeled_attempt_inner(
                 discoveries: discoveries.discoveries,
                 terminal_quiescence,
                 terminal_at,
+                completed_quanta,
                 attempt_event_count: observed_event_count,
             },
         );
@@ -1172,6 +1331,7 @@ fn drive_modeled_attempt_inner(
                 discoveries: discoveries.discoveries,
                 terminal_quiescence,
                 terminal_at,
+                completed_quanta,
                 attempt_event_count: observed_event_count,
             },
         );
@@ -1199,6 +1359,7 @@ fn drive_modeled_attempt_inner(
                 discoveries: discoveries.discoveries,
                 terminal_quiescence,
                 terminal_at,
+                completed_quanta,
                 attempt_event_count: observed_event_count,
             },
         );
@@ -1288,6 +1449,7 @@ fn drive_modeled_attempt_inner(
                     discoveries: discoveries.discoveries,
                     terminal_quiescence,
                     terminal_at,
+                    completed_quanta,
                     attempt_event_count,
                 },
             );
@@ -1370,6 +1532,7 @@ fn drive_modeled_attempt_inner(
                         discoveries: discoveries.discoveries,
                         terminal_quiescence,
                         terminal_at,
+                        completed_quanta,
                         attempt_event_count: observed_event_count,
                     },
                 );
@@ -1405,6 +1568,7 @@ fn drive_modeled_attempt_inner(
                 discoveries: discoveries.discoveries,
                 terminal_quiescence,
                 terminal_at,
+                completed_quanta,
                 attempt_event_count: observed_event_count,
             },
         );
@@ -2096,6 +2260,7 @@ struct QemuBoundaryProjection {
     measurement_evidence: CrucibleMeasurementReplayEvidence,
     measurements: crucible_campaign::MeasurementSet,
     properties: PropertyVerdictSet,
+    failures: Vec<FailureClusterReportFailure>,
     coverage: CoverageProjection,
     discovered_choices: Vec<ChoiceDiscovery>,
     discovered_ids: BTreeSet<ChoiceOpportunityId>,
@@ -2104,7 +2269,7 @@ struct QemuBoundaryProjection {
 }
 
 fn project_boundary(
-    pending: QemuFreshPendingObservation,
+    mut pending: QemuFreshPendingObservation,
     project_stop: bool,
     supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
 ) -> Result<QemuBoundaryProjection, QemuFreshModeledDriverError> {
@@ -2126,6 +2291,7 @@ fn project_boundary(
         });
     }
 
+    let timeout = retain_execution_quanta_timeout(&mut pending)?;
     let mut checker = OfflineAssertionChecker::new()
         .with_world_white_box_policies(pending.input.scenario().world());
     if let Some(quiescence) = pending.terminal_quiescence.clone() {
@@ -2150,6 +2316,16 @@ fn project_boundary(
         return Err(QemuFreshModeledDriverError::ScenarioMismatch);
     }
     let properties = property_verdicts(&report, supplemental.as_ref())?;
+    let mut failures: Vec<_> = report
+        .violations()
+        .iter()
+        .cloned()
+        .map(FailurePropertyViolationRecord::new)
+        .map(FailureClusterReportFailure::property)
+        .collect();
+    if let Some(timeout) = timeout {
+        failures.push(FailureClusterReportFailure::timeout(timeout));
+    }
 
     let scenario_artifact = encode_crucible_scenario_artifact(pending.input.scenario())?;
     if scenario_artifact.id()? != pending.input.lineage().scenario_content()
@@ -2198,12 +2374,118 @@ fn project_boundary(
         measurement_evidence,
         measurements,
         properties,
+        failures,
         coverage,
         discovered_choices,
         discovered_ids,
         produced_selections,
         stop,
     })
+}
+
+fn retain_execution_quanta_timeout(
+    pending: &mut QemuFreshPendingObservation,
+) -> Result<Option<FailureTimeoutRecord>, QemuFreshModeledDriverError> {
+    let Some(configured_limit) = execution_quanta_timeout_limit(pending) else {
+        return Ok(None);
+    };
+    if pending.completed_quanta < configured_limit {
+        return Ok(None);
+    }
+
+    let retained_marker = pending.event_log.iter().rev().find(|entry| {
+        entry.event_payload().kind() == "execution_budget_exhausted"
+            && entry.event_payload().string("budget_kind") == Some("execution-quanta")
+    });
+    let marker = if let Some(marker) = retained_marker {
+        marker.clone()
+    } else {
+        let sequence = pending
+            .event_log
+            .last()
+            .map_or(Some(0), |entry| entry.sequence().checked_add(1))
+            .ok_or(QemuFreshModeledDriverError::LimitExceeded {
+                limit: "fresh-campaign-event-log-sequence",
+            })?;
+        let boundary = pending
+            .event_log
+            .last()
+            .map_or(pending.terminal_at, |entry| {
+                pending.terminal_at.max(entry.at())
+            });
+        let marker = SchedulerEventLogEntry::execution_budget_exhausted(
+            sequence,
+            boundary,
+            "execution-quanta",
+        );
+        append_event_entries(
+            &mut pending.event_log,
+            &mut pending.event_log_bytes,
+            vec![marker.clone()],
+        )?;
+        marker
+    };
+
+    Ok(Some(FailureTimeoutRecord::new(
+        FailureTimeoutBudgetKind::ExecutionQuanta,
+        Some(configured_limit),
+        pending.completed_quanta,
+        marker.at(),
+        marker
+            .time()
+            .icount
+            .node
+            .as_ref()
+            .map(|_| marker.time().icount.icount),
+        marker.time().icount.node.clone(),
+        ContentHash::default(),
+    )))
+}
+
+fn execution_quanta_timeout_limit(pending: &QemuFreshPendingObservation) -> Option<u64> {
+    if let ModeledStop::ObservationReached { proof, .. } = &pending.stop {
+        if proof.satisfaction() != ObservationStopSatisfaction::ExecutionQuanta {
+            return None;
+        }
+        return match proof.condition() {
+            ObservationCondition::SchedulerQuiescentOrExecutionQuanta { execution_quanta } => {
+                Some(*execution_quanta)
+            }
+            ObservationCondition::SchedulerQuiescent
+            | ObservationCondition::AssertionViolationTransition(_)
+            | ObservationCondition::AnyAssertionViolationTransition => None,
+        };
+    }
+
+    let stop = match &pending.stop {
+        ModeledStop::ReplayBoundary => pending.input.attempt().stop(),
+        ModeledStop::Reached(stop) => stop,
+        ModeledStop::ObservationReached { .. }
+        | ModeledStop::ModeledTimeout(_)
+        | ModeledStop::TerminalPassed
+        | ModeledStop::TerminalFailed(_) => return None,
+    };
+    configured_execution_quanta_limit(stop)
+}
+
+fn configured_execution_quanta_limit(stop: &StopCondition) -> Option<u64> {
+    match stop {
+        StopCondition::ExecutionQuanta(limit) => Some(*limit),
+        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => {
+            Some(*execution_quanta)
+        }
+        StopCondition::VirtualTimeOrExecutionQuanta {
+            execution_quanta, ..
+        } => Some(*execution_quanta),
+        StopCondition::Observation(ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
+            execution_quanta,
+        }) => Some(*execution_quanta),
+        StopCondition::NextChoice | StopCondition::NamedBoundary(_)
+        | StopCondition::VirtualTimeNanoseconds(_)
+        | StopCondition::EventCount(_)
+        | StopCondition::Terminal
+        | StopCondition::Observation(_) => None,
+    }
 }
 
 // crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
@@ -2235,11 +2517,23 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
         projection.discovered_choices,
         projection.produced_selections,
     )?;
+    let causal_entries = projection.measurement_evidence.entries().to_vec();
+    let coverage_fingerprint = coverage_fingerprint_from_event_log(&causal_entries);
     Ok(QemuFindingCandidateBoundaryEvidence {
         replay,
         property_verdicts: projection.properties,
         measurement_replay_evidence: vec![projection.measurement_evidence],
         final_events,
+        triage: QemuFindingCandidateTriageInputs {
+            failures: projection.failures,
+            causal_entries,
+            coverage_fingerprint,
+            // Native QEMU execution has no transport-frame source. Raw frames
+            // remain empty rather than synthesizing them from scheduler entries.
+            recorded_event_frames: Vec::new(),
+            paired_divergence_logs: None,
+        },
+        paired_reproduced_coverage: None,
     })
 }
 

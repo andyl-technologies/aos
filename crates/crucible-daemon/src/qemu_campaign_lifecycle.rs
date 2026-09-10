@@ -441,17 +441,20 @@ pub use legacy_run::{
     GuardedCampaignBranchAcceptance, GuardedCampaignContinuationControl,
     GuardedCampaignContinuationControlError, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
+    GuardedCampaignFindingExport, GuardedCampaignFindingObjectProof,
+    GuardedCampaignFindingOccurrenceObjectProof, GuardedCampaignFindingOccurrenceProof,
     GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
     GuardedCampaignFindingOracleEvaluation, GuardedCampaignFindingOracleSource,
-    GuardedCampaignFindingOracleSourceLoadError, GuardedCampaignReplayClosure,
+    GuardedCampaignFindingOracleSourceLoadError, GuardedCampaignFindingProof,
+    GuardedCampaignFindingQueryProof, GuardedCampaignReplayClosure,
     GuardedCampaignReplayClosureError, GuardedCampaignSupplementalFinding,
     GuardedCampaignTimeoutEvidence, GuardedDefaultCampaignInvariantError,
-    GuardedDefaultCampaignObservation, GuardedDefaultCampaignObservationSource,
-    GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignResumeProof,
-    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
-    GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignSupervisorError,
-    GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
-    validate_remote_resume_replay_closure,
+    GuardedDefaultCampaignObservation,
+    GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignProductionRunnerError,
+    GuardedDefaultCampaignResumeProof, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError,
+    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
+    GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
+    run_guarded_default_campaign, validate_remote_resume_replay_closure,
 };
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
@@ -780,6 +783,7 @@ where
         &mut self,
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
+        expected_replay: Option<&crate::qemu_campaign_driver::QemuFindingCandidateBoundaryEvidence>,
         context: &AttemptExecutionContext,
     ) -> Result<
         QemuFindingCandidateReplayOutcome,
@@ -903,6 +907,10 @@ where
         )
         .map_err(AttemptWorkerFailure::Terminal)
         .map_err(map_fresh_driver_failure)?;
+        let evidence = match expected_replay {
+            Some(expected) => evidence.compare_against_expected_replay(expected),
+            None => evidence,
+        };
         Ok(QemuFindingCandidateReplayOutcome::Observed(Box::new(
             evidence,
         )))

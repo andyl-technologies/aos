@@ -45,7 +45,8 @@ use crate::{
     QemuAttemptResourceGuardFactory, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
     QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome, QemuFreshExecutionRunnerError,
     QemuHotForkAttemptReconciliation, QemuHotForkReconciliationStep, QemuHotForkWorldAssembly,
-    QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner, QemuProductionHotForkWorldLifecycle,
+    QemuHotForkWorldAuxiliaryResourceBroker, QemuHotForkWorldNodeTarget,
+    QemuHotForkWorldResourceOwner, QemuProductionHotForkWorldLifecycle,
 };
 
 /// Exact semantic and executor basis of one retained source world.
@@ -529,15 +530,24 @@ where
 }
 
 /// Concrete source-world and target-resource lifecycle factory.
-pub struct QemuProductionHotForkWorldLifecycleFactory<S, R> {
+pub struct QemuProductionHotForkWorldLifecycleFactory<S, R>
+where
+    R: QemuAttemptResourceGuardFactory,
+    R::Guard: QemuAttemptProcessResourceGuard,
+{
     sources: S,
     resources: R,
+    auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<R::Guard>>,
     run_state_root: PathBuf,
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
 }
 
-impl<S, R> QemuProductionHotForkWorldLifecycleFactory<S, R> {
+impl<S, R> QemuProductionHotForkWorldLifecycleFactory<S, R>
+where
+    R: QemuAttemptResourceGuardFactory,
+    R::Guard: QemuAttemptProcessResourceGuard,
+{
     /// Creates a production whole-world factory from its linear authorities.
     #[must_use]
     pub fn new(
@@ -550,6 +560,7 @@ impl<S, R> QemuProductionHotForkWorldLifecycleFactory<S, R> {
         Self {
             sources,
             resources,
+            auxiliary_resources: None,
             run_state_root: run_state_root.into(),
             shutdown_policy,
             async_policy,
@@ -560,6 +571,16 @@ impl<S, R> QemuProductionHotForkWorldLifecycleFactory<S, R> {
     #[must_use]
     pub const fn sources(&self) -> &S {
         &self.sources
+    }
+
+    /// Binds private post-shutdown lifecycles to the retained aggregate guard.
+    #[must_use]
+    pub fn with_auxiliary_resources(
+        mut self,
+        auxiliary_resources: QemuHotForkWorldAuxiliaryResourceBroker<R::Guard>,
+    ) -> Self {
+        self.auxiliary_resources = Some(auxiliary_resources);
+        self
     }
 }
 
@@ -950,6 +971,7 @@ where
             runtime_basis,
             self.run_state_root.clone(),
             resources,
+            self.auxiliary_resources.clone(),
         ) {
             Ok(lifecycle) => lifecycle,
             Err(error) => {
