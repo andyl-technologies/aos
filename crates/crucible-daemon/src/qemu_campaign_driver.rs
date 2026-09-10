@@ -23,9 +23,9 @@ use crucible::{
 };
 use crucible_campaign::{
     AssertionViolationWitness, AttemptStartMode, CampaignCodecError, CampaignHash, ChoiceDiscovery,
-    ChoiceDomainId, ChoiceOpportunityId, ConfigurationId, CoverageProjection,
-    MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, Observation,
-    ObservationCandidate, ObservationCondition, ObservationEventLogProof,
+    ChoiceDomainId, ChoiceOpportunityId, ConfigurationArtifact, ConfigurationId,
+    CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
+    Observation, ObservationCandidate, ObservationCondition, ObservationEventLogProof,
     ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
     PropertyEvidence, PropertyVerdict, PropertyVerdictSet, SelectableId, Selection,
     SelectionOrigin, StopCondition, StopOutcome,
@@ -43,7 +43,8 @@ use crate::guest_selectable::{
 };
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
-    CrucibleAttemptExecution, CrucibleMeasurementError, CrucibleObservationBoundaryEvidence,
+    CrucibleAttemptExecution, CrucibleFindingReplayEvidence, CrucibleMeasurementError,
+    CrucibleMeasurementReplayEvidence, CrucibleObservationBoundaryEvidence,
     PreparedSemanticAttemptResult, PreparedSemanticResultCodecError, QemuFreshAttemptDriver,
     QemuFreshAttemptLifecycle, QemuFreshDriveOutcome, QemuFreshStartMaterialization,
     encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
@@ -231,6 +232,51 @@ pub struct QemuFreshPendingObservation {
     terminal_quiescence: Option<SchedulerQuiescence>,
     terminal_at: VirtualTime,
     attempt_event_count: usize,
+}
+
+/// Private evidence evaluated at one exact finding-candidate boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct QemuFindingCandidateBoundaryEvidence {
+    replay: CrucibleFindingReplayEvidence,
+    property_verdicts: PropertyVerdictSet,
+    measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+    final_events: Vec<SchedulerEventLogEntry>,
+}
+
+// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
+#[cfg_attr(not(test), allow(dead_code))]
+impl QemuFindingCandidateBoundaryEvidence {
+    pub(crate) const fn replay(&self) -> &CrucibleFindingReplayEvidence {
+        &self.replay
+    }
+
+    pub(crate) fn measurement_replay_evidence(&self) -> &[CrucibleMeasurementReplayEvidence] {
+        &self.measurement_replay_evidence
+    }
+
+    pub(crate) const fn property_verdicts(&self) -> &PropertyVerdictSet {
+        &self.property_verdicts
+    }
+
+    pub(crate) fn final_events(&self) -> &[SchedulerEventLogEntry] {
+        &self.final_events
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        CrucibleFindingReplayEvidence,
+        Vec<CrucibleMeasurementReplayEvidence>,
+        Vec<SchedulerEventLogEntry>,
+    ) {
+        (
+            self.replay,
+            self.measurement_replay_evidence,
+            self.final_events,
+        )
+    }
 }
 
 impl QemuFreshPendingObservation {
@@ -858,6 +904,30 @@ pub(crate) fn drive_modeled_attempt(
     AttemptWorkerFailure<QemuFreshModeledDriverError>,
 > {
     drive_modeled_attempt_inner(lifecycle, input, context, materialization, None)
+}
+
+/// Seals the exact materialized start as a private replay boundary.
+// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn finding_candidate_boundary_pending(
+    input: &CrucibleAttemptExecution,
+    configuration: Configuration,
+    materialization: QemuFreshStartMaterialization,
+) -> Result<QemuFreshPendingObservation, QemuFreshModeledDriverError> {
+    let (event_log, event_log_bytes, _, terminal_at, terminal_quiescence, _, replayed_discoveries) =
+        materialization.into_candidate_parts();
+    let discoveries = RetainedChoiceDiscoveries::from_replayed(replayed_discoveries)?;
+    Ok(QemuFreshPendingObservation {
+        input: input.clone(),
+        configuration,
+        stop: ModeledStop::ReplayBoundary,
+        event_log,
+        event_log_bytes,
+        discoveries: discoveries.discoveries,
+        terminal_quiescence,
+        terminal_at,
+        attempt_event_count: 0,
+    })
 }
 
 /// Replays one attempt to a private authenticated checkpoint boundary.
@@ -1581,6 +1651,18 @@ struct RetainedChoiceDiscoveries {
 }
 
 impl RetainedChoiceDiscoveries {
+    // crucible-lint: allow rust-allow -- consumed only by private finding-candidate replay.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn from_replayed(
+        replayed: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
+    ) -> Result<Self, QemuFreshModeledDriverError> {
+        let mut discoveries = Self::default();
+        for discovery in replayed.into_values() {
+            discoveries.insert(discovery)?;
+        }
+        Ok(discoveries)
+    }
+
     fn insert(
         &mut self,
         mut discovery: ChoiceDiscovery,
@@ -1890,6 +1972,54 @@ fn initial_requested_stop_reached(
 fn build_observation_candidate(
     pending: QemuFreshPendingObservation,
 ) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
+    let projection = project_boundary(pending, true)?;
+    let observation = Observation::new(
+        projection.input.attempt().id()?,
+        projection.child.configuration(),
+        projection.child.id()?,
+        projection.input.path().id()?,
+        projection
+            .stop
+            .ok_or(QemuFreshModeledDriverError::SelectedResumeBoundaryMismatch)?,
+        projection.measurements.id()?,
+        projection.properties.id()?,
+        projection.coverage.id()?,
+        projection.discovered_ids,
+    )?;
+    let candidate = ObservationCandidate::new(
+        projection.child,
+        projection.measurements,
+        projection.properties,
+        projection.coverage,
+        projection.discovered_choices,
+        observation,
+    )
+    .and_then(|candidate| candidate.with_produced_selections(projection.produced_selections))?;
+    let result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+        candidate,
+        vec![projection.measurement_evidence],
+        None,
+    )?;
+    Ok(AttemptExecutionProduct::prepared_semantic(result))
+}
+
+struct QemuBoundaryProjection {
+    input: CrucibleAttemptExecution,
+    child: ConfigurationArtifact,
+    measurement_evidence: CrucibleMeasurementReplayEvidence,
+    measurements: crucible_campaign::MeasurementSet,
+    properties: PropertyVerdictSet,
+    coverage: CoverageProjection,
+    discovered_choices: Vec<ChoiceDiscovery>,
+    discovered_ids: BTreeSet<ChoiceOpportunityId>,
+    produced_selections: Vec<Selection>,
+    stop: Option<StopOutcome>,
+}
+
+fn project_boundary(
+    pending: QemuFreshPendingObservation,
+    project_stop: bool,
+) -> Result<QemuBoundaryProjection, QemuFreshModeledDriverError> {
     let assertion_count = pending
         .input
         .scenario()
@@ -1928,7 +2058,9 @@ fn build_observation_candidate(
     )?;
     let measurement_publication = campaign_measurements(&pending, child.configuration())?;
     let (measurement_evidence, _, measurements) = measurement_publication.into_parts();
-    let stop = stop_outcome(pending.stop, &report)?;
+    let stop = project_stop
+        .then(|| stop_outcome(pending.stop, &report))
+        .transpose()?;
     let coverage = coverage_projection(&pending.event_log)?;
     let discovered_choices = pending.discoveries.into_values().collect::<Vec<_>>();
     let discovered_ids = discovered_choices
@@ -1949,32 +2081,55 @@ fn build_observation_candidate(
         .into_iter()
         .filter(|selection| discovered_ids.contains(&selection.opportunity()))
         .collect();
-    let observation = Observation::new(
-        pending.input.attempt().id()?,
-        child.configuration(),
-        child.id()?,
-        pending.input.path().id()?,
-        stop,
-        measurements.id()?,
-        properties.id()?,
-        coverage.id()?,
-        discovered_ids,
-    )?;
-    let candidate = ObservationCandidate::new(
+    Ok(QemuBoundaryProjection {
+        input: pending.input,
         child,
+        measurement_evidence,
         measurements,
         properties,
         coverage,
         discovered_choices,
-        observation,
-    )
-    .and_then(|candidate| candidate.with_produced_selections(produced_selections))?;
-    let result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
-        candidate,
-        vec![measurement_evidence],
-        None,
+        discovered_ids,
+        produced_selections,
+        stop,
+    })
+}
+
+// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn build_finding_candidate_boundary_evidence(
+    mut pending: QemuFreshPendingObservation,
+    candidate: &ConfigurationArtifact,
+    final_events: Vec<SchedulerEventLogEntry>,
+) -> Result<QemuFindingCandidateBoundaryEvidence, QemuFreshModeledDriverError> {
+    append_event_entries(
+        &mut pending.event_log,
+        &mut pending.event_log_bytes,
+        final_events.clone(),
     )?;
-    Ok(AttemptExecutionProduct::prepared_semantic(result))
+    let projection = project_boundary(pending, false)?;
+    if projection.child != *candidate {
+        return Err(QemuFreshModeledDriverError::Artifact(
+            CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "finding replay candidate configuration",
+            },
+        ));
+    }
+    let replay = CrucibleFindingReplayEvidence::new(
+        None,
+        projection.child,
+        projection.measurements,
+        projection.properties.clone(),
+        projection.coverage,
+        projection.discovered_choices,
+        projection.produced_selections,
+    )?;
+    Ok(QemuFindingCandidateBoundaryEvidence {
+        replay,
+        property_verdicts: projection.properties,
+        measurement_replay_evidence: vec![projection.measurement_evidence],
+        final_events,
+    })
 }
 
 fn campaign_measurements(
