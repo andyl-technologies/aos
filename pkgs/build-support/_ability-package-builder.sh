@@ -57,7 +57,13 @@ declare -A canonicalNarHashes
 while IFS= read -r spec; do
   graph_name=$(jq -r .name <<<"$spec")
   root_path=$(jq -r .path <<<"$spec")
-  jq -c --arg name "$graph_name" '.[$name][]' "$NIX_ATTRS_JSON_FILE" > work/graph.jsonl
+  jq -c --arg name "$graph_name" '.[$name][]' "$NIX_ATTRS_JSON_FILE" > work/exported-graph.jsonl
+  jq -s . work/exported-graph.jsonl > work/exported-graph.json
+
+  # exportReferencesGraph can add realized input outputs for a .drv root even
+  # though they are not reachable through the root's reference edges.
+  jq -c --arg root "$root_path" -f "$ABILITY_CLOSURE_GRAPH_JQ" \
+    work/exported-graph.json > work/graph.jsonl
 
   mapfile -t graphNarHashes < <(jq -r '.[].narHash' < <(jq -s . work/graph.jsonl))
   mapfile -t graphNarHex < <(
@@ -79,6 +85,8 @@ while IFS= read -r spec; do
     references='[]'
     while IFS= read -r reference; do
       [[ -n $reference ]] || continue
+      # Registry reference lists omit a member's own edge while retaining the member.
+      [[ $reference != "$member_path" ]] || continue
       reference_hash=$(store_hash "$reference")
       references=$(jq -c --arg value "$reference_hash" '. + [$value] | sort | unique' <<<"$references")
     done < <(jq -r '.references[]' <<<"$member")

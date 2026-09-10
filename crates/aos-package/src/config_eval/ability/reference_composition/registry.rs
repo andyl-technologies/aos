@@ -160,7 +160,7 @@ fn package_meta(
         store_path: companion_path.to_string(),
         nar_hash: canonical_nar_hash(&companion_info.nar_hash)?,
         nar_size: companion_info.nar_size,
-        references: reference_hashes(&companion_info.references)?,
+        references: reference_hashes(companion_path, &companion_info.references)?,
         manifest_sha256: Sha256Digest::of_bytes(manifest).to_string(),
         manifest_size: manifest.len() as u64,
         package_digest: package.content_digest()?.to_string(),
@@ -180,7 +180,10 @@ fn package_meta(
         store_path: package.package.payload.store_path.clone(),
         nar_hash: canonical_nar_hash(&payload_info.nar_hash)?,
         nar_size: payload_info.nar_size,
-        references: reference_hashes(&payload_info.references)?,
+        references: reference_hashes(
+            &package.package.payload.store_path,
+            &payload_info.references,
+        )?,
         source_drv: String::new(),
         source_nar_hash: String::new(),
         closure_size: payload_info.nar_size,
@@ -251,11 +254,13 @@ fn artifact_retention(
     let mut closure = closure_info
         .into_iter()
         .map(|(store_path, info)| {
+            let references = reference_hashes(&store_path, &info.references)?;
+
             Ok(AbilityClosureMemberMeta {
                 store_path,
                 nar_hash: canonical_nar_hash(&info.nar_hash)?,
                 nar_size: info.nar_size,
-                references: reference_hashes(&info.references)?,
+                references,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -314,9 +319,11 @@ fn path_info(nix: &Path, store_path: &str, recursive: bool) -> Result<BTreeMap<S
         .with_context(|| format!("decoding Nix path info for {store_path}"))
 }
 
-fn reference_hashes(references: &[String]) -> Result<Vec<String>> {
+fn reference_hashes(store_path: &str, references: &[String]) -> Result<Vec<String>> {
+    // Authenticated registry references omit a store object's edge to itself.
     let mut hashes = references
         .iter()
+        .filter(|reference| reference.as_str() != store_path)
         .map(|reference| {
             let base = Path::new(reference)
                 .file_name()
