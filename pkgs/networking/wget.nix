@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  patch,
   buildPackages,
   gnumake,
   gettext,
@@ -80,7 +81,7 @@ in
       hash = "sha256-GSJcx1awoIj8gRSNxqQKDI8ymvf9hIPxx7L+UPTgih8=";
     };
 
-    buildDeps = [gnumake gettext pkg-config perl lzip glib.dev buildPackages.glibc-locales] ++ perlTestDeps;
+    buildDeps = [patch gnumake gettext pkg-config perl lzip glib.dev buildPackages.glibc-locales] ++ perlTestDeps;
     runtimeDeps = [
       c-ares
       gpgme
@@ -108,6 +109,7 @@ in
           patch -p1 < ${cve58470}
           patch -p1 < ${cve58469}
           patch -p1 < ${cve58472}
+          patch -p1 < ${./wget-openssl4.patch}
 
           # The Metalink sanitizer added by the security backport uses the
           # standard character classification API explicitly.
