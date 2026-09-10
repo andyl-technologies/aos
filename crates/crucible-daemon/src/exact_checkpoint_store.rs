@@ -60,6 +60,12 @@ use crate::ExecutionCancellation;
 
 const CHECKPOINT_CANCELLATION_READ_CHUNK_BYTES: usize = 1024 * 1024;
 
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const EXACT_CAPTURE_ENOSPC_TRIGGER: &str = "crucible.destructive-recovery.exact-capture-enospc";
+
 /// Canonical schema name of the child-bearing exact-checkpoint root.
 pub const EXACT_CHECKPOINT_ROOT_SCHEMA: &str = "crucible.executor.exact-checkpoint-root";
 /// Content-ID and envelope version of the complete production exact-checkpoint root.
@@ -1079,6 +1085,8 @@ impl ExactCheckpointStore {
                 scheduler_source.logical_length(),
             )?;
         }
+        #[cfg(feature = "destructive-recovery-faults")]
+        inject_exact_capture_enospc()?;
         require_durable_receipt(
             self.backend
                 .put_if_absent(prepared.vmstate_id, &prepared.vmstate_source)
@@ -1221,6 +1229,20 @@ impl ExactCheckpointStore {
             _ => Err(invalid_root("unsupported attempt checkpoint root version")),
         }
     }
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn inject_exact_capture_enospc() -> Result<(), ExactCheckpointStoreError> {
+    let requested = std::env::var_os(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT);
+    if requested.as_deref() != Some(std::ffi::OsStr::new(EXACT_CAPTURE_ENOSPC_TRIGGER)) {
+        return Ok(());
+    }
+
+    Err(ExactCheckpointStoreError::Store(StoreError::Io {
+        operation: "fault-inject-exact-capture-enospc",
+        path: std::path::PathBuf::from("<fault-injected-exact-checkpoint-store>"),
+        source: io::Error::from_raw_os_error(rustix::io::Errno::NOSPC.raw_os_error()),
+    }))
 }
 
 /// Failure while preparing a source-bound replay-oracle replacement.
