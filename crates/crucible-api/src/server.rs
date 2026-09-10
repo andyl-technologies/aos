@@ -41,9 +41,10 @@ use crate::event_log_stream::EventLogCursor;
 use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
     GetReproductionRequest, GetReproductionResponse, LifecycleApiError, LifecycleControlPlane,
-    ListScenariosResponse, ListSessionsResponse, RESUME_REPLAY_CLOSURE_MAX_BYTES,
-    ReproductionCommandRecord, ReproductionCommandResult, ResumeReplayClosure,
-    ResumeSessionRequest, ResumeSessionResponse, SessionId, SessionRef,
+    ListScenariosResponse, ListSessionsResponse, RESUME_OBSERVATION_SOURCE_MAX_BYTES,
+    RESUME_REPLAY_CLOSURE_MAX_BYTES, ReproductionCommandRecord, ReproductionCommandResult,
+    ResumeObservationSource, ResumeReplayClosure, ResumeSessionRequest, ResumeSessionResponse,
+    SessionId, SessionRef,
 };
 use crate::open_set::{
     OpenSetAttributeValue, OpenSetEventSource, open_set_command_kind,
@@ -69,8 +70,9 @@ type SharedLifecycleControlPlane<L, F> = Arc<Mutex<LifecycleControlPlane<L, F>>>
 // fixed aggregate allowance for those existing fields and charges the replay
 // closure at its exact two-character-per-byte wire amplification.
 const RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES: usize = 512 * 1024 * 1024;
-const RESUME_SESSION_RPC_BODY_MAX_BYTES: usize =
-    RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES + RESUME_REPLAY_CLOSURE_MAX_BYTES * 2;
+const RESUME_SESSION_RPC_BODY_MAX_BYTES: usize = RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES
+    + RESUME_REPLAY_CLOSURE_MAX_BYTES * 2
+    + RESUME_OBSERVATION_SOURCE_MAX_BYTES * 2;
 
 /// Runtime policy for the HTTP/2 lifecycle server.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1310,15 +1312,87 @@ where
         Ok(resume) => resume,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let response = match state
-        .control_plane
-        .lock()
-        .await
-        .resume_session(resume)
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => return lifecycle_error_response(error),
+    let response = if resume.observation_source.is_some() {
+        let pending = match state
+            .control_plane
+            .lock()
+            .await
+            .prepare_observation_resume(resume)
+        {
+            Ok(pending) => pending,
+            Err(error) => return lifecycle_error_response(error),
+        };
+        let deadline = pending.context().deadline();
+        let cancellation = pending.context().cancellation().clone();
+        let mut cancellation_guard =
+            crate::lifecycle::ResumeObservationCancellationGuard::new(cancellation);
+        let mut preparation = tokio::task::spawn_blocking(move || pending.authenticate());
+        let mut shutdown = state.shutdown.clone();
+        let prepared = tokio::select! {
+            result = &mut preparation => match result {
+                Ok(Ok(prepared)) => prepared,
+                Ok(Err(error)) => return lifecycle_error_response(error),
+                Err(error) => {
+                    return lifecycle_error_response(LifecycleApiError::ResumeObservationSource {
+                        message: format!("portable observation preparation task failed: {error}"),
+                    });
+                }
+            },
+            () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                cancellation_guard.cancel();
+                return lifecycle_error_response(LifecycleApiError::ResumeObservationSource {
+                    message: String::from("portable observation preparation deadline elapsed"),
+                });
+            }
+            _ = async move {
+                if !*shutdown.borrow() {
+                    let _ = shutdown.changed().await;
+                }
+            } => {
+                cancellation_guard.cancel();
+                return lifecycle_error_response(LifecycleApiError::ResumeObservationSource {
+                    message: String::from("portable observation preparation canceled by daemon shutdown"),
+                });
+            }
+        };
+        let commit_deadline = prepared.context().deadline();
+        let mut commit_shutdown = state.shutdown.clone();
+        let mut control_plane = tokio::select! {
+            control_plane = state.control_plane.lock() => control_plane,
+            () = tokio::time::sleep_until(tokio::time::Instant::from_std(commit_deadline)) => {
+                cancellation_guard.cancel();
+                return lifecycle_error_response(LifecycleApiError::ResumeObservationSource {
+                    message: String::from("portable observation preparation deadline elapsed before publication"),
+                });
+            }
+            _ = async move {
+                if !*commit_shutdown.borrow() {
+                    let _ = commit_shutdown.changed().await;
+                }
+            } => {
+                cancellation_guard.cancel();
+                return lifecycle_error_response(LifecycleApiError::ResumeObservationSource {
+                    message: String::from("portable observation publication canceled by daemon shutdown"),
+                });
+            }
+        };
+        let response = match control_plane.commit_observation_resume(prepared).await {
+            Ok(response) => response,
+            Err(error) => return lifecycle_error_response(error),
+        };
+        cancellation_guard.disarm();
+        response
+    } else {
+        match state
+            .control_plane
+            .lock()
+            .await
+            .resume_session(resume)
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => return lifecycle_error_response(error),
+        }
     };
     http2_response(StatusCode::OK, encode_resume_session_response(&response))
 }
@@ -1754,16 +1828,26 @@ fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionRequest, Str
     let seed = parse_seed_line(lines.next(), "seed=")?;
     let schedule = parse_schedule_line(lines.next(), "schedule=")?;
     let checkpoint = parse_checkpoint_line(lines.next(), "checkpoint=")?;
-    let replay_closure = parse_optional_resume_replay_closure(
+    let (replay_closure, first_observation_line) = parse_optional_resume_replay_closure(
         &scenario,
         &schedule,
         &checkpoint,
         lines.next(),
         &mut lines,
     )?;
+    let observation_source = parse_optional_resume_observation_source(
+        &scenario,
+        &schedule,
+        &checkpoint,
+        first_observation_line,
+        &mut lines,
+    )?;
     let mut request = ResumeSessionRequest::new(scenario, schedule, checkpoint, seed);
     if let Some(replay_closure) = replay_closure {
         request = request.with_replay_closure(replay_closure);
+    }
+    if let Some(observation_source) = observation_source {
+        request = request.with_observation_source(observation_source);
     }
     Ok(request)
 }
@@ -1774,10 +1858,13 @@ fn parse_optional_resume_replay_closure<'a>(
     checkpoint: &Checkpoint,
     first: Option<&'a str>,
     lines: &mut impl Iterator<Item = &'a str>,
-) -> Result<Option<ResumeReplayClosure>, String> {
+) -> Result<(Option<ResumeReplayClosure>, Option<&'a str>), String> {
     let Some(first) = first else {
-        return Ok(None);
+        return Ok((None, None));
     };
+    if first.starts_with("campaign-observation-source-version=") {
+        return Ok((None, Some(first)));
+    }
     let version = parse_u64_line(Some(first), "campaign-replay-closure-version=")?;
     let version = u32::try_from(version)
         .map_err(|_| String::from("campaign replay closure version exceeds u32"))?;
@@ -1803,7 +1890,6 @@ fn parse_optional_resume_replay_closure<'a>(
         ));
     }
     let payload = parse_hex_bytes(payload_hex)?;
-    reject_extra_line(lines.next())?;
 
     let actual_size = u64::try_from(payload.len())
         .map_err(|_| String::from("campaign replay closure size cannot be represented"))?;
@@ -1821,7 +1907,84 @@ fn parse_optional_resume_replay_closure<'a>(
             expected_identity.to_hex(),
         ));
     }
-    Ok(Some(closure))
+    Ok((Some(closure), lines.next()))
+}
+
+fn parse_optional_resume_observation_source<'a>(
+    scenario: &ScenarioDefForm,
+    schedule: &Schedule,
+    checkpoint: &Checkpoint,
+    first: Option<&'a str>,
+    lines: &mut impl Iterator<Item = &'a str>,
+) -> Result<Option<ResumeObservationSource>, String> {
+    let Some(first) = first else {
+        return Ok(None);
+    };
+    let version = parse_u64_line(Some(first), "campaign-observation-source-version=")?;
+    let version = u32::try_from(version)
+        .map_err(|_| String::from("campaign observation source version exceeds u32"))?;
+    let expected_identity =
+        parse_content_hash_line(lines.next(), "campaign-observation-source-identity=")?;
+    let proof_size = parse_u64_line(lines.next(), "campaign-observation-source-proof-size=")?;
+    let proof_hex = parse_wire_line(lines.next(), "campaign-observation-source-proof=")?;
+    let evidence_size = parse_u64_line(lines.next(), "campaign-observation-source-evidence-size=")?;
+    let evidence_hex = parse_wire_line(lines.next(), "campaign-observation-source-evidence=")?;
+    reject_extra_line(lines.next())?;
+
+    let maximum = u64::try_from(RESUME_OBSERVATION_SOURCE_MAX_BYTES)
+        .map_err(|_| String::from("campaign observation source bound cannot be represented"))?;
+    let total = proof_size
+        .checked_add(evidence_size)
+        .ok_or_else(|| String::from("campaign observation source size overflowed"))?;
+    if total > maximum {
+        return Err(format!(
+            "campaign observation source has {total} bytes, maximum is {RESUME_OBSERVATION_SOURCE_MAX_BYTES}"
+        ));
+    }
+    let proof =
+        parse_sized_hex_payload(proof_hex, proof_size, "campaign observation source proof")?;
+    let evidence = parse_sized_hex_payload(
+        evidence_hex,
+        evidence_size,
+        "campaign observation source evidence",
+    )?;
+    let source =
+        ResumeObservationSource::new(scenario, schedule, checkpoint, version, proof, evidence)
+            .map_err(|error| error.to_string())?;
+    if source.identity() != expected_identity {
+        return Err(format!(
+            "campaign observation source identity {} did not match bound identity {}",
+            source.identity().to_hex(),
+            expected_identity.to_hex(),
+        ));
+    }
+    Ok(Some(source))
+}
+
+fn parse_sized_hex_payload(
+    encoded: &str,
+    expected_size: u64,
+    name: &str,
+) -> Result<Vec<u8>, String> {
+    let expected_hex_size = usize::try_from(expected_size)
+        .ok()
+        .and_then(|size| size.checked_mul(2))
+        .ok_or_else(|| format!("{name} hex size overflowed"))?;
+    if encoded.len() != expected_hex_size {
+        return Err(format!(
+            "{name} has {} hex bytes, expected {expected_hex_size}",
+            encoded.len()
+        ));
+    }
+    let payload = parse_hex_bytes(encoded)?;
+    let actual_size =
+        u64::try_from(payload.len()).map_err(|_| format!("{name} size cannot be represented"))?;
+    if actual_size != expected_size {
+        return Err(format!(
+            "{name} size {actual_size} did not match bound size {expected_size}"
+        ));
+    }
+    Ok(payload)
 }
 
 fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, String> {
@@ -2367,6 +2530,12 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
             StatusCode::BAD_REQUEST,
             RpcStatusCode::InvalidArgument,
             "resume-replay-closure",
+            &error.to_string(),
+        ),
+        LifecycleApiError::ResumeObservationSource { .. } => typed_rpc_status_response(
+            StatusCode::BAD_REQUEST,
+            RpcStatusCode::InvalidArgument,
+            "resume-observation-source",
             &error.to_string(),
         ),
         LifecycleApiError::DebugAccess { .. } | LifecycleApiError::DebugEndpointUnavailable => {

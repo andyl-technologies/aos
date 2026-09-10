@@ -921,6 +921,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         debug_runtime_evidence: Vec::new(),
         node_launcher: Box::new(PackagedProductionVmNodeLauncher),
         _run_directory: run_directory,
+        retained_resource_owners: Vec::new(),
     };
     lifecycle
         .reserve_lifecycle_state_encoding(source.plan().fault_signals().resource_limits(), 0, 0)

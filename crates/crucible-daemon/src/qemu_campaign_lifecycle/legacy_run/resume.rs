@@ -103,6 +103,7 @@ pub(super) struct GuardedDefaultCampaignResumeSource {
     pub(super) continuation_control: Option<GuardedCampaignContinuationControl>,
     pub(super) source_observation_proof: Option<ObservationStopProof>,
     pub(super) source_observation_evidence: Option<crate::CrucibleMeasurementReplayEvidence>,
+    pub(super) capture_only: bool,
 }
 
 /// Authenticated source admission for a legacy checkpoint resumed by the campaign owner.
@@ -405,6 +406,67 @@ where
         )
     {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceObservationMismatch.into());
+    }
+
+    if source.capture_only {
+        let capture = proof
+            .source_capture
+            .as_ref()
+            .ok_or(GuardedDefaultCampaignInvariantError::MissingSavepointCapture)?;
+        let (None, None, None, None) = (
+            proof.ready_snapshot,
+            proof.ready,
+            proof.selection,
+            proof.continuation,
+        ) else {
+            return Err(GuardedDefaultCampaignInvariantError::ResumeContinuationMismatch.into());
+        };
+        let request = repository
+            .savepoint_capture_request_at(final_snapshot, capture.request)
+            .map_err(GuardedDefaultCampaignRunError::Repository)?
+            .ok_or(GuardedDefaultCampaignInvariantError::MissingSavepointCapture)?;
+        let resolution = repository
+            .savepoint_capture_resolution_at(final_snapshot, capture.request)
+            .map_err(GuardedDefaultCampaignRunError::Repository)?
+            .ok_or(GuardedDefaultCampaignInvariantError::MissingSavepointCapture)?;
+        if request != capture.description
+            || resolution.request != capture.request
+            || resolution.outcome != SavepointCaptureOutcome::Ready
+            || capture.reached != expected_configuration
+            || capture.evidence != proof.source_evidence
+            || terminal.id() != proof.source_observation
+            || terminal_evidence != &proof.source_evidence
+        {
+            return Err(GuardedDefaultCampaignInvariantError::ResumeContinuationMismatch.into());
+        }
+        let checkpoint = source
+            .checkpoints
+            .load_attempt_checkpoint(capture.checkpoint)
+            .map_err(GuardedDefaultCampaignRunError::ExactCheckpoint)?;
+        if checkpoint.root() != capture.checkpoint
+            || checkpoint.scenario().bytes != lineage.scenario().as_hash().as_bytes()
+            || checkpoint.configuration().bytes != expected_configuration.as_hash().as_bytes()
+            || !capture_evidence_reaches_stop(&capture.evidence, &capture.description.stop)
+        {
+            return Err(GuardedDefaultCampaignInvariantError::SavepointCheckpointMismatch.into());
+        }
+        return Ok(Some(GuardedDefaultCampaignResumeProof {
+            source_checkpoint: proof.source_checkpoint,
+            source_configuration: proof.source_configuration,
+            source_frontier: proof.source_frontier,
+            source_observation: proof.source_observation,
+            source_savepoint: Some(GuardedDefaultCampaignSavepoint {
+                request: capture.request,
+                attempt: capture.description.attempt,
+                checkpoint: capture.checkpoint,
+                configuration: capture.reached,
+                stop: capture.description.stop.clone(),
+                evidence: capture.evidence.clone(),
+            }),
+            ready: None,
+            selection: None,
+            continuation: None,
+        }));
     }
 
     let source_savepoint = match proof.source_capture {

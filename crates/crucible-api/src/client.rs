@@ -1155,6 +1155,38 @@ fn encode_resume_session_request(request: &ResumeSessionRequest) -> Vec<u8> {
             &hex_encode(closure.payload()),
         );
     }
+    if let Some(source) = &request.observation_source {
+        push_line(
+            &mut output,
+            "campaign-observation-source-version",
+            &source.schema_version().to_string(),
+        );
+        push_line(
+            &mut output,
+            "campaign-observation-source-identity",
+            &source.identity().to_hex(),
+        );
+        push_line(
+            &mut output,
+            "campaign-observation-source-proof-size",
+            &source.proof().len().to_string(),
+        );
+        push_line(
+            &mut output,
+            "campaign-observation-source-proof",
+            &hex_encode(source.proof()),
+        );
+        push_line(
+            &mut output,
+            "campaign-observation-source-evidence-size",
+            &source.evidence().len().to_string(),
+        );
+        push_line(
+            &mut output,
+            "campaign-observation-source-evidence",
+            &hex_encode(source.evidence()),
+        );
+    }
     output.into_bytes()
 }
 
@@ -1455,9 +1487,29 @@ fn decode_error_response(body: &[u8]) -> Result<ControlClientError, ControlClien
         "lifecycle-session-not-found" => decode_lifecycle_session_not_found(status, lines),
         "streaming-session-not-found" => decode_streaming_session_not_found(status, lines),
         "resume-replay-closure" => decode_resume_replay_closure_error(status, lines),
+        "resume-observation-source" => decode_resume_observation_source_error(status, lines),
         "resource-limit" => resource_limit::decode_lifecycle_resource_limit(status, lines),
         reason => decode_generic_rpc_status(status, reason, lines),
     }
+}
+
+fn decode_resume_observation_source_error<'a, I>(
+    status: RpcStatusCode,
+    mut lines: I,
+) -> Result<ControlClientError, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    require_rpc_error_status(
+        status,
+        RpcStatusCode::InvalidArgument,
+        "resume-observation-source",
+    )?;
+    let message = parse_hex_string_line(lines.next(), "message=")?;
+    reject_trailing(lines.next())?;
+    Ok(ControlClientError::Lifecycle {
+        source: LifecycleApiError::ResumeObservationSource { message },
+    })
 }
 
 fn decode_resume_replay_closure_error<'a, I>(

@@ -1284,6 +1284,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         debug_runtime_evidence: Vec::new(),
         node_launcher,
         _run_directory: run_directory,
+        retained_resource_owners: Vec::new(),
     };
     if let Some(checkpoint) = &restore_checkpoint {
         let prefix = lifecycle

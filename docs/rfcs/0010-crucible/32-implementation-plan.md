@@ -523,10 +523,11 @@ long-held locks.
   virtual-time, interactive command driving, or a declared property violation
   through the session checkpoint-resume API with breakpoint-firing proof for the
   property stop and replay-oracle validation for terminal savepoints, plus
-  remote-daemon handle-backed virtual-time resume over `ResumeSession` RPC,
-  including bounded, source-bound campaign replay-closure transfer and
-  pre-allocation authentication for typed Selection schedules while preserving
-  the selection-free request encoding,
+  remote-daemon handle-backed virtual-time, quiescence, and property resume over
+  `ResumeSession` RPC, including bounded, source-bound campaign replay-closure
+  transfer, pre-allocation authentication for typed Selection schedules, and
+  campaign-owned v6 observation reproduction while preserving the
+  selection-free request encoding,
   remote interactive command driving, `--watch` status streaming at observed
   remote boundaries, terminal savepoint replay-oracle validation, and terminal
   remote interactive finalization through stopped snapshot query, actor-owned

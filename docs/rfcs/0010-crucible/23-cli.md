@@ -587,10 +587,18 @@ assertion-transition witness. Local-QEMU resume and fork retain both payloads
 as a pending source claim. They replay the authenticated schedule from scenario
 genesis, require the newly accepted observation proof and raw evidence to equal
 the retained claim, and capture the physical checkpoint only after that match.
-This second check rejects a portable artifact whose proof and evidence were
-forged together while preserving their internal hashes. Session-owned and
-remote paths reject v6 boundaries because they cannot perform that campaign
-source replay.
+Remote resume sends the same pair in a content-bound, size-bounded envelope.
+Before allocating a session, the daemon performs the campaign-owned source
+replay and exact capture in bounded blocking work outside the lifecycle
+registry lock, restores the captured native checkpoint, and publishes only the
+resulting ordinary session. One request-scoped Linux cgroup and project quota
+cover source run state, checkpoint CAS objects, source QEMU generations,
+restored run state, and restored generations. Cancellation, timeout, failure,
+and final session teardown retain or quarantine that complete owner until
+process reap permits cleanup. This second replay check rejects a portable
+artifact whose proof and evidence were forged together while preserving their
+internal hashes. Session-owned local-double and unsupported divergent paths
+reject v6 boundaries because they do not perform campaign source replay.
 
 When a property or marker selector reaches its quiescence guard without firing,
 the CLI returns the ordinary identity error and creates no handle. If `--trace`
@@ -1322,7 +1330,15 @@ branch on the verdict without parsing output:
   byte length, and content identity to the exact scenario, configuration, and
   checkpoint material. The daemon validates that envelope before backend and
   session allocation, so restart and retry reconstruct the same authority while
-  selection-free requests retain their historical wire form. The remote route
+  selection-free requests retain their historical wire form. Version 6
+  quiescence and property handles additionally carry a content-bound
+  observation proof and raw measurement-evidence pair. The daemon reproduces
+  that exact observation through campaign ownership, captures without spending
+  a continuation quantum, restores the native checkpoint under one aggregate
+  request quota, and only then publishes an ordinary session. Preparation runs
+  outside the lifecycle registry lock with a fixed in-flight cap, deadline, and
+  cancellation signal; malformed or coherently rehashed but unreproduced pairs
+  fail before session allocation. The remote route
   accepts runtime-only fat checkpoints whose decision schedule remains genesis
   while their frontier has advanced, thin-replays those checkpoints to the exact
   recorded frontier with bounded stagnation and overshoot rejection, rejects

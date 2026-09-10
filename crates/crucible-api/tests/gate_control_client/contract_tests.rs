@@ -404,7 +404,18 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
         b"rpc-replay-closure".to_vec(),
     )
     .expect("bounded RPC replay closure should build");
-    resume_request = resume_request.with_replay_closure(replay_closure);
+    let observation_source = ResumeObservationSource::new(
+        &resume_request.scenario,
+        &resume_request.schedule,
+        &resume_request.checkpoint,
+        1,
+        b"rpc-observation-proof".to_vec(),
+        b"rpc-observation-evidence".to_vec(),
+    )
+    .expect("bounded RPC observation source should build");
+    resume_request = resume_request
+        .with_replay_closure(replay_closure)
+        .with_observation_source(observation_source);
     let expected_resume_checkpoint = resume_request.checkpoint.id;
     let expected_resume_scenario = resume_request.scenario.scenario_def();
     let expected_resume_configuration = Configuration {
@@ -1509,6 +1520,56 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert!(parse_resume_session_request(wrong_identity.as_bytes()).is_err());
     let extra_field = format!("{resume_closure_wire}unexpected=field\n");
     assert!(parse_resume_session_request(extra_field.as_bytes()).is_err());
+
+    let observation_proof = b"rpc-observation-proof".to_vec();
+    let observation_evidence = b"rpc-observation-evidence".to_vec();
+    let observation_source = ResumeObservationSource::new(
+        &resume_request.scenario,
+        &resume_request.schedule,
+        &resume_request.checkpoint,
+        1,
+        observation_proof.clone(),
+        observation_evidence.clone(),
+    )
+    .expect("bounded snapshot observation source should build");
+    let resume_with_observation = resume_with_closure
+        .clone()
+        .with_observation_source(observation_source.clone());
+    let resume_observation_wire = format!(
+        "{resume_closure_wire}campaign-observation-source-version={}\ncampaign-observation-source-identity={}\ncampaign-observation-source-proof-size={}\ncampaign-observation-source-proof={}\ncampaign-observation-source-evidence-size={}\ncampaign-observation-source-evidence={}\n",
+        observation_source.schema_version(),
+        observation_source.identity().to_hex(),
+        observation_source.proof().len(),
+        hex_encode(&observation_proof),
+        observation_source.evidence().len(),
+        hex_encode(&observation_evidence),
+    );
+    assert_eq!(
+        parse_resume_session_request(resume_observation_wire.as_bytes())
+            .unwrap_or_else(|error| panic!("resume observation request should parse: {error}")),
+        resume_with_observation,
+    );
+    assert_rpc_snapshot(
+        "resume-session-observation-source-request",
+        &resume_observation_wire,
+        &resume_observation_wire,
+    );
+    let wrong_observation_size = resume_observation_wire.replace(
+        &format!(
+            "campaign-observation-source-proof-size={}\n",
+            observation_source.proof().len()
+        ),
+        &format!(
+            "campaign-observation-source-proof-size={}\n",
+            observation_source.proof().len().saturating_add(1)
+        ),
+    );
+    assert!(parse_resume_session_request(wrong_observation_size.as_bytes()).is_err());
+    let wrong_observation_identity = resume_observation_wire.replace(
+        &observation_source.identity().to_hex(),
+        &ContentHash::default().to_hex(),
+    );
+    assert!(parse_resume_session_request(wrong_observation_identity.as_bytes()).is_err());
 
     assert_rpc_snapshot(
         "list-sessions-request",

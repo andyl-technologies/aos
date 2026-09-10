@@ -8,7 +8,10 @@ pub(super) use artifact_capture::*;
 
 #[path = "verify_serve/packaged_executor.rs"]
 mod packaged_executor;
-use packaged_executor::prepare_cli_packaged_executor;
+use packaged_executor::{
+    load_guarded_campaign_run_deployment, prepare_cli_packaged_executor,
+    resolve_guarded_campaign_deployment_path,
+};
 
 pub(crate) fn load_guarded_campaign_deployment(
     explicit: Option<&Path>,
@@ -1182,8 +1185,19 @@ where
         ),
         _ => None,
     };
+    let mut production_qemu_build_id = None;
     let mut production_config = if args.production_qemu {
         let backend = require_selftest_qemu_backend(cli)?;
+        let qemu_build_id = match &backend {
+            ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id,
+            #[cfg(any(test, feature = "test-double"))]
+            ResolvedLocalBackend::Double => {
+                return Err(serve_error(
+                    "production QEMU resolved a test-double backend",
+                ));
+            }
+        };
+        production_qemu_build_id = Some(qemu_build_id.clone());
         let mut config = production_qemu_lifecycle_config(&backend)?;
         if let Some(interval) = packaged_executor::production_rendezvous_interval(
             args.qemu_rendezvous_icount,
@@ -1232,6 +1246,11 @@ where
             .ok_or_else(|| serve_error("production QEMU configuration disappeared"))?;
         let config = production_session_lifecycle_config(campaign_config, &debug_authorization);
         let resume_config = config.clone();
+        let observation_config = config.clone();
+        let observation_qemu_build_id = production_qemu_build_id
+            .take()
+            .ok_or_else(|| serve_error("production QEMU identity disappeared"))?;
+        let observation_deployment = cli.campaign_deployment.clone();
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
             Vec::new(),
@@ -1245,6 +1264,29 @@ where
                 crucible_api::build_production_vm_lifecycle_loop(scenario, source, &config)
             },
         )
+        .with_resume_observation_loop_factory(move |request, configuration, context| {
+            let deployment_path =
+                resolve_guarded_campaign_deployment_path(observation_deployment.as_deref())
+                    .map_err(
+                        |error| crucible_api::LifecycleApiError::ResumeObservationSource {
+                            message: format!("resolve guarded campaign deployment: {error}"),
+                        },
+                    )?;
+            let deployment =
+                load_guarded_campaign_run_deployment(&deployment_path).map_err(|error| {
+                    crucible_api::LifecycleApiError::ResumeObservationSource {
+                        message: format!("load guarded campaign deployment: {error}"),
+                    }
+                })?;
+            crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory::new(
+                env!("CARGO_PKG_VERSION"),
+                observation_qemu_build_id.clone(),
+                observation_config.clone(),
+                deployment.host,
+                deployment.resources,
+            )
+            .resume_loop(request, configuration, context)
+        })
         .with_fat_checkpoint_resume_factory(move |scenario, source, _seed, checkpoint| {
             crucible_api::build_production_vm_lifecycle_loop_from_checkpoint(
                 scenario,

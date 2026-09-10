@@ -340,6 +340,9 @@ impl QemuHotForkChildProcessOwner for LinuxQemuAttemptHostResourceOwner {
     }
 }
 
+mod retained_workspace;
+pub(crate) use retained_workspace::RetainedLinuxQemuAttemptWorkspace;
+
 /// Factory adding signal-driven cancellation and quantum accounting to a host owner.
 pub struct ComposedQemuAttemptResourceGuardFactory<H> {
     host: H,

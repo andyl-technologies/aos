@@ -14,9 +14,10 @@ use crucible_api::{
     DebugControllerAcquisition, DestroySessionRequest, HelloRequest, InProcessLifecycleClient,
     LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, LifecycleServerMode, ListScenariosResponse, QuiescentLifecycleLoop,
-    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ResumeReplayClosure,
+    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ResumeObservationSource, ResumeReplayClosure,
     ResumeReplayClosureValidationError, ResumeSessionRequest, RpcControlClient, RpcEndpoint,
-    ScenarioCatalogEntry, SendRequest, serve_lifecycle_http2_with_debug_policy_until_shutdown,
+    ScenarioCatalogEntry, SendRequest, serve_lifecycle_http2,
+    serve_lifecycle_http2_with_debug_policy_until_shutdown,
 };
 use crucible_session::{
     DebugCapability, DebugClientId, DebugCoordinatorError, DebugRole, LiveStateKind, OutcomeKind,
@@ -25,6 +26,7 @@ use crucible_session::{
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[test]
 fn lifecycle_hello_and_list_scenarios_are_side_effect_free() {
@@ -502,6 +504,379 @@ async fn resume_session_accepts_checkpoint_closure_and_paused_live_mirror() {
         .destroy_session(DestroySessionRequest::new(resumed.session))
         .await
         .unwrap_or_else(|error| panic!("cleanup destroy should stop resumed actor: {error}"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn observation_resume_requires_factory_before_session_allocation() {
+    let ordinary_allocations = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&ordinary_allocations);
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-observation-resume-missing-factory-test",
+        Vec::new(),
+        move |_scenario: &ScenarioDef, _seed| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            QuiescentLifecycleLoop::new()
+        },
+    );
+    let mut request = resume_request(142);
+    let source = ResumeObservationSource::new(
+        &request.scenario,
+        &request.schedule,
+        &request.checkpoint,
+        1,
+        b"proof".to_vec(),
+        b"evidence".to_vec(),
+    )
+    .expect("bounded observation source");
+    request = request.with_observation_source(source);
+
+    let client = InProcessLifecycleClient::new(control_plane);
+    let error = client
+        .resume_session(request)
+        .await
+        .expect_err("observation resume without a campaign factory must reject");
+
+    assert!(matches!(
+        error,
+        crucible_api::ControlClientError::Lifecycle {
+            source: LifecycleApiError::ResumeObservationSource { .. }
+        }
+    ));
+    assert_eq!(ordinary_allocations.load(Ordering::SeqCst), 0);
+    assert_eq!(client.session_count().await, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn observation_resume_factory_finishes_before_session_publication() {
+    let ordinary_allocations = Arc::new(AtomicUsize::new(0));
+    let counted_ordinary = Arc::clone(&ordinary_allocations);
+    let authenticated = Arc::new(AtomicUsize::new(0));
+    let counted_authenticated = Arc::clone(&authenticated);
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-observation-resume-factory-test",
+        Vec::new(),
+        move |_scenario: &ScenarioDef, _seed| {
+            counted_ordinary.fetch_add(1, Ordering::SeqCst);
+            QuiescentLifecycleLoop::new()
+        },
+    )
+    .with_resume_observation_loop_factory(move |request, configuration, _context| {
+        assert!(request.observation_source.is_some());
+        assert_eq!(configuration.id(), request.checkpoint.configuration);
+        counted_authenticated.fetch_add(1, Ordering::SeqCst);
+        Ok(QuiescentLifecycleLoop::new())
+    });
+    let mut request = resume_request(143);
+    let source = ResumeObservationSource::new(
+        &request.scenario,
+        &request.schedule,
+        &request.checkpoint,
+        1,
+        b"proof".to_vec(),
+        b"evidence".to_vec(),
+    )
+    .expect("bounded observation source");
+    request = request.with_observation_source(source);
+
+    let client = InProcessLifecycleClient::new(control_plane);
+    let resumed = client
+        .resume_session(request)
+        .await
+        .expect("campaign factory should authorize ordinary session publication");
+
+    assert_eq!(authenticated.load(Ordering::SeqCst), 1);
+    assert_eq!(ordinary_allocations.load(Ordering::SeqCst), 0);
+    assert_eq!(client.session_count().await, 1);
+    client
+        .destroy_session(DestroySessionRequest::new(resumed.session))
+        .await
+        .expect("destroy resumed session");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn direct_observation_resume_route_rejects_before_factory_or_session_allocation() {
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&factory_calls);
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-observation-direct-route-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    )
+    .with_resume_observation_loop_factory(move |_request, _configuration, _context| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Ok(QuiescentLifecycleLoop::new())
+    });
+
+    let error = control_plane
+        .resume_session(observation_resume_request(147))
+        .await
+        .expect_err("the synchronous control-plane route must reject observation work");
+
+    assert!(matches!(
+        error,
+        LifecycleApiError::ResumeObservationSource { .. }
+    ));
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_observation_preparation_releases_its_in_flight_permit() {
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&factory_calls);
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-observation-failed-permit-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    )
+    .with_resume_observation_loop_factory(move |_request, _configuration, _context| {
+        let call = counted.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            Err(LifecycleApiError::ResumeObservationSource {
+                message: String::from("injected source authentication failure"),
+            })
+        } else {
+            Ok(QuiescentLifecycleLoop::new())
+        }
+    })
+    .with_resume_observation_preparation_capacity(1);
+    let client = InProcessLifecycleClient::new(control_plane);
+
+    client
+        .resume_session(observation_resume_request(148))
+        .await
+        .expect_err("first preparation should fail");
+    let resumed = client
+        .resume_session(observation_resume_request(149))
+        .await
+        .expect("failed preparation must release its permit");
+
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(client.session_count().await, 1);
+    client
+        .destroy_session(DestroySessionRequest::new(resumed.session))
+        .await
+        .expect("destroy resumed session");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn timed_out_observation_preparation_retains_then_releases_its_permit() {
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&factory_calls);
+    let (canceled_sender, canceled_receiver) = std::sync::mpsc::sync_channel(1);
+    let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+    let release_receiver = Arc::new(Mutex::new(release_receiver));
+    let factory_release = Arc::clone(&release_receiver);
+    let (finished_sender, finished_receiver) = std::sync::mpsc::sync_channel(1);
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-observation-timeout-permit-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    )
+    .with_resume_observation_loop_factory(move |_request, _configuration, context| {
+        let call = counted.fetch_add(1, Ordering::SeqCst);
+        if call != 0 {
+            return Ok(QuiescentLifecycleLoop::new());
+        }
+        let canceled_sender = canceled_sender.clone();
+        let _cancellation = context.cancellation().register(move || {
+            let _ = canceled_sender.send(());
+        });
+        factory_release
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .recv()
+            .map_err(|error| LifecycleApiError::ResumeObservationSource {
+                message: format!("release timed-out factory: {error}"),
+            })?;
+        let _ = finished_sender.send(());
+        Err(LifecycleApiError::ResumeObservationSource {
+            message: String::from("timed-out factory completed after cancellation"),
+        })
+    })
+    .with_resume_observation_preparation_timeout(Duration::from_millis(20))
+    .with_resume_observation_preparation_capacity(1)
+    .with_max_sessions(2);
+    let client = InProcessLifecycleClient::new(control_plane);
+
+    client
+        .resume_session(observation_resume_request(150))
+        .await
+        .expect_err("blocked preparation should time out");
+    canceled_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("timeout must synchronously signal backend cancellation");
+    client
+        .resume_session(observation_resume_request(151))
+        .await
+        .expect_err("timed-out work retains its permit until the worker exits");
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+
+    release_sender
+        .send(())
+        .expect("release timed-out factory worker");
+    finished_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("timed-out factory should finish");
+    let release_deadline = observation_test_now() + Duration::from_secs(1);
+    let resumed = loop {
+        match client.resume_session(observation_resume_request(152)).await {
+            Ok(resumed) => break resumed,
+            Err(error) if observation_test_now() < release_deadline => {
+                assert!(matches!(
+                    error,
+                    crucible_api::ControlClientError::Lifecycle {
+                        source: LifecycleApiError::ResumeObservationSource { .. }
+                    }
+                ));
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            Err(error) => panic!("completed timed-out work retained its permit: {error}"),
+        }
+    };
+
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
+    client
+        .destroy_session(DestroySessionRequest::new(resumed.session))
+        .await
+        .expect("destroy resumed session");
+}
+
+// Monotonic host time bounds only the test harness's observation of worker
+// teardown; no value enters lifecycle input or expected modeled state.
+// crucible-lint: allow clippy-disallowed-method -- this is an operational test timeout only.
+#[allow(clippy::disallowed_methods)]
+fn observation_test_now() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn observation_factory_does_not_authorize_an_ordinary_typed_resume() {
+    let observation_factory_calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&observation_factory_calls);
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-observation-resume-closure-isolation-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    )
+    .with_resume_observation_loop_factory(move |_request, _configuration, _context| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Ok(QuiescentLifecycleLoop::new())
+    });
+
+    let error = control_plane
+        .resume_session(selected_resume_request(144))
+        .await
+        .expect_err("ordinary typed resume still requires its replay closure validator");
+
+    assert!(matches!(
+        error,
+        LifecycleApiError::ResumeReplayClosure { .. }
+    ));
+    assert_eq!(observation_factory_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn http_observation_preparation_releases_registry_lock_and_bounds_in_flight_work() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("observation concurrency listener");
+    let address = listener.local_addr().expect("observation listener address");
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let counted_calls = Arc::clone(&factory_calls);
+    let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+    let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+    let release_receiver = Arc::new(Mutex::new(release_receiver));
+    let factory_release = Arc::clone(&release_receiver);
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-observation-concurrency-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    )
+    .with_resume_observation_loop_factory(move |_request, _configuration, _context| {
+        counted_calls.fetch_add(1, Ordering::SeqCst);
+        started_sender
+            .send(())
+            .map_err(|error| LifecycleApiError::ResumeObservationSource {
+                message: format!("signal blocked test factory: {error}"),
+            })?;
+        factory_release
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .recv()
+            .map_err(|error| LifecycleApiError::ResumeObservationSource {
+                message: format!("release blocked test factory: {error}"),
+            })?;
+        Ok(QuiescentLifecycleLoop::new())
+    })
+    .with_resume_observation_preparation_capacity(1)
+    .with_max_sessions(2);
+    let server = tokio::spawn(async move { serve_lifecycle_http2(listener, control_plane).await });
+    let endpoint = format!("http://{address}");
+    let rpc = RpcControlClient::new(RpcEndpoint::http2(endpoint.clone()))
+        .expect("observation concurrency client");
+
+    let first_request = observation_resume_request(145);
+    let first_endpoint = endpoint.clone();
+    let first_resume = tokio::spawn(async move {
+        RpcControlClient::new(RpcEndpoint::http2(first_endpoint))
+            .expect("first observation client")
+            .resume_session(first_request)
+            .await
+    });
+    tokio::task::spawn_blocking(move || {
+        started_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("observation factory should start")
+    })
+    .await
+    .expect("factory-start waiter");
+
+    let sessions = tokio::time::timeout(std::time::Duration::from_secs(1), rpc.list_sessions())
+        .await
+        .expect("list sessions must not wait for observation replay")
+        .expect("list sessions during observation replay");
+    assert!(sessions.sessions.is_empty());
+    let second_error = rpc
+        .resume_session(observation_resume_request(146))
+        .await
+        .expect_err("preparation capacity must reject a concurrent source replay");
+    assert!(matches!(
+        second_error,
+        crucible_api::ControlClientError::Lifecycle {
+            source: LifecycleApiError::ResumeObservationSource { .. }
+        }
+    ));
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+
+    release_sender
+        .send(())
+        .expect("release first observation replay");
+    first_resume
+        .await
+        .expect("first observation resume task")
+        .expect("first observation resume");
+    let sessions = rpc.list_sessions().await.expect("list resumed session");
+    assert_eq!(sessions.sessions.len(), 1);
+
+    server.abort();
+    let _ = server.await;
+}
+
+fn observation_resume_request(seed: u64) -> ResumeSessionRequest {
+    let mut request = resume_request(seed);
+    let source = ResumeObservationSource::new(
+        &request.scenario,
+        &request.schedule,
+        &request.checkpoint,
+        1,
+        b"proof".to_vec(),
+        b"evidence".to_vec(),
+    )
+    .expect("bounded observation source");
+    request = request.with_observation_source(source);
+    request
 }
 
 #[tokio::test(flavor = "current_thread")]
