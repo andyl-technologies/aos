@@ -2403,9 +2403,13 @@ dependencies = [
 name = "crucible-harness"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "toml 0.8.23",
 ]
 
