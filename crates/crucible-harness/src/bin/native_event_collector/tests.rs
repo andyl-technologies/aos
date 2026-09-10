@@ -105,7 +105,18 @@ fn decoder_rejects_binary_header_that_disagrees_with_authenticated_material() {
 
     let error = segment::decode(&bytes, 1).expect_err("header mismatch must fail");
 
-    assert!(error.contains("differs from material 7"));
+    assert!(matches!(
+        &error,
+        segment::DecodeError::MaterialU64Mismatch {
+            field: "sequence=",
+            binary: 8,
+            material: 7,
+        }
+    ));
+    assert_eq!(
+        error.to_string(),
+        "event binary field `sequence=` value 8 differs from material 7"
+    );
 }
 
 #[test]

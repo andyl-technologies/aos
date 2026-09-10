@@ -25,7 +25,7 @@ fn collector_decodes_production_node_state_and_guest_marker() -> Result<(), Box<
     ];
     let encoded = EventLog::new().append_entries(entries)?.segment_bytes;
 
-    let decoded = native_event_segment::decode(&encoded, 2).map_err(std::io::Error::other)?;
+    let decoded = native_event_segment::decode(&encoded, 2)?;
 
     assert_eq!(decoded.len(), 2);
     assert_eq!(decoded[0].kind, "node_state");
