@@ -2,6 +2,9 @@
 {
   lib,
   mkDerivation,
+  managedConfigurationRuntime ? ./providers/managed-configuration,
+  nginxRuntime ? ./providers/nginx,
+  systemdRuntime ? ./providers/systemd,
 }: let
   inherit (lib.abilities) schemas;
 
@@ -225,7 +228,7 @@ in {
           };
         };
         nginx-validation = {
-          artifact = nginxArtifact;
+          artifact = nginxRuntime;
           export = terminalExport {
             name = nginxValidation.name;
             group = "nginx-validation";
@@ -239,8 +242,8 @@ in {
         };
       };
       handlers.nginx-terminal = {
-        artifact = nginxArtifact;
-        entryPoint = "libexec/reference-terminal";
+        artifact = nginxRuntime;
+        entryPoint = "bin/nginx";
         arguments = schemas.boolean;
         result = schemas.boolean;
       };
@@ -278,7 +281,7 @@ in {
           };
         };
         managed-configuration-effects = {
-          artifact = managedConfigurationArtifact;
+          artifact = managedConfigurationRuntime;
           export = terminalExport {
             name = managedConfigurationEffects.name;
             group = "managed-configuration-effects";
@@ -292,8 +295,8 @@ in {
         };
       };
       handlers.managed-configuration-terminal = {
-        artifact = managedConfigurationArtifact;
-        entryPoint = "libexec/reference-terminal";
+        artifact = managedConfigurationRuntime;
+        entryPoint = "bin/.aos-package-runtime-unwrapped";
         arguments = schemas.boolean;
         result = schemas.boolean;
       };
@@ -361,7 +364,7 @@ in {
           };
         };
         systemd-service-effects = {
-          artifact = systemdArtifact;
+          artifact = systemdRuntime;
           export = terminalExport {
             name = systemdServiceEffects.name;
             group = "systemd-service-effects";
@@ -385,8 +388,8 @@ in {
         };
       };
       handlers.systemd-terminal = {
-        artifact = systemdArtifact;
-        entryPoint = "libexec/reference-terminal";
+        artifact = systemdRuntime;
+        entryPoint = "bin/.aos-package-runtime-unwrapped";
         arguments = schemas.boolean;
         result = schemas.boolean;
       };

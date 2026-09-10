@@ -14,15 +14,15 @@ let
       key = "${contribution.slot}-configuration";
     };
     quote = value: ''"${builtins.replaceStrings ["\\" "\"" "$" "\n" "\r"] ["\\\\" "\\\"" "\\$" "\\n" ""] value}"'';
-    render = contribution:
+    renderServers = contribution:
       builtins.concatStringsSep "\n" (
         builtins.map
         (virtualHost: ''
           server {
-            listen 80;
+            listen 18080;
             ${
             if virtualHost.tls or false
-            then "listen 443 ssl;"
+            then "listen 18443 ssl;"
             else ""
           }
             server_name ${virtualHost.host};
@@ -33,6 +33,26 @@ let
         '')
         contribution.value.virtualHosts
       );
+    render = contribution: ''
+      worker_processes 1;
+      error_log stderr;
+      pid nginx.pid;
+
+      events {
+        worker_connections 128;
+      }
+
+      http {
+        access_log off;
+        client_body_temp_path client_body;
+        proxy_temp_path proxy;
+        fastcgi_temp_path fastcgi;
+        uwsgi_temp_path uwsgi;
+        scgi_temp_path scgi;
+
+      ${renderServers contribution}
+      }
+    '';
     fieldMap = makeValue:
       builtins.listToAttrs (
         builtins.map
@@ -79,7 +99,7 @@ let
             reference = {
               interface = managedConfiguration;
               resource = resourceFor contribution;
-              operations = ["publish" "read"];
+              operations = ["prepare" "publish" "read" "release"];
               lifetime = "instance";
             };
           });

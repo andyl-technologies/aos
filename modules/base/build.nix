@@ -907,6 +907,7 @@ in {
       emptyHostPath = pathString emptyHost;
       defaultFacts = builtins.toJSON (config.host.facts or {});
       defaultFactsFile = builtins.toFile "aos-default-instance-facts.json" defaultFacts;
+      abilityActivationInput = config.aos.abilities.activationInput;
       ownership = {
         etc = etcOwnership;
         units = unitOwnership;
@@ -961,6 +962,9 @@ in {
             platform = "image";
             store_path = pathString defaultFactsFile;
           };
+        }
+        // lib.optionalAttrs (abilityActivationInput != null) {
+          ability_activation = abilityActivationInput;
         };
         packages = [];
         packageOutputs = {};

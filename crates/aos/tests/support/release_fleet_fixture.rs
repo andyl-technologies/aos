@@ -3,6 +3,8 @@
 //! This binary is installed only in `pkgs.aos.testSupport`. It deliberately
 //! uses fixed private keys and must never be used outside an isolated test.
 
+mod ability_activation_fixture;
+
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
@@ -13,6 +15,15 @@ use anyhow::{Context as _, Result, bail};
 use aos_core::nar::cache::{
     NarCompression, NarInfoSigner, StaticNarInfoInput, render_static_narinfo,
 };
+use aos_package::config::ApmConfig;
+use aos_package::registry::release::{
+    CanonicalRegistryEntryAuthor, INTENT_SCHEMA, RegistryCommitIdentity, RegistryGitObjectKind,
+    RegistryGitSignature, RegistryGitSigningRequest, RegistryObjectSigner,
+    RegistryPackagePublication, RegistryReleaseEntry, RegistryReleaseIntent,
+};
+use aos_package::security::sign_payload_signature;
+use aos_package::types::ProfileScope;
+use aos_package::{DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner};
 use aos_release::artifact::{
     ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath, Compression,
 };
@@ -70,12 +81,188 @@ async fn main() -> Result<()> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     match arguments.first().map(String::as_str) {
         Some("prepare") => prepare(&arguments[1..]),
+        Some("ability-registry") => ability_registry(&arguments[1..]).await,
+        Some("ability-activation") => ability_activation_fixture::generate(&arguments[1..]),
+        Some("ability-authority-provision") => {
+            ability_activation_fixture::provision_authority(&arguments[1..])
+        }
         Some("sign-exchange-v1") => signer_exchange(),
         Some("completion") => completion(&arguments[1..]),
         Some("review") => review(&arguments[1..]),
         Some("maintainer-upstream-proxy") => maintainer_upstream_proxy(&arguments[1..]).await,
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
+    }
+}
+
+async fn ability_registry(arguments: &[String]) -> Result<()> {
+    const FIXED_ARGUMENTS: usize = 10;
+    const PACKAGE_ARGUMENTS: usize = 3;
+
+    if arguments.len() < FIXED_ARGUMENTS + PACKAGE_ARGUMENTS
+        || !(arguments.len() - FIXED_ARGUMENTS).is_multiple_of(PACKAGE_ARGUMENTS)
+    {
+        bail!(
+            "usage: aos-release-fleet-fixture ability-registry SOURCE OUTPUT REGISTRY REGISTRY_IDENTITY RELEASE PLAN_DIGEST BASE_COMMIT KEY_ID TRUST_KEY KEY_PATH NAME PRIMARY ABILITIES [NAME PRIMARY ABILITIES ...]"
+        );
+    }
+    let source = Path::new(&arguments[0]);
+    let output = Path::new(&arguments[1]);
+    let registry = &arguments[2];
+    let registry_identity = &arguments[3];
+    let release = &arguments[4];
+    let plan_digest = &arguments[5];
+    let base_commit = &arguments[6];
+    let key_id = &arguments[7];
+    let trust_key = &arguments[8];
+    let key_path = Path::new(&arguments[9]);
+    if output.exists() {
+        bail!("ability registry output must not already exist");
+    }
+
+    let mut entries = Vec::new();
+    let mut publications = std::collections::BTreeMap::new();
+    for package in arguments[FIXED_ARGUMENTS..].chunks_exact(PACKAGE_ARGUMENTS) {
+        let name = package[0].clone();
+        let primary = package[1].clone();
+        let abilities = package[2].clone();
+        let version = "1.0.0".to_string();
+        let platform = "x86_64-linux".to_string();
+
+        entries.push(RegistryReleaseEntry {
+            id: format!("package/{name}/out"),
+            name: name.clone(),
+            version: version.clone(),
+            platform: platform.clone(),
+            output: "out".to_string(),
+            store_path: primary,
+        });
+        entries.push(RegistryReleaseEntry {
+            id: format!("package/{name}/abilities"),
+            name: name.clone(),
+            version,
+            platform,
+            output: "abilities".to_string(),
+            store_path: abilities,
+        });
+        publications.insert(
+            name,
+            RegistryPackagePublication {
+                description: "Production reference ability package".to_string(),
+                homepage: None,
+                license_expression: "Apache-2.0".to_string(),
+                maintainers: vec!["Andyl, Inc.".to_string()],
+            },
+        );
+    }
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let intent = RegistryReleaseIntent {
+        schema: INTENT_SCHEMA.to_string(),
+        registry: registry_identity.clone(),
+        base_commit: base_commit.clone(),
+        release: release.clone(),
+        plan_digest: plan_digest.clone(),
+        entries,
+        support: None,
+    };
+    let config = ApmConfig::load(ProfileScope::User)?;
+    let mut signer = AbilityRegistrySigner {
+        registry: registry_identity.clone(),
+        release: release.clone(),
+        plan_digest: plan_digest.clone(),
+        key_id: key_id.clone(),
+        trust_key: trust_key.clone(),
+        key_path: key_path.to_path_buf(),
+        operation: 0,
+    };
+    let printer = aos_core::output::Printer::new(0, false, false);
+    let (transaction, prepared) = {
+        let mut author = CanonicalRegistryEntryAuthor::new(
+            &config,
+            registry,
+            &publications,
+            &mut signer,
+            &printer,
+        );
+        intent.prepare(source, output, &mut author).await?
+    };
+    if transaction.expected != prepared.surfaces {
+        bail!("prepared ability registry differs from its closed transaction");
+    }
+    let identity = RegistryCommitIdentity {
+        name: "AOS ability fleet fixture".to_string(),
+        email: "ability-fleet@example.test".to_string(),
+        unix_seconds: 1_788_796_800,
+        offset_minutes: 0,
+    };
+    let finalized = prepared.finalize(&identity, &mut signer).await?;
+    println!("{}", finalized.commit);
+    Ok(())
+}
+
+struct AbilityRegistrySigner {
+    registry: String,
+    release: String,
+    plan_digest: String,
+    key_id: String,
+    trust_key: String,
+    key_path: PathBuf,
+    operation: u64,
+}
+
+impl AbilityRegistrySigner {
+    fn next_operation(&mut self, kind: &str) -> String {
+        self.operation += 1;
+        format!("ability-fleet-{kind}-{}", self.operation)
+    }
+}
+
+#[async_trait::async_trait]
+impl ProvenanceSigner for AbilityRegistrySigner {
+    fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    fn trusted_key_line(&self) -> Option<&str> {
+        Some(&self.trust_key)
+    }
+
+    async fn sign_provenance(&mut self, payload: &[u8]) -> Result<ProvenanceSignature> {
+        let armored_signature =
+            sign_payload_signature(&self.key_path, DSSE_SIGNATURE_NAMESPACE, payload)?;
+        Ok(ProvenanceSignature {
+            key_id: self.key_id.clone(),
+            provider_operation_id: self.next_operation("provenance"),
+            armored_signature,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl RegistryObjectSigner for AbilityRegistrySigner {
+    async fn sign_git_object(
+        &mut self,
+        request: RegistryGitSigningRequest,
+    ) -> Result<RegistryGitSignature> {
+        if request.registry != self.registry
+            || request.release != self.release
+            || request.plan_digest != self.plan_digest
+        {
+            bail!("ability registry signing request differs from fixture authority");
+        }
+        let kind = match request.kind {
+            RegistryGitObjectKind::Commit => "commit",
+            RegistryGitObjectKind::Tag => "tag",
+        };
+        let armored_signature = sign_payload_signature(&self.key_path, "git", &request.payload)?;
+        Ok(RegistryGitSignature {
+            kind: request.kind,
+            payload_digest: request.payload_digest,
+            key_id: self.key_id.clone(),
+            provider_operation_id: self.next_operation(kind),
+            armored_signature,
+        })
     }
 }
 

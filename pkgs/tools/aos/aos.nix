@@ -554,6 +554,8 @@ in
                   ;;
                 apm|aos-package-runtime)
                   cat << 'APM_ENVIRONMENT'
+      export AOS_NIX_STORE="${nix}/bin/nix-store"
+      export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
@@ -577,6 +579,15 @@ in
           install_cli apm "$apm" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
           install_cli apr "$apr" ${lib.escapeShellArg (runtimeBinPath aprRuntimeTools)} 0
           install_cli aos-package-runtime "$packageRuntime" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
+
+          grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/bin/aos-package-runtime"
+          grep -Fqx 'export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"' "$packageRuntime/bin/aos-package-runtime"
+          ${lib.optionalString (!isDarwinCross) ''
+        grep -Fqx 'export AOS_PRLIMIT="${util-linux}/bin/prlimit"' "$packageRuntime/bin/aos-package-runtime"
+      ''}
+          ${lib.optionalString (!isCross) ''
+        PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" __eval --help > /dev/null
+      ''}
 
           # This deterministic signer/fixture process exists only for the
           # isolated fleet release exercise. Keep it out of every shipped CLI
