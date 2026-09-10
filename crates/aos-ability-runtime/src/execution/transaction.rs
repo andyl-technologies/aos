@@ -17,9 +17,10 @@ use thiserror::Error;
 use crate::adapter::{
     PlanRetentionReceipt, RootRetentionReceipt, TrustedPlanStore, TrustedRootStore,
 };
+use crate::execution::summary::{operation_status, transaction_result};
 use crate::execution::{
     CompensationInterventionReason, ExecutionEvent, ExecutionEventKind, OperationHistory,
-    OperationState, StateError,
+    OperationState, OperationStatus, OperationSummary, StateError, TerminalResult,
 };
 use crate::journal::{
     FileJournal, JournalError, JournalLimits, JournalOpenResult, JournalRecord, JournalSnapshot,
@@ -95,6 +96,7 @@ pub struct CheckedExecutionJournalSnapshot {
     records: Vec<JournalRecord<ExecutionEvent>>,
     verified_bytes: u64,
     incomplete_tail_bytes: u64,
+    terminal: Option<TerminalResult>,
 }
 
 impl CheckedExecutionJournalSnapshot {
@@ -176,6 +178,21 @@ impl CheckedExecutionJournalSnapshot {
         }
         let verified_bytes = snapshot.verified_bytes();
         let incomplete_tail_bytes = snapshot.incomplete_tail_bytes();
+        let operations = replay
+            .operations
+            .values()
+            .map(|history| OperationSummary {
+                operation: history.operation_id().clone(),
+                status: if replay.skipped.contains(&history.operation_id().operation) {
+                    OperationStatus::Skipped
+                } else {
+                    operation_status(history)
+                },
+                attempt: history.current_attempt(),
+                elapsed_millis: history.elapsed_millis(),
+            })
+            .collect::<Vec<_>>();
+        let terminal = transaction_result(&operations);
 
         Ok(Self {
             transaction: transaction.clone(),
@@ -183,6 +200,7 @@ impl CheckedExecutionJournalSnapshot {
             records: snapshot.into_records(),
             verified_bytes,
             incomplete_tail_bytes,
+            terminal,
         })
     }
 
@@ -223,6 +241,12 @@ impl CheckedExecutionJournalSnapshot {
     #[must_use]
     pub const fn incomplete_tail_bytes(&self) -> u64 {
         self.incomplete_tail_bytes
+    }
+
+    /// Returns the terminal result derived from the checked durable prefix.
+    #[must_use]
+    pub const fn terminal(&self) -> Option<TerminalResult> {
+        self.terminal
     }
 }
 

@@ -46,7 +46,7 @@ const INTERFACE_DESCRIPTOR: &str =
 const HANDLER_KEY: &str = "managed-configuration-terminal";
 const ENTRY_POINT: &str = "bin/.aos-package-runtime-unwrapped";
 const REQUEST_SCHEMA: &str = "aos.ability.managed-configuration-request/v1";
-const MARKER_SCHEMA: &str = "aos.ability.managed-configuration-revision/v1";
+const MARKER_SCHEMA: &str = "aos.ability.managed-configuration-revision/v2";
 const MAX_MARKER_BYTES: u64 = 16 * 1024;
 
 /// Binds one logical resource to native candidate and destination authority.
@@ -200,6 +200,17 @@ impl ManagedConfigurationResourceCatalog {
         resource: &ResourceId,
     ) -> Option<&ManagedConfigurationResourceSpec> {
         self.resources.get(resource).map(|entry| &entry.spec)
+    }
+
+    pub(crate) fn observe_no_op(
+        &self,
+        resource: &ResourceId,
+    ) -> Result<(NativeQualifiedResource, ResourceRevisionObservation), io::Error> {
+        let resource = self
+            .resources
+            .get(resource)
+            .ok_or_else(|| invalid_data("managed configuration no-op resource is not cataloged"))?;
+        Ok((resource.qualified.clone(), observe_revision(resource)?))
     }
 }
 
@@ -623,6 +634,7 @@ fn release_destination(resource: &QualifiedManagedConfiguration) -> Result<(), i
 #[serde(deny_unknown_fields)]
 struct RevisionMarker {
     schema: String,
+    resource: ResourceId,
     destination: String,
     revision: RevisionId,
     content: Sha256Digest,
@@ -637,6 +649,7 @@ fn observe_revision(
         (None, None) => Ok(ResourceRevisionObservation::Absent),
         (Some(bytes), Some(marker))
             if marker.schema == MARKER_SCHEMA
+                && marker.resource == resource.spec.resource
                 && marker.destination == path_string(resource.destination.display())?
                 && marker.content == Sha256Digest::of_bytes(&bytes) =>
         {
@@ -669,6 +682,7 @@ fn marker_matches_revision_association(
     // unverifiable. The protected marker must still name the exact destination
     // and revision admitted before the interrupted operation.
     Ok(marker.schema == MARKER_SCHEMA
+        && marker.resource == resource.spec.resource
         && marker.destination == path_string(resource.destination.display())?
         && marker.revision == expected_revision)
 }
@@ -680,6 +694,7 @@ fn write_marker(resource: &QualifiedManagedConfiguration) -> Result<(), io::Erro
         .ok_or_else(|| invalid_data("publish has no desired revision"))?;
     let marker = RevisionMarker {
         schema: MARKER_SCHEMA.to_string(),
+        resource: resource.spec.resource.clone(),
         destination: path_string(resource.destination.display())?,
         revision,
         content: resource.candidate_digest,
@@ -822,6 +837,13 @@ fn authenticate(
     Ok(())
 }
 
+pub(crate) fn preflight_native_managed_configuration(
+    package: &VerifiedAbilityPackage,
+    assignment: &ProviderAssignment,
+) -> Result<(), io::Error> {
+    authenticate(package, assignment)
+}
+
 fn expected_interface() -> Result<InterfaceKey, io::Error> {
     Ok(InterfaceKey {
         name: InterfaceName::new(INTERFACE_NAME)
@@ -946,6 +968,69 @@ mod tests {
     }
 
     #[test]
+    fn revision_marker_cannot_transfer_content_to_another_logical_resource() {
+        let fixture = managed_fixture(None, Some(revision("desired")), b"candidate");
+        fixture
+            .resource
+            .destination
+            .atomic_write(b"candidate", false)
+            .expect("candidate destination is installed");
+        let mut foreign_resource = fixture.resource.spec.resource.clone();
+        foreign_resource.key = LocalKey::new("foreign").expect("foreign key is valid");
+        let marker = RevisionMarker {
+            schema: MARKER_SCHEMA.to_string(),
+            resource: foreign_resource,
+            destination: path_string(fixture.resource.destination.display())
+                .expect("destination is UTF-8"),
+            revision: revision("desired"),
+            content: Sha256Digest::of_bytes(b"candidate"),
+        };
+        fixture
+            .resource
+            .marker_path
+            .atomic_write(&serde_json::to_vec(&marker).expect("marker encodes"), false)
+            .expect("foreign marker is installed");
+
+        assert_eq!(
+            observe_revision(&fixture.resource).expect("marker is observed"),
+            ResourceRevisionObservation::Unknown
+        );
+    }
+
+    #[test]
+    fn version_one_marker_cannot_be_adopted_as_resource_ownership() {
+        let fixture = managed_fixture(None, Some(revision("desired")), b"candidate");
+        fixture
+            .resource
+            .destination
+            .atomic_write(b"candidate", false)
+            .expect("candidate destination is installed");
+        let legacy = serde_json::json!({
+            "schema": "aos.ability.managed-configuration-revision/v1",
+            "destination": path_string(fixture.resource.destination.display())
+                .expect("destination is UTF-8"),
+            "revision": revision("desired"),
+            "content": Sha256Digest::of_bytes(b"candidate"),
+        });
+        fixture
+            .resource
+            .marker_path
+            .atomic_write(
+                &serde_json::to_vec(&legacy).expect("legacy marker encodes"),
+                false,
+            )
+            .expect("legacy marker is installed");
+
+        let error = observe_revision(&fixture.resource)
+            .expect_err("unowned legacy marker must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("invalid managed configuration revision marker")
+        );
+    }
+
+    #[test]
     fn publish_rejects_stale_revision_without_replacing_destination() {
         let fixture = managed_fixture(
             Some(revision("expected")),
@@ -959,6 +1044,7 @@ mod tests {
             .expect("old destination is installed");
         let stale_marker = RevisionMarker {
             schema: MARKER_SCHEMA.to_string(),
+            resource: fixture.resource.spec.resource.clone(),
             destination: path_string(fixture.resource.destination.display())
                 .expect("destination is UTF-8"),
             revision: revision("other"),
@@ -1199,6 +1285,7 @@ mod tests {
     ) {
         let marker = RevisionMarker {
             schema: MARKER_SCHEMA.to_string(),
+            resource: resource.spec.resource.clone(),
             destination: path_string(resource.destination.display()).expect("destination is UTF-8"),
             revision: marker_revision,
             content: Sha256Digest::of_bytes(content),

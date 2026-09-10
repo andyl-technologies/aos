@@ -47,10 +47,10 @@ impl OperationStatus {
 /// Summarizes one operation without exposing private adapter evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationSummary {
-    operation: OperationId,
-    status: OperationStatus,
-    attempt: Option<NonZeroU32>,
-    elapsed_millis: u64,
+    pub(super) operation: OperationId,
+    pub(super) status: OperationStatus,
+    pub(super) attempt: Option<NonZeroU32>,
+    pub(super) elapsed_millis: u64,
 }
 
 impl OperationSummary {
@@ -166,7 +166,7 @@ impl ExecutionTransaction<'_> {
     }
 }
 
-fn operation_status(history: &OperationHistory) -> OperationStatus {
+pub(super) fn operation_status(history: &OperationHistory) -> OperationStatus {
     let resources_released = history.resources_released();
     if let Some(compensation) = history.compensation_state() {
         return match compensation {
@@ -204,7 +204,7 @@ fn operation_status(history: &OperationHistory) -> OperationStatus {
     }
 }
 
-fn transaction_result(operations: &[OperationSummary]) -> Option<TerminalResult> {
+pub(super) fn transaction_result(operations: &[OperationSummary]) -> Option<TerminalResult> {
     if operations
         .iter()
         .any(|operation| !operation.status.is_terminal())

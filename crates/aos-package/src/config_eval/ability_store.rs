@@ -228,8 +228,11 @@ struct NativeSessionPaths {
 /// runtime's read-only snapshot boundary can acquire a stable shared lock.
 #[derive(Debug)]
 pub struct RetainedAbilityDiagnosticSource {
+    generation: PathBuf,
+    transaction: TransactionId,
     plan: CheckedEffectPlan,
     plan_bundle: Sha256Digest,
+    desired_planning: Sha256Digest,
     journal: File,
     journal_path: PathBuf,
 }
@@ -341,13 +344,17 @@ impl RetainedAbilityDiagnosticSource {
         let plan_bundle = bundle
             .digest()
             .map_err(GenerationAbilityStoreError::Bundle)?;
+        let desired_planning = bundle.desired_planning_digest();
         let plan = bundle
             .revalidate(supported_features)
             .map_err(GenerationAbilityStoreError::Bundle)?;
 
         Ok(Self {
+            generation,
+            transaction: transaction.clone(),
             plan,
             plan_bundle,
+            desired_planning,
             journal,
             journal_path,
         })
@@ -359,10 +366,28 @@ impl RetainedAbilityDiagnosticSource {
         &self.plan
     }
 
+    /// Returns the transaction selected through the protected generation path.
+    #[must_use]
+    pub const fn transaction(&self) -> &TransactionId {
+        &self.transaction
+    }
+
+    /// Returns the protected generation that owns the retained transaction.
+    #[must_use]
+    pub fn generation(&self) -> &Path {
+        &self.generation
+    }
+
     /// Returns the digest of the retained plan bundle in this transaction directory.
     #[must_use]
     pub const fn plan_bundle(&self) -> Sha256Digest {
         self.plan_bundle
+    }
+
+    /// Returns the planning state installed by the retained transaction.
+    #[must_use]
+    pub const fn desired_planning(&self) -> Sha256Digest {
+        self.desired_planning
     }
 
     /// Consumes the source into its checked plan, bundle identity, and journal.

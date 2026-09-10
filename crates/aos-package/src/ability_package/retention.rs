@@ -6,7 +6,7 @@
 //! execution fail closed without accumulating unreaped children.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -114,7 +114,7 @@ pub(crate) fn verify_store_object(
 pub(crate) fn run_store_check(store_path: &str, arguments: &[&str]) -> anyhow::Result<()> {
     use anyhow::{Context as _, bail};
 
-    let status = live_store_command()
+    let status = live_store_command()?
         .args(arguments)
         .arg(store_path)
         .stdout(Stdio::null())
@@ -191,7 +191,7 @@ pub(crate) fn query_reference_hashes(store_path: &str) -> anyhow::Result<Vec<Str
 fn run_store_query(store_path: &str, arguments: &[&str]) -> anyhow::Result<String> {
     use anyhow::{Context as _, bail};
 
-    let mut child = live_store_command()
+    let mut child = live_store_command()?
         .args(arguments)
         .arg(store_path)
         .stdout(Stdio::piped())
@@ -222,7 +222,7 @@ fn run_store_query(store_path: &str, arguments: &[&str]) -> anyhow::Result<Strin
 pub(crate) fn dump_store_path_identity(store_path: &str) -> anyhow::Result<(Sha256Digest, u64)> {
     use anyhow::{Context as _, bail};
 
-    let mut child = live_store_command()
+    let mut child = live_store_command()?
         .args(["--dump", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -265,8 +265,22 @@ pub(crate) fn dump_store_path_identity(store_path: &str) -> anyhow::Result<(Sha2
     Ok((digest, size))
 }
 
-fn live_store_command() -> Command {
-    let mut command = Command::new("nix-store");
+fn live_store_command() -> anyhow::Result<Command> {
+    let executable = match std::env::var_os("AOS_NIX_STORE") {
+        Some(executable) => {
+            let path = Path::new(&executable);
+            if !path.is_absolute()
+                || path
+                    .components()
+                    .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+            {
+                anyhow::bail!("AOS_NIX_STORE must name a canonical absolute executable path");
+            }
+            executable
+        }
+        None => "nix-store".into(),
+    };
+    let mut command = Command::new(executable);
     command.envs(aos_nix_env());
 
     // The hermetic package test seeds a private Nix database from Nix's own
@@ -284,7 +298,7 @@ fn live_store_command() -> Command {
         }
     }
 
-    command
+    Ok(command)
 }
 
 #[allow(
