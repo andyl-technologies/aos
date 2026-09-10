@@ -520,6 +520,7 @@ in rec {
     installCargoArtifacts ? false,
     cargoArtifactContract ? {},
     cargoNextest ? null,
+    cargoNextestProfile ? null,
     cargoNextestOpenFilesLimit ? null,
     cargoNextestMaxTestThreads ? null,
     nextestFlags ? "",
@@ -547,6 +548,14 @@ in rec {
       else if builtins.isInt cargoNextestMaxTestThreads && cargoNextestMaxTestThreads > 0
       then cargoNextestMaxTestThreads
       else throw "cargoNextestMaxTestThreads must be a positive integer";
+    nextestProfileFlag =
+      if cargoNextestProfile == null
+      then ""
+      else "--profile ${shellQuote cargoNextestProfile}";
+    nextestJunitReport =
+      if cargoNextestProfile == null
+      then null
+      else "target/nextest/${toString cargoNextestProfile}/junit.xml";
     shellQuote = value: "'${builtins.replaceStrings ["'"] ["'\"'\"'"] (toString value)}'";
     cargoEnvExports = builtins.concatStringsSep "\n" (
       builtins.map
@@ -687,6 +696,7 @@ in rec {
                     fi
                   ''
                 }
+                nextestStatus=0
                 cargo nextest run \
                   ${
                   if checkType == "release"
@@ -695,6 +705,7 @@ in rec {
                 } \
                   --frozen \
                   --offline \
+                  ${nextestProfileFlag} \
                   ${noDefaultFlag} \
                   ${featuresFlag} \
                   ${cargoTestFlags} \
@@ -703,7 +714,53 @@ in rec {
                   then ""
                   else ''--test-threads "$nextestTestThreads"''
                 } \
-                  ${nextestFlags}
+                  ${nextestFlags} \
+                  || nextestStatus=$?
+
+                if [ "$nextestStatus" -ne 0 ]; then
+                  ${
+                  if nextestJunitReport == null
+                  then ""
+                  else ''
+                    nextestJunitReport=${shellQuote nextestJunitReport}
+                    echo "Nextest failed; JUnit report: $nextestJunitReport" >&2
+
+                    if [ -s "$nextestJunitReport" ]; then
+                      # Passing test cases are self-closing elements. Retain
+                      # only failed/error cases and their captured output so a
+                      # large workspace report remains readable in Nix logs.
+                      nextestFailures="$NIX_BUILD_TOP/nextest-failures.xml"
+                      sed -n '
+                        /<testcase / { h; b }
+                        /<failure\|<error/ {
+                          x
+                          p
+                          x
+                          :failure
+                          p
+                          /<\/testcase>/ b
+                          n
+                          b failure
+                        }
+                      ' "$nextestJunitReport" > "$nextestFailures"
+
+                      if [ -s "$nextestFailures" ]; then
+                        head -n 1000 "$nextestFailures" >&2
+                        failureLines=$(wc -l < "$nextestFailures")
+                        if [ "$failureLines" -gt 1000 ]; then
+                          echo "Nextest failure details truncated after 1000 of $failureLines lines" >&2
+                        fi
+                      else
+                        echo "JUnit contains no completed failed test case; suite summary follows" >&2
+                        sed -n '/<testsuite /p' "$nextestJunitReport" >&2
+                      fi
+                    else
+                      echo "Nextest did not produce the configured JUnit report" >&2
+                    fi
+                  ''
+                }
+                  exit "$nextestStatus"
+                fi
               ''
               else ''
                 cargo test \

@@ -35,4 +35,4 @@ threads-required = "num-test-threads"
 [profile.ci]
 inherits = "default"
 fail-fast = false
-junit = { path = "target/nextest/ci/junit.xml" }
+junit = { path = "junit.xml" }
