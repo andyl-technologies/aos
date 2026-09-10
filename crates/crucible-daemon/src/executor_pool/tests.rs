@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -29,25 +29,29 @@ use crucible_api::{
     build_raw_production_checkpoint_codec_fixture,
 };
 use crucible_campaign::{
-    AssignmentId, Attempt, AttemptId, AttemptResourceLimits, AttemptStart, BooleanDomain,
-    BranchBudget, BranchPath, BranchPathSegment, BranchRequest, BranchRequestCause,
-    CampaignCommandId, CampaignControlAction, CampaignExecutorDriver, CampaignExecutorStepOutcome,
-    CampaignExecutorStore, CampaignFactId, CampaignHash, CampaignLineage, CampaignLineageId,
-    CampaignMode, CampaignPolicy, CampaignRepository, CampaignSeed, CancelAttemptExecutionRequest,
-    CancelAttemptExecutionResponse, CandidateSource, CanonicalBeamPlanner,
-    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ChoiceClassContext,
-    ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue,
-    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ControlRequest,
-    CoverageProjection, DaemonEpoch, ExactCheckpointId, ExactRational, ExecutionId,
-    ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile,
-    ExecutorControlService, ExecutorDescription, ExecutorMaterializationCapability,
-    ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
-    ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, InterventionLearningPolicy, MeasurementSet, Objective,
-    ObjectiveGoal, Observation, ObservationCandidate, ObservationId, PlannerProposalDisposition,
-    PlanningBudget, PlanningScanPosition, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal,
-    PuctPolicy, PurePlannerEngine, ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
-    RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    ActiveAttemptPolicy, ApplyCampaignCommandRequest, AssignmentId, Attempt, AttemptId,
+    AttemptResourceLimits, AttemptStart, BooleanDomain, BranchBudget, BranchPath,
+    BranchPathSegment, BranchRequest, BranchRequestCause, CampaignAuthorizationError,
+    CampaignClient, CampaignCommandId, CampaignControlAction, CampaignExecutorDriver,
+    CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignFactId, CampaignHash,
+    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy,
+    CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignSeed,
+    CampaignServiceOperation, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    CandidateSource, CanonicalBeamPlanner, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+    ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
+    ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, ExactCheckpointId,
+    ExactRational, ExecutionId, ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient,
+    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorDescription,
+    ExecutorMaterializationCapability, ExecutorRejection, ExecutorResumeService, ExecutorService,
+    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, GetCampaignStatusRequest,
+    InterventionLearningPolicy, MeasurementSet, Objective, ObjectiveGoal, Observation,
+    ObservationCandidate, ObservationId, PinCampaignRequest, PinChange, PinRequest, PinRetention,
+    PlannerProposalDisposition, PlanningBudget, PlanningScanPosition, ProgressiveWideningPolicy,
+    PropertyVerdictSet, Proposal, PuctPolicy, PurePlannerEngine, RepositoryCampaignService,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy,
+    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
     SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
 };
 use crucible_cas::content_store::{
@@ -214,6 +218,20 @@ impl ImmutableBlobBackend for TestDurableBackend {
 
 struct BlockingAdmission {
     state: Arc<(Mutex<(bool, bool)>, Condvar)>,
+}
+
+struct AllowCampaignControl;
+
+impl CampaignPrincipalAuthorizer for AllowCampaignControl {
+    fn authorize(
+        &self,
+        _principal: &CampaignPrincipal,
+        _operation: CampaignServiceOperation,
+        _campaign: &CampaignName,
+        _request_digest: CampaignHash,
+    ) -> Result<(), CampaignAuthorizationError> {
+        Ok(())
+    }
 }
 
 struct AllowAllAttemptScopes;
@@ -1529,6 +1547,201 @@ fn worker_count_is_bounded_by_static_and_supervisor_capacity() {
         LocalExecutorWorkerPool::start(capability(epoch), store, checkpoint_store(), workers),
         Err(LocalExecutorPoolConfigError::WorkerCountExceedsSlots)
     ));
+}
+
+#[test]
+fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
+    struct CountingBlockingWorker {
+        entered: Arc<(Mutex<usize>, Condvar)>,
+    }
+
+    impl LocalAttemptWorker for CountingBlockingWorker {
+        type Error = &'static str;
+
+        fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
+            {
+                let (entered, changed) = self.entered.as_ref();
+                *entered.lock().expect("worker entry count") += 1;
+                changed.notify_all();
+            }
+            assert!(
+                queued
+                    .cancellation()
+                    .wait_for_cancellation(Duration::from_secs(2)),
+                "worker did not observe shutdown cancellation"
+            );
+            AttemptWorkResult::new(
+                queued,
+                Err(AttemptWorkerFailure::Canceled("control-path shutdown")),
+            )
+        }
+    }
+
+    const CONTROL_BOUND: Duration = Duration::from_millis(250);
+
+    let blobs = Arc::new(MemoryBlobBackend::new(
+        "busy-campaign-control",
+        64 * 1024 * 1024,
+    ));
+    let repository = Arc::new(CampaignRepository::new(
+        blobs,
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let campaign = "busy-campaign-control";
+    let (lineage, _, _, admitted, _) = campaign_attempt_fixture(&repository, campaign);
+    let running = repository
+        .apply_control(
+            campaign,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.busy-control.resume.v1",
+                    b"resume",
+                )),
+                expected_snapshot: admitted.new_snapshot,
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume busy-control campaign");
+
+    let epoch = DaemonEpoch::from_bytes([0xa0; 16]).expect("daemon epoch");
+    let supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(2, 2, 4096, 8192, 64).expect("two-slot capacity"),
+    );
+    let capability =
+        LocalExecutorCapabilityService::new(supervisor, description_with_slots(epoch, 2))
+            .expect("two-slot capability");
+    let entered = Arc::new((Mutex::new(0), Condvar::new()));
+    let pool = LocalExecutorWorkerPool::start(
+        capability,
+        CampaignExecutorStore::new(Arc::clone(&repository)),
+        checkpoint_store(),
+        (0..2)
+            .map(|_| CountingBlockingWorker {
+                entered: Arc::clone(&entered),
+            })
+            .collect(),
+    )
+    .expect("two-worker pool");
+    let mut executor = pool.service();
+    for byte in [0xa1, 0xa2] {
+        assert!(matches!(
+            executor
+                .submit_attempt(&request(epoch, byte))
+                .expect("submit blocking attempt")
+                .disposition(),
+            SubmitAttemptDisposition::Accepted { .. }
+        ));
+    }
+    let (entered_count, changed) = entered.as_ref();
+    let entered_count = changed
+        .wait_timeout_while(
+            entered_count.lock().expect("worker entry count"),
+            Duration::from_secs(2),
+            |entered| *entered != 2,
+        )
+        .expect("worker entry notification")
+        .0;
+    assert_eq!(*entered_count, 2, "both worker slots must be occupied");
+    drop(entered_count);
+    assert_eq!(
+        executor.report().expect("saturated pool report").active(),
+        2
+    );
+
+    let principal = CampaignPrincipal::new("operator:lazy-frontier").expect("principal");
+    let name = CampaignName::new(campaign).expect("campaign name");
+    let client = CampaignClient::new(RepositoryCampaignService::new(
+        repository.as_ref(),
+        AllowCampaignControl,
+    ));
+    let started = Instant::now();
+    let paused = client
+        .apply_campaign_command(
+            &ApplyCampaignCommandRequest::new(
+                principal.clone(),
+                name.clone(),
+                ControlRequest {
+                    command: CampaignCommandId::from_hash(CampaignHash::derive(
+                        "crucible.test.busy-control.pause.v1",
+                        b"pause",
+                    )),
+                    expected_snapshot: running.new_snapshot,
+                    action: CampaignControlAction::Pause(ActiveAttemptPolicy::Drain),
+                },
+            )
+            .expect("pause request"),
+        )
+        .expect("pause while every executor slot is busy");
+    let status = client
+        .get_campaign_status(
+            &GetCampaignStatusRequest::new(principal.clone(), name.clone(), paused.new_snapshot())
+                .expect("status request"),
+        )
+        .expect("status while every executor slot is busy");
+    assert_eq!(status.snapshot(), paused.new_snapshot());
+    let pinned = client
+        .pin_campaign(
+            &PinCampaignRequest::new(
+                principal,
+                name,
+                PinRequest {
+                    command: CampaignCommandId::from_hash(CampaignHash::derive(
+                        "crucible.test.busy-control.pin.v1",
+                        b"pin",
+                    )),
+                    expected_snapshot: paused.new_snapshot(),
+                    change: PinChange::new(
+                        lineage.genesis(),
+                        Some(PinRetention::Thin),
+                        "retain busy-control genesis",
+                    )
+                    .expect("pin change"),
+                },
+            )
+            .expect("pin request"),
+        )
+        .expect("pin while every executor slot is busy");
+    assert_ne!(pinned.new_snapshot(), paused.new_snapshot());
+    assert!(
+        started.elapsed() < CONTROL_BOUND,
+        "pause, status, and pin exceeded the bounded control path"
+    );
+    assert_eq!(
+        executor
+            .report()
+            .expect("post-control pool report")
+            .active(),
+        2
+    );
+
+    let shutdown_started = Instant::now();
+    pool.request_shutdown();
+    assert!(
+        shutdown_started.elapsed() < CONTROL_BOUND,
+        "shutdown acknowledgement exceeded the bounded control path"
+    );
+    let (joined_tx, joined_rx) = mpsc::sync_channel(1);
+    let joiner = thread::spawn(move || {
+        joined_tx
+            .send(pool.shutdown_and_join_with_timeout(CONTROL_BOUND))
+            .expect("publish busy pool shutdown result");
+    });
+    let remaining = CONTROL_BOUND.saturating_sub(shutdown_started.elapsed());
+    let report = joined_rx
+        .recv_timeout(remaining)
+        .expect("busy pool cleanup and joining exceeded the bounded shutdown path")
+        .expect("bounded busy pool shutdown");
+    joiner.join().expect("shutdown waiter");
+    assert!(
+        shutdown_started.elapsed() < CONTROL_BOUND,
+        "worker cleanup and joining exceeded the bounded shutdown path"
+    );
+    assert_eq!(report.active(), 0);
+    assert_eq!(report.executions(), 2);
+    assert_eq!(report.terminal_stops(), 2);
 }
 
 #[test]

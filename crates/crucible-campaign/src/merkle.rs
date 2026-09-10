@@ -15,6 +15,8 @@ use thiserror::Error;
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{CampaignCodecError, CampaignHash, CampaignRecordKind, ChildReference, ObjectEnvelope};
 
+mod bulk;
+
 const MERKLE_NODE_SCHEMA_VERSION: u32 = 1;
 const MAX_PAGE_ITEMS: usize = 10_000;
 /// Maximum entries in one proof-bearing public scan page.
