@@ -6422,6 +6422,53 @@ socket/service units, protected root provisioning, lifecycle integration, and
 an enforcing VM handshake all remain open. No readiness or task checkbox
 changes.
 
+Commit `f23241ee3` adds a transport-only retained Unix stream primitive. It
+adopts one already-connected Unix `SOCK_STREAM` descriptor, rejects a listener,
+an unconnected socket, or a non-Unix/non-stream descriptor, and consumes the
+owned descriptor on every rejection. Adoption sets only `FD_CLOEXEC`; a
+regression begins with close-on-exec cleared, `O_NONBLOCK` set, and
+`SO_PASSCRED` enabled, then proves the file-status flags and socket option are
+unchanged. A nonzero `SO_COOKIE` observation surrounds `SO_PEERCRED` and
+`SO_PEERPIDFD` capture, and the pidfd's initial PID must equal the connection
+credential PID.
+
+The retained stream can issue an `F_DUPFD_CLOEXEC` duplicate only after the
+duplicate's socket cookie matches the retained source. Its lifetime-bound
+wrapper borrows the source peer evidence instead of recapturing identity from
+another connection. The API explicitly does not prevent a caller from using or
+duplicating an ordinary descriptor borrow, does not authenticate an
+application role, and does not prove which process later uses a delegated
+descriptor. The three descriptor-close postcondition groups run in separate
+bounded exact-test subprocesses so parallel descriptor allocation cannot reuse
+a just-closed integer before its postcondition is inspected.
+
+Qualification used a clean archive of exact parent `81ea8e1bb` plus only
+`crates/aos-sandbox-linux/src/lib.rs`, `uapi.rs`, and the new
+`unix_stream.rs`. Their SHA-256 digests were respectively
+`992fa8004aad3165d2090dde043fd035d0d3e658caa8a429b801a055065625c5`,
+`7c4d5827e7cddb02fa499ce8ceba33668dd9aa3c101c25c0b99b274ad7c7d60a`,
+and `a3b9767308777d882d082b6925c8eeb00b4bd1fece4ccce96d26defd8db1032b`.
+The pinned realized AOS development environment passed an empty exact-package
+format check, all 12 focused stream tests, 140 Linux library tests with two
+kernel fixture tests ignored, and all 180 Network library tests.
+
+The first clean-target compile terminated inside the shared `sccache` process
+before a crate test ran. Qualification therefore used a fresh target with the
+cache wrapper disabled. A later unchanged-source full Linux run passed every
+stream test but hit the pre-existing seqpacket listener send-after-close
+assertion; that exact regression then passed alone, and the complete Linux
+rerun passed as reported above. The failed run, isolated rerun, and final full
+run were retained separately rather than representing the first full run as
+clean.
+
+No namespace-inspector code consumes this primitive yet. In particular, this
+commit does not connect to or speak the direct systemd manager protocol, does
+not authenticate the stream peer as PID 1 or the Manager role, and does not
+query or bind a socket-activated service instance. The one-shot inspector
+binary, manager helper, activation constructor, Ready/response adapter,
+socket/service units, protected roots, enforcing-MAC deployment, and VM
+handshake remain absent. No production readiness or task checkbox changes.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
