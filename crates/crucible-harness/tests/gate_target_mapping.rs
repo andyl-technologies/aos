@@ -229,6 +229,16 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate_campaign_statistics"
             ),
             (
+                "gate:branch-point-model",
+                "crucible-campaign",
+                "gate_branch_point_model"
+            ),
+            (
+                "gate:lazy-frontier",
+                "crucible-campaign",
+                "gate_lazy_frontier"
+            ),
+            (
                 "gate:attempt-idempotence",
                 "crucible-campaign",
                 "gate_attempt_idempotence"
@@ -252,6 +262,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate:campaign-store-composition",
                 "crucible-cli",
                 "gate_campaign_store_composition"
+            ),
+            (
+                "gate:campaign-component-contract",
+                "crucible-daemon",
+                "gate_campaign_component_contract"
             ),
             (
                 "gate:scheduler-liveness",

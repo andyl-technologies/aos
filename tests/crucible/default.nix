@@ -1198,10 +1198,13 @@ in rec {
         "checks.crucible.phase2.gates.abiConformance" = phase2.gates.abiConformance;
         "checks.crucible.phase2.gates.typedChoice" = phase2.gates.typedChoice;
         "checks.crucible.phase4.gates.attemptIdempotence" = phase4.gates.attemptIdempotence;
+        "checks.crucible.phase4.gates.branchPointModel" = phase4.gates.branchPointModel;
         "checks.crucible.phase4.gates.campaignMutationScaling" = phase4.gates.campaignMutationScaling;
         "checks.crucible.phase4.gates.campaignStatistics" = phase4.gates.campaignStatistics;
+        "checks.crucible.phase4.gates.lazyFrontier" = phase4.gates.lazyFrontier;
         "checks.crucible.phase5.gates.campaignStoreComposition" = phase5.gates.campaignStoreComposition;
         "checks.crucible.phase5.gates.campaignStoreEquivalence" = phase5.gates.campaignStoreEquivalence;
+        "checks.crucible.phase7.qemuHotForkEquivalenceVm" = phase7.qemuHotForkEquivalenceVm;
       };
     };
     gates = rec {
@@ -1243,6 +1246,43 @@ in rec {
           ];
         };
         dependencies = [phase1.gates.campaignModel phase2.gates.typedChoice];
+      };
+      lazyFrontier = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase4.gates.lazyFrontier";
+        # lint needle: lazyFrontier = import ./phase4-lazy-frontier.nix
+        gate = import ./phase4-lazy-frontier.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase4.gates.lazyFrontier";
+          taskIds = ["T-CAM-4.1" "T-CAM-4.2" "T-CAM-4.3" "T-CAM-4.4" "T-CAM-4.5" "T-CAM-4.6"];
+          dependencies = [
+            phase1.gates.campaignModel.rawGate
+            phase2.gates.typedChoice.rawGate
+          ];
+        };
+        dependencies = [phase1.gates.campaignModel phase2.gates.typedChoice];
+      };
+      branchPointModel = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase4.gates.branchPointModel";
+        # lint needle: branchPointModel = import ./phase4-branch-point-model.nix
+        gate = import ./phase4-branch-point-model.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase4.gates.branchPointModel";
+          taskIds = ["T-CAM-4.1" "T-CAM-4.2" "T-CAM-4.3" "T-CAM-4.4"];
+          dependencies = [
+            attemptIdempotence.rawGate
+            campaignStatistics.rawGate
+            lazyFrontier.rawGate
+            phase1.gates.campaignModel.rawGate
+            phase2.gates.typedChoice.rawGate
+          ];
+        };
+        dependencies = [
+          attemptIdempotence
+          campaignStatistics
+          lazyFrontier
+          phase1.gates.campaignModel
+          phase2.gates.typedChoice
+        ];
       };
       campaignMutationScaling = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.campaignMutationScaling";
@@ -2656,6 +2696,11 @@ in rec {
   };
   phase7 = {
     signalSharedCause = import ./phase7-signal-shared-cause.nix {inherit pkgs lib;};
+    qemuHotForkEquivalenceVm = import ./phase7-qemu-hot-fork-equivalence-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.qemuHotForkEquivalenceVm";
+      taskIds = ["T-CAM-6.5" "T-CAM-7.6"];
+    };
     debuggerPackage = import ./phase7-debugger-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.debuggerPackage";
