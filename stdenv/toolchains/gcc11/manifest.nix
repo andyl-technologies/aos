@@ -373,11 +373,19 @@ in {
     version = "8.32";
     url = "https://mirrors.kernel.org/gnu/coreutils/coreutils-8.32.tar.xz";
     hash = "0zds26w4h65w75x3xpdi32hws3vb3idj5n4pm9zrny4mm6pk36jy";
+    postUnpack =
+      if hostPlatform.constraints.cpu != "x86_64"
+      then ''
+        # These architectures provide only getdents64. The empty-directory
+        # existence probe passes no buffer, so it needs no dirent conversion.
+        sed -i 's/SYS_getdents,/SYS_getdents64,/' src/ls.c
+      ''
+      else "";
     buildDeps = autotoolsDeps ++ [perl];
     makeInfo = "${texinfo}/bin/makeinfo";
     configureFlags = tripletNoNls;
     postConfigure =
-      if hostPlatform.constraints.cpu == "aarch64"
+      if hostPlatform.constraints.cpu != "x86_64"
       then ''
         # stdbuf preloads this shared library; it cannot embed static libc.
         # Keep the executable link flags and select shared libc only here.
