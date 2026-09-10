@@ -172,6 +172,22 @@ impl CampaignRepository {
             })
     }
 
+    pub(crate) fn finding_candidate_bundle_with_proof(
+        &self,
+        root: ContentId,
+        bundle: FindingCandidateBundleId,
+    ) -> Result<(FindingCandidateBundle, MerkleMapLookupProof), CampaignRepositoryError> {
+        let value = self.load_finding_candidate_bundle(bundle)?;
+        let key = finding_candidate_occurrence_key(bundle);
+        let (indexed, proof) = self.merkle.get_with_proof(root, key)?;
+        if indexed != Some(bundle.content_id()) {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-finding-candidate-is-not-in-occurrence-index",
+            });
+        }
+        Ok((value, proof))
+    }
+
     pub(crate) fn attempt_with_proof(
         &self,
         root: ContentId,

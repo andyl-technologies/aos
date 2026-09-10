@@ -2,8 +2,10 @@
 
 use super::*;
 use crate::{
-    MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS, QueryCampaignFindingOccurrencesRequest,
-    QueryCampaignFindingOccurrencesResponse,
+    CampaignFindingOccurrenceObject, CampaignFindingOccurrenceObjectKind,
+    GetCampaignFindingOccurrenceObjectRequest, GetCampaignFindingOccurrenceObjectResponse,
+    MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+    QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
 };
 
 /// Installs a frozen historical finding through the same snapshot transition
@@ -846,7 +848,7 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
 
 #[test]
 fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
-    let (repository, lineage, policy, blobs) = counted_fixture();
+    let (repository, lineage, policy, blobs) = fixture_with_quota(192 * 1024 * 1024);
     let campaign = CampaignName::new("finding-candidate-incorporation").expect("campaign name");
     let (_, admitted, observation) = admitted_observation_fixture(
         &repository,
@@ -1035,9 +1037,9 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
             second_observation.child_content(),
             fingerprint,
             1,
-            b"verified second original candidate reproduction".to_vec(),
+            vec![b'x'; 32 * 1024 * 1024],
         )
-        .expect("publish second original reproduction");
+        .expect("publish maximum-payload second original reproduction");
     let second_final_state =
         CampaignHash::derive("test-finding", b"second durable candidate final state");
     let second_minimization = FindingMinimizationEvidence::new(
@@ -1063,10 +1065,10 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
             second_observation.child_content(),
             fingerprint,
             1,
-            b"verified second minimized candidate reproduction".to_vec(),
+            vec![b'm'; 32 * 1024 * 1024],
             second_minimization.clone(),
         )
-        .expect("publish second minimized reproduction");
+        .expect("publish maximum-payload second minimized reproduction");
     let second_signature_minimization = FindingSignatureMinimizationEvidence::new(
         &signature,
         &second_minimization,
@@ -1088,6 +1090,94 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         .publish_finding_candidate_bundle(&second_bundle)
         .expect("publish second finding candidate bundle");
     assert_ne!(second_bundle_id, bundle_id);
+
+    let legacy_no_min_occurrences = repository
+        .merkle
+        .insert(
+            MerkleMap::empty_content_id().expect("empty legacy occurrence root"),
+            finding_occurrence_key(observed.observation),
+            observed.observation.content_id(),
+        )
+        .expect("legacy no-min occurrence root")
+        .content_id();
+    let legacy_no_min_findings = [
+        (
+            "finding-candidate-v1-no-min",
+            1,
+            Finding::new(
+                signature.clone(),
+                observed.observation,
+                original,
+                second_observed.new_snapshot,
+                FindingOccurrenceSet::new(legacy_no_min_occurrences, 1, observed.observation)
+                    .expect("schema-v1 no-min occurrence set"),
+                None,
+                BTreeSet::new(),
+            )
+            .expect("schema-v1 no-min finding"),
+        ),
+        (
+            "finding-candidate-v2-no-min",
+            2,
+            Finding::new_with_retention(
+                signature.clone(),
+                observed.observation,
+                original,
+                second_observed.new_snapshot,
+                FindingOccurrenceSet::new(legacy_no_min_occurrences, 1, observed.observation)
+                    .expect("schema-v2 no-min occurrence set"),
+                None,
+                FindingExactPins::default(),
+            )
+            .expect("schema-v2 no-min finding"),
+        ),
+    ];
+    for (campaign_name, schema_version, legacy) in legacy_no_min_findings {
+        assert_eq!(legacy.schema_version(), schema_version);
+        let legacy_snapshot = install_historical_finding_successor(
+            &repository,
+            campaign_name,
+            second_observed.new_snapshot,
+            &legacy,
+        );
+        let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+        assert_eq!(
+            cold.head(campaign_name)
+                .expect("cold legacy no-min history validation")
+                .snapshot_id(),
+            legacy_snapshot
+        );
+
+        let upgraded = cold
+            .incorporate_finding_candidate_bundle(campaign_name, legacy_snapshot, second_bundle_id)
+            .expect("upgrade no-min legacy finding with distinct candidate");
+        let upgraded_finding = cold
+            .read_finding(upgraded.finding.content_id())
+            .expect("upgraded no-min finding");
+        assert_eq!(upgraded_finding.schema_version(), 4);
+        assert_eq!(upgraded_finding.observation(), observed.observation);
+        assert_eq!(upgraded_finding.reproduction(), original);
+        assert_eq!(upgraded_finding.minimized(), None);
+        assert_eq!(upgraded_finding.occurrence_count(), 2);
+        assert_eq!(upgraded_finding.candidate_occurrence_count(), 1);
+        assert_eq!(upgraded_finding.candidate_bundle(), Some(second_bundle_id));
+        assert_eq!(
+            upgraded_finding.latest_candidate_bundle(),
+            Some(second_bundle_id)
+        );
+        assert_ne!(second_bundle.observation(), upgraded_finding.observation());
+        assert_ne!(
+            second_bundle.reproduction(),
+            upgraded_finding.reproduction()
+        );
+        cold.evict_local_checkpoint(upgraded.new_snapshot.content_id());
+        assert_eq!(
+            cold.head(campaign_name)
+                .expect("cold no-min legacy-to-v4 history validation")
+                .snapshot_id(),
+            upgraded.new_snapshot
+        );
+    }
 
     let fresh_ref = campaign_ref("finding-candidate-fresh-v4").expect("fresh campaign ref");
     assert!(matches!(
@@ -1111,6 +1201,44 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
     assert_eq!(fresh_finding.schema_version(), 4);
     assert_eq!(fresh_finding.candidate_occurrence_count(), 1);
     assert_eq!(fresh_finding.candidate_bundle(), Some(bundle_id));
+
+    let downgraded_finding = Finding::new_with_candidate_bundle(
+        fresh_finding.signature().clone(),
+        fresh_finding.observation(),
+        fresh_finding.reproduction(),
+        fresh_finding.first_seen_snapshot(),
+        FindingOccurrenceSet::new(
+            fresh_finding.occurrences(),
+            fresh_finding.occurrence_count(),
+            fresh_finding.latest_occurrence(),
+        )
+        .expect("downgraded occurrence set"),
+        fresh_finding.minimized(),
+        fresh_finding.exact_pin_retention().clone(),
+        bundle_id,
+    )
+    .expect("schema-v3 downgrade candidate");
+    let downgraded_snapshot = install_historical_finding_successor(
+        &repository,
+        "finding-candidate-fresh-v4",
+        fresh.new_snapshot,
+        &downgraded_finding,
+    );
+    let cold_downgrade = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert!(matches!(
+        cold_downgrade.head("finding-candidate-fresh-v4"),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "finding-transition-cluster-regressed-or-replaced"
+        })
+    ));
+    assert_eq!(
+        cold_downgrade
+            .read_snapshot(downgraded_snapshot.content_id())
+            .expect("stored downgrade snapshot")
+            .snapshot
+            .parent(),
+        Some(fresh.new_snapshot)
+    );
 
     // Preserve an authentic schema-v3 predecessor, validate it from cold
     // storage, then upgrade it with the independently admitted occurrence.
@@ -1214,7 +1342,63 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
             .validate_for(&request)
             .expect("validate decoded occurrence page");
         for occurrence in response.entries() {
-            queried_bundle_ids.insert(occurrence.bundle().id().expect("queried bundle ID"));
+            let bundle_id = occurrence.bundle().id().expect("queried bundle ID");
+            queried_bundle_ids.insert(bundle_id);
+            for kind in [
+                CampaignFindingOccurrenceObjectKind::Observation,
+                CampaignFindingOccurrenceObjectKind::Reproduction,
+                CampaignFindingOccurrenceObjectKind::MinimizedReproduction,
+            ] {
+                let object_request = GetCampaignFindingOccurrenceObjectRequest::new(
+                    principal.clone(),
+                    campaign.clone(),
+                    incorporated.new_snapshot,
+                    incorporated.finding,
+                    bundle_id,
+                    kind,
+                )
+                .expect("occurrence object request");
+                let object_response = client
+                    .get_campaign_finding_occurrence_object(&object_request)
+                    .expect("authenticated occurrence object");
+                let encoded = object_response.canonical_bytes();
+                assert!(encoded.len() <= MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES);
+                if bundle_id == second_bundle_id
+                    && matches!(
+                        kind,
+                        CampaignFindingOccurrenceObjectKind::Reproduction
+                            | CampaignFindingOccurrenceObjectKind::MinimizedReproduction
+                    )
+                {
+                    assert!(encoded.len() > 32 * 1024 * 1024);
+                }
+                let decoded =
+                    GetCampaignFindingOccurrenceObjectResponse::from_canonical_bytes(&encoded)
+                        .expect("decode occurrence object response");
+                decoded
+                    .validate_for(&object_request)
+                    .expect("validate decoded occurrence object response");
+                match decoded.object() {
+                    CampaignFindingOccurrenceObject::Observation(value) => {
+                        assert_eq!(
+                            value.id().expect("observation ID"),
+                            occurrence.bundle().observation()
+                        );
+                    }
+                    CampaignFindingOccurrenceObject::Reproduction(value) => {
+                        assert_eq!(
+                            value.id().expect("reproduction ID"),
+                            occurrence.bundle().reproduction()
+                        );
+                    }
+                    CampaignFindingOccurrenceObject::MinimizedReproduction(value) => {
+                        assert_eq!(
+                            value.id().expect("minimized reproduction ID"),
+                            occurrence.bundle().minimized()
+                        );
+                    }
+                }
+            }
         }
         after = response.next_after();
         if after.is_none() {
