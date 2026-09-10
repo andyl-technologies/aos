@@ -594,14 +594,37 @@ impl CampaignLocalServiceConfig {
         policy: Arc<UnixPeerCampaignPolicy>,
         component_authorities: CampaignComponentAuthorities,
     ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+        self.prepare_repository_with_mode(
+            store,
+            state,
+            policy,
+            component_authorities,
+            CampaignRepositoryPreparationMode::Operational,
+        )
+    }
+
+    fn prepare_repository_with_mode(
+        &self,
+        store: CampaignLocalRepositoryStore,
+        state: CampaignStateOwner,
+        policy: Arc<UnixPeerCampaignPolicy>,
+        component_authorities: CampaignComponentAuthorities,
+        preparation_mode: CampaignRepositoryPreparationMode,
+    ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
         let (blobs, refs, maintenance) = store.into_parts();
-        let hot_fork_retention =
-            Arc::new(crate::DirectoryHotCheckpointFallbackRetentionStore::open(
-                self.state_directory.join(HOT_FORK_FALLBACK_DIRECTORY),
-            )?);
-        let transfer_journal = crate::DirectoryCampaignTransferJournal::open(
-            self.state_directory.join(CAMPAIGN_TRANSFER_DIRECTORY),
-        )?;
+        let hot_fork_root = self.state_directory.join(HOT_FORK_FALLBACK_DIRECTORY);
+        let transfer_root = self.state_directory.join(CAMPAIGN_TRANSFER_DIRECTORY);
+        let (hot_fork_retention, transfer_journal) = match preparation_mode {
+            CampaignRepositoryPreparationMode::Operational => (
+                crate::DirectoryHotCheckpointFallbackRetentionStore::open(hot_fork_root)?,
+                crate::DirectoryCampaignTransferJournal::open(transfer_root)?,
+            ),
+            CampaignRepositoryPreparationMode::ExistingObservational => (
+                crate::DirectoryHotCheckpointFallbackRetentionStore::open_existing(hot_fork_root)?,
+                crate::DirectoryCampaignTransferJournal::open_existing(transfer_root)?,
+            ),
+        };
+        let hot_fork_retention = Arc::new(hot_fork_retention);
         let transfer_identity = state.transfer_identity().to_owned();
         let (repository, planner_authority) = match component_authorities {
             Some((planner, debugger)) => {
@@ -647,6 +670,12 @@ impl CampaignLocalServiceConfig {
     pub fn open(&self) -> Result<CampaignLocalService, CampaignLocalServiceError> {
         self.prepare()?.bind()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CampaignRepositoryPreparationMode {
+    Operational,
+    ExistingObservational,
 }
 
 /// Exclusive pre-bind owner of one durable campaign repository.
@@ -729,6 +758,44 @@ impl PreparedCampaignStoppedOwner {
             transfer_identity: _,
         } = self;
         config.prepare_repository(store, state, policy, component_authorities)
+    }
+
+    /// Binds an observational store for generation-bound campaign GC.
+    ///
+    /// Existing hot-checkpoint and transfer journals are authenticated without
+    /// initialization or recovery. The returned prepared owner exposes the
+    /// usual narrow GC authority while continuously retaining the stopped-owner
+    /// lease acquired by [`CampaignLocalServiceConfig::acquire_existing_owner`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when the service profile is read
+    /// only, maintenance capability is absent, or existing retention state
+    /// cannot be authenticated without repair.
+    pub fn prepare_store_gc_with_store(
+        self,
+        store: CampaignLocalRepositoryStore,
+    ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+        let Self {
+            config,
+            policy,
+            state,
+            component_authorities,
+            transfer_identity: _,
+        } = self;
+        if config.mode == CampaignLocalServiceMode::ReadOnly {
+            return Err(CampaignLocalServiceError::StoreMaintenanceReadOnly);
+        }
+        if store.maintenance.is_none() {
+            return Err(CampaignLocalServiceError::StoreMaintenanceUnavailable);
+        }
+        config.prepare_repository_with_mode(
+            store,
+            state,
+            policy,
+            component_authorities,
+            CampaignRepositoryPreparationMode::ExistingObservational,
+        )
     }
 }
 
@@ -2086,7 +2153,7 @@ fn load_state_identity(
     let path = root.join(STATE_IDENTITY_FILE);
     let file: File = rustix::fs::open(
         &path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
     )
     .map_err(|source| {

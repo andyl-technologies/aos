@@ -1034,15 +1034,55 @@ crucible --format json store gc \
   apply
 ```
 
+To retire the plan instead of applying it, run this alternative. Any later
+collection must use a fresh journal path.
+
+```sh
+crucible --format json store gc \
+  --state "$CAMPAIGN_STATE" \
+  --policy "$CAMPAIGN_POLICY" \
+  --store "$STORE" \
+  --journal "$GC_JOURNAL" \
+  cancel
+```
+
 `plan` is non-destructive and reopens only the exact same durable journal.
-`apply` reacquires the ref, ledger, exact-pin, transfer, and physical-generation
-fences and refuses a stale plan before deletion. An interrupted apply leaves
+`cancel` durably retires a planned journal and can be repeated safely. Apply
+then refuses that journal before deletion; preserve it and use a new journal
+path for any later collection. After authenticating the stopped owner, cancel
+opens only that journal and leaves store recovery debris and unrelated
+operational state untouched. Plan and apply use existing-state, no-repair
+opens for the ref, ledger, exact-pin, transfer, and physical-generation fences;
+apply refuses a stale plan before deletion. An interrupted apply leaves
 recovery evidence; do not remove the journal or edit its files. After a
-successful apply, rerun `store verify`, authenticate a known retained object
-with `store ensure`, restart the daemon, and confirm the exact campaign head.
-The process-level operator regression performs this sequence against the
-generated worked-network fixture and also proves an authenticated orphan is
-reclaimed while the running campaign survives restart.
+successful apply, rerun `store verify`,
+authenticate a known retained object with `store ensure`, restart the daemon,
+and confirm the exact campaign head. The process-level operator regression
+performs this sequence against the generated worked-network fixture and also
+proves cancellation retains an authenticated orphan before a fresh plan
+reclaims it while the running campaign survives restart.
+
+Reclaim sparse physical bytes from one configured packed leaf with a separate,
+durable plan file:
+
+```sh
+crucible --format json store repack \
+  --store "$STORE" \
+  --node "$PACKED_NODE" \
+  --plan "$REPACK_PLAN" \
+  plan
+
+crucible --format json store repack \
+  --store "$STORE" \
+  --node "$PACKED_NODE" \
+  --plan "$REPACK_PLAN" \
+  apply
+```
+
+Keep the deployment and plan file unchanged between commands. Apply rejects a
+stale generation before changing pack files. Retrying the same applied plan is
+idempotent, and readers that already opened an old pack remain valid through
+the generation switch.
 
 ## Recovery rules
 

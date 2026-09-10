@@ -27,7 +27,7 @@ use crucible_campaign::{
     CampaignRepositoryError, ConfigurationId,
 };
 use crucible_cas::content_store::{ContentId, DurabilityRequirement, StoreError};
-use rustix::fs::{FlockOperation, flock};
+use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 use thiserror::Error;
 
 use crate::exact_pin_retention::authenticate_archive_checkpoint;
@@ -257,6 +257,31 @@ impl DirectoryCampaignTransferJournal {
         })?;
         let journal = Self { root, writer_lock };
         cleanup_staging(&journal.root.join(STAGING_DIRECTORY))?;
+        journal.visit_records(&mut |_, _| Ok(()))?;
+        Ok(journal)
+    }
+
+    /// Opens an existing transfer journal without creating or cleaning state.
+    ///
+    /// The root, records and staging directories, and writer lock must already
+    /// exist. Committed records are fully authenticated, while staging evidence
+    /// remains untouched for an explicit recovery operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignTransferJournalError`] when required state is absent
+    /// or malformed, another writer owns it, or the lock cannot be acquired.
+    pub fn open_existing(root: impl Into<PathBuf>) -> Result<Self, CampaignTransferJournalError> {
+        let root = root.into();
+        require_existing_directory(&root)?;
+        require_existing_directory(&root.join(RECORDS_DIRECTORY))?;
+        require_existing_directory(&root.join(STAGING_DIRECTORY))?;
+        let lock_path = root.join(WRITER_LOCK);
+        let writer_lock = open_existing_writer_lock(&lock_path)?;
+        flock(&writer_lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
+            io_error("lock-transfer-journal", &lock_path, io::Error::from(source))
+        })?;
+        let journal = Self { root, writer_lock };
         journal.visit_records(&mut |_, _| Ok(()))?;
         Ok(journal)
     }
@@ -1059,6 +1084,39 @@ fn create_child_directory(root: &Path, name: &str) -> Result<(), CampaignTransfe
         Err(source) => return Err(io_error("create-transfer-directory", &path, source)),
     }
     sync_directory(root)
+}
+
+fn require_existing_directory(path: &Path) -> Result<(), CampaignTransferJournalError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|source| io_error("stat-transfer-directory", path, source))?;
+    if !metadata.file_type().is_dir() {
+        return Err(CampaignTransferJournalError::UnexpectedEntry);
+    }
+    Ok(())
+}
+
+fn open_existing_writer_lock(path: &Path) -> Result<File, CampaignTransferJournalError> {
+    let file = File::from(
+        open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|source| {
+            io_error(
+                "open-transfer-journal-lock",
+                path,
+                io::Error::from_raw_os_error(source.raw_os_error()),
+            )
+        })?,
+    );
+    let metadata = file
+        .metadata()
+        .map_err(|source| io_error("stat-transfer-journal-lock", path, source))?;
+    if !metadata.file_type().is_file() {
+        return Err(CampaignTransferJournalError::UnexpectedEntry);
+    }
+    Ok(file)
 }
 
 fn cleanup_staging(path: &Path) -> Result<(), CampaignTransferJournalError> {

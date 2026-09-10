@@ -32,7 +32,7 @@ use crucible_campaign::{
     ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
     attempt_execution_basis_digest_for_start_mode,
 };
-use rustix::fs::{FlockOperation, flock};
+use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
 const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v13\0";
@@ -1488,6 +1488,43 @@ impl DirectoryAssignmentLedger {
         })
     }
 
+    /// Opens an existing durable ledger without creating or repairing state.
+    ///
+    /// This form is used while a GC plan is still observational. The root,
+    /// writer lock, and retention state must already exist, and an absent
+    /// retention state is rejected rather than initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssignmentLedgerError`] when required state is absent or
+    /// malformed, another writer owns it, or the lock cannot be acquired.
+    pub fn open_existing(root: impl Into<PathBuf>) -> Result<Self, AssignmentLedgerError> {
+        let root = root.into();
+        require_existing_directory(&root)?;
+        let lock_path = root.join("writer.lock");
+        let writer_lock = open_existing_writer_lock(&lock_path)?;
+        flock(&writer_lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
+            io_error(
+                "lock-writer",
+                &lock_path,
+                std::io::Error::from_raw_os_error(source.raw_os_error()),
+            )
+        })?;
+        let retention_path = root.join(RETENTION_STATE_FILE);
+        let retention_bytes = read_optional_with_limit(
+            &retention_path,
+            MAX_RETENTION_STATE_BYTES,
+            "retention-state-size",
+        )?
+        .ok_or_else(|| corrupt("retention-state-missing"))?;
+        let retention_state = decode_retention_state(&retention_bytes)?;
+        Ok(Self {
+            root,
+            writer_lock,
+            retention_state,
+        })
+    }
+
     /// Returns the physical ledger root.
     #[must_use]
     pub fn root(&self) -> &Path {
@@ -2687,11 +2724,29 @@ fn read_optional_with_limit(
     limit: u64,
     size_reason: &'static str,
 ) -> Result<Option<Vec<u8>>, AssignmentLedgerError> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => return Err(io_error("open-record", path, source)),
+    let descriptor = match open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(source) if source == rustix::io::Errno::NOENT => return Ok(None),
+        Err(source) => {
+            return Err(io_error(
+                "open-record",
+                path,
+                std::io::Error::from_raw_os_error(source.raw_os_error()),
+            ));
+        }
     };
+    let file = File::from(descriptor);
+    if !file
+        .metadata()
+        .map_err(|source| io_error("inspect-record", path, source))?
+        .is_file()
+    {
+        return Err(corrupt("record-not-regular-file"));
+    }
     let mut bytes = Vec::new();
     file.take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
@@ -2803,6 +2858,39 @@ fn create_directory_durable(path: &Path) -> Result<(), AssignmentLedgerError> {
         }
         Err(source) => Err(io_error("create-directory", path, source)),
     }
+}
+
+fn require_existing_directory(path: &Path) -> Result<(), AssignmentLedgerError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|source| io_error("inspect-directory", path, source))?;
+    if !metadata.file_type().is_dir() {
+        return Err(corrupt("existing-root-not-directory"));
+    }
+    Ok(())
+}
+
+fn open_existing_writer_lock(path: &Path) -> Result<File, AssignmentLedgerError> {
+    let file = File::from(
+        open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|source| {
+            io_error(
+                "open-writer-lock",
+                path,
+                std::io::Error::from_raw_os_error(source.raw_os_error()),
+            )
+        })?,
+    );
+    let metadata = file
+        .metadata()
+        .map_err(|source| io_error("inspect-writer-lock", path, source))?;
+    if !metadata.file_type().is_file() {
+        return Err(corrupt("writer-lock-not-regular-file"));
+    }
+    Ok(file)
 }
 
 fn sync_directory(path: &Path) -> Result<(), AssignmentLedgerError> {

@@ -253,6 +253,7 @@ fn verification_admin(
     StoreGraphAdmin {
         configuration: StoreGraphConfigurationId([0x31; 32]),
         physical,
+        packed_repack: BTreeMap::new(),
         s3_multipart_cleanup: BTreeMap::new(),
     }
 }

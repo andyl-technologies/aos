@@ -522,8 +522,10 @@ enum StoreCommand {
     Ensure(StoreEnsureArgs),
     /// Authenticate every bounded physical placement in one stable generation.
     Verify(StoreVerifyArgs),
-    /// Plan or apply stopped-owner campaign-store garbage collection.
+    /// Plan, cancel, or apply stopped-owner campaign-store garbage collection.
     Gc(CampaignStoreGcArgs),
+    /// Plan or apply deterministic repacking for one configured packed leaf.
+    Repack(StoreRepackArgs),
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -572,7 +574,32 @@ struct CampaignStoreGcArgs {
 enum CampaignStoreGcCommand {
     /// Inventory exact roots and persist a non-destructive deletion plan.
     Plan,
+    /// Durably cancel a planned journal before any deletion begins.
+    Cancel,
     /// Revalidate every generation and apply one persisted deletion plan.
+    Apply,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreRepackArgs {
+    /// Strict composed repository-store deployment file.
+    #[arg(long, value_name = "path")]
+    store: PathBuf,
+    /// Exact configured packed node ID.
+    #[arg(long, value_name = "id")]
+    node: String,
+    /// Durable canonical repack plan file.
+    #[arg(long, value_name = "path")]
+    plan: PathBuf,
+    #[command(subcommand)]
+    operation: StoreRepackCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum StoreRepackCommand {
+    /// Authenticate the current generation and persist its exact repack plan.
+    Plan,
+    /// Revalidate and apply one persisted exact-generation repack plan.
     Apply,
 }
 
@@ -2448,6 +2475,8 @@ mod cli_resume_fork;
 mod cli_run_save;
 #[path = "cli/campaign/gc.rs"]
 mod cli_store;
+#[path = "cli/campaign/repack.rs"]
+mod cli_store_repack;
 #[path = "cli/triage_debug.rs"]
 mod cli_triage_debug;
 #[path = "cli/verify_serve.rs"]

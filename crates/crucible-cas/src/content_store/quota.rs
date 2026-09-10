@@ -183,7 +183,7 @@ impl LogicalQuotaStore {
         let path = self.state_root.join(QUOTA_STATE_FILE);
         let descriptor = open(
             &path,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
         )
         .map_err(|source| StoreError::Io {
@@ -191,7 +191,21 @@ impl LogicalQuotaStore {
             path: path.clone(),
             source: std::io::Error::from_raw_os_error(source.raw_os_error()),
         })?;
-        let state = read_quota_state(File::from(descriptor), &path)?;
+        let file = File::from(descriptor);
+        if !file
+            .metadata()
+            .map_err(|source| StoreError::Io {
+                operation: "stat-existing-logical-quota-state",
+                path: path.clone(),
+                source,
+            })?
+            .is_file()
+        {
+            return Err(StoreError::InvalidComposition {
+                reason: "logical quota state is not a regular file",
+            });
+        }
+        let state = read_quota_state(file, &path)?;
         if state.binding != self.binding {
             return Err(StoreError::InvalidComposition {
                 reason: "logical quota state belongs to another graph configuration",

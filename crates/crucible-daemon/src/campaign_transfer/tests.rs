@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -175,6 +176,32 @@ fn reopening_cleans_a_torn_staging_file_without_losing_complete_records() {
             .contains(operation)
             .expect("complete record retained")
     );
+}
+
+#[test]
+fn existing_journal_open_preserves_staging_and_never_initializes_state() {
+    let temporary = tempfile::tempdir().expect("temporary parent");
+    let root = temporary.path().join("journal");
+
+    assert!(DirectoryCampaignTransferJournal::open_existing(&root).is_err());
+    assert!(!root.exists());
+    drop(DirectoryCampaignTransferJournal::open(&root).expect("initialize journal"));
+
+    let staging = root
+        .join(STAGING_DIRECTORY)
+        .join(format!("{}.staging", "b".repeat(64)));
+    fs::write(&staging, b"torn transfer record").expect("write staging evidence");
+    let journal =
+        DirectoryCampaignTransferJournal::open_existing(&root).expect("open existing journal");
+    assert_eq!(
+        fs::read(staging).expect("read staging evidence"),
+        b"torn transfer record"
+    );
+    drop(journal);
+
+    fs::rename(root.join(WRITER_LOCK), root.join("real.lock")).expect("move real lock");
+    symlink("real.lock", root.join(WRITER_LOCK)).expect("replace lock with symlink");
+    assert!(DirectoryCampaignTransferJournal::open_existing(&root).is_err());
 }
 
 #[test]

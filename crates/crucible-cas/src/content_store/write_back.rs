@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rustix::fs::{FlockOperation, flock};
+use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
 use super::directory::create_dir_all_durable;
 use super::{
@@ -320,31 +320,7 @@ impl WriteBackJournal {
         operation: FlockOperation,
     ) -> Result<File, StoreError> {
         let path = self.root.join(name);
-        let descriptor = rustix::fs::open(
-            &path,
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::CLOEXEC
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::NONBLOCK,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|source| {
-            io_error(
-                "open existing write-back journal lock",
-                &path,
-                io::Error::from_raw_os_error(source.raw_os_error()),
-            )
-        })?;
-        let file = File::from(descriptor);
-        if !file
-            .metadata()
-            .map_err(|source| io_error("inspect write-back journal lock", &path, source))?
-            .is_file()
-        {
-            return Err(StoreError::InvalidComposition {
-                reason: "write-back journal lock is not a regular file",
-            });
-        }
+        let file = open_existing_regular_file(&path, "open existing write-back journal lock")?;
         flock(&file, operation)
             .map_err(|source| io_error("lock existing write-back journal", &path, source.into()))?;
         Ok(file)
@@ -519,11 +495,15 @@ impl WriteBackJournal {
         repair_torn_tail: bool,
     ) -> Result<(), StoreError> {
         let path = self.log_path();
-        let mut options = OpenOptions::new();
-        options.read(true).write(repair_torn_tail);
-        let mut log = options
-            .open(&path)
-            .map_err(|source| io_error("open write-back journal", &path, source))?;
+        let mut log = if repair_torn_tail {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .map_err(|source| io_error("open write-back journal", &path, source))?
+        } else {
+            open_existing_regular_file(&path, "open existing write-back journal")?
+        };
         let metadata = log
             .metadata()
             .map_err(|source| io_error("stat write-back journal", &path, source))?;
@@ -1082,6 +1062,26 @@ fn read_prefix(reader: &mut File, output: &mut [u8; 4]) -> io::Result<PrefixRead
         }
     }
     Ok(PrefixRead::Complete)
+}
+
+fn open_existing_regular_file(path: &Path, operation: &'static str) -> Result<File, StoreError> {
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|source| io_error(operation, path, source.into()))?;
+    let file = File::from(descriptor);
+    if !file
+        .metadata()
+        .map_err(|source| io_error(operation, path, source))?
+        .is_file()
+    {
+        return Err(StoreError::InvalidComposition {
+            reason: "existing write-back journal path is not a regular file",
+        });
+    }
+    Ok(file)
 }
 
 fn truncate_torn_tail(log: &mut File, path: &Path, offset: u64) -> Result<(), StoreError> {

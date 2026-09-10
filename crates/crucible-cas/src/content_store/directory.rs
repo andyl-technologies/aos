@@ -246,13 +246,34 @@ impl DirectoryBlobBackend {
         &self,
     ) -> Result<DirectoryInventoryState, StoreError> {
         let path = self.inventory_admin_directory().join(INVENTORY_STATE_FILE);
-        File::open(&path)
+        let descriptor = rustix::fs::open(
+            &path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|source| StoreError::Io {
+            operation: "open-existing-inventory-state",
+            path: path.clone(),
+            source: io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        let file = File::from(descriptor);
+        if !file
+            .metadata()
             .map_err(|source| StoreError::Io {
-                operation: "read-existing-inventory-state",
+                operation: "inspect-existing-inventory-state",
                 path: path.clone(),
                 source,
-            })
-            .and_then(|file| read_inventory_state(file, &path))
+            })?
+            .is_file()
+        {
+            return Err(StoreError::InvalidComposition {
+                reason: "existing inventory state is not a regular file",
+            });
+        }
+        read_inventory_state(file, &path)
     }
 
     pub(super) fn advance_inventory_state(

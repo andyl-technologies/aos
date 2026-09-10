@@ -32,7 +32,7 @@ use crucible_cas::content_store::{
     StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
     WriteBackRetentionAdmin,
 };
-use crucible_daemon::DirectoryCampaignGcJournal;
+use crucible_daemon::{DirectoryAssignmentLedger, DirectoryCampaignGcJournal};
 use serde_json::Value;
 use tempfile::{NamedTempFile, TempDir};
 
@@ -43,6 +43,7 @@ const MAX_CAMPAIGN_SERVICE_STDERR_BYTES: u64 = 64 * 1024;
 const MAXIMUM_LOGICAL_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_PENDING_OBJECTS: u64 = 65_536;
 const MAXIMUM_PENDING_BYTES: u64 = 512 * 1024 * 1024;
+const PRIMARY_PACK_BYTES: u64 = 64 * 1024;
 
 #[path = "support/campaign_packaged_process.rs"]
 mod packaged;
@@ -114,7 +115,7 @@ fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), 
     )?;
     assert_eq!(store_status["schema"], "crucible.cli.store-status.v1");
     assert_eq!(store_status["root"], "primary");
-    assert_eq!(store_status["nodes"][0]["kind"], "directory");
+    assert_eq!(store_status["nodes"][0]["kind"], "packed");
 
     let ensured = run_json(
         command(&["--format", "jsonl", "store", "ensure", &scenario, "--in"]).arg(&fixture.store),
@@ -129,10 +130,19 @@ fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), 
 
     service.stop()?;
 
+    // Model the empty retained state owned by the optional packaged executor.
+    // Offline GC authenticates this journal observationally and must not
+    // initialize it itself.
+    drop(DirectoryAssignmentLedger::open(
+        fixture.state.join("executor-ledger"),
+    )?);
+
     let orphan_bytes = b"authenticated campaign-store process-flight orphan";
     let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
-    DirectoryBlobBackend::new("process-flight-primary", &fixture.objects)
-        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.to_vec()))?;
+    {
+        let backend = PackedBlobBackend::open("primary", &fixture.objects, PRIMARY_PACK_BYTES)?;
+        backend.put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.to_vec()))?;
+    }
     let orphan_id = orphan.encode();
     let orphan_ensured = run_json(
         command(&["--format", "jsonl", "store", "ensure", &orphan_id, "--in"]).arg(&fixture.store),
@@ -156,8 +166,68 @@ fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), 
     assert_eq!(json_u64(&planned, "reachable_cache_candidates")?, 0);
     assert!(json_u64(&planned, "candidate_logical_bytes")? >= orphan_bytes.len() as u64);
 
-    let applied = run_json(&mut fixture.gc_command("apply"), "apply stopped-owner GC")?;
-    assert_eq!(applied["plan"], planned["plan"]);
+    let packs = fixture.objects.join("packs");
+    let complete_pack = fs::read_dir(&packs)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "pack")
+        })
+        .ok_or("packed campaign fixture has no complete pack")?;
+    let orphan_pack = packs.join(format!("{}.pack", "f".repeat(64)));
+    if orphan_pack == complete_pack {
+        return Err("packed orphan fixture collided with a referenced pack".into());
+    }
+    fs::copy(&complete_pack, &orphan_pack)?;
+    let staging_pack = packs.join(format!(".pack.tmp-{}-4242", std::process::id()));
+    fs::write(&staging_pack, b"abandoned packed staging evidence")?;
+    let recovery_debris = BTreeMap::from([
+        (orphan_pack.clone(), fs::read(&orphan_pack)?),
+        (staging_pack.clone(), fs::read(&staging_pack)?),
+    ]);
+
+    let cancelled = run_json(&mut fixture.gc_command("cancel"), "cancel stopped-owner GC")?;
+    assert_eq!(cancelled["plan"], planned["plan"]);
+    assert_eq!(cancelled["phase"], "cancelled");
+    assert_eq!(cancelled["journal_disposition"], "cancelled");
+    assert_recovery_debris(&recovery_debris)?;
+
+    let cancellation_replay = run_json(
+        &mut fixture.gc_command("cancel"),
+        "replay stopped-owner GC cancellation",
+    )?;
+    assert_eq!(cancellation_replay["plan"], planned["plan"]);
+    assert_eq!(
+        cancellation_replay["journal_disposition"],
+        "already-cancelled"
+    );
+    assert_recovery_debris(&recovery_debris)?;
+
+    let cancelled_apply = fixture.gc_command("apply").output()?;
+    assert!(!cancelled_apply.status.success());
+    assert!(
+        String::from_utf8_lossy(&cancelled_apply.stderr)
+            .contains("campaign GC journal records a cancelled plan")
+    );
+    assert_recovery_debris(&recovery_debris)?;
+    let retained_orphan = run_json(
+        command(&["--format", "jsonl", "store", "ensure", &orphan_id, "--in"]).arg(&fixture.store),
+        "authenticate orphan after cancelled GC apply",
+    )?;
+    assert_eq!(retained_orphan["authenticated"], true);
+
+    let replacement_journal = fixture.journal.with_extension("replacement");
+    let replacement_plan = run_json(
+        &mut fixture.gc_command_at("plan", &replacement_journal),
+        "plan replacement stopped-owner GC",
+    )?;
+    let applied = run_json(
+        &mut fixture.gc_command_at("apply", &replacement_journal),
+        "apply replacement stopped-owner GC",
+    )?;
+    assert_eq!(applied["plan"], replacement_plan["plan"]);
     assert_eq!(applied["phase"], "complete");
     assert_eq!(applied["apply_status"], "applied");
 
@@ -1192,8 +1262,9 @@ ref_directory = {refs:?}
 [[nodes]]
 id = "primary"
 [nodes.spec]
-kind = "directory"
+kind = "packed"
 root = {objects:?}
+target_pack_bytes = {PRIMARY_PACK_BYTES}
 "#,
             ),
         )?;
@@ -1610,6 +1681,19 @@ fn require_success(output: &Output, operation: &str) -> Result<(), Box<dyn Error
         String::from_utf8_lossy(&output.stderr),
     )
     .into())
+}
+
+fn assert_recovery_debris(expected: &BTreeMap<PathBuf, Vec<u8>>) -> Result<(), Box<dyn Error>> {
+    for (path, bytes) in expected {
+        if fs::read(path)? != *bytes {
+            return Err(format!(
+                "packed recovery debris changed during observational GC: {}",
+                path.display()
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn json_string(value: &Value, field: &str) -> Result<String, Box<dyn Error>> {

@@ -25,7 +25,7 @@ use crucible_campaign::{
     CampaignCodecError, CampaignHash, CampaignLineageId, ConfigurationArtifactId, ExactCheckpointId,
 };
 use crucible_cas::content_store::ContentId;
-use rustix::fs::{FlockOperation, flock};
+use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 use thiserror::Error;
 
 use crate::{HotCheckpointFallback, QemuHotForkTemplateKey};
@@ -346,6 +346,42 @@ impl DirectoryHotCheckpointFallbackRetentionStore {
             )
         })?;
         recover_staging_records(&root)?;
+        let records = load_directory_records(&root)?;
+        Ok(Self {
+            inner: Arc::new(DirectoryHotCheckpointFallbackRetentionInner {
+                root,
+                writer_lock,
+                lifecycle: RwLock::new(()),
+                records: Mutex::new(records),
+            }),
+        })
+    }
+
+    /// Opens an existing catalog without creating state or recovering staging files.
+    ///
+    /// The root and writer lock must already exist. Durable records are fully
+    /// authenticated, while staging evidence remains untouched until an
+    /// explicitly authorized recovery operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HotCheckpointFallbackRetentionError`] when required state is
+    /// absent or malformed, another writer owns it, or the lock cannot be
+    /// acquired.
+    pub fn open_existing(
+        root: impl Into<PathBuf>,
+    ) -> Result<Self, HotCheckpointFallbackRetentionError> {
+        let root = root.into();
+        require_existing_directory(&root)?;
+        let lock_path = root.join("writer.lock");
+        let writer_lock = open_existing_writer_lock(&lock_path)?;
+        flock(&writer_lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
+            io_error(
+                "lock-writer",
+                &lock_path,
+                std::io::Error::from_raw_os_error(source.raw_os_error()),
+            )
+        })?;
         let records = load_directory_records(&root)?;
         Ok(Self {
             inner: Arc::new(DirectoryHotCheckpointFallbackRetentionInner {
@@ -782,6 +818,39 @@ fn create_directory_durable(path: &Path) -> Result<(), HotCheckpointFallbackRete
         }
     }
     Ok(())
+}
+
+fn require_existing_directory(path: &Path) -> Result<(), HotCheckpointFallbackRetentionError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|source| io_error("inspect-directory", path, source))?;
+    if !metadata.file_type().is_dir() {
+        return Err(corrupt("existing-root-not-directory"));
+    }
+    Ok(())
+}
+
+fn open_existing_writer_lock(path: &Path) -> Result<File, HotCheckpointFallbackRetentionError> {
+    let file = File::from(
+        open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|source| {
+            io_error(
+                "open-writer-lock",
+                path,
+                std::io::Error::from_raw_os_error(source.raw_os_error()),
+            )
+        })?,
+    );
+    let metadata = file
+        .metadata()
+        .map_err(|source| io_error("inspect-writer-lock", path, source))?;
+    if !metadata.file_type().is_file() {
+        return Err(corrupt("writer-lock-not-regular-file"));
+    }
+    Ok(file)
 }
 
 fn sync_directory(path: &Path) -> Result<(), HotCheckpointFallbackRetentionError> {

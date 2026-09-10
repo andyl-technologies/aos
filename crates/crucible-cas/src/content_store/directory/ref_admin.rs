@@ -144,13 +144,34 @@ impl DirectoryRefBackend {
         let path = self
             .ref_inventory_admin_directory()
             .join(REF_INVENTORY_STATE_FILE);
-        File::open(&path)
+        let descriptor = rustix::fs::open(
+            &path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|source| StoreError::Io {
+            operation: "open-existing-ref-inventory-state",
+            path: path.clone(),
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        let file = File::from(descriptor);
+        if !file
+            .metadata()
             .map_err(|source| StoreError::Io {
-                operation: "read-existing-ref-inventory-state",
+                operation: "inspect-existing-ref-inventory-state",
                 path: path.clone(),
                 source,
-            })
-            .and_then(|file| read_ref_inventory_state(file, &path))
+            })?
+            .is_file()
+        {
+            return Err(StoreError::InvalidComposition {
+                reason: "existing ref inventory state is not a regular file",
+            });
+        }
+        read_ref_inventory_state(file, &path)
     }
 
     pub(super) fn load_or_create_ref_inventory_state(

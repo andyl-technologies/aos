@@ -2,21 +2,23 @@
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::io::Cursor;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible_campaign::CampaignRepository;
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
-    BlobHandle, ContentId, DirectoryRefBackend, ImmutableBlobBackend, ObjectKind, RefName,
-    StoreError, StoreGraph, StoreGraphConfig, StoreGraphKeyring, StoreGraphNamespaceAuthorizers,
-    StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders, StoreGraphS3Clients, StoreNodeId,
-    StoreNodeSpec, StoreS3BlobAdminClient, StoreS3Client, StoreS3ConditionalDeleteOutcome,
+    BlobHandle, ContentId, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend,
+    ObjectKind, RefName, S3BlobBackend, StoreError, StoreGraph, StoreGraphConfig,
+    StoreGraphKeyring, StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers,
+    StoreGraphPhysicalQuotaBinders, StoreGraphS3Clients, StoreNodeId, StoreNodeSpec,
+    StoreS3BlobAdminClient, StoreS3Client, StoreS3ConditionalDeleteOutcome,
     StoreS3ConditionalPutOutcome, StoreS3ConditionalWriteOutcome, StoreS3EndpointId,
     StoreS3MultipartListCursor, StoreS3MultipartListPage, StoreS3MultipartUpload,
     StoreS3ObjectDownload, StoreS3ObjectListCursor, StoreS3ObjectListPage, StoreS3ObjectScan,
     StoreS3ObjectVersion, StoreS3StrongCasClient, StoreS3UploadedPart, StoreS3VersionedObject,
-    StoreS3VersionedObjectMetadata,
+    StoreS3VersionedObjectMetadata, WriteBackRetentionAdmin,
 };
 
 use super::*;
@@ -430,13 +432,7 @@ fn graph_config(endpoint: StoreS3EndpointId) -> StoreGraphConfig {
 fn build_graph(
     service: Arc<MemoryS3Service>,
 ) -> (StoreGraph, crucible_cas::content_store::StoreGraphAdmin) {
-    let mut clients = StoreGraphS3Clients::new();
-    clients
-        .insert(service.endpoint.clone(), service.clone())
-        .expect("ordinary S3 capability");
-    clients
-        .insert_administration(service.endpoint.clone(), service.clone())
-        .expect("administrative S3 capability");
+    let clients = clients(service.clone());
     StoreGraph::build_with_admin_and_all_capabilities(
         graph_config(service.endpoint.clone()),
         &StoreGraphKeyring::new(),
@@ -446,6 +442,191 @@ fn build_graph(
         &clients,
     )
     .expect("administrable S3 graph")
+}
+
+fn clients(service: Arc<MemoryS3Service>) -> StoreGraphS3Clients {
+    let mut clients = StoreGraphS3Clients::new();
+    clients
+        .insert(service.endpoint.clone(), service.clone())
+        .expect("ordinary S3 capability");
+    clients
+        .insert_administration(service.endpoint.clone(), service)
+        .expect("administrative S3 capability");
+    clients
+}
+
+fn write_back_graph_config(
+    endpoint: StoreS3EndpointId,
+    staging_root: PathBuf,
+    journal_root: PathBuf,
+) -> StoreGraphConfig {
+    let write_back = StoreNodeId::new("write-back").expect("write-back node");
+    let staging = StoreNodeId::new("staging").expect("staging node");
+    let destination = StoreNodeId::new("s3-primary").expect("S3 destination node");
+    StoreGraphConfig {
+        root: write_back.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                write_back,
+                StoreNodeSpec::WriteBack {
+                    staging: staging.clone(),
+                    destination: destination.clone(),
+                    journal_root,
+                    maximum_pending_objects: 16,
+                    maximum_pending_bytes: 1024 * 1024,
+                },
+            ),
+            (staging, StoreNodeSpec::Directory { root: staging_root }),
+            (
+                destination,
+                StoreNodeSpec::S3 {
+                    endpoint,
+                    bucket: BUCKET.to_string(),
+                    prefix: PREFIX.to_string(),
+                    maximum_logical_object_bytes: MAXIMUM_OBJECT_BYTES,
+                    multipart_part_bytes: MULTIPART_PART_BYTES,
+                },
+            ),
+        ]),
+    }
+}
+
+#[test]
+fn observational_s3_gc_apply_deletes_orphan_and_preserves_write_back_staging() {
+    let temp = tempfile::TempDir::new().expect("temporary observational S3 GC root");
+    let staging_root = temp.path().join("staging");
+    let write_back_journal = temp.path().join("write-back-journal");
+    let gc_journal = temp.path().join("gc-journal");
+    let service = Arc::new(MemoryS3Service::new());
+    let config = write_back_graph_config(
+        service.endpoint.clone(),
+        staging_root.clone(),
+        write_back_journal,
+    );
+    let operational = StoreGraph::build_with_admin_and_all_capabilities(
+        config.clone(),
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &StoreGraphPhysicalQuotaBinders::new(),
+        &clients(service.clone()),
+    )
+    .expect("operational write-back S3 graph")
+    .0;
+    let pending = ContentEnvelope::new(
+        "crucible.test.gc-observational-s3-pending",
+        1,
+        BTreeSet::new(),
+        b"pending staging root".to_vec(),
+    )
+    .expect("pending staging envelope");
+    let pending_id = pending.content_id(ObjectKind::Trace);
+    operational
+        .put_if_absent(
+            pending_id,
+            &BlobHandle::from_bytes(pending.canonical_bytes()),
+        )
+        .expect("stage pending write-back root");
+
+    let s3 = S3BlobBackend::new_with_admin(
+        "s3-primary",
+        service.endpoint.clone(),
+        BUCKET,
+        PREFIX,
+        MAXIMUM_OBJECT_BYTES,
+        MULTIPART_PART_BYTES,
+        service.clone(),
+        service.clone(),
+    )
+    .expect("direct operational S3 leaf");
+    let orphan_bytes = b"observational S3 GC orphan";
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    s3.put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store S3 orphan");
+    drop(s3);
+    drop(operational);
+
+    let (graph, admin) = StoreGraph::build_observational_with_admin_and_all_capabilities(
+        config,
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &StoreGraphPhysicalQuotaBinders::new(),
+        &clients(service.clone()),
+    )
+    .expect("observational write-back S3 graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let mut ledger = MemoryAssignmentLedger::default();
+    let prepared = super::super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("plan observational S3 GC");
+    assert_eq!(
+        prepared.roots().iter().collect::<Vec<_>>(),
+        vec![pending_id]
+    );
+    assert!(
+        prepared
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == orphan)
+    );
+    assert!(
+        !prepared
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == pending_id)
+    );
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(&gc_journal, &prepared)
+        .expect("create observational S3 GC journal");
+
+    let report = super::super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("apply observational S3 GC");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert!(service.objects.lock().expect("S3 object lock").is_empty());
+    assert!(!graph.contains(orphan).expect("S3 orphan deleted"));
+
+    let mut retained = Vec::new();
+    let mut write_back_fence = graph
+        .acquire_write_back_retention_fence()
+        .expect("reacquire write-back root fence after apply");
+    let retention = write_back_fence
+        .visit_roots(&mut |root| {
+            retained.push(root.id());
+            Ok(())
+        })
+        .expect("inventory write-back roots after apply");
+    assert_eq!(retention.roots(), 1);
+    assert_eq!(retained, vec![pending_id]);
+    drop(write_back_fence);
+
+    assert!(
+        DirectoryBlobBackend::new("staging", staging_root)
+            .contains(pending_id)
+            .expect("pending staging placement retained")
+    );
+    assert!(
+        graph
+            .contains(pending_id)
+            .expect("pending logical root retained")
+    );
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Complete);
 }
 
 #[test]

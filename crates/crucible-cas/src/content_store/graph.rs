@@ -22,7 +22,8 @@ use super::namespace::{
 };
 use super::packed::PackedBlobBackend;
 use super::physical_quota::{
-    PhysicalQuotaStore, StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaPolicyId,
+    PhysicalQuotaStore, StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaGuard,
+    StorePhysicalQuotaPolicyId,
 };
 use super::profile::{
     ProfileValidatedStore, StoreGraphObjectProfilers, StoreObjectProfilePolicyId,
@@ -474,6 +475,7 @@ impl StoreWriteBackFlushSummary {
 pub struct StoreGraphAdmin {
     configuration: StoreGraphConfigurationId,
     physical: BTreeMap<StoreNodeId, StoreGraphPhysicalAuthority>,
+    packed_repack: BTreeMap<StoreNodeId, StoreGraphPackedRepackAuthority>,
     s3_multipart_cleanup: BTreeMap<StoreNodeId, Arc<S3MultipartCleanupAdmin>>,
 }
 
@@ -481,6 +483,11 @@ struct StoreGraphPhysicalAuthority {
     backend: Arc<dyn ImmutableBlobBackend>,
     admin: Arc<dyn BlobStoreAdmin>,
     retention: BTreeMap<ObjectKind, StoreGraphPhysicalRetention>,
+}
+
+struct StoreGraphPackedRepackAuthority {
+    backend: Arc<PackedBlobBackend>,
+    physical_quota: Option<Arc<dyn StorePhysicalQuotaGuard>>,
 }
 
 /// Graph-derived retention role for one physical boundary and object kind.
@@ -513,6 +520,18 @@ impl StoreGraphAdmin {
             .collect()
     }
 
+    /// Returns repack capabilities for configured packed leaves in node-ID order.
+    ///
+    /// These capabilities are separate from the ordinary graph and preserve an
+    /// enclosing physical-quota guard when the packed leaf is quota-bound.
+    #[must_use]
+    pub fn packed_repack(&self) -> Vec<StoreGraphPackedRepackAdmin<'_>> {
+        self.packed_repack
+            .iter()
+            .map(|(node, authority)| StoreGraphPackedRepackAdmin { node, authority })
+            .collect()
+    }
+
     /// Returns bounded S3 multipart-cleanup boundaries in node-ID order.
     ///
     /// These capabilities reclaim unfinished uploads only. They do not expose
@@ -526,6 +545,67 @@ impl StoreGraphAdmin {
                 admin: admin.as_ref(),
             })
             .collect()
+    }
+}
+
+/// Borrowed generation-bound repack capability for one configured packed leaf.
+#[derive(Clone, Copy)]
+pub struct StoreGraphPackedRepackAdmin<'a> {
+    node: &'a StoreNodeId,
+    authority: &'a StoreGraphPackedRepackAuthority,
+}
+
+impl<'a> StoreGraphPackedRepackAdmin<'a> {
+    /// Returns the exact packed node ID selected by this capability.
+    #[must_use]
+    pub const fn node(self) -> &'a StoreNodeId {
+        self.node
+    }
+
+    /// Returns authenticated accounting for the current packed generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when a physical-quota guard no longer matches or
+    /// the packed index or one of its referenced packs cannot be authenticated.
+    pub fn accounting(self) -> Result<PackedStorageAccounting, StoreError> {
+        self.verify_physical_quota()?;
+        self.authority.backend.accounting()
+    }
+
+    /// Plans an exact deterministic replacement of the current packed generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when a physical-quota guard no longer matches or
+    /// the packed index or one of its referenced packs cannot be authenticated.
+    pub fn plan_repack(self) -> Result<PackedRepackPlan, StoreError> {
+        self.verify_physical_quota()?;
+        self.authority.backend.plan_repack()
+    }
+
+    /// Applies one exact-generation replacement-pack plan.
+    ///
+    /// Existing readers retain already-open pack inodes across the atomic
+    /// generation switch performed by the packed backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the quota guard no longer matches, the plan
+    /// belongs to another backend incarnation or generation, or replacement
+    /// publication and authentication fail.
+    pub fn apply_repack(self, plan: &PackedRepackPlan) -> Result<PackedRepackReport, StoreError> {
+        self.verify_physical_quota()?;
+        self.authority.backend.apply_repack(plan)
+    }
+
+    fn verify_physical_quota(self) -> Result<(), StoreError> {
+        self.authority
+            .physical_quota
+            .as_ref()
+            .map(|guard| guard.verify())
+            .transpose()
+            .map(|_| ())
     }
 }
 
@@ -1036,6 +1116,7 @@ impl StoreGraph {
             StoreGraphAdmin {
                 configuration,
                 physical,
+                packed_repack: state.packed_repack,
                 s3_multipart_cleanup: state.s3_multipart_cleanup,
             },
         ))
@@ -1715,6 +1796,7 @@ fn extend_demand(
 struct GraphBuildState {
     built: BTreeMap<StoreNodeId, Arc<dyn ImmutableBlobBackend>>,
     physical: BTreeMap<StoreNodeId, Arc<dyn BlobStoreAdmin>>,
+    packed_repack: BTreeMap<StoreNodeId, StoreGraphPackedRepackAuthority>,
     s3_multipart_cleanup: BTreeMap<StoreNodeId, Arc<S3MultipartCleanupAdmin>>,
     metrics: BTreeMap<StoreNodeId, Arc<MetricsState>>,
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
@@ -1852,6 +1934,13 @@ fn instantiate(
                     )?
                 }
             });
+            state.packed_repack.insert(
+                id.clone(),
+                StoreGraphPackedRepackAuthority {
+                    backend: Arc::clone(&leaf),
+                    physical_quota: None,
+                },
+            );
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -2079,6 +2168,9 @@ fn instantiate(
             let child_admin = state.physical.remove(child).ok_or_else(|| {
                 invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaChild)
             })?;
+            if let Some(repack) = state.packed_repack.get_mut(child) {
+                repack.physical_quota = Some(Arc::clone(&guard));
+            }
             let store = Arc::new(PhysicalQuotaStore::new(
                 id.as_str(),
                 child_backend,

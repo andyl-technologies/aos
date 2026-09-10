@@ -806,12 +806,29 @@ crucible store gc \
   apply
 ```
 
+To retire the planned journal instead of applying it, run this alternative:
+
+```text
+crucible store gc \
+  --state /var/lib/crucible/campaign \
+  --policy /etc/crucible/campaign-policy.toml \
+  --store /etc/crucible/campaign-store.toml \
+  --journal /var/lib/crucible-maintenance/gc-2026-08-28 \
+  cancel
+```
+
+A later collection uses a fresh journal path.
+
 Every path is absolute, normalized, and at most 4,095 bytes; the authored
-paths and journal are pairwise distinct. The command authenticates the same
-policy and composed-store deployment, takes the service state lock, and then
-opens the packaged executor's one canonical assignment ledger at
-`STATE/executor-ledger`. There is no flag that can substitute another ledger.
-An active service or packaged executor therefore excludes both plan and apply.
+paths and journal are pairwise distinct. Every operation authenticates the
+policy and takes the preexisting service state lock. Plan and apply then
+authenticate the composed-store deployment, retention catalogs, and packaged
+executor's one canonical assignment ledger at `STATE/executor-ledger` through
+existing-state, no-repair opens. There is no flag that can substitute another
+ledger. Cancel opens only the named journal after stopped-owner authentication;
+it does not open the store, ledger, exact-pin catalog, transfer journal, or hot
+fallback catalog. An active service or packaged executor therefore excludes
+all three operations.
 The packaged executor publishes every exact-checkpoint object through the same
 composed campaign graph that this command inventories; its public deployment
 configuration has no independent checkpoint-store path. Assignment-ledger
@@ -827,14 +844,18 @@ directory.
 
 `plan` is non-destructive. It inventories every generation under the existing
 fixed bounds and durably creates, or exactly reopens, the external plan/root/
-candidate journal. `apply` accepts only that journal, reacquires every root,
-transfer, ledger, ref, and physical fence, and reproduces every generation
-before advancing the journal to `Applying`. A mismatch leaves the journal
-`Planned` and deletes nothing. An interrupted `Applying` journal remains
+candidate journal. `cancel` durably advances only `Planned` to `Cancelled`;
+repeating it is idempotent, while `Applying` and `Complete` reject cancellation.
+Apply rejects `Cancelled` before acquiring deletion fences or changing a
+physical leaf. A cancelled journal remains evidence and a later collection
+uses a fresh journal path. `apply` accepts only a planned journal, reacquires
+every root, transfer, ledger, ref, and physical fence, and reproduces every
+generation before advancing the journal to `Applying`. A mismatch leaves the
+journal `Planned` and deletes nothing. An interrupted `Applying` journal remains
 recovery evidence and requires a fresh plan; a completed journal replays as
-`already-complete`. Human, JSON, JSONL, and Markdown reports expose the plan
-ID, journal disposition and phase, root/candidate/byte counts, and every
-physical backend basis without exposing a deletion capability.
+`already-complete`. Human, JSON, JSONL, and Markdown reports expose the plan ID,
+journal disposition and phase, root/candidate/byte counts, and every physical
+backend basis without exposing a deletion capability.
 
 The first write-back layer requires durable streaming staging and destination
 children. A put authenticates its complete source, publishes the staging child,
@@ -1551,6 +1572,23 @@ range; replacement and unlink therefore cannot retarget an in-flight read.
 Logical deletion removes only the index entry until the final entry in that
 pack is deleted. Repack is the operation that reclaims sparse physical bytes.
 
+The public repack owner preserves this exact backend plan format:
+
+```text
+crucible store repack --store STORE --node PACKED_NODE --plan PLAN_FILE plan
+crucible store repack --store STORE --node PACKED_NODE --plan PLAN_FILE apply
+```
+
+Every path is absolute, normalized, and bounded. Planning authenticates the
+current packed generation and durably creates the exact canonical
+`PackedRepackPlanV1` bytes using create-new, file fsync, and parent-directory
+fsync. Exact replay reauthenticates and re-fsyncs the same opened regular file.
+Apply likewise authenticates and re-fsyncs the bounded plan file before asking
+the configured packed-leaf capability to revalidate and publish it. A physical
+quota wrapper remains in force for accounting, plan, and apply. Stale or
+wrong-incarnation plans fail before unreferenced-pack cleanup or replacement
+publication.
+
 ## 06.9 Publication, archival transfer, and offline movement
 
 Publishing a new campaign snapshot is:
@@ -1917,7 +1955,7 @@ body is:
 ```text
 "crucible.campaign.gc-journal-state.v1\0"
 plan_id[32]
-phase:u8  # 1 Planned, 2 Applying, 3 Complete
+phase:u8  # 1 Planned, 2 Applying, 3 Complete, 4 Cancelled
 checksum[32]
 ```
 
@@ -1929,9 +1967,11 @@ fsyncs the containing parent. Reopen locks the directory, re-fsyncs visible
 directory metadata, strictly decodes all records, recomputes the plan/manifest
 bindings, and accepts an existing journal only for the exact same inputs. A
 crash before initial state publication leaves an incomplete directory that
-fails closed. `Applying` means at least one deletion may have occurred, so an
-interrupted journal is durable recovery evidence and requires a fresh plan
-rather than reuse of its now-stale generations.
+fails closed. Tags 1 through 3 retain their original v1 encodings; decoders
+reject every unknown tag. `Cancelled` is a terminal pre-apply state and cannot
+return to `Planned`. `Applying` means at least one deletion may have occurred,
+so an interrupted journal is durable recovery evidence and requires a fresh
+plan rather than reuse of its now-stale generations.
 
 Campaign repository mutations now also acquire the ref backend's shared
 publication-lifecycle fence before their first immutable child write and retain

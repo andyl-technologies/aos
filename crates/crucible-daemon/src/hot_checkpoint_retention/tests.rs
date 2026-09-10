@@ -3,6 +3,8 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for exact failures.
 #![allow(clippy::expect_used)]
 
+use std::fs;
+use std::os::unix::fs::symlink;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -143,6 +145,40 @@ fn directory_catalog_survives_restart_and_rejects_corruption() {
         DirectoryHotCheckpointFallbackRetentionStore::open(directory.path()),
         Err(HotCheckpointFallbackRetentionError::Corrupt { .. })
     ));
+}
+
+#[test]
+fn existing_catalog_preserves_staging_and_accepts_empty_lazy_records() {
+    let temporary = tempfile::tempdir().expect("catalog parent");
+    let root = temporary.path().join("catalog");
+
+    assert!(DirectoryHotCheckpointFallbackRetentionStore::open_existing(&root).is_err());
+    assert!(!root.exists());
+    drop(
+        DirectoryHotCheckpointFallbackRetentionStore::open(&root)
+            .expect("initialize empty catalog"),
+    );
+
+    let empty = DirectoryHotCheckpointFallbackRetentionStore::open_existing(&root)
+        .expect("open empty existing catalog");
+    assert!(!root.join("records").exists());
+    drop(empty);
+
+    fs::create_dir(root.join("records")).expect("create record directory");
+    let staging = root.join("records/.staging-crash");
+    fs::write(&staging, b"torn fallback record").expect("write staging evidence");
+    let catalog = DirectoryHotCheckpointFallbackRetentionStore::open_existing(&root)
+        .expect("open existing catalog with staging");
+    assert_eq!(
+        fs::read(staging).expect("read staging evidence"),
+        b"torn fallback record"
+    );
+    assert!(roots(&catalog).is_empty());
+    drop(catalog);
+
+    fs::rename(root.join("writer.lock"), root.join("real.lock")).expect("move real lock");
+    symlink("real.lock", root.join("writer.lock")).expect("replace lock with symlink");
+    assert!(DirectoryHotCheckpointFallbackRetentionStore::open_existing(&root).is_err());
 }
 
 #[test]
