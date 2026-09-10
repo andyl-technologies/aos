@@ -47,7 +47,10 @@ pub use trust::{
     decode_signature, decode_signature_statement, decode_trust_policy, encode_signature,
     encode_signature_statement, encode_trust_policy,
 };
-pub use view::{decode_environment, decode_view, encode_environment, encode_view};
+pub use view::{
+    decode_environment, decode_view, decode_view_source, encode_environment, encode_view,
+    encode_view_source,
+};
 
 const OBJECT_DOMAIN: &[u8] = b"aos-sandbox-object-v1\0";
 

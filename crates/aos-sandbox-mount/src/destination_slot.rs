@@ -2506,7 +2506,7 @@ mod tests {
         ApplyMountRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 2,
+                protocol_minor: 6,
                 request_id: vec![1; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,
@@ -2550,6 +2550,15 @@ mod tests {
             source_view_id: ViewId::from_bytes([9; 16]).as_bytes().to_vec(),
             source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
                 .into(),
+            source_handle: aos_sandbox_core::encode_view_source(
+                &aos_sandbox_core::model::ViewSource::ImmutableTree {
+                    tree: ObjectDescriptor::new(
+                        MediaType::new(PortableMediaType::Tree.as_str().to_owned()).unwrap(),
+                        ObjectDigest::from_bytes([11; 32]),
+                        12,
+                    ),
+                },
+            ),
             attachment_lease_id: vec![10; 16],
             attachment_lease_issued_seconds: 10,
             attachment_lease_expires_seconds: 20,

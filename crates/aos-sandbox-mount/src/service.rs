@@ -94,17 +94,11 @@ impl<W: MountWorker> MountService<W> {
             Ok(_) | Err(_) => return Ok(ConnectionOutcome::TransportRejected),
         };
         let advertised_features = [signed_plan_lease_feature()?];
-        let mut advertised_methods = vec![
-            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
-            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
-            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
-        ];
-        if self.broker.supports_destination_slots() {
-            advertised_methods.extend([
-                BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
-                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
-            ]);
-        }
+        let advertised_methods = advertised_mount_methods(
+            self.broker.supports_mount_apply(),
+            self.broker.supports_catalog_preparation(),
+            self.broker.supports_destination_slots(),
+        );
         let session = match negotiate_client_hello(
             &hello,
             peer.credentials(),
@@ -180,7 +174,8 @@ impl<W: MountWorker> MountService<W> {
                 (
                     *header.request_id(),
                     ceiling,
-                    Ok(self.broker.inventory_resources()),
+                    self.broker
+                        .inventory_resources_for_version(session.version()),
                 )
             }
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT => {
@@ -277,6 +272,28 @@ impl<W: MountWorker> MountService<W> {
             (Err(_), _) => Ok(ConnectionOutcome::RequestRejected),
         }
     }
+}
+
+fn advertised_mount_methods(
+    supports_apply: bool,
+    supports_preparation: bool,
+    supports_destination_slots: bool,
+) -> Vec<BrokerMethod> {
+    let mut methods = Vec::with_capacity(5);
+    if supports_apply {
+        methods.push(BrokerMethod::BROKER_METHOD_MOUNT_APPLY);
+    }
+    methods.push(BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES);
+    if supports_preparation {
+        methods.push(BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG);
+    }
+    if supports_destination_slots {
+        methods.extend([
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
+        ]);
+    }
+    methods
 }
 
 fn encode_dispatch_response(
@@ -450,8 +467,11 @@ fn send_hello_error(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use aos_proto::aos::sandbox::local::v1::{BrokerRequestEnvelope, BrokerResponseEnvelope};
-    use aos_sandbox_protocol::decode_request_envelope;
+    use aos_proto::aos::sandbox::local::v1::{
+        BrokerClientHello, BrokerRequestEnvelope, BrokerResponseEnvelope,
+    };
+    use aos_sandbox_core::ProtocolVersion;
+    use aos_sandbox_protocol::{decode_request_envelope, negotiate_client_hello};
 
     use super::*;
 
@@ -485,5 +505,84 @@ mod tests {
             response.error.as_option().unwrap().code.as_known(),
             Some(BrokerErrorCode::BROKER_ERROR_CODE_RESOURCE_EXHAUSTED)
         );
+    }
+
+    #[test]
+    fn unavailable_source_authority_is_not_advertised_or_negotiable() {
+        let methods = advertised_mount_methods(false, false, true);
+        assert_eq!(
+            methods,
+            [
+                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
+                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
+            ]
+        );
+
+        for unavailable in [
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
+        ] {
+            let hello = BrokerClientHello {
+                protocol_major: 1,
+                protocol_minor: 6,
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                maximum_response_bytes: 8192,
+                required_methods: vec![unavailable.into()],
+                ..Default::default()
+            };
+            assert_eq!(
+                negotiate_client_hello(
+                    &hello.encode_to_vec(),
+                    aos_sandbox_protocol::PeerCredentials {
+                        uid: 1000,
+                        gid: 1001,
+                        pid: Some(2),
+                    },
+                    PeerPolicy {
+                        uid: 1000,
+                        gid: Some(1001),
+                        audience: Audience::AUDIENCE_NODE_CONTROLLER,
+                    },
+                    ProtocolId::MountBroker,
+                    &[],
+                    &methods,
+                ),
+                Err(ProtocolValidationError::MethodMismatch)
+            );
+        }
+
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 6,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 8192,
+            required_methods: [
+                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            aos_sandbox_protocol::PeerCredentials {
+                uid: 1000,
+                gid: 1001,
+                pid: Some(2),
+            },
+            PeerPolicy {
+                uid: 1000,
+                gid: Some(1001),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            },
+            ProtocolId::MountBroker,
+            &[],
+            &methods,
+        )
+        .unwrap();
+        assert_eq!(session.version(), ProtocolVersion::new(1, 6));
     }
 }

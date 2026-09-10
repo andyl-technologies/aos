@@ -26,6 +26,7 @@ pub mod keeper;
 pub mod peer;
 pub mod plan;
 pub mod service;
+pub mod source_pin;
 pub mod spawn;
 mod state;
 pub mod transport;

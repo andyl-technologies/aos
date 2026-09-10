@@ -19,11 +19,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use aos_sandbox_linux::process::{
-    run_fixed_process_session, ExchangeStep, FixedLiveChild, FixedProcessControlInterest,
-    FixedProcessControlReadiness, FixedProcessRequest, FixedProcessSessionExchange,
-    FixedProcessSessionOutcome, FixedProcessSessionRequest,
+    ExchangeStep, FixedLiveChild, FixedProcessControlInterest, FixedProcessControlReadiness,
+    FixedProcessRequest, FixedProcessSessionExchange, FixedProcessSessionOutcome,
+    FixedProcessSessionRequest, run_fixed_process_session,
 };
-use rustix::net::{socketpair, AddressFamily, SocketFlags, SocketType};
+use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
 
 const CHILD_ARGUMENT: &str = "--fixed-session-child";
 

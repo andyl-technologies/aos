@@ -18,8 +18,10 @@ use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::{MountLifecycle, MountSourceConsistency};
 use aos_sandbox_core::model::{AttachmentConsistency, AttachmentIntent, ViewMutation};
-use aos_sandbox_core::{AttachmentId, ObjectDigest, RawPairedClockSample};
-use aos_sandbox_protocol::{ValidatedMountInventoryRecord, ValidatedMountKernelObservation};
+use aos_sandbox_core::{AttachmentId, ObjectDigest, RawPairedClockSample, encode_view_source};
+use aos_sandbox_protocol::{
+    ValidatedMountInventoryRecord, ValidatedMountKernelObservation, ValidatedMountRecipe,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::attachment_reconciliation::{
@@ -244,6 +246,9 @@ impl Record {
         inventory_request_id: [u8; 16],
         resource: &ValidatedMountInventoryRecord,
     ) -> Result<Self, AttachmentVerificationError> {
+        if resource.recipe().source().exact().is_none() {
+            return Err(AttachmentVerificationError::NotVerifiable);
+        }
         let binding = target.runtime_generation().scope().binding();
         let assignment = binding.manifest().manifest();
         let observation = resource
@@ -321,6 +326,7 @@ impl Record {
         let resource_binding = resource.binding();
         let resource_fence = resource_binding.fence();
         self.attachment_id == desired.intent().id()
+            && resource.recipe().source().exact().is_some()
             && self.desired_generation == desired.intent().desired_generation().get()
             && self.desired_record_digest == *desired.record_digest().as_bytes()
             && self.namespace_target == target.durable_reference()
@@ -356,6 +362,7 @@ impl Record {
         let resource_fence = resource_binding.fence();
 
         self.attachment_id == desired.intent().id()
+            && resource.recipe().source().exact().is_some()
             && self.desired_generation == desired.intent().desired_generation().get()
             && self.desired_record_digest == *desired.record_digest().as_bytes()
             && self.namespace_target.sandbox() == assignment.sandbox()
@@ -676,6 +683,7 @@ pub(crate) fn mount_resource_digest(resource: &ValidatedMountInventoryRecord) ->
     digest.update(recipe.source_view_id());
     update_optional_fixed(&mut digest, recipe.source_incarnation_id());
     digest.update((recipe.source_consistency() as i32).to_be_bytes());
+    update_exact_inventoried_source(&mut digest, recipe);
     digest.update([
         u8::from(attributes.read_only()),
         u8::from(attributes.no_exec()),
@@ -743,6 +751,14 @@ fn mount_recipe_digest(resource: &ValidatedMountInventoryRecord) -> [u8; 32] {
     ]);
     digest.update(attributes.mutation_mode().to_be_bytes());
     digest.finalize().into()
+}
+
+fn update_exact_inventoried_source(digest: &mut Sha256, recipe: &ValidatedMountRecipe) {
+    if let Some((handle, _)) = recipe.source().exact() {
+        update_bytes(digest, &encode_view_source(handle));
+    }
+    // Legacy rows append nothing, reproducing the historical resource digest.
+    // They remain audit-readable but fail the explicit exact-source checks.
 }
 
 fn desired_recipe_digest(intent: &AttachmentIntent) -> [u8; 32] {

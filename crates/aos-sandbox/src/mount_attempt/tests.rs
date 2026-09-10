@@ -8,19 +8,26 @@
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyMountRequest, AssignmentFence, Descriptor, MountAttributes, MountResult,
+    ApplyMountRequest, AssignmentFence, BrokerMethod, Descriptor, MountAttributes, MountResult,
     MountSourceConsistency, MountState, RequestHeader,
 };
 use aos_sandbox_core::format::{encode_ownership_lease, encode_signature, encode_trust_policy};
 use aos_sandbox_core::model::{
     KeyReference, KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
+    ViewSource,
 };
 use aos_sandbox_core::{
-    AssignmentEpoch, BrokerAssignment, BrokerGrant, DesiredGeneration, IncarnationId,
-    LeaseAssignment, NodeId, OperationId, OwnershipLease, RevocationScopeId, SandboxId,
-    TrustScopeId, sign_statement,
+    AssignmentEpoch, BrokerAssignment, BrokerGrant, DesiredGeneration, FeatureRef, IncarnationId,
+    LeaseAssignment, MediaType, NodeId, ObjectDescriptor, OperationId, OwnershipLease, ProtocolId,
+    ProtocolVersion, Revision, RevocationScopeId, SandboxId, TrustScopeId, encode_view_source,
+    sign_statement,
 };
-use aos_sandbox_protocol::AuthorizationArtifactBytes;
+use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
+use aos_sandbox_protocol::{
+    AuthorizationArtifactBytes, PeerCredentials, PeerPolicy, decode_mount_result_for_apply,
+    decode_response_envelope, decode_server_hello, encode_success_response_envelope,
+    negotiate_client_hello,
+};
 use buffa::Message as _;
 use ed25519_dalek::SigningKey;
 
@@ -92,7 +99,7 @@ fn request(assignment: BrokerAssignment, deadline: u64, action: MountAction) -> 
     ApplyMountRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
-            protocol_minor: 2,
+            protocol_minor: 6,
             request_id: vec![10; 16],
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             deadline_boottime_nanoseconds: deadline,
@@ -138,6 +145,13 @@ fn request(assignment: BrokerAssignment, deadline: u64, action: MountAction) -> 
         source_view_id: vec![11; 16],
         source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
             .into(),
+        source_handle: encode_view_source(&ViewSource::ImmutableTree {
+            tree: ObjectDescriptor::new(
+                MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor").unwrap(),
+                ObjectDigest::from_bytes([15; 32]),
+                Revision::new(16).get(),
+            ),
+        }),
         attachment_lease_id: vec![12; 16],
         attachment_lease_issued_seconds: 13,
         attachment_lease_expires_seconds: 14,
@@ -374,6 +388,7 @@ fn successful_receipt(record: &Record) -> Vec<u8> {
             .source_incarnation_id()
             .map_or_else(Vec::new, |value| value.to_vec()),
         source_consistency: request.source_consistency().into(),
+        source_handle: encode_view_source(request.source_handle()),
         attachment_lease_id: request.attachment_lease_id().to_vec(),
         attachment_lease_issued_seconds: request.attachment_lease_issued_seconds(),
         attachment_lease_expires_seconds: request.attachment_lease_expires_seconds(),
@@ -698,6 +713,91 @@ fn completion_codec_binds_one_exact_success_receipt() {
         completion
     );
     assert_eq!(completion.key(), [vec![b'c'], vec![10; 16]].concat());
+}
+
+#[test]
+fn mount_apply_dispatch_is_end_to_end_bound_to_carrier_1_6() {
+    let hello = completion::mount_apply_client_hello();
+    assert_eq!(hello.protocol_major, 1);
+    assert_eq!(hello.protocol_minor, 6);
+
+    let feature = FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(), 1, 0).unwrap();
+    let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
+    let peer = PeerCredentials {
+        uid: 811,
+        gid: 812,
+        pid: Some(813),
+    };
+    let policy = PeerPolicy {
+        uid: 811,
+        gid: Some(812),
+        audience: Audience::AUDIENCE_NODE_CONTROLLER,
+    };
+
+    let mut legacy = hello.clone();
+    legacy.protocol_minor = 5;
+    assert!(
+        negotiate_client_hello(
+            &legacy.encode_to_vec(),
+            peer,
+            policy,
+            ProtocolId::MountBroker,
+            std::slice::from_ref(&feature),
+            &[method],
+        )
+        .is_err()
+    );
+
+    let server_session = negotiate_client_hello(
+        &hello.encode_to_vec(),
+        peer,
+        policy,
+        ProtocolId::MountBroker,
+        std::slice::from_ref(&feature),
+        &[method],
+    )
+    .unwrap();
+    let client_session = decode_server_hello(
+        &server_session.server_hello().encode_to_vec(),
+        ProtocolId::MountBroker,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        ProtocolVersion::new(1, 6),
+        std::slice::from_ref(&feature),
+        &[method],
+        hello.maximum_response_bytes,
+    )
+    .unwrap();
+
+    let attempt = record();
+    let request =
+        decode_attempt_body(&attempt.body, attempt.deadline_boottime_nanoseconds).unwrap();
+    client_session.validate_header(request.header()).unwrap();
+    let request_envelope = server_session.decode_request(&attempt.packet, 0).unwrap();
+    assert!(request_envelope.authorization().is_some());
+    assert_eq!(request_envelope.body(), attempt.body);
+
+    let receipt = successful_receipt(&attempt);
+    let response = encode_success_response_envelope(
+        request.header().request_id(),
+        &request_envelope,
+        receipt.clone(),
+        &[],
+        &[],
+        hello.maximum_response_bytes,
+    )
+    .unwrap();
+    let response = decode_response_envelope(
+        &response,
+        request.header().request_id(),
+        method,
+        &[],
+        0,
+        client_session.maximum_response_bytes(),
+        request.header().maximum_response_bytes(),
+    )
+    .unwrap();
+    assert_eq!(response.body(), receipt);
+    decode_mount_result_for_apply(response.body(), &request, &attempt.body).unwrap();
 }
 
 #[test]

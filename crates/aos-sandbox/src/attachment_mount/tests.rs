@@ -7,18 +7,21 @@
 
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, Audience, InventoryMountResourcesResponse, MountAssignmentBinding,
-    MountInventoryRecord, MountKernelObservation, MountOperationCorrelation,
-    MountPublicationCorrelation, MountRecipe, RequestHeader,
+    MountInventoryRecord, MountInventorySourceAuthority, MountKernelObservation,
+    MountOperationCorrelation, MountPublicationCorrelation, MountRecipe, RequestHeader,
 };
 use aos_sandbox_core::model::{
-    AttachmentConsistency, AttachmentLease, MountAttributes, ViewMutation,
+    AttachmentConsistency, AttachmentLease, CacheDomain, CacheDomainKind, MountAttributes, View,
+    ViewConsistency, ViewMutation, ViewSource,
 };
 use aos_sandbox_core::{
-    AttachmentId, AttachmentSlotId, DesiredGeneration, IncarnationId, LeaseId, MediaType,
-    NamespaceGeneration, ObjectDigest, Revision, SandboxId, ViewId,
+    AttachmentId, AttachmentSlotId, CacheDomainId, DesiredGeneration, FeatureRef, IncarnationId,
+    LeaseId, MediaType, NamespaceGeneration, ObjectDigest, OperationId, PortableMediaType,
+    ProtocolVersion, Revision, SandboxId, ViewId, descriptor_for_bytes, encode_view,
+    encode_view_source,
 };
 use aos_sandbox_protocol::{
-    PeerCredentials, PeerPolicy, decode_mount_inventory_response, decode_mount_request,
+    PeerCredentials, PeerPolicy, decode_mount_inventory_response_for_version, decode_mount_request,
 };
 use buffa::Message as _;
 
@@ -29,6 +32,56 @@ const SLOT: [u8; 16] = [2; 16];
 const CURRENT_HANDLE: [u8; 32] = [11; 32];
 const HISTORICAL_HANDLE: [u8; 32] = [12; 32];
 
+fn immutable_view() -> View {
+    View::new(
+        ViewSource::ImmutableTree {
+            tree: ObjectDescriptor::new(
+                MediaType::new(PortableMediaType::Tree.as_str()).unwrap(),
+                ObjectDigest::from_bytes([24; 32]),
+                25,
+            ),
+        },
+        Vec::new(),
+        ViewConsistency::Immutable,
+        ViewMutation::ReadOnly,
+        FeatureRef::new("aos.sandbox.identity.posix32", 1, 0).unwrap(),
+        CacheDomain::new(
+            CacheDomainKind::Private,
+            CacheDomainId::from_bytes([26; 16]),
+        ),
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+fn intent_descriptor() -> ObjectDescriptor {
+    descriptor_for_bytes(
+        MediaType::new(PortableMediaType::View.as_str()).unwrap(),
+        &encode_view(&immutable_view()),
+    )
+}
+
+fn journal_with_view() -> (tempfile::TempDir, Journal) {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut journal, _) = Journal::open(
+        directory.path().join("controller.journal"),
+        Default::default(),
+    )
+    .unwrap();
+    let mutation = crate::filesystem_view_state::FilesystemViewRevisionMutationV1::new(
+        FilesystemViewRevisionPresenceV1::Available,
+        ViewId::from_bytes([6; 16]),
+        Revision::new(1),
+        immutable_view(),
+        OperationId::from_bytes([27; 16]),
+        ObjectDigest::from_bytes([28; 32]),
+        None,
+    )
+    .unwrap();
+    crate::filesystem_view_state::commit(&mut journal, mutation).unwrap();
+    (directory, journal)
+}
+
 fn intent() -> AttachmentIntent {
     AttachmentIntent::new(
         AttachmentId::from_bytes(ATTACHMENT),
@@ -37,13 +90,9 @@ fn intent() -> AttachmentIntent {
         IncarnationId::from_bytes([4; 16]),
         NamespaceGeneration::new(5),
         ViewId::from_bytes([6; 16]),
-        Revision::new(7),
+        Revision::new(1),
         None,
-        ObjectDescriptor::new(
-            MediaType::new("application/vnd.aos.sandbox.view.v1+cbor").unwrap(),
-            ObjectDigest::from_bytes([8; 32]),
-            9,
-        ),
+        intent_descriptor(),
         AttachmentSlotId::from_bytes(SLOT),
         AttachmentConsistency::ImmutableRevision,
         ViewMutation::ReadOnly,
@@ -62,6 +111,20 @@ fn wire_resource(
     source_incarnation: Option<[u8; 16]>,
     source_consistency: MountSourceConsistency,
 ) -> MountInventoryRecord {
+    let source_handle = match source_consistency {
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION => {
+            encode_view_source(immutable_view().source())
+        }
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE
+        | MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA => {
+            encode_view_source(&ViewSource::LiveExport {
+                owner_sandbox: SandboxId::from_bytes([29; 16]),
+                export: aos_sandbox_core::ExportId::from_bytes([30; 16]),
+                source_generation: Revision::new(source_generation),
+            })
+        }
+        _ => Vec::new(),
+    };
     MountInventoryRecord {
         mount_handle: handle.to_vec(),
         resource_revision: 1,
@@ -105,6 +168,9 @@ fn wire_resource(
             source_view_id: source_view.to_vec(),
             source_incarnation_id: source_incarnation.map_or_else(Vec::new, |value| value.to_vec()),
             source_consistency: source_consistency.into(),
+            source_handle,
+            source_authority: MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT
+                .into(),
             ..Default::default()
         })
         .into(),
@@ -145,7 +211,7 @@ fn wire_resource(
 }
 
 fn validated_resource(record: MountInventoryRecord) -> ValidatedMountInventoryRecord {
-    decode_mount_inventory_response(
+    decode_mount_inventory_response_for_version(
         &InventoryMountResourcesResponse {
             kernel_boot_id: vec![14; 16],
             broker_instance_id: vec![21; 16],
@@ -155,6 +221,7 @@ fn validated_resource(record: MountInventoryRecord) -> ValidatedMountInventoryRe
         }
         .encode_to_vec(),
         16 * 1024 * 1024,
+        ProtocolVersion::new(1, 6),
     )
     .unwrap()
     .mounts()[0]
@@ -164,7 +231,7 @@ fn validated_resource(record: MountInventoryRecord) -> ValidatedMountInventoryRe
 fn validate_shape(mut request: ApplyMountRequest) {
     request.header = Some(RequestHeader {
         protocol_major: 1,
-        protocol_minor: 2,
+        protocol_minor: 6,
         request_id: vec![22; 16],
         audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
         deadline_boottime_nanoseconds: 2,
@@ -202,12 +269,13 @@ fn validate_shape(mut request: ApplyMountRequest) {
 
 #[test]
 fn every_effect_request_is_derived_with_a_valid_closed_shape() {
+    let (_directory, journal) = journal_with_view();
     let intent = intent();
     let current = validated_resource(wire_resource(
         CURRENT_HANDLE,
         2,
-        7,
-        [8; 32],
+        1,
+        *intent_descriptor().digest().as_bytes(),
         [6; 16],
         None,
         MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION,
@@ -234,7 +302,7 @@ fn every_effect_request_is_derived_with_a_valid_closed_shape() {
     ];
 
     for action in cases {
-        let request = request_for_action(&intent, action, &resources).unwrap();
+        let request = request_for_action(&journal, &intent, action, &resources).unwrap();
         assert!(request.header.as_option().is_none());
         assert!(request.fence.as_option().is_none());
         assert_eq!(request.namespace_generation, 0);
@@ -246,6 +314,7 @@ fn every_effect_request_is_derived_with_a_valid_closed_shape() {
 
 #[test]
 fn teardown_reproduces_the_historical_recipe_under_current_desired_authority() {
+    let (_directory, journal) = journal_with_view();
     let intent = intent();
     let historical = validated_resource(wire_resource(
         HISTORICAL_HANDLE,
@@ -266,7 +335,8 @@ fn teardown_reproduces_the_historical_recipe_under_current_desired_authority() {
         },
     ] {
         let request =
-            request_for_action(&intent, action, std::slice::from_ref(&historical)).unwrap();
+            request_for_action(&journal, &intent, action, std::slice::from_ref(&historical))
+                .unwrap();
 
         assert_eq!(request.attachment_id, ATTACHMENT);
         assert_eq!(request.destination_slot_id, SLOT);
@@ -290,9 +360,11 @@ fn teardown_reproduces_the_historical_recipe_under_current_desired_authority() {
 
 #[test]
 fn missing_resource_and_non_effect_actions_fail_closed() {
+    let (_directory, journal) = journal_with_view();
     let intent = intent();
     assert!(matches!(
         request_for_action(
+            &journal,
             &intent,
             AttachmentReconciliationActionV1::Install {
                 mount_handle: CURRENT_HANDLE,
@@ -305,6 +377,7 @@ fn missing_resource_and_non_effect_actions_fail_closed() {
     ));
     assert!(matches!(
         request_for_action(
+            &journal,
             &intent,
             AttachmentReconciliationActionV1::Verify {
                 mount_handle: CURRENT_HANDLE,

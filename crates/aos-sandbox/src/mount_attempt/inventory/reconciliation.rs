@@ -286,6 +286,9 @@ fn validate_resource_matches_request(
     let fence = binding.fence();
     let request_fence = request.fence();
     let recipe = resource.recipe();
+    let Some((inventoried_source_handle, _)) = recipe.source().exact() else {
+        return Err(MountAttemptError::Conflict);
+    };
     let teardown_binding_matches = matches!(
         request.action(),
         MountAction::MOUNT_ACTION_DETACH | MountAction::MOUNT_ACTION_RELEASE
@@ -306,6 +309,7 @@ fn validate_resource_matches_request(
         || recipe.source_view_id() != request.source_view_id()
         || recipe.source_incarnation_id() != request.source_incarnation_id()
         || recipe.source_consistency() != request.source_consistency()
+        || inventoried_source_handle != request.source_handle()
         || request
             .view_revision()
             .is_some_and(|revision| recipe.view_revision() != revision)
@@ -505,13 +509,14 @@ mod tests {
     use aos_proto::aos::sandbox::local::v1::{
         ApplyMountRequest, AssignmentFence, Audience, Descriptor, InventoryMountResourcesResponse,
         MountAssignmentBinding, MountAttributes, MountFaultCorrelation, MountInventoryRecord,
-        MountKernelObservation, MountOperationCorrelation, MountPublicationCorrelation,
-        MountRecipe, MountSourceConsistency, RequestHeader,
+        MountInventorySourceAuthority, MountKernelObservation, MountOperationCorrelation,
+        MountPublicationCorrelation, MountRecipe, MountSourceConsistency, RequestHeader,
     };
-    use aos_sandbox_core::{IncarnationId, SandboxId};
-    use aos_sandbox_protocol::{
-        PeerCredentials, PeerPolicy, decode_mount_inventory_response, decode_mount_request,
+    use aos_sandbox_core::model::ViewSource;
+    use aos_sandbox_core::{
+        IncarnationId, MediaType, ObjectDescriptor, ObjectDigest, SandboxId, encode_view_source,
     };
+    use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_mount_request};
     use buffa::Message as _;
 
     use super::*;
@@ -531,7 +536,7 @@ mod tests {
         let wire = ApplyMountRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 2,
+                protocol_minor: 6,
                 request_id: REQUEST_ID.to_vec(),
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,
@@ -586,6 +591,13 @@ mod tests {
             source_view_id: vec![22; 16],
             source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
                 .into(),
+            source_handle: encode_view_source(&ViewSource::ImmutableTree {
+                tree: ObjectDescriptor::new(
+                    MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor").unwrap(),
+                    ObjectDigest::from_bytes([26; 32]),
+                    27,
+                ),
+            }),
             attachment_lease_id: vec![23; 16],
             attachment_lease_issued_seconds: 24,
             attachment_lease_expires_seconds: 25,
@@ -684,6 +696,9 @@ mod tests {
             source_view_id: request.source_view_id.clone(),
             source_incarnation_id: request.source_incarnation_id.clone(),
             source_consistency: request.source_consistency,
+            source_handle: request.source_handle.clone(),
+            source_authority: MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT
+                .into(),
             attributes: Some(MountAttributes {
                 read_only: true,
                 no_exec: true,
@@ -746,9 +761,13 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        decode_mount_inventory_response(&response, 16 * 1024)
-            .unwrap()
-            .mounts()[0]
+        aos_sandbox_protocol::decode_mount_inventory_response_for_version(
+            &response,
+            16 * 1024,
+            aos_sandbox_core::ProtocolVersion::new(1, 6),
+        )
+        .unwrap()
+        .mounts()[0]
             .clone()
     }
 

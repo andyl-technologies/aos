@@ -21,6 +21,7 @@ pub mod network_inventory;
 pub mod payload_scope;
 pub mod semantics;
 pub mod session;
+mod source_binding;
 pub mod storage_inventory;
 
 pub use host_catalog_snapshot::{
@@ -32,9 +33,10 @@ pub use host_catalog_snapshot::{
 pub use inventory::{
     MAXIMUM_MOUNT_INVENTORY_RECORDS, ValidatedMountAssignmentBinding,
     ValidatedMountFaultCorrelation, ValidatedMountInventory, ValidatedMountInventoryRecord,
-    ValidatedMountKernelObservation, ValidatedMountOperationCorrelation,
-    ValidatedMountPublicationCorrelation, ValidatedMountRecipe, decode_mount_inventory_request,
-    decode_mount_inventory_response,
+    ValidatedMountInventorySource, ValidatedMountKernelObservation,
+    ValidatedMountOperationCorrelation, ValidatedMountPublicationCorrelation, ValidatedMountRecipe,
+    decode_mount_inventory_request, decode_mount_inventory_response_for_version,
+    encode_mount_inventory_response_for_version,
 };
 pub use mount_destination_slot::{
     MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS, MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS,
@@ -44,8 +46,10 @@ pub use mount_destination_slot::{
     ValidatedDestinationSlotRequest, attachment_anchor_handle_v1,
     decode_destination_slot_inventory_request, decode_destination_slot_inventory_response,
     decode_destination_slot_inventory_response_for_version, decode_destination_slot_request,
-    decode_destination_slot_response, encode_destination_slot_inventory_response,
+    decode_destination_slot_response, decode_destination_slot_response_for_version,
+    encode_destination_slot_inventory_response,
     encode_destination_slot_inventory_response_for_version, encode_destination_slot_response,
+    encode_destination_slot_response_for_version,
 };
 pub use mount_result::{
     ValidatedMountResult, decode_mount_result_for_apply, detached_mount_handle_v1,
@@ -78,6 +82,7 @@ pub use session::{
     failed_server_hello, negotiate_client_hello, validate_request_descriptor_roles,
     validate_runtime_effect_receipt_for_apply,
 };
+pub use source_binding::{SourceBindingError, SourceRealizationBindingV1};
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyGuardianRequest, ApplyGuestExecutionRequest, ApplyMountRequest, ApplyNetworkRequest,
@@ -87,9 +92,9 @@ use aos_proto::aos::sandbox::local::v1::{
     RuntimePlan,
 };
 use aos_sandbox_core::{
-    DescriptorRole, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, ProtocolId,
-    ProtocolVersion, RegistryError, negotiate_protocol, validate_descriptor_role,
-    validate_required_features,
+    DecodeLimits, DescriptorRole, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest,
+    ProtocolId, ProtocolVersion, RegistryError, decode_view_source, encode_view_source,
+    model::ViewSource, negotiate_protocol, validate_descriptor_role, validate_required_features,
 };
 use buffa::Message as _;
 
@@ -103,6 +108,26 @@ const OPAQUE_HANDLE_BYTES: usize = 32;
 const MAXIMUM_ATTACHMENTS: usize = 256;
 const MAXIMUM_RESOURCE_LIMITS: usize = 16;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
+const SOURCE_BINDING_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 6);
+
+#[cfg(test)]
+fn immutable_source_handle_fixture() -> Vec<u8> {
+    let media_type = MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor".to_owned())
+        .unwrap_or_else(|error| panic!("test media type failed: {error}"));
+    let tree = ObjectDescriptor::new(media_type, ObjectDigest::from_bytes([42; 32]), 1);
+
+    encode_view_source(&ViewSource::ImmutableTree { tree })
+}
+
+#[cfg(test)]
+fn live_source_handle_fixture(source_generation: u64) -> Vec<u8> {
+    encode_view_source(&ViewSource::LiveExport {
+        owner_sandbox: aos_sandbox_core::SandboxId::from_bytes([40; 16]),
+        export: aos_sandbox_core::ExportId::from_bytes([41; 16]),
+        source_generation: aos_sandbox_core::Revision::new(source_generation),
+    })
+}
+
 /// Carries credentials obtained from the accepted Unix socket.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PeerCredentials {
@@ -361,6 +386,8 @@ pub struct ValidatedMountRequest {
     source_view_id: [u8; 16],
     source_incarnation_id: Option<[u8; 16]>,
     source_consistency: MountSourceConsistency,
+    source_handle: ViewSource,
+    source_binding: Option<SourceRealizationBindingV1>,
     attachment_lease_id: [u8; 16],
     attachment_lease_issued_seconds: i64,
     attachment_lease_expires_seconds: i64,
@@ -461,6 +488,19 @@ impl ValidatedMountRequest {
     #[must_use]
     pub const fn source_consistency(&self) -> MountSourceConsistency {
         self.source_consistency
+    }
+
+    /// Borrows the exact path-free logical source authorized for this recipe.
+    #[must_use]
+    pub const fn source_handle(&self) -> &ViewSource {
+        &self.source_handle
+    }
+
+    /// Reconstructs the complete logical source authority when the action
+    /// carries its exact filesystem-view descriptor.
+    #[must_use]
+    pub const fn source_binding(&self) -> Option<&SourceRealizationBindingV1> {
+        self.source_binding.as_ref()
     }
 
     /// Returns the lease identity of the desired attachment generation.
@@ -698,6 +738,11 @@ pub fn decode_mount_request(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
+    if header.protocol_version() != SOURCE_BINDING_PROTOCOL_VERSION {
+        return Err(ProtocolValidationError::InvalidField(
+            "source binding requires Mount protocol 1.6",
+        ));
+    }
     let fence = validate_fence(
         request
             .fence
@@ -750,13 +795,6 @@ pub fn decode_mount_request(
             "source_incarnation_id",
         ));
     }
-    let attachment_lease_id =
-        exact_nonzero::<16>(&request.attachment_lease_id, "attachment_lease_id")?;
-    if request.attachment_lease_expires_seconds <= request.attachment_lease_issued_seconds {
-        return Err(ProtocolValidationError::InvalidField(
-            "attachment lease interval",
-        ));
-    }
     if request.source_generation == 0
         || request.namespace_generation == 0
         || request.desired_attachment_generation == 0
@@ -764,6 +802,32 @@ pub fn decode_mount_request(
     {
         return Err(ProtocolValidationError::InvalidField(
             "source, namespace, desired attachment, or resource attachment generation",
+        ));
+    }
+    let source_handle = validate_mount_source_handle(
+        &request.source_handle,
+        source_consistency,
+        source_incarnation_id,
+    )?;
+    let source_binding = view_revision
+        .as_ref()
+        .map(|view_revision| {
+            SourceRealizationBindingV1::new(
+                source_view_id,
+                request.source_generation,
+                view_revision.clone(),
+                source_handle.clone(),
+                source_consistency,
+                source_incarnation_id,
+            )
+            .map_err(|_| ProtocolValidationError::InvalidField("source binding"))
+        })
+        .transpose()?;
+    let attachment_lease_id =
+        exact_nonzero::<16>(&request.attachment_lease_id, "attachment_lease_id")?;
+    if request.attachment_lease_expires_seconds <= request.attachment_lease_issued_seconds {
+        return Err(ProtocolValidationError::InvalidField(
+            "attachment lease interval",
         ));
     }
     let creates_or_publishes = matches!(
@@ -817,10 +881,55 @@ pub fn decode_mount_request(
         source_view_id,
         source_incarnation_id,
         source_consistency,
+        source_handle,
+        source_binding,
         attachment_lease_id,
         attachment_lease_issued_seconds: request.attachment_lease_issued_seconds,
         attachment_lease_expires_seconds: request.attachment_lease_expires_seconds,
     })
+}
+
+pub(crate) fn validate_mount_source_handle(
+    bytes: &[u8],
+    consistency: MountSourceConsistency,
+    source_incarnation_id: Option<[u8; 16]>,
+) -> Result<ViewSource, ProtocolValidationError> {
+    if bytes.is_empty() {
+        return Err(ProtocolValidationError::MissingField("source_handle"));
+    }
+    let source = decode_view_source(bytes, DecodeLimits::default())
+        .map_err(|_| ProtocolValidationError::InvalidField("source_handle"))?;
+    if encode_view_source(&source) != bytes {
+        return Err(ProtocolValidationError::InvalidField("source_handle"));
+    }
+
+    let compatible = match &source {
+        ViewSource::ImmutableTree { tree } => {
+            consistency == MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                && source_incarnation_id.is_none()
+                && tree.digest().as_bytes() != &[0; 32]
+                && tree.encoded_size() != 0
+        }
+        ViewSource::LiveExport {
+            owner_sandbox,
+            export,
+            source_generation,
+        } => {
+            matches!(
+                consistency,
+                MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE
+                    | MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA
+            ) && (source_incarnation_id.is_some()
+                == (consistency == MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE))
+                && owner_sandbox.as_bytes() != &[0; 16]
+                && export.as_bytes() != &[0; 16]
+                && source_generation.get() != 0
+        }
+    };
+    if !compatible {
+        return Err(ProtocolValidationError::InvalidField("source_handle"));
+    }
+    Ok(source)
 }
 
 pub(crate) fn validate_mount_attributes(
@@ -1619,7 +1728,7 @@ mod tests {
         let mut request = ApplyMountRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 0;
+        header.protocol_minor = 6;
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 101;
@@ -1640,6 +1749,7 @@ mod tests {
         request.source_view_id = vec![8; 16];
         request.source_consistency =
             MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION.into();
+        request.source_handle = immutable_source_handle_fixture();
         request.attachment_lease_id = vec![9; 16];
         request.attachment_lease_issued_seconds = 10;
         request.attachment_lease_expires_seconds = 20;
@@ -1820,6 +1930,7 @@ mod tests {
         local_live.source_consistency =
             MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE.into();
         local_live.source_incarnation_id = vec![10; 16];
+        local_live.source_handle = live_source_handle_fixture(local_live.source_generation);
         let validated = decode_mount_request(&local_live.encode_to_vec(), peer(), policy(), 100)
             .unwrap_or_else(|error| panic!("local-live source failed: {error}"));
         assert_eq!(validated.source_incarnation_id(), Some(&[10; 16]));

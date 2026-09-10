@@ -114,7 +114,7 @@ mod tests {
         ApplyMountRequest, AssignmentFence, Audience, Descriptor, MountAction, MountAttributes,
         MountSourceConsistency, RequestHeader,
     };
-    use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb};
+    use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb, MediaType, ObjectDescriptor};
     use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_mount_request};
     use buffa::Message as _;
 
@@ -124,6 +124,7 @@ mod tests {
         let wire = ApplyMountRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
+                protocol_minor: 6,
                 request_id: vec![1; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 10_000,
@@ -166,6 +167,15 @@ mod tests {
             source_view_id: vec![16; 16],
             source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
                 .into(),
+            source_handle: aos_sandbox_core::encode_view_source(
+                &aos_sandbox_core::model::ViewSource::ImmutableTree {
+                    tree: ObjectDescriptor::new(
+                        MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor").unwrap(),
+                        ObjectDigest::from_bytes([20; 32]),
+                        21,
+                    ),
+                },
+            ),
             attachment_lease_id: vec![17; 16],
             attachment_lease_issued_seconds: 18,
             attachment_lease_expires_seconds: 19,
@@ -206,9 +216,9 @@ mod tests {
         assert_eq!(
             facade.commitment().digest(),
             ObjectDigest::from_bytes([
-                0xfd, 0x21, 0xc8, 0x2a, 0x93, 0x79, 0xe2, 0x88, 0x2d, 0xf3, 0x25, 0x4e, 0x0a, 0xfa,
-                0x0c, 0xa1, 0x2e, 0x9d, 0x24, 0x7c, 0x32, 0x89, 0x3b, 0x7b, 0xb2, 0x7e, 0x6d, 0xdb,
-                0x8b, 0x1f, 0x08, 0x86,
+                0x96, 0xb4, 0x29, 0x9a, 0x75, 0x78, 0x3e, 0x57, 0x2b, 0x6f, 0xe3, 0xb0, 0x15, 0xd7,
+                0x9f, 0xf3, 0x09, 0xfd, 0xae, 0xb7, 0x99, 0xaf, 0x2d, 0xaa, 0x19, 0x10, 0xf6, 0x01,
+                0x1e, 0x8e, 0xf9, 0x71,
             ])
         );
         assert_eq!(facade.canonical_bytes(), portable.canonical_bytes());

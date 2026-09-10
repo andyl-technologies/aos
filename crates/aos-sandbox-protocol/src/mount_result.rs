@@ -9,14 +9,14 @@
 use aos_proto::aos::sandbox::local::v1::{
     Audience, MountAction, MountResult, MountSourceConsistency, MountState,
 };
-use aos_sandbox_core::{DescriptorRole, ObjectDescriptor};
+use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, model::ViewSource};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::{
     MAXIMUM_REQUEST_BYTES, PeerCredentials, PeerPolicy, ProtocolValidationError,
-    ValidatedMountRequest, decode_mount_request, exact_nonzero, optional_exact_nonzero,
-    validate_descriptor,
+    SourceRealizationBindingV1, ValidatedMountRequest, decode_mount_request, exact_nonzero,
+    optional_exact_nonzero, validate_descriptor, validate_mount_source_handle,
 };
 
 const HANDLE_DOMAIN: &[u8] = b"aos.sandbox.mount.handle.v1\0";
@@ -34,6 +34,8 @@ pub struct ValidatedMountResult {
     source_view_id: [u8; 16],
     source_incarnation_id: Option<[u8; 16]>,
     source_consistency: MountSourceConsistency,
+    source_handle: ViewSource,
+    source_binding: Option<SourceRealizationBindingV1>,
     attachment_lease_id: [u8; 16],
     attachment_lease_issued_seconds: i64,
     attachment_lease_expires_seconds: i64,
@@ -99,6 +101,19 @@ impl ValidatedMountResult {
     #[must_use]
     pub const fn source_consistency(&self) -> MountSourceConsistency {
         self.source_consistency
+    }
+
+    /// Borrows the exact path-free logical source echoed by Mount.
+    #[must_use]
+    pub const fn source_handle(&self) -> &ViewSource {
+        &self.source_handle
+    }
+
+    /// Reconstructs the complete logical source authority when echoed by this
+    /// action's result.
+    #[must_use]
+    pub const fn source_binding(&self) -> Option<&SourceRealizationBindingV1> {
+        self.source_binding.as_ref()
     }
 
     /// Returns the lease identity authorizing the desired generation.
@@ -185,6 +200,11 @@ pub fn decode_mount_result_for_apply(
             .ok_or(ProtocolValidationError::InvalidField(
                 "mount result source_consistency",
             ))?;
+    let source_handle = validate_mount_source_handle(
+        &result.source_handle,
+        source_consistency,
+        source_incarnation_id,
+    )?;
     let attachment_lease_id =
         exact_nonzero::<16>(&result.attachment_lease_id, "result.attachment_lease_id")?;
     let state = result
@@ -201,6 +221,7 @@ pub fn decode_mount_result_for_apply(
         || source_view_id != *request.source_view_id()
         || source_incarnation_id.as_ref() != request.source_incarnation_id()
         || source_consistency != request.source_consistency()
+        || &source_handle != request.source_handle()
         || attachment_lease_id != *request.attachment_lease_id()
         || result.attachment_lease_issued_seconds != request.attachment_lease_issued_seconds()
         || result.attachment_lease_expires_seconds != request.attachment_lease_expires_seconds()
@@ -217,6 +238,20 @@ pub fn decode_mount_result_for_apply(
         installed_mount_handle,
         state,
     )?;
+    let source_binding = view_revision
+        .as_ref()
+        .map(|view_revision| {
+            SourceRealizationBindingV1::new(
+                source_view_id,
+                result.source_generation,
+                view_revision.clone(),
+                source_handle.clone(),
+                source_consistency,
+                source_incarnation_id,
+            )
+            .map_err(|_| ProtocolValidationError::InvalidField("mount result source binding"))
+        })
+        .transpose()?;
 
     Ok(ValidatedMountResult {
         attachment_id,
@@ -229,6 +264,8 @@ pub fn decode_mount_result_for_apply(
         source_view_id,
         source_incarnation_id,
         source_consistency,
+        source_handle,
+        source_binding,
         attachment_lease_id,
         attachment_lease_issued_seconds: result.attachment_lease_issued_seconds,
         attachment_lease_expires_seconds: result.attachment_lease_expires_seconds,
@@ -344,7 +381,7 @@ mod tests {
         let request = ApplyMountRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 2,
+                protocol_minor: 6,
                 request_id: vec![1; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,
@@ -400,6 +437,7 @@ mod tests {
             source_view_id: vec![16; 16],
             source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
                 .into(),
+            source_handle: crate::immutable_source_handle_fixture(),
             attachment_lease_id: vec![17; 16],
             attachment_lease_issued_seconds: 18,
             attachment_lease_expires_seconds: 19,
@@ -467,6 +505,7 @@ mod tests {
             source_view_id: vec![16; 16],
             source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
                 .into(),
+            source_handle: crate::immutable_source_handle_fixture(),
             attachment_lease_id: vec![17; 16],
             attachment_lease_issued_seconds: 18,
             attachment_lease_expires_seconds: 19,

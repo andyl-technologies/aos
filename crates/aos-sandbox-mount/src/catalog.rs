@@ -18,11 +18,15 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use aos_proto::aos::sandbox::local::v1::MountSourceConsistency;
-use aos_sandbox_core::{ObjectDescriptor, ObjectDigest};
+use aos_sandbox_core::{
+    DecodeLimits, ObjectDescriptor, ObjectDigest, decode_view_source, encode_view_source,
+};
 use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace, MountObservation};
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity};
-use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedMountRequest};
+use aos_sandbox_protocol::{
+    SourceRealizationBindingV1, ValidatedAssignmentFence, ValidatedMountRequest,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -32,6 +36,7 @@ use crate::destination_slot::{
     payload_anchor_relative_path, payload_slot_relative_path,
 };
 use crate::host_scope::ObservedMountScope;
+use crate::source_pin::{ResolvedSourcePin, SourcePinStore, UnavailableSourcePins};
 use crate::{MountError, Result};
 
 const CATALOG_FILE: &str = "catalog.json";
@@ -41,7 +46,8 @@ const MAXIMUM_ENTRIES: usize = 16_384;
 const MAXIMUM_RELATIVE_PATH_BYTES: usize = 4096;
 const MAXIMUM_PREPARED_NAMESPACES: usize = 1_024;
 const MAXIMUM_TOPOLOGY_MOUNTS: usize = 65_536;
-const PREPARED_COMMITMENT_VERSION: u16 = 6;
+const PREVIOUS_PREPARED_COMMITMENT_VERSION: u16 = 6;
+const PREPARED_COMMITMENT_VERSION: u16 = 7;
 const REQUIRED_ATTACHMENT_ANCHOR_ATTRIBUTES: u64 = 0x0000_000f;
 const RUN_RELATIVE_PATH: &str = "run";
 const RUN_AOS_RELATIVE_PATH: &str = "run/aos";
@@ -84,6 +90,18 @@ pub(crate) struct ResolvedMountTopology {
 
 /// Resolves one validated semantic request into exact pinned kernel objects.
 pub trait MountCatalog {
+    /// Reports whether exact source resolution can currently authorize Apply.
+    #[must_use]
+    fn supports_mount_apply(&self) -> bool {
+        false
+    }
+
+    /// Reports whether preparation can currently publish executable authority.
+    #[must_use]
+    fn supports_catalog_preparation(&self) -> bool {
+        false
+    }
+
     /// Resolves and verifies all resources from one atomic catalog snapshot.
     ///
     /// # Errors
@@ -165,6 +183,10 @@ struct MountCatalogEntry {
     source_view_id: [u8; 16],
     source_incarnation_id: Option<[u8; 16]>,
     source_consistency: CatalogSourceConsistency,
+    #[serde(default)]
+    source_handle: Vec<u8>,
+    #[serde(default)]
+    source_binding_digest: [u8; 32],
     attachment_lease_id: [u8; 16],
     attachment_lease_issued_seconds: i64,
     attachment_lease_expires_seconds: i64,
@@ -289,8 +311,8 @@ struct MountCatalogSnapshot {
 /// Reads an atomically published compatibility catalog beneath a private root.
 ///
 /// Static v4 entries remain parseable and byte-stable for recovery audit, but
-/// [`MountCatalog::resolve`] rejects them because they do not bind the v6
-/// attachment-anchor topology.
+/// [`MountCatalog::resolve`] rejects them because they do not bind the
+/// attachment-anchor topology or exact source authority.
 #[derive(Debug)]
 pub struct FileMountCatalog {
     root: BeneathRoot,
@@ -301,11 +323,13 @@ pub struct FileMountCatalog {
 /// One namespace generation can be refreshed only with the same exact Host
 /// binding. A changed root, namespace, runtime, or payload-scope handle requires
 /// a new signed namespace generation rather than silently replacing authority.
-/// Legacy v5 rows can reproduce their durable preparation digest for recovery
-/// audit, but only explicit v6 rows can resolve resources for a helper effect.
+/// Legacy v5 and v6 rows can reproduce their durable preparation digests for
+/// recovery audit, but only explicit v7 rows can resolve source-bound resources
+/// for a helper effect.
 pub struct PreparedMountCatalog {
     catalog: FileMountCatalog,
     prepared: BTreeMap<PreparedNamespaceKey, PreparedNamespace>,
+    source_pins: Box<dyn SourcePinStore>,
 }
 
 impl PreparedMountCatalog {
@@ -315,6 +339,24 @@ impl PreparedMountCatalog {
         Self {
             catalog,
             prepared: BTreeMap::new(),
+            source_pins: Box::new(UnavailableSourcePins),
+        }
+    }
+
+    /// Constructs a preparation registry with an explicit fixed-provider pin store.
+    ///
+    /// This is the only constructor that can enable native source resolution.
+    /// The caller must independently authenticate provider ingress before
+    /// admitting descriptors into `source_pins`.
+    #[must_use]
+    pub fn with_source_pins(
+        catalog: FileMountCatalog,
+        source_pins: Box<dyn SourcePinStore>,
+    ) -> Self {
+        Self {
+            catalog,
+            prepared: BTreeMap::new(),
+            source_pins,
         }
     }
 }
@@ -373,6 +415,14 @@ impl MountCatalog for FileMountCatalog {
 }
 
 impl MountCatalog for PreparedMountCatalog {
+    fn supports_mount_apply(&self) -> bool {
+        self.source_pins.is_available()
+    }
+
+    fn supports_catalog_preparation(&self) -> bool {
+        self.source_pins.is_available()
+    }
+
     fn resolve(&self, request: &ValidatedMountRequest) -> Result<ResolvedMountResources> {
         let prepared = self
             .prepared
@@ -385,11 +435,14 @@ impl MountCatalog for PreparedMountCatalog {
                 "prepared mount namespace scope expired".to_owned(),
             ));
         }
+        let source_binding = self.catalog.source_binding_for_request(request)?;
+        let source = self.source_pins.resolve(&source_binding)?;
         self.catalog.inspect_prepared(
             request,
             &prepared.scope,
             prepared.binding,
             PreparedInspectionPurpose::Mutation,
+            source,
         )
     }
 
@@ -425,15 +478,19 @@ impl MountCatalog for PreparedMountCatalog {
             ));
         }
 
+        let source_binding = self.catalog.source_binding_for_request(request)?;
+        let source = self.source_pins.resolve(&source_binding)?;
         let inspection = if self.catalog.contains_matching_entry(request)? {
             self.catalog.inspect_prepared(
                 request,
                 &scope,
                 binding,
                 PreparedInspectionPurpose::Audit,
+                source,
             )?
         } else {
-            self.catalog.publish_prepared(request, &scope, binding)?
+            self.catalog
+                .publish_prepared(request, &scope, binding, source)?
         };
         let commitment = inspection.authorization_commitment.digest();
         self.prepared
@@ -456,15 +513,17 @@ impl FileMountCatalog {
         request: &ValidatedMountRequest,
         scope: &ObservedMountScope,
         binding: PreparedScopeBinding,
+        source: ResolvedSourcePin,
     ) -> Result<ResolvedMountResources> {
         let mut snapshot = self.snapshot_or_empty()?;
-        let entry = self.prepared_entry(request, scope, &snapshot)?;
+        let entry = self.prepared_entry(request, scope, &snapshot, &source)?;
         if !snapshot.upsert(entry)? {
             return self.inspect_prepared(
                 request,
                 scope,
                 binding,
                 PreparedInspectionPurpose::Mutation,
+                source,
             );
         }
         self.publish_snapshot(&snapshot)?;
@@ -475,7 +534,13 @@ impl FileMountCatalog {
                 "mount catalog publication did not reproduce its exact snapshot".to_owned(),
             ));
         }
-        self.inspect_prepared(request, scope, binding, PreparedInspectionPurpose::Mutation)
+        self.inspect_prepared(
+            request,
+            scope,
+            binding,
+            PreparedInspectionPurpose::Mutation,
+            source,
+        )
     }
 
     fn snapshot_or_empty(&self) -> Result<MountCatalogSnapshot> {
@@ -532,6 +597,7 @@ impl FileMountCatalog {
         request: &ValidatedMountRequest,
         scope: &ObservedMountScope,
         snapshot: &MountCatalogSnapshot,
+        source_pin: &ResolvedSourcePin,
     ) -> Result<MountCatalogEntry> {
         let root_identity = FileIdentityWire::from(scope.root().identity());
         let mount_namespace_identity =
@@ -575,7 +641,7 @@ impl FileMountCatalog {
                 )
             }
         };
-        let source = resolve_directory(&self.root, path_text(&source_path)?)?;
+        let source = source_pin.source();
         let target_slot_path = destination_slot_catalog_path(
             request.fence().sandbox_id(),
             request.fence().incarnation_id(),
@@ -622,6 +688,15 @@ impl FileMountCatalog {
             source_consistency: CatalogSourceConsistency::from_protocol(
                 request.source_consistency(),
             )?,
+            source_handle: encode_view_source(request.source_handle()),
+            source_binding_digest: request
+                .source_binding()
+                .ok_or_else(|| {
+                    MountError::State("prepared source lacks an exact binding".to_owned())
+                })?
+                .digest()
+                .as_bytes()
+                .to_owned(),
             attachment_lease_id: *request.attachment_lease_id(),
             attachment_lease_issued_seconds: request.attachment_lease_issued_seconds(),
             attachment_lease_expires_seconds: request.attachment_lease_expires_seconds(),
@@ -701,6 +776,16 @@ impl FileMountCatalog {
         Ok((snapshot.generation, entry))
     }
 
+    fn source_binding_for_request(
+        &self,
+        request: &ValidatedMountRequest,
+    ) -> Result<SourceRealizationBindingV1> {
+        match request.source_binding() {
+            Some(binding) => Ok(binding.clone()),
+            None => self.matching_entry(request)?.1.source_binding(),
+        }
+    }
+
     fn resolve_static(&self, request: &ValidatedMountRequest) -> Result<ResolvedMountResources> {
         let (_, entry) = self.matching_entry(request)?;
         if entry.prepared_scope {
@@ -716,15 +801,16 @@ impl FileMountCatalog {
 
     /// Revalidates prepared facts and computes the entry's native commitment.
     ///
-    /// This inspection is also used to reproduce legacy v5 commitments during
-    /// preparation. Mutation mode checks the version from the same catalog
-    /// snapshot that supplies every resource and commitment fact.
+    /// This inspection is also used to reproduce legacy v5 and v6 commitments
+    /// during preparation. Mutation mode checks the version from the same
+    /// catalog snapshot that supplies every resource and commitment fact.
     fn inspect_prepared(
         &self,
         request: &ValidatedMountRequest,
         scope: &ObservedMountScope,
         binding: PreparedScopeBinding,
         purpose: PreparedInspectionPurpose,
+        source_pin: ResolvedSourcePin,
     ) -> Result<ResolvedMountResources> {
         let (generation, entry) = self.matching_entry(request)?;
         if purpose == PreparedInspectionPurpose::Mutation {
@@ -742,7 +828,7 @@ impl FileMountCatalog {
                 "catalogued Host scope handles changed under one namespace generation",
             ));
         }
-        let source = resolve_directory(&self.root, &entry.source_path)?;
+        let source = source_pin.into_source();
         verify_file(source.identity(), entry.source_identity, "source")?;
 
         let (target_root, mount_namespace, user_namespace) = scope
@@ -816,7 +902,10 @@ impl FileMountCatalog {
 }
 
 fn require_mutation_capable(entry: &MountCatalogEntry) -> Result<()> {
-    if !entry.prepared_scope || entry.commitment_version != Some(PREPARED_COMMITMENT_VERSION) {
+    if !entry.prepared_scope
+        || entry.commitment_version != Some(PREPARED_COMMITMENT_VERSION)
+        || entry.source_handle.is_empty()
+    {
         return Err(MountError::Worker(
             "legacy mount catalog commitment is audit-only and cannot authorize mutation"
                 .to_owned(),
@@ -869,7 +958,16 @@ fn prepared_catalog_authorization_commitment(
             source,
             target_slot,
         ),
-        Some(PREPARED_COMMITMENT_VERSION) => prepared_catalog_authorization_commitment_v6(
+        Some(PREVIOUS_PREPARED_COMMITMENT_VERSION) => prepared_catalog_authorization_commitment_v6(
+            generation,
+            entry,
+            binding,
+            source,
+            target_slot,
+            topology,
+            attachment_anchor,
+        ),
+        Some(PREPARED_COMMITMENT_VERSION) => prepared_catalog_authorization_commitment_v7(
             generation,
             entry,
             binding,
@@ -925,6 +1023,37 @@ fn prepared_catalog_authorization_commitment_v6(
     host_binding.extend_from_slice(&binding.payload_scope_handle);
     let mut bytes = catalog_authorization_bytes(
         b"AOSMCAT4",
+        PREVIOUS_PREPARED_COMMITMENT_VERSION,
+        generation,
+        entry,
+        &host_binding,
+        source,
+        binding.mount_namespace,
+        binding.user_namespace,
+        binding.root,
+        target_slot,
+    )?;
+    append_prepared_topology(&mut bytes, topology, attachment_anchor);
+
+    MountCatalogCommitmentV1::for_verified_canonical_bytes(&bytes)
+        .map_err(|error| MountError::State(error.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepared_catalog_authorization_commitment_v7(
+    generation: u64,
+    entry: &MountCatalogEntry,
+    binding: PreparedScopeBinding,
+    source: FileIdentity,
+    target_slot: FileIdentity,
+    topology: ResolvedMountTopology,
+    attachment_anchor: FileIdentity,
+) -> Result<MountCatalogCommitmentV1> {
+    let mut host_binding = Vec::with_capacity(64);
+    host_binding.extend_from_slice(&binding.runtime_handle);
+    host_binding.extend_from_slice(&binding.payload_scope_handle);
+    let mut bytes = catalog_authorization_bytes(
+        b"AOSMCAT4",
         PREPARED_COMMITMENT_VERSION,
         generation,
         entry,
@@ -935,6 +1064,17 @@ fn prepared_catalog_authorization_commitment_v6(
         binding.root,
         target_slot,
     )?;
+    append_prepared_topology(&mut bytes, topology, attachment_anchor);
+
+    MountCatalogCommitmentV1::for_verified_canonical_bytes(&bytes)
+        .map_err(|error| MountError::State(error.to_string()))
+}
+
+fn append_prepared_topology(
+    bytes: &mut Vec<u8>,
+    topology: ResolvedMountTopology,
+    attachment_anchor: FileIdentity,
+) {
     bytes.extend_from_slice(&attachment_anchor.device.to_be_bytes());
     bytes.extend_from_slice(&attachment_anchor.inode.to_be_bytes());
     for value in [
@@ -948,9 +1088,6 @@ fn prepared_catalog_authorization_commitment_v6(
         bytes.extend_from_slice(&value.to_be_bytes());
     }
     bytes.extend_from_slice(&topology.attachment_anchor_idmap_digest);
-
-    MountCatalogCommitmentV1::for_verified_canonical_bytes(&bytes)
-        .map_err(|error| MountError::State(error.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -990,6 +1127,13 @@ fn catalog_authorization_bytes(
     bytes.extend_from_slice(&entry.source_view_id);
     bytes.extend_from_slice(&entry.source_incarnation_id.unwrap_or([0; 16]));
     bytes.push(entry.source_consistency.code());
+    if version >= PREPARED_COMMITMENT_VERSION {
+        let source_handle_length = u16::try_from(entry.source_handle.len())
+            .map_err(|_| MountError::State("catalog source handle exceeds u16".to_owned()))?;
+        bytes.extend_from_slice(&source_handle_length.to_be_bytes());
+        bytes.extend_from_slice(&entry.source_handle);
+        bytes.extend_from_slice(&entry.source_binding_digest);
+    }
     bytes.extend_from_slice(&entry.attachment_lease_id);
     bytes.extend_from_slice(&entry.attachment_lease_issued_seconds.to_be_bytes());
     bytes.extend_from_slice(&entry.attachment_lease_expires_seconds.to_be_bytes());
@@ -1085,6 +1229,20 @@ impl MountCatalogSnapshot {
 }
 
 impl MountCatalogEntry {
+    fn source_binding(&self) -> Result<SourceRealizationBindingV1> {
+        let source = decode_view_source(&self.source_handle, DecodeLimits::default())
+            .map_err(|error| MountError::State(error.to_string()))?;
+        SourceRealizationBindingV1::new(
+            self.source_view_id,
+            self.source_generation,
+            self.view_revision.clone(),
+            source,
+            self.source_consistency.protocol_value(),
+            self.source_incarnation_id,
+        )
+        .map_err(|error| MountError::State(error.to_string()))
+    }
+
     fn validate(&self) -> Result<()> {
         if self.assignment.sandbox_id == [0; 16]
             || self.assignment.incarnation_id == [0; 16]
@@ -1114,6 +1272,37 @@ impl MountCatalogEntry {
                 "mount catalog source incarnation differs from its consistency contract".to_owned(),
             ));
         }
+        if !self.source_handle.is_empty() {
+            let source = decode_view_source(&self.source_handle, DecodeLimits::default())
+                .map_err(|error| MountError::State(error.to_string()))?;
+            if encode_view_source(&source) != self.source_handle {
+                return Err(MountError::State(
+                    "mount catalog source handle is not canonical".to_owned(),
+                ));
+            }
+            if self.commitment_version == Some(PREPARED_COMMITMENT_VERSION)
+                && self.source_binding()?.digest().as_bytes() != &self.source_binding_digest
+            {
+                return Err(MountError::State(
+                    "mount catalog source binding digest is not canonical".to_owned(),
+                ));
+            }
+        }
+        if self.commitment_version == Some(PREPARED_COMMITMENT_VERSION)
+            && (self.source_handle.is_empty() || self.source_binding_digest == [0; 32])
+        {
+            return Err(MountError::State(
+                "current mount catalog entry lacks an exact source binding".to_owned(),
+            ));
+        }
+        if self.commitment_version != Some(PREPARED_COMMITMENT_VERSION)
+            && (!self.source_handle.is_empty() || self.source_binding_digest != [0; 32])
+        {
+            return Err(MountError::State(
+                "legacy mount catalog entry unexpectedly contains an exact source binding"
+                    .to_owned(),
+            ));
+        }
         for path in [
             &self.source_path,
             &self.target_slot_path,
@@ -1127,7 +1316,8 @@ impl MountCatalogEntry {
                 || !self.target_root_path.is_empty()
                 || !matches!(
                     self.commitment_version,
-                    None | Some(PREPARED_COMMITMENT_VERSION)
+                    None | Some(PREVIOUS_PREPARED_COMMITMENT_VERSION)
+                        | Some(PREPARED_COMMITMENT_VERSION)
                 )
                 || self.runtime_handle.is_none_or(|handle| handle == [0; 32])
                 || self
@@ -1214,6 +1404,7 @@ impl MountCatalogEntry {
             && self.source_view_id == *request.source_view_id()
             && self.source_incarnation_id.as_ref() == request.source_incarnation_id()
             && self.source_consistency.protocol_value() == request.source_consistency()
+            && self.matches_source_authority(request)
             && self.attachment_lease_id == *request.attachment_lease_id()
             && self.attachment_lease_issued_seconds == request.attachment_lease_issued_seconds()
             && self.attachment_lease_expires_seconds == request.attachment_lease_expires_seconds()
@@ -1224,18 +1415,22 @@ impl MountCatalogEntry {
             && self.source_view_id == *request.source_view_id()
             && self.source_incarnation_id.as_ref() == request.source_incarnation_id()
             && self.source_consistency.protocol_value() == request.source_consistency()
+            && self.matches_source_authority(request)
     }
-}
 
-fn resolve_directory(root: &BeneathRoot, path: &str) -> Result<ResolvedPath> {
-    root.resolve(
-        Path::new(path),
-        ResolveOptions {
-            no_mount_crossing: false,
-            require_directory: true,
-        },
-    )
-    .map_err(|error| MountError::Worker(error.to_string()))
+    fn matches_source_authority(&self, request: &ValidatedMountRequest) -> bool {
+        if self.commitment_version != Some(PREPARED_COMMITMENT_VERSION) {
+            // v4-v6 never persisted or committed the portable source handle.
+            // Matching can reproduce their audit digest, but mutation rejects
+            // these rows before exposing any resource.
+            return true;
+        }
+
+        self.source_handle == encode_view_source(request.source_handle())
+            && request
+                .source_binding()
+                .is_none_or(|binding| binding.digest().as_bytes() == &self.source_binding_digest)
+    }
 }
 
 fn resolve_protected_directory(root: &BeneathRoot, path: &str) -> Result<ResolvedPath> {
@@ -1585,12 +1780,19 @@ pub fn source_catalog_relative_path(request: &ValidatedMountRequest) -> Result<P
             ));
         }
     };
+    let source_binding = request
+        .source_binding()
+        .ok_or_else(|| {
+            MountError::State("mount source binding lacks a view descriptor".to_owned())
+        })?
+        .digest();
 
     Ok(Path::new("sources")
         .join(encode_hex(request.source_view_id()))
         .join(format!("{:016x}", request.source_generation()))
         .join(source_scope)
-        .join(encode_hex(revision.digest().as_bytes())))
+        .join(encode_hex(revision.digest().as_bytes()))
+        .join(encode_hex(source_binding.as_bytes())))
 }
 
 fn path_text(path: &Path) -> Result<&str> {
@@ -1657,6 +1859,22 @@ mod tests {
 
     use super::*;
 
+    fn file_catalog(path: &Path) -> FileMountCatalog {
+        let descriptor = rustix::fs::open(
+            path,
+            rustix::fs::OFlags::PATH
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+
+        FileMountCatalog {
+            root: BeneathRoot::from_owned(descriptor).unwrap(),
+        }
+    }
+
     fn catalog_entry() -> MountCatalogEntry {
         let descriptor = ObjectDescriptor::new(
             aos_sandbox_core::MediaType::new("application/vnd.aos.sandbox.view.v1+cbor".to_owned())
@@ -1683,6 +1901,8 @@ mod tests {
             source_view_id: [6; 16],
             source_incarnation_id: None,
             source_consistency: CatalogSourceConsistency::ImmutableRevision,
+            source_handle: Vec::new(),
+            source_binding_digest: [0; 32],
             attachment_lease_id: [8; 16],
             attachment_lease_issued_seconds: 9,
             attachment_lease_expires_seconds: 10,
@@ -1733,6 +1953,31 @@ mod tests {
         entry.runtime_handle = Some([14; 32]);
         entry.payload_scope_handle = Some([15; 32]);
         entry
+    }
+
+    fn bind_current_source(entry: &mut MountCatalogEntry) {
+        let source = aos_sandbox_core::model::ViewSource::ImmutableTree {
+            tree: ObjectDescriptor::new(
+                aos_sandbox_core::MediaType::new(
+                    "application/vnd.aos.sandbox.tree.v1+cbor".to_owned(),
+                )
+                .unwrap(),
+                ObjectDigest::from_bytes([22; 32]),
+                23,
+            ),
+        };
+        entry.source_handle = encode_view_source(&source);
+        entry.source_binding_digest = *SourceRealizationBindingV1::new(
+            entry.source_view_id,
+            entry.source_generation,
+            entry.view_revision.clone(),
+            source,
+            entry.source_consistency.protocol_value(),
+            entry.source_incarnation_id,
+        )
+        .unwrap()
+        .digest()
+        .as_bytes();
     }
 
     fn prepared_binding() -> PreparedScopeBinding {
@@ -1800,7 +2045,7 @@ mod tests {
         let request = ApplyMountRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 2,
+                protocol_minor: 6,
                 request_id: vec![11; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 1_000,
@@ -1843,6 +2088,25 @@ mod tests {
             source_view_id: vec![8; 16],
             source_incarnation_id: source_incarnation_id.map_or_else(Vec::new, |id| id.to_vec()),
             source_consistency: consistency.into(),
+            source_handle: encode_view_source(&match consistency {
+                MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION => {
+                    aos_sandbox_core::model::ViewSource::ImmutableTree {
+                        tree: ObjectDescriptor::new(
+                            aos_sandbox_core::MediaType::new(
+                                "application/vnd.aos.sandbox.tree.v1+cbor".to_owned(),
+                            )
+                            .unwrap(),
+                            ObjectDigest::from_bytes([22; 32]),
+                            23,
+                        ),
+                    }
+                }
+                _ => aos_sandbox_core::model::ViewSource::LiveExport {
+                    owner_sandbox: aos_sandbox_core::SandboxId::from_bytes([23; 16]),
+                    export: aos_sandbox_core::ExportId::from_bytes([24; 16]),
+                    source_generation: aos_sandbox_core::Revision::new(7),
+                },
+            }),
             attachment_lease_id: vec![9; 16],
             attachment_lease_issued_seconds: 10,
             attachment_lease_expires_seconds: 20,
@@ -1886,6 +2150,9 @@ mod tests {
                 .join("0000000000000007")
                 .join("immutable")
                 .join("0606060606060606060606060606060606060606060606060606060606060606")
+                .join(encode_hex(
+                    immutable.source_binding().unwrap().digest().as_bytes()
+                ))
         );
 
         let live = validated_request(
@@ -2067,7 +2334,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_commitment_versions_preserve_v5_and_bind_v6_topology() {
+    fn prepared_commitment_versions_preserve_v5_and_bind_v7_topology_and_source() {
         let directory = |device, inode| FileIdentity {
             device,
             inode,
@@ -2107,10 +2374,35 @@ mod tests {
         assert_eq!(snapshot.generation, 1);
         assert_eq!(snapshot.entries[0].commitment_version, None);
 
+        let mut previous = prepared_catalog_entry();
+        previous.commitment_version = Some(PREVIOUS_PREPARED_COMMITMENT_VERSION);
+        previous.validate().unwrap();
+        let v6 = prepared_catalog_authorization_commitment(
+            1,
+            &previous,
+            binding,
+            directory(1, 1),
+            directory(1, 5),
+            topology(),
+            directory(12, 13),
+        )
+        .unwrap();
+        assert_eq!(
+            v6.digest().as_bytes(),
+            &[
+                0x0c, 0xf5, 0x73, 0xeb, 0x33, 0x67, 0x4b, 0x55, 0x3b, 0xc3, 0x64, 0xb6, 0x43, 0xfe,
+                0xd0, 0xed, 0x62, 0x09, 0x7c, 0x5a, 0xba, 0xa6, 0x92, 0x5c, 0x0e, 0xc1, 0x39, 0x28,
+                0x5e, 0x5f, 0xea, 0xfb,
+            ]
+        );
+        assert_ne!(v6, legacy_commitment);
+        assert!(require_mutation_capable(&previous).is_err());
+
         let mut current = prepared_catalog_entry();
+        bind_current_source(&mut current);
         current.commitment_version = Some(PREPARED_COMMITMENT_VERSION);
         current.validate().unwrap();
-        let v6 = prepared_catalog_authorization_commitment(
+        let v7 = prepared_catalog_authorization_commitment(
             1,
             &current,
             binding,
@@ -2120,7 +2412,8 @@ mod tests {
             directory(12, 13),
         )
         .unwrap();
-        assert_ne!(v6, legacy_commitment);
+        assert_ne!(v7, legacy_commitment);
+        assert_ne!(v7, v6);
 
         let baseline_topology = topology();
         let mut changed_topologies = Vec::new();
@@ -2150,7 +2443,7 @@ mod tests {
                     directory(12, 13),
                 )
                 .unwrap(),
-                v6
+                v7
             );
         }
         assert_ne!(
@@ -2164,18 +2457,18 @@ mod tests {
                 directory(12, 14),
             )
             .unwrap(),
-            v6
+            v7
         );
         assert!(
             serde_json::to_vec(&current)
                 .unwrap()
-                .windows(b"\"commitment_version\":6".len())
-                .any(|window| window == b"\"commitment_version\":6")
+                .windows(b"\"commitment_version\":7".len())
+                .any(|window| window == b"\"commitment_version\":7")
         );
     }
 
     #[test]
-    fn legacy_commitments_stay_byte_stable_but_only_v6_can_authorize_mutation() {
+    fn legacy_commitments_stay_byte_stable_but_only_v7_can_authorize_mutation() {
         let mut static_entry = catalog_entry();
         static_entry.validate().unwrap();
         assert!(require_mutation_capable(&static_entry).is_err());
@@ -2252,12 +2545,104 @@ mod tests {
 
         let mut prepared = prepared_catalog_entry();
         assert!(require_mutation_capable(&prepared).is_err());
+        prepared.commitment_version = Some(PREVIOUS_PREPARED_COMMITMENT_VERSION);
+        prepared.validate().unwrap();
+        assert!(require_mutation_capable(&prepared).is_err());
+
+        bind_current_source(&mut prepared);
         prepared.commitment_version = Some(PREPARED_COMMITMENT_VERSION);
         assert!(require_mutation_capable(&prepared).is_ok());
         prepared.commitment_version = Some(5);
         assert!(prepared.validate().is_err());
-        prepared.commitment_version = Some(7);
+        prepared.commitment_version = Some(8);
         assert!(prepared.validate().is_err());
+    }
+
+    #[test]
+    fn historical_v6_catalog_reopens_and_reproduces_its_golden_commitment() {
+        let mut entry = prepared_catalog_entry();
+        entry.commitment_version = Some(PREVIOUS_PREPARED_COMMITMENT_VERSION);
+        let expected_snapshot = MountCatalogSnapshot {
+            generation: 1,
+            entries: vec![entry.clone()],
+        };
+
+        // These fields did not exist in the v6 JSON schema. Their serde
+        // defaults must preserve an on-disk row without granting new authority.
+        let mut historical_json = serde_json::to_value(&expected_snapshot).unwrap();
+        let historical_entry = historical_json["entries"][0].as_object_mut().unwrap();
+        historical_entry.remove("source_handle");
+        historical_entry.remove("source_binding_digest");
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join(CATALOG_FILE),
+            serde_json::to_vec(&historical_json).unwrap(),
+        )
+        .unwrap();
+        let catalog = file_catalog(directory.path());
+        let reopened = catalog.snapshot().unwrap();
+        assert_eq!(reopened, expected_snapshot);
+        assert!(require_mutation_capable(&reopened.entries[0]).is_err());
+
+        let directory_identity = |device, inode| FileIdentity {
+            device,
+            inode,
+            file_type: FileType::Directory,
+        };
+        let commitment = prepared_catalog_authorization_commitment(
+            reopened.generation,
+            &reopened.entries[0],
+            prepared_binding(),
+            directory_identity(1, 1),
+            directory_identity(1, 5),
+            topology(),
+            directory_identity(12, 13),
+        )
+        .unwrap();
+        assert_eq!(
+            commitment.digest().as_bytes(),
+            &[
+                0x0c, 0xf5, 0x73, 0xeb, 0x33, 0x67, 0x4b, 0x55, 0x3b, 0xc3, 0x64, 0xb6, 0x43, 0xfe,
+                0xd0, 0xed, 0x62, 0x09, 0x7c, 0x5a, 0xba, 0xa6, 0x92, 0x5c, 0x0e, 0xc1, 0x39, 0x28,
+                0x5e, 0x5f, 0xea, 0xfb,
+            ]
+        );
+    }
+
+    #[test]
+    fn historical_v6_row_matches_exact_request_only_for_audit_reproduction() {
+        let request = validated_request(
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION,
+            None,
+        );
+        let mut entry = prepared_catalog_entry();
+        entry.view_revision = request.view_revision().unwrap().clone();
+        entry.source_generation = request.source_generation();
+        entry.source_view_id = *request.source_view_id();
+        entry.attachment_lease_id = *request.attachment_lease_id();
+        entry.attachment_lease_issued_seconds = request.attachment_lease_issued_seconds();
+        entry.attachment_lease_expires_seconds = request.attachment_lease_expires_seconds();
+        entry.commitment_version = Some(PREVIOUS_PREPARED_COMMITMENT_VERSION);
+        entry.validate().unwrap();
+
+        assert!(entry.matches(&request));
+        assert!(require_mutation_capable(&entry).is_err());
+
+        bind_current_source(&mut entry);
+        entry.commitment_version = Some(PREPARED_COMMITMENT_VERSION);
+        entry.validate().unwrap();
+        assert!(entry.matches(&request));
+        assert!(require_mutation_capable(&entry).is_ok());
+    }
+
+    #[test]
+    fn production_prepared_catalog_disables_source_authority_without_provider() {
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = PreparedMountCatalog::new(file_catalog(directory.path()));
+
+        assert!(!catalog.supports_mount_apply());
+        assert!(!catalog.supports_catalog_preparation());
     }
 
     #[test]

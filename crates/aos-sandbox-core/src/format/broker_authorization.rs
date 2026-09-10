@@ -597,7 +597,7 @@ mod tests {
             BrokerAuthorizationPlan::new(
                 original.audience(),
                 original.protocol(),
-                ProtocolVersion::new(1, 6),
+                ProtocolVersion::new(1, 7),
                 original.assignment(),
                 original.node(),
                 original.ownership_authority().clone(),

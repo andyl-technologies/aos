@@ -9,9 +9,9 @@ use aos_proto::aos::sandbox::local::v1::{
     DestinationSlotInventoryRecord, DestinationSlotLifecycle, DestinationSlotReapCorrelation,
     DestinationSlotRematerializationCorrelation, InventoryDestinationSlotsResponse,
     InventoryMountResourcesResponse, MountAction, MountAssignmentBinding, MountAttributes,
-    MountFaultCorrelation, MountFaultPhase, MountInventoryRecord, MountKernelObservation,
-    MountLifecycle, MountOperationCorrelation, MountPublicationCorrelation, MountRecipe,
-    MountResult, MountSourceConsistency, MountState,
+    MountFaultCorrelation, MountFaultPhase, MountInventoryRecord, MountInventorySourceAuthority,
+    MountKernelObservation, MountLifecycle, MountOperationCorrelation, MountPublicationCorrelation,
+    MountRecipe, MountResult, MountSourceConsistency, MountState,
 };
 use aos_sandbox::journal::{
     IdempotencyKey, IdempotencyOutcome, Journal, JournalRecord, JournalTransaction, RecordNamespace,
@@ -29,7 +29,8 @@ use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedDestinationSlotRequest, ValidatedMountAttributes,
     ValidatedMountRequest, attachment_anchor_handle_v1, decode_destination_slot_request,
     decode_mount_request, detached_mount_handle_v1,
-    encode_destination_slot_inventory_response_for_version, encode_destination_slot_response,
+    encode_destination_slot_inventory_response_for_version,
+    encode_destination_slot_response_for_version, encode_mount_inventory_response_for_version,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -46,9 +47,9 @@ use crate::state::authorization_v1::{MountEffectIntentV2, MountEffectStatusV2};
 use crate::state::mount_resource_v1::{
     AssignmentBindingV1, DetachedMountIdentityV1, InstalledMountObservationV1, MountFaultPhaseV1,
     MountHandleV1, MountPolicyV1, MountRecipeV1, MountResourceLimitsV1, MountResourceStateV1,
-    MountResourceTableV1, MountResourceV1, MountSourceConsistencyV1, NativeMutationV1,
-    ObjectDescriptorV1, OperationCorrelationV1, OwnedMountAttributeV1, PublicationCorrelationV1,
-    canonical_fd_store_key,
+    MountResourceTableV1, MountResourceV1, MountSourceAuthorityV1, MountSourceConsistencyV1,
+    NativeMutationV1, ObjectDescriptorV1, OperationCorrelationV1, OwnedMountAttributeV1,
+    PublicationCorrelationV1, canonical_fd_store_key,
 };
 use crate::worker::{
     EffectDeadlineV1, EffectHandles, MountTargetObservation, MountWorker, RetainedMountObservation,
@@ -68,6 +69,18 @@ pub struct MountBroker<W> {
 }
 
 impl<W: MountWorker> MountBroker<W> {
+    /// Reports whether the complete native Apply backend is executable now.
+    #[must_use]
+    pub fn supports_mount_apply(&self) -> bool {
+        self.worker.supports_mount_apply()
+    }
+
+    /// Reports whether catalog preparation can create executable authority now.
+    #[must_use]
+    pub fn supports_catalog_preparation(&self) -> bool {
+        self.worker.supports_catalog_preparation()
+    }
+
     /// Constructs a broker after bounded recovery and exact custody validation.
     ///
     /// # Errors
@@ -138,16 +151,41 @@ impl<W: MountWorker> MountBroker<W> {
 
     /// Encodes one complete authoritative durable resource-table snapshot.
     ///
-    #[must_use]
-    pub fn inventory_resources(&self) -> Vec<u8> {
+    /// # Errors
+    ///
+    /// Returns an error if an internally produced row violates the current
+    /// closed wire schema.
+    pub fn inventory_resources(&self) -> Result<Vec<u8>> {
+        self.inventory_resources_for_version(ProtocolVersion::new(1, 6))
+    }
+
+    /// Encodes a version-bound authoritative durable resource-table snapshot.
+    ///
+    /// Mount 1.0-1.5 omit the later source-authority fields and are therefore
+    /// suitable only for legacy observation. Mount 1.6 includes the exact
+    /// canonical source handle for exact rows and explicitly identifies
+    /// quarantined historical rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported protocol version or if an
+    /// internally produced row violates the version-bound closed wire schema.
+    pub fn inventory_resources_for_version(
+        &self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Vec<u8>> {
         let response = InventoryMountResourcesResponse {
             kernel_boot_id: self.kernel_boot_id.to_vec(),
             journal_sequence: self.journal.snapshot_sequence(),
-            mounts: self.resources.resources().map(inventory_record).collect(),
+            mounts: self
+                .resources
+                .resources()
+                .map(|resource| inventory_record(resource, protocol_version))
+                .collect(),
             broker_instance_id: self.broker_instance_id.to_vec(),
             ..Default::default()
         };
-        response.encode_to_vec()
+        encode_mount_inventory_response_for_version(response, protocol_version).map_err(Into::into)
     }
 
     /// Reports whether this broker owns a configured destination-slot store.
@@ -168,7 +206,7 @@ impl<W: MountWorker> MountBroker<W> {
 
     /// Encodes a version-bound authoritative destination-slot table snapshot.
     ///
-    /// Mount 1.5 additionally revalidates and includes every current
+    /// Mount 1.5-1.6 additionally revalidate and include every current
     /// namespace-generation anchor containing at least one Ready slot.
     ///
     /// # Errors
@@ -183,7 +221,9 @@ impl<W: MountWorker> MountBroker<W> {
         let slots = self.destination_slots.as_ref().ok_or_else(|| {
             MountError::State("destination-slot ownership is not configured".to_owned())
         })?;
-        let attachment_anchors = if protocol_version == ProtocolVersion::new(1, 5) {
+        let attachment_anchors = if protocol_version == ProtocolVersion::new(1, 5)
+            || protocol_version == ProtocolVersion::new(1, 6)
+        {
             slots
                 .attachment_anchors()?
                 .into_iter()
@@ -264,6 +304,25 @@ impl<W: MountWorker> MountBroker<W> {
             policy,
             verification_clock.boottime_nanoseconds(),
         )?;
+        if request.header().protocol_version() != protocol_version {
+            return Err(MountError::Protocol(
+                aos_sandbox_protocol::ProtocolValidationError::MethodMismatch,
+            ));
+        }
+        let binding = destination_slot_binding(&request)?;
+        if protocol_version == ProtocolVersion::new(1, 3)
+            && self
+                .destination_slots
+                .as_ref()
+                .and_then(|slots| slots.get(&binding))
+                .is_some_and(|resource| resource.rematerialization_operation().is_some())
+        {
+            return Err(MountError::Protocol(
+                aos_sandbox_protocol::ProtocolValidationError::InvalidField(
+                    "destination_slot.rematerialization protocol version",
+                ),
+            ));
+        }
         let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
         let prior_fence = self
             .journal
@@ -321,7 +380,6 @@ impl<W: MountWorker> MountBroker<W> {
                 MountError::Fence("destination-slot authority expired before the effect")
             })?;
 
-        let binding = destination_slot_binding(&request)?;
         let resource = match request.action() {
             DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE => {
                 let mutation = DestinationSlotMaterializationV1::new(
@@ -438,7 +496,10 @@ impl<W: MountWorker> MountBroker<W> {
                 ));
             }
         };
-        let response = encode_destination_slot_response(destination_slot_record(resource))?;
+        let response = encode_destination_slot_response_for_version(
+            destination_slot_record(resource),
+            protocol_version,
+        )?;
         let response_limit = usize::try_from(request.header().maximum_response_bytes())
             .map_err(|_| MountError::State("response limit does not fit usize".to_owned()))?;
         if response.len() > response_limit {
@@ -510,12 +571,28 @@ impl<W: MountWorker> MountBroker<W> {
             policy,
             verification_clock.boottime_nanoseconds(),
         )?;
+        if request.header().protocol_version() != protocol_version {
+            return Err(MountError::Protocol(
+                aos_sandbox_protocol::ProtocolValidationError::MethodMismatch,
+            ));
+        }
+        let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
+        let handle = operation_handle(&request, request_digest)?;
+        if self.resources.get(&handle).is_some_and(|resource| {
+            matches!(
+                resource.recipe.source_authority,
+                MountSourceAuthorityV1::LegacyUnbound
+            )
+        }) {
+            return Err(MountError::State(
+                "historical mount resource lacks source authority and is quarantined".to_owned(),
+            ));
+        }
         let catalog_commitment = self.worker.catalog_commitment(&request)?;
         let catalog_semantics = catalog_commitment
             .map(MountCatalogCommitmentV1::from_verified_digest)
             .transpose()
             .map_err(|error| MountError::State(error.to_string()))?;
-        let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
         let prior_fence = self
             .journal
             .get(RecordNamespace::DesiredState, request.fence().sandbox_id());
@@ -578,7 +655,6 @@ impl<W: MountWorker> MountBroker<W> {
             .validate_effect_clock(&effect, &trusted_clock()?)
             .map_err(|_| MountError::Fence("mount authority expired before the effect"))?;
 
-        let handle = operation_handle(&request, request_digest)?;
         let current = self
             .resources
             .get(&handle)
@@ -1214,6 +1290,16 @@ fn allocated_resource(
             source_view_id: *request.source_view_id(),
             source_incarnation_id: request.source_incarnation_id().copied(),
             source_consistency: mount_source_consistency(request.source_consistency()),
+            source_authority: MountSourceAuthorityV1::Exact {
+                source_handle: aos_sandbox_core::encode_view_source(request.source_handle()),
+                source_binding_digest: *request
+                    .source_binding()
+                    .ok_or_else(|| {
+                        MountError::State("allocated resource lacks source binding".to_owned())
+                    })?
+                    .digest()
+                    .as_bytes(),
+            },
             policy: mount_policy(attributes),
         },
         state: MountResourceStateV1::Allocated { creation },
@@ -1296,6 +1382,11 @@ fn validate_request_resource(
     resource: &MountResourceV1,
     kernel_boot_id: [u8; 16],
 ) -> Result<()> {
+    let Some((source_handle, _)) = resource.recipe.source_authority.exact() else {
+        return Err(MountError::State(
+            "historical mount resource lacks source authority and is quarantined".to_owned(),
+        ));
+    };
     let request_binding = binding(request);
     let teardown_binding_matches = matches!(
         request.action(),
@@ -1328,6 +1419,7 @@ fn validate_request_resource(
         || resource.recipe.source_incarnation_id.as_ref() != request.source_incarnation_id()
         || resource.recipe.source_consistency
             != mount_source_consistency(request.source_consistency())
+        || source_handle != aos_sandbox_core::encode_view_source(request.source_handle())
         || !attributes_match
         || !view_matches
     {
@@ -1782,6 +1874,7 @@ fn encode_result(
             .source_incarnation_id()
             .map_or_else(Vec::new, |value| value.to_vec()),
         source_consistency: request.source_consistency().into(),
+        source_handle: aos_sandbox_core::encode_view_source(request.source_handle()),
         attachment_lease_id: request.attachment_lease_id().to_vec(),
         attachment_lease_issued_seconds: request.attachment_lease_issued_seconds(),
         attachment_lease_expires_seconds: request.attachment_lease_expires_seconds(),
@@ -1935,7 +2028,10 @@ fn destination_slot_record(resource: DestinationSlotResourceV1) -> DestinationSl
     }
 }
 
-fn inventory_record(resource: &MountResourceV1) -> MountInventoryRecord {
+fn inventory_record(
+    resource: &MountResourceV1,
+    protocol_version: ProtocolVersion,
+) -> MountInventoryRecord {
     let (
         lifecycle,
         creation,
@@ -1965,7 +2061,7 @@ fn inventory_record(resource: &MountResourceV1) -> MountInventoryRecord {
             ..Default::default()
         })
         .into(),
-        recipe: Some(inventory_recipe(&resource.recipe)).into(),
+        recipe: Some(inventory_recipe(&resource.recipe, protocol_version)).into(),
         lifecycle: lifecycle.into(),
         resource_kernel_boot_id: resource.kernel_boot_id.to_vec(),
         detached_unique_mount_id: detached,
@@ -2179,7 +2275,24 @@ fn inventory_publication(value: &PublicationCorrelationV1) -> MountPublicationCo
     }
 }
 
-fn inventory_recipe(value: &MountRecipeV1) -> MountRecipe {
+fn inventory_recipe(value: &MountRecipeV1, protocol_version: ProtocolVersion) -> MountRecipe {
+    let (source_handle, source_authority) = if protocol_version.minor() >= 6 {
+        match &value.source_authority {
+            MountSourceAuthorityV1::LegacyUnbound => (
+                Vec::new(),
+                MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_LEGACY_UNBOUND,
+            ),
+            MountSourceAuthorityV1::Exact { source_handle, .. } => (
+                source_handle.clone(),
+                MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT,
+            ),
+        }
+    } else {
+        (
+            Vec::new(),
+            MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_UNSPECIFIED,
+        )
+    };
     MountRecipe {
         attachment_id: value.attachment_id.to_vec(),
         destination_slot_id: value.destination_slot_id.to_vec(),
@@ -2197,6 +2310,8 @@ fn inventory_recipe(value: &MountRecipeV1) -> MountRecipe {
             .source_incarnation_id
             .map_or_else(Vec::new, |incarnation| incarnation.to_vec()),
         source_consistency: protocol_source_consistency(value.source_consistency).into(),
+        source_handle,
+        source_authority: source_authority.into(),
         attributes: Some(MountAttributes {
             read_only: value
                 .policy
@@ -2446,11 +2561,13 @@ mod tests {
     use aos_sandbox_protocol::semantics::host::runtime_handle_v1;
     use aos_sandbox_protocol::session::decode_request_envelope;
     use aos_sandbox_protocol::{
-        AuthorizationArtifactBytes, decode_destination_slot_inventory_response,
+        AuthorizationArtifactBytes, ProtocolValidationError, ValidatedMountInventorySource,
+        decode_destination_slot_inventory_response,
         decode_destination_slot_inventory_response_for_version, decode_destination_slot_response,
         encode_authorized_request_envelope,
     };
     use ed25519_dalek::SigningKey;
+    use std::cell::Cell;
     use std::num::NonZeroU32;
     use std::os::unix::ffi::OsStringExt as _;
     use std::os::unix::fs::PermissionsExt as _;
@@ -2557,6 +2674,24 @@ mod tests {
                 lease_generation,
                 authorized_requests,
                 &self.plan_key,
+            )
+        }
+
+        fn artifacts_for_version(
+            &self,
+            request_bytes: &[u8],
+            catalog_digest: Option<ObjectDigest>,
+            lease_generation: u64,
+            authorized_requests: &[&[u8]],
+            protocol_version: ProtocolVersion,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_with_plan_key_and_version(
+                request_bytes,
+                catalog_digest,
+                lease_generation,
+                authorized_requests,
+                &self.plan_key,
+                protocol_version,
             )
         }
 
@@ -2682,6 +2817,25 @@ mod tests {
             authorized_requests: &[&[u8]],
             plan_key: &SigningKey,
         ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_with_plan_key_and_version(
+                request_bytes,
+                catalog_digest,
+                lease_generation,
+                authorized_requests,
+                plan_key,
+                ProtocolVersion::new(1, 6),
+            )
+        }
+
+        fn artifacts_with_plan_key_and_version(
+            &self,
+            request_bytes: &[u8],
+            catalog_digest: Option<ObjectDigest>,
+            lease_generation: u64,
+            authorized_requests: &[&[u8]],
+            plan_key: &SigningKey,
+            protocol_version: ProtocolVersion,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
             let validated =
                 decode_mount_request(request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
                     .unwrap();
@@ -2754,7 +2908,7 @@ mod tests {
             let plan = BrokerAuthorizationPlan::new(
                 BrokerAudience::Mount,
                 ProtocolId::MountBroker,
-                ProtocolVersion::new(1, 1),
+                protocol_version,
                 assignment,
                 TEST_NODE,
                 self.lease_signer.clone(),
@@ -2931,7 +3085,7 @@ mod tests {
         broker.apply_mount(
             request_bytes,
             &artifacts,
-            ProtocolVersion::new(1, 1),
+            ProtocolVersion::new(1, 6),
             peer(),
             policy(),
             || Ok(clock()),
@@ -2983,6 +3137,7 @@ mod tests {
 
     struct ScriptedWorker {
         calls: usize,
+        catalog_calls: Cell<usize>,
         fail_after_custody_once: bool,
         fail_release_after_custody_once: bool,
         custody: Vec<RetainedMountObservation>,
@@ -2993,6 +3148,7 @@ mod tests {
         fn default() -> Self {
             Self {
                 calls: 0,
+                catalog_calls: Cell::new(0),
                 fail_after_custody_once: false,
                 fail_release_after_custody_once: false,
                 custody: Vec::new(),
@@ -3006,6 +3162,7 @@ mod tests {
             &self,
             request: &ValidatedMountRequest,
         ) -> Result<Option<aos_sandbox_core::ObjectDigest>> {
+            self.catalog_calls.set(self.catalog_calls.get() + 1);
             Ok((request.action() != MountAction::MOUNT_ACTION_RELEASE)
                 .then(|| aos_sandbox_core::ObjectDigest::from_bytes([self.catalog_byte; 32])))
         }
@@ -3270,7 +3427,7 @@ mod tests {
         ApplyMountRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 0,
+                protocol_minor: 6,
                 request_id: vec![request_id; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 1_000,
@@ -3314,6 +3471,15 @@ mod tests {
             source_view_id: vec![8; 16],
             source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
                 .into(),
+            source_handle: aos_sandbox_core::encode_view_source(
+                &aos_sandbox_core::model::ViewSource::ImmutableTree {
+                    tree: ObjectDescriptor::new(
+                        MediaType::new(PortableMediaType::Tree.as_str().to_owned()).unwrap(),
+                        ObjectDigest::from_bytes([10; 32]),
+                        11,
+                    ),
+                },
+            ),
             attachment_lease_id: vec![9; 16],
             attachment_lease_issued_seconds: 10,
             attachment_lease_expires_seconds: 20,
@@ -3326,7 +3492,7 @@ mod tests {
     fn catalog_preparation_binds_mount_intent_host_scope_and_response() {
         let mut mount = ApplyMountRequest::decode_from_slice(&request(91)).unwrap();
         let mount_header = mount.header.get_or_insert_default();
-        mount_header.protocol_minor = 2;
+        mount_header.protocol_minor = 6;
         mount_header.deadline_boottime_nanoseconds = 1_000;
         let mount_bytes = mount.encode_to_vec();
         let fixture = AuthorityFixture::new();
@@ -3467,10 +3633,186 @@ mod tests {
         Journal::open(path, JournalLimits::default()).unwrap().0
     }
 
+    fn commit_legacy_v3_resource(journal: &mut Journal, resource: &MountResourceV1) {
+        #[derive(serde::Serialize)]
+        struct LegacyEnvelope<'a> {
+            version: u16,
+            resource: &'a MountResourceV1,
+        }
+
+        let mut key = b"aos.mount.resource.v1\0".to_vec();
+        key.extend_from_slice(&resource.handle);
+        let value = serde_json::to_vec(&LegacyEnvelope {
+            version: 3,
+            resource,
+        })
+        .unwrap();
+        assert!(
+            !value
+                .windows(b"source_handle".len())
+                .any(|window| { window == b"source_handle" })
+        );
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [90; 16],
+                    vec![JournalRecord::put(RecordNamespace::Operation, key, value)],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+
+    fn legacy_installed_resource(request_bytes: &[u8]) -> MountResourceV1 {
+        let request =
+            decode_mount_request(request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                .unwrap();
+        let request_digest = Sha256::digest(request_bytes).into();
+        let kernel_boot_id = KernelBootId::current().unwrap().into_bytes();
+        let mut resource = allocated_resource(
+            &request,
+            request_digest,
+            kernel_boot_id,
+            OperationCorrelationV1 {
+                operation_id: [91; 16],
+                request_digest,
+            },
+        )
+        .unwrap();
+        resource.revision = 4;
+        resource.recipe.source_authority = MountSourceAuthorityV1::LegacyUnbound;
+        resource.state = MountResourceStateV1::Installed {
+            detached: DetachedMountIdentityV1 {
+                unique_mount_id: 700,
+            },
+            installed: InstalledMountObservationV1 {
+                unique_mount_id: 700,
+                parent_mount_id: 600,
+                target_mount_namespace_id: 500,
+                device_major: 8,
+                device_minor: 1,
+                superblock_magic: 0xef53,
+                superblock_flags: 1,
+                mount_attributes: 2,
+                propagation: 4,
+                root: b"/".to_vec(),
+                mount_point: b"/run/aos/slot".to_vec(),
+                identity_map_digest: [12; 32],
+            },
+            publication: PublicationCorrelationV1 {
+                operation: OperationCorrelationV1 {
+                    operation_id: [92; 16],
+                    request_digest: [93; 32],
+                },
+                target_mount_namespace_id: 500,
+                target_namespace_generation: 1,
+                replaces: None,
+            },
+        };
+        resource
+    }
+
     fn private_destination_slot_root() -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         directory
+    }
+
+    #[test]
+    fn mount_apply_rejects_supplied_version_mismatch_before_state_or_effect() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let request_bytes = request(79);
+        let request =
+            decode_mount_request(&request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                .unwrap();
+        let catalog = broker.worker.catalog_commitment(&request).unwrap();
+        let supplied_version = ProtocolVersion::new(1, 5);
+        let artifacts = fixture.artifacts_for_version(
+            &request_bytes,
+            catalog,
+            1,
+            &[&request_bytes],
+            supplied_version,
+        );
+        let journal_sequence = broker.journal.snapshot_sequence();
+        let catalog_calls = broker.worker.catalog_calls.get();
+
+        assert!(matches!(
+            broker.apply_mount(
+                &request_bytes,
+                &artifacts,
+                supplied_version,
+                peer(),
+                policy(),
+                || Ok(clock()),
+            ),
+            Err(MountError::Protocol(
+                ProtocolValidationError::MethodMismatch
+            ))
+        ));
+        assert_eq!(broker.journal.snapshot_sequence(), journal_sequence);
+        assert!(broker.resources.resources().next().is_none());
+        assert_eq!(broker.worker.catalog_calls.get(), catalog_calls);
+        assert_eq!(broker.worker.calls, 0);
+    }
+
+    #[test]
+    fn destination_slot_apply_rejects_supplied_version_mismatch_before_state_or_effect() {
+        let directory = private_destination_slot_root();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let mut request =
+            ApplyDestinationSlotRequest::decode_from_slice(&destination_slot_request(
+                79,
+                1,
+                6,
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+                None,
+                None,
+            ))
+            .unwrap();
+        request.header.get_or_insert_default().protocol_minor = 3;
+        let request_bytes = request.encode_to_vec();
+        let validated = decode_destination_slot_request(
+            &request_bytes,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let binding = destination_slot_binding(&validated).unwrap();
+        let artifacts = fixture.destination_slot_artifacts(&request_bytes, 1);
+        let journal_sequence = broker.journal.snapshot_sequence();
+
+        assert!(matches!(
+            broker.apply_destination_slot(
+                &request_bytes,
+                &artifacts,
+                ProtocolVersion::new(1, 4),
+                peer(),
+                policy(),
+                || Ok(clock()),
+            ),
+            Err(MountError::Protocol(
+                ProtocolValidationError::MethodMismatch
+            ))
+        ));
+        assert_eq!(broker.journal.snapshot_sequence(), journal_sequence);
+        assert!(
+            broker
+                .destination_slots
+                .as_ref()
+                .unwrap()
+                .get(&binding)
+                .is_none()
+        );
+        assert_eq!(broker.worker.calls, 0);
     }
 
     #[test]
@@ -3620,6 +3962,49 @@ mod tests {
             Some(destination_slot_fence(1, 6)),
         );
         assert!(apply_destination_slot(&mut broker, &fixture, &substituted, 1).is_err());
+
+        let mut legacy_reap =
+            ApplyDestinationSlotRequest::decode_from_slice(&destination_slot_request(
+                91,
+                3,
+                8,
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP,
+                Some(*ready.resource_digest()),
+                Some(destination_slot_fence(1, 6)),
+            ))
+            .unwrap();
+        legacy_reap.header.get_or_insert_default().protocol_minor = 3;
+        let legacy_reap = legacy_reap.encode_to_vec();
+        let artifacts = fixture.destination_slot_artifacts(&legacy_reap, 1);
+        let journal_sequence = broker.journal.snapshot_sequence();
+        let before = broker
+            .destination_slots
+            .as_ref()
+            .unwrap()
+            .get(&binding)
+            .unwrap();
+
+        assert!(matches!(
+            broker.apply_destination_slot(
+                &legacy_reap,
+                &artifacts,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                policy(),
+                || Ok(clock()),
+            ),
+            Err(MountError::Protocol(_))
+        ));
+        assert_eq!(broker.journal.snapshot_sequence(), journal_sequence);
+        assert_eq!(
+            broker
+                .destination_slots
+                .as_ref()
+                .unwrap()
+                .get(&binding)
+                .unwrap(),
+            before
+        );
     }
 
     #[test]
@@ -3803,9 +4188,13 @@ mod tests {
         ));
         assert_eq!(resource.revision, 2);
 
-        let inventory = broker.inventory_resources();
-        let decoded =
-            aos_sandbox_protocol::decode_mount_inventory_response(&inventory, 4096).unwrap();
+        let inventory = broker.inventory_resources().unwrap();
+        let decoded = aos_sandbox_protocol::decode_mount_inventory_response_for_version(
+            &inventory,
+            4096,
+            ProtocolVersion::new(1, 6),
+        )
+        .unwrap();
         assert_eq!(decoded.mounts().len(), 1);
         assert_eq!(
             decoded.mounts()[0].lifecycle(),
@@ -3821,7 +4210,36 @@ mod tests {
             recipe.source_consistency(),
             MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
         );
+        assert!(matches!(
+            recipe.source(),
+            aos_sandbox_protocol::ValidatedMountInventorySource::Exact { .. }
+        ));
         assert!(!recipe.attributes().recursive());
+
+        for minor in 0..=5 {
+            let version = ProtocolVersion::new(1, minor);
+            let legacy_bytes = broker.inventory_resources_for_version(version).unwrap();
+            let wire = InventoryMountResourcesResponse::decode_from_slice(&legacy_bytes).unwrap();
+            let wire_recipe = wire.mounts[0].recipe.as_option().unwrap();
+            assert!(wire_recipe.source_handle.is_empty());
+            assert_eq!(
+                wire_recipe.source_authority.as_known(),
+                Some(MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_UNSPECIFIED)
+            );
+            let legacy = aos_sandbox_protocol::decode_mount_inventory_response_for_version(
+                &legacy_bytes,
+                4096,
+                version,
+            )
+            .unwrap();
+            assert_eq!(
+                legacy.mounts()[0].recipe().source(),
+                &aos_sandbox_protocol::ValidatedMountInventorySource::LegacyUnbound
+            );
+        }
+        for version in [ProtocolVersion::new(0, 6), ProtocolVersion::new(1, 7)] {
+            assert!(broker.inventory_resources_for_version(version).is_err());
+        }
     }
 
     #[test]
@@ -3879,7 +4297,7 @@ mod tests {
                     .apply_mount(
                         &presented,
                         &artifacts,
-                        ProtocolVersion::new(1, 1),
+                        ProtocolVersion::new(1, 6),
                         peer(),
                         policy(),
                         || Ok(clock()),
@@ -3908,7 +4326,7 @@ mod tests {
                 .apply_mount(
                     &bytes,
                     &artifacts,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 6),
                     peer(),
                     policy(),
                     || Ok(clock_at(301)),
@@ -3943,7 +4361,7 @@ mod tests {
                 .apply_mount(
                     &bytes,
                     &artifacts,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 6),
                     peer(),
                     policy(),
                     || {
@@ -3985,7 +4403,7 @@ mod tests {
                 .apply_mount(
                     &bytes,
                     &first,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 6),
                     peer(),
                     policy(),
                     || Ok(clock()),
@@ -4000,7 +4418,7 @@ mod tests {
             .apply_mount(
                 &bytes,
                 &renewed,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 6),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -4138,7 +4556,7 @@ mod tests {
                 .apply_mount(
                     &competing_release,
                     &release_artifacts,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 6),
                     peer(),
                     policy(),
                     || Ok(clock()),
@@ -4311,14 +4729,89 @@ mod tests {
             broker.resources.apply_committed(&records).unwrap();
         }
 
-        let bytes = broker.inventory_resources();
-        let inventory =
-            aos_sandbox_protocol::decode_mount_inventory_response(&bytes, 16 * 1024).unwrap();
+        let bytes = broker.inventory_resources().unwrap();
+        let inventory = aos_sandbox_protocol::decode_mount_inventory_response_for_version(
+            &bytes,
+            16 * 1024,
+            ProtocolVersion::new(1, 6),
+        )
+        .unwrap();
         assert_eq!(inventory.mounts().len(), 2);
         assert!(
             inventory.mounts().iter().all(|resource| {
                 resource.lifecycle() == MountLifecycle::MOUNT_LIFECYCLE_FAULTED
             })
         );
+    }
+
+    #[test]
+    fn historical_v3_mount_reopens_as_inventory_only_quarantine() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let create = request(70);
+        let resource = legacy_installed_resource(&create);
+        let handle = resource.handle;
+        let custody = vec![RetainedMountObservation {
+            handle,
+            mount_id: MountId::new(700).unwrap(),
+        }];
+
+        let mut journal = open(&path);
+        commit_legacy_v3_resource(&mut journal, &resource);
+        drop(journal);
+
+        for restart in 0..2 {
+            let worker = ScriptedWorker {
+                custody: custody.clone(),
+                ..Default::default()
+            };
+            let (mut broker, fixture) = test_broker(open(&path), worker);
+            let bytes = broker.inventory_resources().unwrap();
+            let inventory = aos_sandbox_protocol::decode_mount_inventory_response_for_version(
+                &bytes,
+                16 * 1024,
+                ProtocolVersion::new(1, 6),
+            )
+            .unwrap();
+            assert_eq!(inventory.mounts().len(), 1);
+            assert_eq!(inventory.mounts()[0].mount_handle(), &handle);
+            assert_eq!(
+                inventory.mounts()[0].recipe().source(),
+                &ValidatedMountInventorySource::LegacyUnbound
+            );
+
+            if restart == 0 {
+                continue;
+            }
+
+            for (request_id, action) in [
+                (71, MountAction::MOUNT_ACTION_INSTALL),
+                (72, MountAction::MOUNT_ACTION_DETACH),
+                (73, MountAction::MOUNT_ACTION_RELEASE),
+            ] {
+                let mutation = action_request(request_id, 1, 1, 1, action, Some(handle), None);
+                let validated =
+                    decode_mount_request(&mutation, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                        .unwrap();
+                let catalog = broker.worker.catalog_commitment(&validated).unwrap();
+                let artifacts = fixture.artifacts(&mutation, catalog, 1, &[&mutation]);
+                let journal_sequence = broker.journal.snapshot_sequence();
+
+                assert!(matches!(
+                    broker.apply_mount(
+                        &mutation,
+                        &artifacts,
+                        ProtocolVersion::new(1, 6),
+                        peer(),
+                        policy(),
+                        || Ok(clock()),
+                    ),
+                    Err(MountError::State(message)) if message.contains("quarantined")
+                ));
+                assert_eq!(broker.journal.snapshot_sequence(), journal_sequence);
+                assert_eq!(broker.worker.calls, 0);
+                assert_eq!(broker.worker.custody, custody);
+            }
+        }
     }
 }

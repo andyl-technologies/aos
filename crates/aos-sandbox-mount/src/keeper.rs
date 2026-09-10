@@ -11,13 +11,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use aos_sandbox_linux::inherited_fd::duplicate_inherited_descriptor;
 use aos_sandbox_linux::mount::DetachedMount;
+use aos_sandbox_linux::path::ResolvedPath;
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use rustix::net::sockopt::{Timeout, set_socket_timeout};
 use rustix::net::{
@@ -29,6 +32,7 @@ use crate::{MountError, Result};
 
 const ACTIVATION_FD_BASE: RawFd = 3;
 const NAME_PREFIX: &str = "aos-mount-v1-";
+const SOURCE_NAME_PREFIX: &str = "aos-source-v1-";
 const DIGEST_HEX_LENGTH: usize = 64;
 const MAXIMUM_IMPORTED_DESCRIPTORS: usize = 1_024;
 const BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -96,6 +100,80 @@ impl KernelMountName {
     }
 }
 
+/// An opaque descriptor-store name for one source realization binding.
+///
+/// Names use `aos-source-v1-` followed by the lowercase hexadecimal binding
+/// digest. The disjoint prefix prevents a retained source descriptor from ever
+/// being adopted as a detached resource mount.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SourcePinName(String);
+
+impl SourcePinName {
+    /// Constructs the sole canonical name for a source-binding digest.
+    #[must_use]
+    pub fn from_digest(digest: [u8; 32]) -> Self {
+        Self(hex_name(SOURCE_NAME_PREFIX, digest))
+    }
+
+    /// Parses one canonical source descriptor-store name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown prefix, wrong length, uppercase or
+    /// non-hexadecimal suffix, or protocol delimiter.
+    pub fn parse(value: &str) -> Result<Self> {
+        validate_digest_name(value, SOURCE_NAME_PREFIX)?;
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Returns the exact name transmitted to systemd.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Decodes the source-binding digest embedded in this name.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        decode_name_digest(&self.0, SOURCE_NAME_PREFIX)
+    }
+}
+
+fn hex_name(prefix: &str, digest: [u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut name = String::with_capacity(prefix.len() + DIGEST_HEX_LENGTH);
+    name.push_str(prefix);
+    for byte in digest {
+        name.push(char::from(HEX[usize::from(byte >> 4)]));
+        name.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    name
+}
+
+fn validate_digest_name(value: &str, prefix: &str) -> Result<()> {
+    let suffix = value
+        .strip_prefix(prefix)
+        .ok_or_else(|| state_error("descriptor-store name has an unknown prefix"))?;
+    if suffix.len() != DIGEST_HEX_LENGTH
+        || !suffix
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+    {
+        return Err(state_error("descriptor-store name is not canonical"));
+    }
+    Ok(())
+}
+
+fn decode_name_digest(value: &str, prefix: &str) -> [u8; 32] {
+    let suffix = &value.as_bytes()[prefix.len()..];
+    let mut digest = [0_u8; 32];
+    for (index, pair) in suffix.chunks_exact(2).enumerate() {
+        digest[index] = (hex_value(pair[0]) << 4) | hex_value(pair[1]);
+    }
+    digest
+}
+
 const fn hex_value(byte: u8) -> u8 {
     match byte {
         b'0'..=b'9' => byte - b'0',
@@ -144,6 +222,8 @@ pub struct ActivatedMountDescriptors {
     pub listener: OwnedFd,
     /// Canonically named, kernel-validated retained mount descriptors.
     pub mounts: BTreeMap<KernelMountName, DetachedMount>,
+    /// Canonically named source O_PATH descriptors restored from PID 1.
+    pub source_pins: BTreeMap<SourcePinName, ResolvedPath>,
 }
 
 /// Provides synchronous restart-safe custody for kernel mount descriptors.
@@ -180,12 +260,37 @@ pub trait KernelMountStore {
     fn remove(&self, name: &KernelMountName) -> Result<()>;
 }
 
+/// Provides restart-safe PID 1 custody for source O_PATH descriptors.
+pub trait SourceDescriptorStore {
+    /// Reports whether PID 1's acknowledged inventory contains `name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after an ambiguous mutation or inventory failure.
+    fn contains_source(&self, name: &SourcePinName) -> Result<bool>;
+
+    /// Stores a duplicate source descriptor and waits for PID 1's barrier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when storage or barrier acknowledgement fails.
+    fn store_source(&self, name: &SourcePinName, descriptor: BorrowedFd<'_>) -> Result<()>;
+
+    /// Removes every descriptor under `name` and waits for acknowledgement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when removal or barrier acknowledgement fails.
+    fn remove_source(&self, name: &SourcePinName) -> Result<()>;
+}
+
 /// Uses systemd's service-manager descriptor store as restart-safe custody.
 #[derive(Debug)]
 pub struct SystemdFdStore {
     socket: OwnedFd,
     notify_address: SocketAddrUnix,
     inventory: Mutex<BTreeSet<KernelMountName>>,
+    source_inventory: Mutex<BTreeSet<SourcePinName>>,
     maximum_entries: usize,
     poisoned: AtomicBool,
 }
@@ -224,17 +329,36 @@ impl SystemdFdStore {
         retained_names: BTreeSet<KernelMountName>,
         maximum_entries: usize,
     ) -> Result<Self> {
+        Self::from_environment_with_inventories(retained_names, BTreeSet::new(), maximum_entries)
+    }
+
+    /// Connects a keeper and seeds complete mount and source inventories.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid bounds, overlapping capacity, or an
+    /// unavailable/malformed systemd notification socket.
+    pub fn from_environment_with_inventories(
+        retained_names: BTreeSet<KernelMountName>,
+        retained_sources: BTreeSet<SourcePinName>,
+        maximum_entries: usize,
+    ) -> Result<Self> {
         if maximum_entries > MAXIMUM_IMPORTED_DESCRIPTORS {
             return Err(state_error("descriptor-store ceiling exceeds hard limit"));
         }
-        if retained_names.len() > maximum_entries {
+        if retained_names.len().saturating_add(retained_sources.len()) > maximum_entries {
             return Err(state_error(
                 "initial descriptor-store inventory exceeds limit",
             ));
         }
         let value = std::env::var_os("NOTIFY_SOCKET")
             .ok_or_else(|| state_error("NOTIFY_SOCKET is absent"))?;
-        Self::from_notify_socket_with_inventory(&value, retained_names, maximum_entries)
+        Self::from_notify_socket_with_inventories(
+            &value,
+            retained_names,
+            retained_sources,
+            maximum_entries,
+        )
     }
 
     /// Adopts systemd file-descriptor-store entries after caller-owned sockets.
@@ -255,7 +379,14 @@ impl SystemdFdStore {
     /// Returns an error for mismatched activation metadata, a count above the
     /// configured or hard ceiling, duplicate/invalid names, descriptor-number
     /// overflow, or inability to set close-on-exec.
-    pub fn adopt_activation(
+    ///
+    /// # Safety
+    ///
+    /// The caller must exclusively own every descriptor in the imported tail
+    /// of the systemd activation range. No Rust owner may exist for those raw
+    /// descriptors. This function consumes and closes that tail on every path
+    /// after ownership is claimed.
+    pub unsafe fn adopt_activation(
         reserved_descriptors: usize,
         maximum_imported: usize,
     ) -> Result<Vec<ImportedKernelMount>> {
@@ -270,6 +401,25 @@ impl SystemdFdStore {
         }
 
         let descriptor_count = environment_usize("LISTEN_FDS")?;
+        if descriptor_count < reserved_descriptors
+            || descriptor_count - reserved_descriptors > MAXIMUM_IMPORTED_DESCRIPTORS
+        {
+            return Err(state_error("invalid imported descriptor count"));
+        }
+        let imported_count = descriptor_count - reserved_descriptors;
+
+        let first_index = ACTIVATION_FD_BASE
+            .checked_add(raw_fd_from_usize(reserved_descriptors)?)
+            .ok_or_else(|| state_error("activation descriptor number overflow"))?;
+        // SAFETY: upheld by this function's caller for the validated imported
+        // tail. The range is claimed once and immediately moved into owned
+        // storage.
+        let originals = unsafe { claim_inherited_descriptor_range(first_index, imported_count)? };
+        if imported_count > maximum_imported {
+            return Err(state_error("too many descriptor-store entries"));
+        }
+        let descriptors = duplicate_and_close_owned_descriptors(originals)?;
+
         let names = std::env::var("LISTEN_FDNAMES")
             .map_err(|_| state_error("LISTEN_FDNAMES is absent or non-Unicode"))?;
         let imported_names = validate_activation_names(
@@ -278,22 +428,6 @@ impl SystemdFdStore {
             reserved_descriptors,
             maximum_imported,
         )?;
-        let imported_count = imported_names.len();
-
-        let first_index = ACTIVATION_FD_BASE
-            .checked_add(raw_fd_from_usize(reserved_descriptors)?)
-            .ok_or_else(|| state_error("activation descriptor number overflow"))?;
-        let mut descriptors = Vec::with_capacity(imported_count);
-        for offset in 0..imported_count {
-            let raw = first_index
-                .checked_add(raw_fd_from_usize(offset)?)
-                .ok_or_else(|| state_error("activation descriptor number overflow"))?;
-            // SAFETY: the validated systemd activation contract transfers each
-            // descriptor in the contiguous FD 3 range exactly once. The loop
-            // visits each imported tail descriptor once and immediately stores
-            // it in an `OwnedFd`.
-            descriptors.push(unsafe { OwnedFd::from_raw_fd(raw) });
-        }
 
         let mut imported = Vec::with_capacity(imported_count);
         for (name, descriptor) in imported_names.into_iter().zip(descriptors) {
@@ -306,41 +440,99 @@ impl SystemdFdStore {
         Ok(imported)
     }
 
-    /// Atomically adopts one named listener followed by retained mounts.
+    /// Adopts one named listener followed by retained mounts and sources.
     ///
-    /// This is the mount daemon's only supported activation shape. Parsing and
-    /// ownership transfer happen in one startup call, before any inherited
-    /// descriptor may be closed or reused.
+    /// This is the mount daemon's only supported activation shape. Metadata is
+    /// parsed in one startup call before any inherited descriptor may be
+    /// reused. The complete table is first claimed, then safely duplicated;
+    /// all process-start entries are closed before validation continues.
     ///
     /// # Errors
     ///
     /// Returns an error unless descriptor 3 has exactly `listener_name`, every
-    /// remaining descriptor has a unique canonical kernel-mount name, the
+    /// remaining descriptor has a unique canonical mount or source-pin name, the
     /// configured bound is respected, and every retained descriptor yields an
     /// exact `STATX_MNT_ID_UNIQUE` mount identity.
-    pub fn adopt_service_activation(
+    ///
+    /// # Safety
+    ///
+    /// The caller must exclusively own every open descriptor in the systemd
+    /// activation range beginning at FD 3. No Rust owner may exist for those
+    /// raw descriptors. This function consumes and closes all open entries in
+    /// the complete range on every path after ownership is claimed, including
+    /// when malformed metadata describes a gap.
+    pub unsafe fn adopt_service_activation(
         listener_name: &str,
         maximum_imported: usize,
     ) -> Result<ActivatedMountDescriptors> {
+        if maximum_imported > MAXIMUM_IMPORTED_DESCRIPTORS {
+            return Err(state_error("descriptor import ceiling exceeds hard limit"));
+        }
         validate_listener_name(listener_name)?;
+        let descriptor_count = environment_usize("LISTEN_FDS")?;
+        if descriptor_count == 0 || descriptor_count - 1 > MAXIMUM_IMPORTED_DESCRIPTORS {
+            return Err(state_error("too many descriptor-store entries"));
+        }
+        let listen_pid = environment_u32("LISTEN_PID")?;
+        let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
+            .map_err(|_| state_error("current PID does not fit u32"))?;
+        if listen_pid != current_pid {
+            return Err(state_error("LISTEN_PID does not name this process"));
+        }
+
+        // SAFETY: upheld by this function's caller for the validated complete
+        // activation table. The range is claimed exactly once.
+        let originals =
+            unsafe { claim_inherited_descriptor_range(ACTIVATION_FD_BASE, descriptor_count)? };
+        if descriptor_count - 1 > maximum_imported {
+            return Err(state_error("too many descriptor-store entries"));
+        }
+        let descriptors = duplicate_and_close_owned_descriptors(originals)?;
+
         let names = std::env::var("LISTEN_FDNAMES")
             .map_err(|_| state_error("LISTEN_FDNAMES is absent or non-Unicode"))?;
-        if names.split(':').next() != Some(listener_name) {
+        let names: Vec<&str> = names.split(':').collect();
+        if names.len() != descriptor_count {
+            return Err(state_error("LISTEN_FDNAMES count differs from LISTEN_FDS"));
+        }
+        if names.first().copied() != Some(listener_name) {
             return Err(state_error(
                 "activation descriptor 3 is not the named listener",
             ));
         }
-        let imported = Self::adopt_activation(1, maximum_imported)?;
-        // SAFETY: `adopt_activation` validated the complete contiguous table
-        // but intentionally adopted only its retained tail. Descriptor 3 is
-        // therefore still uniquely owned by this process.
-        let listener = unsafe { OwnedFd::from_raw_fd(ACTIVATION_FD_BASE) };
+
+        let mut descriptors = descriptors.into_iter();
+        let listener = descriptors
+            .next()
+            .ok_or_else(|| state_error("activation listener is absent"))?;
+        let mut mounts = BTreeMap::new();
+        let mut source_pins = BTreeMap::new();
+        for (name, descriptor) in names.into_iter().skip(1).zip(descriptors) {
+            ensure_cloexec(descriptor.as_fd())?;
+            if name.starts_with(NAME_PREFIX) {
+                let name = KernelMountName::parse(name)?;
+                let mount = DetachedMount::from_inherited(descriptor).map_err(|error| {
+                    state_error(format!("retained descriptor is not a mount: {error}"))
+                })?;
+                if mounts.insert(name, mount).is_some() {
+                    return Err(state_error("duplicate descriptor-store name"));
+                }
+            } else {
+                let name = SourcePinName::parse(name)?;
+                let source = ResolvedPath::from_inherited(descriptor).map_err(|error| {
+                    state_error(format!("retained source descriptor is invalid: {error}"))
+                })?;
+                if source_pins.insert(name, source).is_some() {
+                    return Err(state_error("duplicate descriptor-store name"));
+                }
+            }
+        }
         ensure_cloexec(listener.as_fd())?;
-        let mounts = imported
-            .into_iter()
-            .map(ImportedKernelMount::into_parts)
-            .collect();
-        Ok(ActivatedMountDescriptors { listener, mounts })
+        Ok(ActivatedMountDescriptors {
+            listener,
+            mounts,
+            source_pins,
+        })
     }
 
     #[cfg(test)]
@@ -352,15 +544,30 @@ impl SystemdFdStore {
         )
     }
 
+    #[cfg(test)]
     fn from_notify_socket_with_inventory(
         value: &OsStr,
         inventory: BTreeSet<KernelMountName>,
         maximum_entries: usize,
     ) -> Result<Self> {
+        Self::from_notify_socket_with_inventories(
+            value,
+            inventory,
+            BTreeSet::new(),
+            maximum_entries,
+        )
+    }
+
+    fn from_notify_socket_with_inventories(
+        value: &OsStr,
+        inventory: BTreeSet<KernelMountName>,
+        source_inventory: BTreeSet<SourcePinName>,
+        maximum_entries: usize,
+    ) -> Result<Self> {
         if maximum_entries > MAXIMUM_IMPORTED_DESCRIPTORS {
             return Err(state_error("descriptor-store ceiling exceeds hard limit"));
         }
-        if inventory.len() > maximum_entries {
+        if inventory.len().saturating_add(source_inventory.len()) > maximum_entries {
             return Err(state_error(
                 "initial descriptor-store inventory exceeds limit",
             ));
@@ -391,6 +598,7 @@ impl SystemdFdStore {
             socket,
             notify_address,
             inventory: Mutex::new(inventory),
+            source_inventory: Mutex::new(source_inventory),
             maximum_entries,
             poisoned: AtomicBool::new(false),
         })
@@ -512,11 +720,15 @@ impl KernelMountStore for SystemdFdStore {
             .inventory
             .lock()
             .map_err(|_| state_error("descriptor-store inventory lock is poisoned"))?;
+        let source_inventory = self
+            .source_inventory
+            .lock()
+            .map_err(|_| state_error("source descriptor-store inventory lock is poisoned"))?;
         self.ensure_reconcilable()?;
         if inventory.contains(name) {
             return Ok(());
         }
-        if inventory.len() >= self.maximum_entries {
+        if inventory.len().saturating_add(source_inventory.len()) >= self.maximum_entries {
             return Err(state_error("descriptor-store inventory is full"));
         }
 
@@ -546,6 +758,89 @@ impl KernelMountStore for SystemdFdStore {
     }
 }
 
+impl<T: KernelMountStore + ?Sized> KernelMountStore for Arc<T> {
+    fn contains(&self, name: &KernelMountName) -> Result<bool> {
+        (**self).contains(name)
+    }
+
+    fn store(&self, name: &KernelMountName, descriptor: BorrowedFd<'_>) -> Result<()> {
+        (**self).store(name, descriptor)
+    }
+
+    fn remove(&self, name: &KernelMountName) -> Result<()> {
+        (**self).remove(name)
+    }
+}
+
+impl SourceDescriptorStore for SystemdFdStore {
+    fn contains_source(&self, name: &SourcePinName) -> Result<bool> {
+        self.ensure_reconcilable()?;
+        let inventory = self
+            .source_inventory
+            .lock()
+            .map_err(|_| state_error("source descriptor-store inventory lock is poisoned"))?;
+        self.ensure_reconcilable()?;
+        Ok(inventory.contains(name))
+    }
+
+    fn store_source(&self, name: &SourcePinName, descriptor: BorrowedFd<'_>) -> Result<()> {
+        self.ensure_reconcilable()?;
+        let mount_inventory = self
+            .inventory
+            .lock()
+            .map_err(|_| state_error("descriptor-store inventory lock is poisoned"))?;
+        let mut inventory = self
+            .source_inventory
+            .lock()
+            .map_err(|_| state_error("source descriptor-store inventory lock is poisoned"))?;
+        self.ensure_reconcilable()?;
+        if inventory.contains(name) {
+            return Ok(());
+        }
+        if mount_inventory.len().saturating_add(inventory.len()) >= self.maximum_entries {
+            return Err(state_error("source descriptor-store inventory is full"));
+        }
+
+        let payload = format!("FDSTORE=1\nFDPOLL=0\nFDNAME={}", name.as_str());
+        self.notify(payload.as_bytes(), Some(descriptor))?;
+        self.barrier().map_err(|error| self.ambiguous(&error))?;
+        inventory.insert(name.clone());
+        Ok(())
+    }
+
+    fn remove_source(&self, name: &SourcePinName) -> Result<()> {
+        self.ensure_reconcilable()?;
+        let mut inventory = self
+            .source_inventory
+            .lock()
+            .map_err(|_| state_error("source descriptor-store inventory lock is poisoned"))?;
+        self.ensure_reconcilable()?;
+        if !inventory.contains(name) {
+            return Ok(());
+        }
+
+        let payload = format!("FDSTOREREMOVE=1\nFDNAME={}", name.as_str());
+        self.notify(payload.as_bytes(), None)?;
+        self.barrier().map_err(|error| self.ambiguous(&error))?;
+        inventory.remove(name);
+        Ok(())
+    }
+}
+
+impl<T: SourceDescriptorStore + ?Sized> SourceDescriptorStore for Arc<T> {
+    fn contains_source(&self, name: &SourcePinName) -> Result<bool> {
+        (**self).contains_source(name)
+    }
+
+    fn store_source(&self, name: &SourcePinName, descriptor: BorrowedFd<'_>) -> Result<()> {
+        (**self).store_source(name, descriptor)
+    }
+
+    fn remove_source(&self, name: &SourcePinName) -> Result<()> {
+        (**self).remove_source(name)
+    }
+}
+
 fn environment_u32(name: &'static str) -> Result<u32> {
     std::env::var(name)
         .map_err(|_| state_error(format!("{name} is absent or non-Unicode")))?
@@ -562,6 +857,67 @@ fn environment_usize(name: &'static str) -> Result<usize> {
 
 fn raw_fd_from_usize(value: usize) -> Result<RawFd> {
     RawFd::try_from(value).map_err(|_| state_error("activation descriptor number overflow"))
+}
+
+/// Claims a complete contiguous activation range without allocating an FD.
+///
+/// # Safety
+///
+/// The caller must have exclusive ownership of every open descriptor in the
+/// specified range, and no Rust owner may exist for one of those descriptors.
+/// A malformed range is closed completely before an error is returned.
+unsafe fn claim_inherited_descriptor_range(first: RawFd, count: usize) -> Result<Vec<OwnedFd>> {
+    let mut raw_descriptors = Vec::with_capacity(count);
+    for offset in 0..count {
+        let raw = first
+            .checked_add(raw_fd_from_usize(offset)?)
+            .ok_or_else(|| state_error("activation descriptor number overflow"))?;
+        raw_descriptors.push(raw);
+    }
+
+    let complete = raw_descriptors.iter().all(|raw| {
+        // SAFETY: F_GETFD observes only the numeric descriptor-table entry and
+        // accepts closed descriptor numbers, reporting EBADF for a gap.
+        unsafe { libc::fcntl(*raw, libc::F_GETFD) >= 0 }
+    });
+    if !complete {
+        for raw in raw_descriptors {
+            // SAFETY: the caller granted exclusive ownership of every open
+            // entry in this exact bounded range. `close` also safely reports
+            // EBADF for the missing entry that caused validation to fail.
+            unsafe { libc::close(raw) };
+        }
+        return Err(state_error(
+            "systemd activation descriptor range is incomplete",
+        ));
+    }
+
+    let mut descriptors = Vec::with_capacity(count);
+    for raw in raw_descriptors {
+        // SAFETY: the complete range was checked without allocating an FD, the
+        // caller grants exclusive ownership, and each number is consumed once.
+        descriptors.push(unsafe { OwnedFd::from_raw_fd(raw) });
+    }
+    Ok(descriptors)
+}
+
+fn duplicate_and_close_owned_descriptors(originals: Vec<OwnedFd>) -> Result<Vec<OwnedFd>> {
+    let duplicates = originals
+        .iter()
+        .map(|original| {
+            duplicate_inherited_descriptor(original.as_raw_fd()).map_err(|error| {
+                state_error(format!(
+                    "could not duplicate activation descriptor: {error}"
+                ))
+            })
+        })
+        .collect();
+
+    // Close the entire process-start table together. Keeping every original
+    // open until duplication finishes prevents F_DUPFD_CLOEXEC from filling a
+    // later activation slot if malformed input contains a gap.
+    drop(originals);
+    duplicates
 }
 
 fn ensure_cloexec(fd: BorrowedFd<'_>) -> Result<()> {
@@ -583,11 +939,20 @@ mod tests {
 
     use std::fs::File;
     use std::io::IoSliceMut;
+    use std::process::Command;
     use std::sync::mpsc;
 
     use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, bind, recvmsg};
 
     use super::*;
+
+    const ACTIVATION_RANGE_FIXTURE: &str = "AOS_MOUNT_ACTIVATION_RANGE_FIXTURE";
+
+    fn raw_descriptor_is_open(raw: RawFd) -> bool {
+        // SAFETY: F_GETFD observes a numeric table entry and reports EBADF for
+        // a closed descriptor without assuming ownership.
+        unsafe { libc::fcntl(raw, libc::F_GETFD) >= 0 }
+    }
 
     #[test]
     fn opaque_names_are_canonical_and_round_trip() {
@@ -619,6 +984,129 @@ mod tests {
             assert!(validate_listener_name(invalid).is_err());
         }
         assert!(validate_listener_name("aos-sandbox-mount").is_ok());
+        // SAFETY: the excessive configured bound is rejected before any
+        // activation descriptor ownership can be claimed.
+        assert!(unsafe {
+            SystemdFdStore::adopt_service_activation(
+                "aos-sandbox-mount",
+                MAXIMUM_IMPORTED_DESCRIPTORS + 1,
+            )
+            .is_err()
+        });
+    }
+
+    #[test]
+    fn service_activation_closes_originals_and_cleans_incomplete_ranges() {
+        for scenario in [
+            "complete",
+            "over-configured-limit",
+            "missing-first",
+            "missing-middle",
+            "missing-last",
+        ] {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "keeper::tests::service_activation_range_fixture",
+                    "--nocapture",
+                ])
+                .env(ACTIVATION_RANGE_FIXTURE, scenario)
+                .status()
+                .unwrap();
+            assert!(status.success(), "activation fixture failed: {scenario}");
+        }
+    }
+
+    #[test]
+    fn service_activation_range_fixture() {
+        let Some(scenario) = std::env::var_os(ACTIVATION_RANGE_FIXTURE) else {
+            return;
+        };
+        let scenario = scenario.to_string_lossy();
+
+        for raw in ACTIVATION_FD_BASE..=ACTIVATION_FD_BASE + 2 {
+            // SAFETY: this exact-test subprocess owns its descriptor table and
+            // intentionally clears the bounded fixture range before rebuilding it.
+            unsafe { libc::close(raw) };
+            let path = c"/proc/self";
+            // SAFETY: `path` is a static NUL-terminated pathname and open
+            // returns a fresh descriptor with no Rust owner.
+            let opened = unsafe {
+                libc::open(
+                    path.as_ptr(),
+                    libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                )
+            };
+            assert_eq!(opened, raw);
+        }
+
+        let missing = match scenario.as_ref() {
+            "complete" | "over-configured-limit" => None,
+            "missing-first" => Some(ACTIVATION_FD_BASE),
+            "missing-middle" => Some(ACTIVATION_FD_BASE + 1),
+            "missing-last" => Some(ACTIVATION_FD_BASE + 2),
+            other => panic!("unknown activation fixture: {other}"),
+        };
+        if let Some(raw) = missing {
+            // SAFETY: the fixture created and exclusively owns this raw entry.
+            assert_eq!(unsafe { libc::close(raw) }, 0);
+        }
+
+        // SAFETY: the exact-test subprocess runs no concurrent tests while it
+        // mutates its process environment.
+        unsafe {
+            std::env::set_var("LISTEN_PID", std::process::id().to_string());
+            std::env::set_var("LISTEN_FDS", "3");
+            std::env::set_var(
+                "LISTEN_FDNAMES",
+                format!(
+                    "aos-sandbox-mount:{}:{}",
+                    SourcePinName::from_digest([1; 32]).as_str(),
+                    SourcePinName::from_digest([2; 32]).as_str(),
+                ),
+            );
+        }
+
+        // SAFETY: the fixture exclusively owns every open entry in the exact
+        // FD 3..=5 activation range and has constructed no Rust owners for it.
+        let maximum_imported = if scenario == "over-configured-limit" {
+            1
+        } else {
+            2
+        };
+        let activation = unsafe {
+            SystemdFdStore::adopt_service_activation("aos-sandbox-mount", maximum_imported)
+        };
+        for raw in ACTIVATION_FD_BASE..=ACTIVATION_FD_BASE + 2 {
+            assert!(!raw_descriptor_is_open(raw));
+        }
+
+        if missing.is_some() || scenario == "over-configured-limit" {
+            assert!(activation.is_err());
+            return;
+        }
+
+        let activation = activation.unwrap();
+        let duplicate_raws = std::iter::once(activation.listener.as_raw_fd())
+            .chain(
+                activation
+                    .source_pins
+                    .values()
+                    .map(|source| source.as_fd().as_raw_fd()),
+            )
+            .collect::<Vec<_>>();
+        assert!(
+            duplicate_raws
+                .iter()
+                .all(|raw| raw_descriptor_is_open(*raw))
+        );
+
+        drop(activation);
+        assert!(
+            duplicate_raws
+                .iter()
+                .all(|raw| !raw_descriptor_is_open(*raw))
+        );
     }
 
     #[test]

@@ -117,6 +117,18 @@ fn validate_catalog_commitment(
 
 /// Applies one idempotent, descriptor-only mount transaction.
 pub trait MountWorker {
+    /// Reports whether the complete Apply backend is currently executable.
+    #[must_use]
+    fn supports_mount_apply(&self) -> bool {
+        false
+    }
+
+    /// Reports whether the complete catalog-preparation backend is executable.
+    #[must_use]
+    fn supports_catalog_preparation(&self) -> bool {
+        false
+    }
+
     /// Retains one authenticated Host scope and returns its catalog commitment.
     ///
     /// This read-only step neither admits a Mount fence nor performs a mount
@@ -366,6 +378,14 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> DescriptorMountWo
 impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
     for DescriptorMountWorker<C, H, K>
 {
+    fn supports_mount_apply(&self) -> bool {
+        self.catalog.supports_mount_apply()
+    }
+
+    fn supports_catalog_preparation(&self) -> bool {
+        self.catalog.supports_catalog_preparation()
+    }
+
     fn prepare_catalog(
         &mut self,
         request: &ValidatedMountRequest,

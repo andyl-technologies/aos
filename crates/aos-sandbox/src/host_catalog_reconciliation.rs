@@ -1022,7 +1022,7 @@ mod tests {
         ResourceDimension, ResourceVector, SandboxId,
     };
     use aos_sandbox_protocol::{
-        decode_destination_slot_inventory_response_for_version, decode_mount_inventory_response,
+        decode_destination_slot_inventory_response_for_version,
         decode_network_resource_inventory_response, decode_storage_resource_inventory_response,
     };
     use buffa::Message as _;
@@ -1220,7 +1220,12 @@ mod tests {
                 .unwrap(),
             decode_network_resource_inventory_response(&network.encode_to_vec(), 15 * 1024 * 1024)
                 .unwrap(),
-            decode_mount_inventory_response(&mounts.encode_to_vec(), 15 * 1024 * 1024).unwrap(),
+            aos_sandbox_protocol::decode_mount_inventory_response_for_version(
+                &mounts.encode_to_vec(),
+                15 * 1024 * 1024,
+                aos_sandbox_core::ProtocolVersion::new(1, 6),
+            )
+            .unwrap(),
             decode_destination_slot_inventory_response_for_version(
                 &destinations.encode_to_vec(),
                 15 * 1024 * 1024,

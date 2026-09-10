@@ -9,17 +9,20 @@ use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::{
     InventoryMountResourcesResponse, InventoryMountsRequest, MountFaultCorrelation,
-    MountFaultPhase, MountInventoryRecord, MountKernelObservation, MountLifecycle,
-    MountOperationCorrelation, MountPublicationCorrelation, MountRecipe, MountSourceConsistency,
+    MountFaultPhase, MountInventoryRecord, MountInventorySourceAuthority, MountKernelObservation,
+    MountLifecycle, MountOperationCorrelation, MountPublicationCorrelation, MountRecipe,
+    MountSourceConsistency,
 };
-use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ProtocolId};
+use aos_sandbox_core::{
+    DescriptorRole, ObjectDescriptor, ProtocolId, ProtocolVersion, model::ViewSource,
+};
 use buffa::Message as _;
 
 use crate::{
     MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_RESPONSE_BYTES, PeerCredentials,
-    PeerPolicy, ProtocolValidationError, ValidatedAssignmentFence, ValidatedHeader,
-    ValidatedMountAttributes, exact_nonzero, validate_descriptor, validate_fence,
-    validate_mount_attributes, validate_request_header,
+    PeerPolicy, ProtocolValidationError, SourceRealizationBindingV1, ValidatedAssignmentFence,
+    ValidatedHeader, ValidatedMountAttributes, exact_nonzero, validate_descriptor, validate_fence,
+    validate_mount_attributes, validate_mount_source_handle, validate_request_header,
 };
 
 /// Maximum durable mount rows accepted in one complete inventory snapshot.
@@ -34,6 +37,8 @@ const HAS_FAULT: u16 = 1 << 5;
 const HAS_LAST_INSTALLED: u16 = 1 << 6;
 const HAS_DETACHMENT: u16 = 1 << 7;
 const HAS_RELEASE: u16 = 1 << 8;
+const FIRST_MOUNT_INVENTORY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+const EXACT_SOURCE_INVENTORY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 6);
 
 /// Carries a complete, validated mount-broker inventory snapshot.
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +108,34 @@ pub struct ValidatedMountRecipe {
     source_view_id: [u8; 16],
     source_incarnation_id: Option<[u8; 16]>,
     source_consistency: MountSourceConsistency,
+    source: ValidatedMountInventorySource,
+}
+
+/// Classifies source authority carried by one versioned inventory recipe.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ValidatedMountInventorySource {
+    /// Compatibility row retained only for observation, quarantine, and absence checks.
+    ///
+    /// Mount 1.0-1.5 inventories classify every row this way. Mount 1.6 uses
+    /// the explicit legacy wire marker only for durable rows that predate
+    /// source-pin authority.
+    LegacyUnbound,
+    /// Mount 1.6 row binds the exact portable handle and complete source tuple.
+    Exact {
+        /// Complete logical source binding reconstructed from field 10.
+        binding: Box<SourceRealizationBindingV1>,
+    },
+}
+
+impl ValidatedMountInventorySource {
+    /// Returns exact source authority only for a Mount 1.6 recipe.
+    #[must_use]
+    pub const fn exact(&self) -> Option<(&ViewSource, &SourceRealizationBindingV1)> {
+        match self {
+            Self::LegacyUnbound => None,
+            Self::Exact { binding } => Some((binding.source(), binding)),
+        }
+    }
 }
 
 impl ValidatedMountRecipe {
@@ -158,6 +191,12 @@ impl ValidatedMountRecipe {
     #[must_use]
     pub const fn source_consistency(&self) -> MountSourceConsistency {
         self.source_consistency
+    }
+
+    /// Returns the versioned source-authority state carried by this recipe.
+    #[must_use]
+    pub const fn source(&self) -> &ValidatedMountInventorySource {
+        &self.source
     }
 }
 
@@ -449,6 +488,27 @@ pub fn decode_mount_inventory_request(
     )
 }
 
+/// Validates and encodes one version-bound authoritative mount inventory.
+///
+/// Mount 1.0-1.5 require both source-authority fields to be absent. Mount 1.6
+/// requires each row to explicitly declare either historical `LegacyUnbound`
+/// authority with no handle or `Exact` authority with one canonical handle.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for an unsupported version, a response
+/// above the fixed protocol ceiling, or any malformed, noncanonical, or
+/// version-incompatible inventory field.
+pub fn encode_mount_inventory_response_for_version(
+    response: InventoryMountResourcesResponse,
+    protocol_version: ProtocolVersion,
+) -> Result<Vec<u8>, ProtocolValidationError> {
+    validate_mount_inventory_version(protocol_version)?;
+    let bytes = response.encode_to_vec();
+    decode_mount_inventory_response_for_version(&bytes, MAXIMUM_RESPONSE_BYTES, protocol_version)?;
+    Ok(bytes)
+}
+
 /// Decodes and validates one complete mount inventory from hostile wire bytes.
 ///
 /// `maximum_response_bytes` is the ceiling negotiated by the client hello and
@@ -462,9 +522,10 @@ pub fn decode_mount_inventory_request(
 /// ceiling, protobuf decoding fails, an inventory contains more than
 /// [`MAXIMUM_MOUNT_INVENTORY_RECORDS`] rows, or any identity, recipe,
 /// observation, correlation, ordering, or lifecycle invariant is invalid.
-pub fn decode_mount_inventory_response(
+pub fn decode_mount_inventory_response_for_version(
     bytes: &[u8],
     maximum_response_bytes: u32,
+    protocol_version: ProtocolVersion,
 ) -> Result<ValidatedMountInventory, ProtocolValidationError> {
     if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&maximum_response_bytes) {
         return Err(ProtocolValidationError::InvalidResponseBound);
@@ -472,6 +533,7 @@ pub fn decode_mount_inventory_response(
     if bytes.len() > maximum_response_bytes as usize {
         return Err(ProtocolValidationError::ResponseTooLarge);
     }
+    validate_mount_inventory_version(protocol_version)?;
 
     let response = InventoryMountResourcesResponse::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
@@ -492,7 +554,7 @@ pub fn decode_mount_inventory_response(
     let mut mounts = Vec::with_capacity(response.mounts.len());
     let mut mount_id_owners = BTreeMap::new();
     for record in &response.mounts {
-        let record = validate_record(record)?;
+        let record = validate_record(record, protocol_version)?;
         if claims_current_kernel_state(record.lifecycle)
             && record.resource_kernel_boot_id != kernel_boot_id
         {
@@ -733,6 +795,7 @@ fn binding_strictly_advances(
 #[allow(clippy::too_many_lines)]
 fn validate_record(
     record: &MountInventoryRecord,
+    protocol_version: ProtocolVersion,
 ) -> Result<ValidatedMountInventoryRecord, ProtocolValidationError> {
     reject_unknown(&record.__buffa_unknown_fields)?;
     let mount_handle = exact_nonzero::<32>(&record.mount_handle, "inventory.mount_handle")?;
@@ -748,6 +811,7 @@ fn validate_record(
             .recipe
             .as_option()
             .ok_or(ProtocolValidationError::MissingField("inventory.recipe"))?,
+        protocol_version,
     )?;
     let creation = record
         .creation
@@ -873,7 +937,10 @@ fn validate_binding(
     })
 }
 
-fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, ProtocolValidationError> {
+fn validate_recipe(
+    value: &MountRecipe,
+    protocol_version: ProtocolVersion,
+) -> Result<ValidatedMountRecipe, ProtocolValidationError> {
     reject_unknown(&value.__buffa_unknown_fields)?;
     let attachment_id =
         exact_nonzero::<16>(&value.attachment_id, "inventory.recipe.attachment_id")?;
@@ -928,6 +995,58 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
             "inventory.recipe.source_incarnation_id",
         ));
     }
+    let source_authority =
+        value
+            .source_authority
+            .as_known()
+            .ok_or(ProtocolValidationError::InvalidField(
+                "inventory.recipe.source_authority",
+            ))?;
+    let source = if protocol_version.minor() < EXACT_SOURCE_INVENTORY_VERSION.minor() {
+        if !value.source_handle.is_empty()
+            || source_authority
+                != MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_UNSPECIFIED
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "inventory.recipe.source authority version",
+            ));
+        }
+        ValidatedMountInventorySource::LegacyUnbound
+    } else {
+        match source_authority {
+            MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_LEGACY_UNBOUND
+                if value.source_handle.is_empty() =>
+            {
+                ValidatedMountInventorySource::LegacyUnbound
+            }
+            MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT => {
+                let handle = validate_mount_source_handle(
+                    &value.source_handle,
+                    source_consistency,
+                    source_incarnation_id,
+                )?;
+                let binding = SourceRealizationBindingV1::new(
+                    source_view_id,
+                    source_generation,
+                    view_revision.clone(),
+                    handle,
+                    source_consistency,
+                    source_incarnation_id,
+                )
+                .map_err(|_| {
+                    ProtocolValidationError::InvalidField("inventory.recipe.source_binding")
+                })?;
+                ValidatedMountInventorySource::Exact {
+                    binding: Box::new(binding),
+                }
+            }
+            _ => {
+                return Err(ProtocolValidationError::InvalidField(
+                    "inventory.recipe.source authority shape",
+                ));
+            }
+        }
+    };
     let attributes = validate_mount_attributes(value.attributes.as_option().ok_or(
         ProtocolValidationError::MissingField("inventory.recipe.attributes"),
     )?)?;
@@ -941,7 +1060,22 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
         source_view_id,
         source_incarnation_id,
         source_consistency,
+        source,
     })
+}
+
+fn validate_mount_inventory_version(
+    protocol_version: ProtocolVersion,
+) -> Result<(), ProtocolValidationError> {
+    if protocol_version.major() != FIRST_MOUNT_INVENTORY_VERSION.major()
+        || protocol_version.minor() > EXACT_SOURCE_INVENTORY_VERSION.minor()
+    {
+        Err(ProtocolValidationError::InvalidField(
+            "inventory protocol version",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_observation(
@@ -1167,6 +1301,17 @@ mod tests {
 
     use super::*;
 
+    fn decode_mount_inventory_response(
+        bytes: &[u8],
+        maximum_response_bytes: u32,
+    ) -> Result<ValidatedMountInventory, ProtocolValidationError> {
+        decode_mount_inventory_response_for_version(
+            bytes,
+            maximum_response_bytes,
+            EXACT_SOURCE_INVENTORY_VERSION,
+        )
+    }
+
     fn installed_record(handle_byte: u8, mount_id: u64) -> MountInventoryRecord {
         let fence = AssignmentFence {
             sandbox_id: vec![1; 16],
@@ -1205,6 +1350,9 @@ mod tests {
             resource_attachment_generation: 13,
             source_view_id: vec![14; 16],
             source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                .into(),
+            source_handle: crate::immutable_source_handle_fixture(),
+            source_authority: MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT
                 .into(),
             attributes: Some(attributes).into(),
             ..Default::default()
@@ -1317,6 +1465,9 @@ mod tests {
         assert_eq!(record.recipe().attachment_id(), &[9; 16]);
         assert_eq!(record.recipe().resource_attachment_generation(), 13);
         assert_eq!(record.recipe().source_view_id(), &[14; 16]);
+        let (source_handle, source_binding) = record.recipe().source().exact().unwrap();
+        assert!(matches!(source_handle, ViewSource::ImmutableTree { .. }));
+        assert_eq!(source_binding.source(), source_handle);
         assert!(record.recipe().attributes().recursive());
         assert_eq!(record.resource_kernel_boot_id(), &[16; 16]);
         assert_eq!(record.detached_unique_mount_id(), Some(101));
@@ -1326,6 +1477,99 @@ mod tests {
                 .map(ValidatedMountKernelObservation::unique_mount_id),
             Some(101)
         );
+    }
+
+    #[test]
+    fn inventory_source_authority_is_exactly_version_partitioned() {
+        let exact_record = installed_record(1, 101);
+        let exact_response = response(vec![exact_record.clone()]).encode_to_vec();
+        let exact = decode_mount_inventory_response_for_version(
+            &exact_response,
+            MINIMUM_RESPONSE_BYTES,
+            ProtocolVersion::new(1, 6),
+        )
+        .unwrap();
+        assert!(matches!(
+            exact.mounts()[0].recipe().source(),
+            ValidatedMountInventorySource::Exact { .. }
+        ));
+
+        for minor in 0..=5 {
+            let version = ProtocolVersion::new(1, minor);
+            assert!(matches!(
+                decode_mount_inventory_response_for_version(
+                    &exact_response,
+                    MINIMUM_RESPONSE_BYTES,
+                    version,
+                ),
+                Err(ProtocolValidationError::InvalidField(
+                    "inventory.recipe.source authority version"
+                ))
+            ));
+
+            let mut legacy_record = exact_record.clone();
+            legacy_record
+                .recipe
+                .get_or_insert_default()
+                .source_handle
+                .clear();
+            legacy_record
+                .recipe
+                .get_or_insert_default()
+                .source_authority =
+                MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_UNSPECIFIED.into();
+            let legacy_response = response(vec![legacy_record]).encode_to_vec();
+            let legacy = decode_mount_inventory_response_for_version(
+                &legacy_response,
+                MINIMUM_RESPONSE_BYTES,
+                version,
+            )
+            .unwrap();
+            assert_eq!(
+                legacy.mounts()[0].recipe().source(),
+                &ValidatedMountInventorySource::LegacyUnbound
+            );
+            assert!(legacy.mounts()[0].recipe().source().exact().is_none());
+        }
+
+        let mut absent_exact = exact_record.clone();
+        absent_exact
+            .recipe
+            .get_or_insert_default()
+            .source_handle
+            .clear();
+        assert!(matches!(
+            decode_mount_inventory_response_for_version(
+                &response(vec![absent_exact]).encode_to_vec(),
+                MINIMUM_RESPONSE_BYTES,
+                ProtocolVersion::new(1, 6),
+            ),
+            Err(ProtocolValidationError::MissingField("source_handle"))
+        ));
+
+        let mut malformed_exact = exact_record;
+        malformed_exact.recipe.get_or_insert_default().source_handle = vec![0xff];
+        assert!(
+            decode_mount_inventory_response_for_version(
+                &response(vec![malformed_exact]).encode_to_vec(),
+                MINIMUM_RESPONSE_BYTES,
+                ProtocolVersion::new(1, 6),
+            )
+            .is_err()
+        );
+
+        for version in [ProtocolVersion::new(0, 6), ProtocolVersion::new(1, 7)] {
+            assert!(matches!(
+                decode_mount_inventory_response_for_version(
+                    &exact_response,
+                    MINIMUM_RESPONSE_BYTES,
+                    version,
+                ),
+                Err(ProtocolValidationError::InvalidField(
+                    "inventory protocol version"
+                ))
+            ));
+        }
     }
 
     #[test]

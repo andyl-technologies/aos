@@ -13,8 +13,8 @@ use crate::pidfd::{PidFd, PidFdInfo};
 use crate::{Error, Result};
 
 use super::{
-    kernel_error, monotonic_now, validate_exclusive_reaping_owner, ChildGuard, FixedProcessOutput,
-    FixedProcessRequest, OutputStream, PreparedInvocation, ProcessStatus, SpawnedProcess,
+    ChildGuard, FixedProcessOutput, FixedProcessRequest, OutputStream, PreparedInvocation,
+    ProcessStatus, SpawnedProcess, kernel_error, monotonic_now, validate_exclusive_reaping_owner,
 };
 
 /// Configures one fixed child process and its parent-side control descriptor.
@@ -998,11 +998,13 @@ mod tests {
             .unwrap()
             .invalid
         );
-        assert!(validate_control_readiness(
-            rustix::event::PollFlags::PRI,
-            FixedProcessControlInterest::Readable,
-        )
-        .is_err());
+        assert!(
+            validate_control_readiness(
+                rustix::event::PollFlags::PRI,
+                FixedProcessControlInterest::Readable,
+            )
+            .is_err()
+        );
     }
 
     fn run_isolated_case(case: &str) {

@@ -10,21 +10,28 @@
 //! The serialized value is a versioned JSON envelope:
 //!
 //! ```text
-//! {"version":3,"resource":{...}}
+//! {"version":4,"resource":{...}}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox::journal::{Journal, JournalRecord, RecordNamespace};
 use aos_sandbox_core::{
-    DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, validate_descriptor_role,
+    DecodeLimits, DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, decode_view_source,
+    encode_view_source, model::ViewSource, validate_descriptor_role,
 };
+use aos_sandbox_protocol::SourceRealizationBindingV1;
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use crate::source_pin::{
+    RecoveredSourcePinReferencesV1, SourcePinReferenceCountsV1, SourcePinReferenceKind,
+};
 use crate::{MountError, Result};
 
 const KEY_PREFIX: &[u8] = b"aos.mount.resource.v1\0";
-const FORMAT_VERSION: u16 = 3;
+const LEGACY_FORMAT_VERSION: u16 = 3;
+const FORMAT_VERSION: u16 = 4;
 
 /// Opaque, stable identity of one broker-owned mount resource.
 pub(crate) type MountHandleV1 = [u8; 32];
@@ -194,9 +201,32 @@ impl ObjectDescriptorV1 {
     }
 }
 
+/// Classifies whether a durable recipe carries exact source-pin authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MountSourceAuthorityV1 {
+    /// Historical v3 row retained for inventory and explicit quarantine only.
+    LegacyUnbound,
+    /// V4 row bound to the canonical portable source and binding digest.
+    Exact {
+        source_handle: Vec<u8>,
+        source_binding_digest: [u8; 32],
+    },
+}
+
+impl MountSourceAuthorityV1 {
+    pub(crate) fn exact(&self) -> Option<(&[u8], &[u8; 32])> {
+        match self {
+            Self::LegacyUnbound => None,
+            Self::Exact {
+                source_handle,
+                source_binding_digest,
+            } => Some((source_handle, source_binding_digest)),
+        }
+    }
+}
+
 /// Describes the immutable source and destination of one handle.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MountRecipeV1 {
     pub(crate) attachment_id: [u8; 16],
     pub(crate) destination_slot_id: [u8; 16],
@@ -206,7 +236,95 @@ pub(crate) struct MountRecipeV1 {
     pub(crate) source_view_id: [u8; 16],
     pub(crate) source_incarnation_id: Option<[u8; 16]>,
     pub(crate) source_consistency: MountSourceConsistencyV1,
+    pub(crate) source_authority: MountSourceAuthorityV1,
     pub(crate) policy: MountPolicyV1,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredMountRecipeV1 {
+    attachment_id: [u8; 16],
+    destination_slot_id: [u8; 16],
+    view_revision: ObjectDescriptorV1,
+    source_generation: u64,
+    resource_attachment_generation: u64,
+    source_view_id: [u8; 16],
+    source_incarnation_id: Option<[u8; 16]>,
+    source_consistency: MountSourceConsistencyV1,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    source_handle: Vec<u8>,
+    #[serde(default, skip_serializing_if = "source_digest_is_zero")]
+    source_binding_digest: [u8; 32],
+    policy: MountPolicyV1,
+}
+
+impl Serialize for MountRecipeV1 {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let (source_handle, source_binding_digest) = match &self.source_authority {
+            MountSourceAuthorityV1::LegacyUnbound => (Vec::new(), [0; 32]),
+            MountSourceAuthorityV1::Exact {
+                source_handle,
+                source_binding_digest,
+            } => (source_handle.clone(), *source_binding_digest),
+        };
+        StoredMountRecipeV1 {
+            attachment_id: self.attachment_id,
+            destination_slot_id: self.destination_slot_id,
+            view_revision: self.view_revision.clone(),
+            source_generation: self.source_generation,
+            resource_attachment_generation: self.resource_attachment_generation,
+            source_view_id: self.source_view_id,
+            source_incarnation_id: self.source_incarnation_id,
+            source_consistency: self.source_consistency,
+            source_handle,
+            source_binding_digest,
+            policy: self.policy.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MountRecipeV1 {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let stored = StoredMountRecipeV1::deserialize(deserializer)?;
+        let source_authority = match (
+            stored.source_handle.is_empty(),
+            stored.source_binding_digest == [0; 32],
+        ) {
+            (true, true) => MountSourceAuthorityV1::LegacyUnbound,
+            (false, false) => MountSourceAuthorityV1::Exact {
+                source_handle: stored.source_handle,
+                source_binding_digest: stored.source_binding_digest,
+            },
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "mount recipe source authority is only partially present",
+                ));
+            }
+        };
+        Ok(Self {
+            attachment_id: stored.attachment_id,
+            destination_slot_id: stored.destination_slot_id,
+            view_revision: stored.view_revision,
+            source_generation: stored.source_generation,
+            resource_attachment_generation: stored.resource_attachment_generation,
+            source_view_id: stored.source_view_id,
+            source_incarnation_id: stored.source_incarnation_id,
+            source_consistency: stored.source_consistency,
+            source_authority,
+            policy: stored.policy,
+        })
+    }
+}
+
+fn source_digest_is_zero(digest: &[u8; 32]) -> bool {
+    *digest == [0; 32]
 }
 
 /// Correlates one accepted broker operation with its exact request.
@@ -411,6 +529,26 @@ impl MountResourceTableV1 {
         self.resources.values()
     }
 
+    /// Derives exact source-pin references from authenticated durable phases.
+    #[cfg(test)]
+    pub(crate) fn source_pin_references(&self) -> Result<RecoveredSourcePinReferencesV1> {
+        let mut counts = BTreeMap::new();
+        for resource in self.resources.values() {
+            let Some(kind) = source_pin_reference_kind(&resource.state) else {
+                continue;
+            };
+            let Some((_, source_binding_digest)) = resource.recipe.source_authority.exact() else {
+                continue;
+            };
+            let digest = ObjectDigest::from_bytes(*source_binding_digest);
+            counts
+                .entry(digest)
+                .or_insert_with(SourcePinReferenceCountsV1::default)
+                .increment(kind)?;
+        }
+        Ok(RecoveredSourcePinReferencesV1::from_counts(counts))
+    }
+
     /// Reports whether no retained mount resource claims one physical slot.
     pub(crate) fn destination_slot_is_unused(
         &self,
@@ -432,6 +570,10 @@ impl MountResourceTableV1 {
     pub(crate) fn plan_allocate(&self, resource: &MountResourceV1) -> Result<Vec<JournalRecord>> {
         if resource.revision != 1
             || !matches!(resource.state, MountResourceStateV1::Allocated { .. })
+            || !matches!(
+                resource.recipe.source_authority,
+                MountSourceAuthorityV1::Exact { .. }
+            )
             || self.resources.contains_key(&resource.handle)
         {
             return Err(state_error(
@@ -786,6 +928,13 @@ impl MountResourceV1 {
         }
         self.recipe.policy.validate()?;
         self.recipe.view_revision.to_runtime()?;
+        if let MountSourceAuthorityV1::Exact {
+            source_handle,
+            source_binding_digest,
+        } = &self.recipe.source_authority
+        {
+            validate_source_handle(&self.recipe, source_handle, source_binding_digest)?;
+        }
         if publication(&self.state).is_some_and(|value| {
             value.target_namespace_generation != self.binding.namespace_generation
         }) {
@@ -795,6 +944,52 @@ impl MountResourceV1 {
         }
         self.state.validate(limits, self.handle)
     }
+}
+
+fn validate_source_handle(
+    recipe: &MountRecipeV1,
+    source_handle: &[u8],
+    source_binding_digest: &[u8; 32],
+) -> Result<()> {
+    let source = decode_view_source(source_handle, DecodeLimits::default())
+        .map_err(|error| state_error(error.to_string()))?;
+    if encode_view_source(&source) != source_handle {
+        return Err(state_error("mount source handle is not canonical"));
+    }
+    let compatible = matches!(
+        (&source, recipe.source_consistency),
+        (
+            ViewSource::ImmutableTree { .. },
+            MountSourceConsistencyV1::ImmutableRevision
+        ) | (
+            ViewSource::LiveExport { .. },
+            MountSourceConsistencyV1::LocalLive | MountSourceConsistencyV1::BestEffortReplica
+        )
+    );
+    if !compatible {
+        return Err(state_error(
+            "mount source handle differs from its consistency contract",
+        ));
+    }
+    let binding = SourceRealizationBindingV1::new(
+        recipe.source_view_id,
+        recipe.source_generation,
+        recipe.view_revision.to_runtime()?,
+        source,
+        match recipe.source_consistency {
+            MountSourceConsistencyV1::ImmutableRevision => aos_proto::aos::sandbox::local::v1::MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION,
+            MountSourceConsistencyV1::LocalLive => aos_proto::aos::sandbox::local::v1::MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE,
+            MountSourceConsistencyV1::BestEffortReplica => aos_proto::aos::sandbox::local::v1::MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA,
+        },
+        recipe.source_incarnation_id,
+    )
+    .map_err(|error| state_error(error.to_string()))?;
+    if binding.digest().as_bytes() != source_binding_digest {
+        return Err(state_error(
+            "mount source binding digest differs from its canonical recipe",
+        ));
+    }
+    Ok(())
 }
 
 impl MountResourceStateV1 {
@@ -1261,6 +1456,51 @@ fn validate_operation(operation: &OperationCorrelationV1) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+fn source_pin_reference_kind(state: &MountResourceStateV1) -> Option<SourcePinReferenceKind> {
+    match state {
+        MountResourceStateV1::Allocated { .. } => Some(SourcePinReferenceKind::Preparing),
+        MountResourceStateV1::Prepared { .. } | MountResourceStateV1::Publishing { .. } => {
+            Some(SourcePinReferenceKind::Detached)
+        }
+        MountResourceStateV1::Installed { .. } | MountResourceStateV1::Detaching { .. } => {
+            Some(SourcePinReferenceKind::Installed)
+        }
+        MountResourceStateV1::Draining { .. } => Some(SourcePinReferenceKind::Draining),
+        MountResourceStateV1::Releasing {
+            installed,
+            replaced_by,
+            ..
+        }
+        | MountResourceStateV1::Faulted {
+            from: MountFaultPhaseV1::Releasing,
+            installed,
+            replaced_by,
+            ..
+        } => {
+            if replaced_by.is_some() {
+                Some(SourcePinReferenceKind::Draining)
+            } else if installed.is_some() {
+                Some(SourcePinReferenceKind::Installed)
+            } else {
+                Some(SourcePinReferenceKind::Detached)
+            }
+        }
+        MountResourceStateV1::Faulted { from, .. } => match from {
+            MountFaultPhaseV1::Allocated => Some(SourcePinReferenceKind::Preparing),
+            MountFaultPhaseV1::Prepared | MountFaultPhaseV1::Publishing => {
+                Some(SourcePinReferenceKind::Detached)
+            }
+            MountFaultPhaseV1::Installed | MountFaultPhaseV1::Detaching => {
+                Some(SourcePinReferenceKind::Installed)
+            }
+            MountFaultPhaseV1::Draining => Some(SourcePinReferenceKind::Draining),
+            MountFaultPhaseV1::Releasing => unreachable!("releasing faults matched above"),
+        },
+        MountResourceStateV1::Released { .. } => None,
+    }
+}
+
 fn creation(state: &MountResourceStateV1) -> Option<&OperationCorrelationV1> {
     match state {
         MountResourceStateV1::Allocated { creation }
@@ -1474,8 +1714,12 @@ fn encoded_total(
 
 fn encode_value(resource: &MountResourceV1, limits: MountResourceLimitsV1) -> Result<Vec<u8>> {
     resource.validate(limits)?;
+    let version = match resource.recipe.source_authority {
+        MountSourceAuthorityV1::LegacyUnbound => LEGACY_FORMAT_VERSION,
+        MountSourceAuthorityV1::Exact { .. } => FORMAT_VERSION,
+    };
     let bytes = serde_json::to_vec(&StoredMountResourceV1 {
-        version: FORMAT_VERSION,
+        version,
         resource: resource.clone(),
     })
     .map_err(|error| state_error(error.to_string()))?;
@@ -1493,7 +1737,12 @@ fn decode_value(bytes: &[u8], limits: MountResourceLimitsV1) -> Result<MountReso
     }
     let stored: StoredMountResourceV1 =
         serde_json::from_slice(bytes).map_err(|error| state_error(error.to_string()))?;
-    if stored.version != FORMAT_VERSION {
+    let source_version_matches = matches!(
+        (stored.version, &stored.resource.recipe.source_authority),
+        (LEGACY_FORMAT_VERSION, MountSourceAuthorityV1::LegacyUnbound)
+            | (FORMAT_VERSION, MountSourceAuthorityV1::Exact { .. })
+    );
+    if !source_version_matches {
         return Err(state_error("mount resource format version is unsupported"));
     }
     stored.resource.validate(limits)?;
@@ -1608,6 +1857,29 @@ mod tests {
     }
 
     fn resource(handle: u8, generation: u64, _replaces: Option<MountHandleV1>) -> MountResourceV1 {
+        let source = ViewSource::ImmutableTree {
+            tree: ObjectDescriptor::new(
+                MediaType::new(PortableMediaType::Tree.as_str().to_owned()).unwrap(),
+                ObjectDigest::from_bytes([16; 32]),
+                17,
+            ),
+        };
+        let view = ObjectDescriptor::new(
+            MediaType::new(PortableMediaType::View.as_str().to_owned()).unwrap(),
+            ObjectDigest::from_bytes([9; 32]),
+            10,
+        );
+        let source_binding_digest = *SourceRealizationBindingV1::new(
+            [13; 16],
+            11,
+            view,
+            source.clone(),
+            aos_proto::aos::sandbox::local::v1::MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION,
+            None,
+        )
+        .unwrap()
+        .digest()
+        .as_bytes();
         MountResourceV1 {
             handle: [handle; 32],
             fd_store_key: [handle; 32],
@@ -1634,12 +1906,83 @@ mod tests {
                 source_view_id: [13; 16],
                 source_incarnation_id: None,
                 source_consistency: MountSourceConsistencyV1::ImmutableRevision,
+                source_authority: MountSourceAuthorityV1::Exact {
+                    source_handle: encode_view_source(&source),
+                    source_binding_digest,
+                },
                 policy: policy(),
             },
             state: MountResourceStateV1::Allocated {
                 creation: creation(),
             },
         }
+    }
+
+    #[test]
+    fn source_pin_counts_are_derived_from_exact_resource_phases() {
+        let mut resources = table();
+        let allocated = resource(1, 1, None);
+        let digest =
+            ObjectDigest::from_bytes(*allocated.recipe.source_authority.exact().unwrap().1);
+
+        let mut prepared = resource(2, 2, None);
+        prepared.state = MountResourceStateV1::Prepared {
+            detached: detached(2, 102),
+            creation: creation(),
+        };
+        let mut installed_resource = resource(3, 3, None);
+        installed_resource.state = MountResourceStateV1::Installed {
+            detached: detached(3, 103),
+            installed: installed(203),
+            publication: publication(None),
+        };
+        let mut draining = resource(4, 4, None);
+        draining.state = MountResourceStateV1::Draining {
+            detached: detached(4, 104),
+            installed: installed(204),
+            replaced_by: [5; 32],
+        };
+        let mut released = resource(5, 5, None);
+        released.state = MountResourceStateV1::Released {
+            last_detached_mount_id: Some(105),
+            last_installed_mount_id: None,
+        };
+
+        for resource in [allocated, prepared, installed_resource, draining, released] {
+            resources.resources.insert(resource.handle, resource);
+        }
+        let counts = resources.source_pin_references().unwrap().into_counts();
+
+        assert_eq!(
+            counts.get(&digest),
+            Some(&SourcePinReferenceCountsV1 {
+                preparing: 1,
+                detached: 1,
+                installed: 1,
+                draining: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn historical_v3_row_decodes_without_fabricated_source_authority() {
+        let mut legacy = resource(1, 1, None);
+        legacy.recipe.source_authority = MountSourceAuthorityV1::LegacyUnbound;
+
+        let golden = include_bytes!("fixtures/mount-resource-v3.json");
+        let decoded = decode_value(golden, MountResourceLimitsV1::default()).unwrap();
+
+        assert_eq!(decoded, legacy);
+        assert_eq!(
+            decoded.recipe.source_authority,
+            MountSourceAuthorityV1::LegacyUnbound
+        );
+        assert!(decoded.recipe.source_authority.exact().is_none());
+        assert_eq!(
+            encode_value(&decoded, MountResourceLimitsV1::default()).unwrap(),
+            golden.strip_suffix(b"\n").unwrap()
+        );
+        assert!(table().plan_allocate(&decoded).is_err());
     }
 
     fn detached(_handle: u8, mount_id: u64) -> DetachedMountIdentityV1 {

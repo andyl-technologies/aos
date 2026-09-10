@@ -505,9 +505,11 @@ message ApplyMountRequest {
   bytes attachment_lease_id = 17; // Exactly 16 bytes.
   int64 attachment_lease_issued_seconds = 18;
   int64 attachment_lease_expires_seconds = 19; // Strictly after issue time.
+  // Canonical portable ViewSource bytes. This is logical authority, never a path or FD.
+  bytes source_handle = 20;
 }
 
-// Mount 1.2 read-only preparation. The nested Mount request selects the exact
+// Mount 1.6 read-only preparation. The nested Mount request selects the exact
 // catalog behavior later committed by a signed Apply grant. host_request_packet
 // is a complete authorized Host 1.3 ObserveMountScope envelope; the controller
 // cannot receive or nominate any of the returned descriptors.
@@ -522,9 +524,10 @@ message PrepareMountCatalogResponse {
   uint64 valid_until_boottime_nanoseconds = 2;
 }
 
-// Mount 1.4 destination-slot effects operate only on broker-derived paths.
-// The exact canonical sandbox specification proves the portable declaration;
-// its descriptor prevents the broker from accepting substituted bytes.
+// Mount 1.3-1.6 materialize/reap and Mount 1.4-1.6 rematerialize effects
+// operate only on broker-derived paths. The exact canonical sandbox
+// specification proves the portable declaration; its descriptor prevents
+// substituted bytes.
 enum DestinationSlotAction {
   DESTINATION_SLOT_ACTION_UNSPECIFIED = 0;
   DESTINATION_SLOT_ACTION_MATERIALIZE = 1;
@@ -612,8 +615,8 @@ message InventoryDestinationSlotsResponse {
   uint64 journal_sequence = 2; // Nonzero next-frame durable boundary.
   repeated DestinationSlotInventoryRecord slots = 3; // At most 16384, strict key order.
   bytes broker_instance_id = 4; // Exactly 16 bytes; changes on broker start.
-  // Mount 1.5 only. One strict logical-key-ordered row for every current anchor
-  // that contains at least one Ready destination slot.
+  // Mount 1.5-1.6 only. One strict logical-key-ordered row for every current
+  // anchor that contains at least one Ready destination slot.
   repeated AttachmentAnchorInventoryRecord attachment_anchors = 5;
 }
 
@@ -633,6 +636,7 @@ message MountResult {
   bytes attachment_lease_id = 13;
   int64 attachment_lease_issued_seconds = 14;
   int64 attachment_lease_expires_seconds = 15;
+  bytes source_handle = 16; // Exact canonical Apply echo.
 }
 
 enum MountState {
@@ -657,6 +661,14 @@ message MountAssignmentBinding {
 // Immutable physical recipe from which the broker created the detached mount.
 // Current desired generation and attachment lease are operation authority and
 // therefore do not appear in inventory.
+enum MountInventorySourceAuthority {
+  MOUNT_INVENTORY_SOURCE_AUTHORITY_UNSPECIFIED = 0;
+  // Historical durable row predating broker-owned source-pin authority.
+  MOUNT_INVENTORY_SOURCE_AUTHORITY_LEGACY_UNBOUND = 1;
+  // Row containing the canonical source handle required by Mount 1.6.
+  MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT = 2;
+}
+
 message MountRecipe {
   bytes attachment_id = 1; // Exactly 16 bytes.
   bytes destination_slot_id = 2; // Exactly 16 bytes.
@@ -667,6 +679,12 @@ message MountRecipe {
   bytes source_view_id = 7;
   bytes source_incarnation_id = 8;
   MountSourceConsistency source_consistency = 9;
+  // Absent in Mount 1.0-1.5 compatibility inventories. In Mount 1.6 this is
+  // required exactly when source_authority is EXACT.
+  bytes source_handle = 10;
+  // Unspecified in Mount 1.0-1.5. Mount 1.6 explicitly distinguishes a
+  // historical non-authorizing row from an exact source-bound row.
+  MountInventorySourceAuthority source_authority = 11;
 }
 
 // Kernel identity observed for an installed mount. Paths are raw, NUL-free

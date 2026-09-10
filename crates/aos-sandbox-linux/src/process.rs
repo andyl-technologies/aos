@@ -21,9 +21,9 @@ use crate::{Error, Result};
 mod session;
 
 pub use session::{
-    run_fixed_process_session, ExchangeStep, FixedLiveChild, FixedProcessControlInterest,
-    FixedProcessControlReadiness, FixedProcessSessionError, FixedProcessSessionExchange,
-    FixedProcessSessionOutcome, FixedProcessSessionRequest,
+    ExchangeStep, FixedLiveChild, FixedProcessControlInterest, FixedProcessControlReadiness,
+    FixedProcessSessionError, FixedProcessSessionExchange, FixedProcessSessionOutcome,
+    FixedProcessSessionRequest, run_fixed_process_session,
 };
 
 const MAXIMUM_EXECUTABLE_BYTES: usize = 4096;

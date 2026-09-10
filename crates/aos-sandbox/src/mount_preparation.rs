@@ -9,7 +9,7 @@
 //! ```text
 //! CurrentNamespaceTarget + Mount intent
 //!     -> authorized Host 1.3 ObserveMountScope packet
-//!     -> unauthenticated Mount 1.2 PrepareMountCatalog packet
+//!     -> unauthenticated Mount 1.6 PrepareMountCatalog packet
 //!     -> opaque commitment + unchanged exclusive deadline
 //! ```
 //!
@@ -56,7 +56,7 @@ use crate::{BrokerDispatchTemplateError, BrokerDispatchTemplateV1, SignedBrokerP
 
 pub(crate) mod transport;
 
-const MOUNT_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
+const MOUNT_VERSION: ProtocolVersion = ProtocolVersion::new(1, 6);
 const HOST_VERSION: ProtocolVersion = ProtocolVersion::new(1, 3);
 const MOUNT_METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG;
 const HOST_METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE;
@@ -127,10 +127,10 @@ impl MountCatalogIntentV1 {
     /// report invalid action shapes, IDs, descriptors, attributes, and source
     /// generations.
     pub fn new(request: ApplyMountRequest) -> Result<Self, MountCatalogPreparationError> {
-        let validated = validate_fence_free_intent(&request)?;
-        if validated.action() == MountAction::MOUNT_ACTION_RELEASE {
+        if request.action.as_known() == Some(MountAction::MOUNT_ACTION_RELEASE) {
             return Err(MountCatalogPreparationError::InvalidIntent);
         }
+        validate_fence_free_intent(&request)?;
 
         Ok(Self { request })
     }
@@ -187,7 +187,7 @@ impl MountCatalogClient {
             transport::exchange_deadline(request.header().deadline_boottime_nanoseconds())?;
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 2,
+            protocol_minor: 6,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: RESPONSE_BYTES,
             required_methods: vec![MOUNT_METHOD.into()],

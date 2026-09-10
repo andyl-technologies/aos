@@ -45,8 +45,17 @@ fn run() -> Result<()> {
             "mount broker must start with real and effective UID zero".to_owned(),
         ));
     }
-    let activation =
-        SystemdFdStore::adopt_service_activation(EXPECTED_FD_NAME, MAXIMUM_RETAINED_MOUNTS)?;
+    // SAFETY: this is the single-threaded process entrypoint, before any code
+    // constructs Rust owners for systemd's contiguous activation descriptor
+    // table. systemd transfers that entire table to this service process.
+    let activation = unsafe {
+        SystemdFdStore::adopt_service_activation(EXPECTED_FD_NAME, MAXIMUM_RETAINED_MOUNTS)?
+    };
+    if !activation.source_pins.is_empty() {
+        return Err(MountError::State(
+            "retained source pins are unsupported without a configured fixed provider".to_owned(),
+        ));
+    }
     let retained_names: BTreeSet<_> = activation.mounts.keys().cloned().collect();
     let listener = ActivatedSeqpacketListener::from_owned(activation.listener)?;
     let keeper =

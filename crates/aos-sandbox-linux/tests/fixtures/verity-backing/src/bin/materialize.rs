@@ -418,10 +418,13 @@ mod linux {
                 failure: BeforeRenameFailure::DestinationExists,
                 ..
             })
-        ) && std::fs::read(&cross_conflict_path)? == b"cross conflict"
+        ) && std::fs::read(&cross_conflict_path)?
+            == b"cross conflict"
             && std::fs::metadata(&cross_conflict_path)?.dev() == cross_conflict_before.dev()
             && std::fs::metadata(&cross_conflict_path)?.ino() == cross_conflict_before.ino()
-            && cross_staging_path.join(CROSS_CONFLICT_PRIVATE_NAME).exists();
+            && cross_staging_path
+                .join(CROSS_CONFLICT_PRIVATE_NAME)
+                .exists();
 
         let mut same_root_callbacks = ExactCallbacks {
             verifier: Some(ObjectDescriptorVerifier::new(expected.clone())),

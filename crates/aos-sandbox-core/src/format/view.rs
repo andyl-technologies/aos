@@ -19,7 +19,7 @@ pub fn encode_view(view: &View) -> Vec<u8> {
     let mut encoder = Encoder::new();
     encoder.array(8);
     encoder.unsigned(1);
-    encode_view_source(&mut encoder, view.source());
+    encode_view_source_into(&mut encoder, view.source());
     encode_slice(
         &mut encoder,
         view.presentation(),
@@ -33,6 +33,34 @@ pub fn encode_view(view: &View) -> Vec<u8> {
     encoder.finish()
 }
 
+/// Encodes one logical filesystem-view source in canonical portable v1 CBOR.
+///
+/// The result contains no node-local path, descriptor, or backend identity. It
+/// is suitable for binding a separately realized source pin to the exact
+/// immutable-tree or generation-fenced live-export authority.
+#[must_use]
+pub fn encode_view_source(source: &ViewSource) -> Vec<u8> {
+    let mut encoder = Encoder::new();
+    encode_view_source_into(&mut encoder, source);
+    encoder.finish()
+}
+
+/// Decodes one canonical portable v1 logical filesystem-view source.
+///
+/// # Errors
+///
+/// Returns [`CanonicalCborError`] for non-canonical CBOR, trailing bytes,
+/// unknown source variants, malformed identities, or an invalid descriptor.
+pub fn decode_view_source(
+    bytes: &[u8],
+    limits: DecodeLimits,
+) -> Result<ViewSource, CanonicalCborError> {
+    let mut decoder = Decoder::new(bytes, limits)?;
+    let source = decode_view_source_from(&mut decoder)?;
+    decoder.finish()?;
+    Ok(source)
+}
+
 /// Decodes and validates one exact portable v1 filesystem view.
 ///
 /// # Errors
@@ -43,7 +71,7 @@ pub fn decode_view(bytes: &[u8], limits: DecodeLimits) -> Result<View, Canonical
     let mut decoder = Decoder::new(bytes, limits)?;
     decoder.array(8)?;
     decoder.exact("view version", 1)?;
-    let source = decode_view_source(&mut decoder)?;
+    let source = decode_view_source_from(&mut decoder)?;
     let presentation = decode_vec(&mut decoder, decode_presentation_action)?;
     let consistency = decode_view_consistency(&mut decoder)?;
     let mutation = decode_view_mutation(&mut decoder)?;
@@ -106,7 +134,7 @@ pub fn decode_environment(
         .map_err(|error| semantics("environment", error))
 }
 
-fn encode_view_source(encoder: &mut Encoder, source: &ViewSource) {
+fn encode_view_source_into(encoder: &mut Encoder, source: &ViewSource) {
     match source {
         ViewSource::ImmutableTree { tree } => {
             encoder.array(2);
@@ -127,7 +155,7 @@ fn encode_view_source(encoder: &mut Encoder, source: &ViewSource) {
     }
 }
 
-fn decode_view_source(decoder: &mut Decoder<'_>) -> Result<ViewSource, CanonicalCborError> {
+fn decode_view_source_from(decoder: &mut Decoder<'_>) -> Result<ViewSource, CanonicalCborError> {
     let offset = decoder.position();
     let length = decoder.array_len()?;
     let kind = decoder.closed("view source kind", 1)?;
@@ -312,6 +340,17 @@ mod tests {
     }
 
     #[test]
+    fn standalone_source_round_trip_is_canonical() {
+        let source = ViewSource::ImmutableTree { tree: descriptor() };
+        let encoded = encode_view_source(&source);
+
+        assert_eq!(
+            decode_view_source(&encoded, DecodeLimits::default()),
+            Ok(source)
+        );
+    }
+
+    #[test]
     fn view_round_trip_preserves_live_generation() {
         let view = View::new(
             ViewSource::LiveExport {
@@ -374,7 +413,7 @@ mod tests {
             decoder
                 .exact("view version", 1)
                 .unwrap_or_else(|error| panic!("test version failed: {error}"));
-            decode_view_source(&mut decoder)
+            decode_view_source_from(&mut decoder)
                 .unwrap_or_else(|error| panic!("test source failed: {error}"));
             assert_eq!(
                 decoder

@@ -9,6 +9,8 @@ use aos_proto::aos::sandbox::local::v1::{
     ApplyMountRequest, AssignmentFence, Audience, Descriptor, MountAction, MountAttributes,
     MountSourceConsistency,
 };
+use aos_sandbox_core::model::ViewSource;
+use aos_sandbox_core::{MediaType, ObjectDescriptor, ObjectDigest, encode_view_source};
 
 use super::*;
 
@@ -40,6 +42,13 @@ fn create_intent() -> ApplyMountRequest {
         source_view_id: vec![9; 16],
         source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
             .into(),
+        source_handle: encode_view_source(&ViewSource::ImmutableTree {
+            tree: ObjectDescriptor::new(
+                MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor").unwrap(),
+                ObjectDigest::from_bytes([13; 32]),
+                14,
+            ),
+        }),
         attachment_lease_id: vec![10; 16],
         attachment_lease_issued_seconds: 11,
         attachment_lease_expires_seconds: 12,

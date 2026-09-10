@@ -10,12 +10,13 @@ use aos_proto::aos::sandbox::local::v1::{
 };
 use aos_sandbox_core::{
     BrokerArgumentCommitment, BrokerGrantTarget, BrokerResourceHandle, BrokerVerb, ObjectDigest,
+    encode_view_source,
 };
 
 use crate::{ValidatedMountAttributes, ValidatedMountRequest};
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSMSEM1";
-const FORMAT_VERSION: u16 = 3;
+const FORMAT_VERSION: u16 = 4;
 const MAXIMUM_DESCRIPTOR_ROLES: usize = 16;
 const MAXIMUM_CANONICAL_BYTES: usize = 2 * 1024;
 
@@ -153,6 +154,7 @@ pub fn canonical_mount_semantics_v1(
         26,
         &request.attachment_lease_expires_seconds().to_be_bytes(),
     )?;
+    encoder.field(27, &encode_view_source(request.source_handle()))?;
     let bytes = encoder.finish();
     Ok(CanonicalMountSemanticsV1 {
         commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),

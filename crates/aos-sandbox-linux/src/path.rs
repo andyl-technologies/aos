@@ -259,6 +259,12 @@ impl ResolvedFile {
         self.fd
     }
 
+    /// Borrows the pinned readable file descriptor.
+    #[must_use]
+    pub fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+
     /// Returns the device/inode/type identity captured after resolution.
     #[must_use]
     pub const fn identity(&self) -> FileIdentity {
@@ -312,9 +318,17 @@ impl ResolvedPath {
     ///
     /// # Errors
     ///
-    /// Returns an error when descriptor inspection fails or it is a symlink.
+    /// Returns an error when the descriptor was not opened with `O_PATH`,
+    /// inspection fails, or the object is a symlink.
     pub fn from_inherited(fd: OwnedFd) -> Result<Self> {
         uapi::ensure_cloexec(fd.as_fd())?;
+        let flags = uapi::get_status_flags(fd.as_fd())?;
+        if flags & libc::O_PATH != libc::O_PATH {
+            return Err(Error::invalid(
+                "inherited path descriptor",
+                "descriptor must be opened with O_PATH",
+            ));
+        }
         let identity = inspect(fd.as_fd())?;
         if identity.file_type == FileType::Symlink {
             return Err(Error::WrongDescriptorType {
@@ -323,6 +337,7 @@ impl ResolvedPath {
         }
         Ok(Self { fd, identity })
     }
+
     /// Borrows the pinned object descriptor.
     #[must_use]
     pub fn as_fd(&self) -> BorrowedFd<'_> {
@@ -414,6 +429,28 @@ mod tests {
     fn root(path: &Path) -> BeneathRoot {
         let fd: OwnedFd = File::open(path).unwrap().into();
         BeneathRoot::from_owned(fd).unwrap()
+    }
+
+    #[test]
+    fn inherited_path_requires_o_path_access_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let readable = rustix::fs::open(
+            temp.path(),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        assert!(ResolvedPath::from_inherited(readable).is_err());
+
+        let path_only = rustix::fs::open(
+            temp.path(),
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        assert!(ResolvedPath::from_inherited(path_only).is_ok());
     }
 
     #[test]

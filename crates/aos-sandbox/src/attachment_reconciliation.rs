@@ -18,7 +18,7 @@ use aos_proto::aos::sandbox::local::v1::{
     MountAction, MountFaultPhase, MountLifecycle, MountSourceConsistency,
 };
 use aos_sandbox_core::RawPairedClockSample;
-use aos_sandbox_core::model::{AttachmentConsistency, AttachmentIntent, ViewMutation};
+use aos_sandbox_core::model::{AttachmentConsistency, AttachmentIntent, ViewMutation, ViewSource};
 use aos_sandbox_protocol::ValidatedMountInventoryRecord;
 
 use crate::Journal;
@@ -26,6 +26,9 @@ use crate::attachment_state::{
     self, AttachmentDesiredPresenceV1, AttachmentDesiredStateError, DurableAttachmentDesiredStateV1,
 };
 use crate::attachment_verification::{self, AttachmentVerificationError};
+use crate::filesystem_view_state::{
+    self, FilesystemViewRevisionPresenceV1, FilesystemViewRevisionStateError,
+};
 use crate::mount_attempt::{
     CurrentMountInventoryReconciliationV1, MountAttemptError, MountAttemptInventoryObservationV1,
     MountAttemptInventoryStatusV1,
@@ -231,6 +234,7 @@ impl AttachmentReconciliationEvidenceV1 {
 
         let now = clock()?.wall_seconds();
         let target_facts = TargetFacts::from_target(target);
+        let source_handle = exact_source_handle(journal, self.desired.intent())?;
         let resources = self
             .snapshot
             .inventory()
@@ -240,6 +244,7 @@ impl AttachmentReconciliationEvidenceV1 {
                 project_resource(
                     resource,
                     self.desired.intent(),
+                    &source_handle,
                     target_facts,
                     self.verification.as_ref().is_some_and(|verification| {
                         verification.matches_current(&self.desired, target, resource)
@@ -286,6 +291,9 @@ pub enum AttachmentReconciliationError {
     /// The Mount inventory or its current-target comparison is stale or invalid.
     #[error(transparent)]
     Mount(#[from] MountAttemptError),
+    /// The desired attachment's exact historical source revision is unavailable.
+    #[error(transparent)]
+    FilesystemViewRevision(#[from] FilesystemViewRevisionStateError),
     /// Durable post-attach verification history is malformed or inconsistent.
     #[error("attachment verification failed: {0}")]
     Verification(#[source] Box<AttachmentVerificationError>),
@@ -385,6 +393,7 @@ where
     inventory.recheck(journal, clock)?;
     attachment_state::recheck_current(journal, &desired)?;
     let verification = attachment_verification::current_record(journal, &desired)?;
+    let source_handle = exact_source_handle(journal, desired.intent())?;
 
     let now = clock()?.wall_seconds();
     let target = TargetFacts::from_target(inventory.target());
@@ -397,6 +406,7 @@ where
             project_resource(
                 resource,
                 desired.intent(),
+                &source_handle,
                 target,
                 verification.as_ref().is_some_and(|verification| {
                     verification.matches_current(&desired, inventory.target(), resource)
@@ -431,6 +441,20 @@ where
     })
 }
 
+fn exact_source_handle(
+    journal: &Journal,
+    intent: &AttachmentIntent,
+) -> Result<ViewSource, AttachmentReconciliationError> {
+    let (source_view_id, source_revision) = intent.source_view();
+    filesystem_view_state::get_revision(journal, source_view_id, source_revision)?
+        .filter(|source| {
+            source.presence() == FilesystemViewRevisionPresenceV1::Available
+                && source.descriptor() == intent.view()
+        })
+        .map(|source| source.source_handle().clone())
+        .ok_or(AttachmentReconciliationError::ActionChanged)
+}
+
 fn project_attempt(observation: MountAttemptInventoryObservationV1) -> AttemptFacts {
     AttemptFacts {
         request_id: observation.request_id(),
@@ -447,6 +471,7 @@ fn project_attempt(observation: MountAttemptInventoryObservationV1) -> AttemptFa
 fn project_resource(
     resource: &ValidatedMountInventoryRecord,
     intent: &AttachmentIntent,
+    source_handle: &ViewSource,
     target: TargetFacts,
     verification_matches: bool,
 ) -> ResourceFacts {
@@ -478,7 +503,7 @@ fn project_resource(
         same_scope,
         current_binding,
         predecessor_binding,
-        recipe_matches: recipe_matches_intent(resource, intent),
+        recipe_matches: recipe_matches_intent(resource, intent, source_handle),
         installed_unique_mount_id: resource
             .installed_observation()
             .map(|observation| observation.unique_mount_id()),
@@ -490,12 +515,16 @@ fn project_resource(
 fn recipe_matches_intent(
     resource: &ValidatedMountInventoryRecord,
     intent: &AttachmentIntent,
+    source_handle: &ViewSource,
 ) -> bool {
     let recipe = resource.recipe();
     let attributes = recipe.attributes();
     let expected_attributes = intent.mount_attributes();
     let (source_view, source_revision) = intent.source_view();
     let Some(source_consistency) = source_consistency(intent.consistency()) else {
+        return false;
+    };
+    let Some((inventoried_source_handle, _)) = recipe.source().exact() else {
         return false;
     };
 
@@ -511,6 +540,7 @@ fn recipe_matches_intent(
                 .as_ref()
                 .map(|value| value.as_bytes())
         && recipe.source_consistency() == source_consistency
+        && inventoried_source_handle == source_handle
         && attributes.read_only() == expected_attributes.read_only()
         && attributes.no_exec() == expected_attributes.no_exec()
         && attributes.no_suid() == expected_attributes.no_suid()
@@ -983,15 +1013,16 @@ mod tests {
 
     use aos_proto::aos::sandbox::local::v1::{
         AssignmentFence, Descriptor, InventoryMountResourcesResponse, MountAssignmentBinding,
-        MountAttributes as WireMountAttributes, MountInventoryRecord, MountKernelObservation,
-        MountOperationCorrelation, MountPublicationCorrelation, MountRecipe,
+        MountAttributes as WireMountAttributes, MountInventoryRecord,
+        MountInventorySourceAuthority, MountKernelObservation, MountOperationCorrelation,
+        MountPublicationCorrelation, MountRecipe,
     };
+    use aos_sandbox_core::format::encode_view_source;
     use aos_sandbox_core::model::{AttachmentLease, MountAttributes};
     use aos_sandbox_core::{
         AttachmentId, AttachmentSlotId, DesiredGeneration, IncarnationId, LeaseId, MediaType,
         NamespaceGeneration, ObjectDescriptor, ObjectDigest, Revision, SandboxId, ViewId,
     };
-    use aos_sandbox_protocol::decode_mount_inventory_response;
     use buffa::Message as _;
 
     use super::*;
@@ -1055,6 +1086,16 @@ mod tests {
             assignment_generation: 3,
             assignment_digest: [10; 32],
             namespace_generation: 5,
+        }
+    }
+
+    fn source_handle() -> ViewSource {
+        ViewSource::ImmutableTree {
+            tree: ObjectDescriptor::new(
+                MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor").unwrap(),
+                ObjectDigest::from_bytes([20; 32]),
+                21,
+            ),
         }
     }
 
@@ -1135,6 +1176,9 @@ mod tests {
                 source_view_id: vec![6; 16],
                 source_consistency:
                     MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION.into(),
+                source_handle: encode_view_source(&source_handle()),
+                source_authority:
+                    MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT.into(),
                 ..Default::default()
             })
             .into(),
@@ -1181,9 +1225,13 @@ mod tests {
             broker_instance_id: vec![19; 16],
             ..Default::default()
         };
-        decode_mount_inventory_response(&response.encode_to_vec(), 16 * 1024 * 1024)
-            .unwrap()
-            .mounts()[0]
+        aos_sandbox_protocol::decode_mount_inventory_response_for_version(
+            &response.encode_to_vec(),
+            16 * 1024 * 1024,
+            aos_sandbox_core::ProtocolVersion::new(1, 6),
+        )
+        .unwrap()
+        .mounts()[0]
             .clone()
     }
 
@@ -1465,12 +1513,33 @@ mod tests {
     #[test]
     fn physical_recipe_matching_checks_every_mutable_recipe_dimension() {
         let expected = intent(2);
+        let source_handle = source_handle();
         let base = installed_wire_resource();
         let exact = validated_resource(base.clone());
-        assert!(recipe_matches_intent(&exact, &expected));
-        let projected = project_resource(&exact, &expected, target(), false);
+        assert!(recipe_matches_intent(&exact, &expected, &source_handle));
+        let projected = project_resource(&exact, &expected, &source_handle, target(), false);
         assert!(projected.current_binding);
         assert!(projected.recipe_matches);
+
+        let mut changed_source = base.clone();
+        changed_source.recipe.get_or_insert_default().source_handle =
+            encode_view_source(&ViewSource::ImmutableTree {
+                tree: ObjectDescriptor::new(
+                    MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor").unwrap(),
+                    ObjectDigest::from_bytes([23; 32]),
+                    24,
+                ),
+            });
+        let changed_source = validated_resource(changed_source);
+        assert!(!recipe_matches_intent(
+            &changed_source,
+            &expected,
+            &source_handle,
+        ));
+        assert_ne!(
+            crate::attachment_verification::mount_resource_digest(&changed_source),
+            crate::attachment_verification::mount_resource_digest(&exact)
+        );
 
         let mut substitutions = Vec::new();
 
@@ -1511,6 +1580,11 @@ mod tests {
         recipe.source_consistency =
             MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE.into();
         recipe.source_incarnation_id = vec![20; 16];
+        recipe.source_handle = encode_view_source(&ViewSource::LiveExport {
+            owner_sandbox: SandboxId::from_bytes([21; 16]),
+            export: aos_sandbox_core::ExportId::from_bytes([22; 16]),
+            source_generation: Revision::new(2),
+        });
         substitutions.push(changed);
 
         for change in [
@@ -1542,7 +1616,8 @@ mod tests {
         for substitution in substitutions {
             assert!(!recipe_matches_intent(
                 &validated_resource(substitution),
-                &expected
+                &expected,
+                &source_handle,
             ));
         }
     }

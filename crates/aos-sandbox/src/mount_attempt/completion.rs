@@ -38,13 +38,30 @@ use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 mod format;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountCompletion;
-const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
+const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 6);
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
 const RESPONSE_BYTES: u32 = 16 * 1024;
 const MAXIMUM_COMPLETIONS: usize = 4096;
 const MAXIMUM_NAMESPACE_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = RESPONSE_BYTES as usize + format::FIXED_RECORD_BYTES;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-completion.transaction.v1\0";
+
+pub(super) fn mount_apply_client_hello() -> BrokerClientHello {
+    BrokerClientHello {
+        protocol_major: u32::from(CARRIER_VERSION.major()),
+        protocol_minor: u32::from(CARRIER_VERSION.minor()),
+        audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+        required_features: vec![Feature {
+            namespace: SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        }],
+        maximum_response_bytes: RESPONSE_BYTES,
+        required_methods: vec![METHOD.into()],
+        ..Default::default()
+    }
+}
 
 /// Reports whether a successful Mount receipt committed or replayed exactly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,20 +118,7 @@ impl MountDispatchClient {
                     "required Mount authorization feature",
                 )
             })?;
-        let hello = BrokerClientHello {
-            protocol_major: 1,
-            protocol_minor: 2,
-            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
-            required_features: vec![Feature {
-                namespace: SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
-                major: 1,
-                minor: 0,
-                ..Default::default()
-            }],
-            maximum_response_bytes: RESPONSE_BYTES,
-            required_methods: vec![METHOD.into()],
-            ..Default::default()
-        };
+        let hello = mount_apply_client_hello();
 
         transport::send(&mut self.socket, &hello.encode_to_vec(), deadline)
             .map_err(MountAttemptError::Preparation)?;

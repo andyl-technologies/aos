@@ -22,9 +22,9 @@ use crate::{
 
 /// Bounds the fixed prospective Apply body nested in a preparation request.
 pub const MAXIMUM_MOUNT_CATALOG_INTENT_BYTES: usize = 16 * 1024;
-/// Bounds Mount 1.2 preparation above the largest authorized Host packet.
+/// Bounds Mount 1.6 preparation above the largest authorized Host packet.
 pub const MOUNT_CATALOG_PREPARATION_OVERHEAD_BYTES: usize = 32 * 1024;
-/// Maximum encoded Mount 1.2 preparation packet accepted before decoding.
+/// Maximum encoded Mount 1.6 preparation packet accepted before decoding.
 pub const MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES: usize =
     MAXIMUM_HOST_QUERY_PACKET_BYTES + MOUNT_CATALOG_PREPARATION_OVERHEAD_BYTES;
 
@@ -91,7 +91,7 @@ impl ValidatedMountCatalogPreparationResponse {
     }
 }
 
-/// Decodes a bounded Mount 1.2 catalog preparation request.
+/// Decodes a bounded Mount 1.6 catalog preparation request.
 ///
 /// # Errors
 ///

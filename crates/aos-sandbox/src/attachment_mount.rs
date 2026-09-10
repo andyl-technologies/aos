@@ -30,7 +30,7 @@ use aos_proto::aos::sandbox::local::v1::{
     MountSourceConsistency,
 };
 use aos_sandbox_core::model::{AttachmentIntent, ViewMutation};
-use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, RawPairedClockSample};
+use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, RawPairedClockSample, encode_view_source};
 use aos_sandbox_protocol::{ValidatedMountInventoryRecord, ValidatedMountRecipe};
 
 use crate::attachment_reconciliation::{
@@ -38,6 +38,9 @@ use crate::attachment_reconciliation::{
     AttachmentReconciliationEvidenceV1, CurrentAttachmentReconciliationV1,
 };
 use crate::attachment_state::{self, AttachmentDesiredPresenceV1, DurableAttachmentDesiredStateV1};
+use crate::filesystem_view_state::{
+    self, FilesystemViewRevisionPresenceV1, FilesystemViewRevisionStateError,
+};
 use crate::mount_attempt::{
     CompletedCurrentMountAttemptV1, DurableCurrentMountAttemptV1, MountAttemptError,
     MountDispatchClient,
@@ -82,6 +85,9 @@ pub enum AttachmentMountError {
     /// Durable admission, authenticated dispatch, or receipt recording failed.
     #[error(transparent)]
     Attempt(#[from] MountAttemptError),
+    /// The exact durable view revision could not supply source authority.
+    #[error(transparent)]
+    FilesystemViewRevision(#[from] FilesystemViewRevisionStateError),
 }
 
 /// Retains a plan-derived Mount operation until its exact signed plan is bound.
@@ -636,6 +642,7 @@ where
     let (evidence, target) = reconciliation.into_evidence_and_target();
     evidence.recheck(journal, &target, clock)?;
     let request = request_for_action(
+        journal,
         evidence.desired().intent(),
         evidence.action(),
         evidence.snapshot().inventory().mounts(),
@@ -969,6 +976,7 @@ fn recheck_resume_record(
 }
 
 fn request_for_action(
+    journal: &Journal,
     intent: &AttachmentIntent,
     action: AttachmentReconciliationActionV1,
     resources: &[ValidatedMountInventoryRecord],
@@ -1029,9 +1037,17 @@ fn request_for_action(
         source_view_id,
         source_incarnation_id,
         source_consistency,
+        source_handle,
         attributes,
     ) = if carries_recipe {
         let (source_view, source_generation) = intent.source_view();
+        let durable_source =
+            filesystem_view_state::get_revision(journal, source_view, source_generation)?
+                .filter(|source| {
+                    source.presence() == FilesystemViewRevisionPresenceV1::Available
+                        && source.descriptor() == intent.view()
+                })
+                .ok_or(AttachmentMountError::NotPreparable)?;
         (
             intent.id().as_bytes().to_vec(),
             intent.destination_slot().as_bytes().to_vec(),
@@ -1043,10 +1059,15 @@ fn request_for_action(
                 .source_incarnation()
                 .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
             source_consistency(intent)?,
+            encode_view_source(durable_source.source_handle()),
             desired_wire_attributes(intent),
         )
     } else {
         let recipe = recipe.ok_or(AttachmentMountError::NotPreparable)?;
+        let (source_handle, _) = recipe
+            .source()
+            .exact()
+            .ok_or(AttachmentMountError::NotPreparable)?;
         (
             recipe.attachment_id().to_vec(),
             recipe.destination_slot_id().to_vec(),
@@ -1058,6 +1079,7 @@ fn request_for_action(
                 .source_incarnation_id()
                 .map_or_else(Vec::new, |value| value.to_vec()),
             recipe.source_consistency(),
+            encode_view_source(source_handle),
             inventoried_wire_attributes(recipe),
         )
     };
@@ -1076,6 +1098,7 @@ fn request_for_action(
         source_view_id,
         source_incarnation_id,
         source_consistency: source_consistency.into(),
+        source_handle,
         attachment_lease_id: lease.id().as_bytes().to_vec(),
         attachment_lease_issued_seconds: lease.issued_seconds(),
         attachment_lease_expires_seconds: lease.expires_seconds(),
