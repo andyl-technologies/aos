@@ -6,6 +6,8 @@
 //!
 //! # Module map
 //!
+//! - [`artifact_consumption`] defines realized build-gate evidence for exact
+//!   artifact-use mechanisms.
 //! - [`builtin`] defines exact terminal contracts supplied by the platform.
 //! - [`document`] owns the closed versioned document envelopes.
 //! - [`identity`] defines stable logical identities and scoped references.
@@ -17,6 +19,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod artifact_consumption;
 pub mod builtin;
 pub mod diagnostic;
 pub mod document;
@@ -28,6 +31,12 @@ pub mod schema;
 pub mod transition;
 pub mod value;
 
+pub use artifact_consumption::{
+    ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA, ArtifactConsumptionEvidenceDocument,
+    ArtifactConsumptionMechanism, ArtifactConsumptionPlatforms, ArtifactFileEvidence,
+    ELF_STARTUP_LINKAGE_FEATURE, ElfSearchPathKind, ElfStartupLinkageContract,
+    ElfStartupLinkageObservation, ElfSymbolVersion,
+};
 pub use diagnostic::{Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase};
 pub use document::{
     AbilityActivationMode, AggregateOutput, BindingPlanDocument, BranchSelection,

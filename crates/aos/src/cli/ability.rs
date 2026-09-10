@@ -8,8 +8,28 @@ use clap::{Args, Subcommand, ValueEnum};
 pub enum AbilityCommand {
     /// Revalidate and render a canonical portable inspection bundle
     Inspect(AbilityInspectArgs),
+    /// Explain one checked realized artifact-consumption relationship
+    ArtifactConsumption(AbilityArtifactConsumptionArgs),
     /// Export a checked retained execution timeline without mutating it
     Diagnostic(AbilityDiagnosticArgs),
+}
+
+#[derive(Args)]
+pub struct AbilityArtifactConsumptionArgs {
+    /// Read canonical realized artifact-consumption evidence from this file
+    pub evidence: PathBuf,
+
+    /// Require this exact consuming executable path
+    #[arg(long, value_name = "STORE-FILE")]
+    pub consumer: Option<String>,
+
+    /// Require this exact provider artifact content digest
+    #[arg(long, value_name = "SHA256")]
+    pub provider_content: Option<String>,
+
+    /// Select the explanation representation
+    #[arg(long, value_enum)]
+    pub format: Option<ArtifactConsumptionRenderFormat>,
 }
 
 #[derive(Args)]
@@ -69,6 +89,14 @@ pub enum AbilityRenderFormat {
     Dot,
     /// Emit a Mermaid flowchart
     Mermaid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ArtifactConsumptionRenderFormat {
+    /// Emit a concise explanation of exact linkage and retention
+    Text,
+    /// Emit the complete checked explanation as canonical JSON
+    Json,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]

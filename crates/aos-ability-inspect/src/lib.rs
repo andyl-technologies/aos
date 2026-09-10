@@ -15,6 +15,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod artifact_consumption;
 pub mod bundle;
 pub mod compare;
 pub mod diagnostic_bundle;
@@ -24,6 +25,11 @@ pub mod query;
 pub mod render;
 pub mod view;
 
+pub use artifact_consumption::{
+    ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES, ArtifactConsumptionEvidenceError,
+    ArtifactConsumptionExplanation, ArtifactConsumptionLimitation, ArtifactConsumptionProvenance,
+    ArtifactConsumptionQuery, CheckedArtifactConsumptionEvidence,
+};
 pub use bundle::{
     CheckedInspectionBundle, INSPECTION_BUNDLE_MAX_BYTES, INSPECTION_BUNDLE_SCHEMA,
     InspectionBundle, InspectionBundleError,
