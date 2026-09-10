@@ -237,6 +237,7 @@ impl CampaignLocalServiceMode {
                 | CampaignServiceOperation::QueryCampaignGraph
                 | CampaignServiceOperation::QueryCampaignFindings
                 | CampaignServiceOperation::QueryCampaignFindingOccurrences
+                | CampaignServiceOperation::GetCampaignFindingOccurrenceObject
                 | CampaignServiceOperation::GetCampaignFindingObject
                 | CampaignServiceOperation::ExplainCampaignAttempt
                 | CampaignServiceOperation::GetCampaignPlannerRankings

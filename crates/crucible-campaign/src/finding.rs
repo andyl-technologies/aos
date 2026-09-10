@@ -1219,8 +1219,9 @@ impl Finding {
     /// Builds a schema-v4 finding that retains every verified candidate bundle.
     ///
     /// The representative observation and reproduction fields remain the first
-    /// finding evidence. `candidate_bundle` is the first retained candidate
-    /// bundle, which can postdate that evidence when a legacy finding upgrades.
+    /// finding evidence, including an absent or legacy minimized reproduction.
+    /// `candidate_bundle` is the first retained candidate bundle, which can
+    /// postdate that evidence when a legacy finding upgrades.
     /// `candidate_occurrences` authenticates every retained bundle.
     ///
     /// # Errors
@@ -1235,7 +1236,7 @@ impl Finding {
         reproduction: ReproductionArtifactId,
         first_seen_snapshot: CampaignSnapshotId,
         occurrences: FindingOccurrenceSet,
-        minimized: ReproductionArtifactId,
+        minimized: Option<ReproductionArtifactId>,
         exact_pins: FindingExactPins,
         candidate_bundle: FindingCandidateBundleId,
         candidate_occurrences: FindingCandidateOccurrenceSet,
@@ -1247,7 +1248,7 @@ impl Finding {
             reproduction,
             first_seen_snapshot,
             occurrences,
-            Some(minimized),
+            minimized,
             exact_pins,
             Some(candidate_bundle),
             Some(candidate_occurrences),
@@ -1291,7 +1292,7 @@ impl Finding {
             }
             CANDIDATE_OCCURRENCES_SCHEMA_VERSION => {
                 reproduction_version == RECORD_SCHEMA_VERSION
-                    && minimized_version.is_some_and(|version| {
+                    && minimized_version.is_none_or(|version| {
                         matches!(version, RECORD_SCHEMA_VERSION | RETENTION_SCHEMA_VERSION)
                     })
                     && candidate_bundle.is_some()

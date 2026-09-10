@@ -360,6 +360,12 @@ fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
         "watch-campaign" => Some(CampaignServiceOperation::WatchCampaign),
         "query-campaign-graph" => Some(CampaignServiceOperation::QueryCampaignGraph),
         "query-campaign-findings" => Some(CampaignServiceOperation::QueryCampaignFindings),
+        "query-campaign-finding-occurrences" => {
+            Some(CampaignServiceOperation::QueryCampaignFindingOccurrences)
+        }
+        "get-campaign-finding-occurrence-object" => {
+            Some(CampaignServiceOperation::GetCampaignFindingOccurrenceObject)
+        }
         "get-campaign-finding-object" => Some(CampaignServiceOperation::GetCampaignFindingObject),
         "explain-campaign-attempt" => Some(CampaignServiceOperation::ExplainCampaignAttempt),
         "get-campaign-planner-rankings" => {

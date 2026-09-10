@@ -197,8 +197,8 @@ impl CampaignRepository {
                 (Some(left), Some(right), None) if left != right => {
                     return Err(CampaignRepositoryError::AlreadyExists);
                 }
-                (Some(value), _, _) | (None, Some(value), _) => Some(value),
-                (None, None, _) => None,
+                (Some(value), _, _) | (None, Some(value), None) => Some(value),
+                (None, _, Some(_)) | (None, None, None) => None,
             };
             let pins = existing.exact_pin_retention().union(&exact_pins)?;
             let selected_candidate_bundle = match (existing.candidate_bundle(), candidate_bundle) {
@@ -317,12 +317,10 @@ impl CampaignRepository {
             Some(candidate_bundle),
             Some(candidate_occurrences),
             Some(latest_candidate_bundle),
-            Some(selected_minimized),
         ) = (
             selected_candidate_bundle,
             candidate_occurrences,
             latest_candidate_bundle,
-            selected_minimized,
         ) {
             Finding::new_with_candidate_occurrences(
                 signature,
@@ -663,7 +661,7 @@ impl CampaignRepository {
                 || previous.first_seen_snapshot() != finding.first_seen_snapshot()
                 || finding.occurrences() != expected_occurrences
                 || finding.occurrence_count() != expected_count
-                || finding.schema_version() >= 4
+                || (previous.schema_version() >= 4 || finding.schema_version() >= 4)
                     && (finding.candidate_occurrences() != expected_candidate_root
                         || finding.candidate_occurrence_count() != expected_candidate_count
                         || candidate_was_present
