@@ -2751,6 +2751,11 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.nginxCurlHttp200";
     };
+    qemuHotForkAtomicWorldVm = import ./phase7-qemu-hot-fork-atomic-world-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.qemuHotForkAtomicWorldVm";
+      taskIds = ["T-CAM-7.4"];
+    };
     adversarialExampleVerify = import ./phase7-adversarial-example-verify.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.adversarialExampleVerify";

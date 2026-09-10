@@ -77,6 +77,9 @@ use crate::{
     stage_prepared_attempt_result,
 };
 
+#[path = "tests/native_acceptance.rs"]
+mod native_acceptance;
+
 struct ScriptedWorldGuard {
     resources: AttemptResourceLimits,
     cancellation: ExecutionCancellation,
@@ -1187,11 +1190,32 @@ fn execution_input() -> CrucibleAttemptExecution {
 }
 
 fn execution_input_for_scenario(scenario: ScenarioDefForm) -> CrucibleAttemptExecution {
-    execution_input_for_scenario_with_stop(scenario, StopCondition::Terminal)
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    execution_input_for_scenario_configuration(scenario, configuration)
+}
+
+fn execution_input_for_scenario_configuration(
+    scenario: ScenarioDefForm,
+    configuration: Configuration,
+) -> CrucibleAttemptExecution {
+    execution_input_for_scenario_configuration_with_stop(
+        scenario,
+        configuration,
+        StopCondition::Terminal,
+    )
 }
 
 fn execution_input_for_scenario_with_stop(
     scenario: ScenarioDefForm,
+    stop: StopCondition,
+) -> CrucibleAttemptExecution {
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    execution_input_for_scenario_configuration_with_stop(scenario, configuration, stop)
+}
+
+fn execution_input_for_scenario_configuration_with_stop(
+    scenario: ScenarioDefForm,
+    configuration: Configuration,
     stop: StopCondition,
 ) -> CrucibleAttemptExecution {
     let definition = scenario.scenario_def();
@@ -1199,7 +1223,7 @@ fn execution_input_for_scenario_with_stop(
         encode_crucible_scenario_artifact(&scenario).expect("encoded scenario artifact");
     let scenario_id = scenario_artifact.scenario();
     let scenario_content = scenario_artifact.id().expect("scenario artifact id");
-    let configuration = Configuration::genesis(definition);
+    assert_eq!(configuration.def, definition);
     let configuration_artifact =
         encode_crucible_configuration_artifact(&scenario_artifact, &configuration.schedule)
             .expect("encoded configuration artifact");
