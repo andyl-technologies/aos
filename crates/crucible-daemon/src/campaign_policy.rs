@@ -366,6 +366,9 @@ fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
         "get-campaign-finding-occurrence-object" => {
             Some(CampaignServiceOperation::GetCampaignFindingOccurrenceObject)
         }
+        "get-campaign-finding-triage-replay-segment" => {
+            Some(CampaignServiceOperation::GetCampaignFindingTriageReplaySegment)
+        }
         "get-campaign-finding-object" => Some(CampaignServiceOperation::GetCampaignFindingObject),
         "explain-campaign-attempt" => Some(CampaignServiceOperation::ExplainCampaignAttempt),
         "get-campaign-planner-rankings" => {

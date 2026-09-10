@@ -18,21 +18,23 @@ use crucible_campaign::{
     CampaignChoiceObjectKind, CampaignClient, CampaignCommandId, CampaignCommandResult,
     CampaignContinuationStatus, CampaignControlAction, CampaignDerivationResult,
     CampaignDiscoveryResult, CampaignFact, CampaignFindingOccurrenceObject,
-    CampaignFindingOccurrenceObjectKind, CampaignFindingOccurrenceService, CampaignHash,
-    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignOperationalStatus,
-    CampaignPolicy, CampaignPolicyId, CampaignPrincipal, CampaignPrincipalAuthorizer,
-    CampaignRepository, CampaignRoots, CampaignSeed, CampaignSemanticStatus, CampaignService,
-    CampaignServiceOperation, CampaignSnapshot, CampaignSnapshotId, CampaignState,
-    CampaignStatusSummary, CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-    ChoiceDomainId, ChoiceOpportunity, ChoiceOpportunityId, ChoiceSource, ChoiceValue,
-    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ContinuationProjection,
-    ContinuationState, ControlRequest, CreateCampaignRequest, CreateCampaignResponse,
-    DeriveCampaignRequest, DeriveCampaignResponse, DiscoveryRequest, ExactRational,
-    ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, ExplorerPolicy, FairnessPolicy,
-    FindingCandidateBundleId, FindingId, GetCampaignChoiceObjectRequest,
+    CampaignFindingOccurrenceObjectKind, CampaignFindingOccurrenceService,
+    CampaignFindingTriageReplayRole, CampaignHash, CampaignLineage, CampaignLineageId,
+    CampaignMode, CampaignName, CampaignOperationalStatus, CampaignPolicy, CampaignPolicyId,
+    CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignRoots,
+    CampaignSeed, CampaignSemanticStatus, CampaignService, CampaignServiceOperation,
+    CampaignSnapshot, CampaignSnapshotId, CampaignState, CampaignStatusSummary, CandidateSource,
+    ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity,
+    ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
+    ConfigurationId, ContinuationProjection, ContinuationState, ControlRequest,
+    CreateCampaignRequest, CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
+    DiscoveryRequest, ExactRational, ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse,
+    ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingCandidateBundleId, FindingId,
+    FindingTriageEvidenceSet, FindingTriageReplayEvidence, GetCampaignChoiceObjectRequest,
     GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
     GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
-    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFindingTriageReplaySegmentRequest,
+    GetCampaignFindingTriageReplaySegmentResponse, GetCampaignFrontierObjectRequest,
     GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
     GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
@@ -533,6 +535,13 @@ impl CampaignFindingOccurrenceService for FixedCampaignService {
         _request: &GetCampaignFindingOccurrenceObjectRequest,
     ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error> {
         unreachable!("fixed service has no finding occurrence dependencies")
+    }
+
+    fn get_campaign_finding_triage_replay_segment(
+        &self,
+        _request: &GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, Self::Error> {
+        unreachable!("fixed service has no finding triage replay segments")
     }
 }
 
@@ -1128,6 +1137,13 @@ impl CampaignFindingOccurrenceService for WrongGetService {
         &self,
         _request: &GetCampaignFindingOccurrenceObjectRequest,
     ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
+    fn get_campaign_finding_triage_replay_segment(
+        &self,
+        _request: &GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, Self::Error> {
         unreachable!("test service only handles GetCampaign")
     }
 }
@@ -1779,8 +1795,56 @@ fn campaign_loopback_round_trips_retained_finding_occurrence_dependencies() {
         )),
         Arc::new(MemoryRefBackend::new()),
     );
-    let (campaign, snapshot, finding, bundle) =
+    let (campaign, snapshot, _legacy_finding, legacy_bundle) =
         crate::campaign_gc::publish_retained_finding_fixture(&repository);
+    let legacy = repository
+        .load_finding_candidate_bundle(legacy_bundle)
+        .expect("load retained finding candidate");
+    let original_replay = FindingTriageReplayEvidence::new(
+        legacy.reproduction(),
+        legacy.signature().clone(),
+        1,
+        b"loopback original replay".to_vec(),
+    )
+    .expect("build original replay evidence");
+    let minimized_replay = FindingTriageReplayEvidence::new(
+        legacy.minimized(),
+        legacy.signature().clone(),
+        1,
+        b"loopback minimized replay".to_vec(),
+    )
+    .expect("build minimized replay evidence");
+    let original_replay = repository
+        .publish_finding_triage_replay_evidence(&original_replay)
+        .expect("publish original replay evidence");
+    let minimized_replay = repository
+        .publish_finding_triage_replay_evidence(&minimized_replay)
+        .expect("publish minimized replay evidence");
+    let triage_evidence = FindingTriageEvidenceSet::new(
+        original_replay,
+        minimized_replay,
+        original_replay,
+        minimized_replay,
+    );
+    let upgraded = FindingCandidateBundle::new_with_triage_evidence(
+        legacy.observation(),
+        legacy.signature().clone(),
+        legacy.reproduction(),
+        legacy.minimized(),
+        legacy.signature_minimization().clone(),
+        legacy.exact_pins().clone(),
+        triage_evidence,
+    )
+    .expect("build retained candidate with triage evidence");
+    let bundle = repository
+        .publish_finding_candidate_bundle(&upgraded)
+        .expect("publish retained candidate with triage evidence");
+    let publication = repository
+        .incorporate_finding_candidate_bundle(campaign.as_str(), snapshot, bundle)
+        .expect("incorporate retained candidate with triage evidence");
+    let snapshot = publication.new_snapshot;
+    let finding = publication.finding;
+
     let occurrence_request = QueryCampaignFindingOccurrencesRequest::new(
         principal(),
         campaign.clone(),
@@ -1806,11 +1870,54 @@ fn campaign_loopback_round_trips_retained_finding_occurrence_dependencies() {
         )
         .expect("retained finding occurrence object request")
     });
+    let description = repository
+        .describe_finding_triage_replay_storage(original_replay)
+        .expect("describe retained replay evidence");
+    let root = &description.objects()[0];
+    let segment_request = GetCampaignFindingTriageReplaySegmentRequest::new(
+        principal(),
+        campaign.clone(),
+        snapshot,
+        finding,
+        bundle,
+        CampaignFindingTriageReplayRole::MinimizationOriginal,
+        original_replay,
+        root.ordinal(),
+        root.content(),
+        0,
+    )
+    .expect("retained finding replay segment request");
+    let mismatched_role_request = GetCampaignFindingTriageReplaySegmentRequest::new(
+        principal(),
+        campaign.clone(),
+        snapshot,
+        finding,
+        bundle,
+        CampaignFindingTriageReplayRole::MinimizationOriginal,
+        minimized_replay,
+        0,
+        minimized_replay.content_id(),
+        0,
+    )
+    .expect("mismatched replay role request");
+    let out_of_range_request = GetCampaignFindingTriageReplaySegmentRequest::new(
+        principal(),
+        campaign.clone(),
+        snapshot,
+        finding,
+        bundle,
+        CampaignFindingTriageReplayRole::MinimizationOriginal,
+        original_replay,
+        root.ordinal(),
+        root.content(),
+        1,
+    )
+    .expect("out-of-range replay segment request");
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
         let service = RepositoryCampaignService::new(&repository, AllowAll);
-        for _ in 0..4 {
+        for _ in 0..7 {
             serve_loopback_campaign_once(&mut server_stream, &service)
                 .expect("serve retained finding occurrence request");
         }
@@ -1822,14 +1929,7 @@ fn campaign_loopback_round_trips_retained_finding_occurrence_dependencies() {
         .query_campaign_finding_occurrences(&occurrence_request)
         .expect("query retained finding occurrence over loopback");
     assert_eq!(page.entries().len(), 1);
-    assert_eq!(
-        page.entries()[0]
-            .bundle()
-            .id()
-            .expect("retained bundle identity"),
-        bundle
-    );
-    assert!(page.next_after().is_none());
+    assert!(page.next_after().is_some());
 
     let observation = client
         .get_campaign_finding_occurrence_object(&object_requests[0])
@@ -1840,6 +1940,20 @@ fn campaign_loopback_round_trips_retained_finding_occurrence_dependencies() {
     let minimized = client
         .get_campaign_finding_occurrence_object(&object_requests[2])
         .expect("read retained minimized reproduction over loopback");
+    let replay_segment = client
+        .get_campaign_finding_triage_replay_segment(&segment_request)
+        .expect("read retained replay segment over loopback");
+    assert!(matches!(
+        client.get_campaign_finding_triage_replay_segment(&mismatched_role_request),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::InvalidRequest
+        ))
+    ));
+    assert!(
+        client
+            .get_campaign_finding_triage_replay_segment(&out_of_range_request)
+            .is_err()
+    );
     assert!(matches!(
         observation.object(),
         CampaignFindingOccurrenceObject::Observation(value)
@@ -1853,8 +1967,21 @@ fn campaign_loopback_round_trips_retained_finding_occurrence_dependencies() {
     assert!(matches!(
         minimized.object(),
         CampaignFindingOccurrenceObject::MinimizedReproduction(value)
-            if value.id().expect("minimized identity") == page.entries()[0].bundle().minimized()
+            if value.id().expect("minimized identity") == upgraded.minimized()
     ));
+    assert_eq!(replay_segment.description(), &description);
+    assert_eq!(
+        u64::try_from(replay_segment.range_bytes().len()).expect("segment length"),
+        root.stored_envelope_bytes()
+    );
+    assert_eq!(
+        ContentId::for_bytes(
+            root.content().kind(),
+            root.content().schema_version(),
+            replay_segment.range_bytes(),
+        ),
+        root.content()
+    );
     server.join().expect("server thread");
 }
 

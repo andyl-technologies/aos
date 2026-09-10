@@ -8,6 +8,7 @@ pub(super) use artifact_capture::*;
 
 #[path = "verify_serve/packaged_executor.rs"]
 mod packaged_executor;
+pub(crate) use packaged_executor::GuardedCampaignRunDeployment;
 use packaged_executor::{
     load_guarded_campaign_run_deployment, prepare_cli_packaged_executor,
     resolve_guarded_campaign_deployment_path,

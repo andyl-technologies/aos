@@ -240,6 +240,7 @@ pub(crate) fn run_local_qemu_search_workflow(
         plan.findings_out.as_deref(),
         execution.findings,
         execution.reproduction_artifacts,
+        execution.finding_exports,
     )?;
     Ok(execution.outcome)
 }
@@ -250,6 +251,7 @@ struct QemuSearchExecution {
     expansions: u64,
     findings: Vec<crate::cli_report::TriageFindingEvidence>,
     reproduction_artifacts: Vec<Vec<u8>>,
+    finding_exports: Vec<GuardedCampaignFindingExport>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -347,6 +349,9 @@ fn run_local_qemu_search_scenario(
     )
     .with_exploration(exploration)
     .with_watch_frames();
+    if deployment.verify_determinism_findings {
+        request = request.with_determinism_finding_verification();
+    }
     if let Some(oracle) = QemuSearchSupplementalOracle::from_plan(plan)? {
         request = request.with_supplemental_finding_oracle(Box::new(oracle));
     }
@@ -505,6 +510,7 @@ fn campaign_search_outcome(
         expansions: campaign.branch_acceptances().len() as u64,
         findings: evidence,
         reproduction_artifacts: reproductions,
+        finding_exports: vec![campaign.finding_export().clone()],
     })
 }
 
@@ -520,6 +526,7 @@ fn run_local_qemu_mutation_search_workflow(
     let mut selected_outcome = None;
     let mut findings = Vec::new();
     let mut reproduction_artifacts = Vec::new();
+    let mut finding_exports = Vec::new();
     let mut budget = MutationSearchBudget::new(plan.max_states);
 
     for (index, materialized) in mutation_plans.into_iter().enumerate() {
@@ -550,6 +557,7 @@ fn run_local_qemu_mutation_search_workflow(
         budget.charge_states(execution.materialized_states);
         findings.extend(execution.findings);
         reproduction_artifacts.extend(execution.reproduction_artifacts);
+        finding_exports.extend(execution.finding_exports);
         let mut outcome = execution.outcome;
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
@@ -598,6 +606,7 @@ fn run_local_qemu_mutation_search_workflow(
         plan.findings_out.as_deref(),
         findings,
         reproduction_artifacts,
+        finding_exports,
     )?;
     if outcome.reproduction_artifact.is_none() && !outcome.side_reproduction_artifacts.is_empty() {
         let (_, primary) = outcome.side_reproduction_artifacts.remove(0);
@@ -839,9 +848,7 @@ fn accepted_observation_outcome(accepted: &GuardedDefaultCampaignObservation) ->
         StopOutcome::Reached(_) | StopOutcome::TerminalSuccess => OutcomeKind::Passed,
         StopOutcome::ObservationReached(proof) => match proof.satisfaction() {
             ObservationStopSatisfaction::SchedulerQuiescent => OutcomeKind::Passed,
-            ObservationStopSatisfaction::AssertionViolationTransition => {
-                OutcomeKind::Failed
-            }
+            ObservationStopSatisfaction::AssertionViolationTransition => OutcomeKind::Failed,
             ObservationStopSatisfaction::ExecutionQuanta => OutcomeKind::Timeout,
         },
     }
@@ -867,7 +874,8 @@ fn accepted_failure_material(
         }
         StopOutcome::ModeledTimeout(_) => {}
         StopOutcome::ObservationReached(proof)
-            if proof.satisfaction() == ObservationStopSatisfaction::AssertionViolationTransition =>
+            if proof.satisfaction()
+                == ObservationStopSatisfaction::AssertionViolationTransition =>
         {
             if let Some(witness) = proof.assertion_witness() {
                 violations.push(witness.assertion().to_owned());

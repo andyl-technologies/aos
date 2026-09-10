@@ -55,7 +55,9 @@
 //!       48 (GetCampaignFindingOccurrenceObjectRequestV1) |
 //!       49 (GetCampaignFindingOccurrenceObjectResponseV1) |
 //!       50 (QueryCampaignReportRequestV1) |
-//!       51 (QueryCampaignReportResponseV1)
+//!       51 (QueryCampaignReportResponseV1) |
+//!       52 (GetCampaignFindingTriageReplaySegmentRequestV1) |
+//!       53 (GetCampaignFindingTriageReplaySegmentResponseV1)
 //! magic = "CRUCCS20"
 //! ```
 //!
@@ -88,7 +90,8 @@ use crucible_campaign::{
     ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
     GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
     GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
-    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFindingTriageReplaySegmentRequest,
+    GetCampaignFindingTriageReplaySegmentResponse, GetCampaignFrontierObjectRequest,
     GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
     GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
@@ -162,6 +165,8 @@ const GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_REQUEST_KIND: u8 = 48;
 const GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_RESPONSE_KIND: u8 = 49;
 const QUERY_CAMPAIGN_REPORT_REQUEST_KIND: u8 = 50;
 const QUERY_CAMPAIGN_REPORT_RESPONSE_KIND: u8 = 51;
+const GET_CAMPAIGN_FINDING_TRIAGE_REPLAY_SEGMENT_REQUEST_KIND: u8 = 52;
+const GET_CAMPAIGN_FINDING_TRIAGE_REPLAY_SEGMENT_RESPONSE_KIND: u8 = 53;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 4_096;
@@ -782,6 +787,27 @@ impl CampaignFindingOccurrenceService for LoopbackCampaignService {
             },
             |failure| {
                 failure.validate_for_get_campaign_finding_occurrence_object(request.snapshot())
+            },
+        )
+    }
+
+    fn get_campaign_finding_triage_replay_segment(
+        &self,
+        request: &GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, Self::Error> {
+        self.exchange(
+            GET_CAMPAIGN_FINDING_TRIAGE_REPLAY_SEGMENT_REQUEST_KIND,
+            GET_CAMPAIGN_FINDING_TRIAGE_REPLAY_SEGMENT_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response =
+                    GetCampaignFindingTriageReplaySegmentResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| {
+                failure.validate_for_get_campaign_finding_triage_replay_segment(request.snapshot())
             },
         )
     }
@@ -1680,6 +1706,40 @@ where
                     let failure = error.campaign_service_failure();
                     if let Err(error) = failure
                         .validate_for_get_campaign_finding_occurrence_object(request.snapshot())
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        GET_CAMPAIGN_FINDING_TRIAGE_REPLAY_SEGMENT_REQUEST_KIND => {
+            let request =
+                GetCampaignFindingTriageReplaySegmentRequest::from_canonical_bytes(&body)?;
+            match service.get_campaign_finding_triage_replay_segment(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        GET_CAMPAIGN_FINDING_TRIAGE_REPLAY_SEGMENT_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) = failure
+                        .validate_for_get_campaign_finding_triage_replay_segment(request.snapshot())
                     {
                         return reject_invalid_service_response(
                             stream,

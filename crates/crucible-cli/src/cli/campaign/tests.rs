@@ -85,6 +85,13 @@ macro_rules! impl_unused_finding_occurrence_service {
             ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error> {
                 unreachable!("unused campaign finding occurrence object query")
             }
+
+            fn get_campaign_finding_triage_replay_segment(
+                &self,
+                _request: &GetCampaignFindingTriageReplaySegmentRequest,
+            ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, Self::Error> {
+                unreachable!("unused campaign finding triage replay segment query")
+            }
         }
     };
 }

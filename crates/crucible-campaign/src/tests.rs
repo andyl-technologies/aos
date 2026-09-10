@@ -325,6 +325,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         "crucible.campaign.query-campaign-finding-occurrences-response",
         "crucible.campaign.get-campaign-finding-occurrence-object-request",
         "crucible.campaign.get-campaign-finding-occurrence-object-response",
+        "crucible.campaign.get-campaign-finding-triage-replay-segment-request",
+        "crucible.campaign.get-campaign-finding-triage-replay-segment-response",
         "crucible.campaign.get-campaign-finding-object-request",
         "crucible.campaign.get-campaign-finding-object-response",
         "crucible.campaign.explain-campaign-attempt-request",

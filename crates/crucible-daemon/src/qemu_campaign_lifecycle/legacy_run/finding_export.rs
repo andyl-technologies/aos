@@ -6,10 +6,12 @@
 
 use crucible_campaign::{
     CampaignClient, CampaignClientError, CampaignFindingObjectKind,
-    CampaignFindingOccurrenceObjectKind, CampaignFindingOccurrenceService, CampaignName,
-    CampaignPrincipal, CampaignService, CampaignServiceFailureSource, CampaignSnapshotId,
-    FindingId, GetCampaignFindingObjectRequest, GetCampaignFindingObjectResponse,
-    GetCampaignFindingOccurrenceObjectRequest, GetCampaignFindingOccurrenceObjectResponse,
+    CampaignFindingOccurrenceObjectKind, CampaignFindingOccurrenceService,
+    CampaignFindingTriageReplayRole, CampaignName, CampaignPrincipal, CampaignService,
+    CampaignServiceFailureSource, CampaignSnapshotId, FindingId, GetCampaignFindingObjectRequest,
+    GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
+    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFindingTriageReplaySegmentRequest,
+    GetCampaignFindingTriageReplaySegmentResponse, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
     QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
     QueryCampaignFindingsRequest, QueryCampaignFindingsResponse,
 };
@@ -57,6 +59,11 @@ pub(super) trait FindingExportClient {
         &self,
         request: &GetCampaignFindingOccurrenceObjectRequest,
     ) -> Result<GetCampaignFindingOccurrenceObjectResponse, CampaignClientError>;
+
+    fn get_campaign_finding_triage_replay_segment(
+        &self,
+        request: &GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, CampaignClientError>;
 }
 
 impl<S> FindingExportClient for CampaignClient<S>
@@ -90,6 +97,13 @@ where
         request: &GetCampaignFindingOccurrenceObjectRequest,
     ) -> Result<GetCampaignFindingOccurrenceObjectResponse, CampaignClientError> {
         CampaignClient::get_campaign_finding_occurrence_object(self, request)
+    }
+
+    fn get_campaign_finding_triage_replay_segment(
+        &self,
+        request: &GetCampaignFindingTriageReplaySegmentRequest,
+    ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, CampaignClientError> {
+        CampaignClient::get_campaign_finding_triage_replay_segment(self, request)
     }
 }
 
@@ -170,6 +184,76 @@ pub struct GuardedCampaignFindingOccurrenceObjectProof {
     response: GetCampaignFindingOccurrenceObjectResponse,
 }
 
+/// One checked request and response for a stored replay-envelope segment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedCampaignFindingTriageReplaySegmentProof {
+    request: GetCampaignFindingTriageReplaySegmentRequest,
+    response: GetCampaignFindingTriageReplaySegmentResponse,
+}
+
+impl GuardedCampaignFindingTriageReplaySegmentProof {
+    /// Returns the exact occurrence-, role-, object-, and segment-bound request.
+    #[must_use]
+    pub const fn request(&self) -> &GetCampaignFindingTriageReplaySegmentRequest {
+        &self.request
+    }
+
+    /// Returns the client-validated response and authenticated storage basis.
+    #[must_use]
+    pub const fn response(&self) -> &GetCampaignFindingTriageReplaySegmentResponse {
+        &self.response
+    }
+}
+
+/// Complete ordered stored-envelope transcript for one triage replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedCampaignFindingTriageReplayProof {
+    segments: Vec<GuardedCampaignFindingTriageReplaySegmentProof>,
+}
+
+impl GuardedCampaignFindingTriageReplayProof {
+    /// Returns every canonical segment in root-first storage order.
+    #[must_use]
+    pub fn segments(&self) -> &[GuardedCampaignFindingTriageReplaySegmentProof] {
+        &self.segments
+    }
+}
+
+/// Four complete segmented triage replays named by one rich candidate bundle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedCampaignFindingTriageReplaySet {
+    minimization_original: GuardedCampaignFindingTriageReplayProof,
+    minimization_selected: GuardedCampaignFindingTriageReplayProof,
+    verification_original: GuardedCampaignFindingTriageReplayProof,
+    verification_selected: GuardedCampaignFindingTriageReplayProof,
+}
+
+impl GuardedCampaignFindingTriageReplaySet {
+    /// Returns the minimization replay of the original reproduction.
+    #[must_use]
+    pub const fn minimization_original(&self) -> &GuardedCampaignFindingTriageReplayProof {
+        &self.minimization_original
+    }
+
+    /// Returns the minimization replay of the selected reproduction.
+    #[must_use]
+    pub const fn minimization_selected(&self) -> &GuardedCampaignFindingTriageReplayProof {
+        &self.minimization_selected
+    }
+
+    /// Returns the verification replay of the original reproduction.
+    #[must_use]
+    pub const fn verification_original(&self) -> &GuardedCampaignFindingTriageReplayProof {
+        &self.verification_original
+    }
+
+    /// Returns the verification replay of the selected reproduction.
+    #[must_use]
+    pub const fn verification_selected(&self) -> &GuardedCampaignFindingTriageReplayProof {
+        &self.verification_selected
+    }
+}
+
 impl GuardedCampaignFindingOccurrenceObjectProof {
     /// Returns the exact finding- and bundle-bound request.
     #[must_use]
@@ -190,6 +274,7 @@ pub struct GuardedCampaignFindingOccurrenceProof {
     request: QueryCampaignFindingOccurrencesRequest,
     response: QueryCampaignFindingOccurrencesResponse,
     objects: Vec<GuardedCampaignFindingOccurrenceObjectProof>,
+    triage_replays: Option<GuardedCampaignFindingTriageReplaySet>,
 }
 
 /// One checked page in the complete final-snapshot finding query chain.
@@ -230,6 +315,12 @@ impl GuardedCampaignFindingOccurrenceProof {
     #[must_use]
     pub fn objects(&self) -> &[GuardedCampaignFindingOccurrenceObjectProof] {
         &self.objects
+    }
+
+    /// Returns all segmented triage replay transcripts for a rich bundle.
+    #[must_use]
+    pub const fn triage_replays(&self) -> Option<&GuardedCampaignFindingTriageReplaySet> {
+        self.triage_replays.as_ref()
     }
 }
 
@@ -473,10 +564,17 @@ where
             }
             None => Vec::new(),
         };
+        let triage_replays = match response.entries().first() {
+            Some(occurrence) => {
+                capture_occurrence_triage_replays(context, finding, occurrence.bundle(), budget)?
+            }
+            None => None,
+        };
         pages.push(GuardedCampaignFindingOccurrenceProof {
             request,
             response,
             objects,
+            triage_replays,
         });
 
         let Some(cursor) = next_after else {
@@ -497,19 +595,11 @@ where
     C: FindingExportClient,
     E: std::error::Error + 'static,
 {
-    let mut kinds = vec![
+    let kinds = [
         CampaignFindingOccurrenceObjectKind::Observation,
         CampaignFindingOccurrenceObjectKind::Reproduction,
         CampaignFindingOccurrenceObjectKind::MinimizedReproduction,
     ];
-    if bundle.triage_evidence().is_some() {
-        kinds.extend([
-            CampaignFindingOccurrenceObjectKind::MinimizationOriginalTriageEvidence,
-            CampaignFindingOccurrenceObjectKind::MinimizationSelectedTriageEvidence,
-            CampaignFindingOccurrenceObjectKind::VerificationOriginalTriageEvidence,
-            CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence,
-        ]);
-    }
     let bundle = bundle.id().map_err(GuardedDefaultCampaignRunError::Codec)?;
 
     let mut objects = Vec::new();
@@ -536,6 +626,296 @@ where
         objects.push(GuardedCampaignFindingOccurrenceObjectProof { request, response });
     }
     Ok(objects)
+}
+
+fn capture_occurrence_triage_replays<C, E>(
+    context: &FindingExportContext<'_, C>,
+    finding: FindingId,
+    bundle: &crucible_campaign::FindingCandidateBundle,
+    budget: &mut FindingExportBudget,
+) -> Result<Option<GuardedCampaignFindingTriageReplaySet>, GuardedDefaultCampaignRunError<E>>
+where
+    C: FindingExportClient,
+    E: std::error::Error + 'static,
+{
+    let Some(evidence) = bundle.triage_evidence() else {
+        return Ok(None);
+    };
+    let bundle = bundle.id().map_err(GuardedDefaultCampaignRunError::Codec)?;
+
+    Ok(Some(GuardedCampaignFindingTriageReplaySet {
+        minimization_original: capture_triage_replay_segments(
+            context,
+            finding,
+            bundle,
+            CampaignFindingTriageReplayRole::MinimizationOriginal,
+            evidence.minimization_original(),
+            budget,
+        )?,
+        minimization_selected: capture_triage_replay_segments(
+            context,
+            finding,
+            bundle,
+            CampaignFindingTriageReplayRole::MinimizationSelected,
+            evidence.minimization_selected(),
+            budget,
+        )?,
+        verification_original: capture_triage_replay_segments(
+            context,
+            finding,
+            bundle,
+            CampaignFindingTriageReplayRole::VerificationOriginal,
+            evidence.verification_original(),
+            budget,
+        )?,
+        verification_selected: capture_triage_replay_segments(
+            context,
+            finding,
+            bundle,
+            CampaignFindingTriageReplayRole::VerificationSelected,
+            evidence.verification_selected(),
+            budget,
+        )?,
+    }))
+}
+
+fn capture_triage_replay_segments<C, E>(
+    context: &FindingExportContext<'_, C>,
+    finding: FindingId,
+    bundle: crucible_campaign::FindingCandidateBundleId,
+    role: CampaignFindingTriageReplayRole,
+    evidence: crucible_campaign::FindingTriageReplayEvidenceId,
+    budget: &mut FindingExportBudget,
+) -> Result<GuardedCampaignFindingTriageReplayProof, GuardedDefaultCampaignRunError<E>>
+where
+    C: FindingExportClient,
+    E: std::error::Error + 'static,
+{
+    let first_request = GetCampaignFindingTriageReplaySegmentRequest::new(
+        context.principal.clone(),
+        context.campaign.clone(),
+        context.snapshot,
+        finding,
+        bundle,
+        role,
+        evidence,
+        0,
+        evidence.content_id(),
+        0,
+    )
+    .map_err(GuardedDefaultCampaignRunError::Codec)?;
+    let first = capture_triage_replay_segment(context, first_request, budget)?;
+    let description = first.response().description().clone();
+    let mut segments = vec![first];
+
+    let root = description
+        .objects()
+        .first()
+        .ok_or(GuardedDefaultCampaignRunError::Codec(
+            crucible_campaign::CampaignCodecError::InvalidValue {
+                reason: "finding triage replay storage description has no root",
+            },
+        ))?;
+    capture_remaining_triage_object_segments(
+        context,
+        finding,
+        bundle,
+        role,
+        evidence,
+        root,
+        1,
+        budget,
+        &mut segments,
+    )?;
+    let root_bytes = captured_object_bytes(&description, root, &segments)
+        .map_err(GuardedDefaultCampaignRunError::Codec)?;
+    description
+        .authenticate_root_envelope(&root_bytes)
+        .map_err(GuardedDefaultCampaignRunError::Codec)?;
+
+    // Child identities become trustworthy only after the complete root
+    // envelope authenticates the returned storage description.
+    for object in &description.objects()[1..] {
+        capture_remaining_triage_object_segments(
+            context,
+            finding,
+            bundle,
+            role,
+            evidence,
+            object,
+            0,
+            budget,
+            &mut segments,
+        )?;
+    }
+
+    authenticate_captured_triage_replay(evidence, &description, &segments)
+        .map_err(GuardedDefaultCampaignRunError::Codec)?;
+    Ok(GuardedCampaignFindingTriageReplayProof { segments })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_remaining_triage_object_segments<C, E>(
+    context: &FindingExportContext<'_, C>,
+    finding: FindingId,
+    bundle: crucible_campaign::FindingCandidateBundleId,
+    role: CampaignFindingTriageReplayRole,
+    evidence: crucible_campaign::FindingTriageReplayEvidenceId,
+    object: &crucible_campaign::FindingTriageReplayStorageObject,
+    first_segment_index: u32,
+    budget: &mut FindingExportBudget,
+    segments: &mut Vec<GuardedCampaignFindingTriageReplaySegmentProof>,
+) -> Result<(), GuardedDefaultCampaignRunError<E>>
+where
+    C: FindingExportClient,
+    E: std::error::Error + 'static,
+{
+    let segment_count = object
+        .stored_envelope_bytes()
+        .checked_add(MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES - 1)
+        .ok_or(GuardedDefaultCampaignRunError::Codec(
+            crucible_campaign::CampaignCodecError::LimitExceeded {
+                limit: "finding-triage-replay-storage-segment-count",
+            },
+        ))?
+        / MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES;
+    let segment_count = u32::try_from(segment_count).map_err(|_| {
+        GuardedDefaultCampaignRunError::Codec(
+            crucible_campaign::CampaignCodecError::LimitExceeded {
+                limit: "finding-triage-replay-storage-segment-count",
+            },
+        )
+    })?;
+    for segment_index in first_segment_index..segment_count {
+        let request = GetCampaignFindingTriageReplaySegmentRequest::new(
+            context.principal.clone(),
+            context.campaign.clone(),
+            context.snapshot,
+            finding,
+            bundle,
+            role,
+            evidence,
+            object.ordinal(),
+            object.content(),
+            segment_index,
+        )
+        .map_err(GuardedDefaultCampaignRunError::Codec)?;
+        segments.push(capture_triage_replay_segment(context, request, budget)?);
+    }
+    Ok(())
+}
+
+fn captured_object_bytes(
+    description: &crucible_campaign::FindingTriageReplayStorageDescription,
+    object: &crucible_campaign::FindingTriageReplayStorageObject,
+    segments: &[GuardedCampaignFindingTriageReplaySegmentProof],
+) -> Result<Vec<u8>, crucible_campaign::CampaignCodecError> {
+    let object_bytes = usize::try_from(object.stored_envelope_bytes()).map_err(|_| {
+        crucible_campaign::CampaignCodecError::LimitExceeded {
+            limit: "finding-triage-replay-storage-envelope-bytes",
+        }
+    })?;
+    let mut envelope = Vec::with_capacity(object_bytes);
+    for segment in segments
+        .iter()
+        .filter(|segment| segment.request().object_ordinal() == object.ordinal())
+    {
+        let expected_index = u32::try_from(
+            u64::try_from(envelope.len()).map_err(|_| {
+                crucible_campaign::CampaignCodecError::LimitExceeded {
+                    limit: "finding-triage-replay-storage-envelope-bytes",
+                }
+            })? / MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
+        )
+        .map_err(|_| crucible_campaign::CampaignCodecError::LimitExceeded {
+            limit: "finding-triage-replay-storage-segment-count",
+        })?;
+        if segment.request().segment_index() != expected_index
+            || segment.request().object() != object.content()
+            || segment.response().description() != description
+        {
+            return Err(crucible_campaign::CampaignCodecError::InvalidValue {
+                reason: "finding triage replay storage segments are reordered or substituted",
+            });
+        }
+        segment.response().validate_for(segment.request())?;
+        envelope.extend_from_slice(segment.response().range_bytes());
+    }
+    if envelope.len() != object_bytes {
+        return Err(crucible_campaign::CampaignCodecError::InvalidValue {
+            reason: "finding triage replay storage envelope transfer is incomplete",
+        });
+    }
+    Ok(envelope)
+}
+
+fn capture_triage_replay_segment<C, E>(
+    context: &FindingExportContext<'_, C>,
+    request: GetCampaignFindingTriageReplaySegmentRequest,
+    budget: &mut FindingExportBudget,
+) -> Result<GuardedCampaignFindingTriageReplaySegmentProof, GuardedDefaultCampaignRunError<E>>
+where
+    C: FindingExportClient,
+    E: std::error::Error + 'static,
+{
+    budget.check()?;
+    check_cancellation(context.cancellation)?;
+    let response = context
+        .client
+        .get_campaign_finding_triage_replay_segment(&request)
+        .map_err(GuardedDefaultCampaignRunError::Service)?;
+    budget.retain_exchange(
+        request.canonical_bytes().len(),
+        response.canonical_bytes().len(),
+    )?;
+    Ok(GuardedCampaignFindingTriageReplaySegmentProof { request, response })
+}
+
+fn authenticate_captured_triage_replay(
+    evidence: crucible_campaign::FindingTriageReplayEvidenceId,
+    description: &crucible_campaign::FindingTriageReplayStorageDescription,
+    segments: &[GuardedCampaignFindingTriageReplaySegmentProof],
+) -> Result<(), crucible_campaign::CampaignCodecError> {
+    let mut envelopes = Vec::with_capacity(description.objects().len());
+    let mut expected_segment_count = 0_usize;
+    for object in description.objects() {
+        expected_segment_count = expected_segment_count
+            .checked_add(
+                usize::try_from(
+                    object
+                        .stored_envelope_bytes()
+                        .checked_add(MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES - 1)
+                        .ok_or(crucible_campaign::CampaignCodecError::LimitExceeded {
+                            limit: "finding-triage-replay-storage-segment-count",
+                        })?
+                        / MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
+                )
+                .map_err(|_| {
+                    crucible_campaign::CampaignCodecError::LimitExceeded {
+                        limit: "finding-triage-replay-storage-segment-count",
+                    }
+                })?,
+            )
+            .ok_or(crucible_campaign::CampaignCodecError::LimitExceeded {
+                limit: "finding-triage-replay-storage-segment-count",
+            })?;
+        envelopes.push(captured_object_bytes(description, object, segments)?);
+    }
+    if segments.len() != expected_segment_count {
+        return Err(crucible_campaign::CampaignCodecError::InvalidValue {
+            reason: "finding triage replay storage transfer has unexpected segments",
+        });
+    }
+    let replay = crucible_campaign::FindingTriageReplayEvidence::from_storage_envelopes(
+        description,
+        &envelopes,
+    )?;
+    if replay.id()? != evidence {
+        return Err(crucible_campaign::CampaignCodecError::InvalidValue {
+            reason: "finding triage replay storage transfer has another evidence identity",
+        });
+    }
+    Ok(())
 }
 
 fn check_cancellation<E>(
@@ -611,6 +991,13 @@ mod tests {
             _request: &GetCampaignFindingOccurrenceObjectRequest,
         ) -> Result<GetCampaignFindingOccurrenceObjectResponse, CampaignClientError> {
             unreachable!("empty finding page has no occurrence-object transfer")
+        }
+
+        fn get_campaign_finding_triage_replay_segment(
+            &self,
+            _request: &GetCampaignFindingTriageReplaySegmentRequest,
+        ) -> Result<GetCampaignFindingTriageReplaySegmentResponse, CampaignClientError> {
+            unreachable!("empty finding page has no triage-replay transfer")
         }
     }
 

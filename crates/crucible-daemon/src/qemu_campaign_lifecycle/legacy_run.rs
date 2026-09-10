@@ -79,6 +79,8 @@ pub use finding_export::{
     GuardedCampaignFindingExport, GuardedCampaignFindingObjectProof,
     GuardedCampaignFindingOccurrenceObjectProof, GuardedCampaignFindingOccurrenceProof,
     GuardedCampaignFindingProof, GuardedCampaignFindingQueryProof,
+    GuardedCampaignFindingTriageReplayProof, GuardedCampaignFindingTriageReplaySegmentProof,
+    GuardedCampaignFindingTriageReplaySet,
 };
 
 mod replay_closure;
