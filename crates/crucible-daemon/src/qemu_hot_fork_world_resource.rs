@@ -24,6 +24,12 @@ use crate::{
     QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
 };
 
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+#[cfg(feature = "destructive-recovery-faults")]
+const WORLD_FORK_ONE_VM_FAILURE_TRIGGER: &str =
+    "crucible.destructive-recovery.world-fork-one-vm-failure";
+
 struct QemuHotForkWorldResourceState<G>
 where
     G: QemuAttemptResourceGuard,
@@ -167,6 +173,12 @@ where
                 "hot-fork world node bound {} is exhausted",
                 state.maximum_nodes
             )));
+        }
+        #[cfg(feature = "destructive-recovery-faults")]
+        if !state.issued.is_empty() && world_fork_one_vm_failure_requested() {
+            return Err(world_resource_error(
+                "fault-injected failure while reserving the next hot-fork world VM",
+            ));
         }
         state.issued.insert(identity.clone());
         drop(state);
@@ -919,6 +931,12 @@ fn world_resource_error(message: impl Into<String>) -> QemuVmRealizationError {
         operation: "manage aggregate hot-fork world resources",
         message: message.into(),
     }
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn world_fork_one_vm_failure_requested() -> bool {
+    std::env::var_os(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT).as_deref()
+        == Some(std::ffi::OsStr::new(WORLD_FORK_ONE_VM_FAILURE_TRIGGER))
 }
 
 #[cfg(test)]
