@@ -176,9 +176,10 @@ id = "expire-store-credentials"
 title = "Expire store credentials during read or write"
 failure_class = "storage-authorization"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-required"
+implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.store-credential-expiry"
+fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.store-credential-expiry {fault_build_command}"
 prior_state = "Credential references, authenticated objects, and the current campaign ref are retained without embedding secret material."
@@ -189,7 +190,7 @@ recovery_gap = "Credential refresh is deployment-specific and has no repository-
 observables = ["authorization classification", "credential reference", "content identity", "ref identity", "retry state"]
 post_recovery_invariant = "Credential recovery exposes the same authenticated state and never treats denied access as missing data."
 backend_scope = "constrained-host-and-each-targeted-backend"
-prerequisites = ["store-credential-expiry"]
+prerequisites = ["store-credential-expiry-retry", "store-credential-expiry"]
 
 [[injections]]
 id = "corrupt-tier-copy"
@@ -379,6 +380,12 @@ id = "multipart-interruption"
 package = "crucible-cas"
 source = "crates/crucible-cas/src/content_store/s3.rs"
 selector = "content_store::s3::tests::interrupted_upload_aborts_and_failed_abort_is_explicit"
+
+[[prerequisite_tests]]
+id = "store-credential-expiry-retry"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/s3.rs"
+selector = "content_store::s3::tests::credential_expiry_preserves_identity_and_authenticated_retry"
 
 [[prerequisite_tests]]
 id = "store-credential-expiry"
