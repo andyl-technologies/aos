@@ -18,6 +18,14 @@ use crate::pidfd::PidFd;
 use crate::uapi;
 use crate::{Error, Result};
 
+mod session;
+
+pub use session::{
+    run_fixed_process_session, ExchangeStep, FixedLiveChild, FixedProcessControlInterest,
+    FixedProcessControlReadiness, FixedProcessSessionError, FixedProcessSessionExchange,
+    FixedProcessSessionOutcome, FixedProcessSessionRequest,
+};
+
 const MAXIMUM_EXECUTABLE_BYTES: usize = 4096;
 const MAXIMUM_ARGUMENTS: usize = 64;
 const MAXIMUM_ARGUMENT_BYTES: usize = 64 * 1024;
@@ -435,6 +443,34 @@ struct ChildGuard {
     armed: bool,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static INJECT_CLEANUP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+struct CleanupFailureInjection;
+
+#[cfg(test)]
+impl Drop for CleanupFailureInjection {
+    fn drop(&mut self) {
+        INJECT_CLEANUP_FAILURE.with(|injection| injection.set(false));
+    }
+}
+
+#[cfg(test)]
+fn inject_cleanup_failure_once() -> CleanupFailureInjection {
+    INJECT_CLEANUP_FAILURE.with(|injection| {
+        assert!(!injection.replace(true), "cleanup failure already injected");
+    });
+    CleanupFailureInjection
+}
+
+#[cfg(test)]
+fn take_cleanup_failure_injection() -> bool {
+    INJECT_CLEANUP_FAILURE.with(std::cell::Cell::take)
+}
+
 impl ChildGuard {
     const fn new(pid: rustix::process::Pid) -> Self {
         Self {
@@ -462,6 +498,13 @@ impl ChildGuard {
 
     fn cancel_and_reap(&mut self) -> Result<ProcessStatus> {
         self.cancel()?;
+        #[cfg(test)]
+        if take_cleanup_failure_injection() {
+            return Err(Error::invalid(
+                "fixed process cleanup test injection",
+                "failed before reap",
+            ));
+        }
         self.reap()
     }
 
@@ -479,6 +522,8 @@ impl Drop for ChildGuard {
             let _ = kill_leader(self.pid, self.pidfd.as_ref());
             let _ = wait_blocking(self.pid);
         }
+        #[cfg(test)]
+        INJECT_CLEANUP_FAILURE.with(|injection| injection.set(false));
     }
 }
 

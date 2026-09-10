@@ -15,3 +15,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "fixed-process-session"
+path = "tests/fixed_process_session.rs"
+harness = false
