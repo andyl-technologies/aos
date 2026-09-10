@@ -109,6 +109,8 @@ struct InjectionContract {
     failure_class: String,
     surface: String,
     implementation_state: String,
+    #[serde(default)]
+    external_command_bindings: Vec<String>,
     action: String,
     #[serde(default)]
     trigger: Option<String>,
@@ -118,6 +120,8 @@ struct InjectionContract {
     symptom: String,
     automatic_response: String,
     recovery_commands: Vec<String>,
+    #[serde(default)]
+    recovery_gap: Option<String>,
     observables: Vec<String>,
     post_recovery_invariant: String,
     backend_scope: String,
@@ -177,7 +181,7 @@ fn contract_validation_rejects_unrunnable_commands_and_prerequisite_drift() {
     assert!(
         failures
             .iter()
-            .any(|failure| failure.contains("documented public recovery command"))
+            .any(|failure| failure.contains("invalid public recovery command"))
     );
 
     let unbound_action = CONTRACT_SOURCE.replacen(
@@ -190,6 +194,30 @@ fn contract_validation_rejects_unrunnable_commands_and_prerequisite_drift() {
         failures
             .iter()
             .any(|failure| failure.contains("runnable operator action"))
+    );
+
+    let unbound_external_action = CONTRACT_SOURCE.replacen(
+        "external_command_bindings = [\"daemon_command\"]\n",
+        "external_command_bindings = []\n",
+        1,
+    );
+    let failures = validation_failures(&unbound_external_action, NIX_SOURCE, &workspace_root());
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.contains("unbound external command placeholder"))
+    );
+
+    let placeholder_recovery = CONTRACT_SOURCE.replacen(
+        "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}",
+        "{documented_service_restart_command}",
+        1,
+    );
+    let failures = validation_failures(&placeholder_recovery, NIX_SOURCE, &workspace_root());
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.contains("invalid public recovery command"))
     );
 
     let missing_runner = NIX_SOURCE.replacen(
@@ -414,14 +442,27 @@ fn validate_injections(contract: &Contract, failures: &mut Vec<String>) {
                 injection.id
             ));
         }
-        if injection.recovery_commands.is_empty()
-            || !injection
-                .recovery_commands
-                .iter()
-                .any(|command| command.starts_with("crucible "))
-        {
+        if injection.recovery_commands.is_empty() {
             failures.push(format!(
                 "{} has no documented public recovery command",
+                injection.id
+            ));
+        }
+        for command in &injection.recovery_commands {
+            if !is_public_recovery_command(command) {
+                failures.push(format!(
+                    "{} has invalid public recovery command {command}",
+                    injection.id
+                ));
+            }
+        }
+        if injection
+            .recovery_gap
+            .as_deref()
+            .is_some_and(|gap| !gap.contains("CMAN-16") || !gap.contains("release blocking"))
+        {
+            failures.push(format!(
+                "{} recovery gap is not explicitly CMAN-16 release blocking",
                 injection.id
             ));
         }
@@ -487,6 +528,16 @@ fn validate_injections(contract: &Contract, failures: &mut Vec<String>) {
                 injection.id
             )),
         }
+
+        let bindings = strings(&injection.external_command_bindings);
+        for placeholder in command_placeholders(&injection.action) {
+            if !bindings.contains(placeholder) {
+                failures.push(format!(
+                    "{} has unbound external command placeholder {placeholder}",
+                    injection.id
+                ));
+            }
+        }
     }
 }
 
@@ -494,6 +545,24 @@ fn is_runnable_operator_action(action: &str) -> bool {
     ["crucible ", "kill ", "systemctl ", "systemd-run "]
         .iter()
         .any(|prefix| action.starts_with(prefix))
+}
+
+fn is_public_recovery_command(command: &str) -> bool {
+    command.starts_with("crucible --format jsonl campaign ")
+        || command.starts_with("crucible --format jsonl store status {store_deployment}")
+        || command.starts_with("crucible --format jsonl store status {destination_store}")
+        || command.starts_with("crucible --format jsonl store verify {store_deployment}")
+        || command.starts_with("crucible --format jsonl store verify {destination_store}")
+        || command.starts_with("crucible --format jsonl store ensure {content_id} --in ")
+}
+
+fn command_placeholders(action: &str) -> BTreeSet<&str> {
+    action
+        .split('{')
+        .skip(1)
+        .filter_map(|suffix| suffix.split_once('}').map(|(placeholder, _)| placeholder))
+        .filter(|placeholder| placeholder.ends_with("_command"))
+        .collect()
 }
 
 fn validate_prerequisites(
