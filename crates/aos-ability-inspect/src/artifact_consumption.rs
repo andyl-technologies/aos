@@ -7,12 +7,11 @@ use std::collections::BTreeSet;
 
 use aos_ability_model::document::PlatformIdentity;
 use aos_ability_model::{
-    decode_canonical, ArtifactConsumptionContract, ArtifactConsumptionEvidenceDocument,
-    ArtifactConsumptionMechanism, ArtifactConsumptionObservation, ArtifactFileEvidence,
-    ArtifactRetentionRequirement, RequiredFeature, ABILITY_LIMITS_V1,
-    ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA, BUILD_TOOL_EXECUTION_FEATURE,
-    ELF_STARTUP_LINKAGE_FEATURE, HELPER_EXECUTION_FEATURE, IMMUTABLE_DATA_INPUT_FEATURE,
-    RUNTIME_PLUGIN_LOAD_FEATURE,
+    ABILITY_LIMITS_V1, ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA, ArtifactConsumptionContract,
+    ArtifactConsumptionEvidenceDocument, ArtifactConsumptionMechanism,
+    ArtifactConsumptionObservation, ArtifactFileEvidence, ArtifactRetentionRequirement,
+    BUILD_TOOL_EXECUTION_FEATURE, ELF_STARTUP_LINKAGE_FEATURE, HELPER_EXECUTION_FEATURE,
+    IMMUTABLE_DATA_INPUT_FEATURE, RUNTIME_PLUGIN_LOAD_FEATURE, RequiredFeature, decode_canonical,
 };
 use aos_contract::Sha256Digest;
 use serde::Serialize;
@@ -471,7 +470,16 @@ fn validate_path_contract(
         });
     }
     for argument in &contract.arguments {
-        validate_string("invocation argument", argument)?;
+        validate_argument(argument)?;
+    }
+    Ok(())
+}
+
+fn validate_argument(argument: &str) -> Result<(), ArtifactConsumptionEvidenceError> {
+    if argument.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes || argument.contains('\0') {
+        return Err(ArtifactConsumptionEvidenceError::Bound {
+            field: "invocation argument",
+        });
     }
     Ok(())
 }
@@ -703,8 +711,8 @@ fn has_duplicate<T: Ord + Clone>(values: &[T]) -> bool {
 #[cfg(test)]
 mod tests {
     use aos_ability_model::{
-        encode_canonical, ArtifactConsumptionPlatforms, ElfSearchPathKind,
-        ElfStartupLinkageContract, ElfStartupLinkageObservation, ElfSymbolVersion, LocalKey,
+        ArtifactConsumptionPlatforms, ElfSearchPathKind, ElfStartupLinkageContract,
+        ElfStartupLinkageObservation, ElfSymbolVersion, LocalKey, encode_canonical,
     };
 
     use super::*;
@@ -787,6 +795,31 @@ mod tests {
         }
     }
 
+    fn observed_helper_document(arguments: Vec<String>) -> ArtifactConsumptionEvidenceDocument {
+        let mut document = document();
+        let output_sha256 = Sha256Digest::of_bytes("helper output");
+        document.required_features = vec![RequiredFeature::new(HELPER_EXECUTION_FEATURE).unwrap()];
+        document.mechanism = ArtifactConsumptionMechanism::HelperExecution;
+        document.provider.path = "/bin/helper".to_string();
+        document.contract = ArtifactConsumptionContract::ObservedPath(
+            aos_ability_model::ObservedPathConsumptionContract {
+                arguments: arguments.clone(),
+                output_sha256,
+                retention: ArtifactRetentionRequirement::Required,
+            },
+        );
+        document.observation = ArtifactConsumptionObservation::ObservedPath(
+            aos_ability_model::ObservedPathConsumptionObservation {
+                arguments,
+                exit_code: 0,
+                output_sha256,
+                provider_access_observed: true,
+                provider_retained_by_consumer: true,
+            },
+        );
+        document
+    }
+
     #[test]
     fn checked_evidence_answers_exact_consumer_and_provider_query() {
         let document = document();
@@ -811,12 +844,16 @@ mod tests {
             explanation.provenance,
             ArtifactConsumptionProvenance::ReportedRealizedBuildGate
         );
-        assert!(explanation
-            .limitations
-            .contains(&ArtifactConsumptionLimitation::NoLiveLoaderEnforcement));
-        assert!(explanation
-            .limitations
-            .contains(&ArtifactConsumptionLimitation::NoDataInputEvidence));
+        assert!(
+            explanation
+                .limitations
+                .contains(&ArtifactConsumptionLimitation::NoLiveLoaderEnforcement)
+        );
+        assert!(
+            explanation
+                .limitations
+                .contains(&ArtifactConsumptionLimitation::NoDataInputEvidence)
+        );
     }
 
     #[test]
@@ -872,35 +909,17 @@ mod tests {
 
     #[test]
     fn observed_helper_evidence_requires_access_output_and_retention() {
-        let mut document = document();
         let arguments = vec![format!("{PROVIDER_STORE}/bin/helper")];
-        let output_sha256 = Sha256Digest::of_bytes("helper output");
-        document.required_features = vec![RequiredFeature::new(HELPER_EXECUTION_FEATURE).unwrap()];
-        document.mechanism = ArtifactConsumptionMechanism::HelperExecution;
-        document.provider.path = "/bin/helper".to_string();
-        document.contract = ArtifactConsumptionContract::ObservedPath(
-            aos_ability_model::ObservedPathConsumptionContract {
-                arguments: arguments.clone(),
-                output_sha256,
-                retention: ArtifactRetentionRequirement::Required,
-            },
-        );
-        document.observation = ArtifactConsumptionObservation::ObservedPath(
-            aos_ability_model::ObservedPathConsumptionObservation {
-                arguments,
-                exit_code: 0,
-                output_sha256,
-                provider_access_observed: true,
-                provider_retained_by_consumer: true,
-            },
-        );
+        let mut document = observed_helper_document(arguments);
 
         let checked = CheckedArtifactConsumptionEvidence::check(document.clone()).unwrap();
         let explanation = checked.query(&ArtifactConsumptionQuery::default()).unwrap();
         assert_eq!(explanation.provider_access_observed, Some(true));
-        assert!(!explanation
-            .limitations
-            .contains(&ArtifactConsumptionLimitation::NoHelperExecutionEvidence));
+        assert!(
+            !explanation
+                .limitations
+                .contains(&ArtifactConsumptionLimitation::NoHelperExecutionEvidence)
+        );
 
         let mut invalid_retention = document.clone();
         let ArtifactConsumptionContract::ObservedPath(contract) = &mut invalid_retention.contract
@@ -927,6 +946,25 @@ mod tests {
         assert!(matches!(
             CheckedArtifactConsumptionEvidence::check(document),
             Err(ArtifactConsumptionEvidenceError::ObservationMismatch)
+        ));
+    }
+
+    #[test]
+    fn observed_path_arguments_accept_empty_and_newline_values() {
+        let arguments = vec![String::new(), "first line\nsecond line".to_string()];
+
+        CheckedArtifactConsumptionEvidence::check(observed_helper_document(arguments)).unwrap();
+    }
+
+    #[test]
+    fn observed_path_arguments_reject_nul_values() {
+        let arguments = vec!["before\0after".to_string()];
+
+        assert!(matches!(
+            CheckedArtifactConsumptionEvidence::check(observed_helper_document(arguments)),
+            Err(ArtifactConsumptionEvidenceError::Bound {
+                field: "invocation argument"
+            })
         ));
     }
 }
