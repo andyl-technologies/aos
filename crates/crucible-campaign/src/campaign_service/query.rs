@@ -1184,7 +1184,6 @@ impl QueryCampaignFindingOccurrencesResponse {
     ///
     /// Returns [`CampaignCodecError`] when the snapshot, finding, proofs,
     /// bundle identities, signatures, cursor, or encoded-size contract is invalid.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         request: &QueryCampaignFindingOccurrencesRequest,
         snapshot_body: CampaignSnapshot,
@@ -1664,7 +1663,6 @@ impl GetCampaignFindingOccurrenceObjectResponse {
     ///
     /// Returns [`CampaignCodecError`] when either proof, identity, dependency,
     /// or the encoded-size contract is invalid.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         request: &GetCampaignFindingOccurrenceObjectRequest,
         snapshot_body: CampaignSnapshot,

@@ -827,6 +827,7 @@ fn directory_repository(root: &Path) -> CampaignRepository {
     )
 }
 
+// crucible-lint: allow rust-allow -- the cross-process fixture forwards every authenticated identity and artifact path explicitly.
 #[allow(clippy::too_many_arguments)]
 fn run_helper(
     root: &Path,
