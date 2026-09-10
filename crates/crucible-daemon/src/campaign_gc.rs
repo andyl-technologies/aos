@@ -61,6 +61,10 @@ pub use planner::{
 };
 
 use crucible_campaign::CampaignHash;
+#[cfg(test)]
+use crucible_campaign::{
+    CampaignName, CampaignRepository, CampaignSnapshotId, FindingCandidateBundleId, FindingId,
+};
 use crucible_cas::content_store::{
     BlobInventorySummary, InventoryGeneration, PhysicalStorageIdentity, RefInventoryGeneration,
     RefInventorySummary,
@@ -852,6 +856,18 @@ impl<'a> PlanCursor<'a> {
             Err(CampaignGcPlanError::InvalidLength)
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn publish_retained_finding_fixture(
+    repository: &CampaignRepository,
+) -> (
+    CampaignName,
+    CampaignSnapshotId,
+    FindingId,
+    FindingCandidateBundleId,
+) {
+    tests::publish_retained_finding_fixture(repository)
 }
 
 #[cfg(test)]
