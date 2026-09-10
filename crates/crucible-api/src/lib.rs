@@ -78,9 +78,9 @@ pub use lifecycle::{
     LifecycleLoopFactory, LifecycleResourceLimit, ListScenariosResponse, ListSessionsResponse,
     QuiescentLifecycleLoop, RESUME_REPLAY_CLOSURE_MAX_BYTES, ReproductionCommandPayload,
     ReproductionCommandRecord, ReproductionCommandResult, ResumeReplayClosure,
-    ResumeReplayClosureValidator, ResumeSessionRequest, ResumeSessionResponse,
-    ScenarioCatalogEntry, ScenarioCatalogSource, ScenarioSummary, SessionId, SessionRef,
-    SessionSummary,
+    ResumeReplayClosureValidationError, ResumeReplayClosureValidator, ResumeSessionRequest,
+    ResumeSessionResponse, ScenarioCatalogEntry, ScenarioCatalogSource, ScenarioSummary, SessionId,
+    SessionRef, SessionSummary,
 };
 pub use open_set::{
     OPEN_SET_BREAKPOINT_KIND_PREFIX, OPEN_SET_CAPABILITY_CATEGORIES, OPEN_SET_COMMAND_KIND_PREFIX,

@@ -2308,9 +2308,23 @@ fn parse_wire_line<'a>(line: Option<&'a str>, prefix: &'static str) -> Result<&'
         .ok_or_else(|| format!("expected `{prefix}` line, got `{line}`"))
 }
 
-fn reject_extra_line(line: Option<&str>) -> Result<(), String> {
+#[derive(Debug, thiserror::Error)]
+#[error("unexpected trailing RPC request field `{field}`")]
+struct UnexpectedRpcRequestField {
+    field: String,
+}
+
+impl From<UnexpectedRpcRequestField> for String {
+    fn from(error: UnexpectedRpcRequestField) -> Self {
+        error.to_string()
+    }
+}
+
+fn reject_extra_line(line: Option<&str>) -> Result<(), UnexpectedRpcRequestField> {
     if let Some(line) = line {
-        return Err(format!("unexpected trailing RPC request field `{line}`"));
+        return Err(UnexpectedRpcRequestField {
+            field: line.to_owned(),
+        });
     }
     Ok(())
 }
