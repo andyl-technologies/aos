@@ -755,6 +755,7 @@ maximum_vcpus = 4
 maximum_resident_bytes = 1073741824
 maximum_disk_bytes = 2147483648
 maximum_execution_quanta = 100000
+verify_determinism_findings = true
 maximum_checkpoint_bytes = 1073741824
 worker_count = 2
 host_architecture = "x86_64"
@@ -763,6 +764,9 @@ qemu_profile = "deterministic-tcg-v1"
 
 The project-ID count must cover every slot, the worker count cannot exceed the
 slot ceiling, and the checkpoint ceiling cannot exceed writable-disk capacity.
+`verify_determinism_findings = true` explicitly enables two private executions
+of ordinary candidates. Both executions share and consume the attempt's finite
+physical quantum budget; an incomplete pair does not create a finding.
 The configured lifecycle run root is partitioned into stable fixed-worker
 subdirectories so recovery state is not shared between concurrent workers.
 

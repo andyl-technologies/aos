@@ -50,9 +50,14 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
         vec![b"retained transport frame".to_vec()],
     )?;
     let bytes = evidence.to_compact_binary()?;
-    let decoded = FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &bytes)?;
+    let historical_v1 = include_bytes!("fixtures/failure-triage-replay-evidence-v1.bin");
+    assert_eq!(bytes.as_slice(), historical_v1);
+    let decoded = FailureTriageReplayEvidence::from_compact_binary(finding.clone(), historical_v1)?;
 
     assert_eq!(decoded, evidence);
+    assert_eq!(decoded.schema_version(), 1);
+    assert!(FailureTriageReplayEvidence::supports_schema(1));
+    assert_eq!(decoded.to_compact_binary()?, bytes);
     assert_eq!(decoded.finding(), &finding);
     assert_eq!(decoded.failure(), &failure);
     assert_eq!(decoded.causal_entries(), causal_entries);
@@ -118,6 +123,71 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
         )
         .is_err(),
         "failure-source material must be bounded before signature construction"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn paired_divergence_evidence_retains_both_logs_and_recomputes_mismatch()
+-> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let schedule = Schedule::from_decisions([override_decision("triage-divergence", "fail")]);
+    let finding = finding_artifact(
+        &scenario,
+        schedule.clone(),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("paired-divergence-evidence"),
+    )?;
+    let expected = recorded_event_log(schedule.decisions()[0].clone());
+    let mut reproduced = expected.clone();
+    reproduced.pop();
+    let coverage_fingerprint = finding_hash("paired-divergence-coverage");
+
+    let evidence = FailureTriageReplayEvidence::new_paired_divergence(
+        finding.clone(),
+        expected.clone(),
+        reproduced.clone(),
+        coverage_fingerprint,
+        Vec::new(),
+    )?;
+    let bytes = evidence.to_compact_binary()?;
+    let decoded = FailureTriageReplayEvidence::from_compact_binary(finding, &bytes)?;
+
+    assert_eq!(decoded.schema_version(), 2);
+    assert!(matches!(
+        decoded.failure(),
+        FailureClusterReportFailure::Divergence(_)
+    ));
+    assert_eq!(
+        decoded.paired_divergence_logs(),
+        Some((expected.as_slice(), reproduced.as_slice()))
+    );
+    assert_eq!(decoded.to_compact_binary()?, bytes);
+    let marker = b"entry.content_hash=";
+    let marker_offset = bytes
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .ok_or("paired divergence summary marker")?;
+    let mut tampered = bytes.clone();
+    let digit = tampered
+        .get_mut(marker_offset + marker.len())
+        .ok_or("paired divergence summary digit")?;
+    *digit = if *digit == b'0' { b'1' } else { b'0' };
+    assert!(
+        FailureTriageReplayEvidence::from_compact_binary(decoded.finding().clone(), &tampered)
+            .is_err(),
+        "decode must reject divergence detail that differs from the paired logs"
+    );
+    assert!(
+        FailureTriageReplayEvidence::new_paired_divergence(
+            decoded.finding().clone(),
+            expected.clone(),
+            expected,
+            coverage_fingerprint,
+            Vec::new(),
+        )
+        .is_err()
     );
 
     Ok(())

@@ -23,10 +23,10 @@ use crate::{
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
-const MAX_RECORD_BYTES: usize = 52 * 1024 * 1024;
+const MAX_RECORD_BYTES: usize = 84 * 1024 * 1024;
 
 /// Maximum opaque execution-model payload retained by one replay record.
-pub const MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES: usize = 48 * 1024 * 1024;
+pub const MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES: usize = 80 * 1024 * 1024;
 
 /// One exact replay and the complete campaign signature it observed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,7 +44,7 @@ impl FindingTriageReplayEvidence {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when the payload schema is zero, the
-    /// payload is empty or exceeds 48 MiB, or the complete record exceeds its
+    /// payload is empty or exceeds 80 MiB, or the complete record exceeds its
     /// canonical size bound.
     pub fn new(
         reproduction: ReproductionArtifactId,

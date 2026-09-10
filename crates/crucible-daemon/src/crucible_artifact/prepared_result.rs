@@ -8,6 +8,19 @@
 //! measurement-ownership, or finding-closure invariants.
 //!
 //! ```text
+//! v5-magic
+//! observation, raw measurements, optional terminal fingerprints, and replay indexes as v4
+//! four role-specific finding-triage replay records before the finding bundle
+//! ```
+//!
+//! ```text
+//! v4-magic
+//! observation and raw measurement records as v3
+//! optional terminal-fingerprint records
+//! finding closure with tagged observed or deterministically-incompatible replay indexes
+//! ```
+//!
+//! ```text
 //! v3-magic
 //! observation-child, measurements, properties, coverage
 //! discovered-choice-count, discovered-choice records
@@ -49,23 +62,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible::{
-    AssertionPhase, ContentHash, ExecutionFingerprint, FingerprintSample, NodeId,
+    AssertionPhase, ContentHash, ExecutionFingerprint, FailureClusterReportFailure, FailureKind,
+    FailureTriageReplayEvidence, FindingReproductionArtifact, FingerprintSample, NodeId,
     ObservableEventPayload, ScenarioDefForm, SchedulerEventLogEntry, SchedulerEventLogPayload,
     VirtualTime,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity,
-    ConfigurationArtifact, CoverageProjection, FindingCandidateBundle, FindingKind, FindingTarget,
-    MeasurementSet, Observation, ObservationCandidate, ObservationCondition,
-    ObservationStopSatisfaction, PropertyVerdict, PropertyVerdictSet, ReproductionArtifact,
-    ScenarioArtifact, SelectableDeclaration, Selection, StopOutcome,
+    ConfigurationArtifact, CoverageProjection, FindingCandidateBundle, FindingKind,
+    FindingSignature, FindingTarget, FindingTriageReplayEvidence, MeasurementSet, Observation,
+    ObservationCandidate, ObservationCondition, ObservationStopSatisfaction, PropertyVerdict,
+    PropertyVerdictSet, ReproductionArtifact, ScenarioArtifact, SelectableDeclaration, Selection,
+    StopOutcome,
 };
 use thiserror::Error;
 
 use super::finding_replay::PreparedFindingReplayRecords;
 use super::{
-    CrucibleArtifactError, MAX_CRUCIBLE_FINDING_REPLAY_BYTES, MAX_CRUCIBLE_FINDING_REPLAY_RECORDS,
-    PreparedCrucibleFindingCandidate, RecordedFindingReplay, prepare_minimized_reproduction,
+    CrucibleArtifactError, FindingReplayIncompatibility, MAX_CRUCIBLE_FINDING_REPLAY_BYTES,
+    MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, PreparedCrucibleFindingCandidate,
+    PreparedFindingTriageReplayRecords, RecordedFindingReplay, prepare_minimized_reproduction,
     prepare_original_reproduction, replay_recorded_signature_pass,
 };
 use crate::{
@@ -76,6 +92,8 @@ use crate::{
 const PREPARED_RESULT_MAGIC_V1: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v1\0";
 const PREPARED_RESULT_MAGIC_V2: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v2\0";
 const PREPARED_RESULT_MAGIC_V3: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v3\0";
+const PREPARED_RESULT_MAGIC_V4: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v4\0";
+const PREPARED_RESULT_MAGIC_V5: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v5\0";
 pub(super) const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
@@ -337,14 +355,18 @@ impl PreparedSemanticAttemptResult {
                     return Err(PreparedSemanticResultCodecError::LimitExceeded);
                 }
 
+                let Some((measurement_id, _, _, _, _)) = replay.observed_components() else {
+                    continue;
+                };
+
                 let measurement = measurements
-                    .get(&replay.measurements)
+                    .get(&measurement_id)
                     .ok_or_else(|| inconsistent("finding replay measurement record"))?;
                 let configuration = configurations
-                    .get(&replay.configuration)
+                    .get(&replay.configuration())
                     .copied()
                     .ok_or_else(|| inconsistent("finding replay measurement configuration"))?;
-                if verified_pairs.insert((replay.measurements, configuration)) {
+                if verified_pairs.insert((measurement_id, configuration)) {
                     verify_measurement_record(
                         measurement,
                         configuration,
@@ -416,7 +438,19 @@ impl PreparedSemanticAttemptResult {
         }
 
         let mut encoder = Encoder::new(maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES));
-        let version = if self.terminal_fingerprints.is_some() {
+        let version = if self
+            .finding
+            .as_ref()
+            .is_some_and(|finding| finding.triage_replays.is_some())
+        {
+            PreparedSemanticResultVersion::V5
+        } else if self
+            .finding
+            .as_ref()
+            .is_some_and(finding_has_incompatibility)
+        {
+            PreparedSemanticResultVersion::V4
+        } else if self.terminal_fingerprints.is_some() {
             PreparedSemanticResultVersion::V3
         } else {
             PreparedSemanticResultVersion::V2
@@ -424,13 +458,26 @@ impl PreparedSemanticAttemptResult {
         encoder.raw(version.magic())?;
         encode_observation(&mut encoder, &self.observation)?;
         encode_measurement_evidence(&mut encoder, &self.measurement_replay_evidence)?;
-        if let Some(terminal_fingerprints) = &self.terminal_fingerprints {
-            encode_terminal_fingerprints(&mut encoder, terminal_fingerprints)?;
+        match version {
+            PreparedSemanticResultVersion::V4 | PreparedSemanticResultVersion::V5 => {
+                match &self.terminal_fingerprints {
+                    Some(terminal_fingerprints) => {
+                        encoder.byte(1)?;
+                        encode_terminal_fingerprints(&mut encoder, terminal_fingerprints)?;
+                    }
+                    None => encoder.byte(0)?,
+                }
+            }
+            _ => {
+                if let Some(terminal_fingerprints) = &self.terminal_fingerprints {
+                    encode_terminal_fingerprints(&mut encoder, terminal_fingerprints)?;
+                }
+            }
         }
         match &self.finding {
             Some(finding) => {
                 encoder.byte(1)?;
-                encode_finding(&mut encoder, finding)?;
+                encode_finding(&mut encoder, finding, version)?;
             }
             None => encoder.byte(0)?,
         }
@@ -481,17 +528,25 @@ impl PreparedSemanticAttemptResult {
         let observation = decode_observation(&mut decoder)?;
         let measurement_replay_evidence = match version {
             PreparedSemanticResultVersion::V1 => Vec::new(),
-            PreparedSemanticResultVersion::V2 | PreparedSemanticResultVersion::V3 => {
-                decode_measurement_evidence(&mut decoder)?
-            }
+            PreparedSemanticResultVersion::V2
+            | PreparedSemanticResultVersion::V3
+            | PreparedSemanticResultVersion::V4
+            | PreparedSemanticResultVersion::V5 => decode_measurement_evidence(&mut decoder)?,
         };
         let terminal_fingerprints = match version {
             PreparedSemanticResultVersion::V1 | PreparedSemanticResultVersion::V2 => None,
             PreparedSemanticResultVersion::V3 => Some(decode_terminal_fingerprints(&mut decoder)?),
+            PreparedSemanticResultVersion::V4 | PreparedSemanticResultVersion::V5 => {
+                match decoder.byte()? {
+                    0 => None,
+                    1 => Some(decode_terminal_fingerprints(&mut decoder)?),
+                    _ => return Err(PreparedSemanticResultCodecError::InvalidTag),
+                }
+            }
         };
         let finding = match decoder.byte()? {
             0 => None,
-            1 => Some(decode_finding(&mut decoder)?),
+            1 => Some(decode_finding(&mut decoder, version)?),
             _ => return Err(PreparedSemanticResultCodecError::InvalidTag),
         };
         decoder.finish()?;
@@ -511,7 +566,10 @@ impl PreparedSemanticAttemptResult {
             PreparedSemanticResultVersion::V1 => {
                 value.canonical_v1_bytes_with_limit(maximum_bytes)?
             }
-            PreparedSemanticResultVersion::V2 | PreparedSemanticResultVersion::V3 => {
+            PreparedSemanticResultVersion::V2
+            | PreparedSemanticResultVersion::V3
+            | PreparedSemanticResultVersion::V4
+            | PreparedSemanticResultVersion::V5 => {
                 value.canonical_bytes_with_limit(maximum_bytes)?
             }
         };
@@ -565,7 +623,7 @@ impl PreparedSemanticAttemptResult {
         match &self.finding {
             Some(finding) => {
                 encoder.byte(1)?;
-                encode_finding(&mut encoder, finding)?;
+                encode_finding(&mut encoder, finding, PreparedSemanticResultVersion::V1)?;
             }
             None => encoder.byte(0)?,
         }
@@ -584,6 +642,10 @@ pub(crate) enum PreparedSemanticResultVersion {
     V2,
     /// Closure with exact raw measurement and terminal-fingerprint evidence.
     V3,
+    /// Closure with typed deterministic candidate incompatibility outcomes.
+    V4,
+    /// Closure with four role-specific native triage replay records.
+    V5,
 }
 
 impl PreparedSemanticResultVersion {
@@ -595,6 +657,10 @@ impl PreparedSemanticResultVersion {
             Some(Self::V2)
         } else if bytes.starts_with(PREPARED_RESULT_MAGIC_V3) {
             Some(Self::V3)
+        } else if bytes.starts_with(PREPARED_RESULT_MAGIC_V4) {
+            Some(Self::V4)
+        } else if bytes.starts_with(PREPARED_RESULT_MAGIC_V5) {
+            Some(Self::V5)
         } else {
             None
         }
@@ -605,8 +671,22 @@ impl PreparedSemanticResultVersion {
             Self::V1 => PREPARED_RESULT_MAGIC_V1,
             Self::V2 => PREPARED_RESULT_MAGIC_V2,
             Self::V3 => PREPARED_RESULT_MAGIC_V3,
+            Self::V4 => PREPARED_RESULT_MAGIC_V4,
+            Self::V5 => PREPARED_RESULT_MAGIC_V5,
         }
     }
+
+    const fn supports_replay_incompatibility(self) -> bool {
+        matches!(self, Self::V4 | Self::V5)
+    }
+}
+
+fn finding_has_incompatibility(finding: &PreparedCrucibleFindingCandidate) -> bool {
+    finding
+        .minimization_replays
+        .iter()
+        .chain(&finding.verification_replays)
+        .any(|replay| replay.incompatibility().is_some())
 }
 
 /// Failure to encode or authenticate a prepared semantic result.
@@ -793,7 +873,11 @@ fn validate_measurement_evidence(
             .minimization_replays
             .iter()
             .chain(&finding.verification_replays)
-            .map(|replay| replay.measurements)
+            .filter_map(|replay| {
+                replay
+                    .observed_components()
+                    .map(|(measurements, _, _, _, _)| measurements)
+            })
             .collect::<BTreeSet<_>>();
         for measurement in &finding.replay_records.measurements {
             if measurement_requires_replay_evidence(measurement)
@@ -823,14 +907,17 @@ fn validate_measurement_evidence(
             .iter()
             .chain(&finding.verification_replays)
         {
+            let Some((measurement_id, _, _, _, _)) = replay.observed_components() else {
+                continue;
+            };
             let measurement = measurements
-                .get(&replay.measurements)
+                .get(&measurement_id)
                 .ok_or_else(|| inconsistent("finding replay measurement record"))?;
             if !measurement_requires_replay_evidence(measurement) {
                 continue;
             }
             let configuration = configurations
-                .get(&replay.configuration)
+                .get(&replay.configuration())
                 .ok_or_else(|| inconsistent("finding replay measurement configuration"))?;
             validate_measurement_record(
                 measurement,
@@ -1202,7 +1289,7 @@ pub(super) fn encode_v1_without_measurement_evidence_for_test(
     match finding {
         Some(finding) => {
             encoder.byte(1)?;
-            encode_finding(&mut encoder, finding)?;
+            encode_finding(&mut encoder, finding, PreparedSemanticResultVersion::V1)?;
         }
         None => encoder.byte(0)?,
     }
@@ -1234,21 +1321,22 @@ fn decode_observation(
     }
     let observation = decoder.decode_record(Observation::from_canonical_bytes)?;
 
-    ObservationCandidate::new(
+    ObservationCandidate::from_recorded_parts(
         child,
         measurements,
         properties,
         coverage,
         discoveries,
+        selections,
         observation,
-    )?
-    .with_produced_selections(selections)
+    )
     .map_err(Into::into)
 }
 
 fn encode_finding(
     encoder: &mut Encoder,
     value: &PreparedCrucibleFindingCandidate,
+    version: PreparedSemanticResultVersion,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     encoder.byte(discovery_path_tag(value.discovery_path))?;
     encoder.raw(&value.minimization_seed.bytes())?;
@@ -1297,13 +1385,28 @@ fn encode_finding(
         &value.replay_records.selections,
         Selection::canonical_bytes,
     )?;
-    encode_replays(encoder, value)?;
+    encode_replays(encoder, value, version)?;
+    match (version, &value.triage_replays) {
+        (PreparedSemanticResultVersion::V5, Some(triage_replays)) => {
+            for replay in triage_replays.records() {
+                encoder.record(&replay.canonical_bytes())?;
+            }
+        }
+        (PreparedSemanticResultVersion::V5, None) => {
+            return Err(inconsistent("v5 finding triage replay evidence"));
+        }
+        (_, Some(_)) => {
+            return Err(inconsistent("legacy finding triage replay evidence"));
+        }
+        (_, None) => {}
+    }
     encoder.record(&value.bundle.canonical_bytes())?;
     Ok(())
 }
 
 fn decode_finding(
     decoder: &mut Decoder<'_>,
+    version: PreparedSemanticResultVersion,
 ) -> Result<PreparedCrucibleFindingCandidate, PreparedSemanticResultCodecError> {
     let discovery_path = discovery_path_from_tag(decoder.byte()?)?;
     let minimization_seed = crucible::Seed::from_bytes(
@@ -1362,8 +1465,24 @@ fn decode_finding(
         &mut replay_record_bytes,
     )?;
     let mut replay_validation_references = 0usize;
-    let minimization_indexes = decode_replay_indexes(decoder, &mut replay_validation_references)?;
-    let verification_indexes = decode_replay_indexes(decoder, &mut replay_validation_references)?;
+    let minimization_indexes =
+        decode_replay_indexes(decoder, &mut replay_validation_references, version)?;
+    let verification_indexes =
+        decode_replay_indexes(decoder, &mut replay_validation_references, version)?;
+    let triage_replays = if version == PreparedSemanticResultVersion::V5 {
+        Some(PreparedFindingTriageReplayRecords {
+            minimization_original: decoder
+                .decode_record(FindingTriageReplayEvidence::from_canonical_bytes)?,
+            minimization_selected: decoder
+                .decode_record(FindingTriageReplayEvidence::from_canonical_bytes)?,
+            verification_original: decoder
+                .decode_record(FindingTriageReplayEvidence::from_canonical_bytes)?,
+            verification_selected: decoder
+                .decode_record(FindingTriageReplayEvidence::from_canonical_bytes)?,
+        })
+    } else {
+        None
+    };
     let bundle = decoder.decode_record(FindingCandidateBundle::from_canonical_bytes)?;
 
     // Resolve every content identity once. Compact replay indexes can refer to
@@ -1431,6 +1550,7 @@ fn decode_finding(
         replay_records,
         minimization_replays,
         verification_replays,
+        triage_replays,
         bundle,
     };
     validate_finding(&value)?;
@@ -1458,30 +1578,11 @@ fn validate_finding(
     }
 
     validate_recorded_replays(value)?;
-    let artifact = crucible::ReproductionArtifact::from_compact_binary(value.original.payload())
-        .map_err(|source| CrucibleArtifactError::InvalidPayload {
-            artifact: "journal original finding reproduction",
-            source: Box::new(source),
-        })?;
-    let replay = artifact
-        .replay()
-        .map_err(|source| CrucibleArtifactError::InvalidPayload {
-            artifact: "journal original finding replay",
-            source: Box::new(source),
-        })?;
-    let original_finding = crucible::FindingReproductionArtifact {
-        discovery_path: value.discovery_path,
-        finding_fingerprint: crucible::ContentHash {
-            bytes: value.original.finding_fingerprint().as_bytes(),
-        },
-        configuration: crucible::Configuration {
-            def: artifact.scenario_def(),
-            schedule: artifact.schedule().clone(),
-        }
-        .id(),
-        artifact,
-        replay,
-    };
+    let original_finding = decode_journal_finding_reproduction(
+        &value.original,
+        value.discovery_path,
+        "journal original finding reproduction",
+    )?;
     let (expected_scenario, expected_configuration, expected_original) =
         prepare_original_reproduction(&original_finding)?;
     if expected_scenario != value.scenario
@@ -1511,6 +1612,10 @@ fn validate_finding(
             component: "finding replay passes",
         });
     }
+    super::validate_replay_incompatibility_passes(
+        &value.minimization_replays,
+        &value.verification_replays,
+    )?;
     let (expected_minimized_configuration, expected_minimized) =
         prepare_minimized_reproduction(original, &minimization)?;
     if expected_minimized_configuration != value.minimized_configuration
@@ -1520,7 +1625,242 @@ fn validate_finding(
             component: "minimized finding reconstruction",
         });
     }
+    let minimized_finding = decode_journal_finding_reproduction(
+        &value.minimized,
+        value.discovery_path,
+        "journal minimized finding reproduction",
+    )?;
+    validate_finding_triage_replays(value, &original_finding, &minimized_finding)?;
     Ok(())
+}
+
+fn decode_journal_finding_reproduction(
+    reproduction: &ReproductionArtifact,
+    discovery_path: crucible::FindingDiscoveryPath,
+    artifact_name: &'static str,
+) -> Result<FindingReproductionArtifact, PreparedSemanticResultCodecError> {
+    let artifact = crucible::ReproductionArtifact::from_compact_binary(reproduction.payload())
+        .map_err(|source| CrucibleArtifactError::InvalidPayload {
+            artifact: artifact_name,
+            source: Box::new(source),
+        })?;
+    let replay = artifact
+        .replay()
+        .map_err(|source| CrucibleArtifactError::InvalidPayload {
+            artifact: artifact_name,
+            source: Box::new(source),
+        })?;
+    let configuration = crucible::Configuration {
+        def: artifact.scenario_def(),
+        schedule: artifact.schedule().clone(),
+    }
+    .id();
+
+    Ok(FindingReproductionArtifact {
+        discovery_path,
+        finding_fingerprint: ContentHash {
+            bytes: reproduction.finding_fingerprint().as_bytes(),
+        },
+        configuration,
+        artifact,
+        replay,
+    })
+}
+
+fn validate_finding_triage_replays(
+    value: &PreparedCrucibleFindingCandidate,
+    original_finding: &FindingReproductionArtifact,
+    minimized_finding: &FindingReproductionArtifact,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    let Some(triage_replays) = &value.triage_replays else {
+        if value.bundle.triage_evidence().is_some() {
+            return Err(inconsistent("finding triage replay evidence"));
+        }
+        return Ok(());
+    };
+    let retained_ids = triage_replays.evidence_set()?;
+    if value.bundle.triage_evidence() != Some(retained_ids) {
+        return Err(inconsistent("finding triage replay evidence identities"));
+    }
+
+    let minimization = value
+        .minimized
+        .minimization()
+        .ok_or_else(|| inconsistent("finding triage minimization"))?;
+    let selected_index = minimization
+        .attempts()
+        .iter()
+        .position(|attempt| attempt.accepted())
+        .map_or(0, |index| index + 1);
+    let signatures = value.bundle.signature_minimization();
+    let minimization_original = signatures
+        .minimization_pass()
+        .first()
+        .and_then(Option::as_ref)
+        .ok_or_else(|| inconsistent("finding triage minimization original signature"))?;
+    let minimization_selected = signatures
+        .minimization_pass()
+        .get(selected_index)
+        .and_then(Option::as_ref)
+        .ok_or_else(|| inconsistent("finding triage minimization selected signature"))?;
+    let verification_original = signatures
+        .verification_pass()
+        .first()
+        .and_then(Option::as_ref)
+        .ok_or_else(|| inconsistent("finding triage verification original signature"))?;
+    let verification_selected = signatures
+        .verification_pass()
+        .get(selected_index)
+        .and_then(Option::as_ref)
+        .ok_or_else(|| inconsistent("finding triage verification selected signature"))?;
+
+    for (record, reproduction, signature, finding) in [
+        (
+            &triage_replays.minimization_original,
+            value.bundle.reproduction(),
+            minimization_original,
+            original_finding,
+        ),
+        (
+            &triage_replays.minimization_selected,
+            value.bundle.minimized(),
+            minimization_selected,
+            minimized_finding,
+        ),
+        (
+            &triage_replays.verification_original,
+            value.bundle.reproduction(),
+            verification_original,
+            original_finding,
+        ),
+        (
+            &triage_replays.verification_selected,
+            value.bundle.minimized(),
+            verification_selected,
+            minimized_finding,
+        ),
+    ] {
+        if record.reproduction() != reproduction
+            || record.observed_signature() != signature
+            || !FailureTriageReplayEvidence::supports_schema(record.payload_schema())
+        {
+            return Err(inconsistent("finding triage replay evidence basis"));
+        }
+        let native_replay =
+            FailureTriageReplayEvidence::from_compact_binary(finding.clone(), record.payload())
+                .map_err(|source| CrucibleArtifactError::InvalidPayload {
+                    artifact: "journal finding triage replay evidence",
+                    source: Box::new(source),
+                })?;
+        if record.payload_schema() != native_replay.schema_version() {
+            return Err(inconsistent(
+                "finding triage replay declared payload schema",
+            ));
+        }
+        let native_signature = native_replay.signature();
+        let native_kind = match native_signature.failure_kind {
+            FailureKind::PropertyViolation => FindingKind::PropertyViolation,
+            FailureKind::Divergence => FindingKind::Divergence,
+            FailureKind::Timeout => FindingKind::Timeout,
+        };
+        let native_property = native_signature
+            .property
+            .as_ref()
+            .map(|property| property.id.name.as_str());
+
+        if native_kind != signature.kind() || native_property != signature.property() {
+            return Err(inconsistent(
+                "finding triage replay native signature policy key",
+            ));
+        }
+        validate_native_divergence_fingerprint(signature, finding, native_replay.failure())?;
+    }
+    Ok(())
+}
+
+fn validate_native_divergence_fingerprint(
+    signature: &FindingSignature,
+    finding: &FindingReproductionArtifact,
+    failure: &FailureClusterReportFailure,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    let FailureClusterReportFailure::Divergence(divergence) = failure else {
+        return Ok(());
+    };
+    let scenario = super::campaign_scenario_id(finding.artifact.scenario_form().id());
+    let fingerprint =
+        crate::automatic_finding_runner::divergence_fingerprint_for_scenario(scenario, divergence);
+    if fingerprint != signature.fingerprint() {
+        return Err(inconsistent(
+            "finding triage replay native divergence fingerprint",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- the integrity fixture uses panic shortcuts for exact failure localization.
+#[allow(clippy::expect_used)]
+mod triage_replay_tests {
+    use super::*;
+
+    fn divergence(node: &str) -> crucible::FailureClusterReportDivergence {
+        let node = NodeId {
+            name: node.to_owned(),
+        };
+        crucible::FailureClusterReportDivergence {
+            raw_index: 0,
+            node: Some(node.clone()),
+            icount_node: Some(node),
+            icount: crucible::Icount { retired: 1 },
+            source: crucible::EventSource::Engine,
+            kind: String::from("fork"),
+            expected_state_summary: String::from("expected"),
+            reproduced_state_summary: String::from("reproduced"),
+        }
+    }
+
+    #[test]
+    fn native_divergence_payload_swap_must_match_recorded_fingerprint() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let configuration = crucible::Configuration::genesis(scenario.scenario_def());
+        let expected_divergence = divergence("node-a");
+        let scenario_id = super::super::campaign_scenario_id(scenario.id());
+        let fingerprint = crate::automatic_finding_runner::divergence_fingerprint_for_scenario(
+            scenario_id,
+            &expected_divergence,
+        );
+        let observed = FindingSignature::new(
+            FindingKind::Divergence,
+            fingerprint,
+            None,
+            String::from("qemu.causal-log-divergence"),
+            None,
+            BTreeSet::new(),
+        )
+        .expect("observed divergence signature");
+        let finding = FindingReproductionArtifact::capture(
+            crucible::FindingDiscoveryPath::StateSpaceSearch,
+            ContentHash {
+                bytes: fingerprint.as_bytes(),
+            },
+            &scenario,
+            &configuration,
+        )
+        .expect("finding reproduction");
+        let expected = FailureClusterReportFailure::divergence(expected_divergence);
+        let swapped = FailureClusterReportFailure::divergence(divergence("node-b"));
+
+        validate_native_divergence_fingerprint(&observed, &finding, &expected)
+            .expect("production-derived divergence fingerprint");
+        assert!(matches!(
+            validate_native_divergence_fingerprint(&observed, &finding, &swapped),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "finding triage replay native divergence fingerprint"
+            })
+        ));
+    }
 }
 
 fn validate_recorded_replays(
@@ -1578,33 +1918,38 @@ fn validate_recorded_replays(
     {
         charge_reference(
             &configurations,
-            &replay.configuration,
+            &replay.configuration(),
             &mut referenced_bytes,
             &mut reference_count,
             "finding replay configuration",
         )?;
+        let Some((measurement_id, property_id, coverage_id, opportunity_ids, selection_ids)) =
+            replay.observed_components()
+        else {
+            continue;
+        };
         charge_reference(
             &measurements,
-            &replay.measurements,
+            &measurement_id,
             &mut referenced_bytes,
             &mut reference_count,
             "finding replay measurements",
         )?;
         charge_reference(
             &properties,
-            &replay.properties,
+            &property_id,
             &mut referenced_bytes,
             &mut reference_count,
             "finding replay properties",
         )?;
         charge_reference(
             &coverage,
-            &replay.coverage,
+            &coverage_id,
             &mut referenced_bytes,
             &mut reference_count,
             "finding replay coverage",
         )?;
-        for opportunity_id in &replay.opportunities {
+        for opportunity_id in opportunity_ids {
             let (opportunity, _) = charge_reference(
                 &opportunities,
                 opportunity_id,
@@ -1627,7 +1972,7 @@ fn validate_recorded_replays(
                 "finding replay domain",
             )?;
         }
-        for selection_id in &replay.selections {
+        for selection_id in selection_ids {
             charge_reference(
                 &selections,
                 selection_id,
@@ -1643,28 +1988,35 @@ fn validate_recorded_replays(
         .iter()
         .chain(&value.verification_replays)
     {
-        let (configuration, _) = configurations.get(&replay.configuration).ok_or(
+        let (configuration, _) = configurations.get(&replay.configuration()).ok_or(
             PreparedSemanticResultCodecError::Inconsistent {
                 component: "finding replay configuration",
             },
         )?;
-        let (measurement, _) = measurements.get(&replay.measurements).ok_or(
+        let Some((measurement_id, property_id, coverage_id, opportunity_ids, selection_ids)) =
+            replay.observed_components()
+        else {
+            continue;
+        };
+        let (measurement, _) = measurements.get(&measurement_id).ok_or(
             PreparedSemanticResultCodecError::Inconsistent {
                 component: "finding replay measurements",
             },
         )?;
-        let (property, _) = properties.get(&replay.properties).ok_or(
-            PreparedSemanticResultCodecError::Inconsistent {
-                component: "finding replay properties",
-            },
-        )?;
-        let (projection, _) = coverage.get(&replay.coverage).ok_or(
-            PreparedSemanticResultCodecError::Inconsistent {
-                component: "finding replay coverage",
-            },
-        )?;
-        let mut discoveries = Vec::with_capacity(replay.opportunities.len());
-        for opportunity_id in &replay.opportunities {
+        let (property, _) =
+            properties
+                .get(&property_id)
+                .ok_or(PreparedSemanticResultCodecError::Inconsistent {
+                    component: "finding replay properties",
+                })?;
+        let (projection, _) =
+            coverage
+                .get(&coverage_id)
+                .ok_or(PreparedSemanticResultCodecError::Inconsistent {
+                    component: "finding replay coverage",
+                })?;
+        let mut discoveries = Vec::with_capacity(opportunity_ids.len());
+        for opportunity_id in opportunity_ids {
             let (opportunity, _) = opportunities.get(opportunity_id).ok_or(
                 PreparedSemanticResultCodecError::Inconsistent {
                     component: "finding replay opportunity",
@@ -1686,8 +2038,7 @@ fn validate_recorded_replays(
                 (*opportunity).clone(),
             )?);
         }
-        let replay_selections = replay
-            .selections
+        let replay_selections = selection_ids
             .iter()
             .map(|id| {
                 selections
@@ -1699,7 +2050,7 @@ fn validate_recorded_replays(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let reconstructed = super::CrucibleFindingReplayEvidence::new(
-            replay.signature.clone(),
+            replay.signature().cloned(),
             (*configuration).clone(),
             (*measurement).clone(),
             (*property).clone(),
@@ -1707,8 +2058,8 @@ fn validate_recorded_replays(
             discoveries,
             replay_selections,
         )?;
-        if reconstructed.configuration().id()? != replay.configuration
-            || reconstructed.signature() != replay.signature.as_ref()
+        if reconstructed.configuration().id()? != replay.configuration()
+            || reconstructed.signature() != replay.signature()
         {
             return Err(PreparedSemanticResultCodecError::Inconsistent {
                 component: "finding replay reconstruction",
@@ -1764,6 +2115,7 @@ fn charge_reference<'a, T, I: Ord>(
 fn encode_replays(
     encoder: &mut Encoder,
     value: &PreparedCrucibleFindingCandidate,
+    version: PreparedSemanticResultVersion,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let records = &value.replay_records;
     let configurations = content_positions(&records.configurations, |record| record.id())?;
@@ -1780,8 +2132,8 @@ fn encode_replays(
         opportunities,
         selections,
     };
-    encode_replay_pass(encoder, &value.minimization_replays, &indexes)?;
-    encode_replay_pass(encoder, &value.verification_replays, &indexes)
+    encode_replay_pass(encoder, &value.minimization_replays, &indexes, version)?;
+    encode_replay_pass(encoder, &value.verification_replays, &indexes, version)
 }
 
 fn content_positions<T, I>(
@@ -1838,31 +2190,47 @@ fn encode_replay_pass(
     encoder: &mut Encoder,
     replays: &[RecordedFindingReplay],
     indexes: &ReplayRecordIndexes,
+    version: PreparedSemanticResultVersion,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     encoder.count(replays.len())?;
     for replay in replays {
+        if version.supports_replay_incompatibility() {
+            encoder.byte(if replay.incompatibility().is_some() {
+                1
+            } else {
+                0
+            })?;
+        } else if replay.incompatibility().is_some() {
+            return Err(inconsistent("legacy finding replay incompatibility"));
+        }
         encoder.index(find_index(
             &indexes.configurations,
-            replay.configuration.content_id(),
+            replay.configuration().content_id(),
         )?)?;
+        if let Some(reason) = replay.incompatibility() {
+            encoder.byte(incompatibility_tag(reason))?;
+            continue;
+        }
+        let Some((measurements, properties, coverage, opportunities, selections)) =
+            replay.observed_components()
+        else {
+            return Err(inconsistent("finding replay outcome"));
+        };
         encoder.index(find_index(
             &indexes.measurements,
-            replay.measurements.content_id(),
+            measurements.content_id(),
         )?)?;
-        encoder.index(find_index(
-            &indexes.properties,
-            replay.properties.content_id(),
-        )?)?;
-        encoder.index(find_index(&indexes.coverage, replay.coverage.content_id())?)?;
-        encoder.count(replay.opportunities.len())?;
-        for opportunity in &replay.opportunities {
+        encoder.index(find_index(&indexes.properties, properties.content_id())?)?;
+        encoder.index(find_index(&indexes.coverage, coverage.content_id())?)?;
+        encoder.count(opportunities.len())?;
+        for opportunity in opportunities {
             encoder.index(find_index(
                 &indexes.opportunities,
                 opportunity.content_id(),
             )?)?;
         }
-        encoder.count(replay.selections.len())?;
-        for selection in &replay.selections {
+        encoder.count(selections.len())?;
+        for selection in selections {
             encoder.index(find_index(&indexes.selections, selection.content_id())?)?;
         }
     }
@@ -1882,25 +2250,54 @@ fn find_index(
 }
 
 #[derive(Clone, Debug)]
-struct ReplayIndexes {
-    configuration: usize,
-    measurements: usize,
-    properties: usize,
-    coverage: usize,
-    opportunities: Vec<usize>,
-    selections: Vec<usize>,
+enum ReplayIndexes {
+    Observed {
+        configuration: usize,
+        measurements: usize,
+        properties: usize,
+        coverage: usize,
+        opportunities: Vec<usize>,
+        selections: Vec<usize>,
+    },
+    DeterministicallyIncompatible {
+        configuration: usize,
+        reason: FindingReplayIncompatibility,
+    },
 }
 
 fn decode_replay_indexes(
     decoder: &mut Decoder<'_>,
     validation_references: &mut usize,
+    version: PreparedSemanticResultVersion,
 ) -> Result<Vec<ReplayIndexes>, PreparedSemanticResultCodecError> {
     let count = decoder.count_bounded(MAX_CRUCIBLE_FINDING_REPLAY_RECORDS)?;
     charge_validation_references(validation_references, count, 4)?;
-    decoder.preflight_collection(count, 6 * size_of::<u32>())?;
+    let minimum_entry_bytes = if version.supports_replay_incompatibility() {
+        // tag + configuration index + closed incompatibility reason
+        2 + size_of::<u32>()
+    } else {
+        6 * size_of::<u32>()
+    };
+    decoder.preflight_collection(count, minimum_entry_bytes)?;
     let mut replays = Vec::with_capacity(count);
     for _ in 0..count {
+        let incompatible = if version.supports_replay_incompatibility() {
+            match decoder.byte()? {
+                0 => false,
+                1 => true,
+                _ => return Err(PreparedSemanticResultCodecError::InvalidTag),
+            }
+        } else {
+            false
+        };
         let configuration = decoder.index()?;
+        if incompatible {
+            replays.push(ReplayIndexes::DeterministicallyIncompatible {
+                configuration,
+                reason: incompatibility_from_tag(decoder.byte()?)?,
+            });
+            continue;
+        }
         let measurements = decoder.index()?;
         let properties = decoder.index()?;
         let coverage = decoder.index()?;
@@ -1918,7 +2315,7 @@ fn decode_replay_indexes(
         for _ in 0..selection_count {
             selections.push(decoder.index()?);
         }
-        replays.push(ReplayIndexes {
+        replays.push(ReplayIndexes::Observed {
             configuration,
             measurements,
             properties,
@@ -1928,6 +2325,25 @@ fn decode_replay_indexes(
         });
     }
     Ok(replays)
+}
+
+const fn incompatibility_tag(reason: FindingReplayIncompatibility) -> u8 {
+    match reason {
+        FindingReplayIncompatibility::PrefixDiverged => 0,
+        FindingReplayIncompatibility::PrefixTerminated => 1,
+        FindingReplayIncompatibility::SelectionMismatch => 2,
+    }
+}
+
+fn incompatibility_from_tag(
+    tag: u8,
+) -> Result<FindingReplayIncompatibility, PreparedSemanticResultCodecError> {
+    match tag {
+        0 => Ok(FindingReplayIncompatibility::PrefixDiverged),
+        1 => Ok(FindingReplayIncompatibility::PrefixTerminated),
+        2 => Ok(FindingReplayIncompatibility::SelectionMismatch),
+        _ => Err(PreparedSemanticResultCodecError::InvalidTag),
+    }
 }
 
 fn charge_validation_references(
@@ -1965,24 +2381,41 @@ fn materialize_replays(
     indexes
         .iter()
         .zip(signatures)
-        .map(|(indexes, signature)| {
-            Ok(RecordedFindingReplay {
-                signature: signature.clone(),
-                configuration: *indexed(configurations, indexes.configuration)?,
-                measurements: *indexed(measurements, indexes.measurements)?,
-                properties: *indexed(properties, indexes.properties)?,
-                coverage: *indexed(coverage, indexes.coverage)?,
-                opportunities: indexes
-                    .opportunities
+        .map(|(indexes, signature)| match indexes {
+            ReplayIndexes::Observed {
+                configuration,
+                measurements: measurement,
+                properties: property,
+                coverage: projection,
+                opportunities: opportunity_indexes,
+                selections: selection_indexes,
+            } => Ok(RecordedFindingReplay::Observed {
+                signature: signature.clone().map(Box::new),
+                configuration: *indexed(configurations, *configuration)?,
+                measurements: *indexed(measurements, *measurement)?,
+                properties: *indexed(properties, *property)?,
+                coverage: *indexed(coverage, *projection)?,
+                opportunities: opportunity_indexes
                     .iter()
                     .map(|index| indexed(opportunities, *index).copied())
                     .collect::<Result<Vec<_>, PreparedSemanticResultCodecError>>()?,
-                selections: indexes
-                    .selections
+                selections: selection_indexes
                     .iter()
                     .map(|index| indexed(selections, *index).copied())
                     .collect::<Result<Vec<_>, PreparedSemanticResultCodecError>>()?,
-            })
+            }),
+            ReplayIndexes::DeterministicallyIncompatible {
+                configuration,
+                reason,
+            } => {
+                if signature.is_some() {
+                    return Err(inconsistent("incompatible replay signature"));
+                }
+                Ok(RecordedFindingReplay::DeterministicallyIncompatible {
+                    configuration: *indexed(configurations, *configuration)?,
+                    reason: *reason,
+                })
+            }
         })
         .collect()
 }
@@ -2296,5 +2729,91 @@ impl<'a> Decoder<'a> {
         let (value, remaining) = self.remaining.split_at(length);
         self.remaining = remaining;
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- malformed index fixtures must fail the focused codec test.
+#[allow(clippy::expect_used)]
+mod v4_replay_index_tests {
+    use super::*;
+    use crucible::Schedule;
+
+    const INCOMPATIBLE_REPLAYS: usize = 4_096;
+
+    fn dense_incompatible_bytes() -> Vec<u8> {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let scenario =
+            super::super::encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
+        let configuration =
+            super::super::encode_crucible_configuration_artifact(&scenario, &Schedule::empty())
+                .expect("configuration artifact");
+        let configuration_id = configuration.id().expect("configuration ID");
+        let replays = (0..INCOMPATIBLE_REPLAYS)
+            .map(|_| RecordedFindingReplay::DeterministicallyIncompatible {
+                configuration: configuration_id,
+                reason: FindingReplayIncompatibility::PrefixDiverged,
+            })
+            .collect::<Vec<_>>();
+        let indexes = ReplayRecordIndexes {
+            configurations: BTreeMap::from([(configuration_id.content_id(), 0)]),
+            measurements: BTreeMap::new(),
+            properties: BTreeMap::new(),
+            coverage: BTreeMap::new(),
+            opportunities: BTreeMap::new(),
+            selections: BTreeMap::new(),
+        };
+        let mut encoder = Encoder::new(MAX_PREPARED_SEMANTIC_RESULT_BYTES);
+        encode_replay_pass(
+            &mut encoder,
+            &replays,
+            &indexes,
+            PreparedSemanticResultVersion::V4,
+        )
+        .expect("encode dense incompatible pass");
+        encoder.finish().expect("finish dense incompatible pass")
+    }
+
+    #[test]
+    fn dense_incompatible_v4_pass_round_trips_without_legacy_padding() {
+        let bytes = dense_incompatible_bytes();
+        assert_eq!(bytes.len(), size_of::<u32>() + (INCOMPATIBLE_REPLAYS * 6));
+
+        let mut decoder = Decoder::new(&bytes);
+        let mut validation_references = 0;
+        let decoded = decode_replay_indexes(
+            &mut decoder,
+            &mut validation_references,
+            PreparedSemanticResultVersion::V4,
+        )
+        .expect("decode dense incompatible pass");
+        decoder.finish().expect("consume dense incompatible pass");
+        assert_eq!(decoded.len(), INCOMPATIBLE_REPLAYS);
+        assert!(decoded.iter().all(|replay| matches!(
+            replay,
+            ReplayIndexes::DeterministicallyIncompatible {
+                configuration: 0,
+                reason: FindingReplayIncompatibility::PrefixDiverged,
+            }
+        )));
+    }
+
+    #[test]
+    fn dense_incompatible_v4_pass_rejects_truncation() {
+        let mut bytes = dense_incompatible_bytes();
+        bytes.pop();
+        let mut decoder = Decoder::new(&bytes);
+        let mut validation_references = 0;
+
+        assert!(matches!(
+            decode_replay_indexes(
+                &mut decoder,
+                &mut validation_references,
+                PreparedSemanticResultVersion::V4,
+            ),
+            Err(PreparedSemanticResultCodecError::Truncated)
+        ));
     }
 }

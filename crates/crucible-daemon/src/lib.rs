@@ -97,6 +97,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod assignment_ledger;
+pub mod automatic_finding_runner;
 pub mod campaign_attachment;
 pub mod campaign_bootstrap;
 pub mod campaign_endpoint;
@@ -186,6 +187,11 @@ pub use assignment_ledger::{
     AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
     CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointResumeBasis,
     MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
+};
+pub use automatic_finding_runner::{
+    AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
+    AutomaticFindingExecutionRunner, AutomaticFindingExecutionRunnerError,
+    PrivateFindingReplayRunner,
 };
 pub use campaign_attachment::{
     AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeConfig,
@@ -283,12 +289,14 @@ pub use control_responsiveness::{
     validate_daemon_control_responsiveness,
 };
 pub use crucible_artifact::{
-    AutomaticFindingPreparationError, CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2,
+    AutomaticFindingPreparationError, AutomaticFindingReplayOutcome,
+    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2,
     CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2,
     CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
     CrucibleArtifactError, CrucibleCampaignArtifactStore, CrucibleFindingReplayEvidence,
-    CrucibleFindingReplayTranscript, MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES,
+    CrucibleFindingReplayTranscript, FindingReplayIncompatibility,
+    MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES,
     MAX_CRUCIBLE_FINDING_REPLAY_BYTES, MAX_CRUCIBLE_FINDING_REPLAY_RECORDS,
     MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
     PreparedCrucibleFindingCandidate, PreparedSemanticAttemptResult,
@@ -297,6 +305,7 @@ pub use crucible_artifact::{
     decode_crucible_configuration_artifact_with_signal_fault_replay,
     decode_crucible_scenario_artifact, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact, prepare_automatic_signature_preserving_finding,
+    prepare_automatic_signature_preserving_finding_with_outcomes,
     prepare_signature_preserving_minimized_finding_candidate,
 };
 pub use crucible_execution::{
@@ -633,7 +642,11 @@ pub use qemu_hot_fork_world_factory::{
     QemuProductionHotForkWorldLifecycleFactoryError, QemuUnavailableHotForkSourceWorldProvider,
 };
 #[cfg(target_os = "linux")]
-pub use qemu_hot_fork_world_resource::{QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner};
+pub use qemu_hot_fork_world_resource::{
+    QemuHotForkWorldAuxiliaryGuard, QemuHotForkWorldAuxiliaryResourceBroker,
+    QemuHotForkWorldAuxiliaryResourceFactory, QemuHotForkWorldAuxiliaryResourceGuard,
+    QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner,
+};
 pub use qemu_lifecycle_launcher::QemuAttemptProductionVmNodeLauncher;
 pub use qemu_resource_guard::{
     ComposedQemuAttemptResourceGuard, ComposedQemuAttemptResourceGuardFactory,

@@ -472,6 +472,7 @@ where
               worker_state_root,
               worker_count,
               lifecycles,
+              finding_replay_brokers,
               lifecycle_config,
               resource_ceiling| {
             let fresh_runners = || {
@@ -579,7 +580,8 @@ where
                     retention: retention_admin,
                 });
             let mut runners = Vec::with_capacity(worker_count);
-            for slot in 0..worker_count {
+            for (slot, finding_replay_broker) in finding_replay_brokers.iter().cloned().enumerate()
+            {
                 let evidence = QemuAttemptExecutionEvidence::default();
                 let lifecycle = lifecycle_config
                     .clone()
@@ -641,7 +643,8 @@ where
                     worker_state_root.join(format!("worker-{slot:03}")),
                     hot_fork.shutdown_policy(),
                     hot_fork.async_policy(),
-                );
+                )
+                .with_auxiliary_resources(finding_replay_broker);
                 let hot_factory = PackagedStatusHotForkFactory {
                     inner: hot_factory,
                     lifecycles: lifecycles.clone(),
