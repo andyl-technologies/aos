@@ -26,13 +26,15 @@
 
 use super::{
     CanonicalManagerPropertyValueV1, MANAGER_PROPERTY_TABLE_V1, ManagerPropertyBindingV1,
-    ManagerPropertyDescriptorV1, ManagerPropertyObservationV1, ManagerPropertyShapeV1,
-    NamespaceInspectorManagerQueryError, ObservedNamespaceInspectorActivationSnapshotV1,
+    ManagerPropertyDescriptorV1, ManagerPropertyObservationV1, NamespaceInspectorManagerQueryError,
+    NamespaceInspectorManagerQuerySchemaDigestV1, ObservedNamespaceInspectorActivationSnapshotV1,
     SNAPSHOT_KIND, SNAPSHOT_MAGIC,
 };
+#[cfg(test)]
+use super::{MANAGER_QUERY_SCHEMA_DIGEST_V1, ManagerPropertyShapeV1};
 use crate::namespace_inspector::launch_contract::{
-    NamespaceInspectorDeploymentContractV1, NamespaceInspectorDeploymentDigestV1, contract_kind,
-    contract_magic, decode_contract_body, encode_contract_body,
+    NamespaceInspectorDeploymentContractV1, contract_kind, contract_magic, decode_contract_body,
+    encode_contract_body,
 };
 
 const VERSION: u16 = 1;
@@ -67,7 +69,7 @@ pub(super) fn encode_snapshot(
     snapshot: &ObservedNamespaceInspectorActivationSnapshotV1,
 ) -> Result<Vec<u8>, NamespaceInspectorManagerQueryError> {
     encode_frame(SNAPSHOT_MAGIC, SNAPSHOT_KIND, |encoder| {
-        encoder.bytes(snapshot.contract_digest.as_bytes());
+        encoder.bytes(snapshot.query_schema_digest.as_bytes());
         encoder.text(&snapshot.service_unit_id)?;
         encoder.text(&snapshot.service_instance)?;
         encoder.bytes(&snapshot.invocation_id);
@@ -88,7 +90,9 @@ pub(super) fn decode_snapshot(
 ) -> Result<ObservedNamespaceInspectorActivationSnapshotV1, NamespaceInspectorManagerQueryError> {
     let mut decoder = decode_frame(bytes, SNAPSHOT_MAGIC, SNAPSHOT_KIND)?;
     let snapshot = ObservedNamespaceInspectorActivationSnapshotV1 {
-        contract_digest: NamespaceInspectorDeploymentDigestV1::from_bytes(decoder.array()?),
+        query_schema_digest: NamespaceInspectorManagerQuerySchemaDigestV1::from_bytes(
+            decoder.array()?,
+        ),
         service_unit_id: decoder.text(super::MAXIMUM_UNIT_ID_BYTES)?,
         service_instance: decoder.text(super::MAXIMUM_INSTANCE_BYTES)?,
         invocation_id: decoder.array()?,
@@ -1004,13 +1008,16 @@ pub(in crate::namespace_inspector) fn test_properties(
             descriptor_id: descriptor.id,
             value: match descriptor.id {
                 1 => CanonicalManagerPropertyValueV1::Scalar(
-                    b"aos-sandbox-network-namespace-inspector@accept.service".to_vec(),
+                    b"aos-sandbox-network-namespace-inspector@7-311-411_511-0.service".to_vec(),
                 ),
                 17 => CanonicalManagerPropertyValueV1::Scalar(
-                    b"/aos.slice/aos-control.slice/inspector.service".to_vec(),
+                    b"/aos.slice/aos-control.slice/aos-sandbox-network-namespace-inspector@7-311-411_511-0.service".to_vec(),
                 ),
                 18 => CanonicalManagerPropertyValueV1::Scalar(211_u64.to_le_bytes().to_vec()),
                 24 => CanonicalManagerPropertyValueV1::Scalar(113_u32.to_le_bytes().to_vec()),
+                93 => CanonicalManagerPropertyValueV1::Scalar(
+                    b"aos-sandbox-network-namespace-inspector.socket".to_vec(),
+                ),
                 _ => test_property_value(descriptor, static_only),
             },
         })
@@ -1019,14 +1026,14 @@ pub(in crate::namespace_inspector) fn test_properties(
 
 #[cfg(test)]
 fn test_snapshot() -> ObservedNamespaceInspectorActivationSnapshotV1 {
-    let contract = crate::namespace_inspector::launch_contract::tests::contract();
     ObservedNamespaceInspectorActivationSnapshotV1 {
-        contract_digest: contract.digest().unwrap(),
-        service_unit_id: "aos-sandbox-network-namespace-inspector@accept.service".into(),
-        service_instance: "accept".into(),
+        query_schema_digest: MANAGER_QUERY_SCHEMA_DIGEST_V1,
+        service_unit_id:
+            "aos-sandbox-network-namespace-inspector@7-311-411_511-0.service".into(),
+        service_instance: "7-311-411_511-0".into(),
         invocation_id: [3; 16],
         main_pid: 113,
-        control_group: "/aos.slice/aos-control.slice/inspector.service".into(),
+        control_group: "/aos.slice/aos-control.slice/aos-sandbox-network-namespace-inspector@7-311-411_511-0.service".into(),
         control_group_id: 211,
         accept_ordinal: 7,
         accepted_socket_cookie: 311,
@@ -1040,9 +1047,13 @@ fn test_snapshot() -> ObservedNamespaceInspectorActivationSnapshotV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::namespace_inspector::launch_contract::tests::contract;
+    use crate::namespace_inspector::launch_contract::{
+        NamespaceInspectorDeploymentContractV1, ProtectedNamespaceInspectorDeploymentContractV1,
+        tests::contract,
+    };
     use crate::namespace_inspector::manager_query::{
         MANAGER_METHOD_TABLE_V1, ManagerMethodDescriptorV1, ManagerQueryObjectV1,
+        NamespaceInspectorManagerQueryExpectedActivationV1,
         match_namespace_inspector_activation_snapshots,
     };
     use sha2::{Digest as _, Sha256};
@@ -1052,6 +1063,40 @@ mod tests {
             .iter()
             .find(|descriptor| descriptor.signature == signature)
             .unwrap()
+    }
+
+    fn expected_activation() -> NamespaceInspectorManagerQueryExpectedActivationV1<'static> {
+        NamespaceInspectorManagerQueryExpectedActivationV1 {
+            service_unit_id: "aos-sandbox-network-namespace-inspector@7-311-411_511-0.service",
+            service_instance: "7-311-411_511-0",
+            parent_pid: 113,
+            parent_pidfd_inode: 613,
+            parent_control_group: "/aos.slice/aos-control.slice/aos-sandbox-network-namespace-inspector@7-311-411_511-0.service",
+            parent_control_group_id: 211,
+            accept_ordinal: 7,
+            accepted_socket_cookie: 311,
+            connecting_pid: 411,
+            connecting_pidfd_inode: 511,
+            connecting_uid: 0,
+        }
+    }
+
+    fn match_test_snapshots(
+        contract: &NamespaceInspectorDeploymentContractV1,
+        first: ObservedNamespaceInspectorActivationSnapshotV1,
+        second: ObservedNamespaceInspectorActivationSnapshotV1,
+    ) -> Result<
+        super::super::MatchedNamespaceInspectorActivationSnapshotsV1,
+        NamespaceInspectorManagerQueryError,
+    > {
+        let protected =
+            ProtectedNamespaceInspectorDeploymentContractV1::for_test(contract.clone()).unwrap();
+        match_namespace_inspector_activation_snapshots(
+            &protected,
+            expected_activation(),
+            first,
+            second,
+        )
     }
 
     #[test]
@@ -1134,13 +1179,7 @@ mod tests {
             digest.update([descriptor.binding as u8, descriptor.shape as u8]);
         }
         let actual: [u8; 32] = digest.finalize().into();
-        assert_eq!(
-            actual,
-            [
-                116, 242, 223, 173, 18, 235, 224, 170, 160, 88, 155, 79, 88, 28, 110, 116, 19, 12,
-                27, 31, 143, 150, 14, 25, 153, 188, 92, 134, 151, 138, 20, 154,
-            ]
-        );
+        assert_eq!(actual, *MANAGER_QUERY_SCHEMA_DIGEST_V1.as_bytes());
     }
 
     #[test]
@@ -1159,7 +1198,7 @@ mod tests {
         let contract = contract();
         let first = test_snapshot();
         let second = first.clone();
-        match_namespace_inspector_activation_snapshots(&contract, first, second).unwrap();
+        match_test_snapshots(&contract, first, second).unwrap();
 
         let first = test_snapshot();
         let mut second = first.clone();
@@ -1167,7 +1206,7 @@ mod tests {
         second.properties[18].value =
             CanonicalManagerPropertyValueV1::Scalar(second.control_group_id.to_le_bytes().to_vec());
         assert_eq!(
-            match_namespace_inspector_activation_snapshots(&contract, first, second),
+            match_test_snapshots(&contract, first, second),
             Err(NamespaceInspectorManagerQueryError::SnapshotMismatch)
         );
     }
@@ -1191,7 +1230,7 @@ mod tests {
         second.properties[106].value = CanonicalManagerPropertyValueV1::Scalar(vec![9; 16]);
 
         assert_eq!(
-            match_namespace_inspector_activation_snapshots(&contract, first, second),
+            match_test_snapshots(&contract, first, second),
             Err(NamespaceInspectorManagerQueryError::SnapshotMismatch)
         );
     }
@@ -1206,7 +1245,7 @@ mod tests {
         };
         assert!(elements[0].iter().rev().take(4).any(|byte| *byte != 0));
 
-        match_namespace_inspector_activation_snapshots(&contract, first.clone(), first).unwrap();
+        match_test_snapshots(&contract, first.clone(), first).unwrap();
     }
 
     #[test]
@@ -1222,7 +1261,7 @@ mod tests {
         let second = first.clone();
 
         assert_eq!(
-            match_namespace_inspector_activation_snapshots(&contract, first, second),
+            match_test_snapshots(&contract, first, second),
             Err(NamespaceInspectorManagerQueryError::StaticPropertyMismatch)
         );
     }
@@ -1241,7 +1280,7 @@ mod tests {
         *last = last.wrapping_add(1);
 
         assert_eq!(
-            match_namespace_inspector_activation_snapshots(&contract, first, second),
+            match_test_snapshots(&contract, first, second),
             Err(NamespaceInspectorManagerQueryError::SnapshotMismatch)
         );
     }
@@ -1259,7 +1298,7 @@ mod tests {
         let second = first.clone();
 
         assert_eq!(
-            match_namespace_inspector_activation_snapshots(&contract, first, second),
+            match_test_snapshots(&contract, first, second),
             Err(NamespaceInspectorManagerQueryError::StaticPropertyMismatch)
         );
     }

@@ -252,10 +252,34 @@ const struct aos_fixture_case aos_fixture_cases[] = {
         .expected_exit = 254,
     },
     {
-        .name = "start-wrong-subject",
-        .fault = AOS_FIXTURE_START_WRONG_SUBJECT,
+        .name = "start-wrong-connector",
+        .fault = AOS_FIXTURE_START_WRONG_CONNECTOR,
+        .expected_calls = 1,
+        .expected_exit = 254,
+    },
+    {
+        .name = "start-wrong-connector-pidfd-inode",
+        .fault = AOS_FIXTURE_START_WRONG_CONNECTOR_INODE,
+        .expected_calls = 1,
+        .expected_exit = 254,
+    },
+    {
+        .name = "start-equal-parent-connector",
+        .fault = AOS_FIXTURE_START_EQUAL_PARENT_CONNECTOR,
         .expected_calls = 0,
         .expected_exit = 254,
+    },
+    {
+        .name = "start-same-pid-different-pidfd-inode",
+        .fault = AOS_FIXTURE_START_SAME_PID_DIFFERENT_INODE,
+        .expected_calls = 254,
+        .expected_exit = 0,
+    },
+    {
+        .name = "start-different-pid-same-pidfd-inode",
+        .fault = AOS_FIXTURE_START_DIFFERENT_PID_SAME_INODE,
+        .expected_calls = 254,
+        .expected_exit = 0,
     },
     {
         .name = "start-minimum-identity-format",
@@ -266,6 +290,18 @@ const struct aos_fixture_case aos_fixture_cases[] = {
     {
         .name = "start-maximum-identity-format",
         .fault = AOS_FIXTURE_START_MAX_IDENTITY,
+        .expected_calls = 254,
+        .expected_exit = 0,
+    },
+    {
+        .name = "control-receive-would-block-retry",
+        .fault = AOS_FIXTURE_CONTROL_RECEIVE_RETRY,
+        .expected_calls = 254,
+        .expected_exit = 0,
+    },
+    {
+        .name = "control-send-would-block-retry",
+        .fault = AOS_FIXTURE_CONTROL_SEND_RETRY,
         .expected_calls = 254,
         .expected_exit = 0,
     },

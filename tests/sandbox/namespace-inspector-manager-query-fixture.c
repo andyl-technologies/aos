@@ -21,7 +21,7 @@
 #include <time.h>
 #include <unistd.h>
 
-static const uint8_t fixture_contract_digest[32] = {
+static const uint8_t fixture_query_schema_digest[32] = {
     116, 242, 223, 173, 18, 235, 224, 170, 160, 88, 155, 79, 88, 28, 110, 116,
     19,  12,  27,  31,  143, 150, 14,  25,  153, 188, 92, 134, 151, 138, 20, 154,
 };
@@ -283,6 +283,36 @@ static int install_child_fds(int null_fd, int stdout_fd, int stderr_fd,
   return 0;
 }
 
+static int saturate_control_send_buffer(void)
+{
+  const uint8_t filler = 0;
+  size_t records = 0;
+
+  for (;;) {
+    ssize_t written = send(AOS_QUERY_CONTROL_FD, &filler, sizeof(filler),
+                           MSG_DONTWAIT | MSG_NOSIGNAL);
+
+    if (written == (ssize_t)sizeof(filler)) {
+      records++;
+      continue;
+    }
+    if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && records > 0)
+      return 0;
+    return -1;
+  }
+}
+
+static int pause_for_nonblocking_retry(void)
+{
+  struct timespec remaining = {.tv_nsec = 50000000};
+
+  while (nanosleep(&remaining, &remaining) != 0) {
+    if (errno != EINTR)
+      return -1;
+  }
+  return 0;
+}
+
 static int spawn_helper(const char *helper, int bus_fd, int parent_pidfd,
                         int control_fd, int stdout_fd, int stderr_fd,
                         const struct aos_fixture_case *test_case, pid_t *child)
@@ -308,6 +338,9 @@ static int spawn_helper(const char *helper, int bus_fd, int parent_pidfd,
     if (install_child_fds(null_fd, stdout_fd, stderr_fd, bus_fd, parent_pidfd,
                           control_fd, test_case) != 0 ||
         drop_child_authority() != 0)
+      _exit(253);
+    if (test_case->fault == AOS_FIXTURE_CONTROL_SEND_RETRY &&
+        saturate_control_send_buffer() != 0)
       _exit(253);
     execve(helper, arguments, environment);
     _exit(253);
@@ -409,8 +442,8 @@ static int send_start(int control_fd, int parent_pidfd,
   else if (test_case->fault == AOS_FIXTURE_START_LONG_DEADLINE)
     deadline_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
                   (uint64_t)now.tv_nsec + UINT64_C(2000000000);
-  memcpy(identity->start.contract_digest, fixture_contract_digest,
-         sizeof(identity->start.contract_digest));
+  memcpy(identity->start.query_schema_digest, fixture_query_schema_digest,
+         sizeof(identity->start.query_schema_digest));
   identity->start.deadline_ns = deadline_ns;
   identity->start.ordinal = UINT64_C(0x1020304050607080);
   identity->start.cookie = UINT64_C(0x8877665544332211);
@@ -421,9 +454,22 @@ static int send_start(int control_fd, int parent_pidfd,
     identity->start.ordinal = UINT64_MAX;
     identity->start.cookie = UINT64_MAX;
   }
-  identity->start.subject_pid = (uint32_t)getpid();
-  identity->start.subject_pidfd_inode = (uint64_t)status.st_ino;
-  identity->start.subject_uid = (uint32_t)geteuid();
+  /* The activation connector is intentionally not the spawned helper's
+   * invoking parent. The fake manager binds these independent fields to the
+   * service instance returned for GetUnitByPIDFD(parent_pidfd). */
+  identity->start.connector_pid =
+      (uint32_t)getpid() == 1U ? 2U : (uint32_t)getpid() ^ 1U;
+  identity->start.connector_pidfd_inode =
+      (uint64_t)status.st_ino == 1U ? 2U : (uint64_t)status.st_ino ^ UINT64_C(1);
+  identity->start.connector_uid = (uint32_t)geteuid();
+  if (test_case->fault == AOS_FIXTURE_START_EQUAL_PARENT_CONNECTOR) {
+    identity->start.connector_pid = (uint32_t)getpid();
+    identity->start.connector_pidfd_inode = (uint64_t)status.st_ino;
+  } else if (test_case->fault == AOS_FIXTURE_START_SAME_PID_DIFFERENT_INODE) {
+    identity->start.connector_pid = (uint32_t)getpid();
+  } else if (test_case->fault == AOS_FIXTURE_START_DIFFERENT_PID_SAME_INODE) {
+    identity->start.connector_pidfd_inode = (uint64_t)status.st_ino;
+  }
   for (size_t index = 0; index < sizeof(identity->invocation_id); index++)
     identity->invocation_id[index] = (uint8_t)(0xa0U + index);
   if (aos_fixture_prepare_identity(identity) != 0)
@@ -433,8 +479,8 @@ static int send_start(int control_fd, int parent_pidfd,
   cursor += 32;
   store_u64be(cursor, identity->start.deadline_ns);
   cursor += 8;
-  memcpy(cursor, identity->start.contract_digest,
-         sizeof(identity->start.contract_digest));
+  memcpy(cursor, identity->start.query_schema_digest,
+         sizeof(identity->start.query_schema_digest));
   if (test_case->fault == AOS_FIXTURE_START_WRONG_DIGEST)
     cursor[0] ^= 0x80U;
   cursor += 32;
@@ -442,12 +488,14 @@ static int send_start(int control_fd, int parent_pidfd,
   cursor += 8;
   store_u64be(cursor, identity->start.cookie);
   cursor += 8;
-  store_u32be(cursor, identity->start.subject_pid +
-                          (test_case->fault == AOS_FIXTURE_START_WRONG_SUBJECT));
+  store_u32be(cursor, identity->start.connector_pid +
+                          (test_case->fault == AOS_FIXTURE_START_WRONG_CONNECTOR));
   cursor += 4;
-  store_u64be(cursor, identity->start.subject_pidfd_inode);
+  store_u64be(cursor, identity->start.connector_pidfd_inode);
+  if (test_case->fault == AOS_FIXTURE_START_WRONG_CONNECTOR_INODE)
+    cursor[7] ^= 1U;
   cursor += 8;
-  store_u32be(cursor, identity->start.subject_uid);
+  store_u32be(cursor, identity->start.connector_uid);
   return send_record(control_fd, AOS_QUERY_PHASE_START, payload, sizeof(payload));
 }
 
@@ -858,8 +906,9 @@ static int validate_phase_snapshot(
 
   if (snapshot_take(&outer, sizeof(identity->start.nonce), &bytes) != 0 ||
       memcmp(bytes, identity->start.nonce, sizeof(identity->start.nonce)) != 0 ||
-      snapshot_take(&outer, sizeof(fixture_contract_digest), &bytes) != 0 ||
-      memcmp(bytes, fixture_contract_digest, sizeof(fixture_contract_digest)) !=
+      snapshot_take(&outer, sizeof(fixture_query_schema_digest), &bytes) != 0 ||
+      memcmp(bytes, fixture_query_schema_digest,
+             sizeof(fixture_query_schema_digest)) !=
           0 ||
       snapshot_take(&outer, 8, &bytes) != 0 ||
       load_u64be(bytes) != identity->start.ordinal ||
@@ -887,8 +936,9 @@ static int validate_phase_snapshot(
       snapshot_u8(&snapshot, &reserved) != 0 || reserved != 0 ||
       snapshot_u32(&snapshot, &number32) != 0 ||
       number32 != snapshot.length ||
-      snapshot_take(&snapshot, sizeof(fixture_contract_digest), &bytes) != 0 ||
-      memcmp(bytes, fixture_contract_digest, sizeof(fixture_contract_digest)) !=
+      snapshot_take(&snapshot, sizeof(fixture_query_schema_digest), &bytes) != 0 ||
+      memcmp(bytes, fixture_query_schema_digest,
+             sizeof(fixture_query_schema_digest)) !=
           0 ||
       snapshot_exact_text(&snapshot, identity->service_name,
                           AOS_QUERY_MAX_UNIT_ID) != 0 ||
@@ -906,11 +956,11 @@ static int validate_phase_snapshot(
       snapshot_u64(&snapshot, &number64) != 0 ||
       number64 != identity->start.cookie ||
       snapshot_u32(&snapshot, &number32) != 0 ||
-      number32 != identity->start.subject_pid ||
+      number32 != identity->start.connector_pid ||
       snapshot_u64(&snapshot, &number64) != 0 ||
-      number64 != identity->start.subject_pidfd_inode ||
+      number64 != identity->start.connector_pidfd_inode ||
       snapshot_u32(&snapshot, &number32) != 0 ||
-      number32 != identity->start.subject_uid ||
+      number32 != identity->start.connector_uid ||
       validate_snapshot_properties(&snapshot, identity, test_case) != 0 ||
       snapshot.offset != snapshot.length)
     return -1;
@@ -970,6 +1020,7 @@ static int exercise_case(int control_fd, int raw_bus_fd, sd_bus *server,
   bool have_first = false;
   bool have_abort = false;
   bool stopped_bus = false;
+  bool send_retry_pause_complete = false;
   bool bus_fault = reply_fault_stops_bus(test_case->fault);
   bool expects_abort = bus_fault || test_case->fault == AOS_FIXTURE_STALLED_REPLY ||
                        test_case->fault == AOS_FIXTURE_ENTRY_LOW_NOFILE ||
@@ -1068,7 +1119,15 @@ static int exercise_case(int control_fd, int raw_bus_fd, sd_bus *server,
       }
     }
 
-    if ((descriptors[1].revents & POLLIN) != 0) {
+    if (test_case->fault == AOS_FIXTURE_CONTROL_SEND_RETRY && calls == 127U &&
+        !send_retry_pause_complete) {
+      if (pause_for_nonblocking_retry() != 0)
+        return -1;
+      send_retry_pause_complete = true;
+    }
+
+    if ((descriptors[1].revents & POLLIN) != 0 &&
+        (test_case->fault != AOS_FIXTURE_CONTROL_SEND_RETRY || calls >= 127U)) {
       struct aos_fixture_wire payload = {0};
       enum aos_query_phase phase;
 
@@ -1165,6 +1224,9 @@ int aos_fixture_run_case(const char *helper,
   stdout_pipe[1] = -1;
   close(stderr_pipe[1]);
   stderr_pipe[1] = -1;
+  if (test_case->fault == AOS_FIXTURE_CONTROL_RECEIVE_RETRY &&
+      pause_for_nonblocking_retry() != 0)
+    goto setup_fail;
   if (send_start(control_pair[0], parent_pidfd, &identity, test_case) != 0 ||
       start_server(bus_pair[0], &server) != 0)
     goto setup_fail;

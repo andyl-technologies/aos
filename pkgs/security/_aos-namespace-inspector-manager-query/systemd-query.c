@@ -21,7 +21,7 @@ _Static_assert(sizeof(aos_query_properties) / sizeof(aos_query_properties[0]) ==
                    AOS_QUERY_PROPERTY_COUNT,
                "systemd 259 property manifest count changed");
 
-const uint8_t aos_query_contract_digest[32] = {
+const uint8_t aos_query_schema_digest[32] = {
     116, 242, 223, 173, 18, 235, 224, 170, 160, 88, 155, 79, 88, 28, 110, 116,
     19,  12,  27,  31,  143, 150, 14,  25,  153, 188, 92, 134, 151, 138, 20, 154,
 };
@@ -656,16 +656,16 @@ static int prepare_unit_identity(struct aos_query_context *context)
       "aos-sandbox-network-namespace-inspector.socket";
   int written;
 
-  if (context->start.cookie == 0 || context->start.subject_pid == 0 ||
-      context->start.subject_pidfd_inode == 0)
+  if (context->start.cookie == 0 || context->start.connector_pid == 0 ||
+      context->start.connector_pidfd_inode == 0)
     return -1;
   written = snprintf(context->service_instance,
                      sizeof(context->service_instance),
                      "%" PRIu64 "-%" PRIu64 "-%" PRIu32 "_%" PRIu64 "-%" PRIu32,
                      context->start.ordinal, context->start.cookie,
-                     context->start.subject_pid,
-                     context->start.subject_pidfd_inode,
-                     context->start.subject_uid);
+                     context->start.connector_pid,
+                     context->start.connector_pidfd_inode,
+                     context->start.connector_uid);
   if (written <= 0 || (size_t)written >= sizeof(context->service_instance))
     return -1;
   written = snprintf(context->unit_name, sizeof(context->unit_name), "%s%s%s",
@@ -889,8 +889,8 @@ int aos_query_snapshot(struct aos_query_context *context,
       aos_query_buffer_u8(snapshot, AOS_QUERY_SNAPSHOT_KIND) != 0 ||
       aos_query_buffer_u8(snapshot, 0) != 0 ||
       aos_query_buffer_u32le(snapshot, 0) != 0 ||
-      aos_query_buffer_append(snapshot, aos_query_contract_digest,
-                              sizeof(aos_query_contract_digest)) != 0 ||
+      aos_query_buffer_append(snapshot, aos_query_schema_digest,
+                              sizeof(aos_query_schema_digest)) != 0 ||
       aos_query_buffer_text_le(snapshot, context->unit_name) != 0 ||
       aos_query_buffer_text_le(snapshot, context->service_instance) != 0 ||
       aos_query_buffer_append(snapshot, context->invocation_id,
@@ -900,9 +900,9 @@ int aos_query_snapshot(struct aos_query_context *context,
       aos_query_buffer_u64le(snapshot, observation.control_group_id) != 0 ||
       aos_query_buffer_u64le(snapshot, context->start.ordinal) != 0 ||
       aos_query_buffer_u64le(snapshot, context->start.cookie) != 0 ||
-      aos_query_buffer_u32le(snapshot, context->start.subject_pid) != 0 ||
-      aos_query_buffer_u64le(snapshot, context->start.subject_pidfd_inode) != 0 ||
-      aos_query_buffer_u32le(snapshot, context->start.subject_uid) != 0 ||
+      aos_query_buffer_u32le(snapshot, context->start.connector_pid) != 0 ||
+      aos_query_buffer_u64le(snapshot, context->start.connector_pidfd_inode) != 0 ||
+      aos_query_buffer_u32le(snapshot, context->start.connector_uid) != 0 ||
       aos_query_buffer_append(snapshot, properties.bytes, properties.length) != 0)
     return -1;
 

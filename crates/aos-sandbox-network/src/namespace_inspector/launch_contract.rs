@@ -126,6 +126,35 @@ pub(crate) struct NamespaceInspectorDeploymentContractV1 {
     static_properties: Vec<ManagerPropertyObservationV1>,
 }
 
+/// Retains a deployment contract admitted by protected provisioning.
+///
+/// This move-only wrapper is the authority input to the manager-query session.
+/// Its production constructor remains intentionally absent until the protected
+/// contract loader and retained artifact checks are composed.
+#[derive(Debug)]
+pub(crate) struct ProtectedNamespaceInspectorDeploymentContractV1 {
+    contract: NamespaceInspectorDeploymentContractV1,
+    digest: NamespaceInspectorDeploymentDigestV1,
+}
+
+impl ProtectedNamespaceInspectorDeploymentContractV1 {
+    pub(super) const fn contract(&self) -> &NamespaceInspectorDeploymentContractV1 {
+        &self.contract
+    }
+
+    pub(super) const fn digest(&self) -> NamespaceInspectorDeploymentDigestV1 {
+        self.digest
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test(
+        contract: NamespaceInspectorDeploymentContractV1,
+    ) -> Result<Self, NamespaceInspectorManagerQueryError> {
+        let digest = contract.digest()?;
+        Ok(Self { contract, digest })
+    }
+}
+
 impl NamespaceInspectorDeploymentContractV1 {
     /// Decodes bounded canonical bytes without authenticating their source.
     ///
@@ -171,6 +200,40 @@ impl NamespaceInspectorDeploymentContractV1 {
 
     pub(super) fn static_properties(&self) -> &[ManagerPropertyObservationV1] {
         &self.static_properties
+    }
+
+    pub(super) fn manager_query_helper(&self) -> Option<&str> {
+        match self.helper_arguments.as_slice() {
+            [helper] => Some(helper),
+            _ => None,
+        }
+    }
+
+    pub(super) fn service_unit_for_instance(
+        &self,
+        instance: &str,
+    ) -> Result<String, NamespaceInspectorManagerQueryError> {
+        if instance.is_empty()
+            || !instance.is_ascii()
+            || instance.len() > MAXIMUM_UNIT_NAME_BYTES
+            || instance
+                .bytes()
+                .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'-'))
+        {
+            return Err(NamespaceInspectorManagerQueryError::InvalidContract);
+        }
+        let Some(stem) = self.service_unit_template.strip_suffix("@.service") else {
+            return Err(NamespaceInspectorManagerQueryError::InvalidContract);
+        };
+        let unit = format!("{stem}@{instance}.service");
+        if unit.len() > MAXIMUM_UNIT_NAME_BYTES {
+            return Err(NamespaceInspectorManagerQueryError::InvalidContract);
+        }
+        Ok(unit)
+    }
+
+    pub(super) fn socket_unit(&self) -> &str {
+        &self.socket_unit
     }
 
     pub(super) fn validate(&self) -> Result<(), NamespaceInspectorManagerQueryError> {
@@ -486,8 +549,8 @@ pub(super) mod tests {
         assert_eq!(
             *decoded.digest().unwrap().as_bytes(),
             [
-                161, 105, 235, 195, 227, 27, 5, 168, 184, 227, 41, 253, 77, 175, 112, 183, 82, 52,
-                63, 252, 207, 20, 154, 201, 248, 152, 115, 110, 210, 234, 17, 192,
+                6, 100, 120, 54, 169, 57, 22, 54, 157, 83, 70, 225, 80, 106, 165, 140, 129, 158,
+                10, 136, 156, 55, 198, 67, 250, 246, 219, 252, 82, 15, 137, 196,
             ]
         );
     }

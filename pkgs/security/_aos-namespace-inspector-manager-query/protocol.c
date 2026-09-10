@@ -338,27 +338,28 @@ int aos_query_decode_start(struct aos_query_context *context,
   cursor += 32;
   context->start.deadline_ns = load_u64(cursor);
   cursor += 8;
-  memcpy(context->start.contract_digest, cursor, 32);
+  memcpy(context->start.query_schema_digest, cursor, 32);
   cursor += 32;
   context->start.ordinal = load_u64(cursor);
   cursor += 8;
   context->start.cookie = load_u64(cursor);
   cursor += 8;
-  context->start.subject_pid = load_u32(cursor);
+  context->start.connector_pid = load_u32(cursor);
   cursor += 4;
-  context->start.subject_pidfd_inode = load_u64(cursor);
+  context->start.connector_pidfd_inode = load_u64(cursor);
   cursor += 8;
-  context->start.subject_uid = load_u32(cursor);
+  context->start.connector_uid = load_u32(cursor);
 
   if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
     return -1;
   now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
   if (context->start.deadline_ns <= now_ns ||
       context->start.deadline_ns - now_ns > UINT64_C(1000000000) ||
-      memcmp(context->start.contract_digest, aos_query_contract_digest, 32) != 0 ||
-      context->start.subject_pid != (uint32_t)context->parent.pid ||
-      context->start.subject_pidfd_inode != context->parent.pidfd_inode ||
-      context->start.subject_uid != context->parent.uid)
+      memcmp(context->start.query_schema_digest, aos_query_schema_digest, 32) != 0 ||
+      context->start.connector_pid == 0 ||
+      context->start.connector_pidfd_inode == 0 || context->start.cookie == 0 ||
+      (context->start.connector_pid == (uint32_t)context->parent.pid &&
+       context->start.connector_pidfd_inode == context->parent.pidfd_inode))
     return -1;
 
   context->deadline.tv_sec = (time_t)(context->start.deadline_ns / UINT64_C(1000000000));

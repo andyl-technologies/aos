@@ -8,17 +8,19 @@
 //!
 //! ```text
 //! AOSNIMS1 | version:u16 | kind:u8 | reserved:u8 | total:u32
-//! contract-digest:32 | dynamic activation fields | manager-environment
+//! query-schema-digest:32 | dynamic activation fields | manager-environment
 //! property-count:u16 | property observations in descriptor-table order
 //! ```
 
 use thiserror::Error;
 
 use super::launch_contract::{
-    NamespaceInspectorDeploymentContractV1, NamespaceInspectorDeploymentDigestV1,
+    NamespaceInspectorDeploymentDigestV1, ProtectedNamespaceInspectorDeploymentContractV1,
 };
+use crate::systemd_socket_instance::SystemdSocketInstanceV1;
 
 pub(super) mod codec;
+mod session;
 
 #[cfg(test)]
 mod manifest_tests;
@@ -28,6 +30,28 @@ const SNAPSHOT_KIND: u8 = 2;
 const MAXIMUM_UNIT_ID_BYTES: usize = 256;
 const MAXIMUM_INSTANCE_BYTES: usize = 192;
 const MAXIMUM_CGROUP_BYTES: usize = 512;
+const INSPECTOR_CONTROL_GROUP_PREFIX: &str = "/aos.slice/aos-control.slice/";
+const SOCKET_UNIT_ID_PROPERTY_INDEX: usize = 93;
+
+/// Identifies the immutable reviewed systemd property-query schema.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NamespaceInspectorManagerQuerySchemaDigestV1([u8; 32]);
+
+impl NamespaceInspectorManagerQuerySchemaDigestV1 {
+    pub(super) const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub(super) const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+pub(super) const MANAGER_QUERY_SCHEMA_DIGEST_V1: NamespaceInspectorManagerQuerySchemaDigestV1 =
+    NamespaceInspectorManagerQuerySchemaDigestV1([
+        116, 242, 223, 173, 18, 235, 224, 170, 160, 88, 155, 79, 88, 28, 110, 116, 19, 12, 27, 31,
+        143, 150, 14, 25, 153, 188, 92, 134, 151, 138, 20, 154,
+    ]);
 
 const MANAGER_INTERFACE: &str = "org.freedesktop.systemd1.Manager";
 const UNIT_INTERFACE: &str = "org.freedesktop.systemd1.Unit";
@@ -1326,7 +1350,7 @@ impl CanonicalManagerPropertyValueV1 {
 /// Holds one decoded but unauthenticated manager activation snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ObservedNamespaceInspectorActivationSnapshotV1 {
-    contract_digest: NamespaceInspectorDeploymentDigestV1,
+    query_schema_digest: NamespaceInspectorManagerQuerySchemaDigestV1,
     service_unit_id: String,
     service_instance: String,
     invocation_id: [u8; 16],
@@ -1367,7 +1391,8 @@ impl ObservedNamespaceInspectorActivationSnapshotV1 {
     }
 
     fn validate(&self) -> Result<(), NamespaceInspectorManagerQueryError> {
-        if self.service_unit_id.is_empty()
+        if self.query_schema_digest != MANAGER_QUERY_SCHEMA_DIGEST_V1
+            || self.service_unit_id.is_empty()
             || self.service_unit_id.len() > MAXIMUM_UNIT_ID_BYTES
             || self.service_instance.is_empty()
             || self.service_instance.len() > MAXIMUM_INSTANCE_BYTES
@@ -1417,39 +1442,105 @@ fn validate_dynamic_property_correlations(
     Ok(())
 }
 
-/// Holds pure A/B equality evidence without granting activation authority.
+/// Binds matched manager evidence to one protected deployment contract.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct MatchedNamespaceInspectorActivationSnapshotsV1 {
-    _snapshot: ObservedNamespaceInspectorActivationSnapshotV1,
+    deployment_digest: NamespaceInspectorDeploymentDigestV1,
+    parent_pidfd_inode: u64,
+    snapshot: ObservedNamespaceInspectorActivationSnapshotV1,
 }
 
-/// Compares two decoded snapshots with one static deployment contract.
+impl MatchedNamespaceInspectorActivationSnapshotsV1 {
+    pub(super) const fn deployment_digest(&self) -> NamespaceInspectorDeploymentDigestV1 {
+        self.deployment_digest
+    }
+
+    pub(super) const fn snapshot(&self) -> &ObservedNamespaceInspectorActivationSnapshotV1 {
+        &self.snapshot
+    }
+
+    pub(super) const fn parent_pidfd_inode(&self) -> u64 {
+        self.parent_pidfd_inode
+    }
+}
+
+/// Supplies retained parent and connector bindings to snapshot matching.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NamespaceInspectorManagerQueryExpectedActivationV1<'a> {
+    pub(super) service_unit_id: &'a str,
+    pub(super) service_instance: &'a str,
+    pub(super) parent_pid: u32,
+    pub(super) parent_pidfd_inode: u64,
+    pub(super) parent_control_group: &'a str,
+    pub(super) parent_control_group_id: u64,
+    pub(super) accept_ordinal: u64,
+    pub(super) accepted_socket_cookie: u64,
+    pub(super) connecting_pid: u32,
+    pub(super) connecting_pidfd_inode: u64,
+    pub(super) connecting_uid: u32,
+}
+
+/// Compares two decoded snapshots with one protected deployment contract.
 ///
-/// This operation proves only canonical structural equality and equality of
-/// the static property projection. It does not authenticate the manager,
-/// helper, protected contract source, retained descriptors, or live kernel
-/// identities, and cannot mint an inspector activation token.
+/// The caller must construct `expected` from retained parent and accepted-
+/// socket evidence. The returned move-only value binds the protected contract
+/// digest only after exact A/B, dynamic activation, and static projection
+/// checks succeed.
 ///
 /// # Errors
 ///
 /// Returns [`NamespaceInspectorManagerQueryError`] when the contract or either
-/// snapshot is invalid, the advertised digest is wrong, any A/B field differs,
-/// or a static property differs from the contract.
+/// snapshot is invalid, any A/B field differs, a retained activation field is
+/// wrong, or a static property differs from the protected contract.
 pub(crate) fn match_namespace_inspector_activation_snapshots(
-    contract: &NamespaceInspectorDeploymentContractV1,
+    protected: &ProtectedNamespaceInspectorDeploymentContractV1,
+    expected: NamespaceInspectorManagerQueryExpectedActivationV1<'_>,
     first: ObservedNamespaceInspectorActivationSnapshotV1,
     second: ObservedNamespaceInspectorActivationSnapshotV1,
 ) -> Result<MatchedNamespaceInspectorActivationSnapshotsV1, NamespaceInspectorManagerQueryError> {
+    let contract = protected.contract();
     contract.validate()?;
     first.validate()?;
     second.validate()?;
 
-    let contract_digest = contract.digest()?;
-    if first.contract_digest != contract_digest
-        || second.contract_digest != contract_digest
-        || first != second
-    {
+    if first != second {
         return Err(NamespaceInspectorManagerQueryError::SnapshotMismatch);
+    }
+    let expected_instance = SystemdSocketInstanceV1::new(
+        expected.accept_ordinal,
+        expected.accepted_socket_cookie,
+        expected.connecting_pid,
+        expected.connecting_pidfd_inode,
+        expected.connecting_uid,
+    )
+    .map_err(|_| NamespaceInspectorManagerQueryError::ActivationBindingMismatch)?;
+    let observed_instance = SystemdSocketInstanceV1::parse(expected.service_instance)
+        .map_err(|_| NamespaceInspectorManagerQueryError::ActivationBindingMismatch)?;
+    let service_unit = contract
+        .service_unit_for_instance(expected.service_instance)
+        .map_err(|_| NamespaceInspectorManagerQueryError::ActivationBindingMismatch)?;
+    let parent_control_group = format!("{INSPECTOR_CONTROL_GROUP_PREFIX}{service_unit}");
+    if expected_instance != observed_instance
+        || service_unit != expected.service_unit_id
+        || parent_control_group != expected.parent_control_group
+        || expected.parent_pid == 0
+        || expected.parent_pidfd_inode == 0
+        || expected.parent_control_group.is_empty()
+        || expected.parent_control_group_id == 0
+        || (expected.parent_pid == expected.connecting_pid
+            && expected.parent_pidfd_inode == expected.connecting_pidfd_inode)
+        || first.service_unit_id != expected.service_unit_id
+        || first.service_instance != expected.service_instance
+        || first.main_pid != expected.parent_pid
+        || first.control_group != expected.parent_control_group
+        || first.control_group_id != expected.parent_control_group_id
+        || first.accept_ordinal != expected.accept_ordinal
+        || first.accepted_socket_cookie != expected.accepted_socket_cookie
+        || first.connecting_pid != expected.connecting_pid
+        || first.connecting_pidfd_inode != expected.connecting_pidfd_inode
+        || first.connecting_uid != expected.connecting_uid
+    {
+        return Err(NamespaceInspectorManagerQueryError::ActivationBindingMismatch);
     }
 
     let observed_static = first
@@ -1462,8 +1553,22 @@ pub(crate) fn match_namespace_inspector_activation_snapshots(
             return Err(NamespaceInspectorManagerQueryError::StaticPropertyMismatch);
         }
     }
+    let Some(ManagerPropertyObservationV1 {
+        value: CanonicalManagerPropertyValueV1::Scalar(socket_unit),
+        ..
+    }) = first.properties.get(SOCKET_UNIT_ID_PROPERTY_INDEX)
+    else {
+        return Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch);
+    };
+    if socket_unit != contract.socket_unit().as_bytes() {
+        return Err(NamespaceInspectorManagerQueryError::StaticPropertyMismatch);
+    }
 
-    Ok(MatchedNamespaceInspectorActivationSnapshotsV1 { _snapshot: first })
+    Ok(MatchedNamespaceInspectorActivationSnapshotsV1 {
+        deployment_digest: protected.digest(),
+        parent_pidfd_inode: expected.parent_pidfd_inode,
+        snapshot: first,
+    })
 }
 
 pub(super) fn validate_property_sequence(
@@ -1526,9 +1631,12 @@ pub(crate) enum NamespaceInspectorManagerQueryError {
     /// A decoded deployment contract violates structural invariants.
     #[error("invalid namespace-inspector deployment contract")]
     InvalidContract,
-    /// A/B snapshots or their advertised contract digest differ.
+    /// A/B snapshots differ.
     #[error("namespace-inspector activation snapshots differ")]
     SnapshotMismatch,
+    /// A retained parent, connector, service, or cgroup binding differs.
+    #[error("namespace-inspector activation binding differs")]
+    ActivationBindingMismatch,
     /// An observed static property differs from protected expected bytes.
     #[error("namespace-inspector static property mismatch")]
     StaticPropertyMismatch,

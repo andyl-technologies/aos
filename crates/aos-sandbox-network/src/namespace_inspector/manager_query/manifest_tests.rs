@@ -7,8 +7,9 @@
 use sha2::{Digest, Sha256};
 
 use super::{
-    MANAGER_INTERFACE, MANAGER_PROPERTY_TABLE_V1, ManagerPropertyBindingV1, ManagerPropertyShapeV1,
-    ManagerQueryObjectV1, SERVICE_INTERFACE, SOCKET_INTERFACE, UNIT_INTERFACE,
+    MANAGER_INTERFACE, MANAGER_PROPERTY_TABLE_V1, MANAGER_QUERY_SCHEMA_DIGEST_V1,
+    ManagerPropertyBindingV1, ManagerPropertyShapeV1, ManagerQueryObjectV1, SERVICE_INTERFACE,
+    SOCKET_INTERFACE, UNIT_INTERFACE,
 };
 
 const PROPERTY_MANIFEST: &str = include_str!("systemd_v259_properties.def");
@@ -21,11 +22,6 @@ const MANIFEST_PREAMBLE: &str = "\
  */
 ";
 const ENTRY_PREFIX: &str = "AOS_SYSTEMD_V259_PROPERTY(";
-const REVIEWED_PROPERTY_TABLE_DIGEST: [u8; 32] = [
-    116, 242, 223, 173, 18, 235, 224, 170, 160, 88, 155, 79, 88, 28, 110, 116, 19, 12, 27, 31, 143,
-    150, 14, 25, 153, 188, 92, 134, 151, 138, 20, 154,
-];
-
 #[derive(Debug, Eq, PartialEq)]
 struct ManifestProperty<'a> {
     id: u16,
@@ -187,7 +183,10 @@ fn native_manifest_matches_rust_property_table_exactly() {
 fn native_manifest_retains_reviewed_property_table_digest() {
     let manifest = parse_manifest(PROPERTY_MANIFEST).unwrap();
 
-    assert_eq!(manifest_digest(&manifest), REVIEWED_PROPERTY_TABLE_DIGEST);
+    assert_eq!(
+        manifest_digest(&manifest),
+        *MANAGER_QUERY_SCHEMA_DIGEST_V1.as_bytes()
+    );
 }
 
 #[test]

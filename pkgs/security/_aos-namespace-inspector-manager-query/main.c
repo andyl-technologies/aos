@@ -20,8 +20,8 @@ static int phase_payload(const struct aos_query_context *context,
     return -1;
   if (aos_query_buffer_append(payload, context->start.nonce,
                               sizeof(context->start.nonce)) != 0 ||
-      aos_query_buffer_append(payload, aos_query_contract_digest,
-                              sizeof(aos_query_contract_digest)) != 0 ||
+      aos_query_buffer_append(payload, aos_query_schema_digest,
+                              sizeof(aos_query_schema_digest)) != 0 ||
       aos_query_buffer_u64(payload, context->start.ordinal) != 0 ||
       aos_query_buffer_u64(payload, context->start.cookie) != 0 ||
       aos_query_buffer_u32(payload, (uint32_t)snapshot->length) != 0 ||

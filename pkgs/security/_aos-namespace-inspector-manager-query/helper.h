@@ -72,12 +72,12 @@ _Static_assert(AOS_QUERY_MAX_CONTROL_RECORD ==
 struct aos_query_start {
   uint8_t nonce[32];
   uint64_t deadline_ns;
-  uint8_t contract_digest[32];
+  uint8_t query_schema_digest[32];
   uint64_t ordinal;
   uint64_t cookie;
-  uint32_t subject_pid;
-  uint64_t subject_pidfd_inode;
-  uint32_t subject_uid;
+  uint32_t connector_pid;
+  uint64_t connector_pidfd_inode;
+  uint32_t connector_uid;
 };
 
 struct aos_query_peer {
@@ -118,7 +118,7 @@ struct aos_query_context {
 };
 
 extern const struct aos_query_property aos_query_properties[];
-extern const uint8_t aos_query_contract_digest[32];
+extern const uint8_t aos_query_schema_digest[32];
 
 int aos_query_validate_entry(struct aos_query_context *context);
 int aos_query_set_runtime_limits(void);

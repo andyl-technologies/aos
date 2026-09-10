@@ -148,9 +148,9 @@ int aos_fixture_prepare_identity(struct aos_fixture_identity *identity)
                      sizeof(identity->service_instance),
                      "%" PRIu64 "-%" PRIu64 "-%" PRIu32 "_%" PRIu64 "-%" PRIu32,
                      identity->start.ordinal, identity->start.cookie,
-                     identity->start.subject_pid,
-                     identity->start.subject_pidfd_inode,
-                     identity->start.subject_uid);
+                     identity->start.connector_pid,
+                     identity->start.connector_pidfd_inode,
+                     identity->start.connector_uid);
   if (written <= 0 || (size_t)written >= sizeof(identity->service_instance))
     return -1;
   written = snprintf(identity->service_name, sizeof(identity->service_name),
