@@ -173,6 +173,7 @@ pub(super) fn inventory_authoritative_refs(
 pub(super) struct RootAccumulator {
     pub(super) unique: BTreeSet<ContentId>,
     pub(super) ordinary: BTreeSet<ContentId>,
+    pub(super) provisional: BTreeSet<ContentId>,
     pub(super) direct: BTreeSet<ContentId>,
     observed: usize,
 }
@@ -195,6 +196,16 @@ impl RootAccumulator {
         }
         self.unique.insert(root);
         self.direct.insert(root);
+        Ok(())
+    }
+
+    pub(super) fn insert_provisional(&mut self, root: ContentId) -> Result<(), ()> {
+        self.observed = self.observed.checked_add(1).ok_or(())?;
+        if self.observed > MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
+            return Err(());
+        }
+        self.unique.insert(root);
+        self.provisional.insert(root);
         Ok(())
     }
 }

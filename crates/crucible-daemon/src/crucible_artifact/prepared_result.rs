@@ -14,6 +14,13 @@
 //! ```
 //!
 //! ```text
+//! v6-magic
+//! observation and finding records as v5
+//! optional four role-specific finding-triage records
+//! finding bundle carrying only four capture manifest IDs/incomplete reasons
+//! ```
+//!
+//! ```text
 //! v4-magic
 //! observation and raw measurement records as v3
 //! optional terminal-fingerprint records
@@ -94,6 +101,7 @@ const PREPARED_RESULT_MAGIC_V2: &[u8] = b"crucible.executor.prepared-semantic-at
 const PREPARED_RESULT_MAGIC_V3: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v3\0";
 const PREPARED_RESULT_MAGIC_V4: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v4\0";
 const PREPARED_RESULT_MAGIC_V5: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v5\0";
+const PREPARED_RESULT_MAGIC_V6: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v6\0";
 pub(super) const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
@@ -205,6 +213,52 @@ impl PreparedSemanticAttemptResult {
     #[must_use]
     pub const fn finding(&self) -> Option<&PreparedCrucibleFindingCandidate> {
         self.finding.as_ref()
+    }
+
+    /// Encodes transient production replay captures for durable chunk staging.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a complete capture no longer validates or exceeds
+    /// its scenario-derived canonical encoding bound.
+    pub(crate) fn production_replay_capture_inputs(
+        &self,
+    ) -> Result<
+        Option<[crate::FindingReplayCaptureInput; 4]>,
+        crate::FindingProductionReplayCaptureError,
+    > {
+        self.finding
+            .as_ref()
+            .map(PreparedCrucibleFindingCandidate::production_replay_capture_inputs)
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    /// Prepares a replacement finding bound to durable manifest roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this result has no transient capture set or the
+    /// rebuilt candidate is inconsistent with its observation closure.
+    pub(crate) fn prepare_bound_production_replay_finding(
+        &self,
+        replay_captures: crucible_campaign::FindingReplayCaptureSet,
+    ) -> Result<PreparedCrucibleFindingCandidate, PreparedSemanticResultCodecError> {
+        let mut finding = self
+            .finding
+            .clone()
+            .ok_or_else(|| inconsistent("finding production replay capture owner"))?;
+        finding.bind_production_replay_captures(replay_captures)?;
+        validate_pair(&self.observation, Some(&finding))?;
+        Ok(finding)
+    }
+
+    /// Installs a replacement already validated against this observation.
+    pub(crate) fn commit_bound_production_replay_finding(
+        &mut self,
+        finding: PreparedCrucibleFindingCandidate,
+    ) {
+        self.finding = Some(finding);
     }
 
     /// Attaches one automatically prepared finding and its raw replay leaves.
@@ -433,12 +487,25 @@ impl PreparedSemanticAttemptResult {
         maximum_bytes: usize,
     ) -> Result<Vec<u8>, PreparedSemanticResultCodecError> {
         validate_pair(&self.observation, self.finding.as_ref())?;
+        if self
+            .finding
+            .as_ref()
+            .is_some_and(|finding| finding.production_replays.is_some())
+        {
+            return Err(inconsistent("unbound finding production replay captures"));
+        }
         if let Some(terminal_fingerprints) = &self.terminal_fingerprints {
             validate_terminal_fingerprints(terminal_fingerprints)?;
         }
 
         let mut encoder = Encoder::new(maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES));
         let version = if self
+            .finding
+            .as_ref()
+            .is_some_and(|finding| finding.bundle.replay_captures().is_some())
+        {
+            PreparedSemanticResultVersion::V6
+        } else if self
             .finding
             .as_ref()
             .is_some_and(|finding| finding.triage_replays.is_some())
@@ -459,15 +526,15 @@ impl PreparedSemanticAttemptResult {
         encode_observation(&mut encoder, &self.observation)?;
         encode_measurement_evidence(&mut encoder, &self.measurement_replay_evidence)?;
         match version {
-            PreparedSemanticResultVersion::V4 | PreparedSemanticResultVersion::V5 => {
-                match &self.terminal_fingerprints {
-                    Some(terminal_fingerprints) => {
-                        encoder.byte(1)?;
-                        encode_terminal_fingerprints(&mut encoder, terminal_fingerprints)?;
-                    }
-                    None => encoder.byte(0)?,
+            PreparedSemanticResultVersion::V4
+            | PreparedSemanticResultVersion::V5
+            | PreparedSemanticResultVersion::V6 => match &self.terminal_fingerprints {
+                Some(terminal_fingerprints) => {
+                    encoder.byte(1)?;
+                    encode_terminal_fingerprints(&mut encoder, terminal_fingerprints)?;
                 }
-            }
+                None => encoder.byte(0)?,
+            },
             _ => {
                 if let Some(terminal_fingerprints) = &self.terminal_fingerprints {
                     encode_terminal_fingerprints(&mut encoder, terminal_fingerprints)?;
@@ -531,18 +598,19 @@ impl PreparedSemanticAttemptResult {
             PreparedSemanticResultVersion::V2
             | PreparedSemanticResultVersion::V3
             | PreparedSemanticResultVersion::V4
-            | PreparedSemanticResultVersion::V5 => decode_measurement_evidence(&mut decoder)?,
+            | PreparedSemanticResultVersion::V5
+            | PreparedSemanticResultVersion::V6 => decode_measurement_evidence(&mut decoder)?,
         };
         let terminal_fingerprints = match version {
             PreparedSemanticResultVersion::V1 | PreparedSemanticResultVersion::V2 => None,
             PreparedSemanticResultVersion::V3 => Some(decode_terminal_fingerprints(&mut decoder)?),
-            PreparedSemanticResultVersion::V4 | PreparedSemanticResultVersion::V5 => {
-                match decoder.byte()? {
-                    0 => None,
-                    1 => Some(decode_terminal_fingerprints(&mut decoder)?),
-                    _ => return Err(PreparedSemanticResultCodecError::InvalidTag),
-                }
-            }
+            PreparedSemanticResultVersion::V4
+            | PreparedSemanticResultVersion::V5
+            | PreparedSemanticResultVersion::V6 => match decoder.byte()? {
+                0 => None,
+                1 => Some(decode_terminal_fingerprints(&mut decoder)?),
+                _ => return Err(PreparedSemanticResultCodecError::InvalidTag),
+            },
         };
         let finding = match decoder.byte()? {
             0 => None,
@@ -569,7 +637,8 @@ impl PreparedSemanticAttemptResult {
             PreparedSemanticResultVersion::V2
             | PreparedSemanticResultVersion::V3
             | PreparedSemanticResultVersion::V4
-            | PreparedSemanticResultVersion::V5 => {
+            | PreparedSemanticResultVersion::V5
+            | PreparedSemanticResultVersion::V6 => {
                 value.canonical_bytes_with_limit(maximum_bytes)?
             }
         };
@@ -646,6 +715,8 @@ pub(crate) enum PreparedSemanticResultVersion {
     V4,
     /// Closure with four role-specific native triage replay records.
     V5,
+    /// Closure with four manifest-rooted portable production replay outcomes.
+    V6,
 }
 
 impl PreparedSemanticResultVersion {
@@ -661,6 +732,8 @@ impl PreparedSemanticResultVersion {
             Some(Self::V4)
         } else if bytes.starts_with(PREPARED_RESULT_MAGIC_V5) {
             Some(Self::V5)
+        } else if bytes.starts_with(PREPARED_RESULT_MAGIC_V6) {
+            Some(Self::V6)
         } else {
             None
         }
@@ -673,11 +746,12 @@ impl PreparedSemanticResultVersion {
             Self::V3 => PREPARED_RESULT_MAGIC_V3,
             Self::V4 => PREPARED_RESULT_MAGIC_V4,
             Self::V5 => PREPARED_RESULT_MAGIC_V5,
+            Self::V6 => PREPARED_RESULT_MAGIC_V6,
         }
     }
 
     const fn supports_replay_incompatibility(self) -> bool {
-        matches!(self, Self::V4 | Self::V5)
+        matches!(self, Self::V4 | Self::V5 | Self::V6)
     }
 }
 
@@ -1395,6 +1469,15 @@ fn encode_finding(
         (PreparedSemanticResultVersion::V5, None) => {
             return Err(inconsistent("v5 finding triage replay evidence"));
         }
+        (PreparedSemanticResultVersion::V6, triage_replays) => match triage_replays {
+            Some(triage_replays) => {
+                encoder.byte(1)?;
+                for replay in triage_replays.records() {
+                    encoder.record(&replay.canonical_bytes())?;
+                }
+            }
+            None => encoder.byte(0)?,
+        },
         (_, Some(_)) => {
             return Err(inconsistent("legacy finding triage replay evidence"));
         }
@@ -1469,8 +1552,8 @@ fn decode_finding(
         decode_replay_indexes(decoder, &mut replay_validation_references, version)?;
     let verification_indexes =
         decode_replay_indexes(decoder, &mut replay_validation_references, version)?;
-    let triage_replays = if version == PreparedSemanticResultVersion::V5 {
-        Some(PreparedFindingTriageReplayRecords {
+    let decode_triage_replays = |decoder: &mut Decoder<'_>| {
+        Ok::<_, PreparedSemanticResultCodecError>(PreparedFindingTriageReplayRecords {
             minimization_original: decoder
                 .decode_record(FindingTriageReplayEvidence::from_canonical_bytes)?,
             minimization_selected: decoder
@@ -1480,8 +1563,15 @@ fn decode_finding(
             verification_selected: decoder
                 .decode_record(FindingTriageReplayEvidence::from_canonical_bytes)?,
         })
-    } else {
-        None
+    };
+    let triage_replays = match version {
+        PreparedSemanticResultVersion::V5 => Some(decode_triage_replays(decoder)?),
+        PreparedSemanticResultVersion::V6 => match decoder.byte()? {
+            0 => None,
+            1 => Some(decode_triage_replays(decoder)?),
+            _ => return Err(PreparedSemanticResultCodecError::InvalidTag),
+        },
+        _ => None,
     };
     let bundle = decoder.decode_record(FindingCandidateBundle::from_canonical_bytes)?;
 
@@ -1551,6 +1641,7 @@ fn decode_finding(
         minimization_replays,
         verification_replays,
         triage_replays,
+        production_replays: None,
         bundle,
     };
     validate_finding(&value)?;
@@ -1665,6 +1756,27 @@ fn decode_journal_finding_reproduction(
         artifact,
         replay,
     })
+}
+
+impl PreparedCrucibleFindingCandidate {
+    /// Reconstructs the scenario-derived bounds used by all four captures.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained original reproduction no longer
+    /// decodes to its authenticated Crucible finding form.
+    pub(crate) fn production_replay_capture_limits(
+        &self,
+    ) -> Result<crate::FindingProductionReplayCaptureLimits, PreparedSemanticResultCodecError> {
+        let finding = decode_journal_finding_reproduction(
+            &self.original,
+            self.discovery_path,
+            "journal production replay capture basis",
+        )?;
+        Ok(crate::FindingProductionReplayCaptureLimits::for_finding(
+            &finding,
+        ))
+    }
 }
 
 fn validate_finding_triage_replays(

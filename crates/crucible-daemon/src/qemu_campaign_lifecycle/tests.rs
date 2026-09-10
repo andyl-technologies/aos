@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt;
+use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -31,22 +32,25 @@ use crucible_api::{
     ProductionVmNodeLauncher,
 };
 use crucible_campaign::{
-    Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, AttemptStartMode,
-    BooleanDomain, BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId,
+    AssignmentId, Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart,
+    AttemptStartMode, BooleanDomain, BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId,
     CampaignControlAction, CampaignExecutorStore, CampaignFactId, CampaignHash, CampaignLineage,
     CampaignMode, CampaignPolicy, CampaignRepository, CampaignSeed, ChoiceClassContext,
     ChoiceDiscovery, ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationArtifact,
-    ConfigurationId, ControlRequest, CoverageProjection, DiscoveryRequest, ExecutionId,
-    ExecutionRetentionIntent, ExplorerPolicy, FairnessPolicy, FindingExactPins, MeasurementSet,
-    Observation, ObservationCandidate, ObservationCondition, ObservationEventLogProof,
+    ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, DiscoveryRequest,
+    ExecutionId, ExecutionRetentionIntent, ExecutorRejection, ExecutorService, ExplorerPolicy,
+    FairnessPolicy, FindingCandidateBundleId, FindingExactPins, MeasurementSet, Observation,
+    ObservationCandidate, ObservationCondition, ObservationEventLogProof, ObservationId,
     ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
     PropertyEvidence, PropertyVerdict, PropertyVerdictSet, RetentionPolicy, ScenarioArtifact,
     ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatchKind,
-    StopCondition, StopOutcome,
+    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
 };
+use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
-    BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
-    MemoryRefBackend, ObjectKind,
+    BlobHandle, ContentId, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend,
+    MemoryBlobBackend, MemoryRefBackend, ObjectKind, StoreGraph, StoreGraphConfig, StoreNodeId,
+    StoreNodeSpec,
 };
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
@@ -62,15 +66,20 @@ use crate::exact_checkpoint_store::AttemptCheckpointResultState;
 use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::qemu_campaign_driver::QemuFreshSupplementalModeledDriver;
 use crate::{
-    AttemptExecutionDisposition, AttemptExecutionOrigin, AttemptExecutionProduct,
-    AttemptExecutionReconciliationStep, AutomaticFindingReplayOutcome, CapturedAttemptCheckpoint,
-    CheckpointHandoffFailure, CrucibleAttemptExecution, CrucibleExecutionOutcome,
+    AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionDisposition,
+    AttemptExecutionOrigin, AttemptExecutionProduct, AttemptExecutionReconciliationStep,
+    AttemptResultRecoveryFailure, AttemptResultStageOutcome, AttemptRuntimeState, AttemptStateCas,
+    AutomaticFindingReplayOutcome, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
+    CompletionValidationFailure, CrucibleAttemptExecution, CrucibleExecutionOutcome,
     CrucibleExecutionRunner, CrucibleFindingReplayTranscript, CrucibleMaterializationTier,
-    CrucibleResolvedAttemptStart, ExactCheckpointStore, ExecutionCancellation,
-    ExecutionCheckpointRequest, PreparedAttemptCheckpoint, PreparedSemanticAttemptResult,
+    CrucibleResolvedAttemptStart, DirectoryAssignmentLedger, DirectoryCampaignGcJournal,
+    DirectoryPreparedResultJournal, ExactCheckpointStore, ExecutionCancellation,
+    ExecutionCheckpointRequest, ExecutorCapacity, FindingReplayCaptureStore,
+    LocalExecutorSupervisor, MAX_PREPARED_SEMANTIC_RESULT_BYTES, ObservationPublicationOutcome,
+    PreparedAttemptCheckpoint, PreparedAttemptRecoveryOutcome, PreparedSemanticAttemptResult,
     QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError, QemuAttemptOperationalBoundary,
     QemuAttemptResourceGuard, QemuFreshModeledDriver, QemuSavepointReplayProof,
-    QemuSelectedOriginResumeRunner,
+    QemuSelectedOriginResumeRunner, apply_single_host_campaign_gc, plan_single_host_campaign_gc,
 };
 
 #[derive(Debug)]
@@ -2657,6 +2666,20 @@ fn finding_candidate_input_with_configuration_and_stop(
     let configuration_artifact =
         crate::encode_crucible_configuration_artifact(&scenario, &configuration.schedule)
             .expect("candidate configuration artifact");
+    let lineage = CampaignLineage::new(
+        scenario.scenario(),
+        scenario.id().expect("candidate scenario content ID"),
+        configuration_artifact.configuration(),
+        configuration_artifact
+            .id()
+            .expect("candidate configuration content ID"),
+        "crucible-test",
+        "qemu-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        scenario.payload_schema(),
+        1,
+    )
+    .expect("candidate campaign lineage");
     let attempt = Attempt::new(
         AttemptStart::Discover {
             configuration: configuration_artifact
@@ -2668,7 +2691,7 @@ fn finding_candidate_input_with_configuration_and_stop(
     )
     .expect("candidate attempt");
     CrucibleAttemptExecution::from_test_parts(
-        base.lineage().clone(),
+        lineage,
         base.scenario().clone(),
         attempt,
         base.path().clone(),
@@ -2698,7 +2721,7 @@ fn owned_finding_candidate(
         child.configuration(),
         child.id().expect("candidate child ID"),
         input.path().id().expect("candidate path ID"),
-        StopOutcome::Reached(StopCondition::ExecutionQuanta(1)),
+        StopOutcome::AssertionFailure(property.to_owned()),
         measurements.id().expect("owned measurement ID"),
         properties.id().expect("owned property ID"),
         coverage.id().expect("owned coverage ID"),
@@ -2724,6 +2747,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     selection: Selection,
     assertion: &AssertionId,
 ) {
+    let (lifecycle_artifacts, lifecycle) = finding_replay_lifecycle_fixture();
     let provisional_candidate = FindingReproductionArtifact::capture(
         FindingDiscoveryPath::StateSpaceSearch,
         crucible::ContentHash::from_bytes(b"composed-exact-candidate"),
@@ -2737,15 +2761,50 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         selection.clone(),
         assertion.name.as_str(),
     );
-    let store = CampaignExecutorStore::new(Arc::new(CampaignRepository::new(
-        Arc::new(MemoryBlobBackend::new("composed-exact-candidate", u64::MAX)),
-        Arc::new(MemoryRefBackend::new()),
-    )));
+    let object_root = lifecycle_artifacts.path().join("objects");
+    let graph_root = StoreNodeId::new("composed-exact-candidate").expect("store graph node");
+    let (blob_backend, blob_admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: graph_root.clone(),
+        admitted_kinds: BTreeSet::from([
+            ObjectKind::CampaignFact,
+            ObjectKind::CampaignSnapshot,
+            ObjectKind::MerkleNode,
+            ObjectKind::Scenario,
+            ObjectKind::Configuration,
+            ObjectKind::Policy,
+            ObjectKind::ExactManifest,
+            ObjectKind::RamExtent,
+            ObjectKind::DiskExtent,
+            ObjectKind::DeviceState,
+            ObjectKind::Observation,
+            ObjectKind::Finding,
+            ObjectKind::Projection,
+            ObjectKind::Trace,
+        ]),
+        nodes: BTreeMap::from([(
+            graph_root,
+            StoreNodeSpec::Directory {
+                root: object_root.clone(),
+            },
+        )]),
+    })
+    .expect("build composed recovery store graph");
+    let blob_backend = Arc::new(blob_backend);
+    let ref_backend = Arc::new(DirectoryRefBackend::new(
+        lifecycle_artifacts.path().join("refs"),
+    ));
+    let repository = Arc::new(CampaignRepository::new(
+        blob_backend.clone(),
+        ref_backend.clone(),
+    ));
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    let request =
+        publish_composed_candidate_input(&repository, &store, &input, &discovery, &selection);
     let final_event = SchedulerEventLogEntry::assertion_state_observation(
         1,
         VirtualTime { ticks: 1 },
         assertion.clone(),
-        AssertionPhase::Satisfied,
+        AssertionPhase::Violated,
     );
     let decisions = input
         .start()
@@ -2755,13 +2814,14 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         .iter()
         .cloned()
         .collect();
-    let mut runner = QemuFreshExecutionRunner::new(
+    let production_boundaries = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = crate::packaged_qemu_executor::packaged_finding_replay_runner(
+        lifecycle.clone(),
         BoundaryCaptureLifecycleFactory {
-            captured: Arc::new(Mutex::new(Vec::new())),
+            captured: Arc::clone(&production_boundaries),
             final_events: vec![final_event],
             replay_decisions: decisions,
         },
-        QemuFreshModeledDriver::new(),
     );
     let context = fresh_runner_context();
     let target_signature =
@@ -2844,19 +2904,20 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                 .iter()
                 .cloned()
                 .collect::<VecDeque<_>>();
+            let boundary = u64::try_from(decisions.len()).expect("candidate event sequence");
             let final_event = SchedulerEventLogEntry::assertion_state_observation(
-                u64::try_from(decisions.len()).expect("candidate event sequence"),
-                VirtualTime { ticks: 1 },
+                boundary,
+                VirtualTime { ticks: boundary },
                 assertion.clone(),
-                AssertionPhase::Satisfied,
+                AssertionPhase::Violated,
             );
-            let mut replay_runner = QemuFreshExecutionRunner::new(
+            let mut replay_runner = crate::packaged_qemu_executor::packaged_finding_replay_runner(
+                lifecycle.clone(),
                 BoundaryCaptureLifecycleFactory {
-                    captured: Arc::new(Mutex::new(Vec::new())),
+                    captured: Arc::clone(&production_boundaries),
                     final_events: vec![final_event],
                     replay_decisions: decisions,
                 },
-                QemuFreshModeledDriver::new(),
             );
             Ok(crate::automatic_finding_runner::replay_candidate(
                 &store,
@@ -2871,21 +2932,284 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         },
     )
     .expect("prepare production rich finding closure");
+    let capture_inputs = prepared
+        .production_replay_capture_inputs()
+        .expect("encode production replay captures")
+        .expect("packaged runner must retain production replay captures");
+    assert!(matches!(
+        prepared.canonical_bytes(),
+        Err(crate::PreparedSemanticResultCodecError::Inconsistent {
+            component: "unbound finding production replay captures"
+        })
+    ));
+    assert!(
+        capture_inputs
+            .iter()
+            .all(|capture| matches!(capture, crate::FindingReplayCaptureInput::Complete { .. }))
+    );
+    let durable_captures = FindingReplayCaptureStore::prepare_set(capture_inputs)
+        .expect("prepare production replay capture closure");
+    let capture_references = durable_captures.references();
+    let guard = store
+        .acquire_finding_replay_publication_guard()
+        .expect("exclude GC while publishing production replay captures");
+    FindingReplayCaptureStore::publish_set(&guard, &durable_captures)
+        .expect("publish production replay capture closure");
+
+    let bound_finding = prepared
+        .prepare_bound_production_replay_finding(capture_references)
+        .expect("bind production replay manifests to finding");
+    let mut prepared = prepared;
+    prepared.commit_bound_production_replay_finding(bound_finding);
+
     let durable_bytes = prepared
         .canonical_bytes()
         .expect("encode rich prepared result");
     assert_eq!(
         crate::crucible_artifact::PreparedSemanticResultVersion::from_payload(&durable_bytes),
-        Some(crate::crucible_artifact::PreparedSemanticResultVersion::V5)
+        Some(crate::crucible_artifact::PreparedSemanticResultVersion::V6)
     );
-    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(&durable_bytes)
-        .expect("decode rich prepared result after restart");
-    let finding = decoded.finding().expect("decoded rich finding");
+    let expected_observation = prepared
+        .observation()
+        .observation()
+        .id()
+        .expect("prepared observation ID");
+    let expected_finding = prepared
+        .finding()
+        .expect("prepared V6 finding")
+        .id()
+        .expect("prepared V6 finding ID");
+    let key = crate::AttemptExecutionKey::new(
+        input.lineage().id().expect("candidate lineage ID"),
+        input.attempt().id().expect("candidate attempt ID"),
+    );
+    let producer_execution = ExecutionId::from_bytes([0x77; 16]).expect("producer execution ID");
+    let ledger_root = lifecycle_artifacts.path().join("ledger");
+    fs::create_dir(&ledger_root).expect("create assignment ledger directory");
+    let mut producer_ledger =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("open producer assignment ledger");
+    assert_eq!(
+        producer_ledger
+            .compare_exchange_attempt(
+                key,
+                None,
+                Some(AttemptRuntimeState::Publishing {
+                    execution_basis: request.execution_basis_digest(),
+                    origin: AttemptExecutionOrigin::Initial,
+                    daemon_epoch: DaemonEpoch::from_bytes([0x78; 16])
+                        .expect("producer daemon epoch"),
+                    execution: producer_execution,
+                    observation: expected_observation,
+                    finding_candidate: Some(expected_finding),
+                    finding_replay_captures: Some(capture_references),
+                }),
+            )
+            .expect("stage production replay capture roots before journaling"),
+        AttemptStateCas::Advanced
+    );
+    drop(guard);
+    drop(producer_ledger);
+
+    let journal_namespace = lifecycle_artifacts.path().join("journals");
+    fs::create_dir(&journal_namespace).expect("create prepared-result journal namespace");
+    let (journal, disposition) = DirectoryPreparedResultJournal::create(
+        &journal_namespace,
+        key,
+        producer_execution,
+        MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+        prepared,
+    )
+    .expect("create V6 prepared-result journal");
+    assert_eq!(
+        disposition,
+        crate::PreparedResultJournalCreateDisposition::Created
+    );
+    drop(journal);
+    let production_boundaries_before_restart = production_boundaries
+        .lock()
+        .expect("production replay boundaries")
+        .len();
+    let capture_manifest = capture_references
+        .minimization_original()
+        .evidence()
+        .expect("complete minimization-original manifest")
+        .content_id();
+    let manifest_bytes = blob_backend
+        .read(capture_manifest, None)
+        .expect("load persisted production replay manifest")
+        .read_all(64 * 1024)
+        .expect("read persisted production replay manifest");
+    let manifest = ContentEnvelope::from_canonical_bytes(&manifest_bytes)
+        .expect("decode persisted production replay manifest");
+    let capture_roots = capture_references
+        .references()
+        .into_iter()
+        .filter_map(crucible_campaign::FindingReplayCaptureReference::evidence)
+        .map(|evidence| evidence.content_id());
+    let persisted_capture_closure = repository
+        .authenticated_closure_ids(capture_roots)
+        .expect("authenticate every persisted production replay capture closure");
+
+    let mut restarted_ledger =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("reopen assignment ledger");
+    let gc_plan = plan_single_host_campaign_gc(
+        &repository,
+        ref_backend.as_ref(),
+        &mut restarted_ledger,
+        None,
+        None,
+        &blob_admin,
+    )
+    .expect("plan GC between V6 journal durability and candidate publication");
+    assert!(
+        gc_plan
+            .candidates()
+            .iter()
+            .all(|candidate| !persisted_capture_closure.contains(&candidate.id()))
+    );
+    let (mut gc_journal, _) =
+        DirectoryCampaignGcJournal::create(lifecycle_artifacts.path().join("gc-journal"), &gc_plan)
+            .expect("journal pre-publication GC plan");
+    apply_single_host_campaign_gc(
+        &mut gc_journal,
+        &repository,
+        ref_backend.as_ref(),
+        &mut restarted_ledger,
+        None,
+        None,
+        &blob_admin,
+    )
+    .expect("apply GC between V6 journal durability and candidate publication");
+    let retained_capture_closure = repository
+        .authenticated_closure_ids(
+            capture_references
+                .references()
+                .into_iter()
+                .filter_map(crucible_campaign::FindingReplayCaptureReference::evidence)
+                .map(|evidence| evidence.content_id()),
+        )
+        .expect("reauthenticate every capture closure after pre-publication GC");
+    assert_eq!(retained_capture_closure, persisted_capture_closure);
+
+    let mut supervisor = LocalExecutorSupervisor::new(
+        restarted_ledger,
+        UnavailableCompletionAdmission,
+        request.daemon_epoch(),
+        ExecutorCapacity::new(1, 2, 64 * 1024 * 1024, 128 * 1024 * 1024, 64)
+            .expect("recovery executor capacity"),
+    );
+    let response = supervisor
+        .submit_attempt(&request)
+        .expect("admit restarted V6 attempt");
+    let SubmitAttemptDisposition::Accepted {
+        execution: recovery_execution,
+    } = response.disposition()
+    else {
+        panic!("restarted V6 attempt must be accepted: {response:?}");
+    };
+    assert_ne!(recovery_execution, producer_execution);
+    let queued = supervisor.next_queued().expect("queued V6 recovery");
+
+    let missing_chunk = manifest
+        .children()
+        .first()
+        .expect("production replay manifest has one chunk")
+        .id();
+    fs::remove_file(directory_blob_object_path(
+        &lifecycle_artifacts.path().join("objects"),
+        missing_chunk,
+    ))
+    .expect("remove one persisted production replay chunk");
+    let failed_recovery = crate::recover_prepared_attempt_result(
+        &store,
+        &journal_namespace,
+        MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+        queued,
+    )
+    .expect_err("missing capture chunk must fail V6 recovery");
+    assert!(matches!(
+        failed_recovery.source,
+        AttemptResultRecoveryFailure::CaptureStore(_)
+    ));
+    assert!(
+        repository
+            .load_finding_candidate_bundle(expected_finding)
+            .is_err()
+    );
+
+    let guard = store
+        .acquire_finding_replay_publication_guard()
+        .expect("exclude GC while restoring missing capture chunk");
+    FindingReplayCaptureStore::publish_set(&guard, &durable_captures)
+        .expect("restore production replay capture closure");
+    drop(guard);
+
+    let capture_chunk_path =
+        directory_blob_object_path(&lifecycle_artifacts.path().join("objects"), missing_chunk);
+    let mut corrupt_chunk_bytes =
+        fs::read(&capture_chunk_path).expect("read restored production replay chunk");
+    *corrupt_chunk_bytes
+        .first_mut()
+        .expect("production replay chunk must not be empty") ^= 0xff;
+    fs::write(&capture_chunk_path, corrupt_chunk_bytes)
+        .expect("corrupt one persisted production replay chunk");
+    let failed_recovery = crate::recover_prepared_attempt_result(
+        &store,
+        &journal_namespace,
+        MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+        *failed_recovery.queued,
+    )
+    .expect_err("corrupt capture chunk must fail V6 recovery");
+    assert!(matches!(
+        failed_recovery.source,
+        AttemptResultRecoveryFailure::CaptureStore(_)
+    ));
+    assert!(
+        repository
+            .load_finding_candidate_bundle(expected_finding)
+            .is_err()
+    );
+    assert_eq!(
+        production_boundaries
+            .lock()
+            .expect("production replay boundaries after corrupt recovery")
+            .len(),
+        production_boundaries_before_restart,
+        "corrupt journal recovery must not execute another production lifecycle"
+    );
+
+    fs::remove_file(&capture_chunk_path).expect("remove corrupt production replay chunk");
+    let guard = store
+        .acquire_finding_replay_publication_guard()
+        .expect("exclude GC while replacing corrupt capture chunk");
+    FindingReplayCaptureStore::publish_set(&guard, &durable_captures)
+        .expect("replace corrupt production replay capture closure");
+    drop(guard);
+
+    let recovered = crate::recover_prepared_attempt_result(
+        &store,
+        &journal_namespace,
+        MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+        *failed_recovery.queued,
+    )
+    .expect("recover authenticated V6 prepared result after restart");
+    let PreparedAttemptRecoveryOutcome::Prepared(prepared) = recovered else {
+        panic!("complete V6 journal must recover without guest execution");
+    };
+    assert_eq!(
+        production_boundaries
+            .lock()
+            .expect("production replay boundaries after restart")
+            .len(),
+        production_boundaries_before_restart,
+        "journal recovery must not execute another production lifecycle"
+    );
+    let finding = prepared.result().finding().expect("recovered rich finding");
     let triage_ids = finding
         .bundle()
         .triage_evidence()
-        .expect("candidate bundle v2 triage evidence");
-    assert_eq!(finding.bundle().schema_version(), 2);
+        .expect("candidate bundle v3 triage evidence");
+    assert_eq!(finding.bundle().schema_version(), 3);
     assert_eq!(
         triage_ids.minimization_original(),
         triage_ids.verification_original(),
@@ -2896,6 +3220,261 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         triage_ids.verification_selected(),
         "independent selected replays must retain identical native evidence",
     );
+
+    let replay_captures = finding
+        .bundle()
+        .replay_captures()
+        .expect("recovered V6 finding owns production replay manifests");
+    assert_eq!(replay_captures, capture_references);
+    assert_eq!(
+        supervisor
+            .stage_observation_finding_and_replay_capture_publication(
+                prepared.queued(),
+                expected_observation,
+                expected_finding,
+                capture_references,
+            )
+            .expect("restage recovered V6 publication roots"),
+        ObservationPublicationOutcome::AlreadyStaged
+    );
+
+    let staged = crate::stage_prepared_attempt_result(&mut supervisor, *prepared)
+        .expect("stage recovered V6 candidate publication");
+    let AttemptResultStageOutcome::Publish(staged) = staged else {
+        panic!("recovered V6 candidate must require immutable publication");
+    };
+    assert!(
+        repository
+            .load_finding_candidate_bundle(expected_finding)
+            .is_err()
+    );
+    let published = crate::publish_prepared_attempt_result(&store, staged)
+        .expect("publish recovered V6 candidate");
+    assert_eq!(published.finding_candidate(), Some(expected_finding));
+    assert!(repository.load_observation(expected_observation).is_ok());
+    let durable_bundle = repository
+        .load_finding_candidate_bundle(expected_finding)
+        .expect("load published V6 finding candidate");
+    assert_eq!(durable_bundle.schema_version(), 3);
+    assert_eq!(durable_bundle.replay_captures(), Some(capture_references));
+}
+
+struct UnavailableCompletionAdmission;
+
+impl AttemptAdmissionValidator for UnavailableCompletionAdmission {
+    fn validate(&self, _request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
+        Ok(())
+    }
+
+    fn validate_completion_artifacts(
+        &self,
+        _request: &SubmitAttemptRequest,
+        _observation: ObservationId,
+        _finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        Err(CompletionValidationFailure::UnavailableInput)
+    }
+}
+
+fn publish_composed_candidate_input(
+    repository: &CampaignRepository,
+    store: &CampaignExecutorStore,
+    input: &CrucibleAttemptExecution,
+    discovery: &ChoiceDiscovery,
+    selection: &Selection,
+) -> SubmitAttemptRequest {
+    const CAMPAIGN: &str = "composed-production-recovery";
+
+    let scenario = crate::encode_crucible_scenario_artifact(input.scenario())
+        .expect("encode composed recovery scenario");
+    let scenario_content = repository
+        .publish_scenario_artifact(
+            scenario.scenario(),
+            scenario.payload_schema(),
+            scenario.payload().to_vec(),
+        )
+        .expect("publish composed recovery scenario");
+    assert_eq!(
+        scenario_content,
+        input.lineage().scenario_content(),
+        "published scenario must match the execution lineage"
+    );
+
+    let configuration = crate::encode_crucible_configuration_artifact(
+        &scenario,
+        &input.start().configuration().schedule,
+    )
+    .expect("encode composed recovery configuration");
+    let configuration_content = repository
+        .publish_configuration_artifact(
+            configuration.scenario(),
+            scenario_content,
+            configuration.configuration(),
+            configuration.payload_schema(),
+            configuration.payload().to_vec(),
+        )
+        .expect("publish composed recovery configuration");
+    assert_eq!(configuration_content, input.lineage().genesis_content());
+
+    store
+        .publish_executor_choice_domain(discovery.domain())
+        .expect("publish composed recovery choice domain");
+    store
+        .publish_executor_selectable(discovery.declaration())
+        .expect("publish composed recovery selectable");
+    store
+        .publish_executor_choice_opportunity(discovery.opportunity())
+        .expect("publish composed recovery choice opportunity");
+    store
+        .publish_executor_selection(selection)
+        .expect("publish composed recovery selection");
+
+    let policy = CampaignPolicy::new(
+        input.lineage().scenario(),
+        CampaignSeed::from_bytes([0x74; 32]),
+        CampaignMode::Strict,
+        ExplorerPolicy::Exhaustive {
+            maximum_cardinality: 1,
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeSet::new(),
+        FairnessPolicy::new(0, 0).expect("composed recovery fairness policy"),
+        RetentionPolicy::new(true, 1, true, true),
+        true,
+    )
+    .expect("composed recovery campaign policy");
+    let created = repository
+        .create(CAMPAIGN, input.lineage(), &policy, &BTreeMap::new())
+        .expect("create composed recovery campaign");
+    let resumed = repository
+        .apply_control(
+            CAMPAIGN,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test",
+                    b"resume-composed-production-recovery",
+                )),
+                expected_snapshot: created.snapshot_id(),
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume composed recovery campaign");
+    let funded = repository
+        .apply_control(
+            CAMPAIGN,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test",
+                    b"fund-composed-production-recovery",
+                )),
+                expected_snapshot: resumed.new_snapshot,
+                action: CampaignControlAction::GrantBudget(
+                    BudgetGrant::new(0, 1).expect("composed recovery attempt grant"),
+                ),
+            },
+        )
+        .expect("fund composed recovery campaign");
+    let admitted = repository
+        .submit_discovery_request(
+            CAMPAIGN,
+            &DiscoveryRequest::new(
+                CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test",
+                    b"discover-composed-production-recovery",
+                )),
+                funded.new_snapshot,
+                configuration_content,
+                input.attempt().stop().clone(),
+            )
+            .expect("composed recovery discovery request"),
+        )
+        .expect("admit composed recovery attempt");
+    let attempt = input.attempt().id().expect("composed recovery attempt ID");
+    assert_eq!(admitted.attempt, attempt);
+
+    SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x75; 16]).expect("composed recovery assignment"),
+        DaemonEpoch::from_bytes([0x76; 16]).expect("composed recovery daemon epoch"),
+        input.lineage().id().expect("composed recovery lineage ID"),
+        attempt,
+        resources(64),
+        ExecutionRetentionIntent::RetainOnFailure,
+    )
+    .expect("composed recovery submit request")
+}
+
+fn directory_blob_object_path(root: &std::path::Path, id: ContentId) -> std::path::PathBuf {
+    let encoded = id.encode();
+    let digest = encoded
+        .rsplit_once('.')
+        .expect("content digest separator")
+        .1;
+    root.join(id.kind().as_str())
+        .join(id.schema_version().to_string())
+        .join(&digest[..2])
+        .join(digest)
+}
+
+fn finding_replay_lifecycle_fixture() -> (tempfile::TempDir, ProductionVmLifecycleConfig) {
+    let directory = tempfile::tempdir().expect("finding replay lifecycle fixture");
+    let root = directory.path();
+    let qemu = root.join("bin/qemu-system-x86_64");
+    let plugin = root.join("lib/libcrucible-qemu-plugin.so");
+    let kernel = root.join("guest/kernel");
+    let root_image = root.join("guest/root.qcow2");
+    let qemu_marker = root.join("share/aos/crucible/qemu-build-identity.env");
+    let plugin_marker = root.join("nix-support/crucible-qemu-plugin-build-info");
+
+    for path in [
+        &qemu,
+        &plugin,
+        &kernel,
+        &root_image,
+        &qemu_marker,
+        &plugin_marker,
+    ] {
+        fs::create_dir_all(path.parent().expect("fixture artifact parent"))
+            .expect("create finding replay fixture directory");
+    }
+    fs::write(&qemu, b"authenticated qemu fixture").expect("write QEMU fixture");
+    fs::write(&plugin, b"authenticated plugin fixture").expect("write plugin fixture");
+    fs::write(&kernel, b"guest kernel fixture").expect("write guest kernel fixture");
+    fs::write(&root_image, b"guest root fixture").expect("write guest root fixture");
+
+    let abi_version = crucible::SHMEM_ABI_VERSION;
+    let abi = format!("crucible-shmem-abi-v{abi_version}");
+    fs::write(
+        &qemu_marker,
+        format!(
+            "qemu_sim_capability=qemu-crucible\n\
+             qemu_crucible_patches_applied=true\n\
+             qemu_plugins_enabled=true\n\
+             qemu_build_id=qemu-build-v1\n\
+             qemu_patch_series_hash=sha256:patch\n\
+             qemu_shmem_abi_version={abi_version}\n\
+             qemu_shmem_abi={abi}\n\
+             qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\n\
+             qemu_shmem_header_hash=sha256:header\n"
+        ),
+    )
+    .expect("write QEMU identity marker");
+    fs::write(
+        &plugin_marker,
+        format!(
+            "plugin_abi={abi}\n\
+             qemu_build_id=qemu-build-v1\n\
+             shmem_abi_version={abi_version}\n\
+             shmem_abi={abi}\n\
+             shmem_generated_header_hash=sha256:header\n"
+        ),
+    )
+    .expect("write plugin identity marker");
+
+    let lifecycle =
+        ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image, root.join("run-state"));
+    (directory, lifecycle)
 }
 
 struct NamedSupplementalFindingOracle {
@@ -3537,7 +4116,7 @@ fn replay_divergence_uses_reproduced_evidence_when_expected_entry_is_absent() {
 #[test]
 fn composed_candidate_replay_retains_app_random_choice_and_measurement_leaf() {
     let assertion = AssertionId::from_name("app-random-candidate-safety");
-    let base = modeled_assertion_candidate_input(assertion.clone(), 2);
+    let base = modeled_assertion_candidate_input_with_vm(assertion.clone(), 2);
     let selectable = AppRandomSelectable::new(
         &base.scenario().scenario_def(),
         NodeId {
@@ -3567,7 +4146,7 @@ fn composed_candidate_replay_retains_app_random_choice_and_measurement_leaf() {
 #[test]
 fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() {
     let assertion = AssertionId::from_name("signal-fault-candidate-safety");
-    let base = modeled_assertion_candidate_input(assertion.clone(), 2);
+    let base = modeled_assertion_candidate_input_with_vm(assertion.clone(), 2);
     let parent = Configuration::genesis(base.scenario().scenario_def());
     let choice = BindingSearchChoice {
         id: SearchChoiceId::from_content_hash(crucible::ContentHash::from_bytes(
@@ -5006,6 +5585,39 @@ fn modeled_assertion_candidate_input(
     predicate_at: u64,
 ) -> CrucibleAttemptExecution {
     let world = World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty World");
+    modeled_assertion_candidate_input_for_world(world, assertion, predicate_at)
+}
+
+fn modeled_assertion_candidate_input_with_vm(
+    assertion: AssertionId,
+    predicate_at: u64,
+) -> CrucibleAttemptExecution {
+    let world = World::from_nodes(vec![WorldNode {
+        id: NodeId {
+            name: String::from("node-a"),
+        },
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::from("finding-replay-production-capture"),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])
+    .expect("finding replay production capture World");
+    modeled_assertion_candidate_input_for_world(world, assertion, predicate_at)
+}
+
+fn modeled_assertion_candidate_input_for_world(
+    world: World,
+    assertion: AssertionId,
+    predicate_at: u64,
+) -> CrucibleAttemptExecution {
     let properties = Properties::from_assertions_for_world(
         &world,
         vec![AssertionDef {

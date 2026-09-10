@@ -1604,6 +1604,53 @@ impl CampaignRepository {
         Ok(objects)
     }
 
+    /// Authenticates strict closures while retaining absent staged publication roots.
+    ///
+    /// A provisional root is returned directly when that exact object is not
+    /// present. If the root is present, its complete closure is authenticated
+    /// exactly like an ordinary root. Missing or invalid descendants always
+    /// fail. This supports a durable executor Publishing record during the
+    /// interval after its root identity is staged and before immutable
+    /// dependency-order publication reaches that root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when a strict root, a present
+    /// provisional root, or any descendant is missing, corrupt, invalid, or
+    /// exceeds the campaign closure bound.
+    pub fn authenticated_closure_ids_with_provisional_roots(
+        &self,
+        strict_roots: impl IntoIterator<Item = ContentId>,
+        provisional_roots: impl IntoIterator<Item = ContentId>,
+    ) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
+        let mut strict = strict_roots.into_iter().collect::<BTreeSet<_>>();
+        let mut absent = BTreeSet::new();
+        for root in provisional_roots {
+            if strict.contains(&root) {
+                continue;
+            }
+            match self.blobs.read(root, None) {
+                Ok(_) => {
+                    strict.insert(root);
+                }
+                Err(StoreError::NotFound { id }) if id == root => {
+                    absent.insert(root);
+                }
+                Err(source) => return Err(source.into()),
+            }
+            if strict.len().saturating_add(absent.len()) > MAX_CAMPAIGN_CLOSURE_OBJECTS {
+                return Err(integrity("campaign-closure-object-limit"));
+            }
+        }
+
+        let mut objects = self.authenticated_closure_ids(strict)?;
+        objects.extend(absent);
+        if objects.len() > MAX_CAMPAIGN_CLOSURE_OBJECTS {
+            return Err(integrity("campaign-closure-object-limit"));
+        }
+        Ok(objects)
+    }
+
     pub(super) fn verify_campaign_closures_anchored_cached(
         &self,
         roots: impl IntoIterator<Item = ContentId>,

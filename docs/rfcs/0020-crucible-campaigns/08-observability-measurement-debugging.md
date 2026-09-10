@@ -399,23 +399,38 @@ evaluation or valid new policy input. `PropertyVerdictSet` and
 `CoverageProjection` remain bounded name/identity maps or sets with generic
 child-bearing envelopes. Model-owned sample production is implemented by
 T-CAM-3.3. Payload schema 2 provides the codec and replay foundation for
-complete raw measurement-event retention. Wiring live QEMU results through the
-prepared-result journal and child-first publication, plus automatic finding-pin
-policy, remains T-CAM-3.5 work.
+complete raw measurement-event retention. Live QEMU results flow through the
+prepared-result journal and child-first publication. Automatic finding-pin
+policy remains T-CAM-3.5 work.
 
 The daemon's local prepared-publication formats use this closed registry:
 
 | Schema name | Current version | Contract |
 |---|---:|---|
-| `crucible.executor.prepared-semantic-attempt-result` | 2 | Contains the observation, content-ordered raw measurement replay leaves, and optional finding closure. |
-| `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, and hash. |
+| `crucible.executor.prepared-semantic-attempt-result` | 6 | Contains the observation, content-ordered raw measurement replay leaves, optional finding closure, and manifest-rooted production replay outcomes. |
+| `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, hash, and an admitted version-2 through version-6 payload. |
+| `crucible.executor.attempt-state-record` | 13 | Retains the operational publication root; a Publishing state includes the optional finding candidate and four production replay manifest outcomes. |
+| `crucible.executor.finding-replay-capture-manifest` | 1 | Commits one capture hash, logical length, and ordered set of at-most-64-MiB trace chunks. |
 
-Readers also support version 1 of both schemas for local journal recovery.
-Prepared-result version 1 contains the observation and optional finding closure
-without raw leaves; a version-1 body containing a Crucible measurement payload
-schema 2 is invalid. Journal-state version 1 omits the raw-leaf count and set
-hash. A state file and its result payload must use the same exact version;
-cross-version pairs fail closed and are never rewritten in place.
+Prepared-result readers retain versions 1 through 5 for local recovery.
+Version 6 makes the version-5 native triage records optional alongside a
+version-3 finding candidate whose four production replay slots contain only
+manifest IDs or explicit incomplete reasons; raw capture bytes never enter the
+bounded result journal.
+Journal-state version 1 admits only a version-1 result and omits the raw-leaf
+count and set hash. Journal-state version 2 admits result versions 2 through 6
+and authenticates the exact payload version, bytes, length, and hash. Other
+state/payload combinations fail closed and are never rewritten in place.
+
+Attempt-state version 13 adds the same four capture outcomes to `Publishing`.
+Readers retain versions 1 through 12; a version-12 or older `Publishing` record
+decodes with no capture set. Writers publish capture chunks and manifests under
+repository GC exclusion, commit the version-13 operational roots, release the
+exclusion, and only then write the version-6 prepared result. Thus restart from
+either side of the journal boundary retains the immutable closure. Recovery
+authenticates every manifest and chunk, decodes every complete production
+capture, and verifies its original/minimized reproduction and finding signature
+before candidate publication.
 
 The prepared-result codec validates raw-leaf closure ownership without claiming
 measurement semantics. It checks each singleton edge and its trace ID, scenario,
@@ -424,9 +439,10 @@ retained evaluation payload with `replay(raw, definitions)` because the journal
 does not own authenticated scenario definitions. Production preparation and
 recovery must resolve those definitions from the admitted semantic closure and
 invoke `verify_crucible_measurement_publication` for the observation and every
-finding replay before publishing any leaf or parent. The current version-2
-codec and journal establish the durable representation and version migration;
-they do not by themselves claim production recovery or publication wiring.
+finding replay before publishing any leaf or parent. The version-2 journal and
+version-6 prepared-result codec validate the durable representation; production
+preparation and recovery resolve and verify its semantic inputs before
+publication.
 
 The observation stores both `ConfigurationId` and
 `ConfigurationArtifactId`. The former is semantic graph identity; the latter is

@@ -121,8 +121,8 @@ crucible.campaign.gc-root-manifest	1	crucible-daemon::campaign_gc	administrative
 crucible.campaign.gc-candidate-manifest	2	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
 crucible.campaign.gc-journal-state	1	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
-crucible.executor.attempt-state-record	11	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
-crucible.executor.prepared-semantic-attempt-result	2	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:campaign-component-contract,gate:campaign-replay
+crucible.executor.attempt-state-record	13	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
+crucible.executor.prepared-semantic-attempt-result	6	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.prepared-result-journal-state	2	crucible-daemon::prepared_result_journal	operational-record	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.measurement-replay-evidence	2	crucible-daemon::crucible_measurement::evidence	trace	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition
@@ -135,6 +135,7 @@ crucible.production-exact-closure	8	crucible-api::vm_lifecycle	device-state	gate
 crucible.executor.production-checkpoint-object	5	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.production-checkpoint-index	1	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
 crucible.executor.exact-checkpoint-root	4	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
+crucible.executor.finding-replay-capture-manifest	1	crucible-daemon::finding_replay_capture_store	exact-manifest	gate:campaign-replay,gate:content-address
 crucible.executor.loopback-frame	5	crucible-daemon::executor_loopback	component-message	gate:campaign-component-contract
 crucible.planner.loopback-frame	1	crucible-daemon::planner_loopback	component-message	gate:campaign-component-contract
 crucible.planner.process-frame	1	crucible-daemon::planner_process	component-message	gate:campaign-component-contract
@@ -174,7 +175,7 @@ crucible.campaign.ranking-explanation	2	crucible-campaign::objective	projection	
 crucible.campaign.survivor-selection	1	crucible-campaign::objective	campaign-fact	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.reproduction-artifact	2	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding	4	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
-crucible.campaign.finding-candidate-bundle	2	crucible-campaign::finding_candidate	finding	gate:campaign-replay,gate:content-address
+crucible.campaign.finding-candidate-bundle	3	crucible-campaign::finding_candidate	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding-triage-replay-evidence	1	crucible-campaign::finding_triage_evidence	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.archive-manifest	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
 crucible.campaign.archive-inventory-page	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address

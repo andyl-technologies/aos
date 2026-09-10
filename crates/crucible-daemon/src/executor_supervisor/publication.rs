@@ -23,7 +23,7 @@ where
         queued: &QueuedAttempt,
         observation: ObservationId,
     ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
-        self.stage_observation_publication_with_candidate(queued, observation, None)
+        self.stage_observation_publication_with_candidate(queued, observation, None, None)
     }
 
     /// Durably reserves an observation and finding candidate before publication.
@@ -49,6 +49,32 @@ where
             queued,
             observation,
             Some(finding_candidate),
+            None,
+        )
+    }
+
+    /// Durably reserves an observation, candidate, and portable capture roots.
+    ///
+    /// The caller holds repository GC exclusion across capture-object writes
+    /// and this transition. A successful state becomes the operational root
+    /// before the prepared semantic result journal is written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError`] for an invalid execution token, ledger
+    /// failure, or a conflicting publication identity.
+    pub fn stage_observation_finding_and_replay_capture_publication(
+        &mut self,
+        queued: &QueuedAttempt,
+        observation: ObservationId,
+        finding_candidate: crucible_campaign::FindingCandidateBundleId,
+        finding_replay_captures: crucible_campaign::FindingReplayCaptureSet,
+    ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
+        self.stage_observation_publication_with_candidate(
+            queued,
+            observation,
+            Some(finding_candidate),
+            Some(finding_replay_captures),
         )
     }
 
@@ -57,6 +83,7 @@ where
         queued: &QueuedAttempt,
         observation: ObservationId,
         finding_candidate: Option<crucible_campaign::FindingCandidateBundleId>,
+        finding_replay_captures: Option<crucible_campaign::FindingReplayCaptureSet>,
     ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
         self.validate_pending_basis(queued)?;
         self.mark_worker_finished(queued.execution);
@@ -91,6 +118,7 @@ where
                     execution,
                     observation,
                     finding_candidate,
+                    finding_replay_captures,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -105,11 +133,18 @@ where
                 execution: current_execution,
                 observation: current_observation,
                 finding_candidate: current_candidate,
+                finding_replay_captures: current_captures,
                 ..
             } if current_execution == queued.execution
                 && current_observation == observation
-                && current_candidate.is_none()
-                && finding_candidate.is_some() =>
+                && (finding_candidate.is_none()
+                    || current_candidate.is_none()
+                    || current_candidate == finding_candidate)
+                && (finding_replay_captures.is_none()
+                    || current_captures.is_none()
+                    || current_captures == finding_replay_captures)
+                && ((current_candidate.is_none() && finding_candidate.is_some())
+                    || (current_captures.is_none() && finding_replay_captures.is_some())) =>
             {
                 let next = AttemptRuntimeState::Publishing {
                     execution_basis,
@@ -117,7 +152,8 @@ where
                     daemon_epoch,
                     execution: current_execution,
                     observation,
-                    finding_candidate,
+                    finding_candidate: finding_candidate.or(current_candidate),
+                    finding_replay_captures: finding_replay_captures.or(current_captures),
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -129,10 +165,13 @@ where
                 execution: current_execution,
                 observation: current_observation,
                 finding_candidate: current_candidate,
+                finding_replay_captures: current_captures,
                 ..
             } if current_execution == queued.execution
                 && current_observation == observation
-                && (finding_candidate.is_none() || current_candidate == finding_candidate) =>
+                && (finding_candidate.is_none() || current_candidate == finding_candidate)
+                && (finding_replay_captures.is_none()
+                    || current_captures == finding_replay_captures) =>
             {
                 Ok(ObservationPublicationOutcome::AlreadyStaged)
             }
