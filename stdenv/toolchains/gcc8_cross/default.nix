@@ -193,6 +193,9 @@
 in
   (import ../lib/finalize-cross.nix {
     bootstrapPerl = true;
+    # Complete libc with the finished cross compiler and build-host generators.
+    libcBuildPerl = prev.perl;
+    libcBuildOverrides = {crossGccStage1 = scope.crossGccStage2;};
     # Static NSS backends are already included in this libc.a.
     perlNssLibraries = "";
     privateTools = scope;
