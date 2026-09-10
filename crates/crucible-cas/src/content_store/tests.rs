@@ -24,6 +24,21 @@ use super::*;
 
 const TEST_READ_LIMIT: u64 = 1024 * 1024;
 
+#[cfg(feature = "destructive-recovery-faults")]
+const CORRUPT_TIER_COPY_CHILD_ENVIRONMENT: &str =
+    "CRUCIBLE_DESTRUCTIVE_RECOVERY_CORRUPT_TIER_COPY_CHILD";
+#[cfg(feature = "destructive-recovery-faults")]
+const CORRUPT_TIER_COPY_ROOT_ENVIRONMENT: &str =
+    "CRUCIBLE_DESTRUCTIVE_RECOVERY_CORRUPT_TIER_COPY_ROOT";
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+#[cfg(feature = "destructive-recovery-faults")]
+const CORRUPT_TIER_COPY_TRIGGER: &str = "crucible.destructive-recovery.corrupt-tier-copy";
+#[cfg(feature = "destructive-recovery-faults")]
+const CORRUPT_TIER_COPY_TEST_NAME: &str = "content_store::tests::corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier";
+#[cfg(feature = "destructive-recovery-faults")]
+const CORRUPT_TIER_COPY_CHILD_EXIT_CODE: i32 = 90;
+
 // Cross-instance directory fences can include filesystem sync work after the
 // lock is released. Leave enough headroom for highly parallel test runners.
 const FILESYSTEM_FENCE_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1491,6 +1506,100 @@ fn tiered_reads_promote_only_verified_objects() {
     assert!(!store.capabilities().streaming_read);
     assert_eq!(read_bytes(&store, id, None).expect("tiered read"), bytes);
     assert!(cache.contains(id).expect("promoted cache object"));
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+#[test]
+fn corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier() {
+    if std::env::var_os(CORRUPT_TIER_COPY_CHILD_ENVIRONMENT).is_some() {
+        run_corrupt_tier_copy_child();
+        panic!("corrupt-tier child returned without recording the injected failure");
+    }
+
+    let temporary = TempDir::new().expect("tier corruption fixture root");
+    let upper_root = temporary.path().join("upper");
+    let lower_root = temporary.path().join("lower");
+    let bytes = b"authenticated tier-copy recovery";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    let upper = DirectoryBlobBackend::new("upper-tier", &upper_root);
+    let lower = DirectoryBlobBackend::new("lower-tier", &lower_root);
+    put_bytes(&upper, id, bytes).expect("seed upper placement");
+    put_bytes(&lower, id, bytes).expect("seed lower placement");
+
+    let child = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .arg("--exact")
+        .arg(CORRUPT_TIER_COPY_TEST_NAME)
+        .arg("--nocapture")
+        .env(CORRUPT_TIER_COPY_CHILD_ENVIRONMENT, "1")
+        .env(CORRUPT_TIER_COPY_ROOT_ENVIRONMENT, temporary.path())
+        .env(
+            DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
+            CORRUPT_TIER_COPY_TRIGGER,
+        )
+        .output()
+        .expect("run corrupt-tier child");
+    assert_eq!(
+        child.status.code(),
+        Some(CORRUPT_TIER_COPY_CHILD_EXIT_CODE),
+        "corrupt-tier child did not preserve the expected state:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr),
+    );
+
+    let upper = Arc::new(DirectoryBlobBackend::new("upper-tier", &upper_root));
+    let lower = Arc::new(DirectoryBlobBackend::new("lower-tier", &lower_root));
+    assert!(matches!(
+        read_bytes(upper.as_ref(), id, None),
+        Err(StoreError::Corrupt { id: corrupt }) if corrupt == id
+    ));
+    assert_eq!(
+        read_bytes(lower.as_ref(), id, None).expect("valid lower placement after restart"),
+        bytes
+    );
+    let strict_tiers: Vec<Arc<dyn ImmutableBlobBackend>> = vec![upper.clone(), lower.clone()];
+    let strict =
+        TieredStore::new("strict-tiered", strict_tiers, 1, false).expect("strict tier policy");
+    assert!(matches!(
+        read_bytes(&strict, id, None),
+        Err(StoreError::Corrupt { id: corrupt }) if corrupt == id
+    ));
+
+    fs::remove_file(object_path(&upper_root, id)).expect("remove diagnosed corrupt placement");
+    let recovery_tiers: Vec<Arc<dyn ImmutableBlobBackend>> = vec![upper.clone(), lower];
+    let recovery =
+        TieredStore::new("recovery-tiered", recovery_tiers, 1, true).expect("recovery tier policy");
+    assert_eq!(
+        read_bytes(&recovery, id, None).expect("fallback to authenticated lower placement"),
+        bytes
+    );
+    assert_eq!(
+        read_bytes(upper.as_ref(), id, None).expect("authenticated promoted repair"),
+        bytes
+    );
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn run_corrupt_tier_copy_child() {
+    let root = std::env::var_os(CORRUPT_TIER_COPY_ROOT_ENVIRONMENT)
+        .map(PathBuf::from)
+        .expect("corrupt-tier fixture root");
+    let bytes = b"authenticated tier-copy recovery";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    let upper = Arc::new(DirectoryBlobBackend::new("upper-tier", root.join("upper")));
+    let lower = Arc::new(DirectoryBlobBackend::new("lower-tier", root.join("lower")));
+    let tiers: Vec<Arc<dyn ImmutableBlobBackend>> = vec![upper.clone(), lower.clone()];
+    let store = TieredStore::new("tiered", tiers, 1, false).expect("tier policy");
+
+    assert!(matches!(
+        read_bytes(&store, id, None),
+        Err(StoreError::Corrupt { id: corrupt }) if corrupt == id
+    ));
+    assert_eq!(
+        read_bytes(lower.as_ref(), id, None).expect("unaffected lower placement"),
+        bytes
+    );
+
+    std::process::exit(CORRUPT_TIER_COPY_CHILD_EXIT_CODE);
 }
 
 #[test]

@@ -31,6 +31,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "destructive-recovery-faults")]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fs::{FlockOperation, flock};
@@ -44,6 +46,13 @@ mod ref_admin;
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 static INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+#[cfg(feature = "destructive-recovery-faults")]
+const CORRUPT_TIER_COPY_TRIGGER: &str = "crucible.destructive-recovery.corrupt-tier-copy";
+#[cfg(feature = "destructive-recovery-faults")]
+static CORRUPT_TIER_COPY_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
 const INVENTORY_ADMIN_DIRECTORY: &str = ".inventory-admin";
 const INVENTORY_LOCK_FILE: &str = "lock";
@@ -90,6 +99,9 @@ impl DirectoryBlobBackend {
         range: Option<ByteRange>,
     ) -> Result<BlobHandle, StoreError> {
         let path = self.object_path(id);
+        #[cfg(feature = "destructive-recovery-faults")]
+        // Persist the bad tier copy before pinning it so restart observes the same corruption.
+        inject_corrupt_tier_copy(&path)?;
         let (file, logical_length) = open_pinned_object(&path, id)?;
         let range = range.unwrap_or(ByteRange {
             offset: 0,
@@ -186,6 +198,69 @@ impl DirectoryBlobBackend {
         let path = directory.join(INVENTORY_STATE_FILE);
         persist_inventory_state(&directory, &path, *state)
     }
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn inject_corrupt_tier_copy(path: &Path) -> Result<(), StoreError> {
+    let requested = std::env::var_os(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT);
+    if requested.as_deref() != Some(std::ffi::OsStr::new(CORRUPT_TIER_COPY_TRIGGER))
+        || CORRUPT_TIER_COPY_TRIGGERED.load(Ordering::Acquire)
+    {
+        return Ok(());
+    }
+
+    let descriptor = match rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDWR
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(source) if source == rustix::io::Errno::NOENT => return Ok(()),
+        Err(source) => {
+            return Err(StoreError::Io {
+                operation: "open-tier-copy-for-fault-injection",
+                path: path.to_path_buf(),
+                source: io::Error::from_raw_os_error(source.raw_os_error()),
+            });
+        }
+    };
+    let file = File::from(descriptor);
+    let metadata = file.metadata().map_err(|source| StoreError::Io {
+        operation: "inspect-tier-copy-for-fault-injection",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(StoreError::InvalidComposition {
+            reason: "fault-injected tier copy is not a regular file",
+        });
+    }
+
+    let mut first = [0_u8; 1];
+    let read = read_at_retry(&file, &mut first, 0).map_err(|source| StoreError::Io {
+        operation: "read-tier-copy-for-fault-injection",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if read == 0 || CORRUPT_TIER_COPY_TRIGGERED.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+
+    first[0] ^= 0xff;
+    file.write_all_at(&first, 0)
+        .map_err(|source| StoreError::Io {
+            operation: "corrupt-tier-copy-for-fault-injection",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    file.sync_all().map_err(|source| StoreError::Io {
+        operation: "sync-corrupt-tier-copy-for-fault-injection",
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 impl ImmutableBlobBackend for DirectoryBlobBackend {

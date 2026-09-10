@@ -197,9 +197,10 @@ id = "corrupt-tier-copy"
 title = "Corrupt one tier copy while another remains valid"
 failure_class = "storage-corruption"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-required"
+implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.corrupt-tier-copy"
+fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.corrupt-tier-copy {fault_build_command}"
 prior_state = "At least two independently named placements authenticate the same content identity."
@@ -210,7 +211,7 @@ recovery_gap = "No public store repair command is exposed; CMAN-16 remains relea
 observables = ["corrupt placement identity", "valid placement identity", "content digest", "fallback route", "repair disposition"]
 post_recovery_invariant = "Only authenticated bytes are returned and repair does not alter the logical content identity."
 backend_scope = "constrained-host-and-each-targeted-backend"
-prerequisites = ["tier-corruption-fallback", "physical-corruption-rejection"]
+prerequisites = ["corrupt-tier-copy-recovery", "tier-corruption-fallback", "physical-corruption-rejection"]
 
 [[injections]]
 id = "interrupt-pack-index-publication"
@@ -392,6 +393,12 @@ id = "store-credential-expiry"
 package = "crucible-cas"
 source = "crates/crucible-cas/src/content_store/s3.rs"
 selector = "content_store::s3::tests::credential_expiry_and_configuration_bounds_fail_closed"
+
+[[prerequisite_tests]]
+id = "corrupt-tier-copy-recovery"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/tests.rs"
+selector = "content_store::tests::corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier"
 
 [[prerequisite_tests]]
 id = "tier-corruption-fallback"
