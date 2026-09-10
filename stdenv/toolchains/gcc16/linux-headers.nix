@@ -9,6 +9,12 @@
   buildPlatform,
   hostPlatform,
 }: let
+  # Header installation has independent per-file targets; avoid serial emulation.
+  headerJobs =
+    if hostPlatform.constraints.cpu != "x86_64"
+    then " -j\"$NIX_BUILD_CORES\""
+    else "";
+
   # Reuse the source filter so emulated builds do not fork for every kernel file.
   filterSourceScripts = hostPlatform.constraints.cpu != "x86_64";
   sourceScriptFilterSetup =
@@ -92,7 +98,7 @@ in
               ${sourceScriptFilterSetup}AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
                 "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} ${sourceScriptRoot}${sourceScriptFilterCleanup}
 
-              make SHELL="${prev.bash}/bin/bash" ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+              make${headerJobs} SHELL="${prev.bash}/bin/bash" ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
               echo "Linux 6.12 headers installed to $out"
       ''
