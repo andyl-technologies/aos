@@ -42,12 +42,17 @@
     mkDerivation {
       pname = "libcap-ng";
       inherit version src;
+      outputs = ["out" "python"];
       buildDeps =
         [autoconf automake libtool gnumake pkg-config swig buildPython]
         ++ lib.optional (!stdenv.isCross) linux-headers
         ++ lib.optional stdenv.isCross buildPackages.bash;
       runtimeDeps = [python3];
       propagatedDeps = [];
+      outputChecks = {
+        out.disallowedRequisites = [python3];
+        python = {};
+      };
       phases = [
         {
           name = "unpack";
@@ -131,6 +136,17 @@
             then ''
               test "$(head -n 1 ${guestQualification}/result)" = PASS
             ''
+            else if stdenv.isCross
+            then ''
+              # Linux cross builds retain the C tests when binfmt can execute
+              # them. Never execute the target Python interpreter here;
+              # AArch64 exercises it in the qualified full-system guest.
+              ${lib.optionalString stdenv.hostPlatform.isLinux ''
+                make -C src check
+                make -C utils check
+              ''}
+              true
+            ''
             else ''
               make -C src check
               make -C utils check
@@ -146,6 +162,29 @@
           name = "install";
           script = ''
             make install
+
+            # Keep the C library and tools usable without pulling the Python
+            # interpreter into every capability-aware system closure.
+            set -- "$out"/lib/python*
+            test "$#" -eq 1
+            test -d "$1"
+            mkdir -p "$python/lib"
+            mv "$1" "$python/lib/"
+
+            python_path=$(find "$python/lib" -type d -name site-packages -print -quit)
+            test -n "$python_path"
+            test -f "$python_path/_capng.la"
+            test -f "$python_path/_capng.so"
+            test -f "$python_path/capng.py"
+            test -n "$(find "$python_path/__pycache__" -type f -name '*.pyc' -print -quit)"
+
+            # The extension remains linked to the C output. Only its install
+            # directory changes when the binding is assigned to $python.
+            sed -i "s|^libdir=.*|libdir='$python_path'|" \
+              "$python_path/_capng.la"
+            grep -Fxq "libdir='$python_path'" "$python_path/_capng.la"
+            grep -Fq "$out/lib/libcap-ng.la" "$python_path/_capng.la"
+            test -z "$(find "$out/lib" -maxdepth 1 -type d -name 'python*' -print -quit)"
             ${
               if collectGuestTests
               then ''
@@ -185,9 +224,13 @@
                 # Target execution is covered by the full-system guest check.
                 :
               ''
+              else if stdenv.isCross
+              then ''
+                # Cross builds validate structure here without executing the
+                # target interpreter on the build machine.
+                :
+              ''
               else ''
-                python_path=$(find "$out/lib" -type d -name site-packages -print -quit)
-                test -n "$python_path"
                 PYTHONPATH="$python_path" ${python3}/bin/python3 -c 'import capng'
               ''
             }
@@ -203,6 +246,12 @@
             test -f "$out/$archive"
             strip -D -S "$out/$archive"
           done
+
+          ${lib.optionalString (!stdenv.isCross) ''
+            python_path=$(find "$python/lib" -type d -name site-packages -print -quit)
+            test -n "$python_path"
+            PYTHONPATH="$python_path" ${python3}/bin/python3 -c 'import capng'
+          ''}
         ''
         + lib.optionalString (guestQualification != null) ''
           # Both builds use the same pname so their store paths have the same
@@ -217,16 +266,43 @@
           rmdir "$comparison/libexec" 2>/dev/null || true
 
           find "$comparison" -type f -exec \
-            sed -i 's|${guestTestPayload}|'$out'|g' {} +
+            sed -i \
+              -e 's|${guestTestPayload}|'$out'|g' \
+              -e 's|${guestTestPayload.python}|'$python'|g' \
+              {} +
           find "$comparison" -type l -print | while IFS= read -r link; do
             target=$(readlink "$link")
             normalized=$(printf '%s\n' "$target" \
-              | sed 's|${guestTestPayload}|'$out'|g')
+              | sed \
+                -e 's|${guestTestPayload}|'$out'|g' \
+                -e 's|${guestTestPayload.python}|'$python'|g')
             if [ "$target" != "$normalized" ]; then
               ln -sfn "$normalized" "$link"
             fi
           done
           diff -r --no-dereference "$comparison" "$out"
+
+          python_comparison="$TMPDIR/tested-python-install"
+          mkdir -p "$python_comparison"
+          cp -a ${guestTestPayload.python}/. "$python_comparison/"
+          chmod -R u+w "$python_comparison"
+
+          find "$python_comparison" -type f -exec \
+            sed -i \
+              -e 's|${guestTestPayload}|'$out'|g' \
+              -e 's|${guestTestPayload.python}|'$python'|g' \
+              {} +
+          find "$python_comparison" -type l -print | while IFS= read -r link; do
+            target=$(readlink "$link")
+            normalized=$(printf '%s\n' "$target" \
+              | sed \
+                -e 's|${guestTestPayload}|'$out'|g' \
+                -e 's|${guestTestPayload.python}|'$python'|g')
+            if [ "$target" != "$normalized" ]; then
+              ln -sfn "$normalized" "$link"
+            fi
+          done
+          diff -r --no-dereference "$python_comparison" "$python"
         '';
       checks =
         if collectGuestTests
@@ -264,6 +340,7 @@
       import ../../tests/build/libcap-ng-aarch64-guest.nix {
         inherit lib buildPackages targetPackages version;
         payload = guestTestPayload;
+        pythonPayload = guestTestPayload.python;
       }
     else null;
 in

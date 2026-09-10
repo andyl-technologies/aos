@@ -15,6 +15,7 @@ class FakeRule:
 
     text: str
     active: bool = True
+    default: str | None = None
 
     def enabled(self) -> bool:
         return self.active
@@ -34,7 +35,12 @@ class FakePolicy:
             for access in effective_policy.POSITIVE_ACCESS
         }
         self.transitions = {
-            transition: [FakeRule(f"type_transition {transition}")]
+            transition: [
+                FakeRule(
+                    f"type_transition {transition}",
+                    default=transition.default,
+                )
+            ]
             for transition in effective_policy.TRANSITIONS
         }
 
@@ -67,13 +73,23 @@ class FakeQuery:
                 for rule in rules
             ]
 
-        transition = effective_policy.Transition(
-            str(self.criteria["source"]),
-            str(self.criteria["target"]),
-            str(self.criteria["tclass"][0]),
-            str(self.criteria["default"]),
-        )
-        return self.policy.transitions.get(transition, [])
+        if "default" in self.criteria:
+            transition = effective_policy.Transition(
+                str(self.criteria["source"]),
+                str(self.criteria["target"]),
+                str(self.criteria["tclass"][0]),
+                str(self.criteria["default"]),
+            )
+            return self.policy.transitions.get(transition, [])
+
+        return [
+            rule
+            for transition, rules in self.policy.transitions.items()
+            if transition.source == str(self.criteria["source"])
+            and transition.target == str(self.criteria["target"])
+            and transition.object_class == str(self.criteria["tclass"][0])
+            for rule in rules
+        ]
 
 
 FAKE_SETOOLS = SimpleNamespace(
@@ -90,8 +106,10 @@ class EffectivePolicyTest(unittest.TestCase):
 
         self.assertEqual(
             len(evidence),
-            4
+            len(effective_policy.ENFORCING_DOMAINS)
             + len(effective_policy.TRANSITIONS)
+            + 1
+            + len(effective_policy.FORBIDDEN_PROVISIONER_TRANSITION_SOURCES)
             + len(effective_policy.POSITIVE_ACCESS)
             + len(effective_policy.NEGATIVE_ACCESS),
         )
@@ -110,6 +128,57 @@ class EffectivePolicyTest(unittest.TestCase):
         policy.allows[access] = []
 
         with self.assertRaisesRegex(ValueError, "missing effective allow"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_missing_provisioner_transition_fails(self) -> None:
+        policy = FakePolicy()
+        transition = next(
+            transition
+            for transition in effective_policy.TRANSITIONS
+            if transition.default == effective_policy.PROVISIONER_DOMAIN
+        )
+        policy.transitions[transition] = []
+
+        with self.assertRaisesRegex(ValueError, "missing effective transition"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_alternate_init_transition_fails_even_when_inactive(self) -> None:
+        policy = FakePolicy()
+        expected = next(
+            transition
+            for transition in effective_policy.TRANSITIONS
+            if transition.default == effective_policy.PROVISIONER_DOMAIN
+        )
+        alternate = effective_policy.Transition(
+            expected.source,
+            expected.target,
+            expected.object_class,
+            "init_t",
+        )
+        policy.transitions[alternate] = [
+            FakeRule("conditional alternate transition", active=False, default="init_t")
+        ]
+
+        with self.assertRaisesRegex(ValueError, "alternate provisioner transition"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_runtime_role_provisioner_transition_fails(self) -> None:
+        policy = FakePolicy()
+        source = effective_policy.DOMAINS[0]
+        forbidden = effective_policy.Transition(
+            source,
+            effective_policy.PROVISIONER_EXECUTABLE,
+            "process",
+            effective_policy.PROVISIONER_DOMAIN,
+        )
+        policy.transitions[forbidden] = [
+            FakeRule(
+                "runtime role provisioner transition",
+                default=effective_policy.PROVISIONER_DOMAIN,
+            )
+        ]
+
+        with self.assertRaisesRegex(ValueError, "runtime role can transition"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_queries_expand_attributes_and_leave_wildcard_targets_unbound(self) -> None:
@@ -154,6 +223,13 @@ class EffectivePolicyTest(unittest.TestCase):
         policy.permissive.add("aos_sandbox_namespace_inspector_t")
 
         with self.assertRaisesRegex(ValueError, "protected domain is permissive"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_permissive_init_domain_fails(self) -> None:
+        policy = FakePolicy()
+        policy.permissive.add("init_t")
+
+        with self.assertRaisesRegex(ValueError, "protected domain is permissive: init_t"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
 

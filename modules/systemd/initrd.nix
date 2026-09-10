@@ -334,6 +334,8 @@ in {
       loadModules = config.aos.boot.initrd.loadModules;
       initrdUnits = config.system.build.systemdInitrdUnits;
       initrdExtraPackages = config.aos.boot.initrd.extraPackages;
+      stage0Init = config.aos.boot.initrd.stage0;
+      immutableSelinuxPolicy = config.system.build.immutableSelinuxPolicy;
       inherit initrdNetworkDir;
       maskedUnits =
         cfg.maskedUnits

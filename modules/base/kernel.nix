@@ -15,6 +15,7 @@
   ...
 }: let
   cfg = config.aos.kernel;
+  extraConfig = builtins.concatStringsSep "\n" cfg._extraConfigFragments;
 
   # Format sysctl settings as a sysctl.d(5) drop-in file.
   sysctlText = builtins.concatStringsSep "\n" (
@@ -102,9 +103,26 @@ in {
         separately with aos.boot.initrd.firmwarePackages.
       '';
     };
+
+    _extraConfigFragments = lib.mkOption {
+      type = lib.types.listOf lib.types.lines;
+      default = [];
+      internal = true;
+      description = ''
+        Ordered deployment kernel configuration fragments. Security features
+        contribute here so lockdown, module-signing, and immutable SELinux
+        requirements are resolved by one linuxWith invocation.
+      '';
+    };
   };
 
   config = {
+    # Security features share one kernel construction. Independent mkForce
+    # replacements would silently discard either lockdown or SELinux policy.
+    system.build.kernel = lib.mkIf (cfg._extraConfigFragments != []) (
+      lib.mkForce (pkgs.linuxWith extraConfig)
+    );
+
     # /etc/sysctl.d/10-aos-kernel.conf — performance sysctl settings.
     # Priority 10 so security settings in 80-aos-hardening.conf take precedence.
     environment.etc."sysctl.d/10-aos-kernel.conf" = {

@@ -1207,6 +1207,7 @@
     "aos-sandbox-network-lease-gate"
     "aos-sandbox-network-lease-gate-loader"
     "aos-sandbox-network-observer"
+    "aos-selinux-runtime-roots"
     "aos-sandbox-zfs-worker"
     "aos-hub"
     "aos-storaged"
@@ -1221,6 +1222,7 @@
     "aos-registry-server"
     "aos-secret-reference-test"
     "aos-selinux-run"
+    "aos-selinux-stage0"
     "aos-service-root"
     "aos-system-image-e2e-fixture"
     "aos-test-agent"
@@ -1434,6 +1436,11 @@
           inherit linuxSource extraConfig;
           enforceRequiredConfig = false;
         };
+      # The immutable SELinux gate needs negative subjects whose loaded and
+      # expected policy bytes differ. Keep that construction explicit so the
+      # deployed package remains the no-argument discovered derivation.
+      aosSelinuxStage0With = arguments:
+        callPackage ./security/aos-selinux-stage0.nix arguments;
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
       zfsForKernel = kernel:
         callPackage ./filesystem/zfs.nix {inherit kernel;};

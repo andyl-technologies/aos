@@ -7,6 +7,11 @@
 }: let
   cfg = config.aos.sandbox.networkBroker;
   controller = config.aos.sandbox.controller;
+  protectedRoots = config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+  protectedRootsUnit = "aos-sandbox-network-roots.service";
+  runtimeRootsExecutable =
+    "${pkgs.aos-selinux-runtime-roots}/bin/aos-selinux-runtime-roots";
+  runtimeRootsCommand = "/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots ${runtimeRootsExecutable} --root / --prepare-sandbox-network-roots";
 in {
   options.aos.sandbox.networkBroker = {
     enable = lib.mkEnableOption "the fixed AOS sandbox Network broker";
@@ -38,78 +43,125 @@ in {
       }
     ];
 
-    systemd.sockets.aos-netd = {
-      description = "AOS sandbox Network broker socket";
-      wantedBy = ["sockets.target"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-network/control.sock";
-        FileDescriptorName = "aos-netd";
-        Service = "aos-netd.service";
-        Accept = false;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "aos-sandboxd";
-        SocketGroup = "aos-sandboxd";
-        SocketMode = "0600";
-        DirectoryMode = "0710";
-        # The complete 16,384-row inventory is larger than the kernel's
-        # ordinary Unix-socket default. Accepted sockets inherit this bound.
-        SendBuffer = "4M";
-        RemoveOnStop = true;
+    systemd.sockets.aos-netd =
+      {
+        description = "AOS sandbox Network broker socket";
+        wantedBy = ["sockets.target"];
+        socketConfig = {
+          ListenSequentialPacket = "/run/aos/sandbox-network/control.sock";
+          FileDescriptorName = "aos-netd";
+          Service = "aos-netd.service";
+          Accept = false;
+          PassCredentials = true;
+          PassPIDFD = true;
+          SocketUser = "aos-sandboxd";
+          SocketGroup = "aos-sandboxd";
+          SocketMode = "0600";
+          DirectoryMode = "0710";
+          # The complete 16,384-row inventory is larger than the kernel's
+          # ordinary Unix-socket default. Accepted sockets inherit this bound.
+          SendBuffer = "4M";
+          RemoveOnStop = true;
+        };
+      }
+      // lib.optionalAttrs protectedRoots {
+        requires = [protectedRootsUnit];
+        after = [protectedRootsUnit];
+      };
+
+    systemd.services.aos-sandbox-network-roots = lib.mkIf protectedRoots {
+      description = "Prepare protected AOS sandbox Network roots";
+      requiredBy = ["sysinit.target"];
+      requires = ["var.mount"];
+      after = ["var.mount"];
+      before = [
+        "sysinit.target"
+        "systemd-tmpfiles-setup.service"
+        "systemd-tmpfiles-setup-dev.service"
+        "aos-netd.socket"
+        "aos-netd.service"
+        "shutdown.target"
+      ];
+      conflicts = ["shutdown.target"];
+      unitConfig = {
+        DefaultDependencies = false;
+        RequiresMountsFor = ["/var/lib"];
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = runtimeRootsCommand;
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+        UMask = "0077";
       };
     };
 
     systemd.services.aos-netd = {
       description = "AOS authenticated sandbox Network inventory broker";
-      requires = ["aos-netd.socket" "dbus.socket"];
-      after = ["aos-netd.socket" "dbus.socket" "local-fs.target"];
+      requires =
+        ["aos-netd.socket" "dbus.socket"]
+        ++ lib.optional protectedRoots protectedRootsUnit;
+      after =
+        ["aos-netd.socket" "dbus.socket" "local-fs.target"]
+        ++ lib.optional protectedRoots protectedRootsUnit;
       unitConfig = {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
       };
-      serviceConfig = {
-        Type = "simple";
-        NotifyAccess = "main";
-        ExecStart = "${cfg.package}/bin/aos-netd ${toString controller.uid} ${toString controller.gid}";
-        Restart = "on-failure";
-        RestartSec = "2s";
-        FileDescriptorStoreMax = cfg.maximumRetainedNamespaces;
-        FileDescriptorStorePreserve = "yes";
-        StateDirectory = "aos/sandbox-network";
-        StateDirectoryMode = "0700";
-        RuntimeDirectory = "aos/sandbox-pins/netns";
-        RuntimeDirectoryMode = "0700";
-        RuntimeDirectoryPreserve = "restart";
-        UMask = "0077";
+      serviceConfig =
+        {
+          Type = "simple";
+          NotifyAccess = "main";
+          # The broker's no-new-privileges sandbox must not suppress the
+          # dedicated SELinux provisioner transition used by this fresh gate.
+          ExecStartPre = lib.optional protectedRoots "+${runtimeRootsCommand}";
+          ExecStart = "${cfg.package}/bin/aos-netd ${toString controller.uid} ${toString controller.gid}${lib.optionalString protectedRoots " --state-root-profile=protected-v1"}";
+          Restart = "on-failure";
+          RestartSec = "2s";
+          FileDescriptorStoreMax = cfg.maximumRetainedNamespaces;
+          FileDescriptorStorePreserve = "yes";
+          RuntimeDirectory = "aos/sandbox-pins/netns";
+          RuntimeDirectoryMode = "0700";
+          RuntimeDirectoryPreserve = "restart";
+          UMask = "0077";
 
-        # This first deployed surface is inventory-only. Network mutation and
-        # its capabilities remain absent until the fixed helper and P0-06 gate
-        # are complete.
-        CapabilityBoundingSet = "";
-        DevicePolicy = "closed";
-        LimitNOFILE = cfg.maximumRetainedNamespaces + 128;
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
-        NoNewPrivileges = true;
-        PrivateDevices = true;
-        PrivateNetwork = true;
-        PrivateTmp = true;
-        ProcSubset = "pid";
-        ProtectClock = true;
-        ProtectControlGroups = true;
-        ProtectHome = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        ProtectProc = "invisible";
-        ProtectSystem = "strict";
-        RestrictAddressFamilies = ["AF_UNIX"];
-        RestrictNamespaces = true;
-        RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        Slice = "aos-control.slice";
-        TasksMax = 32;
-      };
+          # This deployed broker remains capability-free and inventory-only.
+          # The internal preparation path isolates mutation in a fixed one-shot
+          # worker; public Apply awaits production composition and P0-06
+          # qualification.
+          CapabilityBoundingSet = "";
+          DevicePolicy = "closed";
+          LimitNOFILE = cfg.maximumRetainedNamespaces + 128;
+          LockPersonality = true;
+          MemoryDenyWriteExecute = true;
+          NoNewPrivileges = true;
+          PrivateDevices = true;
+          PrivateNetwork = true;
+          PrivateTmp = true;
+          ProcSubset = "pid";
+          ProtectClock = true;
+          ProtectControlGroups = true;
+          ProtectHome = true;
+          ProtectKernelLogs = true;
+          ProtectKernelModules = true;
+          ProtectKernelTunables = true;
+          ProtectProc = "invisible";
+          ProtectSystem = "strict";
+          RestrictAddressFamilies = ["AF_UNIX"];
+          RestrictNamespaces = true;
+          RestrictRealtime = true;
+          RestrictSUIDSGID = true;
+          Slice = "aos-control.slice";
+          TasksMax = 32;
+        }
+        // lib.optionalAttrs (!protectedRoots) {
+          StateDirectory = "aos/sandbox-network";
+          StateDirectoryMode = "0700";
+        }
+        // lib.optionalAttrs protectedRoots {
+          ReadWritePaths = ["/var/lib/aos/sandbox-network/broker-state"];
+        };
     };
   };
 }

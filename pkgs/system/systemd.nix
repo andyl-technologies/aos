@@ -2,6 +2,7 @@
 {
   lib,
   stdenv,
+  buildPackages,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -23,6 +24,8 @@
   getent,
   libcap,
   libxcrypt,
+  gcc-libs,
+  libidn2,
   pcre2,
   audit,
   libselinux,
@@ -55,6 +58,10 @@
     openssl
     libcap
     libxcrypt
+    # glibc loads these by SONAME for unwinding and IDN name-service paths.
+    # Keep the providers in PID 1's authenticated runtime closure explicitly.
+    gcc-libs
+    libidn2
     audit
     libselinux
     libsepol
@@ -117,6 +124,8 @@ in
     #          descriptor with the target idmap and hard read-only attributes.
     #   0012 — Reserve unit-reference lifetime control to root so an
     #          unprivileged client cannot prevent exact terminal collection.
+    #   0013 — Route authenticated switch-root and daemon-reexec operations
+    #          through the immutable AOS SELinux guard without init fallback.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -130,6 +139,7 @@ in
       ./patches/0010-nspawn-retained-supervisor-reboot.patch
       ./patches/0011-nspawn-attachment-anchor-descriptor.patch
       ./patches/0012-restrict-unit-reference-methods.patch
+      ./patches/0013-aos-selinux-root-handoff.patch
     ];
 
     buildDeps = [
@@ -140,6 +150,8 @@ in
       meson
       ninja
       python3
+      buildPackages.binutils
+      buildPackages.patchelf
       gperf
       getent
       # Kernel UAPI headers are compile-time only. Keeping them out of
@@ -688,6 +700,13 @@ in
           if [ -x "$out/bin/ukify" ]; then
             mkdir -p "$tools/bin"
             mv "$out/bin/ukify" "$tools/bin/.ukify-unwrapped"
+
+            ukifyAlias="$out/lib/systemd/ukify"
+            test -L "$ukifyAlias"
+            test "$(readlink "$ukifyAlias")" = ../../bin/ukify
+            mkdir -p "$tools/lib/systemd"
+            mv "$ukifyAlias" "$tools/lib/systemd/ukify"
+
             cat > "$tools/bin/ukify" << EOF
           #!${bash}/bin/bash
           export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
@@ -698,6 +717,18 @@ in
         '';
       }
     ];
+
+    # nuke-refs runs after the package's fixup phase. Remove only the exact
+    # reviewed dead RPATH entries it creates; the stage-0 manifest builder then
+    # rejects every remaining search directory outside the structured closure.
+    postFinalize = ''
+      ${buildPackages.python3}/bin/python3 -B \
+        ${./aos-systemd-rpath-sanitize.py} \
+        --patchelf ${buildPackages.patchelf}/bin/patchelf \
+        --readelf ${buildPackages.binutils}/bin/readelf \
+        --root "out=$out" \
+        --root "tools=$tools"
+    '';
 
     meta = {
       description = "systemd — system and service manager for Linux";

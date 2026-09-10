@@ -10,12 +10,16 @@
   targetLibc = cross.stdenv.glibc;
   targetRunner = cross.stdenv.targetRunner;
   targetBinutils = cross.stdenv.binutils;
+  stage0 = cross.pkgs.aos-selinux-stage0;
+  runtimeRootsProvisioner = cross.pkgs.aos-selinux-runtime-roots;
 in
   assert cross.stdenv.isCross;
   assert cross.stdenv.hostPlatform.system == targetSystem;
   assert gccLibs.platforms.host.system == targetSystem;
   assert gccLibs.system == buildSystem;
   assert targetRunner != null;
+  assert stage0.system == buildSystem;
+  assert runtimeRootsProvisioner.system == buildSystem;
     cross.stdenv.mkDerivation {
       pname = "linux-cross-runtime-aarch64";
       version = "0";
@@ -190,6 +194,20 @@ in
 
             check_aarch64 'target dynamic loader' "$targetLoader"
             check_needed_set 'target dynamic loader' "$targetLoader"
+
+            for executable in \
+              ${stage0}/bin/aos-selinux-stage0 \
+              ${runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots; do
+              check_aarch64 'immutable SELinux static executable' "$executable"
+              ${cross.buildPackages.binutils}/bin/readelf -lW "$executable" \
+                > selinux-program-headers
+              ! grep -Fq INTERP selinux-program-headers || \
+                fail "immutable SELinux executable has an interpreter: $executable"
+              ${cross.buildPackages.binutils}/bin/readelf -dW "$executable" \
+                > selinux-dynamic-section
+              ! grep -Fq '(NEEDED)' selinux-dynamic-section || \
+                fail "immutable SELinux executable has a dynamic dependency: $executable"
+            done
 
             printf 'PASS\n' > "$out/result"
             echo 'linux-cross-runtime: PASS' >&2

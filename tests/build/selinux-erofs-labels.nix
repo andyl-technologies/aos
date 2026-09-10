@@ -31,6 +31,17 @@
   labeledEtcDump = labeledSystem.config.system.build.etcDump;
   labeledEtcImage = labeledSystem.config.system.build.etcMetadataImage;
   labeledEtcPlan = labeledSystem.config.system.build.etcSelinuxContextPlan;
+  labeledRootSystem.config.system.build = {
+    inherit (legacySystem.config.system.build) kernel systemdSystemPresets toplevel;
+    immutableSelinuxPolicy = policy;
+  };
+  labeledRootfs = (import ../../lib/build/rootfs.nix) {
+    inherit pkgs lib;
+    system = labeledRootSystem;
+    pname = "selinux-labeled-rootfs-fixture";
+    fsType = "erofs";
+    erofsCompressionLevel = 1;
+  };
 in
   pkgs.mkDerivation {
     pname = "selinux-erofs-labels-check";
@@ -47,6 +58,7 @@ in
       labeledEtcDump
       labeledEtcImage
       labeledEtcPlan
+      labeledRootfs
     ];
     runtimeDeps = [];
     propagatedDeps = [];
@@ -90,6 +102,34 @@ in
           assert fixture["context"].split(":", 3)[2] == "selinux_config_t", fixture
           assert "/etc/selinux/runtime-prefix-fixture" not in entries, entries
           ' ${labeledEtcPlan}/context-map.json
+
+          # The shared rootfs builder retains its complete plan only on the
+          # policy-backed EROFS path. Its producer has already compared every
+          # image inode and xattr through dump.erofs before installation.
+          test -s ${labeledRootfs}/rootfs-file-contexts
+          test -s ${labeledRootfs}/rootfs-file-contexts.bin
+          test -s ${labeledRootfs}/rootfs-selinux-loader-path
+          test -s ${labeledRootfs}/rootfs-selinux-contexts.json
+          loader=$(cat ${labeledRootfs}/rootfs-selinux-loader-path)
+          ${pkgs.python3}/bin/python3 -c '
+          import json, sys
+
+          document = json.load(open(sys.argv[1], encoding="utf-8"))
+          entries = {entry["path"]: entry for entry in document["entries"]}
+          systemd = sys.argv[2]
+          loader = sys.argv[3]
+
+          assert document["version"] == 1, document
+          assert entries[systemd]["kind"] == "regular", entries[systemd]
+          assert entries[systemd]["context"].split(":", 3)[2] == "init_exec_t", entries[systemd]
+          assert entries[loader]["kind"] == "regular", entries[loader]
+          assert entries[loader]["context"].split(":", 3)[2] == "ld_so_t", entries[loader]
+          assert entries["/proc"]["context"] is None, entries["/proc"]
+          assert entries["/sys"]["context"] is None, entries["/sys"]
+          ' \
+            ${labeledRootfs}/rootfs-selinux-contexts.json \
+            /nix.lower/store/${builtins.baseNameOf pkgs.systemd}/lib/systemd/systemd \
+            "$loader"
 
           root=$TMPDIR/root
           coreutils_store=/nix/store/$(basename ${pkgs.coreutils})

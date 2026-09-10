@@ -14,6 +14,8 @@ DOMAINS = (
     "aos_sandbox_namespace_inspector_t",
     "aos_sandbox_network_lifecycle_worker_t",
 )
+PROVISIONER_DOMAIN = "aos_sandbox_runtime_roots_t"
+ENFORCING_DOMAINS = ("init_t", PROVISIONER_DOMAIN, *DOMAINS)
 
 DOMAIN_EXECUTABLES = (
     ("aos_sandbox_host_t", "aos_sandbox_host_exec_t"),
@@ -23,7 +25,10 @@ DOMAIN_EXECUTABLES = (
         "aos_sandbox_network_lifecycle_worker_t",
         "aos_sandbox_network_lifecycle_worker_exec_t",
     ),
+    (PROVISIONER_DOMAIN, "aos_sandbox_runtime_roots_exec_t"),
 )
+PROVISIONER_EXECUTABLE = "aos_sandbox_runtime_roots_exec_t"
+FORBIDDEN_PROVISIONER_TRANSITION_SOURCES = DOMAINS
 
 
 @dataclass(frozen=True, order=True)
@@ -65,6 +70,12 @@ TRANSITIONS = (
         "aos_sandbox_network_lifecycle_worker_exec_t",
         "process",
         "aos_sandbox_network_lifecycle_worker_t",
+    ),
+    Transition(
+        "init_t",
+        PROVISIONER_EXECUTABLE,
+        "process",
+        PROVISIONER_DOMAIN,
     ),
     Transition(
         "aos_sandbox_network_publisher_t",
@@ -113,6 +124,130 @@ def execution_access() -> tuple[Access, ...]:
 
 POSITIVE_ACCESS = (
     *execution_access(),
+    Access(PROVISIONER_DOMAIN, PROVISIONER_DOMAIN, "process", "setfscreate"),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "root_t",
+        "dir",
+        ("getattr", "open", "read", "search"),
+    ),
+    Access(PROVISIONER_DOMAIN, "security_t", "filesystem", "getattr"),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "security_t",
+        "dir",
+        ("getattr", "open", "read", "search"),
+    ),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "security_t",
+        "file",
+        ("getattr", "open", "read"),
+    ),
+    Access(PROVISIONER_DOMAIN, "proc_t", "filesystem", "getattr"),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "proc_t",
+        "dir",
+        ("getattr", "open", "read", "search"),
+    ),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "proc_t",
+        "file",
+        ("getattr", "open", "read", "write"),
+    ),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "device_t",
+        "dir",
+        ("getattr", "open", "read", "search"),
+    ),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "device_t",
+        "lnk_file",
+        ("getattr", "read"),
+    ),
+    Access(PROVISIONER_DOMAIN, "fixed_disk_device_t", "blk_file", "getattr"),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "var_t",
+        "dir",
+        ("add_name", "getattr", "open", "search", "write"),
+    ),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "var_lib_t",
+        "dir",
+        ("add_name", "create", "getattr", "open", "read", "search", "write"),
+    ),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "aos_sandbox_network_root_t",
+        "dir",
+        ("add_name", "create", "getattr", "open", "read", "search", "write"),
+    ),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "aos_sandbox_network_state_t",
+        "dir",
+        ("create", "getattr", "open", "read", "search"),
+    ),
+    *accesses(
+        PROVISIONER_DOMAIN,
+        "aos_sandbox_network_store_t",
+        "dir",
+        ("add_name", "create", "getattr", "open", "read", "search", "write"),
+    ),
+    *(
+        access
+        for directory in (
+            "aos_sandbox_network_expected_staging_t",
+            "aos_sandbox_network_expected_final_t",
+            "aos_sandbox_network_spent_staging_t",
+            "aos_sandbox_network_spent_final_t",
+        )
+        for access in accesses(
+            PROVISIONER_DOMAIN,
+            directory,
+            "dir",
+            ("create", "getattr", "open", "read", "search"),
+        )
+    ),
+    *(
+        access
+        for domain in (
+            "aos_sandbox_network_publisher_t",
+            "aos_sandbox_namespace_inspector_t",
+        )
+        for directory in ("var_t", "var_lib_t", "aos_sandbox_network_root_t")
+        for access in accesses(domain, directory, "dir", ("getattr", "open", "search"))
+    ),
+    *accesses(
+        "aos_sandbox_network_publisher_t",
+        "aos_sandbox_network_state_t",
+        "dir",
+        ("add_name", "getattr", "open", "read", "remove_name", "search", "write"),
+    ),
+    *accesses(
+        "aos_sandbox_network_publisher_t",
+        "aos_sandbox_network_state_t",
+        "file",
+        (
+            "append",
+            "create",
+            "getattr",
+            "ioctl",
+            "lock",
+            "open",
+            "read",
+            "rename",
+            "setattr",
+            "unlink",
+            "write",
+        ),
+    ),
     *accesses(
         "aos_sandbox_network_publisher_t",
         "aos_sandbox_network_store_t",
@@ -199,12 +334,15 @@ PROTECTED_RECORDS = (
     "aos_sandbox_network_spent_record_t",
 )
 PROTECTED_DIRECTORIES = (
+    "aos_sandbox_network_root_t",
+    "aos_sandbox_network_state_t",
     "aos_sandbox_network_store_t",
     "aos_sandbox_network_expected_staging_t",
     "aos_sandbox_network_expected_final_t",
     "aos_sandbox_network_spent_staging_t",
     "aos_sandbox_network_spent_final_t",
 )
+PROTECTED_ANCESTOR_DIRECTORIES = ("var_t", "var_lib_t")
 PUBLICATION_DIRECTORIES = {
     "aos_sandbox_network_expected_staging_t": "aos_sandbox_network_publisher_t",
     "aos_sandbox_network_expected_final_t": "aos_sandbox_network_publisher_t",
@@ -240,18 +378,117 @@ def negative_access() -> tuple[Access, ...]:
 
     checks: list[Access] = []
 
+    # Runtime roles may traverse the shared /var ancestry but cannot mutate
+    # names or the directory inodes that anchor the protected topology.
+    for directory in PROTECTED_ANCESTOR_DIRECTORIES:
+        for domain in DOMAINS:
+            checks.extend(
+                accesses(
+                    domain,
+                    directory,
+                    "dir",
+                    (
+                        "add_name",
+                        "create",
+                        "relabelfrom",
+                        "relabelto",
+                        "remove_name",
+                        "rename",
+                        "rmdir",
+                        "setattr",
+                        "write",
+                    ),
+                )
+            )
+
     # Runtime roles cannot replace, remove, or relabel the protected store or
     # any of its four role-bearing roots. The parent cannot gain or lose names.
     for directory in PROTECTED_DIRECTORIES:
         for domain in DOMAINS:
             checks.extend(accesses(domain, directory, "dir", DIRECTORY_INODE_MUTATIONS))
     for domain in DOMAINS:
+        checks.append(Access(domain, domain, "process", "setfscreate"))
         checks.extend(
             accesses(
                 domain,
                 "aos_sandbox_network_store_t",
                 "dir",
                 ("add_name", "remove_name", "write"),
+            )
+        )
+        checks.extend(
+            accesses(
+                domain,
+                "aos_sandbox_network_root_t",
+                "dir",
+                ("add_name", "remove_name", "write"),
+            )
+        )
+
+    # init_t selects the dedicated transition but owns none of the
+    # provisioner's creation-label or protected-topology authority.
+    checks.append(Access("init_t", PROVISIONER_EXECUTABLE, "file", "execute_no_trans"))
+    checks.append(Access("init_t", "init_t", "process", "setfscreate"))
+    for directory in (*PROTECTED_ANCESTOR_DIRECTORIES, *PROTECTED_DIRECTORIES):
+        checks.extend(
+            accesses(
+                "init_t",
+                directory,
+                "dir",
+                (
+                    "add_name",
+                    "create",
+                    "relabelfrom",
+                    "relabelto",
+                    "remove_name",
+                    "rename",
+                    "rmdir",
+                    "setattr",
+                    "write",
+                ),
+            )
+        )
+
+    # The provisioner can create directories but cannot administer mounts,
+    # inspect tasks, or write any record payload.
+    checks.extend(
+        (
+            Access(PROVISIONER_DOMAIN, "*", "capability", "sys_admin"),
+            Access(PROVISIONER_DOMAIN, "*", "cap_userns", "sys_admin"),
+            Access(PROVISIONER_DOMAIN, "*", "capability", "sys_ptrace"),
+            Access(PROVISIONER_DOMAIN, "*", "cap_userns", "sys_ptrace"),
+            Access(PROVISIONER_DOMAIN, "*", "process", "ptrace"),
+        )
+    )
+    for record in PROTECTED_RECORDS:
+        checks.extend(accesses(PROVISIONER_DOMAIN, record, "file", RECORD_MUTATIONS))
+
+    for domain in DOMAINS:
+        if domain != "aos_sandbox_network_publisher_t":
+            checks.extend(
+                accesses(
+                    domain,
+                    "aos_sandbox_network_state_t",
+                    "dir",
+                    ("add_name", "remove_name", "write"),
+                )
+            )
+            checks.extend(
+                accesses(
+                    domain,
+                    "aos_sandbox_network_state_t",
+                    "file",
+                    RECORD_MUTATIONS,
+                )
+            )
+
+    for domain in DOMAINS:
+        checks.extend(
+            accesses(
+                domain,
+                PROVISIONER_EXECUTABLE,
+                "file",
+                ("entrypoint", "execute", "execute_no_trans"),
             )
         )
 
@@ -344,11 +581,32 @@ def transition_rules(setools: Any, policy: Any, transition: Transition) -> list[
     return list(query.results())
 
 
+def transition_candidates(
+    setools: Any,
+    policy: Any,
+    source: str,
+    target: str,
+    object_class: str,
+) -> list[Any]:
+    """Returns every transition, including disabled alternatives, for one entry point."""
+
+    query = setools.TERuleQuery(
+        policy,
+        ruletype=[setools.TERuletype.type_transition],
+        source=source,
+        source_indirect=True,
+        target=target,
+        target_indirect=True,
+        tclass=[object_class],
+    )
+    return list(query.results())
+
+
 def check_policy(setools: Any, policy: Any) -> list[str]:
     """Returns deterministic evidence lines or raises on a policy mismatch."""
 
     evidence: list[str] = []
-    for domain in DOMAINS:
+    for domain in ENFORCING_DOMAINS:
         if policy.lookup_type(domain).ispermissive:
             raise ValueError(f"protected domain is permissive: {domain}")
         evidence.append(f"enforcing\t{domain}")
@@ -365,6 +623,43 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
             "transition\t"
             f"{transition.source}\t{transition.target}\t"
             f"{transition.object_class}\t{transition.default}"
+        )
+
+    provisioner_candidates = transition_candidates(
+        setools,
+        policy,
+        "init_t",
+        PROVISIONER_EXECUTABLE,
+        "process",
+    )
+    unexpected = [
+        rule
+        for rule in provisioner_candidates
+        if str(rule.default) != PROVISIONER_DOMAIN
+    ]
+    if unexpected:
+        rendered = " | ".join(sorted(str(rule) for rule in unexpected))
+        raise ValueError(f"alternate provisioner transition exists: {rendered}")
+    evidence.append(
+        f"exclusive-transition\tinit_t\t{PROVISIONER_EXECUTABLE}\t"
+        f"process\t{PROVISIONER_DOMAIN}"
+    )
+
+    for source in FORBIDDEN_PROVISIONER_TRANSITION_SOURCES:
+        rules = transition_candidates(
+            setools,
+            policy,
+            source,
+            PROVISIONER_EXECUTABLE,
+            "process",
+        )
+        if rules:
+            rendered = " | ".join(sorted(str(rule) for rule in rules))
+            raise ValueError(
+                f"runtime role can transition through provisioner: {source}: {rendered}"
+            )
+        evidence.append(
+            f"deny-transition\t{source}\t{PROVISIONER_EXECUTABLE}\tprocess"
         )
 
     for access in POSITIVE_ACCESS:

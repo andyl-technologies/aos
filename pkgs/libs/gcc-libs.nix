@@ -129,7 +129,7 @@ in
       # No fetchurl source — we use builtins.fetchTarball inline
       src = null;
 
-      buildDeps = [];
+      buildDeps = [buildPackages.patchelf];
       runtimeDeps = [];
       propagatedDeps = [];
 
@@ -244,7 +244,7 @@ in
             # Build shared target libraries.
             # LDFLAGS_FOR_TARGET includes -dynamic-linker so configure test
             # programs can actually run in the Nix sandbox (no /lib64/ld-linux).
-            TARGET_LDFLAGS="-Wl,-dynamic-linker=${interp} -Wl,-rpath,${glibc}/lib"
+            TARGET_LDFLAGS="-Wl,-dynamic-linker=${interp} -Wl,-rpath,$out/lib -Wl,-rpath,${glibc}/lib"
             make -j"$NIX_BUILD_CORES" all-target-libgcc \
               AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
               CFLAGS_FOR_TARGET="-O2 -fPIC" \
@@ -281,6 +281,29 @@ in
           '';
         }
       ];
+
+      postFinalize = ''
+        libstdcxx="$out/lib/libstdc++.so.6.0.33"
+        ${buildPackages.patchelf}/bin/patchelf --print-needed "$libstdcxx" | \
+          grep -Fx libgcc_s.so.1
+
+        resolvedLibgcc=""
+        savedIFS="$IFS"
+        IFS=:
+        for directory in $(${buildPackages.patchelf}/bin/patchelf \
+          --print-rpath "$libstdcxx"); do
+          if [ -e "$directory/libgcc_s.so.1" ]; then
+            resolvedLibgcc="$directory/libgcc_s.so.1"
+            break
+          fi
+        done
+        IFS="$savedIFS"
+
+        if [ "$resolvedLibgcc" != "$out/lib/libgcc_s.so.1" ]; then
+          echo "gcc-libs: libstdc++.so.6 does not resolve libgcc_s.so.1 from its own output" >&2
+          exit 1
+        fi
+      '';
 
       passthru.evidenceSources = [gcc-src gmp-src mpfr-src mpc-src];
 

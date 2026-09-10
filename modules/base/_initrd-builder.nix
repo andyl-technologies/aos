@@ -48,10 +48,18 @@
   initrdUnits,
   initrdExtraPackages ? [],
   initrdNetworkDir ? null,
+  stage0Init ? null,
+  immutableSelinuxPolicy ? null,
   maskedUnits ? [],
   validateBootIdentity ? false,
   keepBinutils ? false,
 }: let
+  immutableStage0 =
+    if stage0Init == null && immutableSelinuxPolicy == null
+    then false
+    else if stage0Init != null && immutableSelinuxPolicy != null
+    then true
+    else throw "initrd-builder: stage0Init and immutableSelinuxPolicy must be set together";
   inherit
     (pkgs)
     bash
@@ -69,6 +77,15 @@
     util-linux
     zstd
     ;
+  policySupport = ../../pkgs/security/_aos-selinux-production-policy;
+  policyRoot =
+    if immutableSelinuxPolicy == null
+    then null
+    else "${immutableSelinuxPolicy}/etc/selinux/aos";
+  nativeErofsUtils = pkgs.buildPackages.erofs-utils;
+  nativeLibselinux = pkgs.buildPackages.libselinux;
+  nativePatchelf = pkgs.buildPackages.patchelf;
+  nativePython = pkgs.buildPackages.python3;
   bootIdentityPackages = lib.optional validateBootIdentity pkgs.aos-boot-identity;
 
   # Packages whose full runtime closures are copied into the initrd's
@@ -90,7 +107,8 @@
     ++ bootIdentityPackages
     # Feature-specific closures injected by modules (e.g. the measured-boot
     # PCR-policy public key — RFC-0006 phase 3).
-    ++ initrdExtraPackages;
+    ++ initrdExtraPackages
+    ++ lib.optional immutableStage0 stage0Init;
 
   # Short /bin/<name> symlinks. A binary only needs to appear here if an
   # initrd unit (or a script invoked by one) references it as `/bin/foo`
@@ -357,6 +375,12 @@ in
       zstd
       coreutils
       findutils
+    ]
+    ++ lib.optionals immutableStage0 [
+      nativeErofsUtils
+      nativeLibselinux
+      nativePatchelf
+      nativePython
     ];
 
     # `exportReferencesGraph` writes one file per package/name pair
@@ -803,6 +827,98 @@ in
         script = ''
           set -euo pipefail
           mkdir -p $out
+
+          ${lib.optionalString immutableStage0 ''
+            echo "==> Building labeled immutable stage-1 EROFS"
+
+            # Both conventional entry points resolve to the physical store
+            # objects that stage 0 verifies after loading the policy. Keep a
+            # /lib/systemd/systemd alias as an additional authoritative
+            # init_exec_t name while /usr remains the merged-/usr symlink.
+            ln -sfn ${stage0Init}/bin/aos-selinux-stage0 root/sbin/init
+            ln -sfn ${stage0Init}/bin/aos-selinux-stage0 root/init
+            ln -sfn ${systemd}/lib/systemd/systemd root/bin/systemd
+            ln -sfn ${systemd}/lib/systemd/systemd root/lib/systemd/systemd
+            mkdir -p root/sys/fs/selinux
+
+            systemd_interpreter=$(
+              ${nativePatchelf}/bin/patchelf --print-interpreter \
+                root${systemd}/lib/systemd/systemd
+            )
+            case "$systemd_interpreter" in
+              /nix/store/*) ;;
+              *)
+                echo "initrd-builder: systemd has a non-store ELF interpreter" >&2
+                exit 1
+                ;;
+            esac
+            if [ ! -f "root$systemd_interpreter" ]; then
+              echo "initrd-builder: staged systemd interpreter is absent" >&2
+              exit 1
+            fi
+
+            ${nativePython}/bin/python3 -B ${policySupport}/context_plan.py \
+              --root root \
+              --file-contexts ${policyRoot}/contexts/files/file_contexts \
+              --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+              --dynamic-loader "$systemd_interpreter" \
+              --output-file-contexts exact-file-contexts \
+              --output-map expected-contexts.json
+            ${nativeLibselinux}/sbin/sefcontext_compile \
+              -p ${policyRoot}/policy/policy.33 \
+              -o exact-file-contexts.bin \
+              exact-file-contexts
+            ${nativePython}/bin/python3 -B \
+              ${policySupport}/verify_context_lookups.py \
+              --file-contexts exact-file-contexts \
+              --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+              --expected expected-contexts.json
+
+            # The aliases above are useful only if the physical executable
+            # inodes received the exact label the PID-1 guard will demand.
+            ${nativePython}/bin/python3 -c '
+            import json, sys
+            expected = "system_u:object_r:init_exec_t"
+            entries = {
+                entry["path"]: entry for entry in
+                json.load(open(sys.argv[1], encoding="utf-8"))["entries"]
+            }
+            for path in sys.argv[2:]:
+                entry = entries.get(path)
+                if entry is None or entry["kind"] != "regular" or entry["context"] != expected:
+                    raise SystemExit(f"physical PID-1 executable is not exactly init_exec_t: {path}: {entry}")
+            ' \
+              expected-contexts.json \
+              ${stage0Init}/bin/aos-selinux-stage0 \
+              ${systemd}/lib/systemd/systemd
+
+            ${nativeErofsUtils}/bin/mkfs.erofs \
+              --all-root \
+              --file-contexts=exact-file-contexts \
+              -T0 \
+              -U bdfb6fc9-0000-4000-8000-000000000021 \
+              --workers=$NIX_BUILD_CORES \
+              -z zstd,level=19 \
+              aos-stage1.erofs \
+              root
+            ${nativeErofsUtils}/bin/fsck.erofs aos-stage1.erofs
+            ${nativePython}/bin/python3 -B \
+              ${policySupport}/verify_erofs_contexts.py \
+              --dump-erofs ${nativeErofsUtils}/bin/dump.erofs \
+              --image aos-stage1.erofs \
+              --expected expected-contexts.json
+
+            # The outer newc archive is deliberately non-general: it contains
+            # only the static admission loader and the verified stage-1 image.
+            # No unlabeled stage-1 executable remains reachable before policy
+            # load and the kernel_t -> init_t transition.
+            mv root stage1-root
+            mkdir root
+            cp ${stage0Init}/bin/aos-selinux-stage0 root/init
+            cp aos-stage1.erofs root/aos-stage1.erofs
+            chmod 0555 root/init
+            chmod 0444 root/aos-stage1.erofs
+          ''}
 
           echo "==> Packing cpio archive"
           # Reproducible timestamps — every entry epoch 1.

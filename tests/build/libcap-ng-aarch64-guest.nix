@@ -4,6 +4,7 @@
   buildPackages,
   targetPackages,
   payload,
+  pythonPayload,
   version,
 }: let
   linuxSource = import ../../pkgs/kernel/_source.nix {
@@ -433,6 +434,7 @@
     kernelCapabilityProbe
     runAs
     payload
+    pythonPayload
   ];
   closureGraph =
     lib.concatLists
@@ -537,7 +539,7 @@
             esac
           done < "$test_root/manifest"
 
-          set -- ${payload}/lib/python*/site-packages
+          set -- ${pythonPayload}/lib/python*/site-packages
           [ "$#" -eq 1 ] && [ -d "$1" ]
           python_path=$1
           python=${targetPackages.python3}/bin/python3
@@ -650,6 +652,7 @@ in
             echo backend=qemu-system-aarch64
             echo accelerator=tcg
             echo payload=${payload}
+            echo python_payload=${pythonPayload}
             echo configured_tests=$(wc -l < ${payload}/libexec/libcap-ng-tests/manifest)
             echo root_and_unprivileged_process_capability_tests=true
             echo python_bindings_tested=true

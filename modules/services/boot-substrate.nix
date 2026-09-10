@@ -52,6 +52,14 @@
   filesUnit = "aos-config-seed.service";
   zfsState = config.aos.filesystems.zfs.enable;
   zfsPackage = config.aos.filesystems.zfs.package;
+  protectedSandboxNetworkRoots =
+    config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+  varRootContext =
+    config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+  varRootContextOption =
+    lib.optionalString protectedSandboxNetworkRoots ",rootcontext=${varRootContext}";
+  runtimeRootsExecutable =
+    "${pkgs.aos-selinux-runtime-roots}/bin/aos-selinux-runtime-roots";
   recoveryEnabledJson =
     if config.aos.boot.recovery.enable
     then "true"
@@ -138,13 +146,29 @@
             mount -t zfs -o zfsutil,nosuid,nodev \
               ${lib.escapeShellArg "${config.aos.filesystems.zfs.poolName}/var/lib"} /sysroot/var/lib
           elif [ -e /dev/mapper/var ]; then
-            mount -o nosuid,nodev /dev/mapper/var /sysroot/var
+            mount -o nosuid,nodev${varRootContextOption} /dev/mapper/var /sysroot/var
           else
-            mount -o nosuid,nodev /dev/disk/by-partlabel/var /sysroot/var
+            mount -o nosuid,nodev${varRootContextOption} /dev/disk/by-partlabel/var /sysroot/var
           fi
         fi
-        # Standard /var subdirectories expected by systemd and daemons.
-        mkdir -p /sysroot/var/{log,lib,tmp}
+        ${
+          if protectedSandboxNetworkRoots
+          then ''
+            # Establish the exact /var and /var/lib base before anything can
+            # create a generically labeled state directory beneath it.
+            /sysroot/usr/lib/systemd/aos-selinux-root-handoff \
+              --launch-runtime-roots ${runtimeRootsExecutable} \
+              --root /sysroot --prepare-var-base
+
+            # The protected base phase already created /var/lib, so the
+            # generic mkdir cannot bypass its exact label and metadata checks.
+            mkdir -p /sysroot/var/{log,tmp}
+          ''
+          else ''
+            # Standard /var subdirectories expected by systemd and daemons.
+            mkdir -p /sysroot/var/{log,lib,tmp}
+          ''
+        }
         # /var/etc is the host-persistent allowlist of the /etc
         # overlay (spec v12 §5.4) — created eagerly so
         # aos-machine-id and sshd-keygen find it on first boot.
