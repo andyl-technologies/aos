@@ -557,6 +557,9 @@ fn decode_hex_nibble(byte: u8) -> Result<u8, CampaignCodecError> {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- exact fixture failures localize canonical search regressions.
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use crate::{
         BooleanDomain, BranchBudget, BranchRequestCause, CampaignMode, CampaignSeed,
@@ -727,6 +730,8 @@ mod tests {
         }
     }
 
+    // crucible-lint: allow rust-allow -- the fixture keeps canonical request components explicit at each paged-search boundary.
+    #[allow(clippy::too_many_arguments)]
     fn search_page_request(
         engine: &PlannerEngine,
         artifact: &PolicyArtifact,
