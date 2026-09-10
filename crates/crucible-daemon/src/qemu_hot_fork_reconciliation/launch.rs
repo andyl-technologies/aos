@@ -14,6 +14,11 @@ use super::linux::LinuxQemuHotForkWorldLaunchSource;
 use super::*;
 use crate::QemuAttemptOperationalBoundary;
 
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+#[cfg(feature = "destructive-recovery-faults")]
+const CHILD_RESOURCE_ALIAS_TRIGGER: &str = "crucible.destructive-recovery.child-resource-alias";
+
 /// Forks `source` into `target` with the target's provisioned VMState container
 /// and optional root overlay as the child's private copies.
 fn with_private_file_destinations<T>(
@@ -45,9 +50,21 @@ fn with_private_file_destinations<T>(
         vmstate_destination,
     ));
     if let (Some(root), Some(destination)) = (&overlay_root, overlay_destination) {
+        #[cfg(feature = "destructive-recovery-faults")]
+        let destination = if child_resource_alias_requested() {
+            vmstate_destination
+        } else {
+            destination
+        };
         destinations.push(QemuHotForkChildFileDestination::new(root, destination));
     }
     operation(&destinations)
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn child_resource_alias_requested() -> bool {
+    std::env::var_os(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT).as_deref()
+        == Some(std::ffi::OsStr::new(CHILD_RESOURCE_ALIAS_TRIGGER))
 }
 
 fn fork_with_private_files<O, F>(

@@ -186,6 +186,11 @@ in
             destructive-recovery-faults \
             qemu_hot_fork_world_factory::tests::world_fork_one_vm_failure_quarantines_partial_world
 
+          run_exact_feature_lib_test \
+            crucible-daemon \
+            destructive-recovery-faults \
+            qemu_hot_fork_world_factory::tests::child_resource_alias_rejects_before_fork_and_restores_source_world
+
           for cas_test in \
             content_store::tests::changing_and_failing_sources_leave_no_published_object_or_staging_file \
             content_store::s3::tests::interrupted_upload_aborts_and_failed_abort_is_explicit \
@@ -223,9 +228,9 @@ in
           tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:campaign-destructive-recovery
           injection_classes=14
-          prerequisite_tests=28
+          prerequisite_tests=29
           operator_commands=contract-validated
-          fault_build_hooks=coordinator-before-observation-commit,daemon-during-snapshot-publication,exact-capture-enospc,multipart-remove-leaf,store-credential-expiry,corrupt-tier-copy,pack-index-interruption,world-fork-one-vm-failure-implemented;remaining-required
+          fault_build_hooks=coordinator-before-observation-commit,daemon-during-snapshot-publication,exact-capture-enospc,multipart-remove-leaf,store-credential-expiry,corrupt-tier-copy,pack-index-interruption,world-fork-one-vm-failure,child-resource-alias;all-required-hooks-implemented
           manual_evidence=required
           acceptance=not-evaluated
           RESULT
