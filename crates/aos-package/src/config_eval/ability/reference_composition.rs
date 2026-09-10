@@ -1856,7 +1856,11 @@ fn terminal_interface_name(interface: &str) -> &'static str {
 
 fn lower_authority(suffix: &str) -> (&'static str, Vec<&'static str>, &'static str) {
     match suffix {
-        "configuration" => ("configuration", vec!["publish", "read"], "configuration"),
+        "configuration" => (
+            "configuration",
+            vec!["prepare", "publish", "read", "release"],
+            "configuration",
+        ),
         "credential" => ("credentials", vec!["deliver"], "credential-view"),
         "service" => ("services", vec!["observe", "reload", "start"], "service"),
         _ => panic!("unknown lower-interface suffix"),
