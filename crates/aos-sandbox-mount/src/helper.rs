@@ -1,6 +1,5 @@
 //! Single-threaded namespace-helper process and its fixed launcher.
 
-use std::collections::BTreeSet;
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
@@ -8,19 +7,22 @@ use std::path::{Path, PathBuf};
 
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::{MountId, MountNamespace, MountObservation};
-use aos_sandbox_linux::mount::{DetachedMount, detach_relative};
+use aos_sandbox_linux::mount::{DetachedMount, detach_child};
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, SingleThreadedProcess};
 use aos_sandbox_protocol::ValidatedMountRequest;
 
-use crate::catalog::ResolvedMountResources;
+use crate::catalog::{
+    ResolvedMountResources, ResolvedMountTopology, digest_idmaps, observe_mount_topology,
+};
+use crate::destination_slot::{payload_slot_component, payload_slot_relative_path};
 use crate::plan::{
     DescriptorRoles, ExpectedFileIdentity, ExpectedNamespaceIdentity, HelperAction, HelperPlan,
     SealedHelperPlan,
 };
 use crate::spawn::{
-    DETACHED_MOUNT_FD, DescriptorMapping, MOUNT_NAMESPACE_FD, OBSERVATION_FD, PLAN_FD,
-    TARGET_ROOT_FD, TARGET_SLOT_FD, run_helper,
+    ATTACHMENT_ANCHOR_FD, DETACHED_MOUNT_FD, DescriptorMapping, MOUNT_NAMESPACE_FD, OBSERVATION_FD,
+    PLAN_FD, TARGET_ROOT_FD, TARGET_SLOT_FD, run_helper,
 };
 use crate::worker::{
     EffectDeadlineV1, InstalledMountObservation, MountTargetObservation, NamespaceHelper,
@@ -113,6 +115,10 @@ impl PosixSpawnNamespaceHelper {
             DescriptorMapping {
                 target: TARGET_SLOT_FD,
                 source: resources.target_slot.as_fd(),
+            },
+            DescriptorMapping {
+                target: ATTACHMENT_ANCHOR_FD,
+                source: resources.attachment_anchor.as_fd(),
             },
             DescriptorMapping {
                 target: OBSERVATION_FD,
@@ -240,6 +246,7 @@ pub fn run_inherited() -> Result<u8> {
         MOUNT_NAMESPACE_FD,
         TARGET_ROOT_FD,
         TARGET_SLOT_FD,
+        ATTACHMENT_ANCHOR_FD,
         OBSERVATION_FD,
     ] {
         ensure_descriptor(fd, true)?;
@@ -259,96 +266,118 @@ pub fn run_inherited() -> Result<u8> {
     let target_slot =
         ResolvedPath::from_inherited(adopt(TARGET_SLOT_FD)?).map_err(helper_linux_error)?;
     verify_file(target_slot.identity(), plan.target_slot, "target slot")?;
+    let attachment_anchor = ResolvedPath::from_inherited(adopt(ATTACHMENT_ANCHOR_FD)?)
+        .and_then(BeneathRoot::from_resolved)
+        .map_err(helper_linux_error)?;
+    verify_file(
+        attachment_anchor.identity(),
+        plan.attachment_anchor,
+        "attachment anchor",
+    )?;
+    verify_descriptor_mount_ids(&target_root, &target_slot, &attachment_anchor, &plan)?;
 
     let single = SingleThreadedProcess::verify().map_err(helper_linux_error)?;
     mount_namespace.enter(&single).map_err(helper_linux_error)?;
     target_root
         .confine_helper_root(&single)
         .map_err(helper_linux_error)?;
-    let current = resolve_target(&target_root, &plan.target_relative_path)?;
+    verify_namespace_topology(&target_root, &attachment_anchor, &target_slot, &plan)?;
+    let slot_component = payload_slot_component(&plan.destination_slot_id);
+    let slot_path = Path::new(&slot_component);
+    let current = resolve_target(&attachment_anchor, slot_path)?;
 
     let observation = match plan.action {
         HelperAction::Observe => classify_target(&current, &plan)?,
         HelperAction::Install => {
-            verify_file(current.identity(), plan.target_slot, "pre-install target")?;
-            if MountId::from_fd(current.as_fd())
-                .map_err(helper_linux_error)?
-                .get()
-                != plan.target_slot_mount_id
-            {
+            if !matches!(
+                classify_target(&current, &plan)?,
+                HelperReport {
+                    kind: REPORT_ABSENT,
+                    ..
+                }
+            ) {
                 return Err(MountError::Worker(
                     "install target is not the exact destination slot".to_owned(),
                 ));
             }
-            let mount = DetachedMount::from_inherited(adopt(DETACHED_MOUNT_FD)?)
-                .map_err(helper_linux_error)?;
+            let mount = adopt_expected_detached(&plan)?;
             validate_effect_deadline(&plan)?;
             mount.attach(&current).map_err(helper_linux_error)?;
-            observe_published(&target_root, &plan)?
+            observe_published(&attachment_anchor, slot_path, &plan)?
         }
         HelperAction::Replace => {
             let predecessor = MountId::from_fd(current.as_fd()).map_err(helper_linux_error)?;
-            if predecessor.get() != plan.expected_predecessor_mount_id {
+            if predecessor.get() != plan.expected_predecessor_mount_id
+                || current.identity() == target_slot.identity()
+            {
                 return Err(MountError::Worker(
                     "replacement target is not the authorized predecessor".to_owned(),
                 ));
             }
+            let predecessor_observation = validate_slot_mount_location(
+                MountNamespace::current()
+                    .observe(predecessor)
+                    .map_err(helper_linux_error)?,
+                predecessor,
+                &plan,
+            )?;
             let inventory = MountNamespace::current()
                 .inventory(
                     65_536,
                     aos_sandbox_linux::inventory::MountListOrder::Forward,
                 )
                 .map_err(helper_linux_error)?;
-            let expected_mount_point = inventory
-                .mounts
-                .iter()
-                .find(|mount| mount.mount_id == predecessor)
-                .map(|mount| mount.mount_point.as_os_str().as_bytes())
-                .ok_or_else(|| {
-                    MountError::Worker(
-                        "complete inventory omitted the topmost predecessor".to_owned(),
-                    )
-                })?;
             match classify_replacement_stack(
                 &inventory.mounts,
                 MountId::new(plan.expected_mount_id).map_err(helper_linux_error)?,
                 predecessor,
-                MountId::new(plan.target_slot_mount_id).map_err(helper_linux_error)?,
-                expected_mount_point,
+                MountId::new(plan.attachment_anchor_mount_id).map_err(helper_linux_error)?,
+                plan.target_mount_namespace_id,
+                predecessor_observation.mount_point.as_os_str().as_bytes(),
             )? {
                 ReplacementStackState::NeedsAttach => {
-                    let mount = DetachedMount::from_inherited(adopt(DETACHED_MOUNT_FD)?)
-                        .map_err(helper_linux_error)?;
+                    let mount = adopt_expected_detached(&plan)?;
                     validate_effect_deadline(&plan)?;
                     mount.attach_beneath(&current).map_err(helper_linux_error)?;
                 }
                 ReplacementStackState::AlreadyAttached => {
-                    ensure_descriptor(DETACHED_MOUNT_FD, true)?;
+                    drop(adopt_expected_detached(&plan)?);
                 }
             }
             validate_effect_deadline(&plan)?;
-            detach_relative(&plan.target_relative_path, &single).map_err(helper_linux_error)?;
-            observe_published(&target_root, &plan)?
+            detach_child(&attachment_anchor, slot_path, &single).map_err(helper_linux_error)?;
+            observe_published(&attachment_anchor, slot_path, &plan)?
         }
         HelperAction::Detach => {
-            verify_file(current.identity(), plan.source, "pre-detach target")?;
-            let current_mount_id = MountId::from_fd(current.as_fd()).map_err(helper_linux_error)?;
-            if current_mount_id.get() != plan.expected_mount_id {
+            if !matches!(
+                classify_target(&current, &plan)?,
+                HelperReport {
+                    kind: REPORT_INSTALLED,
+                    ..
+                }
+            ) {
                 return Err(MountError::Worker(
                     "refusing to detach a different exact mount generation".to_owned(),
                 ));
             }
             validate_effect_deadline(&plan)?;
-            detach_relative(&plan.target_relative_path, &single).map_err(helper_linux_error)?;
-            let revealed = resolve_target(&target_root, &plan.target_relative_path)?;
-            if revealed.identity() == current.identity() {
+            detach_child(&attachment_anchor, slot_path, &single).map_err(helper_linux_error)?;
+            let revealed = resolve_target(&attachment_anchor, slot_path)?;
+            if !matches!(
+                classify_target(&revealed, &plan)?,
+                HelperReport {
+                    kind: REPORT_ABSENT,
+                    ..
+                }
+            ) {
                 return Err(MountError::Worker(
-                    "detached mount remains topmost at target".to_owned(),
+                    "detached mount did not reveal the exact protected slot".to_owned(),
                 ));
             }
             HelperReport::absent()
         }
     };
+    verify_namespace_topology(&target_root, &attachment_anchor, &target_slot, &plan)?;
     write_report(adopt(OBSERVATION_FD)?, &observation)?;
     Ok(0)
 }
@@ -359,32 +388,56 @@ enum ReplacementStackState {
     AlreadyAttached,
 }
 
-/// Classifies replacement membership without using parent IDs or list order.
+/// Classifies replacement membership with exact parentage but without list order.
 ///
 /// The caller has proven `predecessor` is topmost and serializes namespace
 /// mutations. The exclusive slot invariant plus a complete inventory means
 /// exactly one additional broker mount at the target must be immediately
-/// beneath the predecessor. `mount_point` is copied from that predecessor's
-/// own `statmount(2)` observation, avoiding any path-representation guess.
+/// beneath the predecessor. Before insertion the predecessor is a direct
+/// child of the anchor. After `MOVE_MOUNT_BENEATH`, the successor is the
+/// anchor child and the kernel reparents the predecessor over the successor.
 fn classify_replacement_stack(
     mounts: &[MountObservation],
     successor: MountId,
     predecessor: MountId,
-    target_slot: MountId,
+    attachment_anchor: MountId,
+    target_mount_namespace_id: u64,
     mount_point: &[u8],
 ) -> Result<ReplacementStackState> {
-    let explicit: BTreeSet<_> = mounts
+    let explicit = mounts
         .iter()
         .filter(|mount| mount.mount_point.as_os_str().as_bytes() == mount_point)
-        .map(|mount| mount.mount_id)
-        .filter(|mount_id| *mount_id != target_slot)
-        .collect();
-    let successor_is_elsewhere = mounts.iter().any(|mount| {
-        mount.mount_id == successor && mount.mount_point.as_os_str().as_bytes() != mount_point
+        .collect::<Vec<_>>();
+    if explicit
+        .iter()
+        .any(|mount| mount.mount_namespace_id != target_mount_namespace_id)
+    {
+        return Err(MountError::Worker(
+            "replacement target mounts are outside the target namespace".to_owned(),
+        ));
+    }
+    let predecessor_observation = explicit
+        .iter()
+        .find(|mount| mount.mount_id == predecessor)
+        .copied();
+    let successor_observation = explicit
+        .iter()
+        .find(|mount| mount.mount_id == successor)
+        .copied();
+    let expected_mount_is_elsewhere = mounts.iter().any(|mount| {
+        (mount.mount_id == successor || mount.mount_id == predecessor)
+            && mount.mount_point.as_os_str().as_bytes() != mount_point
     });
-    if explicit == BTreeSet::from([predecessor]) && !successor_is_elsewhere {
+    if explicit.len() == 1
+        && predecessor_observation.is_some_and(|mount| mount.parent_mount_id == attachment_anchor)
+        && !expected_mount_is_elsewhere
+    {
         Ok(ReplacementStackState::NeedsAttach)
-    } else if explicit == BTreeSet::from([predecessor, successor]) {
+    } else if explicit.len() == 2
+        && successor_observation.is_some_and(|mount| mount.parent_mount_id == attachment_anchor)
+        && predecessor_observation.is_some_and(|mount| mount.parent_mount_id == successor)
+        && !expected_mount_is_elsewhere
+    {
         Ok(ReplacementStackState::AlreadyAttached)
     } else {
         Err(MountError::Worker(
@@ -423,9 +476,12 @@ fn compile_plan(
         request_digest,
         expected_mount_id: expected_mount_id.get(),
         expected_predecessor_mount_id: expected_predecessor_mount_id.map_or(0, MountId::get),
-        target_slot_mount_id: MountId::from_fd(resources.target_slot.as_fd())
-            .map_err(helper_linux_error)?
-            .get(),
+        protected_anchor_mount_id: resources.topology.protected_anchor_mount_id,
+        target_root_mount_id: resources.topology.target_root_mount_id,
+        run_mount_id: resources.topology.run_mount_id,
+        attachment_anchor_mount_id: resources.topology.attachment_anchor_mount_id,
+        target_mount_namespace_id: resources.topology.target_mount_namespace_id,
+        attachment_anchor_mount_attributes: resources.topology.attachment_anchor_mount_attributes,
         clock_provenance,
         host_boot_id,
         effect_deadline_boottime_nanoseconds,
@@ -433,7 +489,8 @@ fn compile_plan(
         mount_namespace: resources.mount_namespace.identity().into(),
         target_root: resources.target_root.identity().into(),
         target_slot: resources.target_slot.identity().into(),
-        target_relative_path: resources.target_relative_path.clone(),
+        attachment_anchor: resources.attachment_anchor.identity().into(),
+        attachment_anchor_idmap_digest: resources.topology.attachment_anchor_idmap_digest,
     })
 }
 
@@ -473,19 +530,99 @@ fn validate_effect_deadline_at(deadline: u64, now: u64) -> Result<()> {
     Ok(())
 }
 
-fn resolve_target(root: &BeneathRoot, relative: &Path) -> Result<ResolvedPath> {
-    root.resolve(
-        relative,
-        ResolveOptions {
-            no_mount_crossing: false,
-            require_directory: true,
-        },
-    )
-    .map_err(helper_linux_error)
+fn verify_descriptor_mount_ids(
+    target_root: &BeneathRoot,
+    target_slot: &ResolvedPath,
+    attachment_anchor: &BeneathRoot,
+    plan: &HelperPlan,
+) -> Result<()> {
+    let actual = [
+        MountId::from_fd(target_root.as_fd())
+            .map_err(helper_linux_error)?
+            .get(),
+        MountId::from_fd(target_slot.as_fd())
+            .map_err(helper_linux_error)?
+            .get(),
+        MountId::from_fd(attachment_anchor.as_fd())
+            .map_err(helper_linux_error)?
+            .get(),
+    ];
+    let expected = [
+        plan.target_root_mount_id,
+        plan.protected_anchor_mount_id,
+        plan.attachment_anchor_mount_id,
+    ];
+    if actual != expected {
+        return Err(MountError::Worker(
+            "helper descriptor mount identities changed".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
-fn observe_published(root: &BeneathRoot, plan: &HelperPlan) -> Result<HelperReport> {
-    let published = resolve_target(root, &plan.target_relative_path)?;
+fn adopt_expected_detached(plan: &HelperPlan) -> Result<DetachedMount> {
+    let mount =
+        DetachedMount::from_inherited(adopt(DETACHED_MOUNT_FD)?).map_err(helper_linux_error)?;
+    if mount.mount_id().get() != plan.expected_mount_id {
+        return Err(MountError::Worker(
+            "helper detached mount differs from the sealed successor".to_owned(),
+        ));
+    }
+    Ok(mount)
+}
+
+fn verify_namespace_topology(
+    target_root: &BeneathRoot,
+    attachment_anchor: &BeneathRoot,
+    target_slot: &ResolvedPath,
+    plan: &HelperPlan,
+) -> Result<()> {
+    let protected_anchor_mount_id =
+        MountId::from_fd(target_slot.as_fd()).map_err(helper_linux_error)?;
+    let actual = observe_mount_topology(
+        MountNamespace::current(),
+        target_root,
+        attachment_anchor,
+        protected_anchor_mount_id,
+    )?;
+    if actual != topology_from_plan(plan) {
+        return Err(MountError::Worker(
+            "helper attachment-anchor topology changed after authorization".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+const fn topology_from_plan(plan: &HelperPlan) -> ResolvedMountTopology {
+    ResolvedMountTopology {
+        protected_anchor_mount_id: plan.protected_anchor_mount_id,
+        target_root_mount_id: plan.target_root_mount_id,
+        run_mount_id: plan.run_mount_id,
+        attachment_anchor_mount_id: plan.attachment_anchor_mount_id,
+        target_mount_namespace_id: plan.target_mount_namespace_id,
+        attachment_anchor_mount_attributes: plan.attachment_anchor_mount_attributes,
+        attachment_anchor_idmap_digest: plan.attachment_anchor_idmap_digest,
+    }
+}
+
+fn resolve_target(anchor: &BeneathRoot, slot_component: &Path) -> Result<ResolvedPath> {
+    anchor
+        .resolve(
+            slot_component,
+            ResolveOptions {
+                no_mount_crossing: false,
+                require_directory: true,
+            },
+        )
+        .map_err(helper_linux_error)
+}
+
+fn observe_published(
+    anchor: &BeneathRoot,
+    slot_component: &Path,
+    plan: &HelperPlan,
+) -> Result<HelperReport> {
+    let published = resolve_target(anchor, slot_component)?;
     verify_file(published.identity(), plan.source, "published target")?;
     let mount_id = MountId::from_fd(published.as_fd()).map_err(helper_linux_error)?;
     if mount_id.get() != plan.expected_mount_id {
@@ -496,28 +633,122 @@ fn observe_published(root: &BeneathRoot, plan: &HelperPlan) -> Result<HelperRepo
     let observation = MountNamespace::current()
         .observe(mount_id)
         .map_err(helper_linux_error)?;
-    Ok(HelperReport::installed(observation))
+    Ok(HelperReport::installed(validate_slot_mount(
+        observation,
+        mount_id,
+        plan,
+    )?))
 }
 
 fn classify_target(target: &ResolvedPath, plan: &HelperPlan) -> Result<HelperReport> {
     let identity = target.identity();
     let current_mount_id = MountId::from_fd(target.as_fd()).map_err(helper_linux_error)?;
-    if same_file(identity, plan.target_slot) && current_mount_id.get() == plan.target_slot_mount_id
-    {
-        Ok(HelperReport::absent())
-    } else if current_mount_id.get() == plan.expected_mount_id {
-        let mount_id = MountId::new(plan.expected_mount_id).map_err(helper_linux_error)?;
-        let observation = MountNamespace::current()
-            .observe(mount_id)
-            .map_err(helper_linux_error)?;
-        Ok(HelperReport::installed(observation))
-    } else if plan.expected_predecessor_mount_id != 0
+    let state = classify_target_identity(identity, current_mount_id, plan)?;
+
+    match state {
+        TargetIdentityState::Absent => Ok(HelperReport::absent()),
+        TargetIdentityState::Expected | TargetIdentityState::Predecessor => {
+            let observation = MountNamespace::current()
+                .observe(current_mount_id)
+                .map_err(helper_linux_error)?;
+            report_for_mounted_target(state, observation, current_mount_id, plan)
+        }
+        TargetIdentityState::Conflict => Ok(HelperReport::conflict()),
+    }
+}
+
+fn report_for_mounted_target(
+    state: TargetIdentityState,
+    observation: MountObservation,
+    current_mount_id: MountId,
+    plan: &HelperPlan,
+) -> Result<HelperReport> {
+    match state {
+        TargetIdentityState::Expected => Ok(HelperReport::installed(validate_slot_mount(
+            observation,
+            current_mount_id,
+            plan,
+        )?)),
+        TargetIdentityState::Predecessor => {
+            validate_slot_mount_location(observation, current_mount_id, plan)?;
+            Ok(HelperReport::predecessor())
+        }
+        TargetIdentityState::Absent | TargetIdentityState::Conflict => Err(MountError::Worker(
+            "unmounted target state cannot produce a mounted report".to_owned(),
+        )),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TargetIdentityState {
+    Absent,
+    Expected,
+    Predecessor,
+    Conflict,
+}
+
+fn classify_target_identity(
+    identity: FileIdentity,
+    current_mount_id: MountId,
+    plan: &HelperPlan,
+) -> Result<TargetIdentityState> {
+    if same_file(identity, plan.target_slot) {
+        if current_mount_id.get() == plan.attachment_anchor_mount_id {
+            return Ok(TargetIdentityState::Absent);
+        }
+        return Err(MountError::Worker(
+            "destination slot is covered by a same-inode mount alias".to_owned(),
+        ));
+    }
+    if current_mount_id.get() == plan.expected_mount_id {
+        verify_file(identity, plan.source, "installed target")?;
+        return Ok(TargetIdentityState::Expected);
+    }
+    if plan.expected_predecessor_mount_id != 0
         && current_mount_id.get() == plan.expected_predecessor_mount_id
     {
-        Ok(HelperReport::predecessor())
-    } else {
-        Ok(HelperReport::conflict())
+        return Ok(TargetIdentityState::Predecessor);
     }
+    Ok(TargetIdentityState::Conflict)
+}
+
+fn validate_slot_mount(
+    observation: MountObservation,
+    expected_mount_id: MountId,
+    plan: &HelperPlan,
+) -> Result<MountObservation> {
+    let observation = validate_slot_mount_location(observation, expected_mount_id, plan)?;
+    if observation.parent_mount_id.get() != plan.attachment_anchor_mount_id {
+        return Err(MountError::Worker(
+            "slot mount does not descend directly from the attachment anchor".to_owned(),
+        ));
+    }
+    Ok(observation)
+}
+
+fn validate_slot_mount_location(
+    observation: MountObservation,
+    expected_mount_id: MountId,
+    plan: &HelperPlan,
+) -> Result<MountObservation> {
+    let expected_mount_point = payload_slot_mount_point(&plan.destination_slot_id);
+    if observation.mount_id != expected_mount_id
+        || observation.mount_namespace_id != plan.target_mount_namespace_id
+        || observation.mount_point.as_os_str().as_bytes() != expected_mount_point
+    {
+        return Err(MountError::Worker(
+            "slot mount identity, mountpoint, or namespace is invalid".to_owned(),
+        ));
+    }
+    Ok(observation)
+}
+
+fn payload_slot_mount_point(slot_id: &[u8; 16]) -> Vec<u8> {
+    let path = payload_slot_relative_path(slot_id);
+    let mut mount_point = Vec::with_capacity(path.as_os_str().as_bytes().len() + 1);
+    mount_point.push(b'/');
+    mount_point.extend_from_slice(path.as_os_str().as_bytes());
+    mount_point
 }
 
 #[derive(Clone)]
@@ -695,35 +926,6 @@ impl WireMountObservation {
     }
 }
 
-fn digest_idmaps(mount: &MountObservation) -> [u8; 32] {
-    use sha2::{Digest as _, Sha256};
-
-    let mut digest = Sha256::new();
-    digest.update(b"aos.sandbox.mount.idmaps.v1\0");
-    for map in [&mount.uid_map, &mount.gid_map] {
-        match map {
-            None => digest.update([0]),
-            Some(extents) => {
-                digest.update([1]);
-                digest.update(
-                    u64::try_from(extents.len())
-                        .unwrap_or(u64::MAX)
-                        .to_le_bytes(),
-                );
-                for extent in extents {
-                    digest.update(
-                        u64::try_from(extent.len())
-                            .unwrap_or(u64::MAX)
-                            .to_le_bytes(),
-                    );
-                    digest.update(extent.as_bytes());
-                }
-            }
-        }
-    }
-    digest.finalize().into()
-}
-
 fn malformed_report() -> MountError {
     MountError::Worker("helper observation is malformed".to_owned())
 }
@@ -814,44 +1016,295 @@ mod tests {
         }
     }
 
+    fn helper_plan() -> HelperPlan {
+        HelperPlan {
+            action: HelperAction::Replace,
+            roles: DescriptorRoles::for_action(HelperAction::Replace),
+            source_generation: 1,
+            namespace_generation: 1,
+            desired_attachment_generation: 2,
+            resource_attachment_generation: 2,
+            attachment_id: [1; 16],
+            destination_slot_id: [2; 16],
+            request_digest: [3; 32],
+            expected_mount_id: 40,
+            expected_predecessor_mount_id: 41,
+            protected_anchor_mount_id: 38,
+            target_root_mount_id: 30,
+            run_mount_id: 30,
+            attachment_anchor_mount_id: 39,
+            target_mount_namespace_id: 39,
+            attachment_anchor_mount_attributes: 0x0f,
+            clock_provenance: [4; 16],
+            host_boot_id: [5; 16],
+            effect_deadline_boottime_nanoseconds: 1,
+            source: ExpectedFileIdentity {
+                device: 1,
+                inode: 10,
+            },
+            mount_namespace: ExpectedNamespaceIdentity {
+                device: 1,
+                inode: 20,
+            },
+            target_root: ExpectedFileIdentity {
+                device: 1,
+                inode: 30,
+            },
+            target_slot: ExpectedFileIdentity {
+                device: 1,
+                inode: 11,
+            },
+            attachment_anchor: ExpectedFileIdentity {
+                device: 1,
+                inode: 12,
+            },
+            attachment_anchor_idmap_digest: [6; 32],
+        }
+    }
+
     #[test]
-    fn replacement_stack_uses_complete_membership_not_parent_or_list_order() {
+    fn target_identity_classification_keeps_protected_slot_and_anchor_distinct() {
+        let plan = helper_plan();
+        let directory = |inode| FileIdentity {
+            device: 1,
+            inode,
+            file_type: aos_sandbox_linux::path::FileType::Directory,
+        };
+        assert_eq!(
+            classify_target_identity(directory(11), MountId::new(39).unwrap(), &plan).unwrap(),
+            TargetIdentityState::Absent
+        );
+        assert_eq!(
+            classify_target_identity(directory(10), MountId::new(40).unwrap(), &plan).unwrap(),
+            TargetIdentityState::Expected
+        );
+        assert_eq!(
+            classify_target_identity(directory(13), MountId::new(41).unwrap(), &plan).unwrap(),
+            TargetIdentityState::Predecessor
+        );
+        assert!(classify_target_identity(directory(11), MountId::new(40).unwrap(), &plan).is_err());
+        assert_eq!(
+            classify_target_identity(directory(10), MountId::new(42).unwrap(), &plan).unwrap(),
+            TargetIdentityState::Conflict
+        );
+    }
+
+    #[test]
+    fn successor_and_predecessor_require_exact_slot_parent_path_and_namespace() {
+        let plan = helper_plan();
+        let mount_point = payload_slot_mount_point(&plan.destination_slot_id);
+        for mount_id in [plan.expected_mount_id, plan.expected_predecessor_mount_id] {
+            let expected_mount_id = MountId::new(mount_id).unwrap();
+            assert!(
+                validate_slot_mount(
+                    mount_at(mount_id, plan.attachment_anchor_mount_id, &mount_point),
+                    expected_mount_id,
+                    &plan,
+                )
+                .is_ok()
+            );
+            assert!(
+                validate_slot_mount(
+                    mount_at(mount_id, plan.attachment_anchor_mount_id - 1, &mount_point),
+                    expected_mount_id,
+                    &plan,
+                )
+                .is_err()
+            );
+            let mut wrong_namespace =
+                mount_at(mount_id, plan.attachment_anchor_mount_id, &mount_point);
+            wrong_namespace.mount_namespace_id += 1;
+            assert!(validate_slot_mount(wrong_namespace, expected_mount_id, &plan).is_err());
+            assert!(
+                validate_slot_mount(
+                    mount_at(mount_id, plan.attachment_anchor_mount_id, b"/wrong"),
+                    expected_mount_id,
+                    &plan,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn replacement_precheck_admits_only_the_beneath_parent_exception() {
+        let plan = helper_plan();
+        let predecessor = MountId::new(plan.expected_predecessor_mount_id).unwrap();
+        let mount_point = payload_slot_mount_point(&plan.destination_slot_id);
+        let beneath = mount_at(predecessor.get(), plan.expected_mount_id, &mount_point);
+
+        assert!(
+            validate_slot_mount_location(beneath.clone(), predecessor, &plan).is_ok(),
+            "the stack classifier must inspect the successor-parent relationship"
+        );
+        assert!(validate_slot_mount(beneath, predecessor, &plan).is_err());
+
+        let mut wrong_namespace = mount_at(predecessor.get(), plan.expected_mount_id, &mount_point);
+        wrong_namespace.mount_namespace_id += 1;
+        assert!(validate_slot_mount_location(wrong_namespace, predecessor, &plan).is_err());
+        assert!(
+            validate_slot_mount_location(
+                mount_at(predecessor.get(), plan.expected_mount_id, b"/wrong"),
+                predecessor,
+                &plan,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn predecessor_observation_accepts_partial_replacement_but_expected_requires_anchor() {
+        let plan = helper_plan();
+        let predecessor = MountId::new(plan.expected_predecessor_mount_id).unwrap();
+        let mount_point = payload_slot_mount_point(&plan.destination_slot_id);
+        let partial = mount_at(predecessor.get(), plan.expected_mount_id, &mount_point);
+
+        let report = report_for_mounted_target(
+            TargetIdentityState::Predecessor,
+            partial.clone(),
+            predecessor,
+            &plan,
+        )
+        .unwrap();
+        assert_eq!(report.kind, REPORT_PREDECESSOR);
+        assert!(
+            report_for_mounted_target(TargetIdentityState::Expected, partial, predecessor, &plan,)
+                .is_err()
+        );
+
+        let installed = mount_at(
+            plan.expected_mount_id,
+            plan.attachment_anchor_mount_id,
+            &mount_point,
+        );
+        assert!(
+            report_for_mounted_target(
+                TargetIdentityState::Expected,
+                installed,
+                MountId::new(plan.expected_mount_id).unwrap(),
+                &plan,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn replacement_stack_accepts_only_an_uninserted_predecessor_on_the_anchor() {
         let predecessor = MountId::new(40).unwrap();
         let successor = MountId::new(41).unwrap();
-        let target_slot = MountId::new(39).unwrap();
-        let mut mounts = vec![
-            mount_at(70, 1, b"/elsewhere"),
-            mount_at(40, 2, b"/target"),
-            mount_at(39, 3, b"/target"),
-        ];
+        let attachment_anchor = MountId::new(39).unwrap();
+        let mounts = vec![mount_at(70, 1, b"/elsewhere"), mount_at(40, 39, b"/target")];
         assert_eq!(
-            classify_replacement_stack(&mounts, successor, predecessor, target_slot, b"/target")
-                .unwrap(),
+            classify_replacement_stack(
+                &mounts,
+                successor,
+                predecessor,
+                attachment_anchor,
+                39,
+                b"/target"
+            )
+            .unwrap(),
             ReplacementStackState::NeedsAttach
         );
 
-        // Parent IDs and list order carry no stack semantics.
-        mounts.insert(0, mount_at(41, 999, b"/target"));
-        assert_eq!(
-            classify_replacement_stack(&mounts, successor, predecessor, target_slot, b"/target")
-                .unwrap(),
-            ReplacementStackState::AlreadyAttached
-        );
-        mounts.push(mount_at(42, 40, b"/target"));
+        let wrong_parent = vec![mount_at(40, 38, b"/target")];
         assert!(
-            classify_replacement_stack(&mounts, successor, predecessor, target_slot, b"/target")
-                .is_err()
+            classify_replacement_stack(
+                &wrong_parent,
+                successor,
+                predecessor,
+                attachment_anchor,
+                39,
+                b"/target"
+            )
+            .is_err()
         );
         let successor_elsewhere = vec![
-            mount_at(40, 2, b"/target"),
-            mount_at(41, 999, b"/elsewhere"),
+            mount_at(40, 39, b"/target"),
+            mount_at(41, 39, b"/elsewhere"),
         ];
         assert!(
             classify_replacement_stack(
                 &successor_elsewhere,
                 successor,
                 predecessor,
-                target_slot,
+                attachment_anchor,
+                39,
+                b"/target"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn replacement_stack_accepts_only_the_kernel_beneath_parent_chain() {
+        let predecessor = MountId::new(40).unwrap();
+        let successor = MountId::new(41).unwrap();
+        let attachment_anchor = MountId::new(39).unwrap();
+        let mounts = vec![mount_at(40, 41, b"/target"), mount_at(41, 39, b"/target")];
+        assert_eq!(
+            classify_replacement_stack(
+                &mounts,
+                successor,
+                predecessor,
+                attachment_anchor,
+                39,
+                b"/target"
+            )
+            .unwrap(),
+            ReplacementStackState::AlreadyAttached
+        );
+
+        let predecessor_still_on_anchor =
+            vec![mount_at(40, 39, b"/target"), mount_at(41, 39, b"/target")];
+        assert!(
+            classify_replacement_stack(
+                &predecessor_still_on_anchor,
+                successor,
+                predecessor,
+                attachment_anchor,
+                39,
+                b"/target"
+            )
+            .is_err()
+        );
+        let reversed_chain = vec![mount_at(40, 39, b"/target"), mount_at(41, 40, b"/target")];
+        assert!(
+            classify_replacement_stack(
+                &reversed_chain,
+                successor,
+                predecessor,
+                attachment_anchor,
+                39,
+                b"/target"
+            )
+            .is_err()
+        );
+        let extra_mount = vec![
+            mount_at(40, 41, b"/target"),
+            mount_at(41, 39, b"/target"),
+            mount_at(42, 41, b"/target"),
+        ];
+        assert!(
+            classify_replacement_stack(
+                &extra_mount,
+                successor,
+                predecessor,
+                attachment_anchor,
+                39,
+                b"/target"
+            )
+            .is_err()
+        );
+        let mut wrong_namespace = mounts;
+        wrong_namespace[0].mount_namespace_id += 1;
+        assert!(
+            classify_replacement_stack(
+                &wrong_namespace,
+                successor,
+                predecessor,
+                attachment_anchor,
+                39,
                 b"/target"
             )
             .is_err()

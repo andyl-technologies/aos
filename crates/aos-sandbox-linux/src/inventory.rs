@@ -116,7 +116,7 @@ pub enum MountListOrder {
 pub struct MountObservation {
     /// Unique mount ID.
     pub mount_id: MountId,
-    /// Unique parent mount ID; equal to `mount_id` for the namespace root.
+    /// Unique parent mount ID; a namespace root may name a mount outside the namespace.
     pub parent_mount_id: MountId,
     /// Unique mount namespace ID.
     pub mount_namespace_id: u64,

@@ -4,26 +4,33 @@
 //! paths derived from portable identities. During Host-backed preparation,
 //! Mount verifies that source, the retained Host root and namespaces, and its
 //! broker-owned destination slot, then atomically publishes `catalog.json`.
-//! Existing static snapshots remain readable for recovery tests. The broker
-//! matches the complete semantic tuple and opens every persistent object below
-//! its pre-opened root; callers never supply a host path or descriptor.
+//! Legacy static snapshots remain decodable for recovery audit, but cannot
+//! authorize the descriptor-rich v6 helper. The broker matches the complete
+//! semantic tuple and opens every persistent object below its pre-opened root;
+//! callers never supply a host path or descriptor.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::path::PathBuf;
 
 use aos_proto::aos::sandbox::local::v1::MountSourceConsistency;
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest};
+use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace, MountObservation};
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
-use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
+use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity};
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedMountRequest};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use crate::authorization::semantics_v1::MountCatalogCommitmentV1;
-use crate::destination_slot::catalog_relative_path as destination_slot_catalog_path;
+use crate::destination_slot::{
+    anchor_catalog_relative_path, catalog_relative_path as destination_slot_catalog_path,
+    payload_anchor_relative_path, payload_slot_relative_path,
+};
 use crate::host_scope::ObservedMountScope;
 use crate::{MountError, Result};
 
@@ -33,6 +40,15 @@ const MAXIMUM_CATALOG_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_ENTRIES: usize = 16_384;
 const MAXIMUM_RELATIVE_PATH_BYTES: usize = 4096;
 const MAXIMUM_PREPARED_NAMESPACES: usize = 1_024;
+const MAXIMUM_TOPOLOGY_MOUNTS: usize = 65_536;
+const PREPARED_COMMITMENT_VERSION: u16 = 6;
+const REQUIRED_ATTACHMENT_ANCHOR_ATTRIBUTES: u64 = 0x0000_000f;
+const RUN_RELATIVE_PATH: &str = "run";
+const RUN_AOS_RELATIVE_PATH: &str = "run/aos";
+const ROOT_MOUNT_POINT: &[u8] = b"/";
+const RUN_MOUNT_POINT: &[u8] = b"/run";
+const RUN_AOS_MOUNT_POINT: &[u8] = b"/run/aos";
+const ATTACHMENT_ANCHOR_MOUNT_POINT: &[u8] = b"/run/aos/attachments";
 
 /// Contains the descriptors pinned for one exact mount operation generation.
 #[derive(Debug)]
@@ -47,10 +63,23 @@ pub struct ResolvedMountResources {
     pub target_root: ResolvedPath,
     /// Pinned broker-owned destination slot.
     pub target_slot: ResolvedPath,
-    /// Catalog-selected path to the slot beneath `target_root`.
-    pub target_relative_path: PathBuf,
+    /// Pinned payload attachment anchor used for all slot resolution.
+    pub attachment_anchor: BeneathRoot,
+    /// Exact verified mount-tree and idmap facts delegated to the helper.
+    pub(crate) topology: ResolvedMountTopology,
     /// Non-circular commitment to the exact verified catalog behavior facts.
     pub(crate) authorization_commitment: MountCatalogCommitmentV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedMountTopology {
+    pub(crate) protected_anchor_mount_id: u64,
+    pub(crate) target_root_mount_id: u64,
+    pub(crate) run_mount_id: u64,
+    pub(crate) attachment_anchor_mount_id: u64,
+    pub(crate) target_mount_namespace_id: u64,
+    pub(crate) attachment_anchor_mount_attributes: u64,
+    pub(crate) attachment_anchor_idmap_digest: [u8; 32],
 }
 
 /// Resolves one validated semantic request into exact pinned kernel objects.
@@ -60,13 +89,15 @@ pub trait MountCatalog {
     /// # Errors
     ///
     /// Returns an error for unknown, stale, mismatched, replaced, incorrectly
-    /// typed, or path-unsafe catalog resources.
+    /// typed, path-unsafe, or legacy audit-only catalog resources.
     fn resolve(&self, request: &ValidatedMountRequest) -> Result<ResolvedMountResources>;
 
     /// Retains one authenticated Host scope and resolves its catalog commitment.
     ///
     /// The default rejects preparation for catalogs that deliberately use only
-    /// static test or recovery pins.
+    /// static test or recovery pins. A prepared implementation may reproduce a
+    /// legacy digest for recovery audit even though [`Self::resolve`] refuses
+    /// to expose mutation resources for that entry.
     ///
     /// # Errors
     ///
@@ -104,6 +135,12 @@ struct PreparedNamespace {
     scope: ObservedMountScope,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreparedInspectionPurpose {
+    Audit,
+    Mutation,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CatalogAssignment {
@@ -139,6 +176,8 @@ struct MountCatalogEntry {
     target_relative_path: String,
     #[serde(default)]
     prepared_scope: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commitment_version: Option<u16>,
     #[serde(default)]
     runtime_handle: Option<[u8; 32]>,
     #[serde(default)]
@@ -247,7 +286,11 @@ struct MountCatalogSnapshot {
     entries: Vec<MountCatalogEntry>,
 }
 
-/// Reads an atomically published catalog beneath a pre-opened private root.
+/// Reads an atomically published compatibility catalog beneath a private root.
+///
+/// Static v4 entries remain parseable and byte-stable for recovery audit, but
+/// [`MountCatalog::resolve`] rejects them because they do not bind the v6
+/// attachment-anchor topology.
 #[derive(Debug)]
 pub struct FileMountCatalog {
     root: BeneathRoot,
@@ -258,6 +301,8 @@ pub struct FileMountCatalog {
 /// One namespace generation can be refreshed only with the same exact Host
 /// binding. A changed root, namespace, runtime, or payload-scope handle requires
 /// a new signed namespace generation rather than silently replacing authority.
+/// Legacy v5 rows can reproduce their durable preparation digest for recovery
+/// audit, but only explicit v6 rows can resolve resources for a helper effect.
 pub struct PreparedMountCatalog {
     catalog: FileMountCatalog,
     prepared: BTreeMap<PreparedNamespaceKey, PreparedNamespace>,
@@ -340,8 +385,12 @@ impl MountCatalog for PreparedMountCatalog {
                 "prepared mount namespace scope expired".to_owned(),
             ));
         }
-        self.catalog
-            .resolve_prepared(request, &prepared.scope, prepared.binding)
+        self.catalog.inspect_prepared(
+            request,
+            &prepared.scope,
+            prepared.binding,
+            PreparedInspectionPurpose::Mutation,
+        )
     }
 
     fn prepare(
@@ -376,12 +425,17 @@ impl MountCatalog for PreparedMountCatalog {
             ));
         }
 
-        let resources = if self.catalog.contains_matching_entry(request)? {
-            self.catalog.resolve_prepared(request, &scope, binding)?
+        let inspection = if self.catalog.contains_matching_entry(request)? {
+            self.catalog.inspect_prepared(
+                request,
+                &scope,
+                binding,
+                PreparedInspectionPurpose::Audit,
+            )?
         } else {
             self.catalog.publish_prepared(request, &scope, binding)?
         };
-        let commitment = resources.authorization_commitment.digest();
+        let commitment = inspection.authorization_commitment.digest();
         self.prepared
             .insert(key, PreparedNamespace { binding, scope });
         Ok(commitment)
@@ -406,7 +460,12 @@ impl FileMountCatalog {
         let mut snapshot = self.snapshot_or_empty()?;
         let entry = self.prepared_entry(request, scope, &snapshot)?;
         if !snapshot.upsert(entry)? {
-            return self.resolve_prepared(request, scope, binding);
+            return self.inspect_prepared(
+                request,
+                scope,
+                binding,
+                PreparedInspectionPurpose::Mutation,
+            );
         }
         self.publish_snapshot(&snapshot)?;
 
@@ -416,7 +475,7 @@ impl FileMountCatalog {
                 "mount catalog publication did not reproduce its exact snapshot".to_owned(),
             ));
         }
-        self.resolve_prepared(request, scope, binding)
+        self.inspect_prepared(request, scope, binding, PreparedInspectionPurpose::Mutation)
     }
 
     fn snapshot_or_empty(&self) -> Result<MountCatalogSnapshot> {
@@ -523,23 +582,31 @@ impl FileMountCatalog {
             request.namespace_generation(),
             request.destination_slot_id(),
         );
-        let pinned_target_slot = resolve_directory(&self.root, path_text(&target_slot_path)?)?;
+        let protected_anchor_path = anchor_catalog_relative_path(
+            request.fence().sandbox_id(),
+            request.fence().incarnation_id(),
+            request.namespace_generation(),
+        );
+        let protected_anchor =
+            resolve_protected_directory(&self.root, path_text(&protected_anchor_path)?)?;
+        let pinned_target_slot =
+            resolve_protected_directory(&self.root, path_text(&target_slot_path)?)?;
+        let protected_anchor_mount_id =
+            verify_protected_slot(&protected_anchor, &pinned_target_slot)?;
         let target_relative_path = payload_slot_relative_path(request.destination_slot_id());
-        let target_slot = scope
-            .root()
-            .resolve(
-                &target_relative_path,
-                ResolveOptions {
-                    no_mount_crossing: false,
-                    require_directory: true,
-                },
-            )
-            .map_err(|error| MountError::Worker(error.to_string()))?;
-        if target_slot.identity() != pinned_target_slot.identity() {
-            return Err(MountError::Worker(
-                "Host-root destination slot differs from its broker-owned pin".to_owned(),
-            ));
-        }
+        let attachment_anchor = resolve_payload_anchor(scope.root())?;
+        verify_anchor_identity(&attachment_anchor, &protected_anchor)?;
+        verify_distinct_source(
+            source.identity(),
+            pinned_target_slot.identity(),
+            attachment_anchor.identity(),
+        )?;
+        observe_mount_topology(
+            MountNamespace::pinned(scope.mount_namespace()).map_err(linux_worker_error)?,
+            scope.root(),
+            &attachment_anchor,
+            protected_anchor_mount_id,
+        )?;
 
         let entry = MountCatalogEntry {
             assignment: CatalogAssignment::from_request(request),
@@ -565,13 +632,14 @@ impl FileMountCatalog {
             target_slot_path: path_text(&target_slot_path)?.to_owned(),
             target_relative_path: path_text(&target_relative_path)?.to_owned(),
             prepared_scope: true,
+            commitment_version: Some(PREPARED_COMMITMENT_VERSION),
             runtime_handle: Some(*scope.metadata().runtime_handle()),
             payload_scope_handle: Some(*scope.metadata().payload_scope_handle()),
             source_identity: FileIdentityWire::from(source.identity()),
             mount_namespace_identity,
             user_namespace_identity,
             target_root_identity: root_identity,
-            target_slot_identity: FileIdentityWire::from(target_slot.identity()),
+            target_slot_identity: FileIdentityWire::from(pinned_target_slot.identity()),
         };
         entry.validate()?;
         Ok(entry)
@@ -634,76 +702,41 @@ impl FileMountCatalog {
     }
 
     fn resolve_static(&self, request: &ValidatedMountRequest) -> Result<ResolvedMountResources> {
-        let (generation, entry) = self.matching_entry(request)?;
+        let (_, entry) = self.matching_entry(request)?;
         if entry.prepared_scope {
             return Err(MountError::Worker(
                 "Host-prepared catalog entry requires retained scope custody".to_owned(),
             ));
         }
-
-        let source = resolve_directory(&self.root, &entry.source_path)?;
-        verify_file(source.identity(), entry.source_identity, "source")?;
-        let mount_namespace = self
-            .root
-            .open_namespace(Path::new(&entry.mount_namespace_path), NamespaceKind::Mount)
-            .map_err(|error| MountError::Worker(error.to_string()))?;
-        verify_namespace(
-            mount_namespace.identity(),
-            entry.mount_namespace_identity,
-            "mount namespace",
-        )?;
-        let user_namespace = self
-            .root
-            .open_namespace(Path::new(&entry.user_namespace_path), NamespaceKind::User)
-            .map_err(|error| MountError::Worker(error.to_string()))?;
-        verify_namespace(
-            user_namespace.identity(),
-            entry.user_namespace_identity,
-            "user namespace",
-        )?;
-        let target_root = resolve_directory(&self.root, &entry.target_root_path)?;
-        verify_file(
-            target_root.identity(),
-            entry.target_root_identity,
-            "target root",
-        )?;
-        let target_slot = resolve_directory(&self.root, &entry.target_slot_path)?;
-        verify_file(
-            target_slot.identity(),
-            entry.target_slot_identity,
-            "target slot",
-        )?;
-        let authorization_commitment = catalog_authorization_commitment(
-            generation,
-            &entry,
-            source.identity(),
-            mount_namespace.identity(),
-            user_namespace.identity(),
-            target_root.identity(),
-            target_slot.identity(),
-        )?;
-
-        Ok(ResolvedMountResources {
-            source,
-            mount_namespace,
-            user_namespace,
-            target_root,
-            target_slot,
-            target_relative_path: PathBuf::from(&entry.target_relative_path),
-            authorization_commitment,
-        })
+        Err(MountError::Worker(
+            "static v4 mount catalog entry is audit-only and cannot authorize the v6 helper"
+                .to_owned(),
+        ))
     }
 
-    fn resolve_prepared(
+    /// Revalidates prepared facts and computes the entry's native commitment.
+    ///
+    /// This inspection is also used to reproduce legacy v5 commitments during
+    /// preparation. Mutation mode checks the version from the same catalog
+    /// snapshot that supplies every resource and commitment fact.
+    fn inspect_prepared(
         &self,
         request: &ValidatedMountRequest,
         scope: &ObservedMountScope,
         binding: PreparedScopeBinding,
+        purpose: PreparedInspectionPurpose,
     ) -> Result<ResolvedMountResources> {
         let (generation, entry) = self.matching_entry(request)?;
-        if entry.prepared_scope
-            && (entry.runtime_handle != Some(binding.runtime_handle)
-                || entry.payload_scope_handle != Some(binding.payload_scope_handle))
+        if purpose == PreparedInspectionPurpose::Mutation {
+            require_mutation_capable(&entry)?;
+        }
+        if !entry.prepared_scope {
+            return Err(MountError::Worker(
+                "static catalog entry cannot be inspected as a retained Host scope".to_owned(),
+            ));
+        }
+        if entry.runtime_handle != Some(binding.runtime_handle)
+            || entry.payload_scope_handle != Some(binding.payload_scope_handle)
         {
             return Err(MountError::Fence(
                 "catalogued Host scope handles changed under one namespace generation",
@@ -731,52 +764,68 @@ impl FileMountCatalog {
             "user namespace",
         )?;
 
-        let pinned_target_slot = resolve_directory(&self.root, &entry.target_slot_path)?;
+        let protected_anchor_path = anchor_catalog_relative_path(
+            &entry.assignment.sandbox_id,
+            &entry.assignment.incarnation_id,
+            entry.namespace_generation,
+        );
+        let protected_anchor =
+            resolve_protected_directory(&self.root, path_text(&protected_anchor_path)?)?;
+        let pinned_target_slot = resolve_protected_directory(&self.root, &entry.target_slot_path)?;
         verify_file(
             pinned_target_slot.identity(),
             entry.target_slot_identity,
             "target slot pin",
         )?;
-        let target_slot = scope
-            .root()
-            .resolve(
-                Path::new(&entry.target_relative_path),
-                ResolveOptions {
-                    no_mount_crossing: false,
-                    require_directory: true,
-                },
-            )
-            .map_err(|error| MountError::Worker(error.to_string()))?;
-        verify_file(
-            target_slot.identity(),
-            entry.target_slot_identity,
-            "target slot",
+        let protected_anchor_mount_id =
+            verify_protected_slot(&protected_anchor, &pinned_target_slot)?;
+        let attachment_anchor = resolve_payload_anchor(scope.root())?;
+        verify_anchor_identity(&attachment_anchor, &protected_anchor)?;
+        verify_distinct_source(
+            source.identity(),
+            pinned_target_slot.identity(),
+            attachment_anchor.identity(),
         )?;
-        if target_slot.identity() != pinned_target_slot.identity() {
-            return Err(MountError::Worker(
-                "Host-root target slot differs from its protected catalog pin".to_owned(),
-            ));
-        }
+        let topology = observe_mount_topology(
+            MountNamespace::pinned(&mount_namespace).map_err(linux_worker_error)?,
+            scope.root(),
+            &attachment_anchor,
+            protected_anchor_mount_id,
+        )?;
 
         let authorization_commitment = prepared_catalog_authorization_commitment(
             generation,
             &entry,
             binding,
             source.identity(),
-            target_slot.identity(),
+            pinned_target_slot.identity(),
+            topology,
+            attachment_anchor.identity(),
         )?;
         Ok(ResolvedMountResources {
             source,
             mount_namespace,
             user_namespace,
             target_root,
-            target_slot,
-            target_relative_path: PathBuf::from(&entry.target_relative_path),
+            target_slot: pinned_target_slot,
+            attachment_anchor,
+            topology,
             authorization_commitment,
         })
     }
 }
 
+fn require_mutation_capable(entry: &MountCatalogEntry) -> Result<()> {
+    if !entry.prepared_scope || entry.commitment_version != Some(PREPARED_COMMITMENT_VERSION) {
+        return Err(MountError::Worker(
+            "legacy mount catalog commitment is audit-only and cannot authorize mutation"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn catalog_authorization_commitment(
     generation: u64,
@@ -809,6 +858,38 @@ fn prepared_catalog_authorization_commitment(
     binding: PreparedScopeBinding,
     source: FileIdentity,
     target_slot: FileIdentity,
+    topology: ResolvedMountTopology,
+    attachment_anchor: FileIdentity,
+) -> Result<MountCatalogCommitmentV1> {
+    match entry.commitment_version {
+        None => prepared_catalog_authorization_commitment_v5(
+            generation,
+            entry,
+            binding,
+            source,
+            target_slot,
+        ),
+        Some(PREPARED_COMMITMENT_VERSION) => prepared_catalog_authorization_commitment_v6(
+            generation,
+            entry,
+            binding,
+            source,
+            target_slot,
+            topology,
+            attachment_anchor,
+        ),
+        Some(_) => Err(MountError::State(
+            "mount catalog commitment version is unknown".to_owned(),
+        )),
+    }
+}
+
+fn prepared_catalog_authorization_commitment_v5(
+    generation: u64,
+    entry: &MountCatalogEntry,
+    binding: PreparedScopeBinding,
+    source: FileIdentity,
+    target_slot: FileIdentity,
 ) -> Result<MountCatalogCommitmentV1> {
     let mut host_binding = Vec::with_capacity(64);
     host_binding.extend_from_slice(&binding.runtime_handle);
@@ -825,6 +906,49 @@ fn prepared_catalog_authorization_commitment(
         binding.root,
         target_slot,
     )?;
+    MountCatalogCommitmentV1::for_verified_canonical_bytes(&bytes)
+        .map_err(|error| MountError::State(error.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepared_catalog_authorization_commitment_v6(
+    generation: u64,
+    entry: &MountCatalogEntry,
+    binding: PreparedScopeBinding,
+    source: FileIdentity,
+    target_slot: FileIdentity,
+    topology: ResolvedMountTopology,
+    attachment_anchor: FileIdentity,
+) -> Result<MountCatalogCommitmentV1> {
+    let mut host_binding = Vec::with_capacity(64);
+    host_binding.extend_from_slice(&binding.runtime_handle);
+    host_binding.extend_from_slice(&binding.payload_scope_handle);
+    let mut bytes = catalog_authorization_bytes(
+        b"AOSMCAT4",
+        PREPARED_COMMITMENT_VERSION,
+        generation,
+        entry,
+        &host_binding,
+        source,
+        binding.mount_namespace,
+        binding.user_namespace,
+        binding.root,
+        target_slot,
+    )?;
+    bytes.extend_from_slice(&attachment_anchor.device.to_be_bytes());
+    bytes.extend_from_slice(&attachment_anchor.inode.to_be_bytes());
+    for value in [
+        topology.protected_anchor_mount_id,
+        topology.target_root_mount_id,
+        topology.run_mount_id,
+        topology.attachment_anchor_mount_id,
+        topology.target_mount_namespace_id,
+        topology.attachment_anchor_mount_attributes,
+    ] {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+    bytes.extend_from_slice(&topology.attachment_anchor_idmap_digest);
+
     MountCatalogCommitmentV1::for_verified_canonical_bytes(&bytes)
         .map_err(|error| MountError::State(error.to_string()))
 }
@@ -1001,6 +1125,10 @@ impl MountCatalogEntry {
             if !self.mount_namespace_path.is_empty()
                 || !self.user_namespace_path.is_empty()
                 || !self.target_root_path.is_empty()
+                || !matches!(
+                    self.commitment_version,
+                    None | Some(PREPARED_COMMITMENT_VERSION)
+                )
                 || self.runtime_handle.is_none_or(|handle| handle == [0; 32])
                 || self
                     .payload_scope_handle
@@ -1011,7 +1139,10 @@ impl MountCatalogEntry {
                 ));
             }
         } else {
-            if self.runtime_handle.is_some() || self.payload_scope_handle.is_some() {
+            if self.runtime_handle.is_some()
+                || self.payload_scope_handle.is_some()
+                || self.commitment_version.is_some()
+            {
                 return Err(MountError::State(
                     "static catalog entry contains Host scope handles".to_owned(),
                 ));
@@ -1033,6 +1164,14 @@ impl MountCatalogEntry {
         if Path::new(&self.target_slot_path) != expected_slot_path {
             return Err(MountError::State(
                 "mount catalog destination does not name its broker-derived slot pin".to_owned(),
+            ));
+        }
+        if self.prepared_scope
+            && Path::new(&self.target_relative_path)
+                != payload_slot_relative_path(&self.destination_slot_id)
+        {
+            return Err(MountError::State(
+                "Host-prepared catalog destination is not its derived payload slot".to_owned(),
             ));
         }
         for identity in [
@@ -1099,6 +1238,298 @@ fn resolve_directory(root: &BeneathRoot, path: &str) -> Result<ResolvedPath> {
     .map_err(|error| MountError::Worker(error.to_string()))
 }
 
+fn resolve_protected_directory(root: &BeneathRoot, path: &str) -> Result<ResolvedPath> {
+    root.resolve(Path::new(path), ResolveOptions::directory())
+        .map_err(linux_worker_error)
+}
+
+fn resolve_payload_anchor(root: &BeneathRoot) -> Result<BeneathRoot> {
+    let anchor = root
+        .resolve(
+            payload_anchor_relative_path(),
+            ResolveOptions {
+                no_mount_crossing: false,
+                require_directory: true,
+            },
+        )
+        .map_err(linux_worker_error)?;
+    BeneathRoot::from_resolved(anchor).map_err(linux_worker_error)
+}
+
+fn verify_protected_slot(anchor: &ResolvedPath, slot: &ResolvedPath) -> Result<MountId> {
+    let anchor_mount_id = MountId::from_fd(anchor.as_fd()).map_err(linux_worker_error)?;
+    let slot_mount_id = MountId::from_fd(slot.as_fd()).map_err(linux_worker_error)?;
+    if slot_mount_id != anchor_mount_id || anchor.identity() == slot.identity() {
+        return Err(MountError::Worker(
+            "protected destination slot is not a distinct child of its generation anchor"
+                .to_owned(),
+        ));
+    }
+    Ok(anchor_mount_id)
+}
+
+fn verify_anchor_identity(payload: &BeneathRoot, protected: &ResolvedPath) -> Result<()> {
+    if payload.identity() != protected.identity() {
+        return Err(MountError::Worker(
+            "payload attachment anchor differs from its protected generation anchor".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_distinct_source(
+    source: FileIdentity,
+    target_slot: FileIdentity,
+    attachment_anchor: FileIdentity,
+) -> Result<()> {
+    if source == target_slot || source == attachment_anchor || target_slot == attachment_anchor {
+        return Err(MountError::Worker(
+            "mount source, destination slot, and attachment anchor must be distinct".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn observe_mount_topology(
+    namespace: MountNamespace<'_>,
+    target_root: &BeneathRoot,
+    attachment_anchor: &BeneathRoot,
+    protected_anchor_mount_id: MountId,
+) -> Result<ResolvedMountTopology> {
+    let run = target_root
+        .resolve(
+            Path::new(RUN_RELATIVE_PATH),
+            ResolveOptions {
+                no_mount_crossing: false,
+                require_directory: true,
+            },
+        )
+        .map_err(linux_worker_error)?;
+    let run_aos = target_root
+        .resolve(
+            Path::new(RUN_AOS_RELATIVE_PATH),
+            ResolveOptions {
+                no_mount_crossing: false,
+                require_directory: true,
+            },
+        )
+        .map_err(linux_worker_error)?;
+    let current_anchor = target_root
+        .resolve(
+            payload_anchor_relative_path(),
+            ResolveOptions {
+                no_mount_crossing: false,
+                require_directory: true,
+            },
+        )
+        .map_err(linux_worker_error)?;
+
+    let root_mount_id = MountId::from_fd(target_root.as_fd()).map_err(linux_worker_error)?;
+    let run_mount_id = MountId::from_fd(run.as_fd()).map_err(linux_worker_error)?;
+    let run_aos_mount_id = MountId::from_fd(run_aos.as_fd()).map_err(linux_worker_error)?;
+    let current_anchor_mount_id =
+        MountId::from_fd(current_anchor.as_fd()).map_err(linux_worker_error)?;
+    let attachment_anchor_mount_id =
+        MountId::from_fd(attachment_anchor.as_fd()).map_err(linux_worker_error)?;
+    if current_anchor.identity() != attachment_anchor.identity() {
+        return Err(MountError::Worker(
+            "payload attachment-anchor descriptor is not the current path target".to_owned(),
+        ));
+    }
+    validate_mount_path_ids(
+        run_mount_id,
+        run_aos_mount_id,
+        current_anchor_mount_id,
+        attachment_anchor_mount_id,
+        protected_anchor_mount_id,
+    )?;
+
+    let inventory = namespace
+        .inventory(MAXIMUM_TOPOLOGY_MOUNTS, MountListOrder::Forward)
+        .map_err(linux_worker_error)?;
+    let observation = |mount_id| {
+        inventory
+            .mounts
+            .iter()
+            .find(|mount| mount.mount_id == mount_id)
+            .cloned()
+            .ok_or_else(|| {
+                MountError::Worker(
+                    "complete target namespace inventory omitted a retained mount".to_owned(),
+                )
+            })
+    };
+    let root_observation = observation(root_mount_id)?;
+    let run_observation = if run_mount_id == root_mount_id {
+        root_observation.clone()
+    } else {
+        observation(run_mount_id)?
+    };
+    let anchor_observation = observation(attachment_anchor_mount_id)?;
+    validate_mount_topology_observations(
+        &root_observation,
+        &run_observation,
+        &anchor_observation,
+        &inventory.mounts,
+    )?;
+
+    Ok(ResolvedMountTopology {
+        protected_anchor_mount_id: protected_anchor_mount_id.get(),
+        target_root_mount_id: root_mount_id.get(),
+        run_mount_id: run_mount_id.get(),
+        attachment_anchor_mount_id: attachment_anchor_mount_id.get(),
+        target_mount_namespace_id: root_observation.mount_namespace_id,
+        attachment_anchor_mount_attributes: anchor_observation.mount_attributes,
+        attachment_anchor_idmap_digest: digest_idmaps(&anchor_observation),
+    })
+}
+
+fn validate_mount_path_ids(
+    run: MountId,
+    run_aos: MountId,
+    current_anchor: MountId,
+    attachment_anchor: MountId,
+    protected_anchor: MountId,
+) -> Result<()> {
+    if run_aos != run
+        || current_anchor != attachment_anchor
+        || attachment_anchor == run
+        || attachment_anchor == protected_anchor
+    {
+        return Err(MountError::Worker(
+            "payload attachment-anchor path contains an untrusted mount crossing".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mount_topology_observations(
+    root: &MountObservation,
+    run: &MountObservation,
+    anchor: &MountObservation,
+    mounts: &[MountObservation],
+) -> Result<()> {
+    validate_complete_mount_tree(root.mount_id, mounts)?;
+
+    let namespace_id = root.mount_namespace_id;
+    let mount_ids = mounts
+        .iter()
+        .map(|mount| mount.mount_id)
+        .collect::<BTreeSet<_>>();
+    let mount_point_count = |expected: &[u8]| {
+        mounts
+            .iter()
+            .filter(|mount| mount.mount_point.as_os_str().as_bytes() == expected)
+            .count()
+    };
+    if namespace_id == 0
+        || mounts
+            .iter()
+            .any(|mount| mount.mount_namespace_id != namespace_id)
+        || !mount_ids.contains(&run.mount_id)
+        || !mount_ids.contains(&anchor.mount_id)
+        || root.mount_point.as_os_str().as_bytes() != ROOT_MOUNT_POINT
+        || mount_point_count(ROOT_MOUNT_POINT) != 1
+        || (run.mount_id == root.mount_id
+            && (run.mount_point.as_os_str().as_bytes() != ROOT_MOUNT_POINT
+                || mount_point_count(RUN_MOUNT_POINT) != 0))
+        || (run.mount_id != root.mount_id
+            && (run.mount_point.as_os_str().as_bytes() != RUN_MOUNT_POINT
+                || run.parent_mount_id != root.mount_id
+                || mount_point_count(RUN_MOUNT_POINT) != 1))
+        || mount_point_count(RUN_AOS_MOUNT_POINT) != 0
+        || anchor.mount_point.as_os_str().as_bytes() != ATTACHMENT_ANCHOR_MOUNT_POINT
+        || anchor.parent_mount_id != run.mount_id
+        || mount_point_count(ATTACHMENT_ANCHOR_MOUNT_POINT) != 1
+        || anchor.mount_attributes & REQUIRED_ATTACHMENT_ANCHOR_ATTRIBUTES
+            != REQUIRED_ATTACHMENT_ANCHOR_ATTRIBUTES
+        || anchor.uid_map.as_ref().is_none_or(Vec::is_empty)
+        || anchor.gid_map.as_ref().is_none_or(Vec::is_empty)
+    {
+        return Err(MountError::Worker(
+            "payload attachment-anchor topology, attributes, or idmap evidence is invalid"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validates one complete parent tree rooted at the selected namespace root.
+///
+/// Proven-root memoization follows each parent edge at most once, keeping the
+/// total work `O(n log n)` with the ordered maps and sets used here.
+fn validate_complete_mount_tree(root: MountId, mounts: &[MountObservation]) -> Result<()> {
+    let parents = mounts
+        .iter()
+        .map(|mount| (mount.mount_id, mount.parent_mount_id))
+        .collect::<BTreeMap<_, _>>();
+    let invalid_tree = || {
+        MountError::Worker("payload mount inventory is not one complete namespace tree".to_owned())
+    };
+
+    if parents.len() != mounts.len() {
+        return Err(invalid_tree());
+    }
+    let root_parent = parents.get(&root).ok_or_else(&invalid_tree)?;
+    if parents.contains_key(root_parent) {
+        return Err(invalid_tree());
+    }
+
+    let mut proven = BTreeSet::from([root]);
+    for mount_id in parents.keys().copied() {
+        if proven.contains(&mount_id) {
+            continue;
+        }
+
+        let mut path = Vec::new();
+        let mut visited = BTreeSet::new();
+        let mut current = mount_id;
+
+        while !proven.contains(&current) {
+            if !visited.insert(current) {
+                return Err(invalid_tree());
+            }
+            path.push(current);
+            current = *parents.get(&current).ok_or_else(&invalid_tree)?;
+        }
+
+        proven.extend(path);
+    }
+
+    Ok(())
+}
+
+pub(crate) fn digest_idmaps(mount: &MountObservation) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"aos.sandbox.mount.idmaps.v1\0");
+    for map in [&mount.uid_map, &mount.gid_map] {
+        match map {
+            None => digest.update([0]),
+            Some(extents) => {
+                digest.update([1]);
+                digest.update(
+                    u64::try_from(extents.len())
+                        .unwrap_or(u64::MAX)
+                        .to_le_bytes(),
+                );
+                for extent in extents {
+                    digest.update(
+                        u64::try_from(extent.len())
+                            .unwrap_or(u64::MAX)
+                            .to_le_bytes(),
+                    );
+                    digest.update(extent.as_bytes());
+                }
+            }
+        }
+    }
+    digest.finalize().into()
+}
+
+fn linux_worker_error(error: aos_sandbox_linux::Error) -> MountError {
+    MountError::Worker(error.to_string())
+}
+
 fn verify_file(actual: FileIdentity, expected: FileIdentityWire, label: &str) -> Result<()> {
     if actual.device != expected.device || actual.inode != expected.inode {
         return Err(MountError::Worker(format!(
@@ -1162,13 +1593,6 @@ pub fn source_catalog_relative_path(request: &ValidatedMountRequest) -> Result<P
         .join(encode_hex(revision.digest().as_bytes())))
 }
 
-fn payload_slot_relative_path(slot_id: &[u8; 16]) -> PathBuf {
-    Path::new("run")
-        .join("aos")
-        .join("attachments")
-        .join(encode_hex(slot_id))
-}
-
 fn path_text(path: &Path) -> Result<&str> {
     path.to_str()
         .ok_or_else(|| MountError::State("derived mount catalog path is not UTF-8".to_owned()))
@@ -1229,6 +1653,7 @@ mod tests {
     use aos_sandbox_linux::path::FileType;
     use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_mount_request};
     use buffa::Message as _;
+    use std::os::unix::ffi::OsStringExt as _;
 
     use super::*;
 
@@ -1270,6 +1695,7 @@ mod tests {
                 .into_owned(),
             target_relative_path: "run/aos/attachments/slot".to_owned(),
             prepared_scope: false,
+            commitment_version: None,
             runtime_handle: None,
             payload_scope_handle: None,
             source_identity: FileIdentityWire {
@@ -1292,6 +1718,78 @@ mod tests {
                 device: 1,
                 inode: 5,
             },
+        }
+    }
+
+    fn prepared_catalog_entry() -> MountCatalogEntry {
+        let mut entry = catalog_entry();
+        entry.mount_namespace_path.clear();
+        entry.user_namespace_path.clear();
+        entry.target_root_path.clear();
+        entry.target_relative_path = payload_slot_relative_path(&entry.destination_slot_id)
+            .to_string_lossy()
+            .into_owned();
+        entry.prepared_scope = true;
+        entry.runtime_handle = Some([14; 32]);
+        entry.payload_scope_handle = Some([15; 32]);
+        entry
+    }
+
+    fn prepared_binding() -> PreparedScopeBinding {
+        PreparedScopeBinding {
+            runtime_handle: [14; 32],
+            payload_scope_handle: [15; 32],
+            root: FileIdentity {
+                device: 1,
+                inode: 4,
+                file_type: FileType::Directory,
+            },
+            mount_namespace: NamespaceIdentity {
+                device: 1,
+                inode: 2,
+            },
+            user_namespace: NamespaceIdentity {
+                device: 1,
+                inode: 3,
+            },
+        }
+    }
+
+    fn topology() -> ResolvedMountTopology {
+        ResolvedMountTopology {
+            protected_anchor_mount_id: 14,
+            target_root_mount_id: 15,
+            run_mount_id: 15,
+            attachment_anchor_mount_id: 16,
+            target_mount_namespace_id: 17,
+            attachment_anchor_mount_attributes: REQUIRED_ATTACHMENT_ANCHOR_ATTRIBUTES,
+            attachment_anchor_idmap_digest: [21; 32],
+        }
+    }
+
+    fn mount_observation(
+        mount_id: u64,
+        parent_mount_id: u64,
+        namespace_id: u64,
+        mount_point: &[u8],
+    ) -> MountObservation {
+        MountObservation {
+            mount_id: MountId::new(mount_id).unwrap(),
+            parent_mount_id: MountId::new(parent_mount_id).unwrap(),
+            mount_namespace_id: namespace_id,
+            device_major: 0,
+            device_minor: 1,
+            superblock_magic: 0x0102_1994,
+            superblock_flags: 0,
+            mount_attributes: REQUIRED_ATTACHMENT_ANCHOR_ATTRIBUTES,
+            propagation: 0,
+            supported_mask: Some(u64::MAX),
+            root: std::ffi::OsString::from_vec(b"/".to_vec()),
+            mount_point: std::ffi::OsString::from_vec(mount_point.to_vec()),
+            filesystem_type: std::ffi::OsString::from_vec(b"tmpfs".to_vec()),
+            superblock_source: std::ffi::OsString::from_vec(b"tmpfs".to_vec()),
+            uid_map: Some(vec!["0 100000 65536".to_owned()]),
+            gid_map: Some(vec!["0 100000 65536".to_owned()]),
         }
     }
 
@@ -1556,6 +2054,9 @@ mod tests {
         entry.mount_namespace_path.clear();
         entry.user_namespace_path.clear();
         entry.target_root_path.clear();
+        entry.target_relative_path = payload_slot_relative_path(&entry.destination_slot_id)
+            .to_string_lossy()
+            .into_owned();
         entry.runtime_handle = Some([14; 32]);
         entry.payload_scope_handle = Some([15; 32]);
         entry.validate().unwrap();
@@ -1563,6 +2064,444 @@ mod tests {
         let mut static_entry = entry;
         static_entry.prepared_scope = false;
         assert!(static_entry.validate().is_err());
+    }
+
+    #[test]
+    fn prepared_commitment_versions_preserve_v5_and_bind_v6_topology() {
+        let directory = |device, inode| FileIdentity {
+            device,
+            inode,
+            file_type: FileType::Directory,
+        };
+        let binding = prepared_binding();
+        let legacy = prepared_catalog_entry();
+        legacy.validate().unwrap();
+        let expected_v5 = [
+            0x68, 0x29, 0xe6, 0xc2, 0x1e, 0x53, 0xcc, 0xfe, 0x82, 0x9f, 0xa5, 0x88, 0x08, 0x39,
+            0x3f, 0x54, 0x84, 0xdb, 0x4b, 0x76, 0x45, 0xc6, 0x41, 0xa9, 0x4a, 0x3e, 0x52, 0xe2,
+            0x6d, 0x68, 0xff, 0x02,
+        ];
+        let legacy_commitment = prepared_catalog_authorization_commitment(
+            1,
+            &legacy,
+            binding,
+            directory(1, 1),
+            directory(1, 5),
+            topology(),
+            directory(12, 13),
+        )
+        .unwrap();
+        assert_eq!(legacy_commitment.digest().as_bytes(), &expected_v5);
+        assert!(
+            !serde_json::to_vec(&legacy)
+                .unwrap()
+                .windows(b"commitment_version".len())
+                .any(|window| window == b"commitment_version")
+        );
+
+        let mut snapshot = MountCatalogSnapshot {
+            generation: 1,
+            entries: vec![legacy.clone()],
+        };
+        assert!(!snapshot.upsert(legacy).unwrap());
+        assert_eq!(snapshot.generation, 1);
+        assert_eq!(snapshot.entries[0].commitment_version, None);
+
+        let mut current = prepared_catalog_entry();
+        current.commitment_version = Some(PREPARED_COMMITMENT_VERSION);
+        current.validate().unwrap();
+        let v6 = prepared_catalog_authorization_commitment(
+            1,
+            &current,
+            binding,
+            directory(1, 1),
+            directory(1, 5),
+            topology(),
+            directory(12, 13),
+        )
+        .unwrap();
+        assert_ne!(v6, legacy_commitment);
+
+        let baseline_topology = topology();
+        let mut changed_topologies = Vec::new();
+        for change in 0..7 {
+            let mut changed = baseline_topology;
+            match change {
+                0 => changed.protected_anchor_mount_id += 1,
+                1 => changed.target_root_mount_id += 1,
+                2 => changed.run_mount_id += 1,
+                3 => changed.attachment_anchor_mount_id += 1,
+                4 => changed.target_mount_namespace_id += 1,
+                5 => changed.attachment_anchor_mount_attributes ^= 0x10,
+                6 => changed.attachment_anchor_idmap_digest[0] ^= 1,
+                _ => unreachable!(),
+            }
+            changed_topologies.push(changed);
+        }
+        for changed_topology in changed_topologies {
+            assert_ne!(
+                prepared_catalog_authorization_commitment(
+                    1,
+                    &current,
+                    binding,
+                    directory(1, 1),
+                    directory(1, 5),
+                    changed_topology,
+                    directory(12, 13),
+                )
+                .unwrap(),
+                v6
+            );
+        }
+        assert_ne!(
+            prepared_catalog_authorization_commitment(
+                1,
+                &current,
+                binding,
+                directory(1, 1),
+                directory(1, 5),
+                baseline_topology,
+                directory(12, 14),
+            )
+            .unwrap(),
+            v6
+        );
+        assert!(
+            serde_json::to_vec(&current)
+                .unwrap()
+                .windows(b"\"commitment_version\":6".len())
+                .any(|window| window == b"\"commitment_version\":6")
+        );
+    }
+
+    #[test]
+    fn legacy_commitments_stay_byte_stable_but_only_v6_can_authorize_mutation() {
+        let mut static_entry = catalog_entry();
+        static_entry.validate().unwrap();
+        assert!(require_mutation_capable(&static_entry).is_err());
+        let before = catalog_authorization_commitment(
+            1,
+            &static_entry,
+            FileIdentity {
+                device: 1,
+                inode: 1,
+                file_type: FileType::Directory,
+            },
+            NamespaceIdentity {
+                device: 1,
+                inode: 2,
+            },
+            NamespaceIdentity {
+                device: 1,
+                inode: 3,
+            },
+            FileIdentity {
+                device: 1,
+                inode: 4,
+                file_type: FileType::Directory,
+            },
+            FileIdentity {
+                device: 1,
+                inode: 5,
+                file_type: FileType::Directory,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            before.digest().as_bytes(),
+            &[
+                0xfe, 0xf2, 0xd0, 0x81, 0x13, 0xea, 0xa1, 0x15, 0xc0, 0xde, 0x1b, 0x49, 0x42, 0xef,
+                0xb7, 0x4a, 0xe4, 0x80, 0x65, 0x90, 0x83, 0x4c, 0x42, 0x9d, 0x08, 0xe1, 0x80, 0x0e,
+                0x90, 0x65, 0x47, 0x13,
+            ]
+        );
+        static_entry.commitment_version = Some(PREPARED_COMMITMENT_VERSION);
+        assert!(static_entry.validate().is_err());
+        static_entry.commitment_version = None;
+        assert_eq!(
+            catalog_authorization_commitment(
+                1,
+                &static_entry,
+                FileIdentity {
+                    device: 1,
+                    inode: 1,
+                    file_type: FileType::Directory,
+                },
+                NamespaceIdentity {
+                    device: 1,
+                    inode: 2,
+                },
+                NamespaceIdentity {
+                    device: 1,
+                    inode: 3,
+                },
+                FileIdentity {
+                    device: 1,
+                    inode: 4,
+                    file_type: FileType::Directory,
+                },
+                FileIdentity {
+                    device: 1,
+                    inode: 5,
+                    file_type: FileType::Directory,
+                },
+            )
+            .unwrap(),
+            before
+        );
+
+        let mut prepared = prepared_catalog_entry();
+        assert!(require_mutation_capable(&prepared).is_err());
+        prepared.commitment_version = Some(PREPARED_COMMITMENT_VERSION);
+        assert!(require_mutation_capable(&prepared).is_ok());
+        prepared.commitment_version = Some(5);
+        assert!(prepared.validate().is_err());
+        prepared.commitment_version = Some(7);
+        assert!(prepared.validate().is_err());
+    }
+
+    #[test]
+    fn payload_topology_accepts_root_backed_and_distinct_run_mounts() {
+        let root = mount_observation(30, 29, 90, b"/");
+        let anchor_from_root = mount_observation(32, 30, 90, ATTACHMENT_ANCHOR_MOUNT_POINT);
+        let root_backed = [root.clone(), anchor_from_root.clone()];
+        assert!(
+            validate_mount_topology_observations(&root, &root, &anchor_from_root, &root_backed,)
+                .is_ok()
+        );
+
+        let run = mount_observation(31, 30, 90, b"/run");
+        let anchor_from_run = mount_observation(32, 31, 90, ATTACHMENT_ANCHOR_MOUNT_POINT);
+        let unrelated = mount_observation(40, 31, 90, b"/run/unrelated");
+        let distinct_run = [
+            root.clone(),
+            run.clone(),
+            anchor_from_run.clone(),
+            unrelated,
+        ];
+        assert!(
+            validate_mount_topology_observations(&root, &run, &anchor_from_run, &distinct_run,)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn payload_topology_rejects_wrong_parent_path_namespace_attributes_and_idmaps() {
+        let root = mount_observation(30, 29, 90, b"/");
+        let run = mount_observation(31, 30, 90, b"/run");
+        let anchor = mount_observation(32, 31, 90, ATTACHMENT_ANCHOR_MOUNT_POINT);
+
+        let mut cases = Vec::new();
+        let mut wrong_root_parent = root.clone();
+        wrong_root_parent.parent_mount_id = run.mount_id;
+        cases.push((wrong_root_parent, run.clone(), anchor.clone()));
+        let mut wrong_run_path = run.clone();
+        wrong_run_path.mount_point = std::ffi::OsString::from("/other");
+        cases.push((root.clone(), wrong_run_path, anchor.clone()));
+        let mut wrong_run_parent = run.clone();
+        wrong_run_parent.parent_mount_id = MountId::new(29).unwrap();
+        cases.push((root.clone(), wrong_run_parent, anchor.clone()));
+        let mut wrong_anchor_path = anchor.clone();
+        wrong_anchor_path.mount_point = std::ffi::OsString::from("/run/aos/other");
+        cases.push((root.clone(), run.clone(), wrong_anchor_path));
+        let mut wrong_anchor_parent = anchor.clone();
+        wrong_anchor_parent.parent_mount_id = root.mount_id;
+        cases.push((root.clone(), run.clone(), wrong_anchor_parent));
+        let mut wrong_namespace = anchor.clone();
+        wrong_namespace.mount_namespace_id += 1;
+        cases.push((root.clone(), run.clone(), wrong_namespace));
+        let mut writable = anchor.clone();
+        writable.mount_attributes &= !0x1;
+        cases.push((root.clone(), run.clone(), writable));
+        let mut absent_uid_map = anchor.clone();
+        absent_uid_map.uid_map = None;
+        cases.push((root.clone(), run.clone(), absent_uid_map));
+        let mut empty_gid_map = anchor;
+        empty_gid_map.gid_map = Some(Vec::new());
+        cases.push((root.clone(), run.clone(), empty_gid_map));
+
+        for (candidate_root, candidate_run, candidate_anchor) in cases {
+            let inventory = [
+                candidate_root.clone(),
+                candidate_run.clone(),
+                candidate_anchor.clone(),
+            ];
+            assert!(
+                validate_mount_topology_observations(
+                    &candidate_root,
+                    &candidate_run,
+                    &candidate_anchor,
+                    &inventory,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn payload_topology_requires_a_complete_unique_namespace_tree() {
+        let root = mount_observation(30, 29, 90, b"/");
+        let run = mount_observation(31, 30, 90, RUN_MOUNT_POINT);
+        let anchor = mount_observation(32, 31, 90, ATTACHMENT_ANCHOR_MOUNT_POINT);
+
+        assert!(
+            validate_mount_topology_observations(
+                &root,
+                &run,
+                &anchor,
+                &[run.clone(), anchor.clone()],
+            )
+            .is_err()
+        );
+
+        let duplicate_root = mount_observation(33, 30, 90, ROOT_MOUNT_POINT);
+        assert!(
+            validate_mount_topology_observations(
+                &root,
+                &run,
+                &anchor,
+                &[root.clone(), run.clone(), anchor.clone(), duplicate_root],
+            )
+            .is_err()
+        );
+
+        let mut parent_present_root = root.clone();
+        parent_present_root.parent_mount_id = MountId::new(33).unwrap();
+        let parent = mount_observation(33, 29, 90, b"/outside");
+        assert!(
+            validate_mount_topology_observations(
+                &parent_present_root,
+                &run,
+                &anchor,
+                &[
+                    parent_present_root.clone(),
+                    run.clone(),
+                    anchor.clone(),
+                    parent
+                ],
+            )
+            .is_err()
+        );
+
+        let orphan = mount_observation(40, 99, 90, b"/orphan");
+        assert!(
+            validate_mount_topology_observations(
+                &root,
+                &run,
+                &anchor,
+                &[root.clone(), run.clone(), anchor.clone(), orphan],
+            )
+            .is_err()
+        );
+
+        let cycle_first = mount_observation(40, 41, 90, b"/cycle/first");
+        let cycle_second = mount_observation(41, 40, 90, b"/cycle/second");
+        assert!(
+            validate_mount_topology_observations(
+                &root,
+                &run,
+                &anchor,
+                &[
+                    root.clone(),
+                    run.clone(),
+                    anchor.clone(),
+                    cycle_first,
+                    cycle_second,
+                ],
+            )
+            .is_err()
+        );
+
+        for extra in [
+            mount_observation(33, 31, 90, RUN_AOS_MOUNT_POINT),
+            mount_observation(33, 31, 90, ATTACHMENT_ANCHOR_MOUNT_POINT),
+        ] {
+            assert!(
+                validate_mount_topology_observations(
+                    &root,
+                    &run,
+                    &anchor,
+                    &[root.clone(), run.clone(), anchor.clone(), extra],
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn complete_mount_tree_handles_a_long_reverse_ordered_chain() {
+        const CHAIN_LENGTH: u64 = 4_096;
+
+        // The smallest ID is deepest and the selected root is last, forcing a
+        // full initial walk while memoization makes every later lookup constant-depth.
+        let root_id = MountId::new(CHAIN_LENGTH + 1).unwrap();
+        let mut mounts = (1..=CHAIN_LENGTH)
+            .map(|mount_id| mount_observation(mount_id, mount_id + 1, 90, b"/chain"))
+            .collect::<Vec<_>>();
+        mounts.push(mount_observation(
+            root_id.get(),
+            CHAIN_LENGTH + 2,
+            90,
+            ROOT_MOUNT_POINT,
+        ));
+
+        assert!(validate_complete_mount_tree(root_id, &mounts).is_ok());
+    }
+
+    #[cfg(feature = "kernel-tests")]
+    #[test]
+    #[ignore = "requires a root VM with Linux 6.18 statmount/listmount support"]
+    fn live_namespace_root_is_unique_and_has_an_external_parent() {
+        assert!(rustix::process::geteuid().is_root());
+        let inventory = MountNamespace::current()
+            .inventory(MAXIMUM_TOPOLOGY_MOUNTS, MountListOrder::Forward)
+            .unwrap();
+        let roots = inventory
+            .mounts
+            .iter()
+            .filter(|mount| mount.mount_point.as_os_str().as_bytes() == ROOT_MOUNT_POINT)
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), 1);
+
+        let mount_ids = inventory
+            .mounts
+            .iter()
+            .map(|mount| mount.mount_id)
+            .collect::<BTreeSet<_>>();
+        assert!(!mount_ids.contains(&roots[0].parent_mount_id));
+    }
+
+    #[test]
+    fn payload_topology_rejects_intermediate_and_covered_anchor_mounts() {
+        let mount = |value| MountId::new(value).unwrap();
+        assert!(
+            validate_mount_path_ids(mount(30), mount(30), mount(31), mount(31), mount(29)).is_ok()
+        );
+        assert!(
+            validate_mount_path_ids(mount(30), mount(32), mount(31), mount(31), mount(29)).is_err()
+        );
+        assert!(
+            validate_mount_path_ids(mount(30), mount(30), mount(32), mount(31), mount(29)).is_err()
+        );
+        assert!(
+            validate_mount_path_ids(mount(30), mount(30), mount(31), mount(30), mount(29)).is_err()
+        );
+        assert!(
+            validate_mount_path_ids(mount(30), mount(30), mount(31), mount(31), mount(31)).is_err()
+        );
+    }
+
+    #[test]
+    fn catalog_rejects_same_inode_source_slot_and_anchor_aliases() {
+        let directory = |inode| FileIdentity {
+            device: 1,
+            inode,
+            file_type: FileType::Directory,
+        };
+        assert!(verify_distinct_source(directory(1), directory(2), directory(3)).is_ok());
+        assert!(verify_distinct_source(directory(2), directory(2), directory(3)).is_err());
+        assert!(verify_distinct_source(directory(3), directory(2), directory(3)).is_err());
+        assert!(verify_distinct_source(directory(1), directory(3), directory(3)).is_err());
     }
 
     #[test]

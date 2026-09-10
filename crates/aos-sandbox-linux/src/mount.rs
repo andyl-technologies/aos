@@ -38,8 +38,8 @@ pub struct MountAttributes {
 ///
 /// The caller must first resolve and verify the same path beneath its pinned
 /// root, then call [`crate::path::BeneathRoot::confine_helper_root`]. Linux has
-/// no descriptor-only unmount operation, so this is the sole narrow pathname
-/// operation in the mount helper.
+/// no descriptor-only unmount operation, so this remains a narrow pathname
+/// operation for callers that cannot retain the destination parent.
 ///
 /// # Errors
 ///
@@ -63,13 +63,35 @@ pub fn detach_relative(path: &Path, _worker: &SingleThreadedProcess) -> Result<(
     uapi::umount_detach(&path)
 }
 
+/// Lazily detaches one canonical child of a retained directory.
+///
+/// The calling single-threaded helper changes its working directory to
+/// `root`, then names exactly one child without re-walking a process root.
+/// The caller must independently authenticate and verify the retained root and
+/// child mount before invoking this operation.
+///
+/// # Errors
+///
+/// Returns an error for an empty, multi-component, parent, NUL-containing, or
+/// overlong child name, failure to anchor the working directory, or refusal by
+/// `umount2(2)`.
+pub fn detach_child(
+    root: &crate::path::BeneathRoot,
+    child: &Path,
+    _worker: &SingleThreadedProcess,
+) -> Result<()> {
+    let child = unmount_child_name(child)?;
+    uapi::fchdir(root.as_fd())?;
+    uapi::umount_detach(&child)
+}
+
 /// Ordinarily unmounts one canonical child of a retained directory.
 ///
 /// The calling single-threaded helper changes its working directory to
 /// `root`, then names exactly one child without `chroot(2)`. The caller must
 /// independently authenticate and verify the retained root and child mount,
 /// and must drop every descriptor into the child mount before this call.
-/// Unlike [`detach_relative`], this operation preserves the kernel's normal
+/// Unlike [`detach_child`], this operation preserves the kernel's normal
 /// busy-reference check and never falls back to lazy detachment.
 ///
 /// # Errors

@@ -23,10 +23,12 @@ pub const DETACHED_MOUNT_FD: i32 = 4;
 pub const MOUNT_NAMESPACE_FD: i32 = 5;
 /// Fixed child descriptor carrying the target root.
 pub const TARGET_ROOT_FD: i32 = 6;
-/// Fixed child descriptor carrying the pre-effect target slot.
+/// Fixed child descriptor carrying the protected broker underlay slot.
 pub const TARGET_SLOT_FD: i32 = 7;
+/// Fixed child descriptor carrying the payload attachment anchor.
+pub const ATTACHMENT_ANCHOR_FD: i32 = 8;
 /// Fixed child descriptor carrying its bounded kernel observation report.
-pub const OBSERVATION_FD: i32 = 8;
+pub const OBSERVATION_FD: i32 = 9;
 
 const FIRST_ROLE_FD: i32 = PLAN_FD;
 const LAST_ROLE_FD: i32 = OBSERVATION_FD;
@@ -45,8 +47,8 @@ pub struct DescriptorMapping<'a> {
 ///
 /// The executable path must be an absolute Nix-store path selected by the
 /// system module. Standard input/output/error are inherited for service-log
-/// integration; descriptors 3 through 7 exactly match `mappings`; everything
-/// above 7 is closed in the child; and the child environment is empty.
+/// integration; descriptors 3 through 9 exactly match `mappings`; everything
+/// above 9 is closed in the child; and the child environment is empty.
 ///
 /// # Errors
 ///
@@ -213,6 +215,7 @@ fn validate(executable: &Path, mappings: &[DescriptorMapping<'_>]) -> Result<()>
         MOUNT_NAMESPACE_FD,
         TARGET_ROOT_FD,
         TARGET_SLOT_FD,
+        ATTACHMENT_ANCHOR_FD,
         OBSERVATION_FD,
     ] {
         if !targets.contains(&mandatory) {

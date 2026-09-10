@@ -55,7 +55,7 @@ const ANCHOR_DIRECTORY_MODE: u32 = 0o755;
 const PARENT_DIRECTORY_MODE: u32 = 0o700;
 const SPECIFICATION_BYTE_CEILING: usize = 1024 * 1024;
 const SLOT_ROOT_COMPONENT: &str = "slots";
-const PAYLOAD_SLOT_PREFIX: &str = "run/aos/attachments";
+const PAYLOAD_ANCHOR_RELATIVE_PATH: &str = "run/aos/attachments";
 
 /// Binds one physical destination slot to exact declared portable semantics.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,16 +181,17 @@ impl DestinationSlotBindingV1 {
     /// Returns the fixed payload-relative destination path for this logical slot.
     #[must_use]
     pub fn payload_relative_path(&self) -> PathBuf {
-        Path::new(PAYLOAD_SLOT_PREFIX).join(encode_hex(self.slot_id.as_bytes()))
+        payload_anchor_relative_path().join(payload_slot_component(self.slot_id.as_bytes()))
     }
 
     /// Returns the private anchor directory installed as the payload slot parent.
     #[must_use]
     pub fn anchor_relative_path(&self) -> PathBuf {
-        Path::new(SLOT_ROOT_COMPONENT)
-            .join(encode_hex(&self.sandbox_id))
-            .join(encode_hex(&self.incarnation_id))
-            .join(format!("{:016x}", self.namespace_generation))
+        anchor_catalog_relative_path(
+            &self.sandbox_id,
+            &self.incarnation_id,
+            self.namespace_generation,
+        )
     }
 
     fn key(&self) -> SlotKey {
@@ -1118,7 +1119,7 @@ impl DestinationSlotStoreV1 {
             parent = self.open_or_create_parent(parent, component, mode)?;
         }
 
-        let slot_name = encode_hex(binding.slot_id.as_bytes());
+        let slot_name = payload_slot_component(binding.slot_id.as_bytes());
         match rustix::fs::mkdirat(
             parent.as_fd(),
             slot_name.as_str(),
@@ -1159,7 +1160,7 @@ impl DestinationSlotStoreV1 {
         self.verify_physical_record(record, &pin)?;
 
         let parent = self.resolve_anchor_parent(&record.binding)?;
-        let slot_name = encode_hex(record.binding.slot_id.as_bytes());
+        let slot_name = payload_slot_component(record.binding.slot_id.as_bytes());
         match rustix::fs::unlinkat(
             parent.as_fd(),
             slot_name.as_str(),
@@ -1702,11 +1703,31 @@ pub(crate) fn catalog_relative_path(
     namespace_generation: u64,
     slot_id: &[u8; 16],
 ) -> PathBuf {
+    anchor_catalog_relative_path(sandbox_id, incarnation_id, namespace_generation)
+        .join(payload_slot_component(slot_id))
+}
+
+pub(crate) fn anchor_catalog_relative_path(
+    sandbox_id: &[u8; 16],
+    incarnation_id: &[u8; 16],
+    namespace_generation: u64,
+) -> PathBuf {
     Path::new(SLOT_ROOT_COMPONENT)
         .join(encode_hex(sandbox_id))
         .join(encode_hex(incarnation_id))
         .join(format!("{namespace_generation:016x}"))
-        .join(encode_hex(slot_id))
+}
+
+pub(crate) fn payload_anchor_relative_path() -> &'static Path {
+    Path::new(PAYLOAD_ANCHOR_RELATIVE_PATH)
+}
+
+pub(crate) fn payload_slot_component(slot_id: &[u8; 16]) -> String {
+    encode_hex(slot_id)
+}
+
+pub(crate) fn payload_slot_relative_path(slot_id: &[u8; 16]) -> PathBuf {
+    payload_anchor_relative_path().join(payload_slot_component(slot_id))
 }
 
 fn sync_directory(directory: &BeneathRoot) -> Result<()> {

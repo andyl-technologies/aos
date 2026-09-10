@@ -3,17 +3,15 @@
 //! The long-lived broker compiles one closed action and exact descriptor-role
 //! bitmap into this format, writes it to a sealable memfd, and adds all four
 //! content seals before spawning the helper. The helper rejects unknown bits,
-//! noncanonical paths, sentinels, trailing bytes, checksum failure, and any
-//! memfd missing a required seal.
+//! sentinels, trailing bytes, checksum failure, and any memfd missing a
+//! required seal.
 //!
 //! ```text
-//! header | identities | effect-deadline | target-relative-path | sha256
+//! header | descriptor identities | mount topology | effect deadline | sha256
 //! ```
 
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::ffi::OsStringExt as _;
-use std::path::{Component, PathBuf};
 
 use aos_sandbox_linux::path::FileIdentity;
 use aos_sandbox_linux::pidfd::NamespaceIdentity;
@@ -23,12 +21,12 @@ use sha2::{Digest as _, Sha256};
 use crate::{MountError, Result};
 
 const MAGIC: &[u8; 8] = b"AOSMNT01";
-const VERSION: u16 = 5;
-const FIXED_PREFIX_BYTES: usize =
-    8 + 2 + 1 + 1 + 8 + 8 + 8 + 8 + 16 + 16 + 32 + (11 * 8) + 16 + 16 + 8 + 2;
+const VERSION: u16 = 6;
+const FIXED_PLAN_BYTES: usize =
+    8 + 2 + 1 + 1 + (4 * 8) + (2 * 16) + 32 + (18 * 8) + (2 * 16) + 8 + 32;
 const CHECKSUM_BYTES: usize = 32;
-const MAXIMUM_TARGET_PATH_BYTES: usize = 4096;
-const MAXIMUM_PLAN_BYTES: usize = FIXED_PREFIX_BYTES + MAXIMUM_TARGET_PATH_BYTES + CHECKSUM_BYTES;
+const MAXIMUM_PLAN_BYTES: usize = FIXED_PLAN_BYTES + CHECKSUM_BYTES;
+const REQUIRED_ATTACHMENT_ANCHOR_ATTRIBUTES: u64 = 0x0000_000f;
 const REQUIRED_SEALS: SealFlags = SealFlags::SHRINK
     .union(SealFlags::GROW)
     .union(SealFlags::WRITE)
@@ -61,13 +59,19 @@ impl DescriptorRoles {
     pub const TARGET_ROOT: u8 = 1 << 2;
     /// Pre-effect destination-slot descriptor.
     pub const TARGET_SLOT: u8 = 1 << 3;
-    const KNOWN: u8 =
-        Self::DETACHED_MOUNT | Self::MOUNT_NAMESPACE | Self::TARGET_ROOT | Self::TARGET_SLOT;
+    /// Payload attachment-anchor descriptor.
+    pub const ATTACHMENT_ANCHOR: u8 = 1 << 4;
+    const KNOWN: u8 = Self::DETACHED_MOUNT
+        | Self::MOUNT_NAMESPACE
+        | Self::TARGET_ROOT
+        | Self::TARGET_SLOT
+        | Self::ATTACHMENT_ANCHOR;
 
     /// Returns the exact roles required by an action.
     #[must_use]
     pub const fn for_action(action: HelperAction) -> Self {
-        let common = Self::MOUNT_NAMESPACE | Self::TARGET_ROOT | Self::TARGET_SLOT;
+        let common =
+            Self::MOUNT_NAMESPACE | Self::TARGET_ROOT | Self::TARGET_SLOT | Self::ATTACHMENT_ANCHOR;
         match action {
             HelperAction::Observe | HelperAction::Detach => Self(common),
             HelperAction::Install | HelperAction::Replace => Self(common | Self::DETACHED_MOUNT),
@@ -148,8 +152,18 @@ pub struct HelperPlan {
     pub expected_mount_id: u64,
     /// Exact predecessor required before replacement, or zero otherwise.
     pub expected_predecessor_mount_id: u64,
-    /// Exact mount identity beneath an absent destination slot.
-    pub target_slot_mount_id: u64,
+    /// Exact broker-side mount containing the protected destination slot.
+    pub protected_anchor_mount_id: u64,
+    /// Exact payload namespace-root mount identity.
+    pub target_root_mount_id: u64,
+    /// Exact mount containing `/run` in the payload namespace.
+    pub run_mount_id: u64,
+    /// Exact payload attachment-anchor mount identity.
+    pub attachment_anchor_mount_id: u64,
+    /// Exact nonzero kernel mount-namespace identity.
+    pub target_mount_namespace_id: u64,
+    /// Exact kernel-reported attachment-anchor mount attributes.
+    pub attachment_anchor_mount_attributes: u64,
     /// Protected paired-clock reader identity, or zero for observation.
     pub clock_provenance: [u8; 16],
     /// Host boot identity under which a mutation deadline is valid.
@@ -164,8 +178,10 @@ pub struct HelperPlan {
     pub target_root: ExpectedFileIdentity,
     /// Pre-effect slot identity.
     pub target_slot: ExpectedFileIdentity,
-    /// Catalog-selected path beneath the pinned target root.
-    pub target_relative_path: PathBuf,
+    /// Payload attachment-anchor identity.
+    pub attachment_anchor: ExpectedFileIdentity,
+    /// Domain-separated digest of the exact UID and GID idmap extents.
+    pub attachment_anchor_idmap_digest: [u8; 32],
 }
 
 impl HelperPlan {
@@ -173,14 +189,11 @@ impl HelperPlan {
     ///
     /// # Errors
     ///
-    /// Returns an error for sentinels, a mismatched role table, or a target
-    /// path that is empty, absolute, noncanonical, or overlong.
+    /// Returns an error for sentinels, inconsistent topology, or a mismatched
+    /// role table.
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
-        let path = self.target_relative_path.as_os_str().as_encoded_bytes();
-        let path_length = u16::try_from(path.len())
-            .map_err(|_| MountError::Worker("helper target path exceeds u16".to_owned()))?;
-        let mut bytes = Vec::with_capacity(FIXED_PREFIX_BYTES + path.len() + CHECKSUM_BYTES);
+        let mut bytes = Vec::with_capacity(MAXIMUM_PLAN_BYTES);
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&VERSION.to_le_bytes());
         bytes.push(self.action as u8);
@@ -201,17 +214,23 @@ impl HelperPlan {
             self.target_root.inode,
             self.target_slot.device,
             self.target_slot.inode,
+            self.attachment_anchor.device,
+            self.attachment_anchor.inode,
             self.expected_mount_id,
             self.expected_predecessor_mount_id,
-            self.target_slot_mount_id,
+            self.protected_anchor_mount_id,
+            self.target_root_mount_id,
+            self.run_mount_id,
+            self.attachment_anchor_mount_id,
+            self.target_mount_namespace_id,
+            self.attachment_anchor_mount_attributes,
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes.extend_from_slice(&self.clock_provenance);
         bytes.extend_from_slice(&self.host_boot_id);
         bytes.extend_from_slice(&self.effect_deadline_boottime_nanoseconds.to_le_bytes());
-        bytes.extend_from_slice(&path_length.to_le_bytes());
-        bytes.extend_from_slice(path);
+        bytes.extend_from_slice(&self.attachment_anchor_idmap_digest);
         let checksum = Sha256::digest(&bytes);
         bytes.extend_from_slice(&checksum);
         Ok(bytes)
@@ -222,9 +241,9 @@ impl HelperPlan {
     /// # Errors
     ///
     /// Returns an error for bad framing, checksum, version, action, roles,
-    /// reserved fields, identities, generations, or target path.
+    /// reserved fields, identities, generations, or topology facts.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < FIXED_PREFIX_BYTES + CHECKSUM_BYTES || bytes.len() > MAXIMUM_PLAN_BYTES {
+        if bytes.len() != MAXIMUM_PLAN_BYTES {
             return Err(invalid_plan("helper plan length is invalid"));
         }
         let payload_length = bytes.len() - CHECKSUM_BYTES;
@@ -258,7 +277,12 @@ impl HelperPlan {
             request_digest: decoder.array()?,
             expected_mount_id: 0,
             expected_predecessor_mount_id: 0,
-            target_slot_mount_id: 0,
+            protected_anchor_mount_id: 0,
+            target_root_mount_id: 0,
+            run_mount_id: 0,
+            attachment_anchor_mount_id: 0,
+            target_mount_namespace_id: 0,
+            attachment_anchor_mount_attributes: 0,
             clock_provenance: [0; 16],
             host_boot_id: [0; 16],
             effect_deadline_boottime_nanoseconds: 0,
@@ -278,20 +302,27 @@ impl HelperPlan {
                 device: decoder.u64()?,
                 inode: decoder.u64()?,
             },
-            target_relative_path: PathBuf::new(),
+            attachment_anchor: ExpectedFileIdentity {
+                device: decoder.u64()?,
+                inode: decoder.u64()?,
+            },
+            attachment_anchor_idmap_digest: [0; 32],
         };
         plan.expected_mount_id = decoder.u64()?;
         plan.expected_predecessor_mount_id = decoder.u64()?;
-        plan.target_slot_mount_id = decoder.u64()?;
+        plan.protected_anchor_mount_id = decoder.u64()?;
+        plan.target_root_mount_id = decoder.u64()?;
+        plan.run_mount_id = decoder.u64()?;
+        plan.attachment_anchor_mount_id = decoder.u64()?;
+        plan.target_mount_namespace_id = decoder.u64()?;
+        plan.attachment_anchor_mount_attributes = decoder.u64()?;
         plan.clock_provenance = decoder.array()?;
         plan.host_boot_id = decoder.array()?;
         plan.effect_deadline_boottime_nanoseconds = decoder.u64()?;
-        let path_length = usize::from(decoder.u16()?);
-        let path = decoder.take(path_length)?;
+        plan.attachment_anchor_idmap_digest = decoder.array()?;
         if !decoder.remaining().is_empty() {
             return Err(invalid_plan("helper plan has trailing bytes"));
         }
-        plan.target_relative_path = PathBuf::from(std::ffi::OsString::from_vec(path.to_vec()));
         plan.validate()?;
         Ok(plan)
     }
@@ -306,7 +337,12 @@ impl HelperPlan {
             || self.destination_slot_id == [0; 16]
             || self.request_digest == [0; 32]
             || self.expected_mount_id == 0
-            || self.target_slot_mount_id == 0
+            || self.protected_anchor_mount_id == 0
+            || self.target_root_mount_id == 0
+            || self.run_mount_id == 0
+            || self.attachment_anchor_mount_id == 0
+            || self.target_mount_namespace_id == 0
+            || self.attachment_anchor_idmap_digest == [0; 32]
             || [
                 self.source.device,
                 self.source.inode,
@@ -316,6 +352,8 @@ impl HelperPlan {
                 self.target_root.inode,
                 self.target_slot.device,
                 self.target_slot.inode,
+                self.attachment_anchor.device,
+                self.attachment_anchor.inode,
             ]
             .contains(&0)
         {
@@ -325,6 +363,17 @@ impl HelperPlan {
             return Err(invalid_plan(
                 "helper resource generation is newer than desired state",
             ));
+        }
+        if self.protected_anchor_mount_id == self.attachment_anchor_mount_id
+            || self.target_root_mount_id == self.attachment_anchor_mount_id
+            || self.run_mount_id == self.attachment_anchor_mount_id
+            || self.source == self.target_slot
+            || self.source == self.attachment_anchor
+            || self.target_slot == self.attachment_anchor
+            || self.attachment_anchor_mount_attributes & REQUIRED_ATTACHMENT_ANCHOR_ATTRIBUTES
+                != REQUIRED_ATTACHMENT_ANCHOR_ATTRIBUTES
+        {
+            return Err(invalid_plan("helper plan mount topology is invalid"));
         }
         let predecessor_valid = match self.action {
             HelperAction::Replace => self.expected_predecessor_mount_id != 0,
@@ -351,23 +400,6 @@ impl HelperPlan {
         if !deadline_valid {
             return Err(invalid_plan(
                 "helper effect deadline does not match the action",
-            ));
-        }
-        let path = &self.target_relative_path;
-        if path.as_os_str().as_encoded_bytes().len() > MAXIMUM_TARGET_PATH_BYTES
-            || path.as_os_str().is_empty()
-            || path.is_absolute()
-            || path
-                .as_os_str()
-                .as_encoded_bytes()
-                .split(|byte| *byte == b'/')
-                .any(|component| component.is_empty() || matches!(component, b"." | b".."))
-            || path
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(invalid_plan(
-                "helper target path is not canonical and relative",
             ));
         }
         Ok(())
@@ -501,10 +533,15 @@ mod tests {
             request_digest: [3; 32],
             expected_mount_id: 12,
             expected_predecessor_mount_id: 13,
-            target_slot_mount_id: 14,
-            clock_provenance: [15; 16],
-            host_boot_id: [16; 16],
-            effect_deadline_boottime_nanoseconds: 17,
+            protected_anchor_mount_id: 14,
+            target_root_mount_id: 15,
+            run_mount_id: 15,
+            attachment_anchor_mount_id: 16,
+            target_mount_namespace_id: 17,
+            attachment_anchor_mount_attributes: 0x0f,
+            clock_provenance: [18; 16],
+            host_boot_id: [19; 16],
+            effect_deadline_boottime_nanoseconds: 20,
             source: ExpectedFileIdentity {
                 device: 4,
                 inode: 5,
@@ -521,7 +558,11 @@ mod tests {
                 device: 10,
                 inode: 11,
             },
-            target_relative_path: PathBuf::from("run/aos/attachments/slot"),
+            attachment_anchor: ExpectedFileIdentity {
+                device: 12,
+                inode: 13,
+            },
+            attachment_anchor_idmap_digest: [21; 32],
         }
     }
 
@@ -543,11 +584,12 @@ mod tests {
     }
 
     #[test]
-    fn helper_target_path_rejects_noncanonical_components() {
-        for invalid in ["", "/slot", "../slot", "a/../slot", "a//slot", "./slot"] {
-            let mut candidate = plan();
-            candidate.target_relative_path = PathBuf::from(invalid);
-            assert!(candidate.encode().is_err(), "accepted {invalid:?}");
-        }
+    fn helper_rejects_the_ephemeral_v5_plan_version() {
+        let mut encoded = plan().encode().unwrap();
+        encoded[8..10].copy_from_slice(&5_u16.to_le_bytes());
+        let payload_length = encoded.len() - CHECKSUM_BYTES;
+        let checksum = Sha256::digest(&encoded[..payload_length]);
+        encoded[payload_length..].copy_from_slice(&checksum);
+        assert!(HelperPlan::decode(&encoded).is_err());
     }
 }
