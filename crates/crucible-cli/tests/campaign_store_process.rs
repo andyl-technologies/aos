@@ -847,6 +847,11 @@ campaign = "*"
 
 [[grants]]
 principal = "{PRINCIPAL}"
+operation = "watch-campaign"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
 operation = "get-campaign-snapshot"
 campaign = "*"
 

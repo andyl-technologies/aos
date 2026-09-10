@@ -11,6 +11,8 @@
 # The packaged campaign wait refreshes only authenticated stale-head reads;
 # all other query and execution failures remain terminal. Planner pipe and
 # hot-fork waits poll one retained process under a fixed deadline or poll cap.
+# Guest-choice `retry` identifiers name the modeled execution-quanta
+# selectable; they never rerun a failed test.
 # The delayed cancellation fixture delivers one cancellation, and the moved
 # node fixture waits for loader completion before its single audit assertion.
 # Hot-fork `retry` names classify resource recovery; they never rerun a test.
@@ -36,6 +38,7 @@ crucible-cli	src/cli/campaign/tests	retry	1
 crucible-cli	src/main	retry	1
 crucible-cli	tests/campaign_store_process	thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process	thread::sleep	1
+crucible-cli	tests/support/campaign_packaged_process/guest_choice	retry	1
 crucible-daemon	src/campaign_bootstrap/tests	thread::sleep	1
 crucible-daemon	src/campaign_transfer/tests	retry	1
 crucible-daemon	src/campaign_server/tests	thread::sleep	1
