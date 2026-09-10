@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  guestTools ? false,
 }: let
   packageSet = import ../abilities/reference-nginx/package.nix {
     inherit lib;
@@ -76,15 +77,26 @@
     }
   ];
   runtimeSystem = mkSystem runtimeModules;
-in {
-  inherit orderedPackages packageRoots packageSet runtimeModules runtimeSystem;
-
-  extraClosures =
+  qualificationSetupBody = ''
+    environment.etc."tmpfiles.d/ability-reference.conf".text = ${builtins.toJSON ''
+      d /var/lib/aos 0700 root root - -
+      d /var/lib/aos/ability-reference 0700 root root - -
+      d /var/lib/aos/ability-reference/nginx-main 0700 root root - -
+      d /var/lib/aos/ability-reference/nginx-secondary 0700 root root - -
+      d /var/lib/aos/ability-runtime 0700 root root - -
+      d /var/lib/aos/ability-runtime/managed-configuration 0700 root root - -
+      d /var/lib/aos/ability-runtime/managed-configuration/candidates 0700 root root - -
+      d /var/lib/aos/ability-runtime/managed-configuration/revisions 0700 root root - -
+      d /var/lib/aos/ability-runtime/nginx 0700 root root - -
+      d /var/lib/aos/ability-runtime/nginx/candidates 0700 root root - -
+      d /var/lib/aos/ability-runtime/nginx/validations 0700 root root - -
+      d /var/lib/aos/ability-runtime/nginx/associations 0700 root root - -
+      d /var/lib/aos/ability-runtime/nginx/sandbox 0700 root root - -
+    ''};
+  '';
+  qualificationExtraClosures =
     packageRoots
     ++ [
-      pkgs.aos
-      pkgs.aos.apm
-      pkgs.aos.apr
       pkgs.aos.testSupport
       pkgs.coreutils
       pkgs.curl
@@ -92,9 +104,45 @@ in {
       pkgs.gawk
       pkgs.git
       pkgs.jq
+      pkgs.nginx
       pkgs.nix
       pkgs.util-linux
+      reloadWrapper
     ];
+  qualificationCandidateRuntimeCompanions =
+    map (name: let
+      entry = builtins.head (builtins.filter (candidate: candidate.name == name) orderedPackages);
+    in {
+      inherit (entry) name;
+      primary = entry.package;
+      abilities = entry.package.abilities;
+      originalRuntime = pkgs.aos.packageRuntime;
+    }) [
+      "ability-reference-managed-configuration"
+      "ability-reference-systemd"
+    ];
+in {
+  inherit
+    orderedPackages
+    packageRoots
+    packageSet
+    qualificationExtraClosures
+    qualificationCandidateRuntimeCompanions
+    qualificationSetupBody
+    runtimeModules
+    runtimeSystem
+    ;
+
+  extraClosures =
+    if guestTools
+    then qualificationExtraClosures
+    else
+      qualificationExtraClosures
+      ++ [
+        pkgs.aos
+        pkgs.aos.apm
+        pkgs.aos.apr
+      ];
 
   testPrelude =
     # python
@@ -105,9 +153,21 @@ in {
       import shlex
       import textwrap
 
-      AOS = "${pkgs.aos}/bin/aos"
-      APM = "${pkgs.aos.apm}/bin/apm"
-      APR = "${pkgs.aos.apr}/bin/apr"
+      AOS = ${
+        if guestTools
+        then ''runtime.guest_tool("aos")''
+        else builtins.toJSON "${pkgs.aos}/bin/aos"
+      }
+      APM = ${
+        if guestTools
+        then ''runtime.guest_tool("apm")''
+        else builtins.toJSON "${pkgs.aos.apm}/bin/apm"
+      }
+      APR = ${
+        if guestTools
+        then ''runtime.guest_tool("apr")''
+        else builtins.toJSON "${pkgs.aos.apr}/bin/apr"
+      }
       COREUTILS = "${pkgs.coreutils}/bin"
       CURL = "${pkgs.curl}/bin/curl"
       FIXTURE = "${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture"
@@ -120,12 +180,20 @@ in {
       PRLIMIT = "${pkgs.util-linux}/bin/prlimit"
       RELOAD_WRAPPER = "${reloadWrapper}/bin/ability-nginx-reload"
 
-      REFERENCE_PACKAGES = ${builtins.toJSON (map (entry: {
+      REFERENCE_PACKAGES = ${
+        if guestTools
+        then "runtime.candidate_handler_packages("
+        else ""
+      }${builtins.toJSON (map (entry: {
           inherit (entry) name;
           package = builtins.toString entry.package;
           abilities = builtins.toString entry.package.abilities;
         })
-        orderedPackages)}
+        orderedPackages)}${
+        if guestTools
+        then ")"
+        else ""
+      }
 
 
       def publish_reference_packages():

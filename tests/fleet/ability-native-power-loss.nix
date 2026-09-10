@@ -3,9 +3,11 @@
   lib,
   mkSystem,
   pkgs,
+  qualificationImage ? false,
 }: let
   fixture = import ./_ability-runtime-reference.nix {
     inherit lib mkSystem pkgs;
+    guestTools = qualificationImage;
   };
 
   observerController = pkgs.writeTextFile {
@@ -72,6 +74,14 @@
       };
     };
   '';
+  packageRuntime =
+    if qualificationImage
+    then "runtime.guest_package_runtime()"
+    else builtins.toJSON "${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped";
+  qualificationImagePython =
+    if qualificationImage
+    then "True"
+    else "False";
 in {
   name = "ability-native-power-loss";
   timeout = 5400;
@@ -102,9 +112,7 @@ in {
       OBSERVER_CONTROLLER = (
           "${observerController}/bin/aos-ability-boundary-controller"
       )
-      PACKAGE_RUNTIME = (
-          "${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped"
-      )
+      PACKAGE_RUNTIME = ${packageRuntime}
       SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
       SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
       PUBLISH_OPERATION = "publish-nginx-secondary-configuration"
@@ -169,6 +177,10 @@ in {
 
 
       def actual_boot_initrd_identity(expected_path):
+          if ${qualificationImagePython}:
+              assert runtime.boot == "published-image", runtime.boot
+              return runtime.assert_published_boot_contract(expected_path)
+
           assert runtime.boot == "kernel", runtime.boot
           assert runtime.initrd_path == expected_path, (
               runtime.initrd_path,
@@ -543,9 +555,12 @@ in {
 
 
       print("waiting for the observer-enabled reference VM")
-      expected_boot_initrd = runtime.succeed(
-          f"{COREUTILS}/cat /etc/aos/fleet-boot-initrd"
-      ).strip()
+      if ${qualificationImagePython}:
+          expected_boot_initrd = runtime.published_boot_identity()
+      else:
+          expected_boot_initrd = runtime.succeed(
+              f"{COREUTILS}/cat /etc/aos/fleet-boot-initrd"
+          ).strip()
       boot_initrd_identity_before = actual_boot_initrd_identity(
           expected_boot_initrd
       )
@@ -756,4 +771,11 @@ in {
       ).encode() == power_state[4]
       assert_route("gamma.example", 18082, "app-c", "gamma-power")
     '';
-}
+  }
+  // lib.optionalAttrs qualificationImage {
+    qualification = {
+      candidateRuntimeCompanions = fixture.qualificationCandidateRuntimeCompanions;
+      extraClosures = fixture.extraClosures ++ [observerController];
+      setupBody = fixture.qualificationSetupBody + observerHostModule;
+    };
+  }
