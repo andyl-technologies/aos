@@ -46,6 +46,11 @@ in
   mkGcc {
     version = "11.5.0";
     src = gccSrc;
+    # Avoid a separate emulated process for each source file during fixup.
+    sourceScriptFilter =
+      if hostPlatform.constraints.cpu == "x86_64"
+      then null
+      else prev.perl;
     inTreeDeps = [
       {
         name = "gmp";

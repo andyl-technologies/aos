@@ -4,7 +4,7 @@ pkgs.mkDerivation {
   pname = "aos-runtime-script-fixups";
   version = "1";
   src = null;
-  buildDeps = [pkgs.python3];
+  buildDeps = [pkgs.python3 pkgs.perl];
   phases = [
     {
       name = "check";
@@ -15,6 +15,8 @@ pkgs.mkDerivation {
         export AOS_TEST_TOOLS="${pkgs.stdenv.bootstrap.coreutils}/bin:${pkgs.stdenv.bootstrap.findutils}/bin:${pkgs.stdenv.bootstrap.sed}/bin:${pkgs.stdenv.bootstrap.grep}/bin:${pkgs.stdenv.bootstrap.bash}/bin"
         export AOS_TEST_SETUP="${../../stdenv/setup.sh}"
         export AOS_TEST_RUNTIME_PATCHER="${../../stdenv/runtime-scripts.sh}"
+        export AOS_TEST_SCRIPT_FILTER="${../../stdenv/filter-runtime-scripts.pl}"
+        export AOS_TEST_PERL="${pkgs.perl}/bin/perl"
         ${pkgs.python3}/bin/python3 -m unittest discover -s modules -v
         echo PASS > "$out/result"
       '';

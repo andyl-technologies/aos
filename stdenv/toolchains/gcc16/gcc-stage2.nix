@@ -55,6 +55,11 @@ in
     version = "16.2.0";
     name = "gcc-16.2.0-stage2";
     src = gccSrc;
+    # Avoid a separate emulated process for each source file during fixup.
+    sourceScriptFilter =
+      if hostPlatform.constraints.cpu == "x86_64"
+      then null
+      else prev.perl;
     bootstrap = true;
     runtimeBinutils = binutils;
     pathDeps = [
