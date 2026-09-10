@@ -277,6 +277,9 @@ in
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # The CI profile retains failed output in a machine-readable report. The
+    # shared Cargo phase prints its failed cases when a sandboxed check exits.
+    cargoNextestProfile = "ci";
     # Compilation still uses every allocated build core. Bound concurrent test
     # processes separately so loopback servers and SQLite workers retain enough
     # scheduler time to satisfy their production-sized deadlines on large hosts.

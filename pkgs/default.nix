@@ -639,6 +639,7 @@
     "installCargoArtifacts"
     "cargoArtifactContract"
     "cargoNextest"
+    "cargoNextestProfile"
     "cargoNextestOpenFilesLimit"
     "cargoNextestMaxTestThreads"
     "nextestFlags"
