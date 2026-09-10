@@ -16,8 +16,11 @@ use std::time::Duration;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
 
-use super::{SandboxCgroupPath, SandboxUnitName, parse_exact_cgroup, parse_invocation_id};
-use crate::client::{JobResult, SystemdClient};
+use super::{
+    AuxiliaryUnit, SandboxCgroupPath, SandboxUnitName, SandboxUnitSpec, parse_exact_cgroup,
+    parse_invocation_id,
+};
+use crate::client::{JobOutcome, JobResult, SystemdClient};
 use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ManagerProxy, ServiceProxy, UnitProxy};
 
@@ -398,6 +401,107 @@ impl ExactUnitClient {
         finish_connection(self, result).await
     }
 
+    /// Starts one bound payload while retaining and rechecking its exact Guardian.
+    ///
+    /// Property preparation completes before the Guardian reference is acquired.
+    /// The exact binding, invocation, and active-running state are observed with
+    /// `RefUnit` held immediately before the caller's final synchronous authority
+    /// guard and `StartTransientUnit`. The payload's mandatory `BindsTo` and
+    /// `After` dependencies then prevent or stop execution if that same retained
+    /// Guardian becomes inactive across submission. A second reference-held
+    /// observation after the start job rejects a lost Guardian before success is
+    /// returned to the broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactStartError::Guard`] when the final authority check denies
+    /// submission. Returns [`ExactStartError::Systemd`] when the payload binding
+    /// differs from the Guardian target, the Guardian is absent, substituted, or
+    /// non-running, property preparation or D-Bus fails, or the Guardian ceases
+    /// to be the exact active invocation before the start job completes.
+    pub async fn start_payload_guarded<E>(
+        self,
+        spec: &SandboxUnitSpec,
+        guardian: ExactUnitTarget,
+        before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
+    ) -> std::result::Result<JobOutcome, ExactStartError<E>> {
+        let properties = spec.properties().map_err(ExactStartError::Systemd)?;
+        if spec.launch_binding() != Some(guardian.binding()) {
+            return Err(ExactStartError::Systemd(Error::InvalidSandboxUnit(
+                "payload and Guardian launch bindings differ".to_owned(),
+            )));
+        }
+
+        let operation = async {
+            let reference = self
+                .client
+                .acquire_unit_reference(spec.name(), ExactUnitRole::Guardian)
+                .await
+                .map_err(ExactStartError::Systemd)?
+                .ok_or_else(|| {
+                    ExactStartError::Systemd(Error::InvalidSandboxUnit(
+                        "bound payload start requires a loaded Guardian".to_owned(),
+                    ))
+                })?;
+            let result = async {
+                let before = self
+                    .client
+                    .observe_reference(spec.name(), ExactUnitRole::Guardian, &reference)
+                    .await
+                    .map_err(ExactStartError::Systemd)?;
+                if !before.matches(guardian) || before.state != ExactUnitState::ActiveRunning {
+                    return Err(ExactStartError::Systemd(Error::InvalidSandboxUnit(
+                        "bound payload start requires the exact active Guardian".to_owned(),
+                    )));
+                }
+
+                before_submission().map_err(ExactStartError::Guard)?;
+                let auxiliary_units: Vec<AuxiliaryUnit> = Vec::new();
+                let path = self
+                    .client
+                    .manager
+                    .start_transient_unit(
+                        spec.name().as_str(),
+                        "fail",
+                        &properties,
+                        &auxiliary_units,
+                    )
+                    .await
+                    .map_err(Error::from)
+                    .map_err(ExactStartError::Systemd)?;
+                let job = self
+                    .client
+                    .await_job(path)
+                    .await
+                    .map_err(ExactStartError::Systemd)?;
+
+                let after = self
+                    .client
+                    .observe_reference(spec.name(), ExactUnitRole::Guardian, &reference)
+                    .await
+                    .map_err(ExactStartError::Systemd)?;
+                if !after.matches(guardian) || after.state != ExactUnitState::ActiveRunning {
+                    return Err(ExactStartError::Systemd(Error::InvalidSandboxUnit(
+                        "exact Guardian was lost across payload submission".to_owned(),
+                    )));
+                }
+                Ok(job)
+            }
+            .await;
+
+            finish_exact_start(&self.client.manager, &reference, result).await
+        };
+        let result = tokio::time::timeout(EXACT_OPERATION_TIMEOUT, operation)
+            .await
+            .unwrap_or_else(|_| {
+                Err(ExactStartError::Systemd(Error::ExactUnitTimeout(
+                    "bound payload start",
+                )))
+            });
+
+        finish_exact_start_connection(self, result).await
+    }
+
     /// Stops only the manager object matching an exact binding and invocation.
     ///
     /// `GetUnit` precedes `RefUnit`; the object path is rechecked after the
@@ -690,6 +794,22 @@ async fn finish_exact_stop<T, E>(
     }
 }
 
+async fn finish_exact_start<T, E>(
+    manager: &ManagerProxy<'static>,
+    reference: &UnitReference,
+    result: std::result::Result<T, ExactStartError<E>>,
+) -> std::result::Result<T, ExactStartError<E>> {
+    let released = reference
+        .release(manager)
+        .await
+        .map_err(ExactStartError::Systemd);
+    match (result, released) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
 async fn finish_connection<T>(client: ExactUnitClient, result: Result<T>) -> Result<T> {
     let closed = close_connection(&client.client.conn).await;
     match (result, closed) {
@@ -706,6 +826,20 @@ async fn finish_exact_connection<T, E>(
     let closed = close_connection(&client.client.conn)
         .await
         .map_err(ExactStopError::Systemd);
+    match (result, closed) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+async fn finish_exact_start_connection<T, E>(
+    client: ExactUnitClient,
+    result: std::result::Result<T, ExactStartError<E>>,
+) -> std::result::Result<T, ExactStartError<E>> {
+    let closed = close_connection(&client.client.conn)
+        .await
+        .map_err(ExactStartError::Systemd);
     match (result, closed) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), _) => Err(error),

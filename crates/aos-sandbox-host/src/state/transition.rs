@@ -1,9 +1,9 @@
-//! Version-4 durable execution evidence and pure transition decisions.
+//! Version-5 durable execution evidence and pure transition decisions.
 //!
 //! The host-state envelope stores this module's tagged records beneath each
-//! request. Current carrier versions continue to use the `legacy` kind. The
-//! future Guardian launch and composite Stop kinds are deliberately codec- and
-//! decision-only until the broker's live effect integration is qualified.
+//! request. Host 1.1 through 1.4 continue to use the `legacy` kind. Host 1.5
+//! Launch persists the Guardian and bound payload transaction through complete
+//! live proof. Host 1.5 Stop persists exact payload-before-Guardian teardown.
 //!
 //! ```text
 //! { "kind": "guardian_launch", "state": { "evidence": ..., "phase": ... } }
@@ -14,6 +14,9 @@
 //! committed before that effect. Recovered active state is never promoted to a
 //! readiness proof: a Guardian becomes ready only from the current fixed
 //! `Type=notify` start job followed by an exact active/running observation.
+//! Payload completion additionally requires fresh pidfd, cgroup, mount, and
+//! namespace proofs. Stop completion requires manager and cgroup absence after
+//! the exact unit reference is released.
 
 use std::os::fd::BorrowedFd;
 
@@ -21,6 +24,7 @@ use aos_sandbox_broker::{
     ProtectedBrokerPublicCredentialRole, ProtectedBrokerPublicCredentialSnapshot,
 };
 use aos_sandbox_core::ProtocolVersion;
+use aos_systemd::GuardianExecutableSnapshot;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -56,7 +60,7 @@ impl HostAction {
         }
     }
 
-    const fn code(self) -> u8 {
+    pub(crate) const fn code(self) -> u8 {
         match self {
             Self::Launch => 1,
             Self::Stop => 2,
@@ -70,9 +74,8 @@ impl HostAction {
 /// Selects the signed Host authority version independently of the carrier.
 ///
 /// Carriers 1.1 through 1.4 retain the established Host 1.1 semantics. The
-/// future 1.5 carrier upgrades only Launch; lifecycle operations remain signed
-/// under Host 1.1. Callers must still keep the live carrier-1.5 guard closed
-/// until Guardian effects are integrated.
+/// 1.5 carrier upgrades only Launch; lifecycle operations remain signed under
+/// Host 1.1 and are rejected by the current live 1.5 Apply boundary.
 pub(crate) const fn signed_authority_version(
     carrier: ProtocolVersion,
     action: HostAction,
@@ -104,7 +107,7 @@ pub(crate) enum DurableExecution {
 }
 
 impl DurableExecution {
-    /// Creates the only execution kind emitted by the current closed carrier.
+    /// Creates the execution kind emitted by legacy Host carriers.
     pub(crate) fn current_legacy(carrier: ProtocolVersion, action: HostAction) -> Option<Self> {
         matches!(carrier.major(), 1)
             .then_some(carrier.minor())
@@ -188,6 +191,138 @@ impl DurableExecution {
         }
     }
 
+    pub(crate) fn composite_stop(
+        context: ExecutionContext,
+        target: CompositeStopTarget,
+    ) -> Option<Self> {
+        let execution = Self::CompositeStop(CompositeStopRecord {
+            target,
+            phase: CompositeStopPhase::StopAuthorized,
+        });
+        execution.validate(context).then_some(execution)
+    }
+
+    pub(crate) fn composite_stop_record(&self) -> Option<&CompositeStopRecord> {
+        let Self::CompositeStop(record) = self else {
+            return None;
+        };
+        Some(record)
+    }
+
+    pub(crate) fn set_composite_stop_phase(&mut self, phase: CompositeStopPhase) -> bool {
+        let Self::CompositeStop(record) = self else {
+            return false;
+        };
+        if !phase.validate(&record.target) {
+            return false;
+        }
+        record.phase = phase;
+        true
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the durable evidence binds one complete closed Guardian attempt"
+    )]
+    pub(crate) fn guardian_launch(
+        context: ExecutionContext,
+        launch_body_digest: [u8; 32],
+        node_id: [u8; 16],
+        host_boot_id: [u8; 16],
+        lease_generation: u64,
+        lease_digest: [u8; 32],
+        broker_plan: &[u8],
+        broker_plan_signature: &[u8],
+        ownership_lease: &[u8],
+        ownership_lease_signature: &[u8],
+        protected_inputs: [ProtectedInputSnapshot; 6],
+        executable: GuardianExecutableSnapshot,
+        payload: PayloadLaunchSnapshot,
+    ) -> Option<Self> {
+        let mut evidence = GuardianLaunchEvidence {
+            attempt: 1,
+            request_id: context.request_id,
+            request_digest: context.request_digest,
+            launch_body_digest,
+            sandbox_id: context.sandbox_id,
+            incarnation_id: context.incarnation_id,
+            assignment_epoch: context.assignment_epoch,
+            desired_generation: context.desired_generation,
+            assignment_digest: context.assignment_digest,
+            node_id,
+            host_boot_id,
+            lease_generation,
+            lease_digest,
+            broker_plan: broker_plan.to_vec(),
+            broker_plan_signature: broker_plan_signature.to_vec(),
+            ownership_lease: ownership_lease.to_vec(),
+            ownership_lease_signature: ownership_lease_signature.to_vec(),
+            protected_inputs,
+            guardian_executable: PinnedExecutableIdentity::from(executable),
+            payload,
+            binding: [0; 32],
+        };
+        evidence.binding = evidence.recompute_binding();
+        let execution = Self::GuardianLaunch(Box::new(GuardianLaunchRecord {
+            evidence,
+            phase: GuardianLaunchPhase::Authorized,
+        }));
+        execution.validate(context).then_some(execution)
+    }
+
+    pub(crate) fn guardian_attempt(&self) -> Option<GuardianAttempt<'_>> {
+        let Self::GuardianLaunch(record) = self else {
+            return None;
+        };
+        Some(GuardianAttempt {
+            binding: record.evidence.binding,
+            broker_plan: &record.evidence.broker_plan,
+            broker_plan_signature: &record.evidence.broker_plan_signature,
+            ownership_lease: &record.evidence.ownership_lease,
+            ownership_lease_signature: &record.evidence.ownership_lease_signature,
+            phase: &record.phase,
+        })
+    }
+
+    pub(crate) fn guardian_completed_invocations(&self) -> Option<([u8; 16], [u8; 16])> {
+        let Self::GuardianLaunch(record) = self else {
+            return None;
+        };
+        match record.phase {
+            GuardianLaunchPhase::Complete {
+                guardian_invocation,
+                payload_invocation,
+                ..
+            } => Some((guardian_invocation, payload_invocation)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn guardian_runtime_inputs_match(
+        &self,
+        protected_inputs: &[ProtectedInputSnapshot; 6],
+        executable: GuardianExecutableSnapshot,
+        payload: &PayloadLaunchSnapshot,
+    ) -> bool {
+        let Self::GuardianLaunch(record) = self else {
+            return false;
+        };
+        record.evidence.protected_inputs == *protected_inputs
+            && record.evidence.guardian_executable == PinnedExecutableIdentity::from(executable)
+            && record.evidence.payload == *payload
+    }
+
+    pub(crate) fn set_guardian_phase(&mut self, phase: GuardianLaunchPhase) -> bool {
+        let Self::GuardianLaunch(record) = self else {
+            return false;
+        };
+        if !phase.validate(record.evidence.binding) {
+            return false;
+        }
+        record.phase = phase;
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn guardian_fixture(context: ExecutionContext) -> Self {
         let mut evidence = GuardianLaunchEvidence {
@@ -227,6 +362,7 @@ impl DurableExecution {
                 changed_nanoseconds: 31,
                 sha256_content: [32; 32],
             },
+            payload: PayloadLaunchSnapshot::fixture(),
             binding: [0; 32],
         };
         evidence.binding = evidence.recompute_binding();
@@ -244,6 +380,16 @@ impl DurableExecution {
             phase: CompositeStopPhase::StopAuthorized,
         })
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct GuardianAttempt<'a> {
+    pub(crate) binding: [u8; 32],
+    pub(crate) broker_plan: &'a [u8],
+    pub(crate) broker_plan_signature: &'a [u8],
+    pub(crate) ownership_lease: &'a [u8],
+    pub(crate) ownership_lease_signature: &'a [u8],
+    pub(crate) phase: &'a GuardianLaunchPhase,
 }
 
 fn update_authentication_field(hash: &mut Sha256, tag: u16, value: &[u8]) -> Option<()> {
@@ -279,7 +425,10 @@ impl GuardianLaunchRecord {
     fn validate(&self, context: ExecutionContext) -> bool {
         self.evidence.validate(context)
             && self.phase.validate(self.evidence.binding)
-            && matches!(self.phase, GuardianLaunchPhase::Complete { .. }) == context.receipt_present
+            && matches!(
+                self.phase,
+                GuardianLaunchPhase::Compensated { .. } | GuardianLaunchPhase::Complete { .. }
+            ) == context.receipt_present
     }
 }
 
@@ -305,6 +454,7 @@ pub(crate) struct GuardianLaunchEvidence {
     ownership_lease_signature: Vec<u8>,
     protected_inputs: [ProtectedInputSnapshot; 6],
     guardian_executable: PinnedExecutableIdentity,
+    payload: PayloadLaunchSnapshot,
     binding: [u8; 32],
 }
 
@@ -333,6 +483,7 @@ impl GuardianLaunchEvidence {
                 .enumerate()
                 .all(|(role, input)| input.validate(role))
             && self.guardian_executable.validate()
+            && self.payload.validate()
             && self.binding != [0; 32]
             && self.binding == self.recompute_binding()
     }
@@ -361,7 +512,106 @@ impl GuardianLaunchEvidence {
             input.update_binding(&mut hash);
         }
         self.guardian_executable.update_binding(&mut hash);
+        self.payload.update_binding(&mut hash);
         hash.finalize().into()
+    }
+}
+
+/// Captures the exact resolved payload resources and closed unit semantics.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PayloadLaunchSnapshot {
+    pub(crate) nspawn: PinnedObjectSnapshot,
+    pub(crate) workspace: PinnedObjectSnapshot,
+    pub(crate) network_device: u64,
+    pub(crate) network_inode: u64,
+    pub(crate) identity_range_start: u32,
+    pub(crate) identity_range_size: u32,
+    pub(crate) identity_catalog_generation: u64,
+    pub(crate) attachment_anchor: Option<PinnedObjectSnapshot>,
+    pub(crate) spec_semantic_digest: [u8; 32],
+}
+
+impl PayloadLaunchSnapshot {
+    fn validate(&self) -> bool {
+        self.nspawn.validate()
+            && self.workspace.validate()
+            && self.network_device != 0
+            && self.network_inode != 0
+            && self.identity_range_start != 0
+            && self.identity_range_size >= 65_536
+            && self
+                .identity_range_start
+                .checked_add(self.identity_range_size)
+                .is_some()
+            && self.identity_catalog_generation != 0
+            && self
+                .attachment_anchor
+                .as_ref()
+                .is_none_or(PinnedObjectSnapshot::validate)
+            && self.spec_semantic_digest != [0; 32]
+    }
+
+    fn update_binding(&self, hash: &mut Sha256) {
+        self.nspawn.update_binding(hash);
+        self.workspace.update_binding(hash);
+        hash.update(self.network_device.to_be_bytes());
+        hash.update(self.network_inode.to_be_bytes());
+        hash.update(self.identity_range_start.to_be_bytes());
+        hash.update(self.identity_range_size.to_be_bytes());
+        hash.update(self.identity_catalog_generation.to_be_bytes());
+        match &self.attachment_anchor {
+            Some(anchor) => {
+                hash.update([1]);
+                anchor.update_binding(hash);
+            }
+            None => hash.update([0]),
+        }
+        hash.update(self.spec_semantic_digest);
+    }
+
+    #[cfg(test)]
+    fn fixture() -> Self {
+        Self {
+            nspawn: PinnedObjectSnapshot {
+                device: 33,
+                inode: 34,
+                mount_id: 35,
+            },
+            workspace: PinnedObjectSnapshot {
+                device: 36,
+                inode: 37,
+                mount_id: 38,
+            },
+            network_device: 39,
+            network_inode: 40,
+            identity_range_start: 65_536,
+            identity_range_size: 65_536,
+            identity_catalog_generation: 41,
+            attachment_anchor: None,
+            spec_semantic_digest: [42; 32],
+        }
+    }
+}
+
+/// Names one descriptor-backed object and its kernel-unique mount instance.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PinnedObjectSnapshot {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) mount_id: u64,
+}
+
+impl PinnedObjectSnapshot {
+    fn validate(&self) -> bool {
+        self.device != 0 && self.inode != 0 && self.mount_id != 0 && self.mount_id != u64::MAX
+    }
+
+    fn update_binding(&self, hash: &mut Sha256) {
+        hash.update(self.device.to_be_bytes());
+        hash.update(self.inode.to_be_bytes());
+        hash.update(self.mount_id.to_be_bytes());
     }
 }
 
@@ -483,6 +733,23 @@ impl PinnedExecutableIdentity {
     }
 }
 
+impl From<GuardianExecutableSnapshot> for PinnedExecutableIdentity {
+    fn from(snapshot: GuardianExecutableSnapshot) -> Self {
+        Self {
+            device: snapshot.device,
+            inode: snapshot.inode,
+            bytes: snapshot.bytes,
+            uid: snapshot.uid,
+            mode: snapshot.mode,
+            modified_seconds: snapshot.modified_seconds,
+            modified_nanoseconds: snapshot.modified_nanoseconds,
+            changed_seconds: snapshot.changed_seconds,
+            changed_nanoseconds: snapshot.changed_nanoseconds,
+            sha256_content: snapshot.sha256_content,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum GuardianLaunchPhase {
@@ -498,18 +765,21 @@ pub(crate) enum GuardianLaunchPhase {
         guardian_invocation: [u8; 16],
         payload_invocation: [u8; 16],
         observation_sequence: u64,
-        worker_proof_digest: [u8; 32],
+        worker_proof: RuntimeProofSnapshot,
     },
     CleanupIssued {
         payload: ExactUnitTarget,
         guardian: ExactUnitTarget,
         progress: CleanupProgress,
     },
+    Compensated {
+        observation_sequence: u64,
+    },
     Complete {
         guardian_invocation: [u8; 16],
         payload_invocation: [u8; 16],
         observation_sequence: u64,
-        worker_proof_digest: [u8; 32],
+        worker_proof: RuntimeProofSnapshot,
     },
 }
 
@@ -517,6 +787,9 @@ impl GuardianLaunchPhase {
     fn validate(&self, binding: [u8; 32]) -> bool {
         match self {
             Self::Authorized | Self::GuardianStartIssued => true,
+            Self::Compensated {
+                observation_sequence,
+            } => *observation_sequence != 0,
             Self::GuardianReady {
                 guardian_invocation,
             }
@@ -527,19 +800,19 @@ impl GuardianLaunchPhase {
                 guardian_invocation,
                 payload_invocation,
                 observation_sequence,
-                worker_proof_digest,
+                worker_proof,
             }
             | Self::Complete {
                 guardian_invocation,
                 payload_invocation,
                 observation_sequence,
-                worker_proof_digest,
+                worker_proof,
             } => {
                 *guardian_invocation != [0; 16]
                     && *payload_invocation != [0; 16]
                     && guardian_invocation != payload_invocation
                     && *observation_sequence != 0
-                    && *worker_proof_digest != [0; 32]
+                    && worker_proof.validate()
             }
             Self::CleanupIssued {
                 payload,
@@ -551,9 +824,8 @@ impl GuardianLaunchPhase {
                     && match progress {
                         CleanupProgress::PayloadPending => payload.is_exact(),
                         CleanupProgress::GuardianPending => guardian.is_exact(),
-                        CleanupProgress::AwaitingAbsence => {
-                            payload.is_exact() || guardian.is_exact()
-                        }
+                        CleanupProgress::PayloadAwaitingAbsence => payload.is_exact(),
+                        CleanupProgress::GuardianAwaitingAbsence => guardian.is_exact(),
                     }
             }
         }
@@ -565,7 +837,8 @@ impl GuardianLaunchPhase {
 pub(crate) enum CleanupProgress {
     PayloadPending,
     GuardianPending,
-    AwaitingAbsence,
+    PayloadAwaitingAbsence,
+    GuardianAwaitingAbsence,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -682,7 +955,7 @@ impl CompositeStopTarget {
         }
     }
 
-    fn payload(&self) -> StopUnitTarget {
+    pub(crate) fn payload(&self) -> StopUnitTarget {
         match self {
             Self::Absent => StopUnitTarget::Absent,
             Self::LegacyPayload { payload, .. } | Self::GuardianComposite { payload, .. } => {
@@ -691,7 +964,7 @@ impl CompositeStopTarget {
         }
     }
 
-    fn guardian(&self) -> StopUnitTarget {
+    pub(crate) fn guardian(&self) -> StopUnitTarget {
         match self {
             Self::GuardianComposite { guardian, .. } => guardian.clone(),
             Self::Absent | Self::LegacyPayload { .. } => StopUnitTarget::Absent,
@@ -727,8 +1000,18 @@ impl StopUnitTarget {
         }
     }
 
-    fn is_exact(&self) -> bool {
+    pub(crate) fn is_exact(&self) -> bool {
         matches!(self, Self::Exact { .. })
+    }
+
+    pub(crate) const fn exact_identity(&self) -> Option<(Option<[u8; 32]>, [u8; 16])> {
+        match self {
+            Self::Absent => None,
+            Self::Exact {
+                binding,
+                invocation,
+            } => Some((*binding, *invocation)),
+        }
     }
 }
 
@@ -736,6 +1019,9 @@ impl StopUnitTarget {
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum CompositeStopPhase {
     StopAuthorized,
+    // This authenticated durable transition is the authority linearization
+    // point. Retries may finish only the saved exact-target containment effect
+    // after lease expiry; they cannot select a new binding or invocation.
     StopEffectIssued { progress: StopProgress },
     Complete { observation_sequence: u64 },
 }
@@ -747,9 +1033,8 @@ impl CompositeStopPhase {
             Self::StopEffectIssued { progress } => match progress {
                 StopProgress::PayloadPending => target.payload().is_exact(),
                 StopProgress::GuardianPending => target.guardian().is_exact(),
-                StopProgress::AwaitingAbsence => {
-                    target.payload().is_exact() || target.guardian().is_exact()
-                }
+                StopProgress::PayloadAwaitingAbsence => target.payload().is_exact(),
+                StopProgress::GuardianAwaitingAbsence => target.guardian().is_exact(),
             },
             Self::Complete {
                 observation_sequence,
@@ -763,7 +1048,8 @@ impl CompositeStopPhase {
 pub(crate) enum StopProgress {
     PayloadPending,
     GuardianPending,
-    AwaitingAbsence,
+    PayloadAwaitingAbsence,
+    GuardianAwaitingAbsence,
 }
 
 fn bounded(bytes: &[u8], maximum: usize) -> bool {
@@ -787,6 +1073,7 @@ pub(crate) enum AuthorityFreshness {
 pub(crate) enum StartJobEvidence {
     None,
     DoneForCurrentSubmission,
+    RecoveredExactProof,
     FailedForCurrentSubmission,
 }
 
@@ -816,7 +1103,73 @@ pub(crate) enum UnitObservation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WorkerProof {
     pub(crate) observation_sequence: u64,
-    pub(crate) digest: [u8; 32],
+    pub(crate) runtime: RuntimeProofSnapshot,
+}
+
+/// Persists the complete fresh kernel proof accepted for one payload start.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RuntimeProofSnapshot {
+    pub(crate) host_boot_id: [u8; 16],
+    pub(crate) supervisor: ProcessProofSnapshot,
+    pub(crate) payload: ProcessProofSnapshot,
+    pub(crate) supervisor_cgroup_id: u64,
+    pub(crate) payload_cgroup_id: u64,
+    pub(crate) workspace_mount_id: u64,
+    pub(crate) payload_root_mount_id: u64,
+    pub(crate) network_namespace: NamespaceProofSnapshot,
+    pub(crate) mount_namespace: NamespaceProofSnapshot,
+    pub(crate) user_namespace: NamespaceProofSnapshot,
+}
+
+impl RuntimeProofSnapshot {
+    pub(crate) fn validate(&self) -> bool {
+        self.host_boot_id != [0; 16]
+            && self.supervisor.validate()
+            && self.payload.validate()
+            && self.supervisor.pid != self.payload.pid
+            && self.payload.parent_pid == self.supervisor.pid
+            && self.supervisor_cgroup_id != 0
+            && self.payload_cgroup_id != 0
+            && self.supervisor.cgroup_id == self.supervisor_cgroup_id
+            && self.payload.cgroup_id == self.payload_cgroup_id
+            && self.workspace_mount_id != 0
+            && self.payload_root_mount_id != 0
+            && self.network_namespace.validate()
+            && self.mount_namespace.validate()
+            && self.user_namespace.validate()
+    }
+}
+
+/// Captures PIDFD_GET_INFO plus `/proc/PID/stat` field 22 for one live pidfd.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProcessProofSnapshot {
+    pub(crate) pid: u32,
+    pub(crate) thread_group_id: u32,
+    pub(crate) parent_pid: u32,
+    pub(crate) cgroup_id: u64,
+    pub(crate) start_time_ticks: u64,
+}
+
+impl ProcessProofSnapshot {
+    fn validate(&self) -> bool {
+        self.pid != 0 && self.thread_group_id == self.pid && self.cgroup_id != 0
+    }
+}
+
+/// Captures one type-checked namespace descriptor identity.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NamespaceProofSnapshot {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+}
+
+impl NamespaceProofSnapshot {
+    fn validate(&self) -> bool {
+        self.device != 0 && self.inode != 0
+    }
 }
 
 /// Names the only future side effects returned by the pure reducers.
@@ -832,8 +1185,6 @@ pub(crate) enum PlannedEffect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DecisionRejection {
     AuthorityExpired,
-    StartFailed,
-    RuntimeDisappeared,
     InconsistentEvidence,
 }
 
@@ -881,19 +1232,22 @@ pub(crate) fn decide_guardian_launch(input: GuardianDecisionInput<'_>) -> Guardi
             guardian_invocation,
             payload_invocation,
             observation_sequence,
-            worker_proof_digest,
-        } => GuardianDecision::Persist(GuardianLaunchPhase::Complete {
-            guardian_invocation: *guardian_invocation,
-            payload_invocation: *payload_invocation,
-            observation_sequence: *observation_sequence,
-            worker_proof_digest: *worker_proof_digest,
-        }),
+            worker_proof,
+        } => decide_payload_verified(
+            input,
+            *guardian_invocation,
+            *payload_invocation,
+            *observation_sequence,
+            *worker_proof,
+        ),
         GuardianLaunchPhase::CleanupIssued {
             payload,
             guardian,
             progress,
         } => decide_launch_cleanup(input, payload, guardian, *progress),
-        GuardianLaunchPhase::Complete { .. } => GuardianDecision::HistoricalComplete,
+        GuardianLaunchPhase::Compensated { .. } | GuardianLaunchPhase::Complete { .. } => {
+            GuardianDecision::HistoricalComplete
+        }
     }
 }
 
@@ -916,17 +1270,14 @@ fn decide_guardian_start_issued(input: GuardianDecisionInput<'_>) -> GuardianDec
     }
     match owned_observation(input.guardian, input.binding, None) {
         OwnedObservation::Absent => match (input.guardian_job, input.freshness) {
-            (StartJobEvidence::DoneForCurrentSubmission, _) => {
-                GuardianDecision::Reject(DecisionRejection::InconsistentEvidence)
-            }
-            (StartJobEvidence::FailedForCurrentSubmission, _) => {
-                GuardianDecision::Reject(DecisionRejection::StartFailed)
-            }
             (StartJobEvidence::None, AuthorityFreshness::Fresh) => {
                 GuardianDecision::RetryIssued(PlannedEffect::StartGuardian)
             }
-            (StartJobEvidence::None, AuthorityFreshness::Expired) => {
-                GuardianDecision::Reject(DecisionRejection::AuthorityExpired)
+            (StartJobEvidence::DoneForCurrentSubmission, _)
+            | (StartJobEvidence::RecoveredExactProof, _)
+            | (StartJobEvidence::FailedForCurrentSubmission, _)
+            | (StartJobEvidence::None, AuthorityFreshness::Expired) => {
+                GuardianDecision::Compensated
             }
         },
         OwnedObservation::Present { invocation, state }
@@ -972,7 +1323,7 @@ fn decide_guardian_ready(
             CleanupProgress::GuardianPending,
             PlannedEffect::StopGuardian(exact_stop_target(input.binding, invocation)),
         ),
-        OwnedObservation::Absent => GuardianDecision::Reject(DecisionRejection::RuntimeDisappeared),
+        OwnedObservation::Absent => GuardianDecision::Compensated,
         OwnedObservation::Foreign | OwnedObservation::Indeterminate => GuardianDecision::Quarantine,
     }
 }
@@ -1001,20 +1352,17 @@ fn decide_payload_start_issued(
     }
 
     match payload {
-        OwnedObservation::Absent
-            if guardian_live
-                && input.freshness == AuthorityFreshness::Fresh
-                && input.payload_job == StartJobEvidence::None =>
-        {
-            GuardianDecision::RetryIssued(PlannedEffect::StartPayload)
-        }
         OwnedObservation::Present {
             invocation: payload_invocation,
             state: PresentUnitState::ActiveRunning,
         } if guardian_live
-            && input.payload_job == StartJobEvidence::DoneForCurrentSubmission
+            && input.freshness == AuthorityFreshness::Fresh
+            && matches!(
+                input.payload_job,
+                StartJobEvidence::DoneForCurrentSubmission | StartJobEvidence::RecoveredExactProof
+            )
             && input.worker_proof.is_some_and(|proof| {
-                proof.observation_sequence != 0 && proof.digest != [0; 32]
+                proof.observation_sequence != 0 && proof.runtime.validate()
             }) =>
         {
             let Some(proof) = input.worker_proof else {
@@ -1024,7 +1372,7 @@ fn decide_payload_start_issued(
                 guardian_invocation,
                 payload_invocation,
                 observation_sequence: proof.observation_sequence,
-                worker_proof_digest: proof.digest,
+                worker_proof: proof.runtime,
             })
         }
         OwnedObservation::Present {
@@ -1053,9 +1401,95 @@ fn decide_payload_start_issued(
                 CleanupProgress::GuardianPending,
                 PlannedEffect::StopGuardian(exact_stop_target(input.binding, invocation)),
             ),
-            OwnedObservation::Absent => {
-                GuardianDecision::Reject(DecisionRejection::RuntimeDisappeared)
+            OwnedObservation::Absent => GuardianDecision::Compensated,
+            OwnedObservation::Foreign | OwnedObservation::Indeterminate => {
+                GuardianDecision::Quarantine
             }
+        },
+        OwnedObservation::Foreign | OwnedObservation::Indeterminate => GuardianDecision::Quarantine,
+    }
+}
+
+fn decide_payload_verified(
+    input: GuardianDecisionInput<'_>,
+    guardian_invocation: [u8; 16],
+    payload_invocation: [u8; 16],
+    observation_sequence: u64,
+    worker_proof: RuntimeProofSnapshot,
+) -> GuardianDecision {
+    let guardian = owned_observation(input.guardian, input.binding, Some(guardian_invocation));
+    let payload = owned_observation(input.payload, input.binding, Some(payload_invocation));
+    if matches!(
+        guardian,
+        OwnedObservation::Foreign | OwnedObservation::Indeterminate
+    ) || matches!(
+        payload,
+        OwnedObservation::Foreign | OwnedObservation::Indeterminate
+    ) {
+        return GuardianDecision::Quarantine;
+    }
+
+    let guardian_live = matches!(
+        guardian,
+        OwnedObservation::Present {
+            state: PresentUnitState::ActiveRunning,
+            ..
+        }
+    );
+    let payload_live = matches!(
+        payload,
+        OwnedObservation::Present {
+            state: PresentUnitState::ActiveRunning,
+            ..
+        }
+    );
+    let proof_matches = input.worker_proof
+        == Some(WorkerProof {
+            observation_sequence,
+            runtime: worker_proof,
+        });
+    if guardian_live
+        && payload_live
+        && proof_matches
+        && input.freshness == AuthorityFreshness::Fresh
+    {
+        return GuardianDecision::Persist(GuardianLaunchPhase::Complete {
+            guardian_invocation,
+            payload_invocation,
+            observation_sequence,
+            worker_proof,
+        });
+    }
+
+    match payload {
+        OwnedObservation::Present { invocation, .. } => {
+            let payload_target = exact_stop_target(input.binding, invocation);
+            let guardian_target = match guardian {
+                OwnedObservation::Present { invocation, .. } => {
+                    exact_stop_target(input.binding, invocation)
+                }
+                OwnedObservation::Absent => StopUnitTarget::Absent,
+                OwnedObservation::Foreign | OwnedObservation::Indeterminate => {
+                    return GuardianDecision::Quarantine;
+                }
+            };
+            cleanup_decision(
+                input.binding,
+                payload_target.clone(),
+                guardian_target,
+                CleanupProgress::PayloadPending,
+                PlannedEffect::StopPayload(payload_target),
+            )
+        }
+        OwnedObservation::Absent => match guardian {
+            OwnedObservation::Present { invocation, .. } => cleanup_decision(
+                input.binding,
+                StopUnitTarget::Absent,
+                exact_stop_target(input.binding, invocation),
+                CleanupProgress::GuardianPending,
+                PlannedEffect::StopGuardian(exact_stop_target(input.binding, invocation)),
+            ),
+            OwnedObservation::Absent => GuardianDecision::Compensated,
             OwnedObservation::Foreign | OwnedObservation::Indeterminate => {
                 GuardianDecision::Quarantine
             }
@@ -1124,15 +1558,38 @@ fn decide_launch_cleanup(
                 GuardianDecision::Compensated
             }
         },
-        CleanupProgress::AwaitingAbsence => match (payload_observation, guardian_observation) {
-            (CleanupObservation::Absent, CleanupObservation::Absent) => {
-                GuardianDecision::Compensated
+        CleanupProgress::PayloadAwaitingAbsence => {
+            match (payload_observation, guardian_observation) {
+                (CleanupObservation::Absent, CleanupObservation::Present(target)) => {
+                    GuardianDecision::PersistThen {
+                        phase: GuardianLaunchPhase::CleanupIssued {
+                            payload: payload.clone(),
+                            guardian: guardian.clone(),
+                            progress: CleanupProgress::GuardianPending,
+                        },
+                        effect: PlannedEffect::StopGuardian(target),
+                    }
+                }
+                (CleanupObservation::Absent, CleanupObservation::Absent) => {
+                    GuardianDecision::Compensated
+                }
+                (CleanupObservation::Foreign, _) | (_, CleanupObservation::Foreign) => {
+                    GuardianDecision::Quarantine
+                }
+                _ => GuardianDecision::ObserveAgain,
             }
-            (CleanupObservation::Foreign, _) | (_, CleanupObservation::Foreign) => {
-                GuardianDecision::Quarantine
+        }
+        CleanupProgress::GuardianAwaitingAbsence => {
+            match (payload_observation, guardian_observation) {
+                (CleanupObservation::Absent, CleanupObservation::Absent) => {
+                    GuardianDecision::Compensated
+                }
+                (CleanupObservation::Foreign, _) | (_, CleanupObservation::Foreign) => {
+                    GuardianDecision::Quarantine
+                }
+                _ => GuardianDecision::ObserveAgain,
             }
-            _ => GuardianDecision::ObserveAgain,
-        },
+        }
     }
 }
 
@@ -1249,7 +1706,24 @@ fn decide_stop_effect_issued(input: StopDecisionInput<'_>, progress: StopProgres
                 complete_or_observe_stop(input)
             }
         },
-        StopProgress::AwaitingAbsence => complete_or_observe_stop(input),
+        StopProgress::PayloadAwaitingAbsence => match (payload_observation, guardian_observation) {
+            (CleanupObservation::Absent, CleanupObservation::Present(target)) => {
+                StopDecision::PersistThen {
+                    phase: CompositeStopPhase::StopEffectIssued {
+                        progress: StopProgress::GuardianPending,
+                    },
+                    effect: PlannedEffect::StopGuardian(target),
+                }
+            }
+            (CleanupObservation::Absent, CleanupObservation::Absent) => {
+                complete_or_observe_stop(input)
+            }
+            (CleanupObservation::Foreign, _) | (_, CleanupObservation::Foreign) => {
+                StopDecision::Quarantine
+            }
+            _ => StopDecision::ObserveAgain,
+        },
+        StopProgress::GuardianAwaitingAbsence => complete_or_observe_stop(input),
     }
 }
 
@@ -1513,11 +1987,22 @@ mod tests {
                 ObservationKind::Absent,
             ) => DecisionShape::Complete,
             (
-                CleanupProgress::AwaitingAbsence,
+                CleanupProgress::GuardianAwaitingAbsence,
                 ObservationKind::Absent,
                 ObservationKind::Absent,
             ) => DecisionShape::Complete,
-            (CleanupProgress::AwaitingAbsence, _, _) => DecisionShape::ObserveAgain,
+            (CleanupProgress::GuardianAwaitingAbsence, _, _) => DecisionShape::ObserveAgain,
+            (
+                CleanupProgress::PayloadAwaitingAbsence,
+                ObservationKind::Absent,
+                ObservationKind::Exact,
+            ) => DecisionShape::PersistGuardianStop,
+            (
+                CleanupProgress::PayloadAwaitingAbsence,
+                ObservationKind::Absent,
+                ObservationKind::Absent,
+            ) => DecisionShape::Complete,
+            (CleanupProgress::PayloadAwaitingAbsence, _, _) => DecisionShape::ObserveAgain,
             _ => DecisionShape::Quarantine,
         }
     }
@@ -1612,11 +2097,22 @@ mod tests {
                 ObservationKind::Absent,
             ) => DecisionShape::Complete,
             (
-                Some(StopProgress::AwaitingAbsence),
+                Some(StopProgress::GuardianAwaitingAbsence),
                 ObservationKind::Absent,
                 ObservationKind::Absent,
             ) => DecisionShape::Complete,
-            (Some(StopProgress::AwaitingAbsence), _, _) => DecisionShape::ObserveAgain,
+            (Some(StopProgress::GuardianAwaitingAbsence), _, _) => DecisionShape::ObserveAgain,
+            (
+                Some(StopProgress::PayloadAwaitingAbsence),
+                ObservationKind::Absent,
+                ObservationKind::Exact,
+            ) => DecisionShape::PersistGuardianStop,
+            (
+                Some(StopProgress::PayloadAwaitingAbsence),
+                ObservationKind::Absent,
+                ObservationKind::Absent,
+            ) => DecisionShape::Complete,
+            (Some(StopProgress::PayloadAwaitingAbsence), _, _) => DecisionShape::ObserveAgain,
             _ => DecisionShape::Quarantine,
         }
     }
@@ -1678,6 +2174,42 @@ mod tests {
             guardian,
             payload: UnitObservation::Absent,
             worker_proof: None,
+        }
+    }
+
+    fn runtime_proof() -> RuntimeProofSnapshot {
+        RuntimeProofSnapshot {
+            host_boot_id: [51; 16],
+            supervisor: ProcessProofSnapshot {
+                pid: 52,
+                thread_group_id: 52,
+                parent_pid: 1,
+                cgroup_id: 53,
+                start_time_ticks: 54,
+            },
+            payload: ProcessProofSnapshot {
+                pid: 55,
+                thread_group_id: 55,
+                parent_pid: 52,
+                cgroup_id: 56,
+                start_time_ticks: 57,
+            },
+            supervisor_cgroup_id: 53,
+            payload_cgroup_id: 56,
+            workspace_mount_id: 58,
+            payload_root_mount_id: 59,
+            network_namespace: NamespaceProofSnapshot {
+                device: 60,
+                inode: 61,
+            },
+            mount_namespace: NamespaceProofSnapshot {
+                device: 62,
+                inode: 63,
+            },
+            user_namespace: NamespaceProofSnapshot {
+                device: 64,
+                inode: 65,
+            },
         }
     }
 
@@ -1865,6 +2397,89 @@ mod tests {
     }
 
     #[test]
+    fn replay_runtime_inputs_must_match_the_authenticated_attempt() {
+        let execution = guardian_record(GuardianLaunchPhase::GuardianStartIssued);
+        let original = evidence();
+        let executable = GuardianExecutableSnapshot {
+            device: original.guardian_executable.device,
+            inode: original.guardian_executable.inode,
+            bytes: original.guardian_executable.bytes,
+            uid: original.guardian_executable.uid,
+            mode: original.guardian_executable.mode,
+            modified_seconds: original.guardian_executable.modified_seconds,
+            modified_nanoseconds: original.guardian_executable.modified_nanoseconds,
+            changed_seconds: original.guardian_executable.changed_seconds,
+            changed_nanoseconds: original.guardian_executable.changed_nanoseconds,
+            sha256_content: original.guardian_executable.sha256_content,
+        };
+        assert!(execution.guardian_runtime_inputs_match(
+            &original.protected_inputs,
+            executable,
+            &original.payload,
+        ));
+
+        let mut changed_protected = original.protected_inputs.clone();
+        changed_protected[0].sha256[0] ^= 1;
+        assert!(!execution.guardian_runtime_inputs_match(
+            &changed_protected,
+            executable,
+            &original.payload,
+        ));
+        let mut replaced_protected = original.protected_inputs.clone();
+        replaced_protected[0].inode += 1;
+        assert!(!execution.guardian_runtime_inputs_match(
+            &replaced_protected,
+            executable,
+            &original.payload,
+        ));
+
+        let mut changed_executable = executable;
+        changed_executable.sha256_content[0] ^= 1;
+        assert!(!execution.guardian_runtime_inputs_match(
+            &original.protected_inputs,
+            changed_executable,
+            &original.payload,
+        ));
+        let mut replaced_executable = executable;
+        replaced_executable.inode += 1;
+        assert!(!execution.guardian_runtime_inputs_match(
+            &original.protected_inputs,
+            replaced_executable,
+            &original.payload,
+        ));
+    }
+
+    #[test]
+    fn expiry_after_done_records_ready_but_cannot_authorize_payload_start() {
+        let binding = evidence().binding;
+        let active = present(Some(binding), 40, PresentUnitState::ActiveRunning);
+        let issued = GuardianLaunchPhase::GuardianStartIssued;
+        let mut completed_start = guardian_input(&issued, active);
+        completed_start.freshness = AuthorityFreshness::Expired;
+        completed_start.guardian_job = StartJobEvidence::DoneForCurrentSubmission;
+        let ready = decide_guardian_launch(completed_start);
+        assert_eq!(
+            ready,
+            GuardianDecision::Persist(GuardianLaunchPhase::GuardianReady {
+                guardian_invocation: [40; 16],
+            })
+        );
+
+        let GuardianDecision::Persist(ready_phase) = ready else {
+            panic!("exact completed start did not produce durable readiness");
+        };
+        let mut expired_ready = guardian_input(&ready_phase, active);
+        expired_ready.freshness = AuthorityFreshness::Expired;
+        assert!(matches!(
+            decide_guardian_launch(expired_ready),
+            GuardianDecision::PersistThen {
+                phase: GuardianLaunchPhase::CleanupIssued { .. },
+                effect: PlannedEffect::StopGuardian(_),
+            }
+        ));
+    }
+
+    #[test]
     fn inactive_and_failed_units_remain_present_cleanup_targets() {
         for state in [
             PresentUnitState::TerminalInactive,
@@ -1895,11 +2510,14 @@ mod tests {
         for worker_proof in [
             WorkerProof {
                 observation_sequence: 0,
-                digest: [43; 32],
+                runtime: runtime_proof(),
             },
             WorkerProof {
                 observation_sequence: 44,
-                digest: [0; 32],
+                runtime: RuntimeProofSnapshot {
+                    host_boot_id: [0; 16],
+                    ..runtime_proof()
+                },
             },
         ] {
             let mut input = guardian_input(
@@ -1924,6 +2542,96 @@ mod tests {
     }
 
     #[test]
+    fn recovered_payload_requires_explicit_complete_exact_proof() {
+        let binding = evidence().binding;
+        let phase = GuardianLaunchPhase::PayloadStartIssued {
+            guardian_invocation: [42; 16],
+        };
+        let mut input = guardian_input(
+            &phase,
+            present(Some(binding), 42, PresentUnitState::ActiveRunning),
+        );
+        input.payload = present(Some(binding), 45, PresentUnitState::ActiveRunning);
+        input.worker_proof = Some(WorkerProof {
+            observation_sequence: 44,
+            runtime: runtime_proof(),
+        });
+
+        assert!(matches!(
+            decide_guardian_launch(input),
+            GuardianDecision::PersistThen {
+                phase: GuardianLaunchPhase::CleanupIssued { .. },
+                effect: PlannedEffect::StopPayload(_),
+            }
+        ));
+
+        input.payload_job = StartJobEvidence::RecoveredExactProof;
+        assert!(matches!(
+            decide_guardian_launch(input),
+            GuardianDecision::Persist(GuardianLaunchPhase::PayloadVerified {
+                guardian_invocation,
+                payload_invocation,
+                observation_sequence: 44,
+                ..
+            }) if guardian_invocation == [42; 16] && payload_invocation == [45; 16]
+        ));
+
+        input.freshness = AuthorityFreshness::Expired;
+        assert!(matches!(
+            decide_guardian_launch(input),
+            GuardianDecision::PersistThen {
+                phase: GuardianLaunchPhase::CleanupIssued { .. },
+                effect: PlannedEffect::StopPayload(_),
+            }
+        ));
+    }
+
+    #[test]
+    fn payload_verified_recovery_requires_a_live_guardian_and_fresh_authority() {
+        let binding = evidence().binding;
+        let runtime = runtime_proof();
+        let phase = GuardianLaunchPhase::PayloadVerified {
+            guardian_invocation: [42; 16],
+            payload_invocation: [45; 16],
+            observation_sequence: 44,
+            worker_proof: runtime,
+        };
+        let payload = present(Some(binding), 45, PresentUnitState::ActiveRunning);
+        let mut input = guardian_input(
+            &phase,
+            present(Some(binding), 42, PresentUnitState::ActiveRunning),
+        );
+        input.payload = payload;
+        input.worker_proof = Some(WorkerProof {
+            observation_sequence: 44,
+            runtime,
+        });
+        assert!(matches!(
+            decide_guardian_launch(input),
+            GuardianDecision::Persist(GuardianLaunchPhase::Complete { .. })
+        ));
+
+        input.guardian = UnitObservation::Absent;
+        assert!(matches!(
+            decide_guardian_launch(input),
+            GuardianDecision::PersistThen {
+                phase: GuardianLaunchPhase::CleanupIssued { .. },
+                effect: PlannedEffect::StopPayload(_),
+            }
+        ));
+
+        input.guardian = present(Some(binding), 42, PresentUnitState::ActiveRunning);
+        input.freshness = AuthorityFreshness::Expired;
+        assert!(matches!(
+            decide_guardian_launch(input),
+            GuardianDecision::PersistThen {
+                phase: GuardianLaunchPhase::CleanupIssued { .. },
+                effect: PlannedEffect::StopPayload(_),
+            }
+        ));
+    }
+
+    #[test]
     fn cleanup_awaiting_absence_quarantines_foreign_units() {
         let binding = evidence().binding;
         let phase = GuardianLaunchPhase::CleanupIssued {
@@ -1932,7 +2640,7 @@ mod tests {
                 invocation: [46; 16],
             },
             guardian: ExactUnitTarget::Absent,
-            progress: CleanupProgress::AwaitingAbsence,
+            progress: CleanupProgress::GuardianAwaitingAbsence,
         };
         let mut input = guardian_input(&phase, UnitObservation::Absent);
         input.payload = present(Some(binding), 47, PresentUnitState::ActiveRunning);
@@ -1997,7 +2705,7 @@ mod tests {
         for progress in [
             CleanupProgress::PayloadPending,
             CleanupProgress::GuardianPending,
-            CleanupProgress::AwaitingAbsence,
+            CleanupProgress::GuardianAwaitingAbsence,
         ] {
             let phase = GuardianLaunchPhase::CleanupIssued {
                 payload: payload.clone(),
@@ -2166,7 +2874,7 @@ mod tests {
             None,
             Some(StopProgress::PayloadPending),
             Some(StopProgress::GuardianPending),
-            Some(StopProgress::AwaitingAbsence),
+            Some(StopProgress::GuardianAwaitingAbsence),
         ] {
             let phase = progress.map_or(CompositeStopPhase::StopAuthorized, |progress| {
                 CompositeStopPhase::StopEffectIssued { progress }
@@ -2217,7 +2925,7 @@ mod tests {
             guardian_invocation: [70; 16],
             payload_invocation: [71; 16],
             observation_sequence: 72,
-            worker_proof_digest: [73; 32],
+            worker_proof: runtime_proof(),
         };
         let mut input = guardian_input(&phase, UnitObservation::Absent);
         input.freshness = AuthorityFreshness::Expired;

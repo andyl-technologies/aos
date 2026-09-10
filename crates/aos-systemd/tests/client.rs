@@ -12,7 +12,8 @@ use aos_systemd::{
 };
 #[cfg(feature = "exact-unit-test-util")]
 use aos_systemd::{
-    ExactStopError, ExactStopOutcome, ExactUnitRole, ExactUnitTarget, PostUnrefUnitObservation,
+    ExactStartError, ExactStopError, ExactStopOutcome, ExactUnitRole, ExactUnitTarget,
+    PostUnrefUnitObservation,
 };
 use common::Harness;
 use zbus::zvariant::OwnedObjectPath;
@@ -346,7 +347,81 @@ async fn sandbox_observation_reads_typed_live_properties() {
 #[cfg(feature = "exact-unit-test-util")]
 mod exact_unit {
     use super::*;
+    use std::sync::atomic::Ordering;
+
     use common::ExactHarness;
+
+    fn bound_spec(name: SandboxUnitName, binding: [u8; 32]) -> SandboxUnitSpec {
+        let executable = std::fs::File::open("/proc/self/exe").unwrap();
+        let root = std::fs::File::open("/").unwrap();
+        let network = std::fs::File::open("/proc/self/ns/net").unwrap();
+        SandboxUnitSpec::new_nspawn_bound(
+            name,
+            SandboxNspawnCommand::private_user_descriptor_v1(
+                SandboxDescriptorPath::for_current_process(executable.as_fd()).unwrap(),
+                [0x42; 16],
+                65_536,
+                65_536,
+            )
+            .unwrap(),
+            SandboxResolvedPaths::from_descriptors(
+                SandboxDescriptorPath::for_current_process(root.as_fd()).unwrap(),
+                SandboxDescriptorPath::for_current_process(network.as_fd()).unwrap(),
+            ),
+            SandboxResources::new(512, 1024, 64, 100).unwrap(),
+            binding,
+            Duration::from_secs(30),
+            Duration::from_secs(10),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn payload_start_holds_and_rechecks_the_exact_guardian() {
+        let exact = ExactHarness::new().await;
+        let name = SandboxUnitName::from_incarnation([0x42; 16]);
+        let binding = [0x24; 32];
+        exact.set_environment(vec![format!(
+            "AOS_GUARDIAN_LAUNCH_BINDING={}",
+            "24".repeat(32)
+        )]);
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        let mut kill_at_guard = || {
+            assert_eq!(state.reference_balance.load(Ordering::SeqCst), 1);
+            assert!(
+                !state
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .contains(&"start_transient_unit".to_owned())
+            );
+            *state.active_state.lock().unwrap() = "inactive".to_owned();
+            *state.sub_state.lock().unwrap() = "dead".to_owned();
+            state.main_pid.store(0, Ordering::SeqCst);
+            Ok::<_, &'static str>(())
+        };
+
+        let result = with_timeout(exact.client.start_payload_guarded(
+            &bound_spec(name, binding),
+            ExactUnitTarget::new(binding, [9; 16]).unwrap(),
+            &mut kill_at_guard,
+        ))
+        .await;
+
+        assert!(matches!(result, Err(ExactStartError::Systemd(_))));
+        assert_eq!(state.reference_balance.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            state
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.as_str() == "start_transient_unit")
+                .count(),
+            1
+        );
+    }
 
     #[tokio::test]
     async fn stop_holds_identity_through_quiescence_then_balances_reference() {

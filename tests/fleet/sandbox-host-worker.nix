@@ -1,4 +1,4 @@
-# Real transient-unit compilation and payload verification, not readiness minting.
+# Real Guardian activation plus transient payload compilation and verification.
 {
   lib,
   mkSystem,
@@ -11,6 +11,16 @@
   workspace = "/run/aos/sandbox-pins/workspaces/qualification";
   network = "/run/aos/sandbox-pins/netns/qualification";
   testName = "plan::kernel_tests::production_compiler_worker_launch_refresh_and_stop";
+  guardianBrokerTestName = "broker::tests::guardian::root_guardian_apply_completes_bound_payload_and_replays_receipt";
+  guardianCompensationTestName = "broker::tests::guardian::root_guardian_payload_failure_completes_exact_compensation";
+  guardianRecoveredProofTestName = "broker::tests::guardian::root_guardian_recovers_payload_start_from_observation_only_proof";
+  guardianRecoveredExpiredTestName = "broker::tests::guardian::root_guardian_recovered_proof_cannot_complete_after_lease_expiry";
+  guardianBothAbsentRecoveryTestName = "broker::tests::guardian::root_guardian_recovery_commits_compensation_when_both_units_are_absent";
+  guardianRecoveryRaceTestName = "broker::tests::guardian::root_guardian_recovery_never_restarts_payload_that_disappears_during_proof";
+  guardianVerifiedPairTestName = "broker::tests::guardian::root_payload_verified_recovery_requires_live_fresh_guardian_pair";
+  guardianReducerTestPrefix = "broker::tests::guardian::guardian_reducer_";
+  stopProofWrongCgroupTestName = "worker::tests::stop_proof_rejects_recycled_leader_from_a_different_cgroup";
+  guardianSystemdTestName = "broker::tests::guardian_systemd::production_worker_enforces_guardian_before_payload_across_restart_and_death";
 
   fixture = pkgs.mkCargoPackage {
     pname = "aos-sandbox-host-worker-tests";
@@ -30,14 +40,23 @@
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
     postBuild = ''
       mkdir worker-fixture
+
+      cargo_target_dir=target
+      if [ -n "''${CARGO_BUILD_TARGET:-}" ]; then
+        cargo_target_dir="$cargo_target_dir/$CARGO_BUILD_TARGET"
+      fi
+
       count=0
-      for candidate in target/debug/deps/aos_sandbox_host-*; do
+      for candidate in "$cargo_target_dir"/debug/deps/aos_sandbox_host-*; do
         if [ -f "$candidate" ] && [ -x "$candidate" ]; then
           install -m 0755 "$candidate" worker-fixture/aos-sandbox-host-worker-tests
           count=$((count + 1))
         fi
       done
-      test "$count" -eq 1
+      if [ "$count" -ne 1 ]; then
+        echo "expected exactly one aos_sandbox_host unit-test executable under $cargo_target_dir/debug/deps, found $count" >&2
+        exit 1
+      fi
     '';
     postInstall = ''
       mkdir -p "$out/bin"
@@ -158,6 +177,8 @@
           Environment = [
             "AOS_SANDBOX_WORKER_QUALIFICATION=1"
             "AOS_SANDBOX_QUALIFICATION_NSPAWN=${pkgs.systemd}/bin/systemd-nspawn"
+            "AOS_SANDBOX_QUALIFICATION_GUARDIAN=${pkgs.aos-sandbox-guardian}/bin/aos-sandbox-guardian"
+            "AOS_SANDBOX_QUALIFICATION_SYSTEMCTL=${pkgs.systemd}/bin/systemctl"
           ];
         };
         script = ''
@@ -177,6 +198,75 @@
           ${pkgs.util-linux}/bin/mount --bind /run/netns/aos-host-worker-qualification ${network}
           ${pkgs.systemd}/bin/systemctl start aos-sandboxes.slice
           unset LD_LIBRARY_PATH
+          run_guardian_root_test() {
+            selected_test=$1
+            success_marker=$2
+            test_log=$3
+            if ! ${fixture}/bin/aos-sandbox-host-worker-tests --exact "$selected_test" \
+              --test-threads=1 --nocapture > "$test_log" 2>&1; then
+              ${pkgs.coreutils}/bin/cat "$test_log"
+              exit 1
+            fi
+            ${pkgs.coreutils}/bin/cat "$test_log"
+            ${pkgs.grep}/bin/grep -Fq "$success_marker" "$test_log"
+          }
+          guardian_log=/run/aos-guardian-broker-root-test
+          if ! ${fixture}/bin/aos-sandbox-host-worker-tests --exact '${guardianBrokerTestName}' \
+            --test-threads=1 --nocapture > "$guardian_log" 2>&1; then
+            ${pkgs.coreutils}/bin/cat "$guardian_log"
+            exit 1
+          fi
+          ${pkgs.coreutils}/bin/cat "$guardian_log"
+          ${pkgs.grep}/bin/grep -Fq 'AOS_GUARDIAN_BROKER_ROOT_INTEGRATION_OK' "$guardian_log"
+          compensation_log=/run/aos-guardian-compensation-root-test
+          if ! ${fixture}/bin/aos-sandbox-host-worker-tests --exact '${guardianCompensationTestName}' \
+            --test-threads=1 --nocapture > "$compensation_log" 2>&1; then
+            ${pkgs.coreutils}/bin/cat "$compensation_log"
+            exit 1
+          fi
+          ${pkgs.coreutils}/bin/cat "$compensation_log"
+          ${pkgs.grep}/bin/grep -Fq 'AOS_GUARDIAN_COMPENSATION_ROOT_INTEGRATION_OK' "$compensation_log"
+          run_guardian_root_test \
+            '${guardianRecoveredProofTestName}' \
+            'AOS_GUARDIAN_RECOVERED_PROOF_ROOT_OK' \
+            /run/aos-guardian-recovered-proof-root-test
+          run_guardian_root_test \
+            '${guardianRecoveredExpiredTestName}' \
+            'AOS_GUARDIAN_RECOVERED_EXPIRED_ROOT_OK' \
+            /run/aos-guardian-recovered-expired-root-test
+          run_guardian_root_test \
+            '${guardianBothAbsentRecoveryTestName}' \
+            'AOS_GUARDIAN_BOTH_ABSENT_RECOVERY_ROOT_OK' \
+            /run/aos-guardian-both-absent-recovery-root-test
+          run_guardian_root_test \
+            '${guardianRecoveryRaceTestName}' \
+            'AOS_GUARDIAN_RECOVERY_RACE_ROOT_OK' \
+            /run/aos-guardian-recovery-race-root-test
+          run_guardian_root_test \
+            '${guardianVerifiedPairTestName}' \
+            'AOS_GUARDIAN_VERIFIED_PAIR_RECOVERY_ROOT_OK' \
+            /run/aos-guardian-verified-pair-root-test
+          guardian_reducer_log=/run/aos-guardian-reducer-root-tests
+          if ! ${fixture}/bin/aos-sandbox-host-worker-tests '${guardianReducerTestPrefix}' \
+            --test-threads=1 --nocapture > "$guardian_reducer_log" 2>&1; then
+            ${pkgs.coreutils}/bin/cat "$guardian_reducer_log"
+            exit 1
+          fi
+          ${pkgs.coreutils}/bin/cat "$guardian_reducer_log"
+          ${pkgs.grep}/bin/grep -Fq '5 passed' "$guardian_reducer_log"
+          run_guardian_root_test \
+            '${stopProofWrongCgroupTestName}' \
+            'AOS_STOP_PROOF_WRONG_CGROUP_OK' \
+            /run/aos-stop-proof-wrong-cgroup-root-test
+          guardian_systemd_log=/run/aos-guardian-systemd-root-test
+          if ! ${fixture}/bin/aos-sandbox-host-worker-tests --ignored --exact '${guardianSystemdTestName}' \
+            --test-threads=1 --nocapture > "$guardian_systemd_log" 2>&1; then
+            ${pkgs.coreutils}/bin/cat "$guardian_systemd_log"
+            exit 1
+          fi
+          ${pkgs.coreutils}/bin/cat "$guardian_systemd_log"
+          ${pkgs.grep}/bin/grep -Fq 'AOS_GUARDIAN_SYSTEMD_COMBINED_OK' "$guardian_systemd_log"
+          ${pkgs.coreutils}/bin/rm -f ${workspace}/var/qualification-generation ${workspace}/var/qualification-reboot
           ${fixture}/bin/aos-sandbox-host-worker-tests --ignored --exact '${testName}' --list \
             > /run/aos-host-worker-selected-tests
           ${pkgs.grep}/bin/grep -Fx '${testName}: test' /run/aos-host-worker-selected-tests
@@ -199,6 +289,6 @@ in {
         print(vm.execute("journalctl -u aos-host-worker-qualification.service -u ${runtimeUnit} --no-pager")[1].decode("utf-8", errors="replace"))
         print(vm.execute("journalctl -k -n 100 --no-pager")[1].decode("utf-8", errors="replace"))
         print(vm.execute("${pkgs.grep}/bin/grep 'type=SECCOMP' /var/log/audit/audit.log")[1].decode("utf-8", errors="replace"))
-        vm.execute("systemctl stop ${runtimeUnit} ${guardian}.service")
+        vm.execute("systemctl stop ${runtimeUnit} ${guardian}.service aos-sandbox-71717171717171717171717171717171.service aos-lease-guard-71717171717171717171717171717171.service aos-sandbox-75757575757575757575757575757575.service aos-lease-guard-75757575757575757575757575757575.service")
   '';
 }

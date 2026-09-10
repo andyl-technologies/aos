@@ -123,7 +123,10 @@ where
     pub async fn serve_once(
         &mut self,
         listener: &ActivatedSeqpacketListener,
-    ) -> Result<ConnectionOutcome> {
+    ) -> Result<ConnectionOutcome>
+    where
+        W: Sync,
+    {
         let connection = match listener.accept() {
             Ok(connection) => connection,
             // A queued connector may exit before its pidfd can be inspected.
@@ -730,7 +733,7 @@ mod tests {
     use std::io::Write as _;
 
     use aos_proto::aos::sandbox::local::v1::{
-        BrokerClientHello, BrokerRequestEnvelope, PublishHostCatalogRequest, RequestHeader,
+        BrokerClientHello, BrokerRequestEnvelope, Feature, PublishHostCatalogRequest, RequestHeader,
     };
     use aos_sandbox_protocol::host_catalog::decode_host_catalog_publication_response;
     use aos_sandbox_protocol::{decode_request_envelope, decode_response_envelope};
@@ -881,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_method_is_not_advertised_without_readiness() {
+    fn launch_method_is_advertised_only_for_a_closed_backend() {
         assert_eq!(
             advertised_methods(false, false),
             [
@@ -910,6 +913,64 @@ mod tests {
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
                 BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG,
             ]
+        );
+    }
+
+    #[test]
+    fn apply_advertisement_negotiates_guardian_carrier() {
+        let peer = aos_sandbox_protocol::PeerCredentials {
+            uid: 100,
+            gid: 200,
+            pid: Some(300),
+        };
+        let policy = PeerPolicy {
+            uid: 100,
+            gid: Some(200),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        };
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 5,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            required_features: vec![Feature {
+                namespace: SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
+                major: 1,
+                minor: 0,
+                ..Default::default()
+            }],
+            maximum_response_bytes: 4_096,
+            required_methods: vec![BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME.into()],
+            ..Default::default()
+        };
+        assert!(
+            negotiate_client_hello(
+                &hello.encode_to_vec(),
+                peer,
+                policy,
+                ProtocolId::HostBroker,
+                &[signed_plan_lease_feature().unwrap()],
+                &advertised_methods(false, false),
+            )
+            .is_err()
+        );
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer,
+            policy,
+            ProtocolId::HostBroker,
+            &[signed_plan_lease_feature().unwrap()],
+            &advertised_methods(true, false),
+        )
+        .unwrap();
+
+        assert_eq!(
+            session.version(),
+            aos_sandbox_core::ProtocolVersion::new(1, 5)
+        );
+        assert!(
+            session
+                .advertised_methods()
+                .contains(&BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME)
         );
     }
 

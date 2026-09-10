@@ -1,10 +1,12 @@
 //! Live signed-query admission before exporting retained payload kernel objects.
 //!
-//! This path never restores payload authority from a completed receipt. It
-//! requires the exact installed plan and ownership generation, plus a fresh
-//! observation of the launch-retained payload. Querying cannot renew or advance
-//! the durable fence. Returned descriptors are observations, not holder mapping
-//! or permission to deliver a channel into the payload.
+//! This path never treats a completed receipt as payload authority. After a
+//! broker restart it may rebuild volatile kernel pins only from the
+//! authenticated completed Guardian record, the exact saved manager identities,
+//! and a fresh kernel proof equal to the durable proof. It still requires the
+//! exact installed plan and ownership generation. Querying cannot renew or
+//! advance the durable fence. Returned descriptors are observations, not holder
+//! mapping or permission to deliver a channel into the payload.
 
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 
@@ -57,7 +59,7 @@ impl<C, S, W> HostBroker<C, S, W>
 where
     C: HostCatalog,
     S: HostStateStore,
-    W: HostWorker,
+    W: HostWorker + Sync,
 {
     pub(crate) async fn prepare_payload_scope<T>(
         &mut self,
@@ -108,6 +110,7 @@ where
                 clock().map_err(|_| BrokerAdmissionError::FenceRejected)
             })?;
 
+        self.recover_completed_runtime_scope(identity).await?;
         self.refresh_payload_scope(identity).await?;
         let pins = self
             .payload_pin(&identity)

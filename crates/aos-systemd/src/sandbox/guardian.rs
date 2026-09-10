@@ -87,12 +87,23 @@ impl GuardianExecutableDescriptor {
         self.snapshot
     }
 
-    fn transferred_path(&self) -> Result<SandboxDescriptorPath> {
+    /// Revalidates the retained descriptor against its admitted identity and content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the descriptor no longer satisfies the protected
+    /// executable contract or its exact metadata or content has changed.
+    pub fn revalidate(&self) -> Result<()> {
         if validate_guardian_executable(self.path.descriptor())? != self.snapshot {
             return Err(invalid(
-                "guardian executable identity or content changed before start",
+                "guardian executable identity or content changed after admission",
             ));
         }
+        Ok(())
+    }
+
+    fn transferred_path(&self) -> Result<SandboxDescriptorPath> {
+        self.revalidate()?;
         Ok(self.path.clone())
     }
 }
@@ -491,9 +502,12 @@ impl GuardianUnitSpec {
     /// Constructs one capability-less, network-listener-free guardian unit.
     ///
     /// The executable is descriptor-pinned, automatic restart is disabled, and
-    /// each assignment receives a separate dynamic service identity and 0700
-    /// durable state directory. The only allowed address family is `AF_UNIX`
-    /// for the one readiness datagram; bind/listen/connect/accept are denied.
+    /// the unit's lifetime start limit permits only its first activation. This
+    /// prevents a payload dependency from rearming a dead Guardian during the
+    /// exact handoff. Each assignment receives a separate dynamic service
+    /// identity and 0700 durable state directory. The only allowed address
+    /// family is `AF_UNIX` for the one readiness datagram;
+    /// bind/listen/connect/accept are denied.
     ///
     /// # Errors
     ///
@@ -548,6 +562,8 @@ impl GuardianUnitSpec {
             string_property("NotifyAccess", "main"),
             string_property("Slice", GUARDIAN_SLICE),
             string_property("Restart", "no"),
+            u64_property("StartLimitIntervalUSec", u64::MAX),
+            u32_property("StartLimitBurst", 1),
             string_property("CollectMode", "inactive-or-failed"),
             bool_property("DynamicUser", true),
             string_array_property("StateDirectory", vec![state_directory])?,
@@ -836,6 +852,8 @@ mod tests {
                 "NotifyAccess",
                 "Slice",
                 "Restart",
+                "StartLimitIntervalUSec",
+                "StartLimitBurst",
                 "CollectMode",
                 "DynamicUser",
                 "StateDirectory",
@@ -882,6 +900,8 @@ mod tests {
                 ("NotifyAccess", "s".to_owned()),
                 ("Slice", "s".to_owned()),
                 ("Restart", "s".to_owned()),
+                ("StartLimitIntervalUSec", "t".to_owned()),
+                ("StartLimitBurst", "u".to_owned()),
                 ("CollectMode", "s".to_owned()),
                 ("DynamicUser", "b".to_owned()),
                 ("StateDirectory", "as".to_owned()),
@@ -927,6 +947,16 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {name}"));
             assert_eq!(u64::try_from(value).unwrap_or(u64::MAX), 0);
         }
+        let (_, interval) = properties
+            .iter()
+            .find(|(name, _)| name == "StartLimitIntervalUSec")
+            .unwrap_or_else(|| panic!("Guardian start-limit interval is absent"));
+        let (_, burst) = properties
+            .iter()
+            .find(|(name, _)| name == "StartLimitBurst")
+            .unwrap_or_else(|| panic!("Guardian start-limit burst is absent"));
+        assert_eq!(u64::try_from(interval).unwrap_or_default(), u64::MAX);
+        assert_eq!(u32::try_from(burst).unwrap_or_default(), 1);
 
         let (_, environment) = properties
             .iter()

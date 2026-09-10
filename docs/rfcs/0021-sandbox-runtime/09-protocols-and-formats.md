@@ -637,8 +637,20 @@ with zero request descriptors. Its exact signed plan must already grant the
 query semantic operation for the installed runtime; the complete admitted
 plan/lease fence must equal the installed durable fence. Unlike effect receipt
 queries, this operation always checks current protected time and requires live
-launch-retained payload pins. It never installs a newer lease, advances durable
-state, or reconstructs kernel authority from a receipt after restart.
+launch-retained payload pins. It never installs a newer lease or advances
+durable state. A receipt alone is never authority to reconstruct kernel pins
+after restart. For a Guardian-backed runtime, before accepting either retained
+or rebuilt volatile pins, the Host requires the unique authenticated
+completed-Launch lineage for the current sandbox incarnation and assignment
+epoch, including its exact saved Guardian binding, both service-manager
+invocation identities, and durable runtime proof, followed by a fresh live
+proof that matches every saved manager and kernel identity. Completed Freeze
+and Thaw successors in that same epoch preserve the lineage while permitting
+desired-generation and assignment-digest advancement. A pending transition,
+Stop or Kill history, replacement epoch or incarnation, missing or ambiguous
+launch, or any proof mismatch fails closed without starting, stopping, or
+adopting a process. Legacy runtimes without Guardian history retain their
+existing live-pin rules.
 
 A successful response echoes the exact assignment fence and runtime handle,
 adds a nonzero process-local opaque scope handle, and transfers exactly two

@@ -17,7 +17,7 @@ use crate::state::HostStateStore;
 use crate::worker::{HostRuntimeIdentity, HostWorker};
 use crate::{HostError, Result};
 
-impl<C: HostCatalog, S: HostStateStore, W: HostWorker> HostBroker<C, S, W> {
+impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W> {
     pub(crate) async fn prepare_mount_scope<T>(
         &mut self,
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,

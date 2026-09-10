@@ -41,6 +41,13 @@ in {
       description = "The independently packaged host broker executable.";
     };
 
+    guardianPackage = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.aos-sandbox-guardian;
+      defaultText = "pkgs.aos-sandbox-guardian";
+      description = "The descriptor-pinned per-assignment Guardian executable.";
+    };
+
     controllerUid = lib.mkOption {
       type = lib.types.int;
       default = 811;
@@ -101,7 +108,8 @@ in {
       };
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn";
+        ExecStartPre = "${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/unit-reference-policy-v1";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian";
         LoadCredential = loadCredentials;
         Restart = "on-failure";
         RestartSec = "2s";

@@ -172,11 +172,12 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
     validate_fixed_nspawn_path(&executable).unwrap();
     // A test-only candidate config exercises production compilation. It does
     // not mint the readiness token that the real service requires to launch.
-    let config = NspawnConfig {
-        executable_pin: Arc::new(open_executable_pin(&executable).unwrap()),
-        timeout_start: Duration::from_secs(60),
-        timeout_stop: Duration::from_secs(15),
-    };
+    let config = NspawnConfig::for_kernel_test(
+        &executable,
+        Duration::from_secs(60),
+        Duration::from_secs(15),
+    )
+    .unwrap();
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
     let now =
         u64::try_from(now.tv_sec).unwrap() * 1_000_000_000 + u64::try_from(now.tv_nsec).unwrap();

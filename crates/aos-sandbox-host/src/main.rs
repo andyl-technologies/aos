@@ -2,8 +2,8 @@
 //!
 //! PID 1 supplies the sole sequence-packet socket and private state/catalog
 //! directories. The executable accepts only the node-controller numeric
-//! identity and the immutable AOS `systemd-nspawn` store path selected by its
-//! system unit.
+//! identity plus the immutable AOS `systemd-nspawn` and Guardian store paths
+//! selected by its system unit.
 
 use std::env;
 use std::os::fd::OwnedFd;
@@ -14,7 +14,9 @@ use aos_sandbox_host::authorization::HostAuthorityV1;
 use aos_sandbox_host::broker::HostBroker;
 use aos_sandbox_host::catalog::{FileHostCatalog, FileHostCatalogPublisher};
 use aos_sandbox_host::peer::ControllerPeerVerifier;
-use aos_sandbox_host::plan::{BackendReadinessBlocker, ProtectedBackendReadinessEvidence};
+use aos_sandbox_host::plan::{
+    BackendReadinessBlocker, GuardianConfig, ProtectedBackendReadinessEvidence,
+};
 use aos_sandbox_host::service::HostService;
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::{PidfdNamespaceAccessProbe, SystemdOneShotWorker};
@@ -42,7 +44,7 @@ fn run() -> Result<()> {
             "host broker must start with real and effective UID zero".to_owned(),
         ));
     }
-    let (controller_identity, nspawn_executable) = arguments()?;
+    let (controller_identity, nspawn_executable, guardian_executable) = arguments()?;
 
     // Adopt FD 3 before another dependency can allocate descriptors or create
     // a thread.
@@ -66,6 +68,7 @@ fn run() -> Result<()> {
     })?;
     let authority = HostAuthorityV1::from_protected_directory(&credential_directory)
         .map_err(|error| HostError::State(error.to_string()))?;
+    let guardian = GuardianConfig::new(&guardian_executable, std::time::Duration::from_secs(30))?;
     let readiness = ProtectedBackendReadinessEvidence::load_protected_optional(
         &credential_directory,
         STATE_ROOT,
@@ -95,8 +98,10 @@ fn run() -> Result<()> {
     // rollback-protected above. Its declared digests are not yet independently
     // verified, and the self-probe above does not prove ptrace access to a
     // shifted payload, so it cannot be promoted into BackendReadiness and
-    // Apply remains unadvertised.
-    let broker = HostBroker::open(catalog, state, worker, None, authority)?;
+    // Legacy and Host 1.5 Launch remain disabled. A Guardian profile alone is
+    // not sufficient to compile a payload; Apply is never advertised until a
+    // production NspawnConfig can be built from complete readiness evidence.
+    let broker = HostBroker::open(catalog, state, worker, None, authority)?.with_guardian(guardian);
     let mut service = HostService::new(broker, verifier, controller_identity)
         .with_catalog_publisher(catalog_publisher);
 
@@ -111,7 +116,7 @@ fn run() -> Result<()> {
     })
 }
 
-fn arguments() -> Result<((u32, u32), String)> {
+fn arguments() -> Result<((u32, u32), String, String)> {
     let mut arguments = env::args();
     let _program = arguments.next();
     let uid = parse_identity(arguments.next(), "controller UID")?;
@@ -119,12 +124,16 @@ fn arguments() -> Result<((u32, u32), String)> {
     let nspawn = arguments
         .next()
         .ok_or_else(|| HostError::State("systemd-nspawn path is absent".to_owned()))?;
+    let guardian = arguments
+        .next()
+        .ok_or_else(|| HostError::State("Guardian path is absent".to_owned()))?;
     if arguments.next().is_some() {
         return Err(HostError::State(
-            "usage: aos-sandbox-hostd CONTROLLER_UID CONTROLLER_GID NSPAWN_PATH".to_owned(),
+            "usage: aos-sandbox-hostd CONTROLLER_UID CONTROLLER_GID NSPAWN_PATH GUARDIAN_PATH"
+                .to_owned(),
         ));
     }
-    Ok(((uid, gid), nspawn))
+    Ok(((uid, gid), nspawn, guardian))
 }
 
 fn parse_identity(value: Option<String>, label: &str) -> Result<u32> {

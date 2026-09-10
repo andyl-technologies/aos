@@ -5,7 +5,7 @@ use aos_sandbox_protocol::mount_scope::{MOUNT_SCOPE_DESCRIPTOR_ROLES, decode_mou
 use super::*;
 use crate::transport::HostConnection;
 
-impl<C: HostCatalog, S: HostStateStore, W: HostWorker> HostService<C, S, W> {
+impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostService<C, S, W> {
     pub(super) async fn serve_mount_scope(
         &mut self,
         connection: &HostConnection,

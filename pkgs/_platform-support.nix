@@ -452,6 +452,7 @@ let
     "aos-namespace-inspector-manager-query"
     "aos-recovery"
     "aos-registry-server"
+    "aos-sandbox-guardian"
     "aos-sandbox-hostd"
     "aos-sandbox-mountd"
     "aos-sandbox-network-lease-gate"

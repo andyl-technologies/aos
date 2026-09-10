@@ -37,12 +37,15 @@ use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::pidfd::NamespaceFd;
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
 use aos_systemd::{
-    SandboxDescriptorPath, SandboxResolvedPaths, SandboxResources, SandboxUnitName, SandboxUnitSpec,
+    GuardianCredentialDescriptors, GuardianExecutableDescriptor, GuardianExecutableSnapshot,
+    GuardianUnitSpec, SandboxDescriptorPath, SandboxResolvedPaths, SandboxResources,
+    SandboxUnitName, SandboxUnitSpec,
 };
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::state::transition::{PayloadLaunchSnapshot, PinnedObjectSnapshot};
 use crate::{HostError, Result};
 
 #[cfg(all(test, feature = "kernel-tests"))]
@@ -290,6 +293,110 @@ impl LaunchPins {
 pub struct PreparedLaunch {
     spec: SandboxUnitSpec,
     pins: LaunchPins,
+    snapshot: PayloadLaunchSnapshot,
+}
+
+/// Stores the fixed executable and timeout used for Guardian starts.
+#[derive(Clone, Debug)]
+pub struct GuardianConfig {
+    executable: GuardianExecutableDescriptor,
+    timeout_start: Duration,
+}
+
+impl GuardianConfig {
+    /// Pins one fixed AOS Guardian store executable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-store path, wrong executable name, zero
+    /// timeout, or an executable that fails the protected descriptor contract.
+    pub fn new(path: &str, timeout_start: Duration) -> Result<Self> {
+        validate_absolute(path, "guardian executable")?;
+        if !path.starts_with("/nix/store/") || !path.ends_with("/bin/aos-sandbox-guardian") {
+            return Err(HostError::InvalidPlan(
+                "guardian executable is not the fixed AOS store binary".to_owned(),
+            ));
+        }
+        if timeout_start.is_zero() {
+            return Err(HostError::InvalidPlan(
+                "guardian start timeout must be nonzero".to_owned(),
+            ));
+        }
+        let descriptor = open_executable_pin(path)?;
+        let executable = GuardianExecutableDescriptor::from_descriptor(descriptor.as_fd())
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        Ok(Self {
+            executable,
+            timeout_start,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Result<Self> {
+        let path =
+            std::env::current_exe().map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let descriptor = rustix::fs::open(
+            &path,
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let executable = GuardianExecutableDescriptor::from_descriptor(descriptor.as_fd())
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        Ok(Self {
+            executable,
+            timeout_start: Duration::from_secs(30),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_descriptor(descriptor: BorrowedFd<'_>) -> Result<Self> {
+        let executable = GuardianExecutableDescriptor::from_descriptor(descriptor)
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        Ok(Self {
+            executable,
+            timeout_start: Duration::from_secs(30),
+        })
+    }
+
+    /// Returns the exact executable identity bound into durable launch evidence.
+    #[must_use]
+    pub const fn executable_snapshot(&self) -> GuardianExecutableSnapshot {
+        self.executable.snapshot()
+    }
+
+    /// Revalidates the protected Guardian executable pinned by this profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if its retained descriptor, metadata, or exact content
+    /// no longer matches the profile admitted at construction.
+    pub(crate) fn revalidate(&self) -> Result<()> {
+        self.executable
+            .revalidate()
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))
+    }
+
+    /// Constructs the sole fixed Guardian unit from an exact descriptor set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptor set or unit contract is invalid.
+    pub(crate) fn prepare(
+        &self,
+        incarnation_id: [u8; 16],
+        credentials: GuardianCredentialDescriptors,
+        binding: [u8; 32],
+    ) -> Result<GuardianUnitSpec> {
+        GuardianUnitSpec::new(
+            SandboxUnitName::from_incarnation(incarnation_id),
+            self.executable.clone(),
+            credentials,
+            binding,
+            self.timeout_start,
+        )
+        .map_err(|error| HostError::InvalidPlan(error.to_string()))
+    }
 }
 
 impl PreparedLaunch {
@@ -301,6 +408,22 @@ impl PreparedLaunch {
 
     pub(crate) fn into_parts(self) -> (SandboxUnitSpec, LaunchPins) {
         (self.spec, self.pins)
+    }
+
+    pub(crate) fn snapshot(&self) -> &PayloadLaunchSnapshot {
+        &self.snapshot
+    }
+
+    pub(crate) const fn pins(&self) -> &LaunchPins {
+        &self.pins
+    }
+
+    pub(crate) fn bind(mut self, binding: [u8; 32]) -> Result<Self> {
+        self.spec = self
+            .spec
+            .into_bound(binding)
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        Ok(self)
     }
 }
 
@@ -754,8 +877,22 @@ const fn protected_file_permissions(mode: u32) -> bool {
 #[derive(Debug)]
 pub struct NspawnConfig {
     executable_pin: Arc<OwnedFd>,
+    executable_snapshot: NspawnExecutableSnapshot,
     timeout_start: Duration,
     timeout_stop: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NspawnExecutableSnapshot {
+    device: u64,
+    inode: u64,
+    bytes: i64,
+    uid: u32,
+    mode: u32,
+    modified_seconds: i64,
+    modified_nanoseconds: u64,
+    changed_seconds: i64,
+    changed_nanoseconds: u64,
 }
 
 impl NspawnConfig {
@@ -799,6 +936,7 @@ impl NspawnConfig {
             ));
         }
         Ok(Self {
+            executable_snapshot: nspawn_executable_snapshot(executable_pin.as_fd())?,
             executable_pin: Arc::new(executable_pin),
             timeout_start,
             timeout_stop,
@@ -817,10 +955,43 @@ impl NspawnConfig {
         )
         .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         Ok(Self {
+            executable_snapshot: nspawn_executable_snapshot(executable_pin.as_fd())?,
             executable_pin: Arc::new(executable_pin),
             timeout_start: Duration::from_secs(30),
             timeout_stop: Duration::from_secs(10),
         })
+    }
+
+    /// Pins the real packaged nspawn for explicit kernel qualification.
+    #[cfg(all(test, feature = "kernel-tests"))]
+    pub(crate) fn for_kernel_test(
+        executable: &str,
+        timeout_start: Duration,
+        timeout_stop: Duration,
+    ) -> Result<Self> {
+        validate_fixed_nspawn_path(executable)?;
+        if timeout_start.is_zero() || timeout_stop.is_zero() {
+            return Err(HostError::InvalidPlan(
+                "systemd operation timeouts must be nonzero".to_owned(),
+            ));
+        }
+        let executable_pin = open_executable_pin(executable)?;
+
+        Ok(Self {
+            executable_snapshot: nspawn_executable_snapshot(executable_pin.as_fd())?,
+            executable_pin: Arc::new(executable_pin),
+            timeout_start,
+            timeout_stop,
+        })
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<()> {
+        if nspawn_executable_snapshot(self.executable_pin.as_fd())? != self.executable_snapshot {
+            return Err(HostError::InvalidPlan(
+                "nspawn executable identity changed after backend admission".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// Resolves opaque resources and compiles the sole accepted nspawn argv.
@@ -932,8 +1103,46 @@ impl NspawnConfig {
             self.timeout_stop,
         )
         .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let nspawn_identity = fstat(self.executable_pin.as_fd())
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let workspace_identity = fstat(workspace.pin.as_fd())
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let nspawn_mount_id =
+            aos_sandbox_linux::inventory::MountId::from_fd(self.executable_pin.as_fd())
+                .map_err(|error| HostError::InvalidPlan(error.to_string()))?
+                .get();
+        let workspace_mount_id =
+            aos_sandbox_linux::inventory::MountId::from_fd(workspace.pin.as_fd())
+                .map_err(|error| HostError::InvalidPlan(error.to_string()))?
+                .get();
+        let snapshot = PayloadLaunchSnapshot {
+            nspawn: PinnedObjectSnapshot {
+                device: nspawn_identity.st_dev,
+                inode: nspawn_identity.st_ino,
+                mount_id: nspawn_mount_id,
+            },
+            workspace: PinnedObjectSnapshot {
+                device: workspace_identity.st_dev,
+                inode: workspace_identity.st_ino,
+                mount_id: workspace_mount_id,
+            },
+            network_device: network.device,
+            network_inode: network.inode,
+            identity_range_start: resolved.identity.range_start,
+            identity_range_size: resolved.identity.range_size,
+            identity_catalog_generation: resolved.identity.catalog_generation,
+            attachment_anchor: attachment_anchor
+                .as_ref()
+                .map(|anchor| PinnedObjectSnapshot {
+                    device: anchor.device,
+                    inode: anchor.inode,
+                    mount_id: anchor.mount_id,
+                }),
+            spec_semantic_digest: spec.semantic_digest_v1(),
+        };
         Ok(PreparedLaunch {
             spec,
+            snapshot,
             pins: LaunchPins {
                 executable: Arc::clone(&self.executable_pin),
                 workspace: workspace.pin,
@@ -963,6 +1172,22 @@ fn open_executable_pin(path: &str) -> Result<OwnedFd> {
         ));
     }
     Ok(pin)
+}
+
+fn nspawn_executable_snapshot(descriptor: BorrowedFd<'_>) -> Result<NspawnExecutableSnapshot> {
+    let identity =
+        rustix::fs::fstat(descriptor).map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+    Ok(NspawnExecutableSnapshot {
+        device: identity.st_dev,
+        inode: identity.st_ino,
+        bytes: identity.st_size,
+        uid: identity.st_uid,
+        mode: identity.st_mode,
+        modified_seconds: identity.st_mtime,
+        modified_nanoseconds: identity.st_mtime_nsec,
+        changed_seconds: identity.st_ctime,
+        changed_nanoseconds: identity.st_ctime_nsec,
+    })
 }
 
 fn validate_resolved_identity(
