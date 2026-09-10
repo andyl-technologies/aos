@@ -198,6 +198,20 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         placeholder: false,
     },
     GateTargetSpec {
+        gate: "gate:branch-point-model",
+        package: "crucible-campaign",
+        test_target: "gate_branch_point_model",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
+        gate: "gate:lazy-frontier",
+        package: "crucible-campaign",
+        test_target: "gate_lazy_frontier",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
         gate: "gate:attempt-idempotence",
         package: "crucible-campaign",
         test_target: "gate_attempt_idempotence",
@@ -230,6 +244,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-cli",
         test_target: "gate_campaign_store_composition",
         required_features: &["test-double"],
+        placeholder: false,
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-component-contract",
+        package: "crucible-daemon",
+        test_target: "gate_campaign_component_contract",
+        required_features: &[],
         placeholder: false,
     },
     GateTargetSpec {

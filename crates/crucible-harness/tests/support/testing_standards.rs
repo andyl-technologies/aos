@@ -274,6 +274,66 @@ pub(super) fn source_shape_failures(
         }
     }
 
+    if standard.shape == TestShape::BranchPointModel {
+        for required in [
+            "opportunity.branch_point_id(lineage.genesis())",
+            "CandidateSource::generated",
+            "submit_debugger_branch_request",
+            "AttemptAdmissionRole::AdditionalCause",
+            "ExplainCampaignAttemptRequest::new",
+            "collect_finite_statistical_evidence",
+            "assert_eq!(raw_visits.parent_visits(), 3)",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove parent scope, finite/generated convergence, retained causes, authenticated execution basis, restart, and statistical intervention exclusion",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::LazyFrontier {
+        for required in [
+            "measure_allocations",
+            "ContinuationState::Waiting",
+            "ContinuationState::Ready",
+            "CampaignRepository::with_component_authorities",
+            "CampaignMode::Strict",
+            "CampaignMode::Streaming",
+            "CandidateGeneratorAlgorithm::ProgressiveInteger",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove bounded lazy polling, feedback suspension, cold recovery, and strict/streaming ordering",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::CampaignComponentContract {
+        for required in [
+            "serve_loopback_campaign_once",
+            "serve_loopback_executor_component_connection_with_limits",
+            "CampaignClient",
+            "ExecutorClient",
+            "kill_and_wait",
+            "SubmitAttemptDisposition::AlreadyCompleted",
+            "ExecutorRejection::Unauthorized",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove direct/loopback equivalence, independent component restart, idempotency, and authority refusal",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
     if standard.shape == TestShape::AttemptIdempotence {
         for required in [
             "CampaignRepository::new",
