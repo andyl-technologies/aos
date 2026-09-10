@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  patch,
   perl,
   python3,
   autoconf,
@@ -69,6 +70,7 @@ in
       [
         gnumake
         pkg-config
+        patch
         perl
         python3
         autoconf
@@ -76,7 +78,7 @@ in
       ++ (
         if isDarwinCross
         then [buildPackages.gettext]
-        else []
+        else [gettext]
       );
     runtimeDeps = [
       curl
@@ -104,8 +106,22 @@ in
         '';
       }
       {
+        name = "patch";
+        script = ''
+          # OpenSSL 4 hides ASN.1 string fields behind its public accessors.
+          patch -p1 < ${./git-patches/2.42-openssl-asn1-accessors.patch}
+        '';
+      }
+      {
         name = "configure";
         script = ''
+          # This compatibility release predates C23's unreachable macro,
+          # which conflicts with its reflog helper under newer GCC defaults.
+          export CFLAGS="''${CFLAGS:--g -O2 -Wall} -std=gnu11"
+
+          # Runtime dependencies do not add their configuration tools to PATH.
+          export CURL_CONFIG=${curl}/bin/curl-config
+
           make configure${
             if isDarwinCross
             then ''

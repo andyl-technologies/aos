@@ -24,6 +24,7 @@
   zlib,
   readline,
   tzdata,
+  buildPackages,
 }: let
   version = "9.20.27";
 in
@@ -39,7 +40,8 @@ in
       hash = "sha256-FFq3pQszoG2dSIteZoyIfnVPQqz4lU4rXcfiOLCA5KA=";
     };
 
-    buildDeps = [gnumake perl pkg-config cmocka tzdata];
+    # dnstap generates C sources with protoc-c on the build machine.
+    buildDeps = [gnumake perl pkg-config cmocka tzdata buildPackages.protobuf-c];
     runtimeDeps = [
       libcap
       libidn2
@@ -116,6 +118,8 @@ in
           # qpdb_test, while two workers still exercise its concurrent paths.
           # Exercise named-zone formatting against the AOS timezone database;
           # the sandbox deliberately has no host /usr/share/zoneinfo.
+          # CMocka is needed only by the test executables, not installed tools.
+          LD_LIBRARY_PATH=${cmocka}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
           TZDIR=${tzdata}/share/zoneinfo \
             ISC_TASK_WORKERS=2 \
             make -j"$NIX_BUILD_CORES" unit
