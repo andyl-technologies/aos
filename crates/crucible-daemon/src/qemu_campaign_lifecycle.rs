@@ -418,6 +418,7 @@ pub use evidence::{
     QemuObservedFreshAttemptLifecycle, QemuObservedFreshAttemptLifecycleFactory,
     QemuObservedFreshAttemptLifecycleFactoryError,
 };
+pub(crate) use evidence::{map_observed_evidence_failure, map_observed_inner_failure};
 
 mod legacy_run;
 #[cfg(any(test, feature = "test-support"))]
