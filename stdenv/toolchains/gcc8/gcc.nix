@@ -6,7 +6,18 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
+  bootstrapCompilerFlags ? "",
 }: let
+  aarch64RuntimeSmoke =
+    if hostPlatform.constraints.cpu == "aarch64"
+    then ''
+      # Floating-point printf analysis exercises the compiler's in-tree MPFR.
+      "$out/bin/gcc" -O2 ${../../../tests/build/toolchain-syscalls.c} \
+        -o "$TMPDIR/gcc8-runtime-smoke"
+      "$TMPDIR/gcc8-runtime-smoke"
+    ''
+    else "";
+
   gccSrc = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gcc/gcc-8.5.0/gcc-8.5.0.tar.xz";
     sha256 = "1d4xjxwvxd4zi4hy7z2fqbd8mfddj32x4w5cqw163lz0q1yf1ak4";
@@ -39,6 +50,10 @@ in
   mkGcc {
     version = "8.5.0";
     src = gccSrc;
+    sourceScriptFilter =
+      if hostPlatform.constraints.cpu == "x86_64"
+      then null
+      else prev.perl;
     inTreeDeps = [
       {
         name = "gmp";
@@ -92,11 +107,11 @@ in
       mkdir -p "$TMPDIR/ccwrap"
       cat > "$TMPDIR/ccwrap/gcc" <<AOS_GCC_CC
       #!${prev.bash}/bin/bash
-      exec ${prev.gcc}/bin/gcc -std=gnu99 -static "\$@"
+      exec ${prev.gcc}/bin/gcc -std=gnu99 -static "\$@"${bootstrapCompilerFlags}
       AOS_GCC_CC
       cat > "$TMPDIR/ccwrap/g++" <<AOS_GCC_CXX
       #!${prev.bash}/bin/bash
-      exec ${prev.gcc}/bin/g++ -static "\$@"
+      exec ${prev.gcc}/bin/g++ -static "\$@"${bootstrapCompilerFlags}
       AOS_GCC_CXX
       chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
       ln -sf gcc "$TMPDIR/ccwrap/cc"
@@ -186,7 +201,7 @@ in
       "$out/bin/g++" -std=c++14 -O2 -flto "$TMPDIR/gcc8-cxx-lto-smoke.cc" \
         -o "$TMPDIR/gcc8-cxx-lto-smoke"
       "$TMPDIR/gcc8-cxx-lto-smoke"
-    '';
+      ${aarch64RuntimeSmoke}'';
     finalMessage = "GCC 8.5.0 installed to $out";
     meta = {
       description = "GNU Compiler Collection, version 8.5.0 (C, C++)";

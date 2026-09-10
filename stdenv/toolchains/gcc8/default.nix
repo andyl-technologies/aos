@@ -69,7 +69,15 @@
       ;
 
     # Phase 1: GCC 8.5.0 built with prev.gcc (4.8.5, provides C++11)
-    gcc = callPackage ./gcc.nix {};
+    gcc = callPackage ./gcc.nix {
+      # GCC 4.8's AArch64 scheduler moves a live condition across cmeq's
+      # late scalar expansion, which clobbers the flags without declaring it.
+      # Disable only that construction pass; the exported GCC keeps -O2.
+      bootstrapCompilerFlags =
+        if hostPlatform.constraints.cpu == "aarch64"
+        then " -fno-schedule-insns"
+        else "";
+    };
 
     # Phase 2: binutils 2.30 built with THIS.gcc
     binutils = callPackage ./binutils.nix {};
