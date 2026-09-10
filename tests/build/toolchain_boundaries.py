@@ -146,10 +146,11 @@ def inspect_recipe_shell(packages, directory, environment, emulator=None):
 
 
 def run_compiled_probe(compiler, source, directory, environment):
-    """Compiles and runs a static contract probe using only exported tools."""
+    """Compiles and runs an optimized static probe using only exported tools."""
     executable = Path(directory) / "program"
+    # The floating-point printf regression requires the compiler's optimizer.
     subprocess.run(
-        [str(compiler), "-static", str(Path(source).resolve()), "-o", str(executable)],
+        [str(compiler), "-O2", "-static", str(Path(source).resolve()), "-o", str(executable)],
         cwd=directory,
         env=environment,
         check=True,
