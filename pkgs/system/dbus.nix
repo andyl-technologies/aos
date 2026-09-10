@@ -47,7 +47,12 @@ in
           systemd
         ]
       );
-    propagatedDeps = [];
+    # dbus-1.pc requires libsystemd, including when consumers only request
+    # compiler flags. Keep that metadata dependency visible downstream.
+    propagatedDeps =
+      if stdenv.hostPlatform.isDarwin
+      then []
+      else [systemd];
 
     # Pure stage-2 inventory for consumers that opt into
     # `systemd.packages = [ pkgs.dbus ]`.

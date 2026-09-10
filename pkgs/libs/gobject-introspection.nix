@@ -88,6 +88,11 @@ in
           sed -i '/^import distutils$/i import setuptools' \
             tests/scanner/test_ccompiler.py
 
+          # Setuptools now executes compiler commands through call(); keep
+          # argument-construction tests intercepting that execution boundary.
+          sed -i "s/CCompiler, 'spawn'/CCompiler, 'call'/g" \
+            tests/scanner/test_ccompiler.py
+
           # The glibc ldd script rejects AOS PIE executables before asking the
           # loader to trace them. Run the executable with the loader's trace
           # environment directly, which produces the same dependency listing.

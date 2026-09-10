@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  patch,
   autoconf,
   autoconf-archive,
   automake,
@@ -27,6 +28,7 @@ in
       hash = "sha256-3tTNQZuKBQAqEIoJEiCOIJhpV1JmTGpZRk0t2kGOBFI=";
     };
     buildDeps = [
+      patch
       autoconf
       autoconf-archive
       automake
@@ -55,6 +57,7 @@ in
         name = "patch";
         script = ''
           sed -i 's/install_vendor/install_site/' swig/perl/Makefile.am
+          patch -p1 < ${./libapparmor-swig-copy.patch}
         '';
       }
       {
