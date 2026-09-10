@@ -1,0 +1,343 @@
+# Real-archive qualification for the normal initrd stage and handoff contract.
+{
+  pkgs,
+  lib,
+  mkSystem,
+}: let
+  fixtureAuthorities = {pkgs, ...}: {
+    # This real-archive fixture enables the complete canonical-release input
+    # set. Give that qualification-only assembly room without weakening the
+    # production server's 128 MiB release admission budget.
+    aos.image.budgets.maxInitrdMiB = lib.mkForce 144;
+
+    aos.profiles.canonicalRelease = {
+      enable = true;
+      publicAuthorities = {
+        secureBootCertificate = "${pkgs.secure-boot-test-keys}/db.crt";
+        moduleSigningCertificate = "${pkgs.secure-boot-test-keys}/modsign.crt";
+        pcrPolicyKey = "${pkgs.secure-boot-test-keys}/pcr.pem";
+        firmwareEnrollment = "${pkgs.secure-boot-test-keys}";
+      };
+    };
+
+    # Exercise exact duplicate normalization and one root used in two roles.
+    aos.boot.initrd.extraPackages = [pkgs.coreutils pkgs.coreutils];
+  };
+  system = mkSystem {
+    modules = [../../systems/server.nix fixtureAuthorities];
+  };
+  initrd = system.config.system.build.initrd;
+  assembly = system.config.system.build.unsignedImageAssembly;
+in
+  assert assembly != null;
+    pkgs.mkDerivation {
+      pname = "aos-initrd-stage-contract-check";
+      version = "1";
+      src = null;
+      buildDeps = [assembly pkgs.aos.testSupport pkgs.coreutils pkgs.cpio pkgs.gawk pkgs.grep pkgs.jq pkgs.zstd];
+      phases = [
+        {
+          name = "check";
+          script = ''
+            set -euo pipefail
+
+            contract=${initrd}/initrd-stage-contract.json
+            archive=${initrd}/initrd.img
+
+            validate_contract() {
+              candidate=$1
+              candidate_archive=$2
+              archive_size=$(stat -c %s "$candidate_archive")
+              archive_sha256=$(sha256sum "$candidate_archive" | cut -d ' ' -f1)
+
+              ${pkgs.jq}/bin/jq -e \
+                --argjson archiveSize "$archive_size" \
+                --arg archiveSha256 "sha256:$archive_sha256" \
+                '.schema_version == "aos.boot.initrd-stage-contract/v1"
+                 and .stage == "initrd"
+                 and .artifact.path == "initrd.img"
+                 and .artifact.size_bytes == $archiveSize
+                 and .artifact.sha256 == $archiveSha256
+                 and ([.dependency_roots[]]
+                   | length == (unique | length))
+                 and .dependency_roots == (.dependency_roots
+                   | unique_by([.kind,.store_path,.available_stage])
+                   | sort_by([.kind,.store_path,.available_stage]))
+                 and ([.dependency_roots[]
+                   | select(.store_path == "${pkgs.coreutils}" and .kind == "runtime-package")]
+                   | length == 1)
+                 and ([.dependency_roots[]
+                   | select(.store_path == "${pkgs.coreutils}" and .kind == "extra-package")]
+                   | length == 1)
+                 and all(.dependency_roots[];
+                   .available_stage == "build" or .available_stage == "initrd")
+                 and (. as $contract
+                   | all(.handoff.required_units[];
+                     . as $unit
+                     | ($contract.rendered_units | index($unit)) != null
+                     and ($contract.masked_units | index($unit)) == null))
+                 and .handoff.to_stage == "host"
+                 and .handoff.mechanism == "systemd-switch-root"
+                 and .handoff.transferable_handles == false
+                 and .handoff.receiving_stage_reauthorizes == true
+                 and .handoff.receiving_stage_reacquires == true
+                 and .handoff.preserved_mounts == (.handoff.preserved_mounts
+                   | unique_by([.initrd_path,.host_path])
+                   | sort_by([.initrd_path,.host_path]))
+                 and .handoff.durable_state_roots == (.handoff.durable_state_roots
+                   | unique_by([.initrd_path,.host_path])
+                   | sort_by([.initrd_path,.host_path]))' \
+                "$candidate" >/dev/null
+            }
+
+            validate_unit_graph() {
+              graph_root=$1
+              graph_contract=$2
+              if ! completion=$(${pkgs.jq}/bin/jq -er '.handoff.completion_target' "$graph_contract"); then
+                return 1
+              fi
+
+              if ! ${pkgs.jq}/bin/jq -r '.handoff.required_units[]' "$graph_contract" > required-units; then
+                return 1
+              fi
+              while IFS= read -r unit; do
+                unit_path="$graph_root/etc/systemd/system/$unit"
+                requirement_path="$graph_root/etc/systemd/system/$completion.requires/$unit"
+                test -L "$requirement_path" || return 1
+                requirement_target=$(readlink "$requirement_path")
+                resolved_requirement=$(realpath -m -s \
+                  "$(dirname "$requirement_path")/$requirement_target")
+                resolved_unit=$(realpath -m -s "$unit_path")
+                test "$resolved_requirement" = "$resolved_unit" || return 1
+
+                if test -L "$unit_path"; then
+                  unit_target=$(readlink "$unit_path")
+                  case "$unit_target" in
+                    /nix/store/*) unit_content="$graph_root$unit_target" ;;
+                    *) return 1 ;;
+                  esac
+                  test -f "$unit_content" || return 1
+                  cmp "$unit_content" "$unit_target" || return 1
+                else
+                  unit_content="$unit_path"
+                fi
+                test -f "$unit_content" || return 1
+                awk -v target="$completion" '
+                      /^[[:space:]]*\[/ {
+                        in_unit = ($0 ~ /^[[:space:]]*\[Unit\][[:space:]]*$/)
+                        next
+                      }
+                      in_unit && /^[[:space:]]*Before[[:space:]]*=/ {
+                        value = $0
+                        sub(/^[^=]*=/, "", value)
+                        if (value ~ /^[[:space:]]*$/) {
+                          found = 0
+                          next
+                        }
+                        count = split(value, tokens, /[[:space:]]+/)
+                        for (token_index = 1; token_index <= count; token_index++) {
+                          if (tokens[token_index] == target) found = 1
+                        }
+                      }
+                      END { exit found ? 0 : 1 }
+                    ' "$unit_content" || return 1
+              done < required-units
+            }
+
+            finish_canonical_json() {
+              candidate=$1
+              candidate_size=$(stat -c %s "$candidate")
+              test "$candidate_size" -gt 1
+              test "$(tail -c 1 "$candidate" | wc -l)" -eq 1
+              truncate -s $((candidate_size - 1)) "$candidate"
+            }
+
+            ${pkgs.jq}/bin/jq -cS . "$contract" > canonical.json
+            canonical_size=$(stat -c %s canonical.json)
+            truncate -s $((canonical_size - 1)) canonical.json
+            cmp canonical.json "$contract"
+            validate_contract "$contract" "$archive"
+            ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
+              initrd-contract "$contract" "$archive"
+            ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
+              image-assembly-contract ${assembly} initrd-stage-contract-check
+
+            ${pkgs.zstd}/bin/zstd -dc "$archive" \
+              | ${pkgs.cpio}/bin/cpio -it --quiet > archive-files
+            ${pkgs.jq}/bin/jq -r '.handoff.required_units[]' "$contract" \
+              | while IFS= read -r unit; do
+                  grep -Fx "etc/systemd/system/$unit" archive-files >/dev/null
+                  grep -Fx "etc/systemd/system/initrd-fs.target.requires/$unit" \
+                    archive-files >/dev/null
+                done
+
+            mkdir unit-graph
+            (
+              cd unit-graph
+              ${pkgs.zstd}/bin/zstd -dc "$archive" \
+                | ${pkgs.cpio}/bin/cpio -idm --quiet
+            )
+            validate_unit_graph unit-graph "$contract"
+
+            first_unit=$(${pkgs.jq}/bin/jq -er '.handoff.required_units[0]' "$contract")
+            first_unit_path="unit-graph/etc/systemd/system/$first_unit"
+            first_requirement="unit-graph/etc/systemd/system/initrd-fs.target.requires/$first_unit"
+            original_unit=$(readlink "$first_unit_path")
+            original_requirement=$(readlink "$first_requirement")
+            chmod -R u+w unit-graph/etc
+            ln -sfn /dev/null "$first_requirement"
+            if validate_unit_graph unit-graph "$contract"; then
+              echo "initrd unit graph accepted a requirement to the wrong target" >&2
+              exit 1
+            fi
+            ln -sfn /does/not-exist "$first_requirement"
+            if validate_unit_graph unit-graph "$contract"; then
+              echo "initrd unit graph accepted a dangling requirement" >&2
+              exit 1
+            fi
+            ln -sfn "$original_requirement" "$first_requirement"
+            validate_unit_graph unit-graph "$contract"
+
+            rm "$first_unit_path" "$first_requirement"
+            ln -s "../$first_unit" "$first_requirement"
+            cat > "$first_unit_path" <<'INVALID_SECTION'
+            [Service]
+            Before=initrd-fs.target
+            INVALID_SECTION
+            if validate_unit_graph unit-graph "$contract"; then
+              echo "initrd unit graph accepted Before= outside [Unit]" >&2
+              exit 1
+            fi
+
+            cat > "$first_unit_path" <<'RESET_ORDER'
+            [Unit]
+            Before=initrd-fs.target
+            Before=
+            RESET_ORDER
+            if validate_unit_graph unit-graph "$contract"; then
+              echo "initrd unit graph ignored a later Before= reset" >&2
+              exit 1
+            fi
+
+            cat > "$first_unit_path" <<'WRONG_LITERAL_TOKEN'
+            [Unit]
+            Before=initrd-fsXtarget
+            WRONG_LITERAL_TOKEN
+            if validate_unit_graph unit-graph "$contract"; then
+              echo "initrd unit graph accepted a nonliteral completion target" >&2
+              exit 1
+            fi
+
+            rm "$first_unit_path" "$first_requirement"
+            ln -s "$original_unit" "$first_unit_path"
+            ln -s "$original_requirement" "$first_requirement"
+            validate_unit_graph unit-graph "$contract"
+
+            cp "$archive" changed-initrd.img
+            chmod u+w changed-initrd.img
+            printf x >> changed-initrd.img
+            if ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
+              initrd-contract "$contract" changed-initrd.img \
+              > changed-archive.log 2>&1; then
+              echo "initrd contract accepted changed archive bytes" >&2
+              exit 1
+            fi
+            grep -F "initrd archive differs from its stage contract" changed-archive.log >/dev/null
+
+            ${pkgs.jq}/bin/jq -cS \
+              '.dependency_roots[0].available_stage = "host"' \
+              "$contract" > late-stage.json
+            finish_canonical_json late-stage.json
+            if ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
+              initrd-contract late-stage.json "$archive" \
+              > late-stage.log 2>&1; then
+              echo "initrd contract accepted a host-stage dependency" >&2
+              exit 1
+            fi
+            grep -F \
+              "initrd dependency root is unavailable during the initrd stage" \
+              late-stage.log >/dev/null
+
+            ${pkgs.jq}/bin/jq -cS \
+              '.masked_units = ((.masked_units + [.handoff.required_units[0]]) | sort | unique)' \
+              "$contract" > required-masked.json
+            finish_canonical_json required-masked.json
+            if ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
+              initrd-contract required-masked.json "$archive" \
+              > required-masked.log 2>&1; then
+              echo "initrd contract accepted a required masked unit" >&2
+              exit 1
+            fi
+            grep -F \
+              "initrd handoff unit is masked in the stage-1 manager" \
+              required-masked.log >/dev/null
+
+            ${pkgs.jq}/bin/jq -cS \
+              '.dependency_roots |= map(select(.kind != "kernel"))' \
+              "$contract" > missing-kernel.json
+            finish_canonical_json missing-kernel.json
+            if ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
+              initrd-contract missing-kernel.json "$archive" \
+              > missing-kernel.log 2>&1; then
+              echo "initrd contract accepted a missing mandatory kernel root" >&2
+              exit 1
+            fi
+            grep -F \
+              "initrd contract requires exactly one kernel and unit-configuration root" \
+              missing-kernel.log >/dev/null
+
+            ${pkgs.jq}/bin/jq -cS \
+              '.dependency_roots += [.dependency_roots[0]]' \
+              "$contract" > duplicate-root.json
+            finish_canonical_json duplicate-root.json
+            if ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
+              initrd-contract duplicate-root.json "$archive" \
+              > duplicate-root.log 2>&1; then
+              echo "initrd contract accepted a duplicate dependency tuple" >&2
+              exit 1
+            fi
+            grep -F \
+              "initrd dependency roots must be sorted and unique" \
+              duplicate-root.log >/dev/null
+
+            ${pkgs.jq}/bin/jq -cS \
+              '(.dependency_roots[] | select(.kind == "kernel").available_stage) = "initrd"' \
+              "$contract" > wrong-kind-stage.json
+            finish_canonical_json wrong-kind-stage.json
+            if ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
+              initrd-contract wrong-kind-stage.json "$archive" \
+              > wrong-kind-stage.log 2>&1; then
+              echo "initrd contract accepted the wrong stage for a dependency kind" >&2
+              exit 1
+            fi
+            grep -F \
+              "initrd dependency kind has the wrong availability stage" \
+              wrong-kind-stage.log >/dev/null
+
+            mkdir -p "$out"
+            cp "$contract" "$out/initrd-stage-contract.json"
+            ${pkgs.jq}/bin/jq -cS -n \
+              --arg schema aos.boot.initrd-stage-contract-check/v1 \
+              --arg archive "${initrd}/initrd.img" \
+              --arg contract "${initrd}/initrd-stage-contract.json" \
+              --arg archiveSha256 "sha256:$(sha256sum "$archive" | cut -d ' ' -f1)" \
+              --argjson requiredUnits "$(${pkgs.jq}/bin/jq '.handoff.required_units | length' "$contract")" \
+              '{schema_version:$schema,archive:$archive,contract:$contract,
+                archive_sha256:$archiveSha256,required_units:$requiredUnits,
+                changed_archive_rejected:true,host_stage_rejected:true,
+                required_mask_rejected:true,missing_kernel_rejected:true,
+                duplicate_tuple_rejected:true,wrong_kind_stage_rejected:true,
+                wrong_requirement_target_rejected:true,
+                dangling_requirement_rejected:true,
+                invalid_unit_section_rejected:true,
+                ordering_reset_rejected:true,
+                nonliteral_target_rejected:true,
+                production_finalizer_capture_passed:true}' > "$out/result.json.tmp"
+            result_size=$(stat -c %s "$out/result.json.tmp")
+            truncate -s $((result_size - 1)) "$out/result.json.tmp"
+            mv "$out/result.json.tmp" "$out/result.json"
+          '';
+        }
+      ];
+      meta.description = "Exact initrd stage-contract and handoff qualification";
+    }

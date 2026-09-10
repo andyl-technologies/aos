@@ -335,6 +335,9 @@ in {
       initrdUnits = config.system.build.systemdInitrdUnits;
       initrdExtraPackages = config.aos.boot.initrd.extraPackages;
       inherit initrdNetworkDir;
+      renderedUnits = builtins.attrNames renderedInitrdUnits;
+      renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);
+      handoff = config.system.build.bootSubstrateContract;
       maskedUnits =
         cfg.maskedUnits
         ++ lib.optionals config.aos.security.verity.enable [

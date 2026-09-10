@@ -48,6 +48,9 @@
   initrdUnits,
   initrdExtraPackages ? [],
   initrdNetworkDir ? null,
+  renderedUnits,
+  renderedNetworks,
+  handoff,
   maskedUnits ? [],
   validateBootIdentity ? false,
   keepBinutils ? false,
@@ -60,9 +63,11 @@
     cryptsetup
     e2fsprogs
     findutils
+    gawk
     gptfdisk
     grep
     iproute2
+    jq
     kmod
     less
     systemd
@@ -73,7 +78,7 @@
 
   # Packages whose full runtime closures are copied into the initrd's
   # /nix/store. See the docstring at the top of this file for why.
-  initrdPackages =
+  runtimeInitrdPackages =
     [
       bash
       coreutils
@@ -87,10 +92,55 @@
       systemd
       util-linux
     ]
-    ++ bootIdentityPackages
+    ++ bootIdentityPackages;
+  initrdPackages =
+    runtimeInitrdPackages
     # Feature-specific closures injected by modules (e.g. the measured-boot
     # PCR-policy public key — RFC-0006 phase 3).
     ++ initrdExtraPackages;
+
+  dependencyRoots =
+    [
+      {
+        kind = "kernel";
+        store_path = "${kernel}";
+        available_stage = "build";
+      }
+      {
+        kind = "unit-configuration";
+        store_path = "${initrdUnits}";
+        available_stage = "build";
+      }
+    ]
+    ++ lib.optional (initrdNetworkDir != null && renderedNetworks != []) {
+      kind = "network-configuration";
+      store_path = "${initrdNetworkDir}";
+      available_stage = "build";
+    }
+    ++ map (package: {
+      kind = "runtime-package";
+      store_path = "${package}";
+      available_stage = "initrd";
+    })
+    runtimeInitrdPackages
+    ++ map (package: {
+      kind = "extra-package";
+      store_path = "${package}";
+      available_stage = "initrd";
+    })
+    initrdExtraPackages
+    ++ map (package: {
+      kind = "kernel-module-package";
+      store_path = "${package}";
+      available_stage = "build";
+    })
+    kernelModulePackages
+    ++ map (package: {
+      kind = "firmware-package";
+      store_path = "${package}";
+      available_stage = "build";
+    })
+    firmwarePackages;
 
   # Short /bin/<name> symlinks. A binary only needs to appear here if an
   # initrd unit (or a script invoked by one) references it as `/bin/foo`
@@ -342,6 +392,49 @@
 
   modulesLoadConf = lib.concatStringsSep "\n" loadModules;
 
+  requiredUnitChecks =
+    lib.concatMapStringsSep "\n" (unit: ''
+      unit_path=root/etc/systemd/system/${unit}
+      requirement_path=root/etc/systemd/system/${handoff.completionTarget}.requires/${unit}
+      if [ ! -f "$unit_path" ]; then
+        echo "initrd-builder: required handoff unit is not rendered: ${unit}" >&2
+        exit 1
+      fi
+      if [ ! -L "$requirement_path" ]; then
+        echo "initrd-builder: ${handoff.completionTarget} does not require ${unit}" >&2
+        exit 1
+      fi
+      unit_target=$(readlink -f "$unit_path")
+      requirement_target=$(readlink -f "$requirement_path")
+      if [ "$requirement_target" != "$unit_target" ]; then
+        echo "initrd-builder: ${handoff.completionTarget} requirement does not resolve to ${unit}" >&2
+        exit 1
+      fi
+      if ! awk -v target=${lib.escapeShellArg handoff.completionTarget} '
+        /^[[:space:]]*\[/ {
+          in_unit = ($0 ~ /^[[:space:]]*\[Unit\][[:space:]]*$/)
+          next
+        }
+        in_unit && /^[[:space:]]*Before[[:space:]]*=/ {
+          value = $0
+          sub(/^[^=]*=/, "", value)
+          if (value ~ /^[[:space:]]*$/) {
+            found = 0
+            next
+          }
+          count = split(value, tokens, /[[:space:]]+/)
+          for (token_index = 1; token_index <= count; token_index++) {
+            if (tokens[token_index] == target) found = 1
+          }
+        }
+        END { exit found ? 0 : 1 }
+      ' "$unit_path"; then
+        echo "initrd-builder: ${unit} is not ordered before ${handoff.completionTarget}" >&2
+        exit 1
+      fi
+    '')
+    handoff.requiredUnits;
+
   interactivePath = lib.concatStringsSep ":" (
     (map (p: "${p}/bin") initrdPackages)
     ++ (map (p: "${p}/sbin") initrdPackages)
@@ -357,6 +450,8 @@ in
       zstd
       coreutils
       findutils
+      gawk
+      jq
     ];
 
     # `exportReferencesGraph` writes one file per package/name pair
@@ -621,6 +716,10 @@ in
             '')
             maskedUnits}
 
+          # The contract describes the rendered graph, so validate the actual
+          # unit files and dependency links after every copy and mask step.
+          ${requiredUnitChecks}
+
           # ── 8. Trim: drop files that only exist in the store for build-
           #    time or developer use. Packages keep these on disk systemwide;
           #    this only removes them from the initrd's cpio. Nix's closure
@@ -830,7 +929,52 @@ in
               | zstd -19 -q -c > $out/initrd.img
           )
 
-          echo "==> $(stat -c '%s bytes' $out/initrd.img) written to $out/initrd.img"
+          archive_size=$(stat -c %s "$out/initrd.img")
+          archive_sha256=$(sha256sum "$out/initrd.img" | cut -d ' ' -f1)
+          ${jq}/bin/jq -cS -n \
+            --arg schema aos.boot.initrd-stage-contract/v1 \
+            --arg platform ${lib.escapeShellArg lib.system} \
+            --arg kernelRelease ${lib.escapeShellArg kernel.version} \
+            --arg archiveSha256 "sha256:$archive_sha256" \
+            --argjson archiveSize "$archive_size" \
+            --argjson dependencyRoots ${lib.escapeShellArg (builtins.toJSON dependencyRoots)} \
+            --argjson renderedUnits ${lib.escapeShellArg (builtins.toJSON renderedUnits)} \
+            --argjson renderedNetworks ${lib.escapeShellArg (builtins.toJSON renderedNetworks)} \
+            --argjson loadModules ${lib.escapeShellArg (builtins.toJSON loadModules)} \
+            --argjson maskedUnits ${lib.escapeShellArg (builtins.toJSON maskedUnits)} \
+            --argjson handoff ${lib.escapeShellArg (builtins.toJSON handoff)} \
+            '($dependencyRoots
+               | unique_by([.kind,.store_path,.available_stage])
+               | sort_by([.kind,.store_path,.available_stage])) as $dependencies
+             | {schema_version:$schema,stage:"initrd",platform:$platform,
+                kernel_release:$kernelRelease,
+                artifact:{path:"initrd.img",size_bytes:$archiveSize,sha256:$archiveSha256},
+                dependency_roots:$dependencies,
+                rendered_units:($renderedUnits | sort | unique),
+                rendered_networks:($renderedNetworks | sort | unique),
+                load_modules:($loadModules | sort | unique),
+                masked_units:($maskedUnits | sort | unique),
+                handoff:{to_stage:"host",mechanism:"systemd-switch-root",
+                  completion_target:$handoff.completionTarget,
+                  required_units:($handoff.requiredUnits | sort | unique),
+                  preserved_mounts:($handoff.preservedMounts
+                    | map({initrd_path:.initrdPath,host_path:.hostPath})
+                    | unique_by([.initrd_path,.host_path])
+                    | sort_by([.initrd_path,.host_path])),
+                  durable_state_roots:($handoff.durableStateRoots
+                    | map({initrd_path:.initrdPath,host_path:.hostPath})
+                    | unique_by([.initrd_path,.host_path])
+                    | sort_by([.initrd_path,.host_path])),
+                  transferable_handles:false,
+                  receiving_stage_reauthorizes:true,
+                  receiving_stage_reacquires:true}}' \
+            > "$out/initrd-stage-contract.json.tmp"
+          contract_size=$(stat -c %s "$out/initrd-stage-contract.json.tmp")
+          [ "$contract_size" -gt 1 ]
+          truncate -s $((contract_size - 1)) "$out/initrd-stage-contract.json.tmp"
+          mv "$out/initrd-stage-contract.json.tmp" "$out/initrd-stage-contract.json"
+
+          echo "==> $archive_size bytes written to $out/initrd.img"
         '';
       }
     ];
