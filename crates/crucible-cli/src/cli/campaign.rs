@@ -44,6 +44,7 @@ use explain::{
     validate_campaign_attempt_explain_command, validate_campaign_explain_command,
     validate_campaign_finding_explain_command,
 };
+use fixture::finding_triage::{generate_finding_triage_fixture, render_finding_triage_fixture};
 use fixture::{generate_worked_network_fixture, render_worked_network_fixture};
 use lineage::{compile_campaign_lineage, render_campaign_lineage_compilation};
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
@@ -351,15 +352,17 @@ enum CampaignChoiceSelector {
 
 pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<(), CliError> {
     if let CampaignCommand::Fixture(fixture) = &args.command {
-        let report = match &fixture.fixture {
+        let rendered = match &fixture.fixture {
             CampaignFixtureCommand::WorkedNetwork(worked) => {
-                generate_worked_network_fixture(&worked.output)?
+                let report = generate_worked_network_fixture(&worked.output)?;
+                render_worked_network_fixture(&report, cli.output_format())?
+            }
+            CampaignFixtureCommand::FindingTriage(finding) => {
+                let report = generate_finding_triage_fixture(&finding.output)?;
+                render_finding_triage_fixture(&report, cli.output_format())?
             }
         };
-        println!(
-            "{}",
-            render_worked_network_fixture(&report, cli.output_format())?
-        );
+        println!("{rendered}");
         return Ok(());
     }
     if let CampaignCommand::ValidateImport(validate) = &args.command {

@@ -582,11 +582,20 @@ struct CampaignFixtureArgs {
 enum CampaignFixtureCommand {
     /// Generate the adaptive network-recovery campaign from RFC-0020.
     WorkedNetwork(CampaignWorkedNetworkFixtureArgs),
+    /// Generate an authenticated offline Finding-triage fixture.
+    FindingTriage(CampaignFindingTriageFixtureArgs),
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignWorkedNetworkFixtureArgs {
     /// New directory that will receive the complete fixture.
+    #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingTriageFixtureArgs {
+    /// New directory that will receive the ledger, store, and mutations.
     #[arg(long, value_name = "DIR", required = true)]
     output: PathBuf,
 }
