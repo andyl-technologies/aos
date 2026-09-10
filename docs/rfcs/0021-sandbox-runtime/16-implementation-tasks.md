@@ -6507,6 +6507,61 @@ binary, manager helper, activation constructor, Ready/response adapter,
 socket/service units, protected roots, enforcing-MAC deployment, and VM
 handshake remain absent. No production readiness or task checkbox changes.
 
+Commit `7d9a7974b` adds a separate static deployment contract and pure,
+non-minting manager-query schema for the namespace inspector. It does not
+reinterpret or populate the existing lifecycle-worker `launch_contract_digest`.
+The new domain-separated digest commits fixed inspector and query-helper argv,
+unit names, socket paths, ordered drop-in and access-path policy, canonical
+environment-name sets, four role-ordered immutable artifact paths with content
+digests and expected ownership/mode, and the static projection of a closed
+126-property systemd 259 table. The artifact contract deliberately excludes
+runtime device, inode, pidfd, process, cgroup, and invocation identities.
+
+Snapshot records retain the advertised static contract digest alongside the
+boot-local service unit and instance, invocation, PID, cgroup, accepted-socket
+instance fields, manager environment, and every complete property value.
+Static `Exec*` policy commits only executable path, ordered argv, and the
+ignore-failure boolean or exact flag set. Each A/B snapshot instead requires
+the full systemd execution tuple,
+including timestamps, PID, code, and status. Pure matching first requires
+byte-exact A/B equality, so those runtime suffixes cannot drift, and then
+projects each validated command prefix for comparison with the protected
+static expectation. Regressions accept identical nonzero runtime suffixes and
+reject changed command policy, suffix drift, static-property drift, internal
+dynamic-field inconsistency, and socket invocation drift. The codec bounds a
+complete frame to 128 KiB, checks collection limits before allocation, rejects
+noncanonical sets and leaf layouts, and fixes reviewed contract and property
+table digest vectors.
+
+Final qualification used exact parent
+`83a8d6a266944d31d149c32f1db917ea1b8d2ce3` plus only the four files in the
+commit. The SHA-256 digests were
+`namespace_inspector.rs` =
+`4a2994cca71d918af58e09e2e871dffc3a70814f5ecb34ecff4cd40f30622d7d`,
+`launch_contract.rs` =
+`4a1f039a523560dce95d90d309b41c2f04113af78db922dcafd26f96a5a932b5`,
+`manager_query.rs` =
+`5267039fc5c96574ad61a4ed7f625d490005935d50692d1c35b7d6920583beab`,
+and `manager_query/codec.rs` =
+`0dc1af35d71825e1a69595c8c40118b3e7a6916c800c217ec7baab2845bf85f3`.
+The pinned realized AOS development environment passed the exact four-file
+format check and all 209 Network library tests. An earlier 205-test snapshot
+covered a superseded schema that incorrectly placed boot-local execution
+suffixes in the static contract. Its source directory was overwritten during
+revision instead of being archived separately; its old hashes and logs remain,
+but the source is unavailable and that run is not qualification evidence for
+this commit.
+
+This slice authenticates neither decoded bytes nor their source and never
+contacts systemd. It has no manager helper, retained-manager consumer,
+protected fragment verifier, query deadline or restart/ABA fence, kernel
+effective-property probe, inspector binary, production activation constructor,
+Ready/response adapter, socket/service unit, protected-root deployment,
+enforcing-MAC transition, or VM handshake. The matched value is intentionally
+non-authorizing and cannot reach the existing move-only activation token.
+Those runtime and deployment prerequisites remain open, Network Apply remains
+unadvertised, and no readiness or task checkbox changes.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
