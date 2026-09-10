@@ -17,7 +17,8 @@ use crucible_campaign::{
     BranchRequestCause, BranchRequestResult, CampaignChoiceEntry, CampaignChoiceObject,
     CampaignChoiceObjectKind, CampaignClient, CampaignCommandId, CampaignCommandResult,
     CampaignContinuationStatus, CampaignControlAction, CampaignDerivationResult,
-    CampaignDiscoveryResult, CampaignFact, CampaignHash, CampaignLineage, CampaignLineageId,
+    CampaignDiscoveryResult, CampaignFact, CampaignFindingOccurrenceObjectKind,
+    CampaignFindingOccurrenceService, CampaignHash, CampaignLineage, CampaignLineageId,
     CampaignMode, CampaignName, CampaignOperationalStatus, CampaignPolicy, CampaignPolicyId,
     CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignRoots,
     CampaignSeed, CampaignSemanticStatus, CampaignService, CampaignServiceOperation,
@@ -27,19 +28,22 @@ use crucible_campaign::{
     ConfigurationId, ContinuationProjection, ContinuationState, ControlRequest,
     CreateCampaignRequest, CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
     DiscoveryRequest, ExactRational, ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse,
-    ExplorerPolicy, FairnessPolicy, GetCampaignChoiceObjectRequest,
-    GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
-    GetCampaignFindingObjectResponse, GetCampaignFrontierObjectRequest,
-    GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
-    GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
-    GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
-    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    MerkleMap, ObjectEnvelope, PinCampaignRequest, PinCampaignResponse, PinChange, PinRequest,
-    PinRetention, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
-    QueryCampaignChoicesResponse, QueryCampaignFindingsRequest, QueryCampaignFindingsResponse,
-    QueryCampaignFrontierRequest, QueryCampaignFrontierResponse, QueryCampaignGraphRequest,
-    QueryCampaignGraphResponse, RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId,
-    ScenarioDefId, SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
+    ExplorerPolicy, FairnessPolicy, FindingCandidateBundleId, FindingId,
+    GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
+    GetCampaignFindingObjectRequest, GetCampaignFindingObjectResponse,
+    GetCampaignFindingOccurrenceObjectRequest, GetCampaignFindingOccurrenceObjectResponse,
+    GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
+    GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
+    GetCampaignPlannerRankingsRequest, GetCampaignPlannerRankingsResponse, GetCampaignRequest,
+    GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MerkleMap, ObjectEnvelope, PinCampaignRequest,
+    PinCampaignResponse, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
+    PuctPolicy, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
+    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
     SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse,
     WatchCampaignRequest, WatchCampaignResponse,
 };
@@ -481,6 +485,22 @@ impl CampaignService for FixedCampaignService {
             },
         )
         .expect("discovery response"))
+    }
+}
+
+impl CampaignFindingOccurrenceService for FixedCampaignService {
+    fn query_campaign_finding_occurrences(
+        &self,
+        _request: &QueryCampaignFindingOccurrencesRequest,
+    ) -> Result<QueryCampaignFindingOccurrencesResponse, Self::Error> {
+        unreachable!("fixed service has no finding occurrences")
+    }
+
+    fn get_campaign_finding_occurrence_object(
+        &self,
+        _request: &GetCampaignFindingOccurrenceObjectRequest,
+    ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error> {
+        unreachable!("fixed service has no finding occurrence dependencies")
     }
 }
 
@@ -1037,6 +1057,22 @@ impl CampaignService for WrongGetService {
     }
 }
 
+impl CampaignFindingOccurrenceService for WrongGetService {
+    fn query_campaign_finding_occurrences(
+        &self,
+        _request: &QueryCampaignFindingOccurrencesRequest,
+    ) -> Result<QueryCampaignFindingOccurrencesResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
+    fn get_campaign_finding_occurrence_object(
+        &self,
+        _request: &GetCampaignFindingOccurrenceObjectRequest,
+    ) -> Result<GetCampaignFindingOccurrenceObjectResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+}
+
 #[test]
 fn campaign_loopback_server_rejects_cross_request_responses() {
     let served = get_request("served");
@@ -1434,6 +1470,40 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
     let watch = watch_request("absent", None);
     let query = graph_query_request("absent", snapshot("absent"), None, 1);
     let findings = finding_query_request("absent", snapshot("absent"), None, 1);
+    let finding_content = ContentId::for_bytes(
+        crucible_campaign::CampaignRecordKind::Finding.object_kind(),
+        4,
+        b"absent finding",
+    );
+    let finding = FindingId::parse(&format!("crucible.campaign.finding@{finding_content}"))
+        .expect("absent finding ID");
+    let bundle_content = ContentId::for_bytes(
+        crucible_campaign::CampaignRecordKind::FindingCandidateBundle.object_kind(),
+        crucible_campaign::CampaignRecordKind::FindingCandidateBundle.schema_version(),
+        b"absent finding candidate bundle",
+    );
+    let bundle = FindingCandidateBundleId::parse(&format!(
+        "crucible.campaign.finding-candidate-bundle@{bundle_content}"
+    ))
+    .expect("absent finding candidate bundle ID");
+    let occurrences = QueryCampaignFindingOccurrencesRequest::new(
+        principal(),
+        CampaignName::new("absent").expect("campaign name"),
+        snapshot("absent"),
+        finding,
+        None,
+        1,
+    )
+    .expect("finding occurrence request");
+    let occurrence_object = GetCampaignFindingOccurrenceObjectRequest::new(
+        principal(),
+        CampaignName::new("absent").expect("campaign name"),
+        snapshot("absent"),
+        finding,
+        bundle,
+        CampaignFindingOccurrenceObjectKind::Observation,
+    )
+    .expect("finding occurrence object request");
     let graph_object = graph_object_request("absent", snapshot("absent"), hash("graph-key"));
     let choices = choice_query_request("absent", snapshot("absent"), None, 1);
     let frontier = frontier_query_request("absent", snapshot("absent"), None, 1);
@@ -1497,6 +1567,18 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
         ))
     ));
     assert!(matches!(
+        direct.query_campaign_finding_occurrences(&occurrences),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
+        direct.get_campaign_finding_occurrence_object(&occurrence_object),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
         direct.get_campaign_graph_object(&graph_object),
         Err(crucible_campaign::CampaignClientError::Service(
             crucible_campaign::CampaignServiceFailure::Unauthorized
@@ -1540,7 +1622,7 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
             Arc::new(MemoryRefBackend::new()),
         );
         let service = RepositoryCampaignService::new(&repository, DenyAll);
-        for _ in 0..11 {
+        for _ in 0..13 {
             serve_loopback_campaign_once(&mut server_stream, &service)
                 .expect("serve denied request");
         }
@@ -1574,6 +1656,18 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
     ));
     assert!(matches!(
         client.query_campaign_findings(&findings),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
+        client.query_campaign_finding_occurrences(&occurrences),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
+        client.get_campaign_finding_occurrence_object(&occurrence_object),
         Err(crucible_campaign::CampaignClientError::Service(
             crucible_campaign::CampaignServiceFailure::Unauthorized
         ))
@@ -1825,6 +1919,70 @@ fn verifier_import_then_create_works_on_a_blank_repository() {
             }
         )) if expected == created.snapshot() && current == resumed.new_snapshot()
     ));
+
+    let absent_finding_content = ContentId::for_bytes(
+        crucible_campaign::CampaignRecordKind::Finding.object_kind(),
+        4,
+        b"stale absent finding",
+    );
+    let absent_finding = FindingId::parse(&format!(
+        "crucible.campaign.finding@{absent_finding_content}"
+    ))
+    .expect("stale absent finding ID");
+    let absent_bundle_content = ContentId::for_bytes(
+        crucible_campaign::CampaignRecordKind::FindingCandidateBundle.object_kind(),
+        crucible_campaign::CampaignRecordKind::FindingCandidateBundle.schema_version(),
+        b"stale absent candidate bundle",
+    );
+    let absent_bundle = FindingCandidateBundleId::parse(&format!(
+        "crucible.campaign.finding-candidate-bundle@{absent_bundle_content}"
+    ))
+    .expect("stale absent candidate bundle ID");
+    let stale_occurrences = QueryCampaignFindingOccurrencesRequest::new(
+        principal(),
+        CampaignName::new("blank-imported").expect("campaign name"),
+        created.snapshot(),
+        absent_finding,
+        None,
+        1,
+    )
+    .expect("stale occurrence request");
+    let stale_occurrence_object = GetCampaignFindingOccurrenceObjectRequest::new(
+        principal(),
+        CampaignName::new("blank-imported").expect("campaign name"),
+        created.snapshot(),
+        absent_finding,
+        absent_bundle,
+        CampaignFindingOccurrenceObjectKind::Reproduction,
+    )
+    .expect("stale occurrence object request");
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
+    let server_repository = Arc::clone(&repository);
+    let server = thread::spawn(move || {
+        let service = RepositoryCampaignService::new(server_repository.as_ref(), AllowAll);
+        for _ in 0..2 {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve stale finding occurrence request");
+        }
+    });
+    let loopback = LoopbackCampaignService::new(client_stream).expect("loopback service");
+    let loopback_client = CampaignClient::new(loopback);
+    for result in [
+        loopback_client
+            .query_campaign_finding_occurrences(&stale_occurrences)
+            .map(|_| ()),
+        loopback_client
+            .get_campaign_finding_occurrence_object(&stale_occurrence_object)
+            .map(|_| ()),
+    ] {
+        assert!(matches!(
+            result,
+            Err(crucible_campaign::CampaignClientError::Service(
+                crucible_campaign::CampaignServiceFailure::Stale { expected, current }
+            )) if expected == created.snapshot() && current == resumed.new_snapshot()
+        ));
+    }
+    server.join().expect("stale occurrence server thread");
 
     let derive = DeriveCampaignRequest::new(
         principal(),
