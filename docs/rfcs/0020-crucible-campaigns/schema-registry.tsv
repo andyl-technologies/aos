@@ -87,6 +87,8 @@ crucible.campaign.query-campaign-graph-request	1	crucible-campaign::campaign_ser
 crucible.campaign.query-campaign-graph-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.query-campaign-findings-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.query-campaign-findings-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
+crucible.campaign.query-campaign-finding-occurrences-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
+crucible.campaign.query-campaign-finding-occurrences-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.get-campaign-finding-object-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.get-campaign-finding-object-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.explain-campaign-attempt-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
@@ -169,7 +171,7 @@ crucible.campaign.objective-evaluation	2	crucible-campaign::objective	observatio
 crucible.campaign.ranking-explanation	2	crucible-campaign::objective	projection	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.survivor-selection	1	crucible-campaign::objective	campaign-fact	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.reproduction-artifact	2	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
-crucible.campaign.finding	3	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
+crucible.campaign.finding	4	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding-candidate-bundle	1	crucible-campaign::finding_candidate	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.archive-manifest	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
 crucible.campaign.archive-inventory-page	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address

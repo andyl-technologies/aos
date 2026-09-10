@@ -621,9 +621,9 @@ content_object_id!(
 content_object_id!(
     FindingId,
     ObjectKind::Finding,
-    [1, 2, 3],
+    [1, 2, 3, 4],
     "crucible.campaign.finding",
-    "Identifies one canonical campaign finding; versions 1 and 2 remain decodable for history compatibility."
+    "Identifies one canonical campaign finding; versions 1 through 3 remain decodable for history compatibility."
 );
 content_object_id!(
     FindingCandidateBundleId,

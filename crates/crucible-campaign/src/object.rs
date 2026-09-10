@@ -245,7 +245,7 @@ impl CampaignRecordKind {
             Self::Observation => 12,
             Self::ObjectiveEvaluation | Self::RankingExplanation => 2,
             Self::ReproductionArtifact => 2,
-            Self::Finding => 3,
+            Self::Finding => 4,
             Self::FindingCandidateBundle => RECORD_SCHEMA_VERSION,
             Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,
@@ -773,7 +773,7 @@ impl ObjectEnvelope {
                     | CampaignRecordKind::BudgetLedger
             ) && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::Finding
-                && matches!(envelope.schema_version(), 1..=2);
+                && matches!(envelope.schema_version(), 1..=3);
         if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign record schema version",

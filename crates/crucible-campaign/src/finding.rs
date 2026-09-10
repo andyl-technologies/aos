@@ -22,6 +22,7 @@ use crate::{
 const RECORD_SCHEMA_VERSION: u32 = 1;
 const RETENTION_SCHEMA_VERSION: u32 = 2;
 const CANDIDATE_BUNDLE_SCHEMA_VERSION: u32 = 3;
+const CANDIDATE_OCCURRENCES_SCHEMA_VERSION: u32 = 4;
 const MAX_REPRODUCTION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_REPRODUCTION_RECORD_BYTES: usize = 34 * 1024 * 1024;
 const MAX_FINDING_RECORD_BYTES: usize = 4 * 1024 * 1024;
@@ -1032,6 +1033,78 @@ impl Canonical for FindingOccurrenceSet {
     }
 }
 
+/// Authenticated candidate-bundle occurrence set carried by one finding version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindingCandidateOccurrenceSet {
+    root: ContentId,
+    count: u32,
+    latest: FindingCandidateBundleId,
+}
+
+impl FindingCandidateOccurrenceSet {
+    /// Builds a bounded candidate-bundle occurrence-set projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when `root` is not a Merkle node or
+    /// `count` is zero or exceeds the one-million-occurrence bound.
+    pub fn new(
+        root: ContentId,
+        count: u32,
+        latest: FindingCandidateBundleId,
+    ) -> Result<Self, CampaignCodecError> {
+        if root.kind() != ObjectKind::MerkleNode {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "finding candidate occurrence root is not a Merkle node",
+            });
+        }
+        if count == 0 || count > MAX_FINDING_OCCURRENCES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "finding-candidate-occurrence-count",
+            });
+        }
+        Ok(Self {
+            root,
+            count,
+            latest,
+        })
+    }
+
+    /// Returns the authenticated Merkle-set root.
+    #[must_use]
+    pub const fn root(self) -> ContentId {
+        self.root
+    }
+
+    /// Returns the authenticated set cardinality.
+    #[must_use]
+    pub const fn count(self) -> u32 {
+        self.count
+    }
+
+    /// Returns the bundle added or reaffirmed by this record version.
+    #[must_use]
+    pub const fn latest(self) -> FindingCandidateBundleId {
+        self.latest
+    }
+}
+
+impl Canonical for FindingCandidateOccurrenceSet {
+    fn encode(&self, encoder: &mut Encoder) {
+        Canonical::encode(&self.root, encoder);
+        self.count.encode(encoder);
+        self.latest.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            ContentId::decode(decoder)?,
+            u32::decode(decoder)?,
+            FindingCandidateBundleId::decode(decoder)?,
+        )
+    }
+}
+
 /// Canonical cluster of one stable failure signature and its occurrences.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
@@ -1044,6 +1117,7 @@ pub struct Finding {
     minimized: Option<ReproductionArtifactId>,
     exact_pins: FindingExactPins,
     candidate_bundle: Option<FindingCandidateBundleId>,
+    candidate_occurrences: Option<FindingCandidateOccurrenceSet>,
 }
 
 impl Finding {
@@ -1076,6 +1150,7 @@ impl Finding {
             minimized,
             FindingExactPins::from_untyped(exact_pins)?,
             None,
+            None,
         )
     }
 
@@ -1104,6 +1179,7 @@ impl Finding {
             occurrences,
             minimized,
             exact_pins,
+            None,
             None,
         )
     }
@@ -1136,6 +1212,45 @@ impl Finding {
             minimized,
             exact_pins,
             Some(candidate_bundle),
+            None,
+        )
+    }
+
+    /// Builds a schema-v4 finding that retains every verified candidate bundle.
+    ///
+    /// The representative observation and reproduction fields remain the first
+    /// finding evidence. `candidate_bundle` is the first retained candidate
+    /// bundle, which can postdate that evidence when a legacy finding upgrades.
+    /// `candidate_occurrences` authenticates every retained bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when reproduction versions are invalid or
+    /// the encoded record exceeds 4 MiB.
+    // crucible-lint: allow rust-allow -- the versioned constructor keeps every canonical field explicit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_candidate_occurrences(
+        signature: FindingSignature,
+        observation: ObservationId,
+        reproduction: ReproductionArtifactId,
+        first_seen_snapshot: CampaignSnapshotId,
+        occurrences: FindingOccurrenceSet,
+        minimized: ReproductionArtifactId,
+        exact_pins: FindingExactPins,
+        candidate_bundle: FindingCandidateBundleId,
+        candidate_occurrences: FindingCandidateOccurrenceSet,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            CANDIDATE_OCCURRENCES_SCHEMA_VERSION,
+            signature,
+            observation,
+            reproduction,
+            first_seen_snapshot,
+            occurrences,
+            Some(minimized),
+            exact_pins,
+            Some(candidate_bundle),
+            Some(candidate_occurrences),
         )
     }
 
@@ -1151,6 +1266,7 @@ impl Finding {
         minimized: Option<ReproductionArtifactId>,
         exact_pins: FindingExactPins,
         candidate_bundle: Option<FindingCandidateBundleId>,
+        candidate_occurrences: Option<FindingCandidateOccurrenceSet>,
     ) -> Result<Self, CampaignCodecError> {
         let reproduction_version = reproduction.content_id().schema_version();
         let minimized_version = minimized.map(|id| id.content_id().schema_version());
@@ -1159,16 +1275,27 @@ impl Finding {
                 reproduction_version == RECORD_SCHEMA_VERSION
                     && minimized_version.is_none_or(|version| version == RECORD_SCHEMA_VERSION)
                     && candidate_bundle.is_none()
+                    && candidate_occurrences.is_none()
             }
             RETENTION_SCHEMA_VERSION => {
                 reproduction_version == RECORD_SCHEMA_VERSION
                     && minimized_version.is_none_or(|version| version == RETENTION_SCHEMA_VERSION)
                     && candidate_bundle.is_none()
+                    && candidate_occurrences.is_none()
             }
             CANDIDATE_BUNDLE_SCHEMA_VERSION => {
                 reproduction_version == RECORD_SCHEMA_VERSION
                     && minimized_version == Some(RETENTION_SCHEMA_VERSION)
                     && candidate_bundle.is_some()
+                    && candidate_occurrences.is_none()
+            }
+            CANDIDATE_OCCURRENCES_SCHEMA_VERSION => {
+                reproduction_version == RECORD_SCHEMA_VERSION
+                    && minimized_version.is_some_and(|version| {
+                        matches!(version, RECORD_SCHEMA_VERSION | RETENTION_SCHEMA_VERSION)
+                    })
+                    && candidate_bundle.is_some()
+                    && candidate_occurrences.is_some()
             }
             _ => false,
         };
@@ -1187,6 +1314,7 @@ impl Finding {
             minimized,
             exact_pins,
             candidate_bundle,
+            candidate_occurrences,
         };
         codec::ensure_encoded_size(
             &value,
@@ -1262,10 +1390,42 @@ impl Finding {
         &self.exact_pins
     }
 
-    /// Returns the verified candidate bundle retained by this finding version.
+    /// Returns the retained candidate-bundle compatibility anchor.
+    ///
+    /// Schema v3 binds this bundle to the representative evidence. Schema v4
+    /// preserves the first bundle retained after upgrade, while
+    /// [`Self::candidate_occurrences`] is authoritative for all bundles.
     #[must_use]
     pub const fn candidate_bundle(&self) -> Option<FindingCandidateBundleId> {
         self.candidate_bundle
+    }
+
+    /// Returns the authenticated Merkle root of retained candidate bundles.
+    #[must_use]
+    pub const fn candidate_occurrences(&self) -> Option<ContentId> {
+        match self.candidate_occurrences {
+            Some(occurrences) => Some(occurrences.root()),
+            None => None,
+        }
+    }
+
+    /// Returns the number of retained candidate bundles.
+    #[must_use]
+    pub const fn candidate_occurrence_count(&self) -> u32 {
+        match self.candidate_occurrences {
+            Some(occurrences) => occurrences.count(),
+            None if self.candidate_bundle.is_some() => 1,
+            None => 0,
+        }
+    }
+
+    /// Returns the candidate bundle added or reaffirmed by this record version.
+    #[must_use]
+    pub const fn latest_candidate_bundle(&self) -> Option<FindingCandidateBundleId> {
+        match self.candidate_occurrences {
+            Some(occurrences) => Some(occurrences.latest()),
+            None => self.candidate_bundle,
+        }
     }
 
     /// Returns strict canonical record-body bytes.
@@ -1327,6 +1487,16 @@ impl Finding {
         if let Some(candidate_bundle) = self.candidate_bundle {
             children.push(("candidate-bundle".to_owned(), candidate_bundle.content_id()));
         }
+        if let Some(candidate_occurrences) = self.candidate_occurrences {
+            children.push((
+                "candidate-occurrences".to_owned(),
+                candidate_occurrences.root(),
+            ));
+            children.push((
+                "latest-candidate-bundle".to_owned(),
+                candidate_occurrences.latest().content_id(),
+            ));
+        }
         if self.schema_version == RECORD_SCHEMA_VERSION {
             children.extend(
                 self.exact_pins
@@ -1356,8 +1526,11 @@ impl Canonical for Finding {
         } else {
             self.exact_pins.encode(encoder);
         }
-        if self.schema_version == CANDIDATE_BUNDLE_SCHEMA_VERSION {
+        if self.schema_version >= CANDIDATE_BUNDLE_SCHEMA_VERSION {
             self.candidate_bundle.encode(encoder);
+        }
+        if self.schema_version == CANDIDATE_OCCURRENCES_SCHEMA_VERSION {
+            self.candidate_occurrences.encode(encoder);
         }
     }
 
@@ -1365,7 +1538,10 @@ impl Canonical for Finding {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            RECORD_SCHEMA_VERSION | RETENTION_SCHEMA_VERSION | CANDIDATE_BUNDLE_SCHEMA_VERSION
+            RECORD_SCHEMA_VERSION
+                | RETENTION_SCHEMA_VERSION
+                | CANDIDATE_BUNDLE_SCHEMA_VERSION
+                | CANDIDATE_OCCURRENCES_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported finding record schema version",
@@ -1384,8 +1560,13 @@ impl Canonical for Finding {
         } else {
             FindingExactPins::decode(decoder)?
         };
-        let candidate_bundle = if schema_version == CANDIDATE_BUNDLE_SCHEMA_VERSION {
+        let candidate_bundle = if schema_version >= CANDIDATE_BUNDLE_SCHEMA_VERSION {
             Option::<FindingCandidateBundleId>::decode(decoder)?
+        } else {
+            None
+        };
+        let candidate_occurrences = if schema_version == CANDIDATE_OCCURRENCES_SCHEMA_VERSION {
+            Option::<FindingCandidateOccurrenceSet>::decode(decoder)?
         } else {
             None
         };
@@ -1399,6 +1580,7 @@ impl Canonical for Finding {
             minimized,
             exact_pins,
             candidate_bundle,
+            candidate_occurrences,
         )
     }
 }

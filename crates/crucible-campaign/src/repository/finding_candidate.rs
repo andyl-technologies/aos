@@ -147,8 +147,9 @@ impl CampaignRepository {
     /// This read-only check is the handoff boundary for releasing an
     /// executor-owned pending-candidate GC root. It verifies the candidate and
     /// finding records, reads the named campaign's authoritative head, requires
-    /// the finding's direct candidate child to equal `bundle`, and authenticates
-    /// the complete current snapshot closure containing both records.
+    /// the finding's candidate occurrence set to contain `bundle`, and
+    /// authenticates the complete current snapshot closure containing both
+    /// records.
     ///
     /// The returned value is point-in-time evidence only. It neither pins that
     /// head nor authorizes a later unfenced assignment-ledger update. A caller
@@ -170,9 +171,9 @@ impl CampaignRepository {
     ) -> Result<AuthenticatedFindingCandidateIncorporation, CampaignRepositoryError> {
         self.load_finding_candidate_bundle(bundle)?;
         let finding_record = self.read_finding(finding.content_id())?;
-        if finding_record.candidate_bundle() != Some(bundle) {
+        if !self.finding_retains_candidate_bundle(&finding_record, bundle)? {
             return Err(integrity(
-                "finding-candidate-incorporation-direct-link-mismatch",
+                "finding-candidate-incorporation-occurrence-mismatch",
             ));
         }
 
@@ -250,8 +251,7 @@ impl CampaignRepository {
         )?;
         if finding.signature() != bundle.signature()
             || occurrence != Some(bundle.observation().content_id())
-            || finding.minimized() != Some(bundle.minimized())
-            || finding.candidate_bundle() != Some(bundle.id()?)
+            || !self.finding_retains_candidate_bundle(&finding, bundle.id()?)?
             || !exact_pins_contain(finding.exact_pin_retention(), bundle.exact_pins())
         {
             return Ok(None);
@@ -263,6 +263,20 @@ impl CampaignRepository {
             finding: FindingId::from_content_id(finding_id)?,
             replayed: true,
         }))
+    }
+
+    pub(in crate::repository) fn finding_retains_candidate_bundle(
+        &self,
+        finding: &Finding,
+        bundle: FindingCandidateBundleId,
+    ) -> Result<bool, CampaignRepositoryError> {
+        let Some(root) = finding.candidate_occurrences() else {
+            return Ok(finding.candidate_bundle() == Some(bundle));
+        };
+        Ok(self
+            .merkle
+            .get(root, finding_candidate_occurrence_key(bundle))?
+            == Some(bundle.content_id()))
     }
 }
 

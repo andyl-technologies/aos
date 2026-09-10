@@ -31,22 +31,23 @@ use crate::{
     ContinuationProjection, ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch,
     DebuggerAuthorityKey, DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile,
     ExecutorRejection, ExpansionCredit, ExpansionState, ExpansionStateId, Finding,
-    FindingCandidateBundle, FindingCandidateBundleId, FindingId, FindingMinimizationEvidence,
-    FindingOccurrenceSet, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof,
-    MerkleMapPage, MerkleMapPageProof, MerkleMapRoot, NonModeledAttemptDisposition, ObjectEnvelope,
-    ObjectiveEvaluation, ObjectiveEvaluationId, Observation, ObservationId, PinRequest,
-    PlannerAuthorityKey, PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
-    PlannerProposalDisposition, PlannerRequest, PlannerState, PlannerStep, PlannerStepId,
-    PlannerStepProposal, PlanningAccounting, PlanningBudget, PlanningScanPage,
-    PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
-    PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
-    RankingExplanation, RankingExplanationId, ReproductionArtifact, ReproductionArtifactId,
-    RetainedPlannerRequestId, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointCaptureResolution, SavepointContinuationSelection, ScenarioArtifact,
-    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
-    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse, SurvivorSelection, SurvivorSelectionBundle, SurvivorSelectionId,
+    FindingCandidateBundle, FindingCandidateBundleId, FindingCandidateOccurrenceSet, FindingId,
+    FindingMinimizationEvidence, FindingOccurrenceSet, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MeasurementSet, MeasurementSetId,
+    MerkleMap, MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
+    NonModeledAttemptDisposition, ObjectEnvelope, ObjectiveEvaluation, ObjectiveEvaluationId,
+    Observation, ObservationId, PinRequest, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
+    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
+    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
+    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
+    PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
+    ProposalId, PurePlannerEngine, RankingExplanation, RankingExplanationId, ReproductionArtifact,
+    ReproductionArtifactId, RetainedPlannerRequestId, SavepointCaptureOutcome,
+    SavepointCaptureRequest, SavepointCaptureResolution, SavepointContinuationSelection,
+    ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId,
+    Selection, SelectionId, StopCondition, StopOutcome, SubmitAttemptDisposition,
+    SubmitAttemptRequest, SubmitAttemptResponse, SurvivorSelection, SurvivorSelectionBundle,
+    SurvivorSelectionId,
 };
 use crate::{BranchAcceptanceCount, BranchAcceptanceSummary};
 
@@ -1406,7 +1407,7 @@ pub use budget::CampaignBudgetProjection;
 
 use attempt_closure::non_modeled_attempt_key;
 use finding::finding_occurrence_key;
-pub(crate) use finding::finding_signature_key;
+pub(crate) use finding::{finding_candidate_occurrence_key, finding_signature_key};
 pub use finding_candidate::AuthenticatedFindingCandidateIncorporation;
 
 pub use attempt_closure::NonModeledAttemptResult;

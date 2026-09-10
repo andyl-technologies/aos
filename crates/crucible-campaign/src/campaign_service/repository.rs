@@ -858,3 +858,78 @@ where
         Ok(SubmitCampaignBranchResponse::new(request, result)?)
     }
 }
+
+impl<A> CampaignFindingOccurrenceService for RepositoryCampaignService<'_, A>
+where
+    A: CampaignPrincipalAuthorizer,
+{
+    fn query_campaign_finding_occurrences(
+        &self,
+        request: &QueryCampaignFindingOccurrencesRequest,
+    ) -> Result<QueryCampaignFindingOccurrencesResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::QueryCampaignFindingOccurrences,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let (finding, finding_proof) = self
+            .repository
+            .finding_with_proof(head.snapshot().roots().findings, request.finding())?;
+        let occurrence_root =
+            finding
+                .candidate_occurrences()
+                .ok_or(CampaignRepositoryError::InvalidRequest {
+                    reason: "campaign-finding-has-no-candidate-occurrence-index",
+                })?;
+        let limit = usize::try_from(request.limit()).map_err(|_| {
+            CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-finding-occurrence-query-page-size-is-invalid",
+            }
+        })?;
+        let (page, occurrence_proof) = self.repository.scan_finding_candidate_occurrences_page(
+            occurrence_root,
+            request.after(),
+            limit,
+        )?;
+        let entries = page
+            .entries()
+            .iter()
+            .map(|(_, object)| {
+                let bundle = self.repository.load_finding_candidate_bundle(
+                    FindingCandidateBundleId::from_content_id(*object)?,
+                )?;
+                let observation = self.repository.load_observation(bundle.observation())?;
+                let reproduction = self
+                    .repository
+                    .load_reproduction_artifact(bundle.reproduction())?;
+                let minimized = self
+                    .repository
+                    .load_reproduction_artifact(bundle.minimized())?;
+                Ok(CampaignFindingOccurrence::new(
+                    bundle,
+                    observation,
+                    reproduction,
+                    minimized,
+                )?)
+            })
+            .collect::<Result<Vec<_>, CampaignRepositoryError>>()?;
+        Ok(QueryCampaignFindingOccurrencesResponse::new(
+            request,
+            head.snapshot().clone(),
+            finding,
+            entries,
+            page.next_after(),
+            finding_proof,
+            occurrence_proof,
+        )?)
+    }
+}

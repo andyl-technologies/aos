@@ -440,6 +440,53 @@ impl CampaignRepository {
         {
             return Err(integrity("finding-occurrence-root-mismatch"));
         }
+        match (
+            finding.candidate_bundle(),
+            finding.candidate_occurrences(),
+            finding.latest_candidate_bundle(),
+        ) {
+            (Some(first), Some(root), Some(latest)) => {
+                let candidate_occurrences = self.merkle.inspect_shallow(root)?;
+                if candidate_occurrences.entry_count()
+                    != u64::from(finding.candidate_occurrence_count())
+                    || self
+                        .merkle
+                        .get(root, finding_candidate_occurrence_key(first))?
+                        != Some(first.content_id())
+                    || self
+                        .merkle
+                        .get(root, finding_candidate_occurrence_key(latest))?
+                        != Some(latest.content_id())
+                {
+                    return Err(integrity("finding-candidate-occurrence-root-mismatch"));
+                }
+                let first_bundle = self.load_finding_candidate_bundle(first)?;
+                if first_bundle.signature() != finding.signature()
+                    || finding.schema_version() == 3
+                        && (first_bundle.observation() != finding.observation()
+                            || first_bundle.reproduction() != finding.reproduction()
+                            || Some(first_bundle.minimized()) != finding.minimized())
+                    || !first_bundle
+                        .exact_pins()
+                        .all()
+                        .is_subset(finding.exact_pins())
+                {
+                    return Err(integrity("finding-first-candidate-bundle-mismatch"));
+                }
+                let latest_bundle = self.load_finding_candidate_bundle(latest)?;
+                if latest_bundle.signature() != finding.signature()
+                    || !latest_bundle
+                        .exact_pins()
+                        .all()
+                        .is_subset(finding.exact_pins())
+                {
+                    return Err(integrity("finding-latest-candidate-bundle-mismatch"));
+                }
+            }
+            (Some(_), None, Some(_)) => {}
+            (None, None, None) => {}
+            _ => return Err(integrity("finding-candidate-occurrence-shape")),
+        }
         let reproduction = self.read_reproduction_artifact(finding.reproduction().content_id())?;
         self.read_snapshot(finding.first_seen_snapshot().content_id())?;
         if reproduction.finding_fingerprint() != finding.signature().fingerprint()
@@ -464,7 +511,7 @@ impl CampaignRepository {
             {
                 return Err(integrity("finding-minimized-reproduction-basis-mismatch"));
             }
-            if finding.schema_version() >= 2 {
+            if minimized.schema_version() >= 2 {
                 let minimization = minimized
                     .minimization()
                     .ok_or_else(|| integrity("finding-minimized-reproduction-has-no-trace"))?;
