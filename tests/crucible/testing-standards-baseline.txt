@@ -16,6 +16,8 @@
 # The delayed cancellation fixture delivers one cancellation, and the moved
 # node fixture waits for loader completion before its single audit assertion.
 # Hot-fork `retry` names classify resource recovery; they never rerun a test.
+# The native scenario retry domain and selected-retry metric model a guest
+# choice and its observation; neither retries a failed test.
 # The native atomic-world publication retry resumes one immutable repository
 # transaction after an injected storage failure; it never reruns the test. Its
 # fixed sleep polls the retained production process under a bounded step limit.
@@ -65,6 +67,7 @@ crucible-daemon	src/planner_process/owner	retry	1
 crucible-daemon	src/planner_process/pipes/tests	thread::sleep	1
 crucible-daemon	src/qemu_hot_fork_factory/tests	retry	1
 crucible-daemon	src/qemu_hot_fork_world_factory/tests	retry	1
+crucible-daemon	src/qemu_hot_fork_world_factory/tests/native_acceptance/scenario	retry	1
 crucible-daemon	src/qemu_hot_fork_world_factory/tests/native_acceptance/failures	retry	1
 crucible-daemon	src/qemu_hot_fork_world_factory/tests/native_acceptance/failures	std::thread::sleep	1
 crucible-daemon	src/qemu_hot_fork_world_factory/tests/native_acceptance/failures	thread::sleep	1
