@@ -17,35 +17,35 @@ use crucible_campaign::{
     BranchRequestCause, BranchRequestResult, CampaignChoiceEntry, CampaignChoiceObject,
     CampaignChoiceObjectKind, CampaignClient, CampaignCommandId, CampaignCommandResult,
     CampaignContinuationStatus, CampaignControlAction, CampaignDerivationResult,
-    CampaignDiscoveryResult, CampaignFact, CampaignFindingOccurrenceObjectKind,
-    CampaignFindingOccurrenceService, CampaignHash, CampaignLineage, CampaignLineageId,
-    CampaignMode, CampaignName, CampaignOperationalStatus, CampaignPolicy, CampaignPolicyId,
-    CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignRoots,
-    CampaignSeed, CampaignSemanticStatus, CampaignService, CampaignServiceOperation,
-    CampaignSnapshot, CampaignSnapshotId, CampaignState, CampaignStatusSummary, CandidateSource,
-    ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity,
-    ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
-    ConfigurationId, ContinuationProjection, ContinuationState, ControlRequest,
-    CreateCampaignRequest, CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
-    DiscoveryRequest, ExactRational, ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse,
-    ExplorerPolicy, FairnessPolicy, FindingCandidateBundleId, FindingId,
-    GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
-    GetCampaignFindingObjectRequest, GetCampaignFindingObjectResponse,
-    GetCampaignFindingOccurrenceObjectRequest, GetCampaignFindingOccurrenceObjectResponse,
-    GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
-    GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
-    GetCampaignPlannerRankingsRequest, GetCampaignPlannerRankingsResponse, GetCampaignRequest,
-    GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MerkleMap, ObjectEnvelope, PinCampaignRequest,
-    PinCampaignResponse, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
-    PuctPolicy, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
-    QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
-    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
-    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
-    RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
-    SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse,
-    WatchCampaignRequest, WatchCampaignResponse,
+    CampaignDiscoveryResult, CampaignFact, CampaignFindingOccurrenceObject,
+    CampaignFindingOccurrenceObjectKind, CampaignFindingOccurrenceService, CampaignHash,
+    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignOperationalStatus,
+    CampaignPolicy, CampaignPolicyId, CampaignPrincipal, CampaignPrincipalAuthorizer,
+    CampaignRepository, CampaignRoots, CampaignSeed, CampaignSemanticStatus, CampaignService,
+    CampaignServiceOperation, CampaignSnapshot, CampaignSnapshotId, CampaignState,
+    CampaignStatusSummary, CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+    ChoiceDomainId, ChoiceOpportunity, ChoiceOpportunityId, ChoiceSource, ChoiceValue,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ContinuationProjection,
+    ContinuationState, ControlRequest, CreateCampaignRequest, CreateCampaignResponse,
+    DeriveCampaignRequest, DeriveCampaignResponse, DiscoveryRequest, ExactRational,
+    ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, ExplorerPolicy, FairnessPolicy,
+    FindingCandidateBundleId, FindingId, GetCampaignChoiceObjectRequest,
+    GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
+    GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
+    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
+    GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
+    GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
+    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+    MerkleMap, ObjectEnvelope, PinCampaignRequest, PinCampaignResponse, PinChange, PinRequest,
+    PinRetention, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
+    QueryCampaignChoicesResponse, QueryCampaignFindingOccurrencesRequest,
+    QueryCampaignFindingOccurrencesResponse, QueryCampaignFindingsRequest,
+    QueryCampaignFindingsResponse, QueryCampaignFrontierRequest, QueryCampaignFrontierResponse,
+    QueryCampaignGraphRequest, QueryCampaignGraphResponse, RepositoryCampaignService,
+    RetentionPolicy, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, StopCondition,
+    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest,
+    SubmitCampaignDiscoveryResponse, WatchCampaignRequest, WatchCampaignResponse,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
@@ -1709,6 +1709,159 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
         ))
     ));
     server.join().expect("server thread");
+}
+
+#[test]
+fn campaign_loopback_round_trips_retained_finding_occurrence_dependencies() {
+    let repository = CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "campaign-loopback-finding-occurrence",
+            u64::MAX,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    );
+    let (campaign, snapshot, finding, bundle) =
+        crate::campaign_gc::publish_retained_finding_fixture(&repository);
+    let occurrence_request = QueryCampaignFindingOccurrencesRequest::new(
+        principal(),
+        campaign.clone(),
+        snapshot,
+        finding,
+        None,
+        1,
+    )
+    .expect("retained finding occurrence request");
+    let object_requests = [
+        CampaignFindingOccurrenceObjectKind::Observation,
+        CampaignFindingOccurrenceObjectKind::Reproduction,
+        CampaignFindingOccurrenceObjectKind::MinimizedReproduction,
+    ]
+    .map(|kind| {
+        GetCampaignFindingOccurrenceObjectRequest::new(
+            principal(),
+            campaign.clone(),
+            snapshot,
+            finding,
+            bundle,
+            kind,
+        )
+        .expect("retained finding occurrence object request")
+    });
+
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
+    let server = thread::spawn(move || {
+        let service = RepositoryCampaignService::new(&repository, AllowAll);
+        for _ in 0..4 {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve retained finding occurrence request");
+        }
+    });
+    let client =
+        CampaignClient::new(LoopbackCampaignService::new(client_stream).expect("loopback service"));
+
+    let page = client
+        .query_campaign_finding_occurrences(&occurrence_request)
+        .expect("query retained finding occurrence over loopback");
+    assert_eq!(page.entries().len(), 1);
+    assert_eq!(
+        page.entries()[0]
+            .bundle()
+            .id()
+            .expect("retained bundle identity"),
+        bundle
+    );
+    assert!(page.next_after().is_none());
+
+    let observation = client
+        .get_campaign_finding_occurrence_object(&object_requests[0])
+        .expect("read retained observation over loopback");
+    let reproduction = client
+        .get_campaign_finding_occurrence_object(&object_requests[1])
+        .expect("read retained reproduction over loopback");
+    let minimized = client
+        .get_campaign_finding_occurrence_object(&object_requests[2])
+        .expect("read retained minimized reproduction over loopback");
+    assert!(matches!(
+        observation.object(),
+        CampaignFindingOccurrenceObject::Observation(value)
+            if value.id().expect("observation identity") == page.entries()[0].bundle().observation()
+    ));
+    assert!(matches!(
+        reproduction.object(),
+        CampaignFindingOccurrenceObject::Reproduction(value)
+            if value.id().expect("reproduction identity") == page.entries()[0].bundle().reproduction()
+    ));
+    assert!(matches!(
+        minimized.object(),
+        CampaignFindingOccurrenceObject::MinimizedReproduction(value)
+            if value.id().expect("minimized identity") == page.entries()[0].bundle().minimized()
+    ));
+    server.join().expect("server thread");
+}
+
+#[test]
+fn campaign_loopback_client_rejects_cross_request_occurrence_object_response() {
+    let repository = CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "campaign-loopback-finding-occurrence-mismatch",
+            u64::MAX,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    );
+    let (campaign, snapshot, finding, bundle) =
+        crate::campaign_gc::publish_retained_finding_fixture(&repository);
+    let served = GetCampaignFindingOccurrenceObjectRequest::new(
+        principal(),
+        campaign.clone(),
+        snapshot,
+        finding,
+        bundle,
+        CampaignFindingOccurrenceObjectKind::Observation,
+    )
+    .expect("served occurrence object request");
+    let other = GetCampaignFindingOccurrenceObjectRequest::new(
+        CampaignPrincipal::new("operator:bob").expect("other principal"),
+        campaign,
+        snapshot,
+        finding,
+        bundle,
+        CampaignFindingOccurrenceObjectKind::Observation,
+    )
+    .expect("other occurrence object request");
+    let wrong_response = CampaignClient::new(RepositoryCampaignService::new(&repository, AllowAll))
+        .get_campaign_finding_occurrence_object(&other)
+        .expect("valid response for other request");
+
+    let (client_stream, mut peer) = UnixStream::pair().expect("stream pair");
+    let peer_thread = thread::spawn(move || {
+        read_frame(
+            &mut peer,
+            GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_REQUEST_KIND,
+            std::time::Duration::from_secs(1),
+        )
+        .expect("read occurrence object request");
+        write_frame(
+            &mut peer,
+            GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_RESPONSE_KIND,
+            &wrong_response.canonical_bytes(),
+            std::time::Duration::from_secs(1),
+        )
+        .expect("write cross-request occurrence object response");
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("read timeout");
+        let mut byte = [0_u8; 1];
+        assert_eq!(peer.read(&mut byte).expect("client close"), 0);
+    });
+    let client =
+        CampaignClient::new(LoopbackCampaignService::new(client_stream).expect("loopback service"));
+
+    assert!(matches!(
+        client.get_campaign_finding_occurrence_object(&served),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::ProtocolViolation
+        ))
+    ));
+    peer_thread.join().expect("peer thread");
 }
 
 #[test]

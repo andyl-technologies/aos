@@ -17,13 +17,13 @@ use crucible::ContentHash;
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, BudgetGrant, CampaignCommandId,
     CampaignControlAction, CampaignLineage, CampaignLineageId, CampaignMode, CampaignName,
-    CampaignPolicy, CampaignRepository, CampaignSeed, CancelAttemptExecutionDisposition,
-    CancelAttemptExecutionRequest, CheckpointAttemptExecutionDisposition,
-    CheckpointAttemptExecutionRequest, ConfigurationId, ControlRequest, CoverageProjection,
-    DaemonEpoch, ExecutionId, ExecutionRetentionIntent, ExecutorCompatibilityProfile,
-    ExecutorControlService, ExecutorStatusService, ExplorerPolicy, FairnessPolicy,
-    FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingKind,
-    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
+    CampaignPolicy, CampaignRepository, CampaignSeed, CampaignSnapshotId,
+    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest, ConfigurationId,
+    ControlRequest, CoverageProjection, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
+    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorStatusService, ExplorerPolicy,
+    FairnessPolicy, FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingId,
+    FindingKind, FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
     FindingSignatureMinimizationEvidence, FindingTarget, GetAttemptExecutionDisposition,
     GetAttemptExecutionRequest, MeasurementSet, MerkleMap, Observation, ObservationCandidate,
     ObservationId, PropertyVerdictSet, RetentionPolicy, ScenarioDefId, StopOutcome,
@@ -286,6 +286,33 @@ fn publish_pending_finding_fixture(
     FindingCandidateBundleId,
 ) {
     publish_pending_finding_fixture_with_observation(repository, true)
+}
+
+pub(super) fn publish_retained_finding_fixture(
+    repository: &CampaignRepository,
+) -> (
+    CampaignName,
+    CampaignSnapshotId,
+    FindingId,
+    FindingCandidateBundleId,
+) {
+    const CAMPAIGN: &str = "pending-finding-gc-fixture";
+
+    let (_, _, _, bundle) = publish_pending_finding_fixture(repository);
+    let expected = repository
+        .head(CAMPAIGN)
+        .expect("retained finding fixture head")
+        .snapshot_id();
+    let publication = repository
+        .incorporate_finding_candidate_bundle(CAMPAIGN, expected, bundle)
+        .expect("incorporate retained finding fixture");
+
+    (
+        CampaignName::new(CAMPAIGN).expect("retained finding fixture campaign"),
+        publication.new_snapshot,
+        publication.finding,
+        bundle,
+    )
 }
 
 fn publish_pending_finding_fixture_with_observation(
