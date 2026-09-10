@@ -95,7 +95,7 @@ pub use request::{
     StorageSemanticsError, decode_resolved,
 };
 pub use runtime::{
-    StorageBrokerRuntime, StoragePrepareReadiness, StorageRuntimeError,
+    StorageApplyReadiness, StorageBrokerRuntime, StoragePrepareReadiness, StorageRuntimeError,
     StorageRuntimeMutationOutcome, StorageRuntimeReadiness, WorkspacePinRepairExecutionOutcomeV1,
 };
 pub use service::{

@@ -87,6 +87,9 @@ pub enum StorageServiceError {
 
 /// Defines the narrow runtime surface reachable from public Storage RPC.
 pub trait StorageRpcRuntime {
+    /// Reports whether the service must exit and reopen protected state.
+    fn requires_reopen(&self) -> bool;
+
     /// Reports whether protected policy and runtime state permit Prepare.
     fn is_prepare_ready(&self) -> bool;
 
@@ -148,6 +151,10 @@ pub trait StorageRpcRuntime {
 }
 
 impl StorageRpcRuntime for StorageBrokerRuntime {
+    fn requires_reopen(&self) -> bool {
+        Self::requires_reopen(self)
+    }
+
     fn is_prepare_ready(&self) -> bool {
         Self::is_prepare_ready(self)
     }
@@ -245,13 +252,17 @@ impl<R: StorageRpcRuntime> StorageService<R> {
     /// # Errors
     ///
     /// Returns [`StorageServiceError`] for a corrupted listener or configured
-    /// controller cgroup, failed readiness polling, or invalid local clock.
-    /// Peer, request, runtime, and accepted-child transport failures remain
-    /// contained to the connection and are returned as an outcome.
+    /// controller cgroup, failed readiness polling, invalid local clock, or a
+    /// runtime whose protected journal custody requires a process restart.
+    /// Other peer, request, runtime, and accepted-child transport failures
+    /// remain contained to the connection and are returned as an outcome.
     pub fn serve_once(
         &mut self,
         listener: &mut RecordSubjectListener,
     ) -> Result<StorageConnectionOutcome, StorageServiceError> {
+        if self.runtime.requires_reopen() {
+            return Err(StorageRuntimeError::ReopenRequired.into());
+        }
         self.verifier.validate_current()?;
         let Some(mut connection) = accept_connection(listener)? else {
             return Ok(StorageConnectionOutcome::TransportRejected);
@@ -348,14 +359,21 @@ impl<R: StorageRpcRuntime> StorageService<R> {
             }
             _ => return Ok(StorageConnectionOutcome::RequestRejected),
         };
-        let Ok((response, outcome, request_deadline)) = response else {
-            return Ok(StorageConnectionOutcome::RequestRejected);
+        let (response, outcome, request_deadline) = match response {
+            Ok(response) => response,
+            Err(_) if self.runtime.requires_reopen() => {
+                return Err(StorageRuntimeError::ReopenRequired.into());
+            }
+            Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
         };
         if self
             .verifier
             .recheck_connection(execution, connection.peer())
             .is_err()
         {
+            if self.runtime.requires_reopen() {
+                return Err(StorageRuntimeError::ReopenRequired.into());
+            }
             return Ok(StorageConnectionOutcome::PeerRejected);
         }
         let response_deadline = if inventory_method {
@@ -363,11 +381,8 @@ impl<R: StorageRpcRuntime> StorageService<R> {
         } else {
             exchange_deadline.min(request_deadline)
         };
-        if send(&mut connection, &response, response_deadline).is_err() {
-            return Ok(StorageConnectionOutcome::TransportRejected);
-        }
-
-        Ok(outcome)
+        let response_sent = send(&mut connection, &response, response_deadline).is_ok();
+        finish_dispatched_response(self.runtime.requires_reopen(), response_sent, outcome)
     }
 
     fn dispatch_inventory(
@@ -658,6 +673,7 @@ fn encode_runtime_error(
         StorageRuntimeError::Worker(_)
         | StorageRuntimeError::Transaction(_)
         | StorageRuntimeError::Recovery
+        | StorageRuntimeError::ReopenRequired
         | StorageRuntimeError::WorkspacePinScope
         | StorageRuntimeError::Admission(_) => (
             BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE,
@@ -668,6 +684,23 @@ fn encode_runtime_error(
     // A public caller must reconcile inventory and obtain new authority before
     // another mutation. No ambiguous failure is labelled safely retryable.
     encode_safe_error(request_id, request, code, message, false, maximum_bytes)
+}
+
+pub(crate) fn finish_dispatched_response(
+    reopen_required: bool,
+    response_sent: bool,
+    outcome: StorageConnectionOutcome,
+) -> Result<StorageConnectionOutcome, StorageServiceError> {
+    // Once custody is ambiguous, even a failed response send must not return to
+    // the accept loop. Exiting lets systemd reopen and replay protected state.
+    if reopen_required {
+        return Err(StorageRuntimeError::ReopenRequired.into());
+    }
+    if !response_sent {
+        return Ok(StorageConnectionOutcome::TransportRejected);
+    }
+
+    Ok(outcome)
 }
 
 fn encode_safe_error(
@@ -837,6 +870,34 @@ mod tests {
         );
         assert!(!response.error.as_option().unwrap().retryable);
         assert!(response.body.is_empty());
+    }
+
+    #[test]
+    fn reopen_required_exits_after_bounded_response_handling() {
+        for response_sent in [false, true] {
+            let error = finish_dispatched_response(
+                true,
+                response_sent,
+                StorageConnectionOutcome::RequestRejected,
+            )
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                StorageServiceError::Runtime(StorageRuntimeError::ReopenRequired)
+            ));
+        }
+
+        assert_eq!(
+            finish_dispatched_response(false, true, StorageConnectionOutcome::RequestRejected,)
+                .unwrap(),
+            StorageConnectionOutcome::RequestRejected
+        );
+        assert_eq!(
+            finish_dispatched_response(false, false, StorageConnectionOutcome::RequestRejected,)
+                .unwrap(),
+            StorageConnectionOutcome::TransportRejected
+        );
     }
 
     #[test]

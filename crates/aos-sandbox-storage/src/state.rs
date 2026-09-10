@@ -3149,6 +3149,11 @@ impl StorageTransactionStore {
         }
     }
 
+    /// Reports whether an uncertain commit invalidated the in-memory projection.
+    pub(crate) const fn requires_reopen(&self) -> bool {
+        self.commit_failed
+    }
+
     pub(crate) fn poison_after_committed_repair_failure(&mut self) {
         self.commit_failed = true;
     }

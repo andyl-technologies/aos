@@ -402,6 +402,7 @@ in {
         "RuntimeDirectory=aos/sandbox-pins/workspaces",
         "RuntimeDirectoryMode=0700",
         "RuntimeDirectoryPreserve=yes",
+        "RequiresMountsFor=${resolverPolicyDirectory}",
         "ReadOnlyPaths=${authorityDirectory}",
         "ReadOnlyPaths=${bootstrapDirectory}",
         "ReadOnlyPaths=-${resolverPolicyDirectory}",

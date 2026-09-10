@@ -40,6 +40,12 @@ in {
       description = "Existing root-owned directory containing storage-genesis.catalog and storage-minimum-generation.";
     };
 
+    resolverPolicyDirectory = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Optional existing root-owned directory containing storage-resolver-policy.catalog.";
+    };
+
     identityPoolStart = lib.mkOption {
       type = lib.types.addCheck lib.types.int (value: value >= minimumIdentityRange);
       default = 65536;
@@ -70,6 +76,10 @@ in {
       {
         assertion = lib.hasPrefix "/" cfg.bootstrapDirectory;
         message = "aos.sandbox.storageBroker.bootstrapDirectory must be absolute";
+      }
+      {
+        assertion = cfg.resolverPolicyDirectory == null || lib.hasPrefix "/" cfg.resolverPolicyDirectory;
+        message = "aos.sandbox.storageBroker.resolverPolicyDirectory must be null or absolute";
       }
       {
         assertion = cfg.identityPoolStart + cfg.identityPoolSize <= 4294967295;
@@ -105,7 +115,7 @@ in {
     };
 
     systemd.services.aos-storaged = {
-      description = "AOS authenticated Storage repair and inventory broker";
+      description = "AOS authenticated Storage Prepare, repair, and inventory broker";
       requires = [
         "aos-storaged.socket"
         "aos-sandbox-zfs-worker.socket"
@@ -122,7 +132,7 @@ in {
           "/sys/fs/cgroup"
           cfg.authorityDirectory
           cfg.bootstrapDirectory
-        ];
+        ] ++ lib.optional (cfg.resolverPolicyDirectory != null) cfg.resolverPolicyDirectory;
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
       };
@@ -136,7 +146,12 @@ in {
             ${toString cfg.identityPoolSize} \
             ${cfg.zfsPackage}/sbin/zfs \
             ${cfg.authorityDirectory} \
-            ${cfg.bootstrapDirectory}
+            ${cfg.bootstrapDirectory} \
+            ${lib.escapeShellArg (
+            if cfg.resolverPolicyDirectory == null
+            then "-"
+            else cfg.resolverPolicyDirectory
+          )}
         '';
         Restart = "on-failure";
         RestartSec = "2s";
@@ -164,7 +179,10 @@ in {
         PrivateDevices = true;
         PrivateNetwork = true;
         PrivateTmp = true;
-        ProcSubset = "pid";
+        # Workspace pin proofs bind mount identities to the kernel boot ID at
+        # /proc/sys/kernel/random/boot_id. Keep process metadata hidden and
+        # kernel tunables read-only, but do not hide this required procfs ABI.
+        ProcSubset = "all";
         ProtectClock = true;
         ProtectControlGroups = true;
         ProtectHome = true;
@@ -173,12 +191,28 @@ in {
         ProtectKernelTunables = true;
         ProtectProc = "invisible";
         ProtectSystem = "strict";
-        ReadOnlyPaths = [cfg.authorityDirectory cfg.bootstrapDirectory];
+        ReadOnlyPaths =
+          [cfg.authorityDirectory cfg.bootstrapDirectory]
+          ++ lib.optional (cfg.resolverPolicyDirectory != null) "-${cfg.resolverPolicyDirectory}";
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;
         RestrictRealtime = true;
-        RestrictSUIDSGID = true;
+        # systemd 259's RestrictSUIDSGID implementation rejects every
+        # openat2 call because its mode flags are indirect. The broker needs
+        # strict openat2 resolution for cgroup and protected-file authority.
+        # Direct chmod-family mutations remain denied below, but openat2
+        # creation with an indirect setid mode remains a MAC qualification
+        # requirement; Apply therefore stays unavailable.
+        RestrictSUIDSGID = false;
         Slice = "aos-control.slice";
+        SystemCallArchitectures = ["native"];
+        SystemCallFilter = [
+          "~chmod"
+          "~fchmod"
+          "~fchmodat"
+          "~fchmodat2"
+        ];
+        SystemCallErrorNumber = "EPERM";
         TasksMax = 32;
       };
     };

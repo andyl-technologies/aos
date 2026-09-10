@@ -9,15 +9,17 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use aos_sandbox::{Journal, RecordNamespace, RecoveryReport};
+use aos_sandbox::{Journal, JournalRecord, JournalTransaction, RecordNamespace, RecoveryReport};
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    CatalogHeadV1, HEAD_KEY, IdentityPoolWire, RECORD_KEY_PREFIX, StorageIdentityPoolV1,
-    StorageWorkspaceCatalogError, StorageWorkspacePublicationV1, StorageWorkspaceRetirementV1,
-    WORKSPACE_JOURNAL_FILE, WorkspaceRecordV1, decode_head, decode_record, decode_record_key,
-    validate_identity_range, validate_record_set, workspace_journal_limits,
+    AssignmentWire, CatalogBindingWire, CatalogHeadV1, HEAD_KEY, IdentityPoolWire,
+    ObjectDescriptorWire, RECORD_KEY_PREFIX, StorageIdentityPoolV1, StorageWorkspaceCatalogError,
+    StorageWorkspacePublicationV1, StorageWorkspaceRetirementV1, WORKSPACE_JOURNAL_FILE,
+    WorkspaceLifecycleV1, WorkspaceRecordV1, decode_head, decode_record, decode_record_key,
+    encode_head, encode_record, genesis_transaction_id, next_generation, record_key,
+    transaction_id, validate_identity_range, validate_record_set, workspace_journal_limits,
 };
 
 const SNAPSHOT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-catalog-snapshot.v1\0";
@@ -414,6 +416,8 @@ pub(crate) struct PendingStorageWorkspaceCatalogV1 {
     records: std::collections::BTreeMap<[u8; 32], WorkspaceRecordV1>,
     snapshot: StorageWorkspaceCatalogSnapshotV1,
     recovery: StorageWorkspaceCatalogRecoveryV1,
+    #[cfg(test)]
+    fail_after_next_materialization_commit: bool,
 }
 
 impl PendingStorageWorkspaceCatalogV1 {
@@ -593,6 +597,8 @@ impl PendingStorageWorkspaceCatalogV1 {
             records,
             snapshot,
             recovery: recovery.into(),
+            #[cfg(test)]
+            fail_after_next_materialization_commit: false,
         })
     }
 
@@ -662,8 +668,9 @@ fn validate_plan_against_pending(
 
 /// Retains structurally validated catalog state and its exact authority plan.
 ///
-/// This typestate intentionally exposes no semantic mutation, physical
-/// observation, allocation, convergence, or inventory method.
+/// This typestate exposes no physical observation, allocation, or inventory
+/// authority. Its only semantic mutation is the private terminal materializer,
+/// which the activation typestate may call after consuming fresh evidence.
 pub(crate) struct ValidatedPendingStorageWorkspaceCatalogV1 {
     pending: PendingStorageWorkspaceCatalogV1,
     plan: StorageWorkspaceCatalogPlanV1,
@@ -698,6 +705,110 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
         validate_plan_against_pending(&self.pending, &plan)?;
         self.plan = plan;
         Ok(())
+    }
+
+    /// Consumes fresh-observation custody and durably reaches every terminal row.
+    ///
+    /// The caller must hold the private fresh-observation capability for this
+    /// exact plan before invoking this method. All deterministic journal and
+    /// record bounds are preflighted before the first write. Each row and its
+    /// new head are one atomic transaction, so a crash leaves an authenticated
+    /// prefix that can be resumed after a new observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageWorkspaceCatalogError`] when the plan is not terminal,
+    /// a terminal record is invalid, a journal bound is exhausted, or a commit
+    /// fails. A commit error consumes custody because journal durability may be
+    /// ambiguous; callers must reopen and recover rather than retrying it.
+    pub(super) fn materialize_terminal(mut self) -> Result<Self, StorageWorkspaceCatalogError> {
+        let mut generation = self.pending.head.as_ref().map_or(1, |head| head.generation);
+        let mut projected_records = self.pending.records.clone();
+        let mut transactions = Vec::new();
+
+        if self.pending.head.is_none() {
+            let head = CatalogHeadV1 {
+                generation,
+                identity_pool: IdentityPoolWire::from(self.pending.identity_pool),
+            };
+            transactions.push(JournalTransaction::new(
+                genesis_transaction_id(self.pending.identity_pool),
+                vec![JournalRecord::put(
+                    RecordNamespace::StorageResourceInventory,
+                    HEAD_KEY.to_vec(),
+                    encode_head(&head)?,
+                )],
+            )?);
+        }
+
+        for row in &self.plan.rows {
+            if projected_records
+                .get(&row.workspace_handle)
+                .is_some_and(|record| record_matches_terminal_policy(record, row))
+            {
+                continue;
+            }
+
+            generation = next_generation(generation)?;
+            let (record, operation_id) = terminal_record(row, generation)?;
+            let head = CatalogHeadV1 {
+                generation,
+                identity_pool: IdentityPoolWire::from(self.pending.identity_pool),
+            };
+            transactions.push(JournalTransaction::new(
+                transaction_id(operation_id, generation),
+                vec![
+                    JournalRecord::put(
+                        RecordNamespace::StorageResourceInventory,
+                        HEAD_KEY.to_vec(),
+                        encode_head(&head)?,
+                    ),
+                    JournalRecord::put(
+                        RecordNamespace::StorageResourceInventory,
+                        record_key(&record.workspace_handle),
+                        encode_record(&record)?,
+                    ),
+                ],
+            )?);
+            projected_records.insert(row.workspace_handle, record);
+        }
+
+        validate_record_set(&projected_records, self.pending.identity_pool)?;
+        self.pending.journal.preflight_transactions(&transactions)?;
+        for transaction in &transactions {
+            self.pending.journal.commit(transaction)?;
+            #[cfg(test)]
+            if std::mem::take(&mut self.pending.fail_after_next_materialization_commit) {
+                // Model an error returned after a complete transaction became
+                // durable but before the in-memory projection was refreshed.
+                return Err(aos_sandbox::JournalError::Io(std::io::Error::other(
+                    "injected failure after durable workspace catalog commit",
+                ))
+                .into());
+            }
+        }
+
+        self.pending.head = Some(CatalogHeadV1 {
+            generation,
+            identity_pool: IdentityPoolWire::from(self.pending.identity_pool),
+        });
+        self.pending.records = projected_records;
+        self.pending.snapshot = snapshot_binding(
+            &self.pending.journal,
+            self.pending.identity_pool,
+            self.pending.head.as_ref(),
+        )?;
+        validate_plan_against_pending(&self.pending, &self.plan)?;
+        if !self.is_terminally_materialized() {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        }
+
+        Ok(self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_after_next_materialization_commit_for_test(&mut self) {
+        self.pending.fail_after_next_materialization_commit = true;
     }
 
     /// Returns whether the semantic workspace catalog already has a head.
@@ -756,6 +867,86 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
     /// Borrows the exact decoded rows retained under the journal lock.
     pub(super) const fn records(&self) -> &std::collections::BTreeMap<[u8; 32], WorkspaceRecordV1> {
         &self.pending.records
+    }
+}
+
+fn terminal_record(
+    row: &StorageWorkspaceCatalogRowPlanV1,
+    catalog_generation: u64,
+) -> Result<(WorkspaceRecordV1, [u8; 16]), StorageWorkspaceCatalogError> {
+    let (publication, lifecycle, root_device, root_inode, operation_id) = match &row.policy {
+        StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(publication) => (
+            publication,
+            WorkspaceLifecycleV1::Active,
+            publication.pin_proof.root_device(),
+            publication.pin_proof.root_inode(),
+            publication.operation_id,
+        ),
+        StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired {
+            creation,
+            retirement,
+        } => (
+            creation,
+            WorkspaceLifecycleV1::Retired {
+                operation_id: retirement.operation_id,
+                request_catalog: CatalogBindingWire::from(retirement.request_catalog),
+                result_catalog: CatalogBindingWire::from(retirement.result_catalog),
+                result_digest: *retirement.result_digest.as_bytes(),
+            },
+            0,
+            0,
+            retirement.operation_id,
+        ),
+        StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent
+        | StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(_) => {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        }
+    };
+    let mut record = WorkspaceRecordV1 {
+        catalog_generation,
+        workspace_handle: publication.workspace_handle,
+        creation_operation_id: publication.operation_id,
+        request_catalog: CatalogBindingWire::from(publication.request_catalog),
+        result_catalog: CatalogBindingWire::from(publication.result_catalog),
+        result_digest: *publication.result_digest.as_bytes(),
+        assignment: AssignmentWire::from(publication.assignment),
+        root_image: ObjectDescriptorWire::from_runtime(&publication.root_image)?,
+        kernel_boot_id: publication.pin_proof.kernel_boot_id(),
+        root_device,
+        root_inode,
+        dataset_guid: publication.dataset_guid,
+        pin_proof: publication.pin_proof.clone(),
+        uid_range_start: publication.identity_range_start,
+        uid_range_size: publication.identity_range_size,
+        lifecycle,
+        resource_digest: [0; 32],
+    };
+    record.refresh_digest()?;
+    record.validate()?;
+
+    Ok((record, operation_id))
+}
+
+fn record_matches_terminal_policy(
+    record: &WorkspaceRecordV1,
+    row: &StorageWorkspaceCatalogRowPlanV1,
+) -> bool {
+    match row.policy() {
+        StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(publication) => {
+            record.is_active()
+                && record.matches_creation(publication)
+                && record.pin_proof == publication.pin_proof
+        }
+        StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired {
+            creation,
+            retirement,
+        } => {
+            record.matches_creation(creation)
+                && record.pin_proof == creation.pin_proof
+                && record.matches_retirement(retirement)
+        }
+        StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent
+        | StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(_) => false,
     }
 }
 
@@ -1123,6 +1314,65 @@ mod tests {
             PendingStorageWorkspaceCatalogV1::open_for_test(deleted.path(), identity_pool),
             Err(StorageWorkspaceCatalogError::CorruptRecord)
         ));
+    }
+
+    #[test]
+    fn terminal_materialization_resumes_an_atomic_crash_prefix_and_replays() {
+        let directory = TempDir::new().unwrap();
+        let identity_pool = pool(3);
+        let active_publication = publication(1);
+        let retired_publication = publication(2);
+        let retired = retirement(2);
+        commit_catalog_record(
+            &directory,
+            identity_pool,
+            &active_record(&active_publication),
+        );
+
+        // The first row represents the durable prefix left by a crash between
+        // row transactions. A new activation resumes only the missing row.
+        let authority_plan = || {
+            plan(vec![
+                row(
+                    &active_publication,
+                    StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(
+                        active_publication.clone(),
+                    ),
+                ),
+                row(
+                    &retired_publication,
+                    StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired {
+                        creation: retired_publication.clone(),
+                        retirement: retired,
+                    },
+                ),
+            ])
+        };
+        let validated =
+            PendingStorageWorkspaceCatalogV1::open_for_test(directory.path(), identity_pool)
+                .unwrap()
+                .validate_plan(authority_plan())
+                .unwrap();
+        let materialized = validated.materialize_terminal().unwrap();
+        let terminal_snapshot = materialized.snapshot();
+
+        assert!(materialized.is_terminally_materialized());
+        assert_eq!(terminal_snapshot.catalog_generation(), Some(3));
+        assert_eq!(materialized.records().len(), 2);
+
+        // Exact replay emits no transaction and therefore keeps the complete
+        // snapshot binding unchanged.
+        let replayed = materialized.materialize_terminal().unwrap();
+        assert_eq!(replayed.snapshot(), terminal_snapshot);
+        drop(replayed);
+
+        let reopened =
+            PendingStorageWorkspaceCatalogV1::open_for_test(directory.path(), identity_pool)
+                .unwrap()
+                .validate_plan(authority_plan())
+                .unwrap();
+        assert!(reopened.is_terminally_materialized());
+        assert_eq!(reopened.snapshot(), terminal_snapshot);
     }
 
     #[test]

@@ -399,6 +399,11 @@ impl StorageAdmissionCoordinator {
         self.transactions.fail_after_next_journal_commit_for_test();
     }
 
+    /// Reports whether the transaction journal must be reopened before reuse.
+    pub(crate) const fn transaction_journal_requires_reopen(&self) -> bool {
+        self.transactions.requires_reopen()
+    }
+
     pub(crate) fn admit_trusted_resolver_policy(
         &mut self,
         binding: StorageResolverPolicyCatalogBindingV1,
@@ -5590,9 +5595,24 @@ mod tests {
                 peer_policy(),
                 &mut || Ok(vm_clock()),
             ),
-            Err(crate::StorageRuntimeError::Recovery)
+            Err(crate::StorageRuntimeError::ReopenRequired)
         ));
         assert!(!observation_pin_path.exists());
+        assert!(runtime.requires_reopen());
+        assert!(!runtime.is_prepare_ready());
+        assert!(!runtime.is_apply_ready());
+        assert!(!runtime.is_repair_ready());
+        assert!(!runtime.is_inventory_ready());
+        let fatal = crate::service::finish_dispatched_response(
+            runtime.requires_reopen(),
+            true,
+            crate::StorageConnectionOutcome::RequestRejected,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            fatal,
+            crate::StorageServiceError::Runtime(crate::StorageRuntimeError::ReopenRequired)
+        ));
 
         let observer_after_repair = systemd_socket_sample(observer_socket);
         let worker_after_repair = systemd_socket_sample(worker_socket);
@@ -5836,7 +5856,8 @@ mod tests {
         let observer_before_resumed = systemd_socket_sample(observer_socket);
         let worker_before_resumed = systemd_socket_sample(worker_socket);
         let claims_before_resumed = workspace_pin_replay_claim_count();
-        assert_eq!(
+        assert!(runtime.fail_after_next_workspace_catalog_commit_for_test());
+        assert!(matches!(
             runtime
                 .repair_workspace_pin(
                     &resumed_request,
@@ -5846,17 +5867,86 @@ mod tests {
                     peer_policy(),
                     &mut || Ok(vm_clock()),
                 )
-                .unwrap(),
-            crate::runtime::WorkspacePinRepairExecutionOutcomeV1::Satisfied
-        );
+                .unwrap_err(),
+            crate::StorageRuntimeError::ReopenRequired
+        ));
         assert!(observation_pin_path.is_dir());
+        assert!(runtime.requires_reopen());
+        assert!(!runtime.is_prepare_ready());
+        assert!(!runtime.is_apply_ready());
+        assert!(!runtime.is_repair_ready());
+        assert!(!runtime.is_inventory_ready());
+        let fatal = crate::service::finish_dispatched_response(
+            runtime.requires_reopen(),
+            true,
+            crate::StorageConnectionOutcome::RequestRejected,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            fatal,
+            crate::StorageServiceError::Runtime(crate::StorageRuntimeError::ReopenRequired)
+        ));
+
+        // The effect and catalog prefix are durable, but the consumed runtime
+        // cannot trust its old projection. A new process reopens both journals
+        // and freshly reproves the catalog before serving another RPC.
+        drop(runtime);
+        let reopen_coordinator =
+            runtime_coordinator(&observation_state, &fixture, &observation_catalog).unwrap();
+        let reopen_custody = WorkspacePinHostCustody::retain_initial_root_owned().unwrap();
+        let reopen_contract = ZfsHelperContract::new(executable.clone()).unwrap();
+        let reopen_pin_executor = SystemdWorkspacePinExecutor::new(
+            PathBuf::from("/run/aos/sandbox-workspace-pin-worker/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let reopen_pin_observer = crate::pin_worker_runtime::SystemdWorkspacePinObserver::new(
+            PathBuf::from("/run/aos/sandbox-workspace-pin-observer/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let reopen_generic_executor = crate::SystemdZfsExecutor::new(
+            PathBuf::from("/run/aos/sandbox-zfs-worker/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let reopen_helper = StorageMutationHelper::new(
+            reopen_contract.clone(),
+            SystemdZfsProcessBackend::new(reopen_generic_executor),
+        );
+        let mut runtime = crate::StorageBrokerRuntime::from_protected_components_for_test(
+            reopen_coordinator,
+            || {
+                crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_root_owned(
+                    &repair_catalog_path,
+                    identity_pool,
+                )
+                .map_err(Into::into)
+            },
+            crate::runtime::runtime_configuration_binding(
+                fixture.protected_authority_binding(),
+                identity_pool,
+            ),
+            reopen_custody,
+            reopen_contract,
+            reopen_pin_executor,
+            reopen_pin_observer,
+            reopen_helper,
+        )
+        .unwrap();
+        assert!(matches!(
+            runtime.readiness(),
+            crate::StorageRuntimeReadiness::Ready
+        ));
+        assert!(runtime.is_inventory_ready());
+
         let observer_after_resumed = systemd_socket_sample(observer_socket);
         let worker_after_resumed = systemd_socket_sample(worker_socket);
         assert_same_socket_invocation(&observer_before_resumed, &observer_after_resumed);
         assert_same_socket_invocation(&worker_before_resumed, &worker_after_resumed);
         assert_eq!(
             observer_after_resumed.accepted,
-            observer_before_resumed.accepted + 1
+            observer_before_resumed.accepted + 3
         );
         assert_eq!(
             worker_after_resumed.accepted,
@@ -5916,7 +6006,7 @@ mod tests {
                 .status(),
             BrokerEffectStatusV2::Complete
         );
-        assert!(!runtime.is_inventory_ready());
+        assert!(runtime.is_inventory_ready());
 
         // Exact replay of the completed successor is also side-effect free.
         let replay_sequence = runtime
@@ -7313,6 +7403,198 @@ mod tests {
         let floor = broker.transactions.resolver_policy_floor().unwrap();
         assert_eq!(floor.generation(), newer.generation());
         assert_eq!(floor.catalog_digest(), newer.digest());
+    }
+
+    #[test]
+    fn production_prepare_floor_commit_ambiguity_reopens_before_retry() {
+        let mut production = production_preparation_fixture(7);
+        let policy_binding = production.policies.load().unwrap().binding().unwrap();
+        let initial_sequence = production.broker.transactions.journal_sequence_for_test();
+        production.broker.fail_after_next_journal_commit_for_test();
+
+        let failure = production
+            .broker
+            .prepare_catalog_from_protected_policy(
+                &production.request,
+                &production.artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            failure,
+            StorageBrokerError::State(crate::StorageStateError::Journal(_))
+        ));
+        assert!(production.broker.transaction_journal_requires_reopen());
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            initial_sequence + 3
+        );
+        let fatal = crate::service::finish_dispatched_response(
+            production.broker.transaction_journal_requires_reopen(),
+            true,
+            crate::StorageConnectionOutcome::RequestRejected,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            fatal,
+            crate::StorageServiceError::Runtime(crate::StorageRuntimeError::ReopenRequired)
+        ));
+
+        let ProductionPreparationFixture {
+            state,
+            fixture,
+            broker: poisoned,
+            policies,
+            request,
+            artifacts,
+            ..
+        } = production;
+        drop(poisoned);
+        let mut reopened = coordinator(&state, &fixture);
+        reopened.authenticate_catalog_preparations().unwrap();
+        let reopened_floor = reopened.transactions.resolver_policy_floor().unwrap();
+        assert_eq!(reopened_floor.generation(), policy_binding.generation());
+        assert_eq!(reopened_floor.catalog_digest(), policy_binding.digest());
+        let floor_sequence = reopened.transactions.journal_sequence_for_test();
+        let prepared = reopened
+            .prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            )
+            .unwrap();
+        assert_eq!(
+            reopened.transactions.journal_sequence_for_test(),
+            floor_sequence + 6
+        );
+        let prepared_sequence = reopened.transactions.journal_sequence_for_test();
+        drop(reopened);
+
+        let mut replay = coordinator(&state, &fixture);
+        replay.authenticate_catalog_preparations().unwrap();
+        let replayed = replay
+            .prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            )
+            .unwrap();
+        assert_eq!(replayed, prepared);
+        assert_eq!(
+            replay.transactions.journal_sequence_for_test(),
+            prepared_sequence
+        );
+    }
+
+    #[test]
+    fn production_prepare_retention_commit_ambiguity_reopens_to_exact_replay() {
+        let mut production = production_preparation_fixture(7);
+        let policy_binding = production.policies.load().unwrap().binding().unwrap();
+        assert_eq!(
+            production
+                .broker
+                .admit_trusted_resolver_policy(policy_binding)
+                .unwrap(),
+            StorageResolverPolicyAdmissionOutcomeV1::Advanced
+        );
+        let floor_sequence = production.broker.transactions.journal_sequence_for_test();
+        production.broker.fail_after_next_journal_commit_for_test();
+
+        let failure = production
+            .broker
+            .prepare_catalog_from_protected_policy(
+                &production.request,
+                &production.artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            failure,
+            StorageBrokerError::State(crate::StorageStateError::Journal(_))
+        ));
+        assert!(production.broker.transaction_journal_requires_reopen());
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            floor_sequence + 6
+        );
+        let fatal = crate::service::finish_dispatched_response(
+            production.broker.transaction_journal_requires_reopen(),
+            true,
+            crate::StorageConnectionOutcome::RequestRejected,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            fatal,
+            crate::StorageServiceError::Runtime(crate::StorageRuntimeError::ReopenRequired)
+        ));
+
+        // Exact replay must not reload or resolve the policy after the process
+        // reopens the durable four-record preparation transaction.
+        fs::write(
+            production
+                .policy_directory
+                .join("storage-resolver-policy.catalog"),
+            b"malformed current publication",
+        )
+        .unwrap();
+        let ProductionPreparationFixture {
+            state,
+            fixture,
+            broker: poisoned,
+            policies,
+            request,
+            artifacts,
+            ..
+        } = production;
+        drop(poisoned);
+        let mut reopened = coordinator(&state, &fixture);
+        reopened.authenticate_catalog_preparations().unwrap();
+        let durable_sequence = reopened.transactions.journal_sequence_for_test();
+        let mut samples = 0;
+        let replayed = reopened
+            .prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &policies,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &mut || {
+                    samples += 1;
+                    Ok(clock())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(samples, 2);
+        assert_eq!(replayed.operation_id(), [7; 16]);
+        assert_eq!(
+            reopened.transactions.journal_sequence_for_test(),
+            durable_sequence
+        );
+        assert!(
+            reopened
+                .transactions
+                .catalog_preparation_record(&[7; 16])
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
