@@ -17,6 +17,31 @@
   labelNameRegex = "([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?";
   labelValueRegex = "([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?";
   taintRegex = "${labelNameRegex}(=${labelValueRegex})?:(NoSchedule|PreferNoSchedule|NoExecute)";
+  resourceNameRegex = "[a-z0-9]([-a-z0-9.]*[a-z0-9])?";
+  resourceApiVersionRegex = "[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[A-Za-z0-9]([-A-Za-z0-9.]*[A-Za-z0-9])?)?";
+  resourceKindRegex = "[A-Z][A-Za-z0-9]*";
+  resourceNameType = types.strMatching resourceNameRegex;
+  canonicalJsonValue = value: let
+    valueType = builtins.typeOf value;
+  in
+    if builtins.elem valueType ["null" "bool" "string" "int"]
+    then true
+    else if valueType == "list"
+    then builtins.all canonicalJsonValue value
+    else if valueType == "set"
+    then builtins.all canonicalJsonValue (builtins.attrValues value)
+    else false;
+  canonicalJsonObjectType =
+    types.attrs
+    // {
+      description = "integer-profile JSON object";
+      merge = location: definitions: let
+        merged = types.attrs.merge location definitions;
+      in
+        if canonicalJsonValue merged
+        then merged
+        else throw "The option '${builtins.concatStringsSep "." location}' must contain only canonical integer-profile JSON values.";
+    };
   secretRefType = lib.serviceTypes.namedSecretRef;
   cniIntegrationType = types.submodule ({...}: {
     config._module.strict = true;
@@ -49,14 +74,57 @@
   resourceType = types.submodule ({...}: {
     config._module.strict = true;
     options = {
-      content = mkOption {
+      apiVersion = mkOption {
         type = nonEmptyStr;
-        description = "Complete Kubernetes YAML resource bundle staged by a server role.";
+        description = "Kubernetes API group and version for the submitted object.";
+      };
+      kind = mkOption {
+        type = nonEmptyStr;
+        description = "Kubernetes kind for the submitted object.";
+      };
+      name = mkOption {
+        type = resourceNameType;
+        description = "Kubernetes metadata.name for the submitted object.";
+      };
+      namespace = mkOption {
+        type = types.nullOr resourceNameType;
+        default = null;
+        description = "Kubernetes namespace, or null for a cluster-scoped object.";
+      };
+      spec = mkOption {
+        type = canonicalJsonObjectType;
+        description = "Typed integer-profile Kubernetes object spec serialized without parsing package-authored YAML.";
       };
       priority = mkOption {
         type = types.addCheck types.int (value: value >= 0 && value <= 999);
         default = 500;
         description = "Stable ordering priority used before the resource name.";
+      };
+    };
+  });
+  resourceGrantType = types.submodule ({...}: {
+    config._module.strict = true;
+    options = {
+      contribution = mkOption {
+        type = resourceNameType;
+        description = "Authorized named contribution below k3s.integrations.resources.";
+      };
+      apiVersion = mkOption {
+        type = nonEmptyStr;
+        description = "Exact authorized Kubernetes API version.";
+      };
+      kind = mkOption {
+        type = nonEmptyStr;
+        description = "Exact authorized Kubernetes kind.";
+      };
+      name = mkOption {
+        type = resourceNameType;
+        description = "Exact authorized Kubernetes object name.";
+      };
+      namespace = mkOption {
+        type = types.nullOr resourceNameType;
+        default = null;
+        description = "Exact authorized namespace, or null for cluster scope.";
       };
     };
   });
@@ -67,17 +135,57 @@
   integrationLabels = builtins.foldl' (labels: integration: labels // integration.nodeLabels) {} csiIntegrations;
   nodeLabels = cfg.node.labels // integrationLabels;
   resourceNames = builtins.attrNames cfg.integrations.resources;
-  resourceNameRegex = "[a-z0-9]([-a-z0-9.]*[a-z0-9])?";
   renderedResources = builtins.sort (left: right:
     if left.priority == right.priority
     then left.name < right.name
     else left.priority < right.priority) (
-    lib.mapAttrsToList (name: resource: {
-      inherit name;
-      inherit (resource) content priority;
+    lib.mapAttrsToList (name: resource: let
+      object = {
+        inherit (resource) apiVersion kind spec;
+        metadata =
+          {inherit (resource) name;}
+          // lib.optionalAttrs (resource.namespace != null) {
+            inherit (resource) namespace;
+          };
+      };
+    in {
+      inherit name object;
+      inherit (resource) priority;
+      revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON object)}";
     })
     cfg.integrations.resources
   );
+  resourceIdentities = map (resource:
+    builtins.toJSON [
+      resource.object.apiVersion
+      resource.object.kind
+      (resource.object.metadata.namespace or null)
+      resource.object.metadata.name
+    ])
+  renderedResources;
+  resourceAuthorized = contribution: resource:
+    builtins.any (grant:
+      grant.contribution
+      == contribution
+      && grant.apiVersion == resource.apiVersion
+      && grant.kind == resource.kind
+      && grant.name == resource.name
+      && grant.namespace == resource.namespace)
+    cfg.integrations.resourceGrants;
+  validResourceShapes = builtins.all (resource:
+    builtins.match resourceApiVersionRegex resource.apiVersion
+    != null
+    && builtins.match resourceKindRegex resource.kind != null)
+  (builtins.attrValues cfg.integrations.resources);
+  resourcesAuthorized = builtins.all (contribution:
+    resourceAuthorized contribution cfg.integrations.resources.${contribution})
+  resourceNames;
+  addonPayload = {
+    schema = "aos.kubernetes-resources/v2";
+    inherit role;
+    resources = renderedResources;
+  };
+  addonRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON addonPayload)}";
   validLabels = builtins.all (name:
     builtins.match labelNameRegex name
     != null
@@ -270,7 +378,12 @@ in {
         type = types.attrsOf resourceType;
         default = {};
         contributable = true;
-        description = "Named, package-contributable Kubernetes YAML bundles reconciled by server roles.";
+        description = "Named, package-contributable Kubernetes objects reconciled by server roles.";
+      };
+      resourceGrants = mkOption {
+        type = types.listOf resourceGrantType;
+        default = [];
+        description = "Operator-authorized exact Kubernetes object identities.";
       };
     };
   };
@@ -280,10 +393,7 @@ in {
 
     ${package} = {
       config.env = desiredEnv;
-      config.addons = {
-        schema = "aos.kubernetes-resources/v1";
-        resources = renderedResources;
-      };
+      config.addons = addonPayload // {revision = addonRevision;};
       credentials = mkIf (cfg.token != null) {token = cfg.token;};
     };
 
@@ -315,6 +425,18 @@ in {
       {
         assertion = builtins.all (name: builtins.match resourceNameRegex name != null) resourceNames;
         message = "k3s.integrations.resources names must use lowercase DNS-label syntax";
+      }
+      {
+        assertion = validResourceShapes;
+        message = "k3s Kubernetes resources must use normalized API versions and kinds";
+      }
+      {
+        assertion = resourcesAuthorized;
+        message = "k3s Kubernetes resource object lacks an exact operator grant";
+      }
+      {
+        assertion = builtins.length resourceIdentities == builtins.length (lib.unique resourceIdentities);
+        message = "k3s Kubernetes resource contributions must have unique object identities";
       }
       {
         assertion = builtins.all (taint: builtins.match taintRegex taint != null) cfg.node.taints;

@@ -8,15 +8,6 @@
   inherit (lib) mkIf mkOption types;
   package = builtins.fromJSON (builtins.readFile "${outputs.self}/share/cilium-package.json");
   cfg = config.cilium;
-  values = ''
-    kubeProxyReplacement: ${
-      if cfg.kubeProxyReplacement
-      then "true"
-      else "false"
-    }
-    operator:
-      replicas: ${toString cfg.operatorReplicas}
-  '';
 in {
   options.cilium = {
     enable = mkOption {
@@ -42,20 +33,20 @@ in {
     disableKubeProxy = cfg.kubeProxyReplacement;
   };
   config.k3s.integrations.resources.cilium = mkIf cfg.enable {
+    apiVersion = "helm.cattle.io/v1";
+    kind = "HelmChart";
+    name = "cilium";
+    namespace = "kube-system";
     priority = 100;
-    content = ''
-      apiVersion: helm.cattle.io/v1
-      kind: HelmChart
-      metadata:
-        name: cilium
-        namespace: kube-system
-      spec:
-        chart: cilium
-        repo: https://helm.cilium.io/
-        targetNamespace: kube-system
-        version: ${package.version}
-        valuesContent: |-
-      ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
-    '';
+    spec = {
+      chart = "cilium";
+      repo = "https://helm.cilium.io/";
+      targetNamespace = "kube-system";
+      version = package.version;
+      valuesContent = builtins.toJSON {
+        kubeProxyReplacement = cfg.kubeProxyReplacement;
+        operator.replicas = cfg.operatorReplicas;
+      };
+    };
   };
 }

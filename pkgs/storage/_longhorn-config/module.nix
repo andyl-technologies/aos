@@ -15,12 +15,6 @@
     builtins.readFile "${outputs.self}/share/longhorn-package.json"
   ));
   cfg = config.longhorn;
-  values = ''
-    defaultSettings:
-      defaultReplicaCount: "${toString cfg.defaultReplicaCount}"
-    persistence:
-      defaultClassReplicaCount: ${toString cfg.defaultReplicaCount}
-  '';
 in {
   options.longhorn = {
     enable = mkOption {
@@ -44,20 +38,20 @@ in {
     nodeLabels."node.longhorn.io/create-default-disk" = cfg.nodeLabel;
   };
   config.k3s.integrations.resources.longhorn = mkIf cfg.enable {
+    apiVersion = "helm.cattle.io/v1";
+    kind = "HelmChart";
+    name = "longhorn";
+    namespace = "kube-system";
     priority = 200;
-    content = ''
-      apiVersion: helm.cattle.io/v1
-      kind: HelmChart
-      metadata:
-        name: longhorn
-        namespace: kube-system
-      spec:
-        chart: longhorn
-        repo: https://charts.longhorn.io
-        targetNamespace: longhorn-system
-        version: ${package.version}
-        valuesContent: |-
-      ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
-    '';
+    spec = {
+      chart = "longhorn";
+      repo = "https://charts.longhorn.io";
+      targetNamespace = "longhorn-system";
+      version = package.version;
+      valuesContent = builtins.toJSON {
+        defaultSettings.defaultReplicaCount = builtins.toString cfg.defaultReplicaCount;
+        persistence.defaultClassReplicaCount = cfg.defaultReplicaCount;
+      };
+    };
   };
 }
