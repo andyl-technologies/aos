@@ -652,6 +652,12 @@ impl AttemptExecutionContext {
         self.execution_quanta.consumed()
     }
 
+    /// Returns whether another physical replay can begin within this reservation.
+    #[must_use]
+    pub(crate) fn has_remaining_execution_quanta(&self) -> bool {
+        self.consumed_execution_quanta() < self.resources.maximum_execution_quanta()
+    }
+
     pub(crate) fn record_guest_selectable_boundary_diagnostic(
         &self,
         event: &GuestSelectableBoundaryDiagnosticEvent,

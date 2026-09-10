@@ -751,6 +751,9 @@ impl JournalVersion {
             (self, payload),
             (Self::V1, PreparedSemanticResultVersion::V1)
                 | (Self::V2, PreparedSemanticResultVersion::V2)
+                | (Self::V2, PreparedSemanticResultVersion::V3)
+                | (Self::V2, PreparedSemanticResultVersion::V4)
+                | (Self::V2, PreparedSemanticResultVersion::V5)
         )
     }
 }

@@ -559,6 +559,9 @@ impl ExecutionCancellation {
     }
 
     /// Requests sticky cancellation for this execution incarnation.
+    ///
+    /// Registered process-resource hooks are signaled before this method
+    /// returns. Repeated requests are idempotent.
     pub fn cancel(&self) {
         // The predicate publication and notification share the wait mutex.
         // Without this ordering a waiter can observe `false`, lose a notify

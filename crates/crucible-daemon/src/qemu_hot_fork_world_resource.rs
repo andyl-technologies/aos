@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 // crucible-lint: allow host-nondeterminism-state -- exact node generations index operational resource ownership, not scheduler decisions or guest time.
 use crucible_api::ProductionVmNodeGeneration;
@@ -21,8 +21,248 @@ use crucible_qemu::{
 
 use crate::{
     ExecutionCancellation, MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptOperationalBoundary,
-    QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
+    QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
 };
+
+struct QemuHotForkWorldAuxiliaryResourceHandle<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    state: Weak<Mutex<QemuHotForkWorldResourceState<G>>>,
+    resources: AttemptResourceLimits,
+    cancellation: ExecutionCancellation,
+}
+
+impl<G> Clone for QemuHotForkWorldAuxiliaryResourceHandle<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn clone(&self) -> Self {
+        Self {
+            state: Weak::clone(&self.state),
+            resources: self.resources,
+            cancellation: self.cancellation.clone(),
+        }
+    }
+}
+
+struct QemuHotForkWorldAuxiliaryBrokerState<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    next_token: u64,
+    bound: Option<(u64, QemuHotForkWorldAuxiliaryResourceHandle<G>)>,
+}
+
+/// Per-worker rendezvous for private lifecycles sharing a retained hot World guard.
+///
+/// A production hot-fork lifecycle binds this broker only after primary child
+/// shutdown is complete. The broker retains a weak resource handle, so it
+/// cannot prolong aggregate ownership or source-publication authority.
+pub struct QemuHotForkWorldAuxiliaryResourceBroker<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    state: Arc<Mutex<QemuHotForkWorldAuxiliaryBrokerState<G>>>,
+}
+
+impl<G> Clone for QemuHotForkWorldAuxiliaryResourceBroker<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
+}
+
+impl<G> Default for QemuHotForkWorldAuxiliaryResourceBroker<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<G> QemuHotForkWorldAuxiliaryResourceBroker<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    /// Creates an unbound per-worker auxiliary-resource broker.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(QemuHotForkWorldAuxiliaryBrokerState {
+                next_token: 0,
+                bound: None,
+            })),
+        }
+    }
+
+    pub(crate) fn bind(
+        &self,
+        resources: &QemuHotForkWorldResourceOwner<G>,
+    ) -> Result<QemuHotForkWorldAuxiliaryResourceBinding<G>, QemuVmRealizationError> {
+        let mut broker = self.state.lock().map_err(|_| {
+            world_resource_error("hot-fork world auxiliary resource broker is poisoned")
+        })?;
+        if broker.bound.is_some() {
+            return Err(world_resource_error(
+                "hot-fork world auxiliary resource broker is already bound",
+            ));
+        }
+        let token = broker.next_token.checked_add(1).ok_or_else(|| {
+            world_resource_error("hot-fork world auxiliary resource broker token overflowed")
+        })?;
+        broker.next_token = token;
+        broker.bound = Some((token, resources.auxiliary_resource_handle()));
+
+        Ok(QemuHotForkWorldAuxiliaryResourceBinding {
+            broker: Arc::clone(&self.state),
+            token,
+            bound: true,
+        })
+    }
+
+    fn try_begin(
+        &self,
+        resources: AttemptResourceLimits,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<Option<QemuHotForkWorldAuxiliaryGuard<G>>, QemuVmRealizationError> {
+        let handle = {
+            let broker = self.state.lock().map_err(|_| {
+                world_resource_error("hot-fork world auxiliary resource broker is poisoned")
+            })?;
+            broker.bound.as_ref().map(|(_, handle)| handle.clone())
+        };
+        let Some(handle) = handle else {
+            return Ok(None);
+        };
+        if handle.resources != resources || !handle.cancellation.same_incarnation(cancellation) {
+            return Err(world_resource_error(
+                "hot-fork world auxiliary request differs from the admitted attempt contract",
+            ));
+        }
+        let state = handle.state.upgrade().ok_or_else(|| {
+            world_resource_error("hot-fork world auxiliary aggregate owner was released")
+        })?;
+        auxiliary_guard_from_state(state, handle.resources, handle.cancellation).map(Some)
+    }
+}
+
+pub(crate) struct QemuHotForkWorldAuxiliaryResourceBinding<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    broker: Arc<Mutex<QemuHotForkWorldAuxiliaryBrokerState<G>>>,
+    token: u64,
+    bound: bool,
+}
+
+impl<G> QemuHotForkWorldAuxiliaryResourceBinding<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn clear(&mut self) {
+        if !self.bound {
+            return;
+        }
+        match self.broker.lock() {
+            Ok(mut broker) => {
+                if matches!(broker.bound, Some((token, _)) if token == self.token) {
+                    broker.bound = None;
+                }
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().bound = None;
+            }
+        }
+        self.bound = false;
+    }
+}
+
+impl<G> Drop for QemuHotForkWorldAuxiliaryResourceBinding<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+/// Resource factory selecting a retained hot-World lease or an ordinary fresh guard.
+///
+/// A bound broker always owns selection. An expired or incompatible binding
+/// fails closed rather than allocating additional physical capacity. When no
+/// hot lifecycle is pending, `fresh` installs the ordinary attempt guard.
+pub struct QemuHotForkWorldAuxiliaryResourceFactory<F>
+where
+    F: QemuAttemptResourceGuardFactory,
+    F::Guard: QemuAttemptProcessResourceGuard,
+{
+    broker: QemuHotForkWorldAuxiliaryResourceBroker<F::Guard>,
+    fresh: F,
+}
+
+impl<F> QemuHotForkWorldAuxiliaryResourceFactory<F>
+where
+    F: QemuAttemptResourceGuardFactory,
+    F::Guard: QemuAttemptProcessResourceGuard,
+{
+    /// Creates a factory over one worker broker and its ordinary fresh fallback.
+    #[must_use]
+    pub const fn new(broker: QemuHotForkWorldAuxiliaryResourceBroker<F::Guard>, fresh: F) -> Self {
+        Self { broker, fresh }
+    }
+
+    /// Returns the per-worker auxiliary-resource broker.
+    #[must_use]
+    pub const fn broker(&self) -> &QemuHotForkWorldAuxiliaryResourceBroker<F::Guard> {
+        &self.broker
+    }
+
+    /// Returns the ordinary fresh resource factory.
+    #[must_use]
+    pub const fn fresh(&self) -> &F {
+        &self.fresh
+    }
+}
+
+/// Process resource guard selected for one private replay lifecycle.
+#[must_use = "finish the private replay resource guard or transfer it to quarantine"]
+pub enum QemuHotForkWorldAuxiliaryResourceGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    /// Ordinary independently admitted fresh-attempt resources.
+    Fresh(G),
+    /// Sequential lease over the retained hot-World aggregate.
+    Retained(QemuHotForkWorldAuxiliaryGuard<G>),
+}
+
+impl<F> QemuAttemptResourceGuardFactory for QemuHotForkWorldAuxiliaryResourceFactory<F>
+where
+    F: QemuAttemptResourceGuardFactory,
+    F::Guard: QemuAttemptProcessResourceGuard,
+{
+    type Guard = QemuHotForkWorldAuxiliaryResourceGuard<F::Guard>;
+
+    fn begin(
+        &mut self,
+        resources: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
+    ) -> Result<Self::Guard, QemuVmRealizationError> {
+        match self.broker.try_begin(resources, &cancellation)? {
+            Some(guard) => Ok(QemuHotForkWorldAuxiliaryResourceGuard::Retained(guard)),
+            None => self
+                .fresh
+                .begin(resources, cancellation)
+                .map(QemuHotForkWorldAuxiliaryResourceGuard::Fresh),
+        }
+    }
+}
 
 struct QemuHotForkWorldResourceState<G>
 where
@@ -284,52 +524,22 @@ where
     where
         G: QemuAttemptProcessResourceGuard,
     {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if state.terminal {
-            return Err(world_resource_error(
-                state
-                    .terminal_failure
-                    .as_deref()
-                    .unwrap_or("hot-fork world resource owner is terminal"),
-            ));
-        }
-        if !state.lifecycle_launcher_required || !state.lifecycle_launcher_finished {
-            return Err(world_resource_error(
-                "hot-fork world auxiliary lifecycle preceded primary launcher cleanup",
-            ));
-        }
-        if state.issued != state.released {
-            return Err(world_resource_error(
-                "hot-fork world auxiliary lifecycle has an unfinished primary child target",
-            ));
-        }
-        if state.auxiliary_lifecycle_active {
-            return Err(world_resource_error(
-                "hot-fork world auxiliary lifecycle is already active",
-            ));
-        }
-        let process_contract = state
-            .guard
-            .child_process_contract()?
-            .try_clone_for_attempt_generation()
-            .map_err(|source| {
-                world_resource_error(format!(
-                    "duplicate hot-fork world auxiliary process contract: {source}"
-                ))
-            })?;
-        state.auxiliary_lifecycle_active = true;
-        drop(state);
+        auxiliary_guard_from_state(
+            Arc::clone(&self.state),
+            self.resources,
+            self.cancellation.clone(),
+        )
+    }
 
-        Ok(QemuHotForkWorldAuxiliaryGuard {
-            state: Arc::clone(&self.state),
+    fn auxiliary_resource_handle(&self) -> QemuHotForkWorldAuxiliaryResourceHandle<G>
+    where
+        G: QemuAttemptProcessResourceGuard,
+    {
+        QemuHotForkWorldAuxiliaryResourceHandle {
+            state: Arc::downgrade(&self.state),
             resources: self.resources,
             cancellation: self.cancellation.clone(),
-            process_contract,
-            finished: false,
-        })
+        }
     }
 
     /// Releases aggregate enforcement after every exact child target finished.
@@ -389,6 +599,61 @@ where
     pub fn quarantine(&mut self) {
         quarantine_world_state(&self.state);
     }
+}
+
+fn auxiliary_guard_from_state<G>(
+    state: Arc<Mutex<QemuHotForkWorldResourceState<G>>>,
+    resources: AttemptResourceLimits,
+    cancellation: ExecutionCancellation,
+) -> Result<QemuHotForkWorldAuxiliaryGuard<G>, QemuVmRealizationError>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    let mut registry = state
+        .lock()
+        .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+    if registry.terminal {
+        return Err(world_resource_error(
+            registry
+                .terminal_failure
+                .as_deref()
+                .unwrap_or("hot-fork world resource owner is terminal"),
+        ));
+    }
+    if !registry.lifecycle_launcher_required || !registry.lifecycle_launcher_finished {
+        return Err(world_resource_error(
+            "hot-fork world auxiliary lifecycle preceded primary launcher cleanup",
+        ));
+    }
+    if registry.issued != registry.released {
+        return Err(world_resource_error(
+            "hot-fork world auxiliary lifecycle has an unfinished primary child target",
+        ));
+    }
+    if registry.auxiliary_lifecycle_active {
+        return Err(world_resource_error(
+            "hot-fork world auxiliary lifecycle is already active",
+        ));
+    }
+    let process_contract = registry
+        .guard
+        .child_process_contract()?
+        .try_clone_for_attempt_generation()
+        .map_err(|source| {
+            world_resource_error(format!(
+                "duplicate hot-fork world auxiliary process contract: {source}"
+            ))
+        })?;
+    registry.auxiliary_lifecycle_active = true;
+    drop(registry);
+
+    Ok(QemuHotForkWorldAuxiliaryGuard {
+        state,
+        resources,
+        cancellation,
+        process_contract,
+        finished: false,
+    })
 }
 
 /// Shared process/storage guard for generations created after world adoption.
@@ -718,6 +983,87 @@ where
     }
 }
 
+impl<G> QemuAttemptOperationalBoundary for QemuHotForkWorldAuxiliaryResourceGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        match self {
+            Self::Fresh(guard) => guard.resource_limits(),
+            Self::Retained(guard) => guard.resource_limits(),
+        }
+    }
+
+    fn cancellation(&self) -> &ExecutionCancellation {
+        match self {
+            Self::Fresh(guard) => guard.cancellation(),
+            Self::Retained(guard) => guard.cancellation(),
+        }
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => guard.check_operational_boundary(),
+            Self::Retained(guard) => guard.check_operational_boundary(),
+        }
+    }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => guard.charge_execution_quantum(),
+            Self::Retained(guard) => guard.charge_execution_quantum(),
+        }
+    }
+}
+
+impl<G> QemuAttemptResourceGuard for QemuHotForkWorldAuxiliaryResourceGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => guard.finish(),
+            Self::Retained(guard) => guard.finish(),
+        }
+    }
+
+    fn quarantine(&mut self) {
+        match self {
+            Self::Fresh(guard) => guard.quarantine(),
+            Self::Retained(guard) => guard.quarantine(),
+        }
+    }
+}
+
+impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldAuxiliaryResourceGuard<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => guard.child_process_contract(),
+            Self::Retained(guard) => guard.child_process_contract(),
+        }
+    }
+
+    fn prepare_generation_run_directory(
+        &mut self,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => guard.prepare_generation_run_directory(requirements),
+            Self::Retained(guard) => guard.prepare_generation_run_directory(requirements),
+        }
+    }
+
+    fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
+        match self {
+            Self::Fresh(guard) => guard.retain_failed_launch_child(child),
+            Self::Retained(guard) => guard.retain_failed_launch_child(child),
+        }
+    }
+}
+
 impl<G> Drop for QemuHotForkWorldResourceOwner<G>
 where
     G: QemuAttemptResourceGuard,
@@ -926,10 +1272,12 @@ mod tests {
     // crucible-lint: allow panic-shortcut -- fixture construction and expected success must fail the test on error.
     #![allow(clippy::expect_used)]
 
+    use std::fs::File;
     use std::os::unix::net::UnixStream;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crucible::NodeId;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::QemuExecutionQuantumCounter;
@@ -942,6 +1290,10 @@ mod tests {
         process_contract: QemuChildProcessContract,
         finishes: Arc<AtomicUsize>,
         quarantines: Arc<AtomicUsize>,
+        active_capacity: Option<Arc<AtomicUsize>>,
+        run_root: TempDir,
+        next_generation: usize,
+        terminal: bool,
     }
 
     impl QemuAttemptOperationalBoundary for FakeGuard {
@@ -971,12 +1323,26 @@ mod tests {
 
     impl QemuAttemptResourceGuard for FakeGuard {
         fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+            if self.terminal {
+                return Ok(());
+            }
             self.finishes.fetch_add(1, Ordering::AcqRel);
+            if let Some(active) = &self.active_capacity {
+                active.fetch_sub(1, Ordering::AcqRel);
+            }
+            self.terminal = true;
             Ok(())
         }
 
         fn quarantine(&mut self) {
+            if self.terminal {
+                return;
+            }
             self.quarantines.fetch_add(1, Ordering::AcqRel);
+            if let Some(active) = &self.active_capacity {
+                active.fetch_sub(1, Ordering::AcqRel);
+            }
+            self.terminal = true;
         }
     }
 
@@ -989,18 +1355,34 @@ mod tests {
 
         fn prepare_generation_run_directory(
             &mut self,
-            _requirements: QemuLaunchResourceRequirements,
+            requirements: QemuLaunchResourceRequirements,
         ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
-            Err(world_resource_error(
-                "fake world resources do not provision run directories",
-            ))
+            let generation = self
+                .run_root
+                .path()
+                .join(format!("generation-{:03}", self.next_generation));
+            self.next_generation += 1;
+            std::fs::create_dir(&generation)
+                .map_err(|error| world_resource_error(error.to_string()))?;
+            File::create(generation.join(crucible_qemu::DEFAULT_VMSTATE_FILE_NAME))
+                .map_err(|error| world_resource_error(error.to_string()))?;
+            if requirements.has_root_overlay() {
+                File::create(generation.join(crucible_qemu::DEFAULT_ROOT_OVERLAY_FILE_NAME))
+                    .map_err(|error| world_resource_error(error.to_string()))?;
+            }
+            QemuPreparedRunDirectory::open_for_test_requirements(
+                requirements,
+                generation,
+                &self.process_contract,
+            )
+            .map_err(|error| world_resource_error(error.to_string()))
         }
 
         fn retain_failed_launch_child(&mut self, _child: QemuNodeChild) {}
     }
 
     fn resources() -> AttemptResourceLimits {
-        AttemptResourceLimits::new(1, 1024, 1024, 2).expect("resource limits")
+        AttemptResourceLimits::new(1, 1024 * 1024, 1024 * 1024 * 1024, 2).expect("resource limits")
     }
 
     fn identity(name: &str, generation: u64) -> ProductionVmNodeGeneration {
@@ -1032,6 +1414,44 @@ mod tests {
             ),
             finishes,
             quarantines,
+            active_capacity: None,
+            run_root: TempDir::new().expect("fake run root"),
+            next_generation: 0,
+            terminal: false,
+        }
+    }
+
+    struct OneCapacityGuardFactory {
+        active: Arc<AtomicUsize>,
+        begins: Arc<AtomicUsize>,
+        finishes: Arc<AtomicUsize>,
+        quarantines: Arc<AtomicUsize>,
+    }
+
+    impl QemuAttemptResourceGuardFactory for OneCapacityGuardFactory {
+        type Guard = FakeGuard;
+
+        fn begin(
+            &mut self,
+            resources: AttemptResourceLimits,
+            cancellation: ExecutionCancellation,
+        ) -> Result<Self::Guard, QemuVmRealizationError> {
+            if self
+                .active
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(world_resource_error(
+                    "one-capacity resource factory is occupied",
+                ));
+            }
+            self.begins.fetch_add(1, Ordering::AcqRel);
+            let mut admitted = guard(Arc::clone(&self.finishes), Arc::clone(&self.quarantines));
+            admitted.resources = resources;
+            admitted.cancellation = cancellation;
+            admitted.counter = QemuExecutionQuantumCounter::new(resources);
+            admitted.active_capacity = Some(Arc::clone(&self.active));
+            Ok(admitted)
         }
     }
 
@@ -1253,6 +1673,93 @@ mod tests {
         owner.finish().expect("finish canceled aggregate");
 
         assert_eq!(finishes.load(Ordering::Acquire), 1);
+        assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn bound_replay_factory_reuses_one_capacity_with_fresh_private_directories() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let begins = Arc::new(AtomicUsize::new(0));
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let quarantines = Arc::new(AtomicUsize::new(0));
+        let mut one_capacity = OneCapacityGuardFactory {
+            active: Arc::clone(&active),
+            begins: Arc::clone(&begins),
+            finishes: Arc::clone(&finishes),
+            quarantines: Arc::clone(&quarantines),
+        };
+        let cancellation = ExecutionCancellation::default();
+        let primary = one_capacity
+            .begin(resources(), cancellation.clone())
+            .expect("admit the sole physical capacity slot");
+        let mut owner = QemuHotForkWorldResourceOwner::new(primary, 1).expect("world owner");
+        finish_primary_lifecycle(&mut owner, "primary");
+
+        let broker = QemuHotForkWorldAuxiliaryResourceBroker::new();
+        let binding = broker.bind(&owner).expect("bind retained aggregate");
+        let mut replay_resources =
+            QemuHotForkWorldAuxiliaryResourceFactory::new(broker, one_capacity);
+        let requirements = QemuLaunchResourceRequirements::from_vm_shape(1, 1, false);
+
+        let mut first = replay_resources
+            .begin(resources(), cancellation.clone())
+            .expect("first retained private replay");
+        assert!(matches!(
+            first,
+            QemuHotForkWorldAuxiliaryResourceGuard::Retained(_)
+        ));
+        let first_path = first
+            .prepare_generation_run_directory(requirements)
+            .expect("first private run directory")
+            .path()
+            .to_path_buf();
+        assert!(
+            replay_resources
+                .begin(resources(), cancellation.clone())
+                .is_err()
+        );
+        first.finish().expect("finish first private replay");
+
+        let mut second = replay_resources
+            .begin(resources(), cancellation.clone())
+            .expect("second retained private replay");
+        let second_path = second
+            .prepare_generation_run_directory(requirements)
+            .expect("second private run directory")
+            .path()
+            .to_path_buf();
+        assert_ne!(first_path, second_path);
+        assert_eq!(begins.load(Ordering::Acquire), 1);
+        assert_eq!(active.load(Ordering::Acquire), 1);
+        second.finish().expect("finish second private replay");
+
+        drop(binding);
+        assert!(
+            replay_resources
+                .begin(resources(), cancellation.clone())
+                .is_err()
+        );
+        owner.finish().expect("release retained aggregate");
+        assert_eq!(active.load(Ordering::Acquire), 0);
+
+        let mut independent = replay_resources
+            .begin(resources(), cancellation)
+            .expect("fresh fallback after aggregate release");
+        assert!(matches!(
+            independent,
+            QemuHotForkWorldAuxiliaryResourceGuard::Fresh(_)
+        ));
+        let independent_path = independent
+            .prepare_generation_run_directory(requirements)
+            .expect("independent private run directory")
+            .path()
+            .to_path_buf();
+        assert_ne!(first_path, independent_path);
+        assert_ne!(second_path, independent_path);
+        independent.finish().expect("finish fresh fallback");
+
+        assert_eq!(begins.load(Ordering::Acquire), 2);
+        assert_eq!(finishes.load(Ordering::Acquire), 2);
         assert_eq!(quarantines.load(Ordering::Acquire), 0);
     }
 

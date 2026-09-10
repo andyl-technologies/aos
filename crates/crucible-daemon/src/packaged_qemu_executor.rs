@@ -53,8 +53,9 @@ use crate::{
     AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
     AuthenticatedHotCheckpointDemotionError, AuthenticatedHotCheckpointDemotionSink,
     AuthenticatedQemuHotForkSourceBasis, AuthenticatedQemuHotForkSourceBasisError,
-    CompletionValidationFailure, ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError,
-    CrucibleAttemptExecution, CrucibleExecutionModel, DirectoryAssignmentLedger,
+    AutomaticFindingExecutionRunner, CompletionValidationFailure,
+    ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleAttemptExecution,
+    CrucibleExecutionModel, DirectoryAssignmentLedger,
     DirectoryHotCheckpointFallbackRetentionStore, ExactCheckpointStore, ExactCheckpointStoreError,
     ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity, ExecutorLocalService,
     ExecutorLocalServiceError, ExecutorLocalServiceReport, ExecutorLocalServiceShutdown,
@@ -76,7 +77,8 @@ use crate::{
     QemuFreshExecutionRunner, QemuFreshModeledDriver, QemuHotCheckpointFallbackAuthenticationError,
     QemuHotCheckpointFallbackAuthenticator, QemuHotForkSourceWorldBoundary,
     QemuHotForkSourceWorldDemoter, QemuHotForkSourceWorldDemotionError, QemuHotForkSourceWorldKey,
-    QemuHotForkSourceWorldProvider, QemuHotForkWorldExecutionRunner,
+    QemuHotForkSourceWorldProvider, QemuHotForkWorldAuxiliaryResourceBroker,
+    QemuHotForkWorldAuxiliaryResourceFactory, QemuHotForkWorldExecutionRunner,
     QemuProductionExactResumeExecutionRunner, QemuProductionHotForkWorldLifecycleFactory,
     RepositoryAttemptWorker, SharedManagedQemuHotForkSourceWorldPool,
     SharedManagedQemuHotForkSourceWorldShutdownError, SharedQemuAttemptHostResourceFactory,
@@ -276,6 +278,7 @@ pub struct PackagedQemuExecutorConfig {
     host: LinuxQemuAttemptHostConfig,
     hot_fork: Option<PackagedQemuHotForkConfig>,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticConfig>,
+    verify_determinism_findings: bool,
 }
 
 impl PackagedQemuExecutorConfig {
@@ -337,6 +340,7 @@ impl PackagedQemuExecutorConfig {
             host,
             hot_fork: None,
             guest_selectable_boundary_diagnostics: None,
+            verify_determinism_findings: false,
         })
     }
 
@@ -354,6 +358,13 @@ impl PackagedQemuExecutorConfig {
         diagnostics: GuestSelectableBoundaryDiagnosticConfig,
     ) -> Self {
         self.guest_selectable_boundary_diagnostics = Some(diagnostics);
+        self
+    }
+
+    /// Enables paired private replay for automatic determinism findings.
+    #[must_use]
+    pub const fn with_determinism_finding_verification(mut self) -> Self {
+        self.verify_determinism_findings = true;
         self
     }
 
@@ -404,6 +415,12 @@ impl PackagedQemuExecutorConfig {
         &self,
     ) -> Option<GuestSelectableBoundaryDiagnosticConfig> {
         self.guest_selectable_boundary_diagnostics
+    }
+
+    /// Returns whether ordinary attempts receive paired determinism verification.
+    #[must_use]
+    pub const fn verifies_determinism_findings(&self) -> bool {
+        self.verify_determinism_findings
     }
 }
 
@@ -1023,6 +1040,7 @@ where
          worker_state_root,
          worker_count,
          lifecycles,
+         _finding_replay_brokers,
          lifecycle_config,
          _resource_ceiling| {
             Ok(PackagedQemuInitialRunnerBuild::fresh(
@@ -1082,6 +1100,9 @@ where
         &Path,
         usize,
         &PackagedWorldLifecycleTracker,
+        &[QemuHotForkWorldAuxiliaryResourceBroker<
+            crate::ComposedQemuAttemptResourceGuard<H::Owner>,
+        >],
         &ProductionVmLifecycleConfig,
         AttemptResourceLimits,
     ) -> Result<PackagedQemuInitialRunnerBuild<R>, PackagedQemuExecutorError>,
@@ -1144,6 +1165,10 @@ where
     let resource_ceiling = packaged_resource_ceiling(&config)?;
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let worker_state_root = config.lifecycle.run_state_root().join("campaign-workers");
+    let finding_replay_state_root = config
+        .lifecycle
+        .run_state_root()
+        .join("campaign-finding-replays");
     let promotion_state_root = config
         .lifecycle
         .run_state_root()
@@ -1156,6 +1181,9 @@ where
         config.worker_count,
     );
     let lifecycles = PackagedWorldLifecycleTracker::new();
+    let finding_replay_brokers = (0..config.worker_count)
+        .map(|_| QemuHotForkWorldAuxiliaryResourceBroker::new())
+        .collect::<Vec<_>>();
     let initial_runner_build = build_initial_runners(
         &store,
         &checkpoints,
@@ -1163,6 +1191,7 @@ where
         &worker_state_root,
         config.worker_count,
         &lifecycles,
+        &finding_replay_brokers,
         &config.lifecycle,
         resource_ceiling,
     )?;
@@ -1209,8 +1238,24 @@ where
     let workers = initial_runner_build
         .runners
         .into_iter()
+        .zip(finding_replay_brokers)
         .enumerate()
-        .map(|(slot, (fresh, evidence))| {
+        .map(|(slot, ((fresh, evidence), finding_replay_broker))| {
+            let finding_replay_lifecycle = config
+                .lifecycle
+                .clone()
+                .with_run_state_root(finding_replay_state_root.join(format!("worker-{slot:03}")));
+            let finding_replay_resources = QemuHotForkWorldAuxiliaryResourceFactory::new(
+                finding_replay_broker,
+                ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
+            );
+            let finding_replay_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
+                finding_replay_lifecycle,
+                finding_replay_resources,
+            );
+            let finding_replay =
+                QemuFreshExecutionRunner::new(finding_replay_lifecycles, QemuFreshModeledDriver);
+
             let lifecycle = config
                 .lifecycle
                 .clone()
@@ -1233,6 +1278,11 @@ where
             );
             let runner = QemuAttemptExecutionRouter::new(fresh, resume);
             let runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence);
+            let mut runner =
+                AutomaticFindingExecutionRunner::new(store.clone(), runner, finding_replay);
+            if config.verify_determinism_findings {
+                runner = runner.with_determinism_finding_verification();
+            }
             let model = CrucibleExecutionModel::new(store.clone(), runner);
             PackagedStatusAttemptWorker {
                 inner: RepositoryAttemptWorker::new(store.clone(), model)
@@ -1298,8 +1348,11 @@ where
     })
 }
 
-const PACKAGED_NATIVE_NAMESPACES: [&str; 2] =
-    ["campaign-workers", "campaign-checkpoint-promotions"];
+const PACKAGED_NATIVE_NAMESPACES: [&str; 3] = [
+    "campaign-workers",
+    "campaign-finding-replays",
+    "campaign-checkpoint-promotions",
+];
 const PACKAGED_PREPARED_RESULT_NAMESPACE: &str = "campaign-prepared-results";
 
 fn prepare_packaged_prepared_result_namespace(
