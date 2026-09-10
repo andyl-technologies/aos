@@ -62,10 +62,9 @@ fn supplemental_finding_source_round_trips_and_reopens_by_exact_identity() {
         b"canonical supplemental oracle material".to_vec(),
     )
     .expect("supplemental source");
-    let decoded = GuardedCampaignFindingOracleSource::from_canonical_bytes(
-        &source.canonical_bytes(),
-    )
-    .expect("decode supplemental source");
+    let decoded =
+        GuardedCampaignFindingOracleSource::from_canonical_bytes(&source.canonical_bytes())
+            .expect("decode supplemental source");
     assert_eq!(decoded, source);
 
     let repository = Arc::new(CampaignRepository::new(

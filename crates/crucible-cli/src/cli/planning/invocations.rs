@@ -270,6 +270,7 @@ pub(crate) struct LocalDoubleSearchCounterexample {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FuzzDriverPlan {
+    pub(crate) campaign_deployment: Option<PathBuf>,
     pub(crate) family: FuzzFamilyRef,
     pub(crate) runs: u64,
     pub(crate) coverage: FuzzCoverageArg,
@@ -1917,6 +1918,7 @@ pub(crate) fn plan_fuzz_invocation_with_artifact_dir(
     );
 
     Ok(FuzzDriverPlan {
+        campaign_deployment: None,
         family,
         runs: args.runs,
         coverage: args.coverage,

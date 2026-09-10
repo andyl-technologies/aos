@@ -20,6 +20,21 @@ pub(crate) fn load_guarded_campaign_deployment(
 #[path = "legacy_campaign.rs"]
 mod legacy_campaign;
 
+/// Projects one completed guarded campaign into the shared CLI run report.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when retained campaign evidence cannot be encoded or
+/// does not satisfy the report's terminal-evidence invariants.
+pub(crate) fn campaign_run_report(
+    run_plan: &RunInvocationPlan,
+    campaign: &crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRun,
+    terminal_outcome: OutcomeKind,
+    status: BackendCommandStatus,
+) -> Result<RunWorkflowReport, CliError> {
+    legacy_campaign::campaign_run_report(run_plan, campaign, terminal_outcome, status)
+}
+
 // crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated inputs to the daemon owner and only renders its accepted result.
 pub(crate) fn run_local_qemu_campaign_workflow(
     backend: &ResolvedLocalBackend,

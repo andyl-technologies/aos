@@ -152,12 +152,14 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let seed = ergonomics_plan.as_ref().ok_or_else(|| {
                 backend_error("fuzz requires a resolved deterministic campaign seed")
             })?;
-            Some(plan_fuzz_invocation_with_artifact_dir(
+            let mut plan = plan_fuzz_invocation_with_artifact_dir(
                 args,
                 seed,
                 &run_store_root,
                 &cli.artifact_dir,
-            )?)
+            )?;
+            plan.campaign_deployment = cli.campaign_deployment.clone();
+            Some(plan)
         }
         _ => None,
     };

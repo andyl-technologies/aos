@@ -139,9 +139,9 @@ impl GuardedCampaignExploration {
 
     pub(super) fn attempt_stop(self) -> StopCondition {
         match self.execution_quanta_timeout {
-            Some(execution_quanta) => StopCondition::NextChoiceOrExecutionQuanta {
-                execution_quanta,
-            },
+            Some(execution_quanta) => {
+                StopCondition::NextChoiceOrExecutionQuanta { execution_quanta }
+            }
             None => StopCondition::NextChoice,
         }
     }
@@ -332,9 +332,7 @@ where
                         crucible_campaign::CanonicalSearchStrategy::DepthFirst
                     }
                     GuardedCampaignExplorationStrategy::Priority { seed } => {
-                        crucible_campaign::CanonicalSearchStrategy::Priority {
-                            seed: seed.bytes(),
-                        }
+                        crucible_campaign::CanonicalSearchStrategy::Priority { seed: seed.bytes() }
                     }
                     GuardedCampaignExplorationStrategy::CoverageGuided => unreachable!(),
                 };
@@ -399,9 +397,7 @@ where
                 GuardedCampaignExplorationStrategy::BreadthFirst
                 | GuardedCampaignExplorationStrategy::DepthFirst
                 | GuardedCampaignExplorationStrategy::Priority { .. },
-            ) => {
-                planner.require_exhaustive_policy()
-            }
+            ) => planner.require_exhaustive_policy(),
             Some(GuardedCampaignExplorationStrategy::CoverageGuided) => {
                 planner.require_tree_search_policy()
             }

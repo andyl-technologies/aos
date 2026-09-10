@@ -2,6 +2,14 @@
 
 use super::*;
 
+use crucible_campaign::{
+    ObservationCondition, ObservationStopSatisfaction, StopCondition, StopOutcome,
+};
+use crucible_daemon::qemu_campaign_lifecycle::{
+    GuardedCampaignReplayClosure, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
+    run_guarded_default_campaign,
+};
+
 #[path = "finding_frames.rs"]
 mod finding_frames;
 use finding_frames::property_violation_from_frames;
@@ -196,17 +204,34 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU fuzz requires a resolved backend"))?;
     let family = load_fuzz_family(plan)?;
+    let lifecycle_artifacts =
+        std::sync::Arc::new(crucible::LocalDagStore::new(plan.store_root.clone()));
     let config = production_qemu_lifecycle_config(backend)?
         .with_run_ceiling_icount(LIVE_FUZZ_RUN_CEILING_ICOUNT)
-        .with_coverage(production_api::ProductionPluginSwitch::On);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
+        .with_quantum_budget(LIVE_FUZZ_QUANTUM_LIMIT)
+        .with_coverage(production_api::ProductionPluginSwitch::On)
+        .with_world_artifacts(lifecycle_artifacts.clone())
+        .with_signal_artifacts(lifecycle_artifacts);
+    let deployment = load_guarded_campaign_deployment(plan.campaign_deployment.as_deref())?;
+    if deployment.resources.maximum_execution_quanta() < LIVE_FUZZ_QUANTUM_LIMIT {
+        return Err(backend_error(format!(
+            "campaign deployment admits {} execution quanta, below the fuzz requirement of {}",
+            deployment.resources.maximum_execution_quanta(),
+            LIVE_FUZZ_QUANTUM_LIMIT,
+        )));
+    }
     let warmup = family
         .fuzz_coverage_guided(plan.config, &[])
         .map_err(|error| backend_error(format!("QEMU fuzz warm-up policy failed: {error}")))?;
-    let mut execution =
-        execute_qemu_fuzz_iterations(&config, &runtime, &warmup, "warm-up", plan, backend_plan)?;
+    let mut execution = execute_qemu_fuzz_iterations(
+        &config,
+        &deployment.host,
+        deployment.resources,
+        &warmup,
+        "warm-up",
+        plan,
+        backend_plan,
+    )?;
     let (run, mut report) = if let Some(corpus) = &plan.corpus {
         fs::create_dir_all(corpus).map_err(|error| {
             backend_error(format!(
@@ -238,7 +263,15 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         if plan.on_violation == SearchOnViolationArg::Stop && !execution.findings.is_empty() {
             QemuFuzzExecution::default()
         } else {
-            execute_qemu_fuzz_iterations(&config, &runtime, &run, "guided", plan, backend_plan)?
+            execute_qemu_fuzz_iterations(
+                &config,
+                &deployment.host,
+                deployment.resources,
+                &run,
+                "guided",
+                plan,
+                backend_plan,
+            )?
         };
     merge_qemu_fuzz_execution(&mut execution, guided_execution)?;
     report.property_findings = execution
@@ -276,6 +309,26 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
             ),
         });
     }
+    for campaign in &execution.campaigns {
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: campaign.frontier.ticks,
+            node: String::from("campaign"),
+            kind: String::from("fuzz_campaign_execution"),
+            summary: format!(
+                "phase={} iteration={} campaign={} snapshot={} observation={} configuration={} stop={} observations={} quanta={} backend=live",
+                campaign.phase,
+                campaign.iteration,
+                campaign.campaign,
+                campaign.snapshot,
+                campaign.observation,
+                campaign.configuration.to_hex(),
+                campaign.stop,
+                campaign.accepted_observations,
+                campaign.quanta,
+            ),
+        });
+    }
     attach_qemu_findings_outputs(
         &mut outcome,
         &plan.store_root,
@@ -291,13 +344,111 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
 #[derive(Default)]
 struct QemuFuzzExecution {
     feedback: Vec<crucible::EventLogCoverageFeedback>,
+    campaigns: Vec<QemuFuzzCampaignRecord>,
     findings: Vec<TriageFindingEvidence>,
     reproduction_artifacts: Vec<Vec<u8>>,
 }
 
+struct QemuFuzzCampaignRecord {
+    phase: String,
+    iteration: u64,
+    campaign: String,
+    snapshot: crucible_campaign::CampaignSnapshotId,
+    observation: crucible_campaign::ObservationId,
+    configuration: crucible::ContentHash,
+    stop: String,
+    accepted_observations: usize,
+    frontier: crucible::VirtualTime,
+    quanta: u64,
+}
+
+fn qemu_build_id(backend_plan: &BackendSelectionPlan) -> Result<String, CliError> {
+    match backend_plan.resolved_backend.as_ref() {
+        Some(ResolvedLocalBackend::Qemu { qemu_build_id, .. }) => Ok(qemu_build_id.clone()),
+        #[cfg(any(test, feature = "test-double"))]
+        Some(ResolvedLocalBackend::Double) => Err(backend_error(
+            "campaign QEMU fuzz requires a resolved production backend",
+        )),
+        None => Err(backend_error(
+            "campaign QEMU fuzz requires a resolved backend",
+        )),
+    }
+}
+
+fn qemu_fuzz_campaign_status(
+    campaign: &GuardedDefaultCampaignRun,
+) -> Result<(BackendCommandStatus, OutcomeKind, bool), CliError> {
+    match campaign.terminal().observation().stop() {
+        StopOutcome::ObservationReached(proof) => {
+            qemu_fuzz_observation_status(proof.condition(), proof.satisfaction())
+        }
+        StopOutcome::TerminalSuccess => {
+            Ok((BackendCommandStatus::Passed, OutcomeKind::Passed, true))
+        }
+        StopOutcome::ModeledTimeout(_) => {
+            Ok((BackendCommandStatus::Timeout, OutcomeKind::Timeout, false))
+        }
+        StopOutcome::GuestCrash(_) => {
+            Ok((BackendCommandStatus::Crashed, OutcomeKind::Crashed, false))
+        }
+        StopOutcome::AssertionFailure(_) | StopOutcome::ScenarioFailure(_) => {
+            Ok((BackendCommandStatus::Failed, OutcomeKind::Failed, false))
+        }
+        StopOutcome::Reached(_) => Err(backend_error(
+            "campaign fuzz ended at an unexpected campaign boundary",
+        )),
+    }
+}
+
+fn qemu_fuzz_observation_status(
+    condition: &ObservationCondition,
+    satisfaction: ObservationStopSatisfaction,
+) -> Result<(BackendCommandStatus, OutcomeKind, bool), CliError> {
+    if condition
+        != &(ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
+            execution_quanta: LIVE_FUZZ_QUANTUM_LIMIT,
+        })
+    {
+        return Err(backend_error(
+            "campaign fuzz reached an observation condition it did not request",
+        ));
+    }
+
+    match satisfaction {
+        ObservationStopSatisfaction::SchedulerQuiescent => {
+            Ok((BackendCommandStatus::Passed, OutcomeKind::Passed, true))
+        }
+        ObservationStopSatisfaction::ExecutionQuanta => {
+            Ok((BackendCommandStatus::Timeout, OutcomeKind::Timeout, true))
+        }
+        ObservationStopSatisfaction::AssertionViolationTransition => Err(backend_error(
+            "campaign fuzz compound completion carried an assertion-transition proof",
+        )),
+    }
+}
+
+fn qemu_fuzz_campaign_stop_label(stop: &StopOutcome) -> String {
+    match stop {
+        StopOutcome::Reached(condition) => format!("reached:{condition:?}"),
+        StopOutcome::TerminalSuccess => String::from("terminal-success"),
+        StopOutcome::ModeledTimeout(name) => format!("modeled-timeout:{name}"),
+        StopOutcome::GuestCrash(class) => format!("guest-crash:{class}"),
+        StopOutcome::AssertionFailure(property) => format!("assertion-failure:{property}"),
+        StopOutcome::ScenarioFailure(reasons) => {
+            format!("scenario-failure:{}", reasons.join(","))
+        }
+        StopOutcome::ObservationReached(proof) => format!(
+            "observation-reached:{:?}:{:?}",
+            proof.condition(),
+            proof.satisfaction()
+        ),
+    }
+}
+
 fn execute_qemu_fuzz_iterations(
     config: &production_api::ProductionVmLifecycleConfig,
-    runtime: &tokio::runtime::Runtime,
+    host: &crucible_daemon::LinuxQemuAttemptHostConfig,
+    resources: crucible_campaign::AttemptResourceLimits,
     run: &crucible::CoverageGuidedFuzzRun,
     phase: &str,
     plan: &FuzzDriverPlan,
@@ -305,23 +456,63 @@ fn execute_qemu_fuzz_iterations(
 ) -> Result<QemuFuzzExecution, CliError> {
     let mut execution = QemuFuzzExecution {
         feedback: Vec::with_capacity(run.iterations.len()),
+        campaigns: Vec::with_capacity(run.iterations.len()),
         ..QemuFuzzExecution::default()
     };
     for iteration in &run.iterations {
         let form = iteration.scenario.form().clone();
         let run_plan = qemu_fuzz_iteration_plan(iteration.sequence, form.clone());
-        // crucible-lint: allow host-nondeterminism-state -- genesis is reconstructed from canonical scenario material, not host observations.
-        let branch_base = crucible::Configuration::genesis(iteration.scenario.scenario_def());
-        let iteration_config = config.clone().with_branch_prefix_overrides(
-            branch_base,
-            VirtualTime { ticks: 0 },
-            iteration.schedule().decisions().to_vec(),
-        );
-        let control_plane =
-            production_qemu_control_plane(iteration_config, run_plan.scenario.scenario_form());
-        let client = InProcessLifecycleClient::new(control_plane);
-        let report =
-            runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?;
+        let schedule = iteration.schedule().clone();
+        let replay_closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(
+            &schedule,
+        )
+        .map_err(|error| {
+            backend_error(format!(
+                "QEMU fuzz {phase} iteration {} replay closure: {error}",
+                iteration.sequence,
+            ))
+        })?;
+        let request = GuardedDefaultCampaignRunRequest::new(
+            form.clone(),
+            form.scenario_def().seed(),
+            env!("CARGO_PKG_VERSION"),
+            qemu_build_id(backend_plan)?,
+            config.clone(),
+            host.clone(),
+            resources,
+        )
+        .with_initial_replay(schedule, replay_closure)
+        .with_discovery_stop(StopCondition::Observation(
+            ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
+                execution_quanta: LIVE_FUZZ_QUANTUM_LIMIT,
+            },
+        ));
+        let campaign = run_guarded_default_campaign(request).map_err(|error| {
+            backend_error(format!(
+                "execute QEMU fuzz {phase} iteration {} through campaign owner: {error}",
+                iteration.sequence,
+            ))
+        })?;
+        let (status, terminal_outcome, campaign_completion) = qemu_fuzz_campaign_status(&campaign)?;
+        let report = crate::cli_verify_serve::campaign_run_report(
+            &run_plan,
+            &campaign,
+            terminal_outcome,
+            status,
+        )?;
+        let terminal = campaign.terminal();
+        execution.campaigns.push(QemuFuzzCampaignRecord {
+            phase: phase.to_owned(),
+            iteration: iteration.sequence,
+            campaign: campaign.campaign().as_str().to_owned(),
+            snapshot: campaign.final_snapshot(),
+            observation: terminal.id(),
+            configuration: terminal.configuration().id(),
+            stop: qemu_fuzz_campaign_stop_label(terminal.observation().stop()),
+            accepted_observations: campaign.observations().len(),
+            frontier: campaign.evidence().frontier(),
+            quanta: campaign.evidence().quanta(),
+        });
         if report.status == BackendCommandStatus::Crashed {
             let last_event = report.streamed_events.last().map_or("none", String::as_str);
             return Err(backend_error(format!(
@@ -385,6 +576,7 @@ fn execute_qemu_fuzz_iterations(
             iteration.sequence,
             iteration.schedule().len(),
             backend_plan,
+            campaign_completion,
         )?;
         execution.feedback.push(report.coverage_feedback);
         if let Some((evidence, reproduction)) = finding {
@@ -414,15 +606,9 @@ fn qemu_fuzz_finding_evidence(
     sequence: u64,
     branch_decisions: usize,
     backend_plan: &BackendSelectionPlan,
+    campaign_completion: bool,
 ) -> Result<Option<(crate::cli_report::TriageFindingEvidence, Vec<u8>)>, CliError> {
-    if report.status == BackendCommandStatus::Passed
-        || qemu_fuzz_timeout_is_campaign_completion(
-            report.status,
-            report.budget_timed_out,
-            report.outcome,
-            report.final_quanta,
-        )
-    {
+    if campaign_completion || report.status == BackendCommandStatus::Passed {
         return Ok(None);
     }
     let terminal = report.terminal_configuration.as_ref().ok_or_else(|| {
@@ -502,18 +688,6 @@ fn qemu_fuzz_finding_evidence(
     Ok(Some((evidence, reproduction)))
 }
 
-fn qemu_fuzz_timeout_is_campaign_completion(
-    status: BackendCommandStatus,
-    budget_timed_out: bool,
-    outcome: Option<OutcomeKind>,
-    final_quanta: u64,
-) -> bool {
-    status == BackendCommandStatus::Timeout
-        && budget_timed_out
-        && outcome == Some(OutcomeKind::Timeout)
-        && final_quanta == LIVE_FUZZ_QUANTUM_LIMIT
-}
-
 fn push_qemu_fuzz_finding(
     execution: &mut QemuFuzzExecution,
     evidence: TriageFindingEvidence,
@@ -549,6 +723,7 @@ fn merge_qemu_fuzz_execution(
         ));
     }
     target.feedback.extend(source.feedback);
+    target.campaigns.extend(source.campaigns);
     for (evidence, reproduction) in source
         .findings
         .into_iter()
@@ -663,18 +838,27 @@ mod finding_tests {
         assert_eq!(plan.max_quanta, Some(LIVE_FUZZ_QUANTUM_LIMIT));
         assert_eq!(LIVE_FUZZ_RUN_CEILING_ICOUNT, 2_000_000);
         assert_eq!(plan.execution_mode, RunExecutionMode::ToCompletion);
-        assert!(qemu_fuzz_timeout_is_campaign_completion(
-            BackendCommandStatus::Timeout,
-            true,
-            Some(OutcomeKind::Timeout),
-            LIVE_FUZZ_QUANTUM_LIMIT,
-        ));
-        assert!(!qemu_fuzz_timeout_is_campaign_completion(
-            BackendCommandStatus::Timeout,
-            true,
-            Some(OutcomeKind::Timeout),
-            LIVE_FUZZ_QUANTUM_LIMIT - 1,
-        ));
+        let condition = ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
+            execution_quanta: LIVE_FUZZ_QUANTUM_LIMIT,
+        };
+        assert_eq!(
+            qemu_fuzz_observation_status(
+                &condition,
+                ObservationStopSatisfaction::SchedulerQuiescent,
+            )?,
+            (BackendCommandStatus::Passed, OutcomeKind::Passed, true),
+        );
+        assert_eq!(
+            qemu_fuzz_observation_status(&condition, ObservationStopSatisfaction::ExecutionQuanta,)?,
+            (BackendCommandStatus::Timeout, OutcomeKind::Timeout, true),
+        );
+        assert!(
+            qemu_fuzz_observation_status(
+                &ObservationCondition::SchedulerQuiescent,
+                ObservationStopSatisfaction::SchedulerQuiescent,
+            )
+            .is_err()
+        );
         Ok(())
     }
 }

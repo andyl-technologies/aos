@@ -38,9 +38,10 @@ impl QemuSearchSupplementalOracle {
             }
         };
         let (media_type, material) = match &source {
-            QemuSearchSupplementalOracleSource::Named(source) => {
-                (SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE, source.material.clone())
-            }
+            QemuSearchSupplementalOracleSource::Named(source) => (
+                SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE,
+                source.material.clone(),
+            ),
             QemuSearchSupplementalOracleSource::Retained(source) => {
                 (SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE, source.material.clone())
             }
@@ -48,12 +49,10 @@ impl QemuSearchSupplementalOracle {
         let scenario = crucible_campaign::ScenarioDefId::from_hash(
             crucible_campaign::CampaignHash::from_bytes(plan.scenario.scenario_form().id().bytes),
         );
-        let source_record = GuardedCampaignFindingOracleSource::new(
-            scenario,
-            media_type,
-            material,
-        )
-        .map_err(|error| backend_error(format!("encode supplemental search evidence: {error}")))?;
+        let source_record = GuardedCampaignFindingOracleSource::new(scenario, media_type, material)
+            .map_err(|error| {
+                backend_error(format!("encode supplemental search evidence: {error}"))
+            })?;
         Ok(Some(Self {
             scenario: plan.scenario.scenario_form().clone(),
             source,
@@ -325,15 +324,11 @@ fn run_local_qemu_search_scenario(
         )));
     }
     let strategy = match plan.engine_strategy {
-        crucible::SearchStrategy::BreadthFirst => {
-            GuardedCampaignExplorationStrategy::BreadthFirst
-        }
+        crucible::SearchStrategy::BreadthFirst => GuardedCampaignExplorationStrategy::BreadthFirst,
         crucible::SearchStrategy::CoverageGuided => {
             GuardedCampaignExplorationStrategy::CoverageGuided
         }
-        crucible::SearchStrategy::DepthFirst => {
-            GuardedCampaignExplorationStrategy::DepthFirst
-        }
+        crucible::SearchStrategy::DepthFirst => GuardedCampaignExplorationStrategy::DepthFirst,
         crucible::SearchStrategy::Priority { seed } => {
             GuardedCampaignExplorationStrategy::Priority { seed }
         }
@@ -810,15 +805,12 @@ fn accepted_terminal_fingerprints(
     scenario: &crucible::ScenarioDefForm,
     accepted: &GuardedDefaultCampaignObservation,
 ) -> Result<Vec<crucible::FingerprintSample>, CliError> {
-    let samples = accepted
-        .evidence()
-        .terminal_fingerprints()
-        .ok_or_else(|| {
-            artifact_error(format!(
-                "campaign search observation `{}` has no authenticated terminal fingerprints",
-                accepted.id()
-            ))
-        })?;
+    let samples = accepted.evidence().terminal_fingerprints().ok_or_else(|| {
+        artifact_error(format!(
+            "campaign search observation `{}` has no authenticated terminal fingerprints",
+            accepted.id()
+        ))
+    })?;
     let mut expected_nodes = scenario
         .world()
         .vm_nodes()
@@ -851,9 +843,14 @@ fn accepted_observation_outcome(accepted: &GuardedDefaultCampaignObservation) ->
         StopOutcome::AssertionFailure(_) | StopOutcome::ScenarioFailure(_) => OutcomeKind::Failed,
         StopOutcome::ModeledTimeout(_) => OutcomeKind::Timeout,
         StopOutcome::GuestCrash(_) => OutcomeKind::Crashed,
-        StopOutcome::Reached(_)
-        | StopOutcome::ObservationReached(_)
-        | StopOutcome::TerminalSuccess => OutcomeKind::Passed,
+        StopOutcome::Reached(_) | StopOutcome::TerminalSuccess => OutcomeKind::Passed,
+        StopOutcome::ObservationReached(proof) => match proof.satisfaction() {
+            ObservationStopSatisfaction::SchedulerQuiescent => OutcomeKind::Passed,
+            ObservationStopSatisfaction::AssertionViolationTransition => {
+                OutcomeKind::Failed
+            }
+            ObservationStopSatisfaction::ExecutionQuanta => OutcomeKind::Timeout,
+        },
     }
 }
 
@@ -876,10 +873,15 @@ fn accepted_failure_material(
             ));
         }
         StopOutcome::ModeledTimeout(_) => {}
-        StopOutcome::Reached(_)
-        | StopOutcome::ObservationReached(_)
-        | StopOutcome::TerminalSuccess
-        | StopOutcome::GuestCrash(_) => {}
+        StopOutcome::ObservationReached(proof)
+            if proof.satisfaction() == ObservationStopSatisfaction::AssertionViolationTransition =>
+        {
+            if let Some(witness) = proof.assertion_witness() {
+                violations.push(witness.assertion().to_owned());
+            }
+        }
+        StopOutcome::ObservationReached(_) => {}
+        StopOutcome::Reached(_) | StopOutcome::TerminalSuccess | StopOutcome::GuestCrash(_) => {}
     }
     violations.sort();
     violations.dedup();
