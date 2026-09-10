@@ -118,6 +118,8 @@ pub enum CampaignRecordKind {
     PlannerSearchCandidate,
     /// Exact replay inputs for reconstructing one observed finding signature.
     FindingTriageReplayEvidence,
+    /// One bounded opaque payload segment owned by replay-evidence manifest.
+    FindingTriageReplayEvidenceChunk,
     /// Durable executor-produced finding candidate handoff.
     FindingCandidateBundle,
     /// Authenticated partial or complete campaign archive boundary.
@@ -128,7 +130,7 @@ pub enum CampaignRecordKind {
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 47] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -175,6 +177,7 @@ impl CampaignRecordKind {
         Self::PlannerBeamCandidate,
         Self::PlannerSearchCandidate,
         Self::FindingTriageReplayEvidence,
+        Self::FindingTriageReplayEvidenceChunk,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -224,6 +227,9 @@ impl CampaignRecordKind {
             Self::PlannerBeamCandidate => "crucible.campaign.planner-beam-candidate",
             Self::PlannerSearchCandidate => "crucible.campaign.planner-search-candidate",
             Self::FindingTriageReplayEvidence => "crucible.campaign.finding-triage-replay-evidence",
+            Self::FindingTriageReplayEvidenceChunk => {
+                "crucible.campaign.finding-triage-replay-evidence-chunk"
+            }
             Self::FindingCandidateBundle => "crucible.campaign.finding-candidate-bundle",
             Self::ArchiveManifest => "crucible.campaign.archive-manifest",
             Self::ArchiveInventoryPage => "crucible.campaign.archive-inventory-page",
@@ -251,6 +257,7 @@ impl CampaignRecordKind {
             Self::ReproductionArtifact => 2,
             Self::Finding => 4,
             Self::FindingCandidateBundle => 3,
+            Self::FindingTriageReplayEvidence => 2,
             Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,
             Self::PlannerBeamCandidate => 2,
@@ -294,7 +301,8 @@ impl CampaignRecordKind {
             Self::ReproductionArtifact
             | Self::Finding
             | Self::FindingCandidateBundle
-            | Self::FindingTriageReplayEvidence => ObjectKind::Finding,
+            | Self::FindingTriageReplayEvidence
+            | Self::FindingTriageReplayEvidenceChunk => ObjectKind::Finding,
             Self::Lineage
             | Self::BudgetLedger
             | Self::Fact
@@ -366,6 +374,7 @@ impl Canonical for CampaignRecordKind {
             Self::PlannerBeamCandidate => 43,
             Self::PlannerSearchCandidate => 44,
             Self::FindingTriageReplayEvidence => 45,
+            Self::FindingTriageReplayEvidenceChunk => 46,
         });
     }
 
@@ -417,6 +426,7 @@ impl Canonical for CampaignRecordKind {
             43 => Ok(Self::PlannerBeamCandidate),
             44 => Ok(Self::PlannerSearchCandidate),
             45 => Ok(Self::FindingTriageReplayEvidence),
+            46 => Ok(Self::FindingTriageReplayEvidenceChunk),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -689,6 +699,12 @@ impl ObjectEnvelope {
         self.envelope.body()
     }
 
+    /// Returns the record schema version carried by the generic envelope.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.envelope.schema_version()
+    }
+
     /// Returns strict canonical envelope bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
@@ -782,7 +798,11 @@ impl ObjectEnvelope {
             || record_kind == CampaignRecordKind::Finding
                 && matches!(envelope.schema_version(), 1..=3)
             || record_kind == CampaignRecordKind::FindingCandidateBundle
-                && matches!(envelope.schema_version(), 1..=2);
+                && matches!(envelope.schema_version(), 1..=2)
+            || record_kind == CampaignRecordKind::FindingTriageReplayEvidence
+                && matches!(envelope.schema_version(), 1..=2)
+            || record_kind == CampaignRecordKind::FindingTriageReplayEvidenceChunk
+                && envelope.schema_version() == 1;
         if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign record schema version",
@@ -814,6 +834,7 @@ impl ObjectEnvelope {
                 | CampaignRecordKind::Finding
                 | CampaignRecordKind::FindingCandidateBundle
                 | CampaignRecordKind::FindingTriageReplayEvidence
+                | CampaignRecordKind::FindingTriageReplayEvidenceChunk
                 | CampaignRecordKind::PlannerCandidateGuidance
                 | CampaignRecordKind::PlannerBeamCandidate
                 | CampaignRecordKind::ArchiveManifest
@@ -996,8 +1017,11 @@ fn expected_children(
             content_children(value.content_children())
         }
         CampaignRecordKind::FindingTriageReplayEvidence => {
-            let value = FindingTriageReplayEvidence::from_canonical_bytes(body)?;
-            content_children(value.content_children())
+            content_children(FindingTriageReplayEvidence::storage_content_children(body)?)
+        }
+        CampaignRecordKind::FindingTriageReplayEvidenceChunk => {
+            crate::finding_triage_evidence::validate_finding_triage_replay_chunk_body(body)?;
+            Ok(BTreeSet::new())
         }
         CampaignRecordKind::PlannerCandidateGuidance => {
             let value = crate::PlannerCandidateGuidance::from_canonical_bytes(body)?;

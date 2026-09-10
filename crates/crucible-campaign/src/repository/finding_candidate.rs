@@ -3,7 +3,8 @@
 use super::*;
 use crate::{
     CampaignName, FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingId,
-    FindingTarget,
+    FindingTarget, FindingTriageReplayStorageDescription, FindingTriageReplayStorageObject,
+    FindingTriageReplayStorageObjectRole, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
 };
 
 /// Opaque proof that one snapshot directly retains a finding candidate bundle.
@@ -66,13 +67,26 @@ impl CampaignRepository {
         &self,
         evidence: &FindingTriageReplayEvidence,
     ) -> Result<FindingTriageReplayEvidenceId, CampaignRepositoryError> {
+        let plan = evidence.storage_plan()?;
+        let expected_content = plan.root.content_id();
         self.validate_finding_triage_replay_evidence(evidence)?;
-        let content = self.put_envelope(ObjectEnvelope::for_record(
-            crate::CampaignRecordKind::FindingTriageReplayEvidence,
-            crate::object::content_children(evidence.content_children())?,
-            evidence.canonical_bytes(),
-        )?)?;
-        if content != evidence.id()?.content_id() {
+
+        // Rebuild and authenticate the complete deterministic plan before the
+        // first durable write. The second pass publishes one bounded chunk at a
+        // time, so maximum evidence does not require another full payload copy.
+        for (index, descriptor) in plan.chunks.iter().copied().enumerate() {
+            evidence.chunk_envelope(index, descriptor)?;
+        }
+        for (index, descriptor) in plan.chunks.iter().copied().enumerate() {
+            let content = self.put_envelope(evidence.chunk_envelope(index, descriptor)?)?;
+            if content != descriptor.content() {
+                return Err(integrity(
+                    "finding-triage-replay-evidence-chunk-publication-id-mismatch",
+                ));
+            }
+        }
+        let content = self.put_envelope(plan.root)?;
+        if content != expected_content {
             return Err(integrity(
                 "finding-triage-replay-evidence-publication-id-mismatch",
             ));
@@ -94,6 +108,210 @@ impl CampaignRepository {
         let evidence = self.decode_finding_triage_replay_evidence(id.content_id())?;
         self.validate_finding_triage_replay_evidence(&evidence)?;
         Ok(evidence)
+    }
+
+    /// Describes the authenticated stored envelopes for one replay record.
+    ///
+    /// The returned order is always the root followed by payload chunks in
+    /// logical order. Repeated content IDs remain distinct positions.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the root, a payload
+    /// chunk, or a referenced logical dependency is absent or inconsistent.
+    pub fn describe_finding_triage_replay_storage(
+        &self,
+        id: FindingTriageReplayEvidenceId,
+    ) -> Result<FindingTriageReplayStorageDescription, CampaignRepositoryError> {
+        let root = self.require_record_kind(
+            id.content_id(),
+            crate::CampaignRecordKind::FindingTriageReplayEvidence,
+        )?;
+        let root_schema_version = root.schema_version();
+        let mut objects = vec![FindingTriageReplayStorageObject::new(
+            0,
+            FindingTriageReplayStorageObjectRole::Root,
+            id.content_id(),
+            canonical_envelope_bytes(&root)?,
+        )];
+
+        let logical_payload_bytes = match root_schema_version {
+            1 => {
+                let evidence = FindingTriageReplayEvidence::from_canonical_bytes(root.body())?;
+                self.validate_finding_triage_replay_dependencies(
+                    evidence.reproduction(),
+                    evidence.observed_signature(),
+                )?;
+                u64::try_from(evidence.payload().len()).map_err(|_| {
+                    CampaignCodecError::LimitExceeded {
+                        limit: "finding-triage-replay-payload-bytes",
+                    }
+                })?
+            }
+            2 => {
+                let manifest =
+                    FindingTriageReplayEvidence::manifest_from_canonical_bytes(root.body())?;
+                self.validate_finding_triage_replay_dependencies(
+                    manifest.reproduction(),
+                    manifest.observed_signature(),
+                )?;
+                for (index, descriptor) in manifest.chunks().iter().copied().enumerate() {
+                    let chunk = self.require_record_kind(
+                        descriptor.content(),
+                        crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
+                    )?;
+                    let payload =
+                        FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
+                    if payload.len() != descriptor.logical_bytes() as usize {
+                        return Err(integrity(
+                            "finding-triage-replay-evidence-chunk-length-mismatch",
+                        ));
+                    }
+                    drop(payload);
+                    let ordinal = u32::try_from(index + 1).map_err(|_| {
+                        CampaignCodecError::LimitExceeded {
+                            limit: "finding-triage-replay-storage-object-ordinal",
+                        }
+                    })?;
+                    let chunk_index =
+                        u32::try_from(index).map_err(|_| CampaignCodecError::LimitExceeded {
+                            limit: "finding-triage-replay-storage-object-ordinal",
+                        })?;
+                    objects.push(FindingTriageReplayStorageObject::new(
+                        ordinal,
+                        FindingTriageReplayStorageObjectRole::PayloadChunk {
+                            index: chunk_index,
+                            logical_payload_bytes: descriptor.logical_bytes(),
+                        },
+                        descriptor.content(),
+                        canonical_envelope_bytes(&chunk)?,
+                    ));
+                }
+                u64::try_from(manifest.payload_bytes()?).map_err(|_| {
+                    CampaignCodecError::LimitExceeded {
+                        limit: "finding-triage-replay-payload-bytes",
+                    }
+                })?
+            }
+            _ => {
+                return Err(integrity("finding-triage-replay-evidence-envelope-version"));
+            }
+        };
+
+        FindingTriageReplayStorageDescription::new(
+            id,
+            root_schema_version,
+            logical_payload_bytes,
+            objects,
+        )
+        .map_err(Into::into)
+    }
+
+    /// Reads one authenticated bounded range from a described stored envelope.
+    ///
+    /// `object_ordinal` addresses the root-then-payload order returned by
+    /// [`Self::describe_finding_triage_replay_storage`]. The stored root layout
+    /// is reauthenticated before the range is read, binding the ordinal and
+    /// content identity to `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-request error for a zero-length, oversized,
+    /// overflowing, out-of-bounds, or unknown range. Returns a store, codec, or
+    /// integrity error when the authenticated layout cannot be read.
+    pub fn read_finding_triage_replay_storage_range(
+        &self,
+        id: FindingTriageReplayEvidenceId,
+        object_ordinal: u32,
+        range: crucible_cas::content_store::ByteRange,
+    ) -> Result<Vec<u8>, CampaignRepositoryError> {
+        if range.length == 0 || range.length > MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "finding-triage-replay-storage-range-length",
+            });
+        }
+        let end = range.offset.checked_add(range.length).ok_or(
+            CampaignRepositoryError::InvalidRequest {
+                reason: "finding-triage-replay-storage-range-overflow",
+            },
+        )?;
+        let object = self.resolve_finding_triage_replay_storage_object(id, object_ordinal)?;
+        if end > object.stored_envelope_bytes() {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "finding-triage-replay-storage-range-bounds",
+            });
+        }
+
+        let source = self.blobs.read(object.content(), Some(range))?;
+        if source.logical_length() != range.length {
+            return Err(integrity(
+                "finding-triage-replay-storage-range-length-mismatch",
+            ));
+        }
+        source.read_all(range.length).map_err(Into::into)
+    }
+
+    fn resolve_finding_triage_replay_storage_object(
+        &self,
+        id: FindingTriageReplayEvidenceId,
+        object_ordinal: u32,
+    ) -> Result<FindingTriageReplayStorageObject, CampaignRepositoryError> {
+        let root = self.require_record_kind(
+            id.content_id(),
+            crate::CampaignRecordKind::FindingTriageReplayEvidence,
+        )?;
+        if object_ordinal == 0 {
+            return Ok(FindingTriageReplayStorageObject::new(
+                0,
+                FindingTriageReplayStorageObjectRole::Root,
+                id.content_id(),
+                canonical_envelope_bytes(&root)?,
+            ));
+        }
+        if root.schema_version() != 2 {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "finding-triage-replay-storage-object-ordinal",
+            });
+        }
+
+        let manifest = FindingTriageReplayEvidence::manifest_from_canonical_bytes(root.body())?;
+        let chunk_index =
+            object_ordinal
+                .checked_sub(1)
+                .ok_or(CampaignRepositoryError::InvalidRequest {
+                    reason: "finding-triage-replay-storage-object-ordinal",
+                })?;
+        let descriptor = manifest
+            .chunks()
+            .get(usize::try_from(chunk_index).map_err(|_| {
+                CampaignRepositoryError::InvalidRequest {
+                    reason: "finding-triage-replay-storage-object-ordinal",
+                }
+            })?)
+            .copied()
+            .ok_or(CampaignRepositoryError::InvalidRequest {
+                reason: "finding-triage-replay-storage-object-ordinal",
+            })?;
+        let chunk = self.require_record_kind(
+            descriptor.content(),
+            crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
+        )?;
+        let logical_bytes = FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
+        if logical_bytes.len() != descriptor.logical_bytes() as usize {
+            return Err(integrity(
+                "finding-triage-replay-evidence-chunk-length-mismatch",
+            ));
+        }
+
+        Ok(FindingTriageReplayStorageObject::new(
+            object_ordinal,
+            FindingTriageReplayStorageObjectRole::PayloadChunk {
+                index: chunk_index,
+                logical_payload_bytes: descriptor.logical_bytes(),
+            },
+            descriptor.content(),
+            canonical_envelope_bytes(&chunk)?,
+        ))
     }
 
     /// Publishes one fully verified finding candidate handoff.
@@ -257,7 +475,38 @@ impl CampaignRepository {
     ) -> Result<FindingTriageReplayEvidence, CampaignRepositoryError> {
         let envelope =
             self.require_record_kind(id, crate::CampaignRecordKind::FindingTriageReplayEvidence)?;
-        let evidence = FindingTriageReplayEvidence::from_canonical_bytes(envelope.body())?;
+        let evidence = match envelope.schema_version() {
+            1 => FindingTriageReplayEvidence::from_canonical_bytes(envelope.body())?,
+            2 => {
+                let manifest =
+                    FindingTriageReplayEvidence::manifest_from_canonical_bytes(envelope.body())?;
+                let payload_bytes = manifest.payload_bytes()?;
+                let mut payload = Vec::new();
+                payload.try_reserve_exact(payload_bytes).map_err(|_| {
+                    CampaignCodecError::LimitExceeded {
+                        limit: "finding-triage-replay-payload-allocation",
+                    }
+                })?;
+                for descriptor in manifest.chunks().iter().copied() {
+                    let chunk = self.require_record_kind(
+                        descriptor.content(),
+                        crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
+                    )?;
+                    let bytes =
+                        FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
+                    if bytes.len() != descriptor.logical_bytes() as usize {
+                        return Err(integrity(
+                            "finding-triage-replay-evidence-chunk-length-mismatch",
+                        ));
+                    }
+                    payload.extend_from_slice(&bytes);
+                }
+                manifest.into_evidence(payload)?
+            }
+            _ => {
+                return Err(integrity("finding-triage-replay-evidence-envelope-version"));
+            }
+        };
         if evidence.id()?.content_id() != id {
             return Err(integrity("finding-triage-replay-evidence-envelope-shape"));
         }
@@ -268,14 +517,25 @@ impl CampaignRepository {
         &self,
         evidence: &FindingTriageReplayEvidence,
     ) -> Result<(), CampaignRepositoryError> {
-        let reproduction = self.read_reproduction_artifact(evidence.reproduction().content_id())?;
-        if reproduction.finding_fingerprint() != evidence.observed_signature().fingerprint() {
+        self.validate_finding_triage_replay_dependencies(
+            evidence.reproduction(),
+            evidence.observed_signature(),
+        )
+    }
+
+    fn validate_finding_triage_replay_dependencies(
+        &self,
+        reproduction_id: crate::ReproductionArtifactId,
+        observed_signature: &crate::FindingSignature,
+    ) -> Result<(), CampaignRepositoryError> {
+        let reproduction = self.read_reproduction_artifact(reproduction_id.content_id())?;
+        if reproduction.finding_fingerprint() != observed_signature.fingerprint() {
             return Err(integrity(
                 "finding-triage-replay-evidence-fingerprint-mismatch",
             ));
         }
         if matches!(
-            evidence.observed_signature().target(),
+            observed_signature.target(),
             Some(FindingTarget::Configuration(configuration))
                 if configuration != reproduction.configuration_artifact()
         ) {
@@ -283,7 +543,13 @@ impl CampaignRepository {
                 "finding-triage-replay-evidence-configuration-mismatch",
             ));
         }
-        for (_, child) in evidence.content_children() {
+        let mut children = vec![reproduction_id.content_id()];
+        children.extend(
+            crate::finding_candidate::signature_children("observed-signature", observed_signature)
+                .into_iter()
+                .map(|(_, child)| child),
+        );
+        for child in children {
             let handle = self.blobs.read(child, None)?;
             handle.copy_to(&mut std::io::sink())?;
         }
@@ -429,6 +695,15 @@ impl CampaignRepository {
             .get(root, finding_candidate_occurrence_key(bundle))?
             == Some(bundle.content_id()))
     }
+}
+
+fn canonical_envelope_bytes(envelope: &ObjectEnvelope) -> Result<u64, CampaignRepositoryError> {
+    u64::try_from(envelope.canonical_bytes().len()).map_err(|_| {
+        CampaignCodecError::LimitExceeded {
+            limit: "finding-triage-replay-storage-envelope-bytes",
+        }
+        .into()
+    })
 }
 
 fn exact_pins_contain(retained: &FindingExactPins, requested: &FindingExactPins) -> bool {
