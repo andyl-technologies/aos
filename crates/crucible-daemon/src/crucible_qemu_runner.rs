@@ -213,9 +213,12 @@ pub struct QemuExactThinExecutionRunner<S, F> {
 /// Exact-origin router for fresh and durable-resume QEMU execution paths.
 ///
 /// The resume root in [`AttemptExecutionContext`] is an operational execution
-/// origin, not a materialization hint. A context with a root always obtains its
-/// execution outcome from `resume`; `fresh` may only authenticate its immutable
-/// semantic basis and never becomes an execution fallback. A context without a
+/// origin, not a materialization hint. A context with a root normally obtains
+/// its execution outcome from `resume`; `fresh` may only authenticate its
+/// immutable semantic basis. Modeled continuation control is the exception:
+/// exact checkpoints do not carry that newly selected input, so the router cold
+/// executes the continuation from its authenticated semantic source after the
+/// resume path has validated the supplied exact closure. A context without a
 /// root executes through `fresh`.
 /// Ordinary `EventCount` resumes first cold replay the immutable attempt start
 /// so the resumed driver can distinguish inherited evidence from same-attempt
@@ -377,6 +380,19 @@ where
         if context.resume_checkpoint().is_none() {
             self.fresh
                 .execute(input, context)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))
+        } else if input.attempt().continuation_input().is_some() {
+            if matches!(
+                input.start(),
+                CrucibleResolvedAttemptStart::AfterAttempt { .. }
+            ) {
+                self.resume
+                    .authenticate_selected_resume_boundary(input, context)
+                    .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))?;
+            }
+            let cold_context = context.for_absent_selected_source();
+            self.fresh
+                .execute(input, &cold_context)
                 .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))
         } else if matches!(
             input.start(),

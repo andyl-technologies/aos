@@ -74,10 +74,13 @@ pub use replay_closure::{
 };
 
 mod resume;
-pub use resume::GuardedDefaultCampaignResumeProof;
 use resume::{
     DefaultRunResumeProgress, DefaultRunResumeProof, GuardedDefaultCampaignResumeSource,
-    materialize_resume_proof, validate_resume_source,
+    continuation_lifecycle_config, materialize_resume_proof, validate_resume_source,
+};
+pub use resume::{
+    GuardedCampaignContinuationControl, GuardedCampaignContinuationControlError,
+    GuardedDefaultCampaignResumeProof,
 };
 
 #[cfg(test)]
@@ -266,6 +269,35 @@ impl GuardedDefaultCampaignRunRequest {
             checkpoint,
             final_stop,
             checkpoints,
+            continuation_control: None,
+        });
+        self
+    }
+
+    /// Continues from an authenticated checkpoint under modeled branch control.
+    ///
+    /// The control is committed into the continuation [`Attempt`] identity
+    /// before execution admission. The campaign owner derives the production
+    /// lifecycle branch configuration from that same record.
+    #[must_use]
+    pub fn with_controlled_resume_source(
+        mut self,
+        // crucible-lint: allow host-nondeterminism-state -- the caller-supplied replay schedule is forwarded unchanged into exact source authentication.
+        schedule: Schedule,
+        closure: GuardedCampaignReplayClosure,
+        checkpoint: Checkpoint,
+        final_stop: StopCondition,
+        checkpoints: Arc<ExactCheckpointStore>,
+        continuation_control: GuardedCampaignContinuationControl,
+    ) -> Self {
+        self.initial_schedule = schedule;
+        self.initial_replay_closure = Some(closure);
+        self.discovery_stop = StopCondition::VirtualTimeNanoseconds(checkpoint.virtual_time.ticks);
+        self.resume_source = Some(GuardedDefaultCampaignResumeSource {
+            checkpoint,
+            final_stop,
+            checkpoints,
+            continuation_control: Some(continuation_control),
         });
         self
     }
@@ -665,6 +697,12 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// The completed run lost its authenticated legacy-resume proof.
     #[error("the completed campaign did not retain its legacy-resume proof")]
     MissingResumeProof,
+    /// A modeled continuation input did not match the retained source or attempt.
+    #[error("the campaign continuation input differs from its authenticated source or attempt")]
+    ContinuationInputMismatch,
+    /// A modeled continuation input was malformed or unsupported by this runner.
+    #[error("the campaign continuation input is malformed or unsupported")]
+    InvalidContinuationInput,
 }
 
 /// Executes one guarded scenario-default path through shared campaign ownership.
@@ -679,17 +717,18 @@ pub fn run_guarded_default_campaign(
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
     validate_initial_replay(&request)?;
     validate_resume_source(&request)?;
+    continuation_lifecycle_config(&request)?;
     validate_fresh_qemu_scenario_resources(&request.scenario, request.resources)
         .map_err(GuardedDefaultCampaignRunError::Resource)?;
 
     let host = LinuxQemuAttemptHostResourceFactory::open(request.host.clone())
         .map_err(GuardedDefaultCampaignRunError::Host)?;
-    let guarded_factory = QemuAttemptProductionVmLifecycleFactory::new(
+    let production = QemuAttemptProductionVmLifecycleFactory::new(
         request.lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(host),
     );
     let (lifecycle_factory, execution_evidence) =
-        QemuObservedFreshAttemptLifecycleFactory::with_evidence(guarded_factory);
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(production);
     let runner = QemuFreshExecutionRunner::new(lifecycle_factory, QemuFreshModeledDriver);
 
     run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
@@ -707,6 +746,7 @@ where
 {
     validate_initial_replay(&request)?;
     validate_resume_source(&request)?;
+    continuation_lifecycle_config(&request)?;
 
     run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
 }
@@ -1281,14 +1321,21 @@ where
                     .repository
                     .load_attempt(savepoint.description.attempt)
                     .map_err(GuardedDefaultCampaignRunError::Repository)?;
-                let continuation = Attempt::new(
-                    AttemptStart::AfterAttempt {
-                        origin: savepoint.description.attempt,
-                        reached: reached_content,
-                    },
-                    origin.path(),
-                    source.final_stop.clone(),
-                )
+                let continuation_start = AttemptStart::AfterAttempt {
+                    origin: savepoint.description.attempt,
+                    reached: reached_content,
+                };
+                let continuation = match &source.continuation_control {
+                    Some(control) => Attempt::new_with_continuation_input(
+                        continuation_start,
+                        origin.path(),
+                        source.final_stop.clone(),
+                        control.input().clone(),
+                    ),
+                    None => {
+                        Attempt::new(continuation_start, origin.path(), source.final_stop.clone())
+                    }
+                }
                 .map_err(GuardedDefaultCampaignRunError::Codec)?;
                 let continuation_id = continuation
                     .id()
@@ -2018,7 +2065,8 @@ fn capture_evidence_reaches_stop(
         StopCondition::NextChoice
         | StopCondition::NamedBoundary(_)
         | StopCondition::EventCount(_)
-        | StopCondition::Terminal => true,
+        | StopCondition::Terminal
+        | StopCondition::Observation(_) => true,
     }
 }
 
