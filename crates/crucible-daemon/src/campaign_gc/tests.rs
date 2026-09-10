@@ -16,18 +16,19 @@ use std::time::Duration;
 use crucible::ContentHash;
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, BudgetGrant, CampaignCommandId,
-    CampaignControlAction, CampaignLineage, CampaignLineageId, CampaignMode, CampaignName,
-    CampaignPolicy, CampaignRepository, CampaignSeed, CampaignSnapshotId,
-    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    CampaignControlAction, CampaignExecutorStore, CampaignLineage, CampaignLineageId, CampaignMode,
+    CampaignName, CampaignPolicy, CampaignRepository, CampaignRepositoryError, CampaignSeed,
+    CampaignSnapshotId, CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
     CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest, ConfigurationId,
     ControlRequest, CoverageProjection, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
-    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorStatusService, ExplorerPolicy,
-    FairnessPolicy, FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingId,
-    FindingKind, FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
+    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorRejection, ExecutorService,
+    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, FindingCandidateBundle,
+    FindingCandidateBundleId, FindingExactPins, FindingId, FindingKind, FindingMinimizationAttempt,
+    FindingMinimizationEvidence, FindingReplayCaptureIncomplete, FindingSignature,
     FindingSignatureMinimizationEvidence, FindingTarget, GetAttemptExecutionDisposition,
     GetAttemptExecutionRequest, MeasurementSet, MerkleMap, Observation, ObservationCandidate,
     ObservationId, PropertyVerdictSet, RetentionPolicy, ScenarioDefId, StopOutcome,
-    SubmitAttemptRequest,
+    SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
@@ -49,15 +50,60 @@ use super::{
 use crate::{
     AssignmentLedger, AssignmentRetentionAdmin, AssignmentRetentionFence,
     AssignmentRetentionGeneration, AssignmentRetentionInventoryError, AssignmentRetentionRoot,
-    AssignmentRetentionSummary, AssignmentRetentionVisitorError, AttemptExecutionKey,
-    AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas, CompletedFindingCandidate,
-    DirectoryAssignmentLedger, FindingCandidateRetentionOutcome, HotCheckpointFallback,
+    AssignmentRetentionSummary, AssignmentRetentionVisitorError, AttemptAdmissionValidator,
+    AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas,
+    CompletedFindingCandidate, DirectoryAssignmentLedger, FindingCandidateRetentionOutcome,
+    FindingReplayCaptureInput, FindingReplayCaptureStore, HotCheckpointFallback,
     HotCheckpointFallbackRecord, HotCheckpointFallbackRetentionCas,
     HotCheckpointFallbackRetentionStore, HotCheckpointFallbackSlot, MemoryAssignmentLedger,
     MemoryHotCheckpointFallbackRetentionStore, QemuHotForkTemplateKey, RepositoryAttemptAdmission,
     acknowledge_incorporated_finding_candidate, incorporate_and_acknowledge_finding_candidate,
     reconcile_pending_finding_candidates,
 };
+
+#[test]
+fn provisional_publication_roots_tolerate_only_an_absent_root() {
+    let blobs = Arc::new(MemoryBlobBackend::new(
+        "provisional-publication-root",
+        1024 * 1024,
+    ));
+    let repository = CampaignRepository::new(blobs.clone(), Arc::new(MemoryRefBackend::new()));
+    let absent_root = ContentId::for_bytes(ObjectKind::Observation, 1, b"absent observation");
+
+    assert_eq!(
+        repository
+            .authenticated_closure_ids_with_provisional_roots([], [absent_root])
+            .expect("retain absent provisional root"),
+        BTreeSet::from([absent_root])
+    );
+    assert!(matches!(
+        repository.authenticated_closure_ids([absent_root]),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { id })) if id == absent_root
+    ));
+
+    let missing_child = ContentId::for_bytes(ObjectKind::Trace, 1, b"missing descendant");
+    let present_root = ContentEnvelope::new(
+        "crucible.test.provisional-publication-root",
+        1,
+        BTreeSet::from([
+            ContentChild::new("capture", missing_child).expect("missing child reference")
+        ]),
+        b"present root".to_vec(),
+    )
+    .expect("present provisional root envelope");
+    let present_root_id = present_root.content_id(ObjectKind::ExactManifest);
+    blobs
+        .put_if_absent(
+            present_root_id,
+            &BlobHandle::from_bytes(present_root.canonical_bytes()),
+        )
+        .expect("store present provisional root");
+
+    assert!(matches!(
+        repository.authenticated_closure_ids_with_provisional_roots([], [present_root_id]),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { id })) if id == missing_child
+    ));
+}
 use crate::{
     CampaignTransferJournalError, CampaignTransferRetentionAdmin, CampaignTransferRetentionFence,
     CampaignTransferRetentionGeneration, CampaignTransferRetentionRoot,
@@ -71,6 +117,23 @@ mod s3;
 #[derive(Default)]
 struct TestCampaignTransferRoots {
     roots: Mutex<Vec<CampaignTransferRetentionRoot>>,
+}
+
+struct UnavailableCompletionAdmission;
+
+impl AttemptAdmissionValidator for UnavailableCompletionAdmission {
+    fn validate(&self, _request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
+        Ok(())
+    }
+
+    fn validate_completion_artifacts(
+        &self,
+        _request: &SubmitAttemptRequest,
+        _observation: ObservationId,
+        _finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        Err(CompletionValidationFailure::UnavailableInput)
+    }
 }
 
 impl TestCampaignTransferRoots {
@@ -1689,6 +1752,219 @@ fn pending_finding_restart_publishes_observation_before_finding_and_release() {
             candidate,
         )
         .expect("finding and candidate are retained by the current head");
+}
+
+#[test]
+fn publishing_capture_roots_survive_restart_gc_and_are_reclaimed_after_cancellation() {
+    let storage = tempfile::tempdir().expect("capture restart storage");
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "capture-restart-gc",
+        storage.path().join("blobs"),
+    ));
+    let refs = Arc::new(DirectoryRefBackend::new(storage.path().join("refs")));
+    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+    let (lineage, attempt, observation, candidate) = publish_pending_finding_fixture(&repository);
+    let request = pending_finding_request(lineage, attempt);
+    let ledger_path = storage.path().join("ledger");
+    let capacity = ExecutorCapacity::new(1, 1, 8192, 16_384, 64).expect("capacity");
+    let mut supervisor = LocalExecutorSupervisor::new(
+        DirectoryAssignmentLedger::open(&ledger_path).expect("open initial ledger"),
+        UnavailableCompletionAdmission,
+        request.daemon_epoch(),
+        capacity,
+    );
+    assert!(matches!(
+        supervisor
+            .submit_attempt(&request)
+            .expect("admit initial capture publication")
+            .disposition(),
+        SubmitAttemptDisposition::Accepted { .. }
+    ));
+    let queued = supervisor
+        .next_queued()
+        .expect("initial capture publication");
+
+    let capture_bytes = b"portable replay bytes retained before the journal".to_vec();
+    let capture_hash = ContentHash::from_bytes(&capture_bytes);
+    let chunk = ContentId::for_bytes(ObjectKind::Trace, 1, &capture_bytes);
+    let prepared = FindingReplayCaptureStore::prepare_set([
+        FindingReplayCaptureInput::Complete {
+            bytes: capture_bytes,
+            content_hash: capture_hash,
+        },
+        FindingReplayCaptureInput::Incomplete(
+            FindingReplayCaptureIncomplete::MissingEventLogPrefix,
+        ),
+        FindingReplayCaptureInput::Incomplete(
+            FindingReplayCaptureIncomplete::MissingTerminalFingerprints,
+        ),
+        FindingReplayCaptureInput::Incomplete(
+            FindingReplayCaptureIncomplete::MissingSignalArtifactStore,
+        ),
+    ])
+    .expect("prepare capture roots");
+    let captures = prepared.references();
+    let manifest = captures
+        .minimization_original()
+        .evidence()
+        .expect("complete capture manifest")
+        .content_id();
+    let executor_store = CampaignExecutorStore::new(repository.clone());
+    let guard = executor_store
+        .acquire_finding_replay_publication_guard()
+        .expect("capture GC exclusion");
+    FindingReplayCaptureStore::publish_set(&guard, &prepared).expect("publish capture closure");
+    assert_eq!(
+        supervisor
+            .stage_observation_finding_and_replay_capture_publication(
+                &queued,
+                observation,
+                candidate,
+                captures,
+            )
+            .expect("stage capture roots before journal"),
+        crate::ObservationPublicationOutcome::Staged
+    );
+    drop(guard);
+    drop(supervisor.into_ledger());
+
+    let recovery_epoch = DaemonEpoch::from_bytes([0x86; 16]).expect("recovery epoch");
+    let recovery_request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x87; 16]).expect("recovery assignment"),
+        recovery_epoch,
+        lineage,
+        attempt,
+        request.resources(),
+        request.retention(),
+    )
+    .expect("recovery request");
+    let mut recovered = LocalExecutorSupervisor::new(
+        DirectoryAssignmentLedger::open(&ledger_path).expect("reopen ledger after crash"),
+        UnavailableCompletionAdmission,
+        recovery_epoch,
+        capacity,
+    );
+    assert!(matches!(
+        recovered
+            .submit_attempt(&recovery_request)
+            .expect("recover publishing assignment without journal")
+            .disposition(),
+        SubmitAttemptDisposition::Accepted { .. }
+    ));
+    let recovered_execution = recovered
+        .next_queued()
+        .expect("recovered capture publication")
+        .execution();
+    assert!(matches!(
+        recovered
+            .ledger()
+            .load_attempt(AttemptExecutionKey::for_request(&recovery_request))
+            .expect("load recovered capture roots"),
+        Some(AttemptRuntimeState::Publishing {
+            finding_candidate: Some(retained_candidate),
+            finding_replay_captures: Some(retained_captures),
+            ..
+        }) if retained_candidate == candidate && retained_captures == captures
+    ));
+
+    let mut ledger = recovered.into_ledger();
+    let physical = CampaignGcPhysicalStore::new("capture-restart-gc", blobs.as_ref())
+        .expect("capture physical store");
+    let graph = hash("crucible.test.capture-restart-live.v1", 0x88);
+    let plan = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("plan GC with recovered capture roots");
+    let first_journal = tempfile::tempdir().expect("live capture GC journal");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(first_journal.path().join("journal"), &plan)
+            .expect("create live capture GC journal");
+    let physical = CampaignGcPhysicalStore::new("capture-restart-gc", blobs.as_ref())
+        .expect("capture physical store");
+    apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
+        graph,
+        &[physical],
+    )
+    .expect("apply GC with recovered capture roots");
+    assert!(blobs.contains(manifest).expect("manifest retained"));
+    assert!(blobs.contains(chunk).expect("chunk retained"));
+
+    let cancel_epoch = DaemonEpoch::from_bytes([0x89; 16]).expect("cancel epoch");
+    let cancel_request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x8a; 16]).expect("cancel assignment"),
+        cancel_epoch,
+        lineage,
+        attempt,
+        request.resources(),
+        request.retention(),
+    )
+    .expect("cancel recovery request");
+    let mut canceling = LocalExecutorSupervisor::new(
+        ledger,
+        UnavailableCompletionAdmission,
+        cancel_epoch,
+        capacity,
+    );
+    assert!(matches!(
+        canceling
+            .submit_attempt(&cancel_request)
+            .expect("retry capture publication")
+            .disposition(),
+        SubmitAttemptDisposition::Accepted { .. }
+    ));
+    let retry = canceling.next_queued().expect("retry capture execution");
+    assert_ne!(retry.execution(), recovered_execution);
+    canceling
+        .cancel_execution(
+            AttemptExecutionKey::for_request(&cancel_request),
+            retry.execution(),
+        )
+        .expect("cancel recovered capture publication");
+    assert!(matches!(
+        canceling
+            .ledger()
+            .load_attempt(AttemptExecutionKey::for_request(&cancel_request))
+            .expect("load canceled capture publication"),
+        Some(AttemptRuntimeState::Canceled { .. })
+    ));
+
+    let mut ledger = canceling.into_ledger();
+    let physical = CampaignGcPhysicalStore::new("capture-restart-gc", blobs.as_ref())
+        .expect("capture physical store");
+    let graph = hash("crucible.test.capture-restart-canceled.v1", 0x8b);
+    let plan = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("plan GC after capture cancellation");
+    let second_journal = tempfile::tempdir().expect("canceled capture GC journal");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(second_journal.path().join("journal"), &plan)
+            .expect("create canceled capture GC journal");
+    let physical = CampaignGcPhysicalStore::new("capture-restart-gc", blobs.as_ref())
+        .expect("capture physical store");
+    apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
+        graph,
+        &[physical],
+    )
+    .expect("apply GC after capture cancellation");
+    assert!(!blobs.contains(manifest).expect("manifest reclaimed"));
+    assert!(!blobs.contains(chunk).expect("chunk reclaimed"));
 }
 
 #[test]

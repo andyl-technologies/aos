@@ -2340,6 +2340,7 @@ fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_reco
                     execution: producer_execution,
                     observation: expected_observation,
                     finding_candidate: None,
+                    finding_replay_captures: None,
                 }),
             )
             .expect("stage producer publication"),

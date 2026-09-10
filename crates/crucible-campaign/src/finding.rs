@@ -42,6 +42,8 @@ pub const MAX_FINDING_EXACT_PINS: usize = 256;
 pub const MAX_FINDING_MINIMIZATION_ATTEMPTS: usize = 4_096;
 /// Maximum execution-model policy bytes retained by one minimization trace.
 pub const MAX_FINDING_MINIMIZATION_POLICY_BYTES: usize = 64 * 1024;
+/// Maximum unique static bytes retained by one finding's replay captures.
+pub const MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Role-tagged exact-checkpoint accelerators retained by one finding cluster.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -400,6 +402,21 @@ impl FindingSignature {
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
+    }
+
+    /// Decodes one strict canonical finding signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
+    /// oversized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        if bytes.len() > MAX_FINDING_RECORD_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "finding-signature-encoded-bytes",
+            });
+        }
+        codec::decode(bytes)
     }
 
     fn content_children(&self) -> Vec<(String, ContentId)> {

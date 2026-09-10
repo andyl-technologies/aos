@@ -7,7 +7,7 @@
 //! Candidate execution shares cancellation and the physical quantum budget
 //! with the admitted attempt, but it cannot recursively invoke this wrapper.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use crucible::{
     ContentHash, EngineError, FailureClusterReportFailure, FailureKind,
@@ -37,6 +37,133 @@ const DIVERGENCE_FAILURE_CLASS: &str = "qemu.causal-log-divergence";
 
 mod private {
     pub trait Sealed {}
+}
+
+/// Owns immutable deployment inputs and process-local evidence for private replay capture.
+pub(crate) struct QemuFindingReplayCaptureProducer {
+    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
+    static_byte_limit: u64,
+    shared_context: OneEntryCache<
+        QemuFindingReplaySharedContextScope,
+        crate::FindingProductionReplayCaptureOutcome<
+            Arc<crate::FindingProductionReplaySharedContext>,
+        >,
+    >,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QemuFindingReplaySharedContextScope {
+    scenario: ContentHash,
+    max_lifecycle_objects: usize,
+    max_lifecycle_bytes: u64,
+    max_guest_asset_bytes: u64,
+    static_byte_limit: u64,
+}
+
+impl QemuFindingReplaySharedContextScope {
+    fn new(
+        finding: &FindingReproductionArtifact,
+        limits: crate::FindingProductionReplayCaptureLimits,
+        static_byte_limit: u64,
+    ) -> Self {
+        Self {
+            scenario: finding.artifact.scenario_def().id(),
+            max_lifecycle_objects: limits.max_lifecycle_objects,
+            max_lifecycle_bytes: limits.max_lifecycle_bytes,
+            max_guest_asset_bytes: limits.max_guest_asset_bytes,
+            static_byte_limit,
+        }
+    }
+}
+
+struct OneEntryCache<K, V> {
+    entry: Option<(K, V)>,
+}
+
+impl<K, V> OneEntryCache<K, V> {
+    const fn new() -> Self {
+        Self { entry: None }
+    }
+}
+
+impl<K: PartialEq, V: Clone> OneEntryCache<K, V> {
+    fn get_or_try_replace<E>(
+        &mut self,
+        key: K,
+        capture: impl FnOnce() -> Result<V, E>,
+    ) -> Result<V, E> {
+        if let Some((cached_key, value)) = &self.entry
+            && cached_key == &key
+        {
+            return Ok(value.clone());
+        }
+
+        let value = capture()?;
+        self.entry = Some((key, value.clone()));
+        Ok(value)
+    }
+}
+
+impl QemuFindingReplayCaptureProducer {
+    /// Creates a capture owner before the production replay runner takes lifecycle authority.
+    pub(crate) const fn new(
+        lifecycle: crucible_api::ProductionVmLifecycleConfig,
+        evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
+        static_byte_limit: u64,
+    ) -> Self {
+        Self {
+            lifecycle,
+            evidence,
+            static_byte_limit,
+            shared_context: OneEntryCache::new(),
+        }
+    }
+
+    /// Captures immutable replay inputs once per scenario-and-limits scope.
+    ///
+    /// Candidate executions in the same scope share one retained context. A
+    /// worker moving to another scenario replaces that single cached entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::FindingProductionReplayCaptureError`] when marker
+    /// authentication, lifecycle projection, or bounded content capture fails.
+    pub(crate) fn shared_context(
+        &mut self,
+        finding: &FindingReproductionArtifact,
+    ) -> Result<
+        crate::FindingProductionReplayCaptureOutcome<
+            Arc<crate::FindingProductionReplaySharedContext>,
+        >,
+        crate::FindingProductionReplayCaptureError,
+    > {
+        let limits = crate::FindingProductionReplayCaptureLimits::for_finding(finding);
+        let scope =
+            QemuFindingReplaySharedContextScope::new(finding, limits, self.static_byte_limit);
+        self.shared_context.get_or_try_replace(scope, || {
+            crate::capture_finding_replay_shared_context(
+                finding,
+                &self.lifecycle,
+                self.static_byte_limit,
+                limits,
+            )
+        })
+    }
+
+    /// Reads the evidence completed by the most recent private lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crucible::SchedulerError`] when the process-local evidence lock is poisoned.
+    pub(crate) fn execution_snapshot(
+        &self,
+    ) -> Result<
+        crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+        crucible::SchedulerError,
+    > {
+        self.evidence.snapshot()
+    }
 }
 
 /// Fresh runner allowed to execute private finding-reduction candidates.
@@ -85,6 +212,7 @@ pub trait PrivateFindingReplayRunner: CrucibleExecutionRunner + private::Sealed 
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         finding: &FindingReproductionArtifact,
+        replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
         target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>>;
@@ -217,12 +345,22 @@ where
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         finding: &FindingReproductionArtifact,
+        replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
         target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
+        let shared_context = self
+            .finding_replay_capture_mut()
+            .map(|producer| producer.shared_context(finding))
+            .transpose()
+            .map_err(crate::QemuFreshExecutionRunnerError::FindingReplayCapture)
+            .map_err(AttemptWorkerFailure::Terminal)?;
         let first = QemuFreshExecutionRunner::replay_finding_candidate_boundary(
             self, input, candidate, None, context,
         )?;
+        let first_snapshot = qemu_finding_replay_snapshot(self)
+            .map_err(crate::QemuFreshExecutionRunnerError::FindingReplayEvidence)
+            .map_err(AttemptWorkerFailure::Terminal)?;
         let outcome = if target_signature.kind() == FindingKind::Divergence {
             match first {
                 crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(
@@ -234,6 +372,7 @@ where
                             candidate,
                             finding,
                             target_signature,
+                            None,
                         )
                         .map_err(|failure| *failure);
                     }
@@ -244,24 +383,47 @@ where
                             ),
                         ));
                     }
-                    QemuFreshExecutionRunner::replay_finding_candidate_boundary(
+                    let second = QemuFreshExecutionRunner::replay_finding_candidate_boundary(
                         self,
                         input,
                         candidate,
                         Some(&evidence),
                         context,
-                    )?
+                    )?;
+                    let second_snapshot = qemu_finding_replay_snapshot(self)
+                        .map_err(crate::QemuFreshExecutionRunnerError::FindingReplayEvidence)
+                        .map_err(AttemptWorkerFailure::Terminal)?;
+                    (second, Some((first_snapshot, second_snapshot)))
                 }
-                incompatible => incompatible,
+                incompatible => (incompatible, None),
             }
         } else {
-            first
+            (first, Some((first_snapshot, None)))
         };
+        let (outcome, snapshots) = outcome;
         match outcome {
             crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(
                 evidence,
-            ) => finish_qemu_finding_replay(*evidence, candidate, finding, target_signature)
-                .map_err(|failure| *failure),
+            ) => {
+                let production_replay = capture_qemu_finding_replay_material(
+                    &evidence,
+                    snapshots,
+                    shared_context,
+                    finding,
+                    target_signature.kind(),
+                    replay_closure,
+                )
+                .map_err(crate::QemuFreshExecutionRunnerError::FindingReplayCapture)
+                .map_err(AttemptWorkerFailure::Terminal)?;
+                finish_qemu_finding_replay(
+                    *evidence,
+                    candidate,
+                    finding,
+                    target_signature,
+                    production_replay,
+                )
+                .map_err(|failure| *failure)
+            }
             crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
                 reason,
             ) => Ok(AutomaticFindingReplayOutcome::DeterministicallyIncompatible {
@@ -274,6 +436,144 @@ where
             }),
         }
     }
+}
+
+type QemuFindingReplaySnapshots = Option<(
+    Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot>,
+    Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot>,
+)>;
+
+fn qemu_finding_replay_snapshot<F, D>(
+    runner: &mut QemuFreshExecutionRunner<F, D>,
+) -> Result<
+    Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot>,
+    crucible::SchedulerError,
+> {
+    runner
+        .finding_replay_capture_mut()
+        .map(|producer| producer.execution_snapshot())
+        .transpose()
+}
+
+fn capture_qemu_finding_replay_material(
+    evidence: &crate::qemu_campaign_driver::QemuFindingCandidateBoundaryEvidence,
+    snapshots: QemuFindingReplaySnapshots,
+    shared_context: Option<
+        crate::FindingProductionReplayCaptureOutcome<
+            Arc<crate::FindingProductionReplaySharedContext>,
+        >,
+    >,
+    finding: &FindingReproductionArtifact,
+    finding_kind: FindingKind,
+    replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+) -> Result<
+    Option<crate::FindingProductionReplayMaterialOutcome>,
+    crate::FindingProductionReplayCaptureError,
+> {
+    let Some(shared_context) = shared_context else {
+        return Ok(None);
+    };
+    let shared_context = match shared_context {
+        crate::FindingProductionReplayCaptureOutcome::Complete(shared_context) => shared_context,
+        crate::FindingProductionReplayCaptureOutcome::Incomplete(reason) => {
+            return Ok(Some(
+                crate::FindingProductionReplayCaptureOutcome::Incomplete(reason),
+            ));
+        }
+    };
+    let Some((first, second)) = snapshots else {
+        return Ok(None);
+    };
+    let Some(first) = first.as_ref() else {
+        return Ok(None);
+    };
+    let limits = crate::FindingProductionReplayCaptureLimits::for_finding(finding);
+    let mut sides = Vec::with_capacity(2);
+    match finding_kind {
+        FindingKind::PropertyViolation | FindingKind::Timeout => {
+            let terminal = if finding_kind == FindingKind::Timeout {
+                crate::FindingProductionReplayTerminalOutcome::Timeout
+            } else {
+                crate::FindingProductionReplayTerminalOutcome::Failed
+            };
+            let side = capture_qemu_finding_replay_side(
+                terminal,
+                evidence.causal_entries(),
+                first,
+                limits,
+            )?;
+            match side {
+                crate::FindingProductionReplayCaptureOutcome::Complete(side) => sides.push(side),
+                crate::FindingProductionReplayCaptureOutcome::Incomplete(reason) => {
+                    return Ok(Some(
+                        crate::FindingProductionReplayCaptureOutcome::Incomplete(reason),
+                    ));
+                }
+            }
+        }
+        FindingKind::Divergence => {
+            let (Some(second), Some((expected_log, reproduced_log))) =
+                (second.as_ref(), evidence.paired_divergence_logs())
+            else {
+                return Ok(None);
+            };
+            for (log, snapshot) in [(expected_log, first), (reproduced_log, second)] {
+                match capture_qemu_finding_replay_side(
+                    crate::FindingProductionReplayTerminalOutcome::Passed,
+                    log,
+                    snapshot,
+                    limits,
+                )? {
+                    crate::FindingProductionReplayCaptureOutcome::Complete(side) => {
+                        sides.push(side);
+                    }
+                    crate::FindingProductionReplayCaptureOutcome::Incomplete(reason) => {
+                        return Ok(Some(
+                            crate::FindingProductionReplayCaptureOutcome::Incomplete(reason),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let material = crate::FindingProductionReplayCaptureMaterial::from_shared_context(
+        finding,
+        finding_kind,
+        shared_context,
+        sides,
+        replay_closure,
+        limits,
+    )?;
+    Ok(Some(
+        crate::FindingProductionReplayCaptureOutcome::Complete(Arc::new(material)),
+    ))
+}
+
+fn capture_qemu_finding_replay_side(
+    outcome: crate::FindingProductionReplayTerminalOutcome,
+    complete_log: &[crucible::SchedulerEventLogEntry],
+    snapshot: &crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+    limits: crate::FindingProductionReplayCaptureLimits,
+) -> Result<
+    crate::FindingProductionReplayCaptureOutcome<crate::FindingProductionReplayExecutionSide>,
+    crate::FindingProductionReplayCaptureError,
+> {
+    let suffix = snapshot.event_log_entries();
+    let prefix_len = suffix.first().map_or(complete_log.len(), |entry| {
+        usize::try_from(entry.sequence()).unwrap_or(usize::MAX)
+    });
+    if prefix_len > complete_log.len()
+        || complete_log.len().saturating_sub(prefix_len) != suffix.len()
+        || complete_log[prefix_len..] != *suffix
+    {
+        return Err(crate::FindingProductionReplayCaptureError::InvalidEventLog);
+    }
+    crate::FindingProductionReplayExecutionSide::from_snapshot(
+        outcome,
+        &complete_log[..prefix_len],
+        snapshot,
+        limits,
+    )
 }
 
 fn probe_exhausted_physical_work<F>(
@@ -297,6 +597,7 @@ fn finish_qemu_finding_replay<F>(
     _candidate: &ConfigurationArtifact,
     finding: &FindingReproductionArtifact,
     target_signature: &FindingSignature,
+    production_replay: Option<crate::FindingProductionReplayMaterialOutcome>,
 ) -> Result<
     AutomaticFindingReplayOutcome,
     Box<
@@ -319,17 +620,18 @@ fn finish_qemu_finding_replay<F>(
             ),
         ))
     })?;
-    match triage {
-        Some(triage) => Ok(AutomaticFindingReplayOutcome::observed_with_triage(
+    let outcome = match triage {
+        Some(triage) => AutomaticFindingReplayOutcome::observed_with_triage(
             replay,
             measurement_replay_evidence,
             triage,
-        )),
-        None => Ok(AutomaticFindingReplayOutcome::observed(
-            replay,
-            measurement_replay_evidence,
-        )),
-    }
+        ),
+        None => AutomaticFindingReplayOutcome::observed(replay, measurement_replay_evidence),
+    };
+    Ok(match production_replay {
+        Some(production_replay) => outcome.with_production_replay(production_replay),
+        None => outcome,
+    })
 }
 
 fn divergence_fingerprint(
@@ -436,6 +738,9 @@ where
     /// A Crucible candidate or its typed replay closure was invalid.
     #[error("automatic finding artifact failed: {0}")]
     Artifact(#[source] CrucibleArtifactError),
+    /// A candidate's authenticated campaign choice closure was invalid.
+    #[error("automatic finding replay closure failed: {0}")]
+    ReplayClosure(#[source] crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosureError),
     /// The deterministic minimization or final finding attachment failed.
     #[error("automatic finding preparation failed: {0}")]
     Preparation(#[source] AutomaticFindingPreparationError),
@@ -1062,12 +1367,20 @@ where
             signal_fault_replay,
         )
         .map_err(CandidateReplayFailure::Campaign)?;
+    let replay_closure =
+        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_resolved_selections(
+            candidate.artifact.scenario_form(),
+            candidate.artifact.schedule(),
+            &starting_selections,
+        )
+        .map_err(CandidateReplayFailure::ReplayClosure)?;
     let replay_context = context.for_origin_replay();
     let outcome = replay
         .replay_finding_candidate_boundary(
             &replay_input,
             &configuration,
             candidate,
+            &replay_closure,
             target_signature,
             &replay_context,
         )
@@ -1077,6 +1390,7 @@ where
             evidence,
             measurement_replay_evidence,
             triage_evidence,
+            production_replay,
         } => {
             let evidence = (*evidence)
                 .with_resolved_starting_selections(&starting_selections)
@@ -1096,7 +1410,7 @@ where
                     .map_err(CandidateReplayFailure::Artifact)?,
                 None => evidence,
             };
-            match triage_evidence {
+            let outcome = match triage_evidence {
                 Some(triage_evidence) => Ok(AutomaticFindingReplayOutcome::observed_with_triage(
                     evidence,
                     measurement_replay_evidence,
@@ -1106,7 +1420,11 @@ where
                     evidence,
                     measurement_replay_evidence,
                 )),
-            }
+            }?;
+            Ok(match production_replay {
+                Some(production_replay) => outcome.with_production_replay(production_replay),
+                None => outcome,
+            })
         }
         incompatible @ AutomaticFindingReplayOutcome::DeterministicallyIncompatible { .. } => {
             Ok(incompatible)
@@ -1119,6 +1437,7 @@ pub(crate) enum CandidateReplayFailure<R> {
     Operational(AttemptWorkerFailure<R>),
     Campaign(CampaignCodecError),
     Artifact(CrucibleArtifactError),
+    ReplayClosure(crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosureError),
 }
 
 fn private_replay_unwind_error() -> EngineError {
@@ -1191,6 +1510,9 @@ where
         CandidateReplayFailure::Artifact(error) => {
             AttemptWorkerFailure::Terminal(AutomaticFindingExecutionRunnerError::Artifact(error))
         }
+        CandidateReplayFailure::ReplayClosure(error) => AttemptWorkerFailure::Terminal(
+            AutomaticFindingExecutionRunnerError::ReplayClosure(error),
+        ),
     }
 }
 
@@ -1237,17 +1559,19 @@ mod tests {
     use crucible_campaign::FindingReplaySignature;
     use crucible_campaign::{
         AssertionViolationWitness, AssignmentId, Attempt, AttemptContinuationInput,
-        AttemptResourceLimits, AttemptStart, BranchEdgeId, BranchPath, BranchPathSegment,
-        BranchPointId, BudgetGrant, CampaignCommandId, CampaignControlAction, CampaignFact,
-        CampaignLineage, CampaignMode, CampaignPolicy, CampaignRepository, CampaignSeed,
-        ControlRequest, CoverageProjection, DaemonEpoch, DiscoveryRequest, ExactCheckpointId,
-        ExecutionId, ExecutionRetentionIntent, ExplorerPolicy, FairnessPolicy,
-        GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
-        MeasurementSet, Observation, ObservationCondition, ObservationEventLogProof, ObservationId,
-        ObservationQuantumBoundary, ObservationStopProof, ProgressiveWideningPolicy,
-        PropertyEvidence, PropertyVerdictSet, PuctPolicy, RetentionPolicy, SavepointCaptureOutcome,
-        SavepointCaptureRequest, SavepointCaptureResolution, SavepointContinuationSelection,
-        ScenarioDefId, StopCondition, SubmitAttemptRequest,
+        AttemptResourceLimits, AttemptStart, BooleanDomain, BranchEdgeId, BranchPath,
+        BranchPathSegment, BranchPointId, BudgetGrant, CampaignCommandId, CampaignControlAction,
+        CampaignFact, CampaignLineage, CampaignMode, CampaignPolicy, CampaignRepository,
+        CampaignSeed, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain,
+        ChoiceSource, ChoiceValue, ConfigurationId, ControlRequest, CoverageProjection,
+        DaemonEpoch, DiscoveryRequest, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
+        ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+        GetAttemptExecutionResponse, MeasurementSet, Observation, ObservationCondition,
+        ObservationEventLogProof, ObservationId, ObservationQuantumBoundary, ObservationStopProof,
+        ProgressiveWideningPolicy, PropertyEvidence, PropertyVerdictSet, PuctPolicy,
+        RetentionPolicy, SavepointCaptureOutcome, SavepointCaptureRequest,
+        SavepointCaptureResolution, SavepointContinuationSelection, ScenarioDefId,
+        SelectableDeclaration, Selection, StopCondition, SubmitAttemptRequest,
     };
     use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
     #[cfg(target_os = "linux")]
@@ -1313,6 +1637,7 @@ mod tests {
             input: &CrucibleAttemptExecution,
             candidate: &ConfigurationArtifact,
             _finding: &FindingReproductionArtifact,
+            _replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
             _target_signature: &FindingSignature,
             context: &AttemptExecutionContext,
         ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
@@ -1381,6 +1706,53 @@ mod tests {
                 AttemptExecutionProduct::prepared_semantic(result),
                 CrucibleMaterializationTier::ThinReplay,
             ))
+        }
+    }
+
+    struct ClosureRecordingReplayRunner {
+        inner: ReplayRunner,
+        closures: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl private::Sealed for ClosureRecordingReplayRunner {}
+
+    impl CrucibleExecutionRunner for ClosureRecordingReplayRunner {
+        type Error = io::Error;
+
+        fn execute(
+            &mut self,
+            input: &CrucibleAttemptExecution,
+            context: &AttemptExecutionContext,
+        ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+            self.inner.execute(input, context)
+        }
+    }
+
+    impl PrivateFindingReplayRunner for ClosureRecordingReplayRunner {
+        fn replay_finding_candidate_boundary(
+            &mut self,
+            input: &CrucibleAttemptExecution,
+            candidate: &ConfigurationArtifact,
+            finding: &FindingReproductionArtifact,
+            replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+            target_signature: &FindingSignature,
+            context: &AttemptExecutionContext,
+        ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
+            let bytes = replay_closure
+                .to_canonical_bytes()
+                .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))?;
+            self.closures
+                .lock()
+                .expect("record replay closure")
+                .push(bytes);
+            self.inner.replay_finding_candidate_boundary(
+                input,
+                candidate,
+                finding,
+                replay_closure,
+                target_signature,
+                context,
+            )
         }
     }
 
@@ -1500,6 +1872,7 @@ mod tests {
             input: &CrucibleAttemptExecution,
             candidate: &ConfigurationArtifact,
             finding: &FindingReproductionArtifact,
+            _replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
             _target_signature: &FindingSignature,
             context: &AttemptExecutionContext,
         ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
@@ -1822,6 +2195,7 @@ mod tests {
             input: &CrucibleAttemptExecution,
             candidate: &ConfigurationArtifact,
             finding: &FindingReproductionArtifact,
+            replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
             target_signature: &FindingSignature,
             context: &AttemptExecutionContext,
         ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
@@ -1842,6 +2216,7 @@ mod tests {
                 input,
                 candidate,
                 finding,
+                replay_closure,
                 target_signature,
                 context,
             );
@@ -1940,6 +2315,184 @@ mod tests {
         )
         .expect("candidate");
         PreparedSemanticAttemptResult::new(candidate, None).expect("prepared result")
+    }
+
+    fn failed_result_with_unpublished_branch_selection(
+        input: &CrucibleAttemptExecution,
+        property: &str,
+    ) -> (PreparedSemanticAttemptResult, Selection) {
+        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+        let declaration = SelectableDeclaration::new(
+            "automatic-finding.unpublished-choice",
+            ChoiceSource::Workload {
+                producer: String::from("automatic-finding-test"),
+            },
+            domain.clone(),
+            ChoiceValue::Boolean(false),
+            ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("selectable declaration");
+        let opportunity = crucible_campaign::ChoiceOpportunity::new(
+            input.lineage().scenario(),
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: CampaignHash::derive(
+                    "automatic-finding-test.choice-coordinate",
+                    b"scheduler",
+                ),
+                producer: CampaignHash::derive(
+                    "automatic-finding-test.choice-coordinate",
+                    b"producer",
+                ),
+            },
+            "unpublished-branch-selection",
+            None,
+        )
+        .expect("choice opportunity");
+        let parent = input.start().configuration();
+        let parent_id = ConfigurationId::from_hash(CampaignHash::from_bytes(parent.id().bytes));
+        let selection = Selection::new_campaign_branch(
+            &opportunity,
+            &domain,
+            ChoiceValue::Boolean(true),
+            opportunity.branch_point_id(parent_id),
+        )
+        .expect("branch selection");
+        let schedule = parent.schedule.clone().appended(Decision::Selection(
+            crucible::SelectionDecision::new(&selection),
+        ));
+
+        let scenario = encode_crucible_scenario_artifact(input.scenario()).expect("scenario");
+        let child =
+            encode_crucible_configuration_artifact(&scenario, &schedule).expect("configuration");
+        let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+        let properties = PropertyVerdictSet::new(BTreeMap::from([(
+            property.to_owned(),
+            PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::new())
+                .expect("failed property"),
+        )]))
+        .expect("properties");
+        let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage");
+        let discovery = ChoiceDiscovery::new(declaration, domain, opportunity)
+            .expect("self-contained choice discovery");
+        let observation = Observation::new(
+            input.attempt().id().expect("attempt"),
+            child.configuration(),
+            child.id().expect("configuration ID"),
+            input.path().id().expect("path ID"),
+            StopOutcome::AssertionFailure(property.to_owned()),
+            measurements.id().expect("measurement ID"),
+            properties.id().expect("property ID"),
+            coverage.id().expect("coverage ID"),
+            BTreeSet::from([discovery.opportunity().id().expect("choice opportunity ID")]),
+        )
+        .expect("observation");
+        let candidate = ObservationCandidate::new(
+            child,
+            measurements,
+            properties,
+            coverage,
+            vec![discovery],
+            observation,
+        )
+        .expect("candidate")
+        .with_produced_selections(vec![selection.clone()])
+        .expect("attach unpublished selection");
+
+        (
+            PreparedSemanticAttemptResult::new(candidate, None).expect("prepared result"),
+            selection,
+        )
+    }
+
+    fn cache_scope_finding(
+        scenario: &crucible::ScenarioDefForm,
+        schedule: Schedule,
+        fingerprint: &[u8],
+    ) -> FindingReproductionArtifact {
+        let configuration = Configuration {
+            def: scenario.scenario_def(),
+            schedule,
+        };
+        FindingReproductionArtifact::capture(
+            FindingDiscoveryPath::StateSpaceSearch,
+            ContentHash::from_bytes(fingerprint),
+            scenario,
+            &configuration,
+        )
+        .expect("cache-scope finding")
+    }
+
+    #[test]
+    fn shared_context_cache_replaces_scenarios_and_reuses_same_scenario_arc() {
+        let crash = crucible::crash_restart_scenario()
+            .expect("crash-restart scenario")
+            .scenario;
+        let first = cache_scope_finding(&crash, Schedule::empty(), b"first-cache-scope");
+        let happy = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let second = cache_scope_finding(&happy, Schedule::empty(), b"second-cache-scope");
+        let minimized = cache_scope_finding(
+            &happy,
+            Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            })),
+            b"second-cache-scope",
+        );
+        assert_ne!(second.artifact.id(), minimized.artifact.id());
+
+        let scope = |finding: &FindingReproductionArtifact| {
+            QemuFindingReplaySharedContextScope::new(
+                finding,
+                crate::FindingProductionReplayCaptureLimits::for_finding(finding),
+                1024,
+            )
+        };
+        let mut cache = OneEntryCache::new();
+        let incomplete = cache
+            .get_or_try_replace(scope(&first), || {
+                Ok::<_, std::convert::Infallible>(crate::FindingProductionReplayCaptureOutcome::<
+                    Arc<u8>,
+                >::Incomplete(
+                    crate::FindingProductionReplayIncomplete::MissingWorldArtifactStore,
+                ))
+            })
+            .expect("cache incomplete scenario");
+        assert!(matches!(
+            incomplete,
+            crate::FindingProductionReplayCaptureOutcome::Incomplete(
+                crate::FindingProductionReplayIncomplete::MissingWorldArtifactStore
+            )
+        ));
+
+        let complete = cache
+            .get_or_try_replace(scope(&second), || {
+                Ok::<_, std::convert::Infallible>(
+                    crate::FindingProductionReplayCaptureOutcome::Complete(Arc::new(7_u8)),
+                )
+            })
+            .expect("replace cache for second scenario");
+        let reused = cache
+            .get_or_try_replace(
+                scope(&minimized),
+                || -> Result<_, std::convert::Infallible> {
+                    panic!("same-scenario candidate must reuse shared capture")
+                },
+            )
+            .expect("reuse second-scenario context");
+        let (
+            crate::FindingProductionReplayCaptureOutcome::Complete(complete),
+            crate::FindingProductionReplayCaptureOutcome::Complete(reused),
+        ) = (complete, reused)
+        else {
+            panic!("second scenario must retain complete shared context")
+        };
+        assert!(Arc::ptr_eq(&complete, &reused));
     }
 
     fn input_fixture() -> (CrucibleAttemptExecution, String) {
@@ -2415,6 +2968,73 @@ mod tests {
             .expect("assertion finding signature");
         assert_eq!(signature.property(), Some(property.as_str()));
         assert_eq!(signature.failure_class(), ASSERTION_FAILURE_CLASS);
+    }
+
+    #[test]
+    fn private_replay_carries_an_authenticated_unpublished_choice_closure() {
+        let (input, property) = input_fixture();
+        let (main_result, selection) =
+            failed_result_with_unpublished_branch_selection(&input, &property);
+        let store = executor_store();
+        assert!(
+            store
+                .resolve_selection(selection.id().expect("selection ID"))
+                .is_err(),
+            "the regression requires a choice absent from repository storage"
+        );
+        let signature = property_violation_signature(&input, main_result.observation())
+            .expect("property signature")
+            .expect("failed property finding");
+        let finding = original_finding(&input, &store, main_result.observation(), &signature)
+            .expect("original finding with owned unpublished choice");
+        let closures = Arc::new(Mutex::new(Vec::new()));
+        let mut replay = ClosureRecordingReplayRunner {
+            inner: ReplayRunner {
+                calls: Arc::new(AtomicUsize::new(0)),
+                observed: Arc::new(Mutex::new(Vec::new())),
+                property,
+                expected_controls: None,
+                controlled_calls: None,
+            },
+            closures: Arc::clone(&closures),
+        };
+        let context = AttemptExecutionContext::new(
+            AttemptResourceLimits::new(1, 1, 0, 1).expect("attempt limits"),
+            ExecutionRetentionIntent::Discard,
+            ExecutionCancellation::default(),
+            ExecutionCheckpointRequest::default(),
+        );
+
+        replay_candidate(
+            &store,
+            &mut replay,
+            &input,
+            &finding,
+            main_result.observation(),
+            &signature,
+            &context,
+        )
+        .expect("private replay from owned choice closure");
+
+        let recorded = closures.lock().expect("recorded closure");
+        assert_eq!(recorded.len(), 1);
+        let closure =
+            crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
+                &recorded[0],
+            )
+            .expect("canonical replay closure");
+        closure
+            .validate_for_schedule(
+                finding.artifact.scenario_form(),
+                finding.artifact.schedule(),
+            )
+            .expect("closure authenticates the candidate schedule");
+        assert!(
+            store
+                .resolve_selection(selection.id().expect("selection ID"))
+                .is_err(),
+            "private replay must not depend on ambient choice publication"
+        );
     }
 
     #[test]

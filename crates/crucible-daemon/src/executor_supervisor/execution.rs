@@ -167,6 +167,7 @@ where
                 execution: current_execution,
                 observation: staged_observation,
                 finding_candidate,
+                ..
             } if daemon_epoch == self.daemon_epoch && current_execution == execution => {
                 if staged_observation != observation {
                     return Err(LocalExecutorError::ConflictingCompletion);

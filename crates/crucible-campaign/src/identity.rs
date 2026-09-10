@@ -628,9 +628,9 @@ content_object_id!(
 content_object_id!(
     FindingCandidateBundleId,
     ObjectKind::Finding,
-    [1, 2],
+    [1, 2, 3],
     "crucible.campaign.finding-candidate-bundle",
-    "Identifies one durable executor-produced finding candidate handoff; version 1 remains decodable for history compatibility."
+    "Identifies one durable executor-produced finding candidate handoff; versions 1 and 2 remain decodable for history compatibility."
 );
 content_object_id!(
     FindingTriageReplayEvidenceId,
@@ -638,6 +638,27 @@ content_object_id!(
     "crucible.campaign.finding-triage-replay-evidence",
     "Identifies one exact replay and its independently observed finding signature."
 );
+content_object_id!(
+    FindingReplayCaptureEvidenceId,
+    ObjectKind::ExactManifest,
+    "crucible.campaign.finding-replay-capture-evidence",
+    "Identifies one manifest-rooted portable production replay capture."
+);
+
+impl FindingReplayCaptureEvidenceId {
+    /// Claims a version-one finding replay capture manifest identity.
+    ///
+    /// The daemon calls this only after constructing or authenticating the
+    /// manifest envelope and its complete chunk closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::InvalidValue`] when `value` has another
+    /// object kind or schema version.
+    pub fn from_manifest_content_id(value: ContentId) -> Result<Self, CampaignCodecError> {
+        Self::from_content_id(value)
+    }
+}
 content_object_id!(
     ReproductionArtifactId,
     ObjectKind::Finding,

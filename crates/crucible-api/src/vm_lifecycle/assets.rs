@@ -15,6 +15,124 @@ pub(super) struct ProductionVmGuestAssets {
     pub(super) kernel_cmdline_prefix: Option<String>,
 }
 
+/// Exact configured guest paths selected for one replay architecture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionVmPortableReplayGuestAssetPaths {
+    architecture: crucible::VmArchitecture,
+    kernel: PathBuf,
+    root_image: PathBuf,
+    kernel_cmdline_prefix: Option<String>,
+}
+
+impl ProductionVmPortableReplayGuestAssetPaths {
+    /// Returns the selected guest architecture.
+    #[must_use]
+    pub const fn architecture(&self) -> crucible::VmArchitecture {
+        self.architecture
+    }
+
+    /// Returns the exact configured kernel path.
+    #[must_use]
+    pub fn kernel(&self) -> &Path {
+        &self.kernel
+    }
+
+    /// Returns the exact configured immutable root-image path.
+    #[must_use]
+    pub fn root_image(&self) -> &Path {
+        &self.root_image
+    }
+
+    /// Returns the effective package command-line prefix for this architecture.
+    #[must_use]
+    pub fn kernel_cmdline_prefix(&self) -> Option<&str> {
+        self.kernel_cmdline_prefix.as_deref()
+    }
+}
+
+/// Read-only exact guest deployment selected for a portable replay capture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionVmPortableReplayAssetPaths {
+    guest_assets: Vec<ProductionVmPortableReplayGuestAssetPaths>,
+    initrd: Option<PathBuf>,
+    root_image_format: ProductionRootImageFormat,
+}
+
+impl ProductionVmPortableReplayAssetPaths {
+    /// Returns one sorted, unique asset set for each scenario architecture.
+    #[must_use]
+    pub fn guest_assets(&self) -> &[ProductionVmPortableReplayGuestAssetPaths] {
+        &self.guest_assets
+    }
+
+    /// Returns the shared initrd path passed to every VM, when configured.
+    #[must_use]
+    pub fn initrd(&self) -> Option<&Path> {
+        self.initrd.as_deref()
+    }
+
+    /// Returns the immutable root-image format passed to QEMU.
+    #[must_use]
+    pub const fn root_image_format(&self) -> ProductionRootImageFormat {
+        self.root_image_format
+    }
+}
+
+impl ProductionVmLifecycleConfig {
+    /// Resolves and validates the exact guest files used by `scenario`.
+    ///
+    /// The projection owns path values but cannot modify lifecycle selection.
+    /// Callers can copy these files into a path-free replay artifact before a
+    /// private lifecycle and its deployment paths are released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when an architecture has no configured
+    /// assets or an authored kernel, root-image, or initrd reference differs
+    /// from the selected file.
+    pub fn portable_replay_asset_paths(
+        &self,
+        scenario: &crucible::ScenarioDefForm,
+    ) -> Result<ProductionVmPortableReplayAssetPaths, LifecycleApiError> {
+        let mut selected = std::collections::BTreeMap::new();
+        for vm in scenario.world().vm_nodes() {
+            let assets = self.guest_assets.get(&vm.arch).ok_or_else(|| {
+                loop_factory_error(format!(
+                    "production QEMU lifecycle has no boot artifacts for {:?}",
+                    vm.arch
+                ))
+            })?;
+            validate_guest_asset_references(vm, assets)?;
+            match (vm.initrd, self.initrd.as_ref()) {
+                (Some(expected), Some(path)) => {
+                    validate_guest_asset_reference(&vm.id, "initrd", Some(expected), path)?;
+                }
+                (Some(_), None) => {
+                    return Err(loop_factory_error(format!(
+                        "QEMU node `{}` declares an initrd but no materialized initrd was configured",
+                        vm.id.name
+                    )));
+                }
+                (None, _) => {}
+            }
+            selected
+                .entry(vm.arch)
+                .or_insert_with(|| ProductionVmPortableReplayGuestAssetPaths {
+                    architecture: vm.arch,
+                    kernel: assets.kernel.clone(),
+                    root_image: assets.root_image.clone(),
+                    kernel_cmdline_prefix: production_kernel_cmdline_prefix(self, vm.arch, assets)
+                        .map(ToOwned::to_owned),
+                });
+        }
+        Ok(ProductionVmPortableReplayAssetPaths {
+            guest_assets: selected.into_values().collect(),
+            initrd: self.initrd.clone(),
+            root_image_format: self.root_image_format,
+        })
+    }
+}
+
 /// Selects a command-line prefix without crossing guest architectures.
 pub(super) fn production_kernel_cmdline_prefix<'a>(
     config: &'a ProductionVmLifecycleConfig,
@@ -79,7 +197,10 @@ pub(super) fn validate_guest_asset_references(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crucible::{ContentAddressedBlobRef, ReadyPoint, WhiteBoxPolicy, WorldNode};
+    use crucible::{
+        ContentAddressedBlobRef, Plan, Properties, ReadyPoint, ScenarioDefForm, Seed,
+        WhiteBoxPolicy, World, WorldNode,
+    };
 
     fn test_node(kernel: &[u8], root_image: &[u8]) -> WorldNode {
         WorldNode {
@@ -128,6 +249,53 @@ mod tests {
             .ok_or("mismatched kernel reference unexpectedly passed")?;
         assert!(error.to_string().contains("declares kernel blake3:"));
         assert!(error.to_string().contains("hashes to blake3:"));
+        Ok(())
+    }
+
+    #[test]
+    fn portable_projection_selects_and_validates_exact_guest_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let kernel = directory.path().join("kernel");
+        let root_image = directory.path().join("root.img");
+        let initrd = directory.path().join("initrd");
+        fs::write(&kernel, b"kernel-bytes")?;
+        fs::write(&root_image, b"root-image-bytes")?;
+        fs::write(&initrd, b"initrd-bytes")?;
+
+        let mut node = test_node(b"kernel-bytes", b"root-image-bytes");
+        node.initrd = Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
+            b"initrd-bytes",
+        )));
+        let world = World::from_nodes(vec![node])?;
+        let scenario = ScenarioDefForm::from_components(
+            &world,
+            &Plan::empty(),
+            &Properties::empty(),
+            Seed::from_u64(1),
+        )?;
+        let config = ProductionVmLifecycleConfig::new(
+            "qemu",
+            "plugin",
+            &kernel,
+            &root_image,
+            directory.path().join("run"),
+        )
+        .with_initrd(&initrd)
+        .with_root_image_format(ProductionRootImageFormat::Raw);
+        let selected = config.portable_replay_asset_paths(&scenario)?;
+
+        assert_eq!(selected.root_image_format(), ProductionRootImageFormat::Raw);
+        assert_eq!(selected.initrd(), Some(initrd.as_path()));
+        assert_eq!(selected.guest_assets().len(), 1);
+        assert_eq!(selected.guest_assets()[0].kernel(), kernel.as_path());
+        assert_eq!(
+            selected.guest_assets()[0].root_image(),
+            root_image.as_path()
+        );
+
+        fs::write(&initrd, b"changed-initrd")?;
+        assert!(config.portable_replay_asset_paths(&scenario).is_err());
         Ok(())
     }
 }

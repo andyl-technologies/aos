@@ -371,14 +371,27 @@ where
 
     let ledger_summary = ledger_fence
         .visit_roots(&mut |root| {
-            let id = match root {
-                AssignmentRetentionRoot::Observation(observation) => observation.content_id(),
-                AssignmentRetentionRoot::ExactCheckpoint(checkpoint) => checkpoint.content_id(),
-                AssignmentRetentionRoot::FindingCandidate(candidate) => candidate.content_id(),
+            let result = match root {
+                AssignmentRetentionRoot::Observation(observation) => {
+                    roots.insert(observation.content_id())
+                }
+                AssignmentRetentionRoot::PublishingObservation(observation) => {
+                    roots.insert_provisional(observation.content_id())
+                }
+                AssignmentRetentionRoot::ExactCheckpoint(checkpoint) => {
+                    roots.insert(checkpoint.content_id())
+                }
+                AssignmentRetentionRoot::FindingCandidate(candidate) => {
+                    roots.insert(candidate.content_id())
+                }
+                AssignmentRetentionRoot::PublishingFindingCandidate(candidate) => {
+                    roots.insert_provisional(candidate.content_id())
+                }
+                AssignmentRetentionRoot::FindingReplayCapture(capture) => {
+                    roots.insert(capture.content_id())
+                }
             };
-            roots
-                .insert(id)
-                .map_err(|()| AssignmentRetentionVisitorError::LimitExceeded)
+            result.map_err(|()| AssignmentRetentionVisitorError::LimitExceeded)
         })
         .map_err(|source| match source {
             AssignmentRetentionInventoryError::Backend(source) => {
@@ -430,7 +443,10 @@ where
     // inventory so promoting an archive object to an operational root cannot
     // leave its newly required descendants eligible under an older plan.
     let mut current_reachable = repository
-        .authenticated_closure_ids(roots.ordinary.iter().copied())
+        .authenticated_closure_ids_with_provisional_roots(
+            roots.ordinary.iter().copied(),
+            roots.provisional.iter().copied(),
+        )
         .map_err(CampaignGcApplyError::Campaign)?;
     current_reachable.extend(roots.direct.iter().copied());
     if let Some(candidate) = journal.candidates().iter().find(|candidate| {

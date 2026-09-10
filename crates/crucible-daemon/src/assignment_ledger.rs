@@ -28,13 +28,15 @@ use crucible_campaign::{
     AssignmentId, AttemptExecutionScope, AttemptId, AttemptResourceLimits, AttemptStartMode,
     CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineageId, CampaignSnapshotId,
     ConfigurationArtifactId, DaemonEpoch, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
-    FindingCandidateBundleId, ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
+    FindingCandidateBundleId, FindingReplayCaptureEvidenceId, FindingReplayCaptureSet,
+    ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
     attempt_execution_basis_digest_for_start_mode,
 };
 use rustix::fs::{FlockOperation, flock};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v12\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v13\0";
+const ATTEMPT_STATE_MAGIC_V12: &[u8] = b"crucible.executor.attempt-state-record.v12\0";
 const ATTEMPT_STATE_MAGIC_V11: &[u8] = b"crucible.executor.attempt-state-record.v11\0";
 const ATTEMPT_STATE_MAGIC_V10: &[u8] = b"crucible.executor.attempt-state-record.v10\0";
 const ATTEMPT_STATE_MAGIC_V9: &[u8] = b"crucible.executor.attempt-state-record.v9\0";
@@ -47,7 +49,8 @@ const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v
 const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v12";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v13";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V12: &str = "crucible.executor.attempt-state-record.v12";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V11: &str = "crucible.executor.attempt-state-record.v11";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V10: &str = "crucible.executor.attempt-state-record.v10";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V9: &str = "crucible.executor.attempt-state-record.v9";
@@ -499,6 +502,8 @@ pub enum AttemptRuntimeState {
         observation: ObservationId,
         /// Expected finding candidate retained before immutable publication.
         finding_candidate: Option<FindingCandidateBundleId>,
+        /// Portable capture manifests retained before candidate publication.
+        finding_replay_captures: Option<FindingReplayCaptureSet>,
     },
     /// One execution published an immutable observation.
     Completed {
@@ -678,6 +683,18 @@ impl AttemptRuntimeState {
             | Self::CheckpointPromoting { .. }
             | Self::Canceled { .. }
             | Self::TerminalFailure { .. } => None,
+        }
+    }
+
+    /// Returns capture manifests retained during candidate publication.
+    #[must_use]
+    pub const fn pending_finding_replay_captures(self) -> Option<FindingReplayCaptureSet> {
+        match self {
+            Self::Publishing {
+                finding_replay_captures,
+                ..
+            } => finding_replay_captures,
+            _ => None,
         }
     }
 
@@ -871,10 +888,16 @@ impl AssignmentRetentionGeneration {
 pub enum AssignmentRetentionRoot {
     /// One in-progress or completed observation publication.
     Observation(ObservationId),
+    /// One staged observation whose immutable root may not exist yet.
+    PublishingObservation(ObservationId),
     /// One in-progress or paused exact-checkpoint publication.
     ExactCheckpoint(ExactCheckpointId),
     /// One executor-produced finding candidate awaiting incorporation acknowledgement.
     FindingCandidate(FindingCandidateBundleId),
+    /// One staged finding candidate whose immutable root may not exist yet.
+    PublishingFindingCandidate(FindingCandidateBundleId),
+    /// One portable finding replay capture manifest awaiting candidate publication.
+    FindingReplayCapture(FindingReplayCaptureEvidenceId),
 }
 
 /// Terminal evidence that one fenced assignment-ledger inventory completed.
@@ -885,6 +908,7 @@ pub struct AssignmentRetentionSummary {
     observation_roots: u64,
     checkpoint_roots: u64,
     finding_candidate_roots: u64,
+    finding_replay_capture_roots: u64,
 }
 
 impl AssignmentRetentionSummary {
@@ -903,6 +927,7 @@ impl AssignmentRetentionSummary {
             observation_roots,
             checkpoint_roots,
             finding_candidate_roots,
+            finding_replay_capture_roots: 0,
         }
     }
 
@@ -936,6 +961,12 @@ impl AssignmentRetentionSummary {
         self.finding_candidate_roots
     }
 
+    /// Returns the number of portable replay capture manifests emitted.
+    #[must_use]
+    pub const fn finding_replay_capture_roots(self) -> u64 {
+        self.finding_replay_capture_roots
+    }
+
     fn visit(
         &mut self,
         state: AttemptRuntimeState,
@@ -947,19 +978,41 @@ impl AssignmentRetentionSummary {
             .attempt_records
             .checked_add(1)
             .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
+        let publishing = matches!(state, AttemptRuntimeState::Publishing { .. });
         if let Some(observation) = state.observation() {
             self.observation_roots = self
                 .observation_roots
                 .checked_add(1)
                 .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
-            visitor(AssignmentRetentionRoot::Observation(observation))?;
+            visitor(if publishing {
+                AssignmentRetentionRoot::PublishingObservation(observation)
+            } else {
+                AssignmentRetentionRoot::Observation(observation)
+            })?;
         }
         if let Some(candidate) = state.pending_finding_candidate() {
             self.finding_candidate_roots = self
                 .finding_candidate_roots
                 .checked_add(1)
                 .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
-            visitor(AssignmentRetentionRoot::FindingCandidate(candidate))?;
+            visitor(if publishing {
+                AssignmentRetentionRoot::PublishingFindingCandidate(candidate)
+            } else {
+                AssignmentRetentionRoot::FindingCandidate(candidate)
+            })?;
+        }
+        if let Some(captures) = state.pending_finding_replay_captures() {
+            for capture in captures
+                .references()
+                .into_iter()
+                .filter_map(crucible_campaign::FindingReplayCaptureReference::evidence)
+            {
+                self.finding_replay_capture_roots = self
+                    .finding_replay_capture_roots
+                    .checked_add(1)
+                    .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
+                visitor(AssignmentRetentionRoot::FindingReplayCapture(capture))?;
+            }
         }
         for checkpoint in state.retained_checkpoint_roots().into_iter().flatten() {
             self.checkpoint_roots = self
@@ -1895,6 +1948,7 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             execution,
             observation,
             finding_candidate,
+            finding_replay_captures,
             ..
         } => {
             payload.push(3);
@@ -1902,6 +1956,7 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             payload.extend_from_slice(&execution.as_bytes());
             push_bytes(&mut payload, observation.to_text().as_bytes());
             encode_optional_finding_candidate(&mut payload, finding_candidate);
+            encode_optional_finding_replay_captures(&mut payload, finding_replay_captures);
         }
         AttemptRuntimeState::Canceled {
             daemon_epoch,
@@ -1930,6 +1985,8 @@ fn decode_attempt_state(
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
     let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
         (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V12) {
+        (payload, ATTEMPT_STATE_MAGIC_V12)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11) {
         (payload, ATTEMPT_STATE_MAGIC_V11)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V10) {
@@ -1960,13 +2017,15 @@ fn decode_attempt_state(
     cursor.require(magic)?;
     let lineage = parse_typed(cursor.bytes()?, CampaignLineageId::parse)?;
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
-    let scope = if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V11 {
+    let scope = if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+        || magic == ATTEMPT_STATE_MAGIC_V11
+    {
         AttemptExecutionScope::from_canonical_bytes(cursor.bytes()?)?
     } else {
         AttemptExecutionScope::Semantic
     };
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
-    let origin = if magic == ATTEMPT_STATE_MAGIC
+    let origin = if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
         || magic == ATTEMPT_STATE_MAGIC_V11
         || magic == ATTEMPT_STATE_MAGIC_V10
         || magic == ATTEMPT_STATE_MAGIC_V9
@@ -1976,7 +2035,10 @@ fn decode_attempt_state(
         || magic == ATTEMPT_STATE_MAGIC_V5
         || magic == ATTEMPT_STATE_MAGIC_V4
     {
-        decode_attempt_origin(&mut cursor, magic == ATTEMPT_STATE_MAGIC)?
+        decode_attempt_origin(
+            &mut cursor,
+            magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12,
+        )?
     } else {
         AttemptExecutionOrigin::Initial
     };
@@ -1993,7 +2055,8 @@ fn decode_attempt_state(
         1 => {
             let observation = parse_typed(cursor.bytes()?, ObservationId::parse)?;
             let finding_candidate = decode_optional_finding_candidate(&mut cursor, magic)?;
-            let finding_candidate_acknowledged = if magic == ATTEMPT_STATE_MAGIC
+            let finding_candidate_acknowledged = if (magic == ATTEMPT_STATE_MAGIC
+                || magic == ATTEMPT_STATE_MAGIC_V12)
                 || magic == ATTEMPT_STATE_MAGIC_V11
                 || magic == ATTEMPT_STATE_MAGIC_V10
                 || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2031,7 +2094,7 @@ fn decode_attempt_state(
             daemon_epoch,
             execution,
         },
-        8 if magic == ATTEMPT_STATE_MAGIC
+        8 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2045,7 +2108,7 @@ fn decode_attempt_state(
                 execution,
             }
         }
-        3 if magic == ATTEMPT_STATE_MAGIC
+        3 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2064,9 +2127,14 @@ fn decode_attempt_state(
                 execution,
                 observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
                 finding_candidate: decode_optional_finding_candidate(&mut cursor, magic)?,
+                finding_replay_captures: if magic == ATTEMPT_STATE_MAGIC {
+                    decode_optional_finding_replay_captures(&mut cursor)?
+                } else {
+                    None
+                },
             }
         }
-        4 if magic == ATTEMPT_STATE_MAGIC
+        4 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2084,7 +2152,7 @@ fn decode_attempt_state(
                 execution,
             }
         }
-        5 if magic == ATTEMPT_STATE_MAGIC
+        5 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2103,7 +2171,7 @@ fn decode_attempt_state(
                 checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
             }
         }
-        6 if magic == ATTEMPT_STATE_MAGIC
+        6 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2123,6 +2191,7 @@ fn decode_attempt_state(
                 promotion_basis: if matches!(
                     magic,
                     ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V12
                         | ATTEMPT_STATE_MAGIC_V11
                         | ATTEMPT_STATE_MAGIC_V10
                         | ATTEMPT_STATE_MAGIC_V9
@@ -2132,18 +2201,19 @@ fn decode_attempt_state(
                 ) {
                     decode_checkpoint_promotion_basis(
                         &mut cursor,
-                        magic == ATTEMPT_STATE_MAGIC
+                        (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
                             || magic == ATTEMPT_STATE_MAGIC_V11
                             || magic == ATTEMPT_STATE_MAGIC_V10,
-                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V11,
-                        magic == ATTEMPT_STATE_MAGIC,
+                        (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+                            || magic == ATTEMPT_STATE_MAGIC_V11,
+                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12,
                     )?
                 } else {
                     None
                 },
             }
         }
-        7 if magic == ATTEMPT_STATE_MAGIC
+        7 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2162,6 +2232,7 @@ fn decode_attempt_state(
                 promotion_basis: if matches!(
                     magic,
                     ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V12
                         | ATTEMPT_STATE_MAGIC_V11
                         | ATTEMPT_STATE_MAGIC_V10
                         | ATTEMPT_STATE_MAGIC_V9
@@ -2171,11 +2242,12 @@ fn decode_attempt_state(
                 ) {
                     decode_checkpoint_promotion_basis(
                         &mut cursor,
-                        magic == ATTEMPT_STATE_MAGIC
+                        (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
                             || magic == ATTEMPT_STATE_MAGIC_V11
                             || magic == ATTEMPT_STATE_MAGIC_V10,
-                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V11,
-                        magic == ATTEMPT_STATE_MAGIC,
+                        (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+                            || magic == ATTEMPT_STATE_MAGIC_V11,
+                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12,
                     )?
                 } else {
                     None
@@ -2231,11 +2303,37 @@ fn encode_optional_finding_candidate(
     }
 }
 
+fn encode_optional_finding_replay_captures(
+    payload: &mut Vec<u8>,
+    captures: Option<FindingReplayCaptureSet>,
+) {
+    match captures {
+        Some(captures) => {
+            payload.push(1);
+            push_bytes(payload, &captures.canonical_bytes());
+        }
+        None => payload.push(0),
+    }
+}
+
+fn decode_optional_finding_replay_captures(
+    cursor: &mut RecordCursor<'_>,
+) -> Result<Option<FindingReplayCaptureSet>, AssignmentLedgerError> {
+    match cursor.byte()? {
+        0 => Ok(None),
+        1 => FindingReplayCaptureSet::from_canonical_bytes(cursor.bytes()?)
+            .map(Some)
+            .map_err(Into::into),
+        _ => Err(corrupt("attempt-state-finding-replay-captures-option-tag")),
+    }
+}
+
 fn decode_optional_finding_candidate(
     cursor: &mut RecordCursor<'_>,
     magic: &[u8],
 ) -> Result<Option<FindingCandidateBundleId>, AssignmentLedgerError> {
     if magic != ATTEMPT_STATE_MAGIC
+        && magic != ATTEMPT_STATE_MAGIC_V12
         && magic != ATTEMPT_STATE_MAGIC_V11
         && magic != ATTEMPT_STATE_MAGIC_V10
         && magic != ATTEMPT_STATE_MAGIC_V9

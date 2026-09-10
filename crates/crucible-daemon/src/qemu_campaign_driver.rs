@@ -399,6 +399,21 @@ fn divergence_entry_summary(entry: Option<&SchedulerEventLogEntry>) -> String {
 // crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
 #[cfg_attr(not(test), allow(dead_code))]
 impl QemuFindingCandidateBoundaryEvidence {
+    /// Returns the complete causal scheduler log for this observed boundary.
+    pub(crate) fn causal_entries(&self) -> &[SchedulerEventLogEntry] {
+        &self.triage.causal_entries
+    }
+
+    /// Returns expected and reproduced causal logs for a divergent pair.
+    pub(crate) fn paired_divergence_logs(
+        &self,
+    ) -> Option<(&[SchedulerEventLogEntry], &[SchedulerEventLogEntry])> {
+        self.triage
+            .paired_divergence_logs
+            .as_ref()
+            .map(|(expected, reproduced)| (expected.as_slice(), reproduced.as_slice()))
+    }
+
     /// Returns whether this replay observed a property failure or timeout.
     pub(crate) fn has_higher_priority_failure_source(&self) -> bool {
         self.triage.failures.iter().any(|failure| {
@@ -2534,16 +2549,15 @@ fn execution_quanta_timeout_limit(pending: &QemuFreshPendingObservation) -> Opti
 fn configured_execution_quanta_limit(stop: &StopCondition) -> Option<u64> {
     match stop {
         StopCondition::ExecutionQuanta(limit) => Some(*limit),
-        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => {
-            Some(*execution_quanta)
-        }
+        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => Some(*execution_quanta),
         StopCondition::VirtualTimeOrExecutionQuanta {
             execution_quanta, ..
         } => Some(*execution_quanta),
         StopCondition::Observation(ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
             execution_quanta,
         }) => Some(*execution_quanta),
-        StopCondition::NextChoice | StopCondition::NamedBoundary(_)
+        StopCondition::NextChoice
+        | StopCondition::NamedBoundary(_)
         | StopCondition::VirtualTimeNanoseconds(_)
         | StopCondition::EventCount(_)
         | StopCondition::Terminal

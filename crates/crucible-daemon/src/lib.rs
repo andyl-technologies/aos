@@ -26,6 +26,8 @@
 //! executor publication roots for local garbage-collection inventory;
 //! [`pending_finding`] owns the fenced handoff that replaces an executor
 //! candidate root with an authenticated campaign finding;
+//! [`finding_production_replay`] captures bounded, path-free replay evidence
+//! and its shared immutable deployment context before private teardown;
 //! [`campaign_store_quota`] adapts pinned Linux project quotas to the CAS
 //! store graph without introducing a storage dependency into the kernel layer;
 //! [`campaign_store_composition`] exposes the bounded concrete store
@@ -131,6 +133,8 @@ pub mod executor_server;
 pub mod executor_service;
 pub mod executor_supervisor;
 pub mod executor_worker;
+pub mod finding_production_replay;
+pub mod finding_replay_capture_store;
 mod guest_selectable;
 #[cfg(target_os = "linux")]
 pub mod hot_checkpoint_fallback;
@@ -290,16 +294,16 @@ pub use control_responsiveness::{
 };
 pub use crucible_artifact::{
     AutomaticFindingPreparationError, AutomaticFindingReplayOutcome,
-    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2,
-    CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2,
-    CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
-    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
-    CrucibleArtifactError, CrucibleCampaignArtifactStore, CrucibleFindingReplayEvidence,
-    CrucibleFindingReplayTranscript, FindingReplayIncompatibility,
-    MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES,
-    MAX_CRUCIBLE_FINDING_REPLAY_BYTES, MAX_CRUCIBLE_FINDING_REPLAY_RECORDS,
-    MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
-    PreparedCrucibleFindingCandidate, PreparedSemanticAttemptResult,
+    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1,
+    CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2,
+    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3, CrucibleArtifactError, CrucibleCampaignArtifactStore,
+    CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript,
+    FindingProductionReplayMaterialOutcome, FindingReplayIncompatibility,
+    MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, MAX_CRUCIBLE_FINDING_REPLAY_BYTES,
+    MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
+    MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedCrucibleFindingCandidate,
+    PreparedFindingProductionReplays, PreparedSemanticAttemptResult,
     PreparedSemanticResultCodecError, decode_crucible_configuration_artifact,
     decode_crucible_configuration_artifact_with_selections,
     decode_crucible_configuration_artifact_with_signal_fault_replay,
@@ -436,6 +440,23 @@ pub use executor_worker::{
     resolve_attempt_execution_input, resolve_attempt_execution_input_with_resources,
     retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
     stage_prepared_checkpoint_result,
+};
+pub use finding_production_replay::{
+    FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION, FindingProductionReplayAsset,
+    FindingProductionReplayCapture, FindingProductionReplayCaptureError,
+    FindingProductionReplayCaptureLimits, FindingProductionReplayCaptureMaterial,
+    FindingProductionReplayCaptureOutcome, FindingProductionReplayDeployment,
+    FindingProductionReplayExecutionSide, FindingProductionReplayGuestAssets,
+    FindingProductionReplayIncomplete, FindingProductionReplayRecipe,
+    FindingProductionReplayRootImageFormat, FindingProductionReplayRuntimeIdentity,
+    FindingProductionReplaySelectedSide, FindingProductionReplaySharedContext,
+    FindingProductionReplayTerminalOutcome, capture_finding_replay_deployment,
+    capture_finding_replay_lifecycle_objects, capture_finding_replay_lifecycle_objects_with_limits,
+    capture_finding_replay_shared_context,
+};
+pub use finding_replay_capture_store::{
+    FindingReplayCaptureInput, FindingReplayCaptureStore, FindingReplayCaptureStoreError,
+    LoadedFindingReplayCapture, PreparedFindingReplayCaptureSet,
 };
 pub use guest_selectable::{
     GuestSelectableBoundaryDiagnosticConfig, GuestSelectableBoundaryDiagnosticConfigError,

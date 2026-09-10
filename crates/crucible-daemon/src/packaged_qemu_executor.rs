@@ -126,6 +126,22 @@ use status::{
 /// both hostile immutable-store work and retained decoded scenario state.
 pub const MAX_PACKAGED_SCENARIO_CATALOG_BYTES: usize = 128 * 1024 * 1024;
 
+pub(crate) fn packaged_finding_replay_runner<F>(
+    lifecycle: ProductionVmLifecycleConfig,
+    lifecycles: F,
+) -> QemuFreshExecutionRunner<QemuObservedFreshAttemptLifecycleFactory<F>, QemuFreshModeledDriver> {
+    let (lifecycles, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(lifecycles);
+    let capture = crate::automatic_finding_runner::QemuFindingReplayCaptureProducer::new(
+        lifecycle,
+        evidence,
+        crucible_campaign::MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES,
+    );
+
+    QemuFreshExecutionRunner::new(lifecycles, QemuFreshModeledDriver)
+        .with_finding_replay_capture(capture)
+}
+
 /// Explicit process-wide policy for packaged retained source worlds.
 ///
 /// Absence of this policy keeps hot-fork source capture and capability
@@ -1250,11 +1266,11 @@ where
                 ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
             );
             let finding_replay_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
-                finding_replay_lifecycle,
+                finding_replay_lifecycle.clone(),
                 finding_replay_resources,
             );
             let finding_replay =
-                QemuFreshExecutionRunner::new(finding_replay_lifecycles, QemuFreshModeledDriver);
+                packaged_finding_replay_runner(finding_replay_lifecycle, finding_replay_lifecycles);
 
             let lifecycle = config
                 .lifecycle

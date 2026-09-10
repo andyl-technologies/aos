@@ -123,7 +123,7 @@ type GuardedDefaultCampaignMainRunnerError = QemuFreshExecutionRunnerError<
     QemuFreshModeledDriverError,
 >;
 type GuardedDefaultCampaignReplayRunnerError = QemuFreshExecutionRunnerError<
-    QemuAttemptProductionVmLifecycleError,
+    QemuObservedFreshAttemptLifecycleFactoryError<QemuAttemptProductionVmLifecycleError>,
     QemuFreshModeledDriverError,
 >;
 
@@ -1343,14 +1343,22 @@ where
     let supplemental_oracle = request.supplemental_finding_oracle.clone();
     let main_driver = QemuFreshSupplementalModeledDriver::new(supplemental_oracle.clone());
     let main = QemuFreshExecutionRunner::new(lifecycle_factory, main_driver);
-    let replay_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
+    let replay_production = QemuAttemptProductionVmLifecycleFactory::new(
         request.lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(host),
+    );
+    let (replay_lifecycles, replay_evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(replay_production);
+    let replay_capture = crate::automatic_finding_runner::QemuFindingReplayCaptureProducer::new(
+        request.lifecycle.clone(),
+        replay_evidence,
+        crucible_campaign::MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES,
     );
     let replay = QemuFreshExecutionRunner::new(
         replay_lifecycles,
         QemuFreshSupplementalModeledDriver::new(supplemental_oracle),
-    );
+    )
+    .with_finding_replay_capture(replay_capture);
 
     let (repository, planner_authority) = default_run_repository(
         Arc::new(MemoryBlobBackend::new(

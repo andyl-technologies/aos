@@ -5,6 +5,7 @@
 //! contain further references: normalized traces and tiled spatial grids.
 
 use super::*;
+use crate::LifecycleResourceLimit;
 use crucible::model::{
     FaultResourceLimits, FaultSignalPlan, InverseCdfTable, NormalizedSpatialArtifact,
     SignalNodeKind, SignalSourceSpecification, SignalTraceManifest, SpatialArtifactKind,
@@ -20,22 +21,117 @@ pub fn collect_signal_artifact_objects(
     plan: &FaultSignalPlan,
     store: &dyn DagStore,
 ) -> Result<BTreeMap<ContentHash, Vec<u8>>, LifecycleApiError> {
+    collect_signal_artifact_objects_bounded(
+        plan,
+        store,
+        plan.resource_limits().fat_checkpoint_bytes,
+    )
+}
+
+/// Resolves a signal closure under an additional caller-supplied byte ceiling.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError`] when an object is absent, corrupt, exceeds the
+/// plan's resource limits, or would make the retained closure exceed
+/// `max_retained_bytes`.
+pub fn collect_signal_artifact_objects_bounded(
+    plan: &FaultSignalPlan,
+    store: &dyn DagStore,
+    max_retained_bytes: u64,
+) -> Result<BTreeMap<ContentHash, Vec<u8>>, LifecycleApiError> {
+    collect_signal_artifact_objects_with_budget(
+        plan,
+        store,
+        max_retained_bytes,
+        &BTreeSet::new(),
+        0,
+        max_retained_bytes,
+    )
+}
+
+/// Resolves a signal closure against lifecycle and publication byte budgets.
+///
+/// Identities in `precharged_identities` are still authenticated and returned,
+/// but their bytes count only through `precharged_bytes` for the publication
+/// budget. Every retained signal object counts toward `max_lifecycle_bytes`.
+/// This supports one unique-byte allowance shared with another artifact role
+/// without weakening the lifecycle-specific allowance.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError`] when an object is absent, corrupt, exceeds the
+/// plan's resource limits or `max_lifecycle_bytes`, or would exceed
+/// `max_static_bytes` together with `precharged_bytes`.
+pub fn collect_signal_artifact_objects_with_budget(
+    plan: &FaultSignalPlan,
+    store: &dyn DagStore,
+    max_lifecycle_bytes: u64,
+    precharged_identities: &BTreeSet<ContentHash>,
+    precharged_bytes: u64,
+    max_static_bytes: u64,
+) -> Result<BTreeMap<ContentHash, Vec<u8>>, LifecycleApiError> {
+    if precharged_bytes > max_static_bytes {
+        return Err(capture_limit(
+            "finding_production_replay_static_bytes",
+            precharged_bytes,
+            0,
+            max_static_bytes,
+            plan.resource_limits().fat_checkpoint_bytes,
+        ));
+    }
+    let budget = SignalCaptureBudget {
+        max_lifecycle_bytes,
+        precharged_identities,
+        precharged_bytes,
+        max_static_bytes,
+    };
     let mut objects = BTreeMap::new();
     for program in plan.programs() {
         for node in program.nodes() {
             let SignalNodeKind::Source(source) = &node.kind else {
                 continue;
             };
-            collect_source(source, store, plan.resource_limits(), &mut objects)?;
+            collect_source_bounded(source, store, plan.resource_limits(), budget, &mut objects)?;
         }
     }
     Ok(objects)
 }
 
+#[cfg(test)]
 fn collect_source(
     source: &SignalSourceSpecification,
     store: &dyn DagStore,
     limits: FaultResourceLimits,
+    objects: &mut BTreeMap<ContentHash, Vec<u8>>,
+) -> Result<(), LifecycleApiError> {
+    collect_source_bounded(
+        source,
+        store,
+        limits,
+        SignalCaptureBudget {
+            max_lifecycle_bytes: limits.fat_checkpoint_bytes,
+            precharged_identities: &BTreeSet::new(),
+            precharged_bytes: 0,
+            max_static_bytes: limits.fat_checkpoint_bytes,
+        },
+        objects,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct SignalCaptureBudget<'a> {
+    max_lifecycle_bytes: u64,
+    precharged_identities: &'a BTreeSet<ContentHash>,
+    precharged_bytes: u64,
+    max_static_bytes: u64,
+}
+
+fn collect_source_bounded(
+    source: &SignalSourceSpecification,
+    store: &dyn DagStore,
+    limits: FaultResourceLimits,
+    budget: SignalCaptureBudget<'_>,
     objects: &mut BTreeMap<ContentHash, Vec<u8>>,
 ) -> Result<(), LifecycleApiError> {
     match source {
@@ -44,7 +140,7 @@ fn collect_source(
             raw_provenance,
             ..
         } => {
-            let manifest_bytes = retain_object(*artifact, store, limits, objects)?;
+            let manifest_bytes = retain_object(*artifact, store, limits, budget, objects)?;
             let manifest = SignalTraceManifest::decode_with_chunk_limit(
                 &manifest_bytes,
                 usize::try_from(limits.trace_chunks_total).map_err(|_| {
@@ -61,10 +157,10 @@ fn collect_source(
                     "signal trace manifest does not authenticate its authored provenance",
                 ));
             }
-            retain_object(*raw_provenance, store, limits, objects)?;
+            retain_object(*raw_provenance, store, limits, budget, objects)?;
             for channel in &manifest.channels {
                 for chunk in &channel.chunks {
-                    retain_object(chunk.content, store, limits, objects)?;
+                    retain_object(chunk.content, store, limits, budget, objects)?;
                 }
             }
         }
@@ -72,11 +168,11 @@ fn collect_source(
         | SignalSourceSpecification::RegularGrid { artifact, .. }
         | SignalSourceSpecification::ZoneMap { artifact, .. }
         | SignalSourceSpecification::PathProfile { artifact, .. } => {
-            let bytes = retain_object(*artifact, store, limits, objects)?;
+            let bytes = retain_object(*artifact, store, limits, budget, objects)?;
             authenticate_spatial_artifact(*artifact, &bytes)?;
         }
         SignalSourceSpecification::TiledGrid { manifest, .. } => {
-            let bytes = retain_object(*manifest, store, limits, objects)?;
+            let bytes = retain_object(*manifest, store, limits, budget, objects)?;
             let spatial = authenticate_spatial_artifact(*manifest, &bytes)?;
             let SpatialArtifactKind::TiledGrid { tiles } = spatial.kind() else {
                 return Err(loop_factory_error(
@@ -84,7 +180,7 @@ fn collect_source(
                 ));
             };
             for tile in tiles {
-                let bytes = retain_object(tile.content, store, limits, objects)?;
+                let bytes = retain_object(tile.content, store, limits, budget, objects)?;
                 let tile_artifact = authenticate_spatial_artifact(tile.content, &bytes)?;
                 if !matches!(
                     tile_artifact.kind(),
@@ -97,12 +193,12 @@ fn collect_source(
             }
         }
         SignalSourceSpecification::TransmitterField { lookup, .. } => {
-            let bytes = retain_object(*lookup, store, limits, objects)?;
+            let bytes = retain_object(*lookup, store, limits, budget, objects)?;
             authenticate_spatial_artifact(*lookup, &bytes)?;
         }
         SignalSourceSpecification::ExponentialWait { sampler_table, .. }
         | SignalSourceSpecification::WeibullWait { sampler_table, .. } => {
-            let bytes = retain_object(*sampler_table, store, limits, objects)?;
+            let bytes = retain_object(*sampler_table, store, limits, budget, objects)?;
             let table = InverseCdfTable::decode(&bytes).map_err(|error| {
                 loop_factory_error(format!("decode inverse-CDF signal artifact: {error}"))
             })?;
@@ -135,6 +231,7 @@ fn retain_object(
     identity: ContentHash,
     store: &dyn DagStore,
     limits: FaultResourceLimits,
+    budget: SignalCaptureBudget<'_>,
     objects: &mut BTreeMap<ContentHash, Vec<u8>>,
 ) -> Result<Vec<u8>, LifecycleApiError> {
     if let Some(bytes) = objects.get(&identity) {
@@ -162,16 +259,77 @@ fn retain_object(
     limits
         .reserve("fat_checkpoint_bytes", retained, requested)
         .map_err(|error| loop_factory_error(error.to_string()))?;
+    if retained
+        .checked_add(requested)
+        .is_none_or(|total| total > budget.max_lifecycle_bytes)
+    {
+        return Err(capture_limit(
+            "finding_production_replay_lifecycle_bytes",
+            retained,
+            requested,
+            budget.max_lifecycle_bytes,
+            limits.fat_checkpoint_bytes,
+        ));
+    }
+    let effective_retained = objects
+        .iter()
+        .filter(|(identity, _)| !budget.precharged_identities.contains(identity))
+        .try_fold(budget.precharged_bytes, |total, (_, object)| {
+            total.checked_add(u64::try_from(object.len()).ok()?)
+        })
+        .ok_or_else(|| {
+            capture_limit(
+                "finding_production_replay_static_bytes",
+                budget.precharged_bytes,
+                u64::MAX,
+                budget.max_static_bytes,
+                limits.fat_checkpoint_bytes,
+            )
+        })?;
+    let effective_requested = if budget.precharged_identities.contains(&identity) {
+        0
+    } else {
+        requested
+    };
+    if effective_retained
+        .checked_add(effective_requested)
+        .is_none_or(|total| total > budget.max_static_bytes)
+    {
+        return Err(capture_limit(
+            "finding_production_replay_static_bytes",
+            effective_retained,
+            effective_requested,
+            budget.max_static_bytes,
+            limits.fat_checkpoint_bytes,
+        ));
+    }
     objects.insert(identity, bytes.clone());
     Ok(bytes)
+}
+
+fn capture_limit(
+    field: &'static str,
+    current: u64,
+    requested: u64,
+    configured: u64,
+    hard: u64,
+) -> LifecycleApiError {
+    LifecycleApiError::ResourceLimit(LifecycleResourceLimit {
+        field,
+        current,
+        requested,
+        configured,
+        hard,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crucible::model::{
-        MemoryDagStore, SignalBoundaryBehavior, SignalId, SignalInterpolation, SignalShape,
-        SignalUnit, SignalValue, SignalValueType, SpatialTileReference,
+        MemoryDagStore, SignalBoundaryBehavior, SignalDomain, SignalId, SignalInterpolation,
+        SignalNode, SignalProgram, SignalResourceLimits, SignalShape, SignalUnit, SignalValue,
+        SignalValueType, SpatialTileReference,
     };
 
     fn id(value: &str) -> SignalId {
@@ -181,6 +339,75 @@ mod tests {
     fn shape() -> SignalShape {
         SignalShape::new(SignalValueType::I64, SignalUnit::Dimensionless, 0)
             .unwrap_or_else(|error| panic!("test shape must be valid: {error}"))
+    }
+
+    fn regular_grid_plan() -> (FaultSignalPlan, MemoryDagStore, ContentHash, usize) {
+        let artifact = NormalizedSpatialArtifact::new(
+            id("frame"),
+            shape(),
+            SpatialArtifactKind::RegularGrid {
+                origin_mm: [0; 3],
+                cell_size_mm: [1; 3],
+                dimensions: [1; 3],
+                values: vec![SignalValue::I64(7)],
+            },
+        )
+        .unwrap_or_else(|error| panic!("test artifact must be valid: {error}"));
+        let encoded = artifact.encode();
+        let signal = id("grid");
+        let program = SignalProgram::new(
+            vec![SignalNode {
+                id: signal.clone(),
+                domain: SignalDomain::Spatial,
+                output: shape(),
+                inputs: Vec::new(),
+                kind: SignalNodeKind::Source(SignalSourceSpecification::RegularGrid {
+                    artifact: artifact.content(),
+                    coordinate_frame: id("frame"),
+                    origin_mm: [0; 3],
+                    cell_size_mm: [1; 3],
+                    dimensions: [1; 3],
+                    interpolation: SignalInterpolation::Nearest,
+                    outside: SignalBoundaryBehavior::Error,
+                }),
+            }],
+            vec![signal],
+            SignalResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("test program must be valid: {error}"));
+        let plan = FaultSignalPlan::new(vec![program], Vec::new(), FaultResourceLimits::default())
+            .unwrap_or_else(|error| panic!("test plan must be valid: {error}"));
+        let store = MemoryDagStore::new();
+        store
+            .put(&encoded)
+            .unwrap_or_else(|error| panic!("store test artifact: {error}"));
+
+        (plan, store, artifact.content(), encoded.len())
+    }
+
+    #[test]
+    fn budgeted_dependency_walk_enforces_lifecycle_ceiling_independently() {
+        let (plan, store, identity, encoded_len) = regular_grid_plan();
+        let encoded_len = u64::try_from(encoded_len).expect("test artifact length fits in u64");
+        let lifecycle_limit = encoded_len - 1;
+        let precharged_identities = BTreeSet::from([identity]);
+
+        let result = collect_signal_artifact_objects_with_budget(
+            &plan,
+            &store,
+            lifecycle_limit,
+            &precharged_identities,
+            encoded_len,
+            encoded_len,
+        );
+
+        let Err(LifecycleApiError::ResourceLimit(limit)) = result else {
+            panic!("tighter lifecycle allowance must reject the artifact");
+        };
+        assert_eq!(limit.field, "finding_production_replay_lifecycle_bytes");
+        assert_eq!(limit.current, 0);
+        assert_eq!(limit.requested, encoded_len);
+        assert_eq!(limit.configured, lifecycle_limit);
     }
 
     #[test]

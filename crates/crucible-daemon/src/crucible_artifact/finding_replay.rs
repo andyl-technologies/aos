@@ -4,7 +4,10 @@
 //! admitted attempts and graph observations while preserving every typed object
 //! that a raw replay signature may reference.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use super::{
     CrucibleArtifactError, FindingReplayPass, MAX_CONFIGURATION_BRANCH_PREFIX_BYTES,
@@ -25,6 +28,11 @@ use crucible_campaign::{
     SelectableDeclaration, Selection, SelectionId, SelectionOrigin,
 };
 use crucible_cas::content_store::ContentId;
+
+/// Producer result retained before durable replay identities are available.
+pub type FindingProductionReplayMaterialOutcome = crate::FindingProductionReplayCaptureOutcome<
+    Arc<crate::FindingProductionReplayCaptureMaterial>,
+>;
 
 /// Stable reason that an exact minimization candidate could not be materialized.
 ///
@@ -52,6 +60,8 @@ pub enum AutomaticFindingReplayOutcome {
         measurement_replay_evidence: Vec<crate::CrucibleMeasurementReplayEvidence>,
         /// Native full-signature evidence retained from this exact replay.
         triage_evidence: Option<Box<FailureTriageReplayEvidence>>,
+        /// Path-free production replay content captured before lifecycle teardown.
+        production_replay: Option<FindingProductionReplayMaterialOutcome>,
     },
     /// The exact candidate was deterministically incompatible with its replay prefix.
     DeterministicallyIncompatible {
@@ -73,6 +83,7 @@ impl AutomaticFindingReplayOutcome {
             evidence: Box::new(evidence),
             measurement_replay_evidence,
             triage_evidence: None,
+            production_replay: None,
         }
     }
 
@@ -87,6 +98,34 @@ impl AutomaticFindingReplayOutcome {
             evidence: Box::new(evidence),
             measurement_replay_evidence,
             triage_evidence: Some(Box::new(triage_evidence)),
+            production_replay: None,
+        }
+    }
+
+    /// Attaches a producer-owned production replay capture result.
+    #[must_use]
+    pub(crate) fn with_production_replay(
+        mut self,
+        production_replay: FindingProductionReplayMaterialOutcome,
+    ) -> Self {
+        if let Self::Observed {
+            production_replay: retained,
+            ..
+        } = &mut self
+        {
+            *retained = Some(production_replay);
+        }
+        self
+    }
+
+    /// Returns the path-free production replay result retained before binding.
+    #[must_use]
+    pub fn production_replay(&self) -> Option<&FindingProductionReplayMaterialOutcome> {
+        match self {
+            Self::Observed {
+                production_replay, ..
+            } => production_replay.as_ref(),
+            Self::DeterministicallyIncompatible { .. } => None,
         }
     }
 
@@ -606,6 +645,7 @@ pub struct CrucibleFindingReplayTranscript {
     pub(super) verification_pass: Vec<RecordedFindingReplay>,
     pub(super) records: ReplayRecordAccumulator,
     pub(super) triage: RetainedFindingTriageEvidence,
+    pub(super) production: RetainedFindingProductionReplayEvidence,
 }
 
 impl CrucibleFindingReplayTranscript {
@@ -617,6 +657,7 @@ impl CrucibleFindingReplayTranscript {
             verification_pass: Vec::new(),
             records: ReplayRecordAccumulator::new(),
             triage: RetainedFindingTriageEvidence::new(),
+            production: RetainedFindingProductionReplayEvidence::new(),
         }
     }
 
@@ -664,15 +705,28 @@ impl CrucibleFindingReplayTranscript {
             }
             .into());
         }
-        self.triage.record(
+        let original = self.minimization_pass.is_empty();
+        let mut production = self.production.clone();
+        production.record(
             FindingReplayPass::Minimization,
-            self.minimization_pass.is_empty(),
+            original,
+            preserves_signature,
+            replay.production_replay().cloned(),
+            replay.signature().cloned(),
+        )?;
+        let mut triage = self.triage.clone();
+        triage.record(
+            FindingReplayPass::Minimization,
+            original,
             preserves_signature,
             candidate,
             replay.triage_evidence().cloned(),
             replay.signature().cloned(),
         )?;
         let recorded = self.records.record_outcome(candidate, replay)?;
+
+        self.production = production;
+        self.triage = triage;
         self.minimization_pass.push(recorded);
         Ok(())
     }
@@ -721,17 +775,143 @@ impl CrucibleFindingReplayTranscript {
             }
             .into());
         }
-        self.triage.record(
+        let original = self.verification_pass.is_empty();
+        let mut production = self.production.clone();
+        production.record(
             FindingReplayPass::Verification,
-            self.verification_pass.is_empty(),
+            original,
+            preserves_signature,
+            replay.production_replay().cloned(),
+            replay.signature().cloned(),
+        )?;
+        let mut triage = self.triage.clone();
+        triage.record(
+            FindingReplayPass::Verification,
+            original,
             preserves_signature,
             candidate,
             replay.triage_evidence().cloned(),
             replay.signature().cloned(),
         )?;
         let recorded = self.records.record_outcome(candidate, replay)?;
+
+        self.production = production;
+        self.triage = triage;
         self.verification_pass.push(recorded);
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct RetainedFindingProductionReplayEvidence {
+    minimization_original: Option<Box<RetainedFindingProductionReplay>>,
+    minimization_selected: Option<Box<RetainedFindingProductionReplay>>,
+    verification_original: Option<Box<RetainedFindingProductionReplay>>,
+    verification_selected: Option<Box<RetainedFindingProductionReplay>>,
+    has_capture: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RetainedFindingProductionReplay {
+    pub(super) capture: FindingProductionReplayMaterialOutcome,
+    pub(super) observed_signature: FindingSignature,
+}
+
+impl RetainedFindingProductionReplayEvidence {
+    const fn new() -> Self {
+        Self {
+            minimization_original: None,
+            minimization_selected: None,
+            verification_original: None,
+            verification_selected: None,
+            has_capture: false,
+        }
+    }
+
+    fn record(
+        &mut self,
+        pass: FindingReplayPass,
+        original: bool,
+        preserves_signature: bool,
+        capture: Option<FindingProductionReplayMaterialOutcome>,
+        observed_signature: Option<FindingSignature>,
+    ) -> Result<(), CrucibleArtifactError> {
+        self.has_capture |= capture.is_some();
+        if !original && !preserves_signature {
+            return Ok(());
+        }
+        let capture = match (capture, observed_signature) {
+            (Some(capture), Some(observed_signature)) => {
+                Some(Box::new(RetainedFindingProductionReplay {
+                    capture,
+                    observed_signature,
+                }))
+            }
+            (Some(_), None) => {
+                return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                    artifact: "finding production replay signature",
+                });
+            }
+            (None, _) => None,
+        };
+
+        match pass {
+            FindingReplayPass::Minimization => {
+                if original {
+                    self.minimization_original = capture.clone();
+                }
+                if preserves_signature {
+                    self.minimization_selected = capture;
+                }
+            }
+            FindingReplayPass::Verification => {
+                if original {
+                    self.verification_original = capture.clone();
+                }
+                if preserves_signature {
+                    self.verification_selected = capture;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn into_parts(
+        self,
+    ) -> Result<
+        Option<(
+            RetainedFindingProductionReplay,
+            RetainedFindingProductionReplay,
+            RetainedFindingProductionReplay,
+            RetainedFindingProductionReplay,
+        )>,
+        CrucibleArtifactError,
+    > {
+        if !self.has_capture {
+            return Ok(None);
+        }
+        let (
+            Some(minimization_original),
+            Some(minimization_selected),
+            Some(verification_original),
+            Some(verification_selected),
+        ) = (
+            self.minimization_original,
+            self.minimization_selected,
+            self.verification_original,
+            self.verification_selected,
+        )
+        else {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "incomplete finding production replay evidence",
+            });
+        };
+        Ok(Some((
+            *minimization_original,
+            *minimization_selected,
+            *verification_original,
+            *verification_selected,
+        )))
     }
 }
 
@@ -1456,6 +1636,196 @@ mod tests {
 
         assert_eq!(records.ids.len(), first_count);
         assert_eq!(records.canonical_bytes, first_bytes + signature_bytes);
+    }
+
+    fn replay_with_production_capture(
+        replay: CrucibleFindingReplayEvidence,
+    ) -> AutomaticFindingReplayOutcome {
+        AutomaticFindingReplayOutcome::observed(replay, Vec::new()).with_production_replay(
+            crate::FindingProductionReplayCaptureOutcome::Incomplete(
+                crate::FindingProductionReplayIncomplete::MissingEventLogPrefix,
+            ),
+        )
+    }
+
+    fn record_transcript_pass(
+        transcript: &mut CrucibleFindingReplayTranscript,
+        pass: FindingReplayPass,
+        candidate: &FindingReproductionArtifact,
+        replay: AutomaticFindingReplayOutcome,
+    ) -> Result<(), CrucibleArtifactError> {
+        match pass {
+            FindingReplayPass::Minimization => {
+                transcript.record_minimization_outcome(candidate, replay)
+            }
+            FindingReplayPass::Verification => {
+                transcript.record_verification_outcome(candidate, replay)
+            }
+        }
+    }
+
+    #[test]
+    fn transcript_admission_is_atomic_across_identity_failure_and_retry() {
+        let (finding, replay, _) = replay_fixture();
+        let wrong_scenario = crucible::crash_restart_scenario()
+            .expect("crash-restart scenario")
+            .scenario;
+        let wrong_configuration = Configuration {
+            def: wrong_scenario.scenario_def(),
+            schedule: Schedule::empty(),
+        };
+        let wrong_finding = reproduction(
+            &wrong_scenario,
+            &wrong_configuration,
+            b"wrong-replay-candidate",
+        );
+
+        for pass in [
+            FindingReplayPass::Minimization,
+            FindingReplayPass::Verification,
+        ] {
+            let outcome = replay_with_production_capture(replay.clone());
+            let mut transcript = CrucibleFindingReplayTranscript::new();
+            let before = transcript.clone();
+
+            assert!(matches!(
+                record_transcript_pass(&mut transcript, pass, &wrong_finding, outcome.clone()),
+                Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                    artifact: "finding replay candidate configuration"
+                })
+            ));
+            assert_eq!(transcript, before);
+
+            record_transcript_pass(&mut transcript, pass, &finding, outcome)
+                .expect("identical replay admitted after corrected candidate identity");
+            assert!(transcript.production.has_capture);
+            assert_eq!(
+                transcript.minimization_pass.len() + transcript.verification_pass.len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn transcript_admission_is_atomic_across_byte_failure_and_retry() {
+        let (finding, replay, _) = replay_fixture();
+
+        for pass in [
+            FindingReplayPass::Minimization,
+            FindingReplayPass::Verification,
+        ] {
+            let outcome = replay_with_production_capture(replay.clone());
+            let mut transcript = CrucibleFindingReplayTranscript::new();
+            transcript.records.canonical_bytes = MAX_CRUCIBLE_FINDING_REPLAY_BYTES;
+            let before = transcript.clone();
+
+            assert!(matches!(
+                record_transcript_pass(&mut transcript, pass, &finding, outcome.clone()),
+                Err(CrucibleArtifactError::Campaign(
+                    CampaignCodecError::LimitExceeded {
+                        limit: "finding-replay-retained-record-bytes"
+                    }
+                ))
+            ));
+            assert_eq!(transcript, before);
+
+            transcript.records.canonical_bytes = 0;
+            record_transcript_pass(&mut transcript, pass, &finding, outcome)
+                .expect("identical replay admitted after byte capacity became available");
+            assert!(transcript.production.has_capture);
+            assert_eq!(
+                transcript.minimization_pass.len() + transcript.verification_pass.len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn production_replay_retention_selects_the_four_named_required_outcomes() {
+        let (_finding, replay, _) = replay_fixture();
+        let signature = replay.signature().expect("signed replay").clone();
+        let mut retained = RetainedFindingProductionReplayEvidence::new();
+        let outcome = |reason| {
+            Some(crate::FindingProductionReplayCaptureOutcome::Incomplete(
+                reason,
+            ))
+        };
+
+        retained
+            .record(
+                FindingReplayPass::Minimization,
+                true,
+                true,
+                outcome(crate::FindingProductionReplayIncomplete::MissingEventLogPrefix),
+                Some(signature.clone()),
+            )
+            .expect("minimization original");
+        retained
+            .record(
+                FindingReplayPass::Minimization,
+                false,
+                false,
+                outcome(crate::FindingProductionReplayIncomplete::MissingTerminalFingerprints),
+                Some(signature.clone()),
+            )
+            .expect("discarded minimization candidate");
+        retained
+            .record(
+                FindingReplayPass::Minimization,
+                false,
+                true,
+                outcome(crate::FindingProductionReplayIncomplete::MissingSignalArtifactStore),
+                Some(signature.clone()),
+            )
+            .expect("selected minimization candidate");
+        retained
+            .record(
+                FindingReplayPass::Verification,
+                true,
+                true,
+                outcome(crate::FindingProductionReplayIncomplete::MissingWorldArtifactStore),
+                Some(signature.clone()),
+            )
+            .expect("verification original");
+        retained
+            .record(
+                FindingReplayPass::Verification,
+                false,
+                true,
+                outcome(crate::FindingProductionReplayIncomplete::PublicationLimitExceeded),
+                Some(signature),
+            )
+            .expect("verification selected");
+
+        let Some((min_original, min_selected, verify_original, verify_selected)) =
+            retained.into_parts().expect("complete required replay set")
+        else {
+            panic!("production replay retention was unexpectedly disabled")
+        };
+        assert_eq!(
+            min_original.capture,
+            crate::FindingProductionReplayCaptureOutcome::Incomplete(
+                crate::FindingProductionReplayIncomplete::MissingEventLogPrefix
+            )
+        );
+        assert_eq!(
+            min_selected.capture,
+            crate::FindingProductionReplayCaptureOutcome::Incomplete(
+                crate::FindingProductionReplayIncomplete::MissingSignalArtifactStore
+            )
+        );
+        assert_eq!(
+            verify_original.capture,
+            crate::FindingProductionReplayCaptureOutcome::Incomplete(
+                crate::FindingProductionReplayIncomplete::MissingWorldArtifactStore
+            )
+        );
+        assert_eq!(
+            verify_selected.capture,
+            crate::FindingProductionReplayCaptureOutcome::Incomplete(
+                crate::FindingProductionReplayIncomplete::PublicationLimitExceeded
+            )
+        );
     }
 
     #[test]

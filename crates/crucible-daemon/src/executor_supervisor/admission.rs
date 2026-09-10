@@ -236,6 +236,7 @@ where
                         AttemptRuntimeState::Publishing {
                             observation,
                             finding_candidate,
+                            finding_replay_captures,
                             ..
                         } => AttemptRuntimeState::Publishing {
                             execution_basis,
@@ -244,6 +245,7 @@ where
                             execution,
                             observation,
                             finding_candidate,
+                            finding_replay_captures,
                         },
                         AttemptRuntimeState::Paused { .. }
                         | AttemptRuntimeState::CheckpointPromoting { .. }
@@ -556,6 +558,7 @@ where
                     execution,
                     observation,
                     finding_candidate,
+                    finding_replay_captures,
                 },
             ) if current_basis == execution_basis => {
                 match self.validator.validate_completion_artifacts(
@@ -602,6 +605,7 @@ where
                             execution: recovery_execution,
                             observation,
                             finding_candidate,
+                            finding_replay_captures,
                         };
                         let advance = self.advance_attempt(key, publishing, Some(recovery))?;
                         if let AttemptAdvance::CommittedAfterError(error) = advance {

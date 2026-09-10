@@ -19,8 +19,8 @@ use crucible::{Configuration, Decision, ScenarioDefForm, Schedule};
 use crucible_campaign::ChoiceValue;
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
-    CampaignRepositoryError, ChoiceDomain, ChoiceOpportunity, SelectableDeclaration, Selection,
-    SelectionId, SelectionOrigin,
+    CampaignRepositoryError, ChoiceDomain, ChoiceOpportunity, ResolvedSelection,
+    SelectableDeclaration, Selection, SelectionId, SelectionOrigin,
 };
 use thiserror::Error;
 
@@ -46,7 +46,7 @@ impl GuardedCampaignReplayClosure {
     /// Canonical schema version carried by the remote resume envelope.
     pub const SCHEMA_VERSION: u32 = 1;
 
-    pub(super) fn collect(
+    pub(crate) fn collect(
         store: &CampaignExecutorStore,
         scenario: &ScenarioDefForm,
         schedule: &Schedule,
@@ -71,6 +71,31 @@ impl GuardedCampaignReplayClosure {
             });
         }
 
+        let closure = Self::new(records)?;
+        closure.validate_for_schedule(scenario, schedule)?;
+        Ok(closure)
+    }
+
+    /// Builds a closure from selections already authenticated during candidate decoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuardedCampaignReplayClosureError`] when the supplied records
+    /// are incomplete, inconsistent, noncanonical, or exceed closure bounds.
+    pub(crate) fn from_resolved_selections(
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+        selections: &[ResolvedSelection],
+    ) -> Result<Self, GuardedCampaignReplayClosureError> {
+        let records = selections
+            .iter()
+            .map(|resolved| GuardedCampaignReplaySelection {
+                domain: resolved.domain().clone(),
+                declaration: resolved.declaration().clone(),
+                opportunity: resolved.opportunity().clone(),
+                selection: resolved.selection().clone(),
+            })
+            .collect();
         let closure = Self::new(records)?;
         closure.validate_for_schedule(scenario, schedule)?;
         Ok(closure)

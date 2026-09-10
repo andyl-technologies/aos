@@ -11,7 +11,8 @@ use std::time::Duration;
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, CampaignFactId, CampaignLineageId,
     CampaignSnapshotId, ConfigurationArtifactId, ExecutionRetentionIntent, ExecutorClient,
-    FindingCandidateBundleId, SubmitAttemptDisposition,
+    FindingCandidateBundleId, FindingReplayCaptureEvidenceId, FindingReplayCaptureIncomplete,
+    FindingReplayCaptureReference, FindingReplayCaptureSet, SubmitAttemptDisposition,
 };
 
 use super::*;
@@ -1356,6 +1357,99 @@ fn finding_candidate_root_is_staged_atomically_and_preserved_by_completion() {
 }
 
 #[test]
+fn capture_enrichment_rejects_a_different_existing_candidate_without_mutation() {
+    let epoch = daemon_epoch(0x71);
+    let request = request(0x72, 0x73, epoch, resources(1, 1024, 2048));
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 1, 2048, 4096, 64).expect("capacity"),
+    );
+    supervisor
+        .submit_attempt(&request)
+        .expect("capture attempt accepted");
+    let queued = supervisor.next_queued().expect("capture attempt queued");
+    let observation = observation(0x74);
+    let original_candidate = finding_candidate(0x75);
+    supervisor
+        .stage_observation_and_finding_candidate_publication(
+            &queued,
+            observation,
+            original_candidate,
+        )
+        .expect("stage original candidate");
+    let before = supervisor
+        .ledger()
+        .load_attempt(execution_key(&request))
+        .expect("load original staged state");
+
+    assert!(matches!(
+        supervisor.stage_observation_finding_and_replay_capture_publication(
+            &queued,
+            observation,
+            finding_candidate(0x76),
+            finding_replay_captures(0x77),
+        ),
+        Err(LocalExecutorError::ConflictingCompletion)
+    ));
+    assert_eq!(
+        supervisor
+            .ledger()
+            .load_attempt(execution_key(&request))
+            .expect("load state after rejected candidate enrichment"),
+        before
+    );
+}
+
+#[test]
+fn capture_enrichment_rejects_different_existing_capture_roots_without_mutation() {
+    let epoch = daemon_epoch(0x78);
+    let request = request(0x79, 0x7a, epoch, resources(1, 1024, 2048));
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 1, 2048, 4096, 64).expect("capacity"),
+    );
+    supervisor
+        .submit_attempt(&request)
+        .expect("capture attempt accepted");
+    let queued = supervisor.next_queued().expect("capture attempt queued");
+    let observation = observation(0x7b);
+    let candidate = finding_candidate(0x7c);
+    supervisor
+        .stage_observation_finding_and_replay_capture_publication(
+            &queued,
+            observation,
+            candidate,
+            finding_replay_captures(0x7d),
+        )
+        .expect("stage original capture roots");
+    let before = supervisor
+        .ledger()
+        .load_attempt(execution_key(&request))
+        .expect("load original staged state");
+
+    assert!(matches!(
+        supervisor.stage_observation_finding_and_replay_capture_publication(
+            &queued,
+            observation,
+            candidate,
+            finding_replay_captures(0x7e),
+        ),
+        Err(LocalExecutorError::ConflictingCompletion)
+    ));
+    assert_eq!(
+        supervisor
+            .ledger()
+            .load_attempt(execution_key(&request))
+            .expect("load state after rejected capture enrichment"),
+        before
+    );
+}
+
+#[test]
 fn rejection_preflight_is_stable_and_does_not_consume_capacity() {
     let epoch = daemon_epoch(0x23);
     let calls = Cell::new(0_u32);
@@ -2422,6 +2516,27 @@ fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
         byte,
     ))
     .expect("finding candidate")
+}
+
+fn finding_replay_captures(byte: u8) -> FindingReplayCaptureSet {
+    let root = FindingReplayCaptureEvidenceId::parse(&typed_id(
+        "crucible.campaign.finding-replay-capture-evidence",
+        "exact-manifest",
+        byte,
+    ))
+    .expect("finding replay capture root");
+    FindingReplayCaptureSet::new(
+        FindingReplayCaptureReference::Complete(root),
+        FindingReplayCaptureReference::Incomplete(
+            FindingReplayCaptureIncomplete::MissingEventLogPrefix,
+        ),
+        FindingReplayCaptureReference::Incomplete(
+            FindingReplayCaptureIncomplete::MissingTerminalFingerprints,
+        ),
+        FindingReplayCaptureReference::Incomplete(
+            FindingReplayCaptureIncomplete::MissingSignalArtifactStore,
+        ),
+    )
 }
 
 fn checkpoint(byte: u8) -> ExactCheckpointId {

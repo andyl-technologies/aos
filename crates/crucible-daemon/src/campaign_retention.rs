@@ -9,7 +9,8 @@
 
 use crucible_campaign::{
     CampaignName, CampaignPinRetentionRecord, CampaignPinRetentionSummary, CampaignRepository,
-    CampaignRepositoryError, FindingCandidateBundleId, ObservationId,
+    CampaignRepositoryError, FindingCandidateBundleId, FindingReplayCaptureEvidenceId,
+    ObservationId,
 };
 use thiserror::Error;
 
@@ -29,6 +30,8 @@ pub enum LocalCampaignRetentionRoot {
     ExactCheckpoint(ExactCheckpointId),
     /// One executor-produced finding candidate awaiting incorporation acknowledgement.
     FindingCandidate(FindingCandidateBundleId),
+    /// One portable replay capture manifest staged before candidate publication.
+    FindingReplayCapture(FindingReplayCaptureEvidenceId),
 }
 
 /// Terminal evidence that one local retention inventory completed.
@@ -39,6 +42,7 @@ pub struct LocalCampaignRetentionSummary {
     observation_roots: u64,
     checkpoint_roots: u64,
     finding_candidate_roots: u64,
+    finding_replay_capture_roots: u64,
 }
 
 impl LocalCampaignRetentionSummary {
@@ -70,6 +74,12 @@ impl LocalCampaignRetentionSummary {
     #[must_use]
     pub const fn finding_candidate_roots(self) -> u64 {
         self.finding_candidate_roots
+    }
+
+    /// Returns the number of operational replay capture manifest roots visited.
+    #[must_use]
+    pub const fn finding_replay_capture_roots(self) -> u64 {
+        self.finding_replay_capture_roots
     }
 }
 
@@ -141,11 +151,20 @@ where
                 AssignmentRetentionRoot::Observation(observation) => {
                     visitor(LocalCampaignRetentionRoot::Observation(observation));
                 }
+                AssignmentRetentionRoot::PublishingObservation(observation) => {
+                    visitor(LocalCampaignRetentionRoot::Observation(observation));
+                }
                 AssignmentRetentionRoot::ExactCheckpoint(checkpoint) => {
                     visitor(LocalCampaignRetentionRoot::ExactCheckpoint(checkpoint));
                 }
                 AssignmentRetentionRoot::FindingCandidate(candidate) => {
                     visitor(LocalCampaignRetentionRoot::FindingCandidate(candidate));
+                }
+                AssignmentRetentionRoot::PublishingFindingCandidate(candidate) => {
+                    visitor(LocalCampaignRetentionRoot::FindingCandidate(candidate));
+                }
+                AssignmentRetentionRoot::FindingReplayCapture(capture) => {
+                    visitor(LocalCampaignRetentionRoot::FindingReplayCapture(capture));
                 }
             }
             Ok(())
@@ -167,6 +186,7 @@ where
         observation_roots: operational.observation_roots(),
         checkpoint_roots: operational.checkpoint_roots(),
         finding_candidate_roots: operational.finding_candidate_roots(),
+        finding_replay_capture_roots: operational.finding_replay_capture_roots(),
     })
 }
 
