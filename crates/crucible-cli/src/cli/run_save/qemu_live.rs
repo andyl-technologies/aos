@@ -688,16 +688,42 @@ fn qemu_fuzz_finding_evidence(
     Ok(Some((evidence, reproduction)))
 }
 
+/// Identifies one failure because a reproduction may expose distinct failures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QemuFuzzFindingIdentity<'a> {
+    reproduction_artifact: crucible::ContentHash,
+    configuration: crucible::ContentHash,
+    fingerprint: crucible::ContentHash,
+    kind: crucible_model::FailureKind,
+    property: Option<&'a str>,
+}
+
+impl<'a> QemuFuzzFindingIdentity<'a> {
+    fn from_evidence(evidence: &'a TriageFindingEvidence) -> Self {
+        Self {
+            reproduction_artifact: evidence.finding.artifact.id(),
+            configuration: evidence.finding.configuration,
+            fingerprint: evidence.finding.finding_fingerprint,
+            kind: evidence.discovery_signature.failure_kind,
+            property: evidence
+                .discovery_signature
+                .property
+                .as_ref()
+                .map(|property| property.id.name.as_str()),
+        }
+    }
+}
+
 fn push_qemu_fuzz_finding(
     execution: &mut QemuFuzzExecution,
     evidence: TriageFindingEvidence,
     reproduction: Vec<u8>,
 ) -> Result<(), CliError> {
-    let artifact = evidence.finding.artifact.id();
+    let identity = QemuFuzzFindingIdentity::from_evidence(&evidence);
     if let Some(index) = execution
         .findings
         .iter()
-        .position(|existing| existing.finding.artifact.id() == artifact)
+        .position(|existing| QemuFuzzFindingIdentity::from_evidence(existing) == identity)
     {
         if execution.findings[index] != evidence
             || execution.reproduction_artifacts.get(index) != Some(&reproduction)
@@ -792,14 +818,15 @@ fn attach_qemu_findings_outputs(
 mod finding_tests {
     use super::*;
 
-    #[test]
-    fn collect_fuzz_deduplicates_identical_phase_reproductions()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn qemu_fuzz_timeout_evidence(
+        finding_fingerprint: &[u8],
+        coverage_fingerprint: &[u8],
+    ) -> Result<TriageFindingEvidence, Box<dyn std::error::Error>> {
         let scenario = crucible::happy_path_scenario()?.scenario;
         let configuration = crucible::Configuration::genesis(scenario.scenario_def());
         let finding = crucible::FindingReproductionArtifact::capture(
             crucible::FindingDiscoveryPath::CoverageGuidedFuzzing,
-            crucible::ContentHash::from_bytes(b"repeated-fuzz-timeout"),
+            crucible::ContentHash::from_bytes(finding_fingerprint),
             &scenario,
             &configuration,
         )?;
@@ -812,12 +839,52 @@ mod finding_tests {
             None,
             finding.artifact.id(),
         );
-        let evidence = crate::cli_triage_debug::triage_timeout_evidence(
+        Ok(crate::cli_triage_debug::triage_timeout_evidence(
             finding,
             timeout,
-            crucible::ContentHash::from_bytes(b"repeated-fuzz-coverage"),
+            crucible::ContentHash::from_bytes(coverage_fingerprint),
             Vec::new(),
+        )?)
+    }
+
+    fn qemu_fuzz_property_evidence(
+        finding_fingerprint: &[u8],
+        property: &str,
+    ) -> Result<TriageFindingEvidence, Box<dyn std::error::Error>> {
+        let scenario = crucible::happy_path_scenario()?.scenario;
+        let configuration = crucible::Configuration::genesis(scenario.scenario_def());
+        let finding = crucible::FindingReproductionArtifact::capture(
+            crucible::FindingDiscoveryPath::CoverageGuidedFuzzing,
+            crucible::ContentHash::from_bytes(finding_fingerprint),
+            &scenario,
+            &configuration,
         )?;
+        let violation = crucible_model::HostAssertionViolation {
+            assertion: crucible::AssertionId::from_name(property),
+            message: format!("{property} failed"),
+            quantifier: crucible_model::AssertionQuantifierKind::Always,
+            event_kind: String::from("assertion_state_changed"),
+            at_icount: Some(crucible::Icount { retired: 4 }),
+            at_virtual_time: crucible::VirtualTime { ticks: 4 },
+            node: None,
+            detail: String::from("test property violation"),
+            reproduction_artifact: finding.artifact.id(),
+        };
+        Ok(
+            crate::cli_triage_debug::triage_property_evidence_for_violation_with_recording(
+                finding,
+                violation,
+                crucible::ContentHash::from_bytes(b"shared-property-coverage"),
+                Vec::new(),
+            )?,
+        )
+    }
+
+    #[test]
+    fn collect_fuzz_deduplicates_identical_phase_reproductions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let evidence =
+            qemu_fuzz_timeout_evidence(b"repeated-fuzz-timeout", b"repeated-fuzz-coverage")?;
         let mut execution = QemuFuzzExecution::default();
         push_qemu_fuzz_finding(&mut execution, evidence.clone(), vec![1, 2, 3])?;
         let mut guided = QemuFuzzExecution::default();
@@ -825,7 +892,45 @@ mod finding_tests {
         merge_qemu_fuzz_execution(&mut execution, guided)?;
         assert_eq!(execution.findings.len(), 1);
         assert_eq!(execution.reproduction_artifacts.len(), 1);
-        assert!(push_qemu_fuzz_finding(&mut execution, evidence, vec![4, 5, 6]).is_err());
+        assert!(push_qemu_fuzz_finding(&mut execution, evidence.clone(), vec![4, 5, 6]).is_err());
+
+        let conflicting_evidence =
+            qemu_fuzz_timeout_evidence(b"repeated-fuzz-timeout", b"other-fuzz-coverage")?;
+        assert!(
+            push_qemu_fuzz_finding(&mut execution, conflicting_evidence, vec![1, 2, 3]).is_err()
+        );
+        assert_eq!(execution.findings, vec![evidence]);
+        assert_eq!(execution.reproduction_artifacts, vec![vec![1, 2, 3]]);
+        Ok(())
+    }
+
+    #[test]
+    fn collect_fuzz_preserves_distinct_findings_sharing_an_artifact()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let shared_fingerprint = b"shared-finding-fingerprint";
+        let findings = [
+            qemu_fuzz_timeout_evidence(shared_fingerprint, b"timeout-coverage")?,
+            qemu_fuzz_timeout_evidence(b"other-finding-fingerprint", b"timeout-coverage")?,
+            qemu_fuzz_property_evidence(shared_fingerprint, "property-a")?,
+            qemu_fuzz_property_evidence(shared_fingerprint, "property-b")?,
+        ];
+        let shared_artifact = findings[0].finding.artifact.id();
+        assert!(
+            findings
+                .iter()
+                .all(|evidence| evidence.finding.artifact.id() == shared_artifact)
+        );
+
+        let mut execution = QemuFuzzExecution::default();
+        for (index, evidence) in findings.iter().cloned().enumerate() {
+            push_qemu_fuzz_finding(&mut execution, evidence, vec![index as u8])?;
+        }
+
+        assert_eq!(execution.findings, findings);
+        assert_eq!(
+            execution.reproduction_artifacts,
+            vec![vec![0], vec![1], vec![2], vec![3]]
+        );
         Ok(())
     }
 
