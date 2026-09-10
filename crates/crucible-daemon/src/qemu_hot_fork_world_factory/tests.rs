@@ -80,6 +80,9 @@ use crate::{
 #[path = "tests/native_acceptance.rs"]
 mod native_acceptance;
 
+#[path = "tests/world_fork_atomicity.rs"]
+mod world_fork_atomicity;
+
 struct ScriptedWorldGuard {
     resources: AttemptResourceLimits,
     cancellation: ExecutionCancellation,

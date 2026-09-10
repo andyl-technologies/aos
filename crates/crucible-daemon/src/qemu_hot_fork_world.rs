@@ -311,6 +311,18 @@ where
         self.token.clone()
     }
 
+    /// Consumes an unpublished assembly into its private children for rollback.
+    ///
+    /// This boundary remains crate-private because callers must either drive
+    /// every child through complete cancellation reconciliation or retain the
+    /// entire remaining set in fail-closed quarantine. It never exposes a
+    /// runnable world capability.
+    pub(crate) fn into_rollback_children(mut self) -> BTreeMap<NodeId, C> {
+        let children = std::mem::take(&mut self.children);
+        self.published = true;
+        children
+    }
+
     pub(crate) fn quarantine(&mut self) {
         let children = std::mem::take(&mut self.children);
         for (_node, mut child) in children {

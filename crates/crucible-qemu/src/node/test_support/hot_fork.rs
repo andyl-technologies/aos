@@ -6,7 +6,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt as _;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crucible::{AdvanceOutcome, Checkpoint, ExecutionFingerprint, Icount, ObservableEvent};
 // crucible-lint: allow host-nondeterminism-state -- the scripted transport forwards fixed test input into the same validated node boundary as the production channel.
@@ -36,6 +36,38 @@ fn spawn_scripted_process() -> std::io::Result<std::process::Child> {
         .spawn()
 }
 
+fn wait_for_scripted_process_termination(process_id: u32) -> std::io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let stat_path = format!("/proc/{process_id}/stat");
+    loop {
+        match std::fs::read_to_string(&stat_path) {
+            Ok(stat) => {
+                let state = stat
+                    .rsplit_once(") ")
+                    .and_then(|(_identity, fields)| fields.chars().next())
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "scripted source process status is malformed",
+                        )
+                    })?;
+                if state == 'Z' {
+                    return Ok(());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "scripted source did not terminate within two seconds",
+            ));
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// Scripted parent outcome used by cross-crate hot-fork ownership tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QemuTestHotForkOutcome {
@@ -43,6 +75,8 @@ pub enum QemuTestHotForkOutcome {
     Forked,
     /// Rejects the first fork before creating a child, then allows a retry.
     RejectedOnce,
+    /// Rejects before creating a child after terminating the scripted source.
+    RejectedAfterSourceExit,
     /// Loses the command disposition after QEMU may have forked.
     Indeterminate,
 }
@@ -1206,6 +1240,46 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                     source: QemuNodeChannelError::new(
                         "fork scripted hot-fork template",
                         "injected no-child rejection",
+                    ),
+                })
+            }
+            QemuTestHotForkOutcome::RejectedAfterSourceExit => {
+                let process = rustix::process::Pid::from_raw(
+                    i32::try_from(self.process_id).map_err(|error| {
+                        crate::QemuHotForkCommandError::Rejected {
+                            source: QemuNodeChannelError::new(
+                                "terminate scripted hot-fork source",
+                                error.to_string(),
+                            ),
+                        }
+                    })?,
+                )
+                .ok_or_else(|| crate::QemuHotForkCommandError::Rejected {
+                    source: QemuNodeChannelError::new(
+                        "terminate scripted hot-fork source",
+                        "scripted source PID must be positive",
+                    ),
+                })?;
+                rustix::process::kill_process(process, rustix::process::Signal::KILL).map_err(
+                    |error| crate::QemuHotForkCommandError::Rejected {
+                        source: QemuNodeChannelError::new(
+                            "terminate scripted hot-fork source",
+                            error.to_string(),
+                        ),
+                    },
+                )?;
+                wait_for_scripted_process_termination(self.process_id).map_err(|error| {
+                    crate::QemuHotForkCommandError::Rejected {
+                        source: QemuNodeChannelError::new(
+                            "await scripted hot-fork source termination",
+                            error.to_string(),
+                        ),
+                    }
+                })?;
+                Err(crate::QemuHotForkCommandError::Rejected {
+                    source: QemuNodeChannelError::new(
+                        "fork scripted hot-fork template",
+                        "injected no-child rejection after source exit",
                     ),
                 })
             }
