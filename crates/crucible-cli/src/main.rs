@@ -345,6 +345,8 @@ enum CampaignCommand {
     Branch(CampaignBranchArgs),
     /// Print the current authenticated campaign head and lifecycle state.
     Status(CampaignStatusArgs),
+    /// Report snapshot-bound outcomes, exploration state, and estimator evidence.
+    Report(CampaignReportArgs),
     /// Return the latest coalesced head after an optional snapshot cursor.
     Watch(CampaignWatchArgs),
     /// Inspect one exact historical campaign snapshot.
@@ -853,6 +855,25 @@ struct CampaignStatusArgs {
     /// Canonical campaign name.
     #[arg(value_name = "NAME")]
     name: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignReportArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact current snapshot that anchors every reported fact.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exclusive one-based endpoint cursor returned by the preceding page.
+    #[arg(long, value_name = "CURSOR")]
+    after: Option<u32>,
+    /// Maximum estimator endpoints returned per page.
+    #[arg(long, value_name = "COUNT", default_value_t = 8)]
+    limit: u32,
+    /// Maximum authenticated estimator pages followed from the supplied cursor.
+    #[arg(long, value_name = "COUNT", default_value_t = 1)]
+    pages: u32,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

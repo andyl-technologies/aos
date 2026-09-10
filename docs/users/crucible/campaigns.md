@@ -19,7 +19,7 @@ The checked local API currently provides:
 - explicitly authorized, bounded enumeration of current campaign heads;
 - resume, pause, stop, unseal, budget, steering, pin, and unpin mutations;
 - finite, generated, and exhaustive additive branch requests;
-- snapshot, graph, choice, frontier, finding, and comparison queries;
+- snapshot, graph, choice, frontier, finding, report, and comparison queries;
 - proof-bearing choice, finding, and attempt explanations; and
 - a bounded set of packaged deterministic planner runtimes attached to one or
   more authenticated local executor endpoints.
@@ -484,6 +484,11 @@ campaign = "*"
 
 [[grants]]
 principal = "operator"
+operation = "query-campaign-report"
+campaign = "*"
+
+[[grants]]
+principal = "operator"
 operation = "get-campaign-snapshot"
 campaign = "*"
 
@@ -922,11 +927,27 @@ authenticated response reports EOF rather than inferring EOF from a short page.
 
 ```sh
 crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
+  report network-recovery --snapshot "$SNAPSHOT" \
+  --limit 32 --pages 8 --format json
+
+crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
   frontier network-recovery --snapshot "$SNAPSHOT" --limit 256 --format jsonl
 
 crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
   findings network-recovery --snapshot "$SNAPSHOT" --limit 256 --format jsonl
 ```
+
+`report` combines the exact observed outcome classes with admitted execution
+bases, retained findings, planner-chain identity, and continuation totals. It
+names explored, stopped, successful, failed, and unexplored attempts separately
+and distinguishes unvisited, exhausted, and budget- or policy-closed (pruned)
+continuations. Exhaustive nonstatistical campaigns are descriptive; adaptive
+tree and beam campaigns are labeled guidance-biased. A statistical campaign
+returns `no-estimate` until every policy-declared endpoint has an authenticated
+observation. Once complete, its paged endpoint records carry exact target `P`,
+proposal `Q`, estimator weight, and evidence identities. In this report,
+`complete` describes endpoint pagination; the campaign lifecycle remains in
+the separate `state` field.
 
 Object bodies require their own authorization even when an ID appeared in a
 graph page. Use `graph-object`, `choice-object`, or `frontier-object`; do not

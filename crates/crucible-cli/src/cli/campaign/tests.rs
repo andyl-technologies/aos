@@ -253,6 +253,13 @@ impl CampaignService for FixedHeadService {
         Ok(render_status::fixed_campaign_status_response(request))
     }
 
+    fn query_campaign_report(
+        &self,
+        _request: &crucible_campaign::QueryCampaignReportRequest,
+    ) -> Result<crucible_campaign::QueryCampaignReportResponse, Self::Error> {
+        unreachable!("unused campaign-service operation")
+    }
+
     fn get_campaign_snapshot(
         &self,
         _request: &GetCampaignSnapshotRequest,
@@ -441,6 +448,7 @@ impl CampaignService for StatusSequenceService {
         fn create_campaign(CreateCampaignRequest) -> CreateCampaignResponse;
         fn derive_campaign(DeriveCampaignRequest) -> DeriveCampaignResponse;
         fn get_campaign_snapshot(GetCampaignSnapshotRequest) -> GetCampaignSnapshotResponse;
+        fn query_campaign_report(crucible_campaign::QueryCampaignReportRequest) -> crucible_campaign::QueryCampaignReportResponse;
         fn watch_campaign(WatchCampaignRequest) -> WatchCampaignResponse;
         fn query_campaign_graph(QueryCampaignGraphRequest) -> QueryCampaignGraphResponse;
         fn get_campaign_graph_object(GetCampaignGraphObjectRequest) -> GetCampaignGraphObjectResponse;
@@ -495,6 +503,19 @@ impl CampaignService for GraphPageService {
         _request: &GetCampaignStatusRequest,
     ) -> Result<GetCampaignStatusResponse, Self::Error> {
         unreachable!("unused campaign-service operation")
+    }
+
+    fn query_campaign_report(
+        &self,
+        request: &crucible_campaign::QueryCampaignReportRequest,
+    ) -> Result<crucible_campaign::QueryCampaignReportResponse, Self::Error> {
+        Ok(crucible_campaign::QueryCampaignReportResponse::new(
+            request,
+            self.snapshot.clone(),
+            empty_report_summary(),
+            Vec::new(),
+        )
+        .expect("fixed report response"))
     }
 
     fn get_campaign_snapshot(
@@ -3617,6 +3638,34 @@ fn mutation_basis(label: &str) -> CampaignMutationBasisArgs {
         expected: snapshot("current").to_string(),
         command: hash(label).to_hex(),
     }
+}
+
+fn empty_report_summary() -> crucible_campaign::CampaignReportSummary {
+    let semantic = crucible_campaign::CampaignSemanticStatus::new(
+        crucible_campaign::CampaignContinuationStatus::default(),
+        0,
+        0,
+        0,
+        0,
+    )
+    .expect("empty report semantic status");
+    crucible_campaign::CampaignReportSummary::new(
+        CampaignState::Running,
+        crucible_campaign::CampaignMode::Strict,
+        semantic,
+        crucible_campaign::CampaignOutcomeCounts::new(0, 0, 0, 0, 0)
+            .expect("empty report outcomes"),
+        crucible_campaign::CampaignExecutionBasisCounts::new(0, 0, 0, 0),
+        crucible_campaign::CampaignPlannerEvidence::new(0, None)
+            .expect("empty report planner evidence"),
+        crucible_campaign::CampaignEstimateSummary::new(
+            crucible_campaign::CampaignEstimateLabel::Descriptive,
+            0,
+            None,
+        )
+        .expect("empty report estimate"),
+    )
+    .expect("empty report summary")
 }
 
 fn hash(label: &str) -> CampaignHash {

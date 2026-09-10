@@ -273,6 +273,27 @@ impl StatisticalWeightDiagnostics {
     }
 }
 
+impl Canonical for StatisticalWeightDiagnostics {
+    fn encode(&self, encoder: &mut crate::codec::Encoder) {
+        self.concentration.encode(encoder);
+        self.effective_sample_size.encode(encoder);
+    }
+
+    fn decode(decoder: &mut crate::codec::Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let concentration = StatisticalRational::decode(decoder)?;
+        let effective_sample_size = StatisticalRational::decode(decoder)?;
+        if concentration.numerator() == 0
+            || concentration.numerator() > concentration.denominator()
+            || effective_sample_size.numerator() == 0
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "statistical weight diagnostics are invalid",
+            });
+        }
+        Ok(Self::new(concentration, effective_sample_size))
+    }
+}
+
 /// Complete exact evidence for the policy-declared equal-weight endpoint mixture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatisticalEstimateReport {

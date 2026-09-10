@@ -285,6 +285,50 @@ where
         )?)
     }
 
+    fn query_campaign_report(
+        &self,
+        request: &QueryCampaignReportRequest,
+    ) -> Result<QueryCampaignReportResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::QueryCampaignReport,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let (summary, endpoints) = self
+            .repository
+            .project_campaign_report(request.campaign().as_str(), request.snapshot())?;
+        let start = usize::try_from(request.after().unwrap_or(0)).map_err(|_| {
+            CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-report-cursor-is-invalid",
+            }
+        })?;
+        let limit = usize::try_from(request.limit()).map_err(|_| {
+            CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-report-page-size-is-invalid",
+            }
+        })?;
+        let page = endpoints
+            .into_iter()
+            .skip(start)
+            .take(limit)
+            .collect::<Vec<_>>();
+        Ok(QueryCampaignReportResponse::new(
+            request,
+            head.snapshot().clone(),
+            summary,
+            page,
+        )?)
+    }
+
     fn get_campaign_snapshot(
         &self,
         request: &GetCampaignSnapshotRequest,

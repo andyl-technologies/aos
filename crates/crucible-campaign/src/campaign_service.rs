@@ -27,6 +27,7 @@ mod list;
 mod pin;
 mod query;
 mod ranking;
+mod report;
 mod repository;
 mod status;
 mod watch;
@@ -60,6 +61,11 @@ pub use query::{
     QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
 };
 pub use ranking::{GetCampaignPlannerRankingsRequest, GetCampaignPlannerRankingsResponse};
+pub use report::{
+    CampaignEstimateLabel, CampaignEstimateSummary, CampaignExecutionBasisCounts,
+    CampaignOutcomeCounts, CampaignPlannerEvidence, CampaignReportEndpoint, CampaignReportSummary,
+    MAX_CAMPAIGN_REPORT_PAGE_ITEMS, QueryCampaignReportRequest, QueryCampaignReportResponse,
+};
 pub use repository::{RepositoryCampaignService, RepositoryCampaignServiceError};
 #[cfg(test)]
 use repository::{repository_service_failure, store_service_failure};
@@ -179,6 +185,8 @@ pub enum CampaignServiceOperation {
     QueryCampaignChoices,
     /// Read one bounded page from the authenticated continuation frontier.
     QueryCampaignFrontier,
+    /// Read a snapshot-bound outcome summary and estimator endpoint page.
+    QueryCampaignReport,
     /// Read complete finding records from the authenticated findings index.
     QueryCampaignFindings,
     /// Read retained candidate bundles from one authenticated finding.
@@ -483,6 +491,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this query's exact snapshot.
     pub fn validate_for_query_campaign_frontier(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact campaign report query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this query's exact snapshot.
+    pub fn validate_for_query_campaign_report(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1664,6 +1685,18 @@ pub trait CampaignService {
         request: &GetCampaignStatusRequest,
     ) -> Result<GetCampaignStatusResponse, Self::Error>;
 
+    /// Returns a snapshot-bound outcome summary and estimator endpoint page.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, bounded projection, estimator verification, or
+    /// response construction fails.
+    fn query_campaign_report(
+        &self,
+        request: &QueryCampaignReportRequest,
+    ) -> Result<QueryCampaignReportResponse, Self::Error>;
+
     /// Returns one exact snapshot from the named campaign's authenticated history.
     ///
     /// # Errors
@@ -2024,6 +2057,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_get_campaign_status(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Gets one exact campaign report page and validates response binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, endpoint page, or cursor relation.
+    pub fn query_campaign_report(
+        &self,
+        request: &QueryCampaignReportRequest,
+    ) -> Result<QueryCampaignReportResponse, CampaignClientError> {
+        let response = match self.service.query_campaign_report(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_query_campaign_report(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
