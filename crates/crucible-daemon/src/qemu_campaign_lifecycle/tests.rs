@@ -22,8 +22,8 @@ use crucible::{
     ReadyPoint, RngDecision, RngStreamId, ScenarioDef, ScenarioDefForm, ScenarioSelectableLimits,
     ScenarioSelectables, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SearchFrontierChoices, SearchRuntimeFrontier,
-    Seed, SelectionDecision, SignalFaultSelectable, VirtualTime, WhiteBoxPolicy, World, WorldNode,
-    step,
+    SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, Seed, SelectionDecision,
+    SignalFaultSelectable, VirtualTime, WhiteBoxPolicy, World, WorldNode, step,
 };
 use crucible_api::vm_lifecycle::production_permanently_failed_loop_for_test;
 use crucible_api::{
@@ -32,15 +32,17 @@ use crucible_api::{
 };
 use crucible_campaign::{
     Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, AttemptStartMode,
-    BooleanDomain, BranchPath, BranchPathSegment, CampaignExecutorStore, CampaignFactId,
-    CampaignHash, CampaignLineage, CampaignRepository, ChoiceClassContext, ChoiceDiscovery,
-    ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationId,
-    CoverageProjection, ExecutionId, ExecutionRetentionIntent, FindingExactPins, MeasurementSet,
+    BooleanDomain, BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId,
+    CampaignControlAction, CampaignExecutorStore, CampaignFactId, CampaignHash, CampaignLineage,
+    CampaignMode, CampaignPolicy, CampaignRepository, CampaignSeed, ChoiceClassContext,
+    ChoiceDiscovery, ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationArtifact,
+    ConfigurationId, ControlRequest, CoverageProjection, DiscoveryRequest, ExecutionId,
+    ExecutionRetentionIntent, ExplorerPolicy, FairnessPolicy, FindingExactPins, MeasurementSet,
     Observation, ObservationCandidate, ObservationCondition, ObservationEventLogProof,
     ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
-    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, ScenarioArtifact, ScenarioDefId,
-    SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatchKind, StopCondition,
-    StopOutcome,
+    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, RetentionPolicy, ScenarioArtifact,
+    ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatchKind,
+    StopCondition, StopOutcome,
 };
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
@@ -58,6 +60,7 @@ use super::*;
 use crate::crucible_execution::{CrucibleAttemptOrigin, CrucibleAttemptOrigins};
 use crate::exact_checkpoint_store::AttemptCheckpointResultState;
 use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
+use crate::qemu_campaign_driver::QemuFreshSupplementalModeledDriver;
 use crate::{
     AttemptExecutionDisposition, AttemptExecutionOrigin, AttemptExecutionProduct,
     AttemptExecutionReconciliationStep, AutomaticFindingReplayOutcome, CapturedAttemptCheckpoint,
@@ -2893,6 +2896,268 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         triage_ids.verification_selected(),
         "independent selected replays must retain identical native evidence",
     );
+}
+
+struct NamedSupplementalFindingOracle {
+    scenario: ScenarioDefForm,
+    source: GuardedCampaignFindingOracleSource,
+    truths: SearchScheduleNamedPredicateTruths,
+}
+
+impl GuardedCampaignFindingOracle for NamedSupplementalFindingOracle {
+    fn source(&self) -> &GuardedCampaignFindingOracleSource {
+        &self.source
+    }
+
+    fn evaluate(
+        &self,
+        configuration: &Configuration,
+    ) -> Result<Option<GuardedCampaignFindingOracleEvaluation>, GuardedCampaignFindingOracleError>
+    {
+        crucible::SearchFailureOracle::evaluate_configuration_with_named_predicates(
+            &self.scenario,
+            configuration,
+            &self.truths,
+        )
+        .map(|finding| finding.map(GuardedCampaignFindingOracleEvaluation::new))
+        .map_err(|error| GuardedCampaignFindingOracleError::new(error.to_string()))
+    }
+}
+
+#[test]
+fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fails() {
+    const PROPERTY: &str = "supplemental-collision";
+    const NAMED_PREDICATE: &str = "supplemental-truth";
+
+    let world = World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty World");
+    let properties = Properties::from_assertions_for_world(
+        &world,
+        vec![AssertionDef {
+            id: AssertionId::from_name(PROPERTY),
+            message: String::from("supplemental collision failed"),
+            property: Property::Always {
+                predicate: Predicate::named(NAMED_PREDICATE),
+            },
+        }],
+    )
+    .expect("supplemental collision properties");
+    let scenario = ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &properties,
+        Seed::from_u64(0x005a_771e),
+    )
+    .expect("supplemental collision scenario");
+    let input = modeled_fresh_runner_input_for_scenario(
+        scenario.clone(),
+        StopCondition::ExecutionQuanta(1),
+    );
+    let decision = Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("supplemental-collision"),
+        value: 1,
+    });
+    let finding_configuration = step(input.start().configuration(), decision.clone());
+    let source = GuardedCampaignFindingOracleSource::new(
+        ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes)),
+        "application/vnd.crucible.test-named-truth+binary",
+        b"supplemental-truth=false".to_vec(),
+    )
+    .expect("supplemental source");
+    let source_id = source.content_id();
+    let oracle = Arc::new(NamedSupplementalFindingOracle {
+        scenario: scenario.clone(),
+        source,
+        truths: SearchScheduleNamedPredicateTruths::new().with_truth(
+            SearchScheduleNamedPredicateKey::new(NAMED_PREDICATE, Vec::new()),
+            false,
+        ),
+    });
+    let expected_finding = oracle
+        .evaluate(&finding_configuration)
+        .expect("evaluate supplemental collision")
+        .expect("supplemental collision must fail");
+    let oracle: Arc<dyn GuardedCampaignFindingOracle> = oracle;
+
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new("supplemental-wrapper", u64::MAX)),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let artifacts = crate::CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
+    artifacts
+        .import_scenario(&scenario)
+        .expect("publish supplemental scenario");
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    store
+        .publish_executor_trace_leaf(source_id, 1, oracle.source().canonical_bytes().as_slice())
+        .expect("publish supplemental source");
+    let configuration = artifacts
+        .import_configuration(&scenario, &input.start().configuration().schedule)
+        .expect("publish supplemental start configuration");
+    let policy = CampaignPolicy::new(
+        input.lineage().scenario(),
+        CampaignSeed::from_bytes([0x5a; 32]),
+        CampaignMode::Strict,
+        ExplorerPolicy::Exhaustive {
+            maximum_cardinality: 1,
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeSet::new(),
+        FairnessPolicy::new(0, 0).expect("supplemental fairness policy"),
+        RetentionPolicy::new(true, 1, true, true),
+        true,
+    )
+    .expect("supplemental campaign policy");
+    let created = repository
+        .create(
+            "supplemental-wrapper",
+            input.lineage(),
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create supplemental campaign");
+    let resumed = repository
+        .apply_control(
+            "supplemental-wrapper",
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test",
+                    b"resume-supplemental-wrapper",
+                )),
+                expected_snapshot: created.snapshot_id(),
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume supplemental campaign");
+    let funded = repository
+        .apply_control(
+            "supplemental-wrapper",
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test",
+                    b"fund-supplemental-wrapper",
+                )),
+                expected_snapshot: resumed.new_snapshot,
+                action: CampaignControlAction::GrantBudget(
+                    BudgetGrant::new(0, 1).expect("supplemental attempt grant"),
+                ),
+            },
+        )
+        .expect("fund supplemental campaign");
+    let admitted = repository
+        .submit_discovery_request(
+            "supplemental-wrapper",
+            &DiscoveryRequest::new(
+                CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test",
+                    b"discover-supplemental-wrapper",
+                )),
+                funded.new_snapshot,
+                configuration,
+                StopCondition::ExecutionQuanta(1),
+            )
+            .expect("supplemental discovery request"),
+        )
+        .expect("admit supplemental discovery");
+    assert_eq!(
+        admitted.attempt,
+        input.attempt().id().expect("supplemental input attempt ID")
+    );
+
+    let replay_decisions = VecDeque::from([decision]);
+    let main = QemuFreshExecutionRunner::new(
+        BoundaryCaptureLifecycleFactory {
+            captured: Arc::new(Mutex::new(Vec::new())),
+            final_events: vec![SchedulerEventLogEntry::assertion_state_observation(
+                1,
+                VirtualTime { ticks: 1 },
+                AssertionId::from_name(PROPERTY),
+                AssertionPhase::Violated,
+            )],
+            replay_decisions: replay_decisions.clone(),
+        },
+        QemuFreshSupplementalModeledDriver::new(Some(Arc::clone(&oracle))),
+    );
+    // Each pass replays the one-decision original and then the empty selected
+    // schedule, so the retained assertion follows prefixes of length one and zero.
+    let replay_final_events = [1, 0, 1, 0]
+        .into_iter()
+        .map(|sequence| {
+            vec![SchedulerEventLogEntry::assertion_state_observation(
+                sequence,
+                VirtualTime { ticks: sequence },
+                AssertionId::from_name(PROPERTY),
+                AssertionPhase::Violated,
+            )]
+        })
+        .collect::<VecDeque<_>>();
+    let replay = QemuFreshExecutionRunner::new(
+        SequencedBoundaryCaptureLifecycleFactory {
+            captured: Arc::new(Mutex::new(Vec::new())),
+            final_events: replay_final_events,
+            replay_decisions,
+        },
+        QemuFreshSupplementalModeledDriver::new(Some(oracle)),
+    );
+    let mut runner = crate::AutomaticFindingExecutionRunner::new(store.clone(), main, replay);
+
+    let outcome = runner
+        .execute(
+            &input,
+            &context(resources(64), ExecutionCancellation::default()),
+        )
+        .expect("automatic supplemental finding wrapper");
+    let AttemptExecutionProduct::PreparedSemantic(result) = outcome.product() else {
+        panic!("supplemental finding must produce a prepared semantic result")
+    };
+    let property = result
+        .observation()
+        .properties()
+        .properties()
+        .get(PROPERTY)
+        .expect("supplemental property verdict");
+    assert_eq!(property.verdict(), PropertyVerdict::Failed);
+    assert_eq!(property.evidence(), &BTreeSet::from([source_id]));
+
+    let finding = result
+        .finding()
+        .expect("supplemental finding must survive private minimization");
+    assert_eq!(finding.bundle().schema_version(), 2);
+    crate::executor_worker::publish_prepared_semantic_attempt_result(&store, result)
+        .expect("publish supplemental prepared result");
+    let triage = finding
+        .bundle()
+        .triage_evidence()
+        .expect("supplemental finding triage set");
+    let retained = repository
+        .load_finding_triage_replay_evidence(triage.minimization_original())
+        .expect("load supplemental triage evidence");
+    let reproduction = finding.original();
+    let artifact = crucible::ReproductionArtifact::from_compact_binary(reproduction.payload())
+        .expect("decode supplemental reproduction");
+    let native_finding = FindingReproductionArtifact {
+        discovery_path: FindingDiscoveryPath::StateSpaceSearch,
+        finding_fingerprint: crucible::ContentHash {
+            bytes: reproduction.finding_fingerprint().as_bytes(),
+        },
+        configuration: crucible::ContentHash {
+            bytes: reproduction.configuration().as_hash().as_bytes(),
+        },
+        replay: artifact.replay().expect("replay supplemental reproduction"),
+        artifact,
+    };
+    let replay = crucible::FailureTriageReplayEvidence::from_compact_binary(
+        native_finding,
+        retained.payload(),
+    )
+    .expect("decode supplemental triage payload");
+    let crucible::FailureClusterReportFailure::Property(actual) = replay.failure() else {
+        panic!("supplemental replay must retain a property violation")
+    };
+    let mut expected = expected_finding.violation().clone();
+    expected.reproduction_artifact = replay.finding().artifact.id();
+    assert_eq!(actual.violation, expected);
 }
 
 #[test]
