@@ -6670,6 +6670,34 @@ inspector binary and units, enforcing-MAC deployment, and VM handshake remain
 unimplemented. No activation token is minted, Network Apply remains
 unadvertised, and no readiness or task checkbox changes.
 
+Commit `d70cf7d78` freezes the manager-query property schema in a C-consumable
+X-macro manifest. Its 126 ordered rows carry the stable ID, retained object,
+systemd 259 interface, property name, D-Bus signature, static or dynamic
+binding, and canonical value shape. A test-only parser accepts only the exact
+preamble, delimiters, decimal IDs, token vocabulary, quoting, and final line
+ending. It then requires contiguous IDs, compares all seven interpreted fields
+with the Rust protocol table, and recomputes the existing reviewed property
+table digest.
+
+Qualification used a read-only archive of exact parent `818ef8d4a` plus only
+`manager_query.rs` and the two new manifest files. Their SHA-256 digests were
+respectively
+`b39701bb95ec52bcf77eadc498c97050ce63deeee8f98eee02ba15e305634a37`,
+`bcdd5d58d9310207d1372287125782670f8618e4e0fbf193512219bc6a3d9b0a`,
+and `da3cd1fc96a13cc0f628a0487c90facaffa94417cc89f8429ecaeeeee9806175`.
+The pinned realized AOS development environment passed the exact two-Rust-file
+format check, all three focused manifest tests, all 212 Network library tests,
+and all three `aos-netd` binary tests. The full run emitted one pre-existing
+unused-import warning from `manager_query/codec.rs`; it had no test failures.
+
+This increment neither implements nor compiles the native helper. It does not
+open or authenticate a manager stream, perform D-Bus SASL or Unix-FD
+negotiation, issue a property call, enforce a query deadline, encode live
+snapshot bytes, or reject ancillary descriptors. The helper package, native
+fixture, Rust exchange adapter, production deployment, enforcing-MAC boundary,
+and VM handshake all remain open. No activation token is minted, Network Apply
+remains unadvertised, and no readiness or task checkbox changes.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
