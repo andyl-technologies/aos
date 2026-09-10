@@ -35,7 +35,7 @@ impl CampaignRepository {
     ///
     /// Returns an error for a missing or invalid opportunity closure, scenario
     /// mismatch, stale precondition, publication failure, or final ref conflict.
-    pub(crate) fn discover_choice_opportunity(
+    pub fn discover_choice_opportunity(
         &self,
         name: &str,
         expected_snapshot: CampaignSnapshotId,
@@ -183,7 +183,7 @@ impl CampaignRepository {
     /// Returns an error for an invalid request closure, a parent configuration
     /// outside the campaign graph, a stale precondition, publication failure,
     /// or final authoritative-ref conflict.
-    pub(crate) fn submit_branch_request(
+    pub fn submit_branch_request(
         &self,
         name: &str,
         expected_snapshot: CampaignSnapshotId,
