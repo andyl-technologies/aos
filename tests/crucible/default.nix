@@ -3219,4 +3219,14 @@ in rec {
       };
     };
   };
+  phase9 = {
+    gates = {
+      campaignDestructiveRecoveryContract = import ./phase9-campaign-destructive-recovery-contract.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase9.gates.campaignDestructiveRecoveryContract";
+        taskIds = ["T-CAM-0.5" "T-CAM-4.8" "T-CAM-5.8" "T-CAM-6.9" "T-CAM-7.7" "T-CAM-9.7"];
+        dependencies = [];
+      };
+    };
+  };
 }
