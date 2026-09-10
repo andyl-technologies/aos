@@ -1,0 +1,396 @@
+schema = "aos.crucible.campaign-destructive-recovery-contract.v1"
+gate = "gate:campaign-destructive-recovery"
+rfc_section = "RFC-0020 section 14.8"
+acceptance_state = "manual-evidence-required"
+constrained_host_required = true
+actual_product_workload_required = true
+independent_driver_and_reviewer_required = true
+every_targeted_backend_required = true
+authenticated_prior_state_required = true
+unexplained_live_resources_permitted = false
+implementation_tasks = [
+  "T-CAM-0.5",
+  "T-CAM-4.8",
+  "T-CAM-5.8",
+  "T-CAM-6.9",
+  "T-CAM-7.7",
+  "T-CAM-9.7",
+]
+
+[provenance]
+required = true
+fields = ["build_id", "source_revision", "qemu_identity", "plugin_identity", "host_profile", "store_profile"]
+
+[command_journal]
+required = true
+records_exit_status = true
+records_structured_output = true
+redacts_secrets = true
+
+[sign_offs]
+required_roles = ["driver", "independent_reviewer", "release_owner"]
+unsigned_result = "blocked"
+
+[resource_audit]
+required = true
+resources = ["processes", "threads", "descriptors", "shared_memory", "disk_overlays", "cgroups", "staging_uploads", "object_pins", "writable_store_resources"]
+
+[forbidden_recovery]
+release_blocking = true
+operations = ["undocumented_object_deletion", "reservation_editing", "ref_rewriting", "undocumented_process_signaling"]
+
+[[injections]]
+id = "kill-running-child"
+title = "Kill one running child"
+failure_class = "process-child"
+surface = "operator-command"
+implementation_state = "operator-command-available"
+action = "kill --signal KILL {child_pid}"
+prior_state = "An authenticated running attempt and its prior campaign snapshot are retained."
+symptom = "Campaign status reports an operational child failure without a modeled observation."
+automatic_response = "The executor localizes or retries the same semantic attempt with idempotent accounting."
+recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} explain-attempt {campaign} --snapshot {snapshot} --attempt {attempt}"]
+observables = ["attempt identity", "runtime incarnation", "operational failure", "retry state", "graph edge count", "reward count"]
+post_recovery_invariant = "No partial graph edge or reward exists and no child process or writable runtime resource is orphaned."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["worker-operational-requeue", "cancellation-resource-reap"]
+
+[[injections]]
+id = "kill-coordinator-before-observation-commit"
+title = "Kill the coordinator before observation commit"
+failure_class = "process-coordinator-publication"
+surface = "fault-build-trigger"
+implementation_state = "fault-build-hook-required"
+trigger = "crucible.destructive-recovery.coordinator-before-observation-commit"
+production_artifact_state = "absent"
+action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.coordinator-before-observation-commit {fault_build_command}"
+prior_state = "The attempt assignment and completion facts are durable while observation incorporation is unpublished."
+symptom = "The campaign head remains at the prior snapshot and the restarted coordinator reports recovered incomplete publication."
+automatic_response = "Restart reconstructs work from authenticated facts, discards stale volatile reservations, and resubmits safely."
+recovery_commands = ["{documented_service_restart_command}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} snapshot {campaign} --snapshot {prior_snapshot}"]
+observables = ["prior snapshot", "assignment ledger", "completion facts", "reservation count", "resubmission identity", "observation count"]
+post_recovery_invariant = "Exactly one modeled observation may be incorporated and the attempt is never credited twice."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["publication-ledger-conditionality", "publishing-restart-recovery"]
+
+[[injections]]
+id = "kill-local-executor"
+title = "Kill the local executor while the coordinator remains live"
+failure_class = "process-executor"
+surface = "operator-command"
+implementation_state = "operator-command-available"
+action = "kill --signal KILL {executor_pid}"
+prior_state = "The coordinator retains an authenticated current head and a durable accepted assignment."
+symptom = "Campaign status distinguishes executor unavailability from a modeled scenario result."
+automatic_response = "The coordinator reports operational failure and idempotently resubmits the assignment after executor recovery."
+recovery_commands = ["{documented_executor_restart_command}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} explain-attempt {campaign} --snapshot {snapshot} --attempt {attempt}"]
+observables = ["executor endpoint state", "assignment identity", "attempt accounting", "modeled result absence", "retry incarnation"]
+post_recovery_invariant = "The same semantic attempt completes at most once and no executor-owned resource survives unexplained."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["worker-operational-requeue", "durable-running-restart"]
+
+[[injections]]
+id = "kill-daemon-during-snapshot-publication"
+title = "Kill the daemon during snapshot publication"
+failure_class = "campaign-ref-publication"
+surface = "fault-build-trigger"
+implementation_state = "fault-build-hook-required"
+trigger = "crucible.destructive-recovery.daemon-during-snapshot-publication"
+production_artifact_state = "absent"
+action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.daemon-during-snapshot-publication {fault_build_command}"
+prior_state = "The complete old snapshot is authenticated and all prospective new snapshot objects are either staged or durable."
+symptom = "After restart, the campaign name resolves to the complete old or complete new authenticated snapshot."
+automatic_response = "Repository recovery discards unreachable staging or completes only a valid conditional ref publication."
+recovery_commands = ["{documented_service_restart_command}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} snapshot {campaign} --snapshot {resolved_snapshot}"]
+observables = ["old snapshot", "new snapshot", "resolved ref", "reachable object closure", "staging inventory"]
+post_recovery_invariant = "The named ref never exposes a mixed or incomplete snapshot and unreachable staging is reclaimable."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["publication-ledger-conditionality", "publishing-restart-recovery"]
+
+[[injections]]
+id = "reboot-paused-or-hibernating"
+title = "Reboot with a paused or hibernating campaign"
+failure_class = "host-reboot"
+surface = "operator-command"
+implementation_state = "operator-command-available"
+action = "systemctl reboot"
+prior_state = "The pause or hibernation snapshot and every required cold fallback are durable and authenticated."
+symptom = "The restarted service identifies exact resumable attempts and reports former live templates as non-live."
+automatic_response = "Startup reconstructs durable catalog state without claiming that an ephemeral process survived."
+recovery_commands = ["{documented_service_start_command}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} resume {campaign} --expected {snapshot} --command {command_id}"]
+observables = ["campaign lifecycle", "resumable roots", "cold fallback inventory", "live template count", "attempt accounting"]
+post_recovery_invariant = "Resume uses an authenticated retained root and does not infer live process state from the pre-reboot epoch."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["durable-hot-catalog-restart", "paused-root-restart"]
+
+[[injections]]
+id = "enospc-during-exact-capture"
+title = "Exhaust campaign-store space during exact capture"
+failure_class = "storage-capacity"
+surface = "fault-build-trigger"
+implementation_state = "fault-build-hook-required"
+trigger = "crucible.destructive-recovery.exact-capture-enospc"
+production_artifact_state = "absent"
+action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.exact-capture-enospc {fault_build_command}"
+prior_state = "The prior campaign ref, finding, and capture source are authenticated before any exact-capture write."
+symptom = "Status reports capacity exhaustion as an operational store failure and leaves the prior ref unchanged."
+automatic_response = "The failed capture remains unpublished and its partial staging is eligible for documented cleanup."
+recovery_commands = ["crucible --format jsonl store status {store_deployment}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl store verify {store_deployment}"]
+observables = ["ENOSPC classification", "prior ref", "finding identity", "staging inventory", "store capacity"]
+post_recovery_invariant = "The prior ref and finding remain valid; no partial exact closure is reachable; staging is reclaimable."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["exact-capture-cancel-before-write", "failed-source-staging-cleanup"]
+
+[[injections]]
+id = "remove-archival-leaf-during-multipart"
+title = "Remove an archival leaf during multipart upload"
+failure_class = "storage-multipart"
+surface = "fault-build-trigger"
+implementation_state = "fault-build-hook-required"
+trigger = "crucible.destructive-recovery.multipart-remove-leaf"
+production_artifact_state = "absent"
+action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.multipart-remove-leaf {fault_build_command}"
+prior_state = "The source snapshot and archive transfer journal authenticate all selected closure leaves."
+symptom = "Archive inspection fails closed and durability remains unsatisfied while a required leaf is absent."
+automatic_response = "Multipart state resumes from authenticated parts or aborts idempotently without publishing the archive ref."
+recovery_commands = ["crucible --format jsonl campaign archive inspect --state {destination_state} --policy {destination_policy} --store {destination_store} --archive {archive}", "crucible --format jsonl store verify {destination_store}", "{repeat_documented_archive_transfer_command}"]
+observables = ["transfer journal", "multipart upload identity", "selected leaf identity", "archive ref absence", "durability count"]
+post_recovery_invariant = "No incomplete closure is published or counted as durable and abandoned multipart resources are explained."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["multipart-interruption"]
+
+[[injections]]
+id = "expire-store-credentials"
+title = "Expire store credentials during read or write"
+failure_class = "storage-authorization"
+surface = "fault-build-trigger"
+implementation_state = "fault-build-hook-required"
+trigger = "crucible.destructive-recovery.store-credential-expiry"
+production_artifact_state = "absent"
+action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.store-credential-expiry {fault_build_command}"
+prior_state = "Credential references, authenticated objects, and the current campaign ref are retained without embedding secret material."
+symptom = "Store status distinguishes authorization failure from object absence and corruption."
+automatic_response = "Reads and writes fail closed without changing refs, object identity, or retry accounting."
+recovery_commands = ["{documented_credential_refresh_command}", "crucible --format jsonl store status {store_deployment}", "crucible --format jsonl store ensure {content_id} --in {store_deployment}"]
+observables = ["authorization classification", "credential reference", "content identity", "ref identity", "retry state"]
+post_recovery_invariant = "Credential recovery exposes the same authenticated state and never treats denied access as missing data."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["store-credential-expiry"]
+
+[[injections]]
+id = "corrupt-tier-copy"
+title = "Corrupt one tier copy while another remains valid"
+failure_class = "storage-corruption"
+surface = "fault-build-trigger"
+implementation_state = "fault-build-hook-required"
+trigger = "crucible.destructive-recovery.corrupt-tier-copy"
+production_artifact_state = "absent"
+action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.corrupt-tier-copy {fault_build_command}"
+prior_state = "At least two independently named placements authenticate the same content identity."
+symptom = "Store status distinguishes corruption from a miss and refuses bytes from the corrupt placement."
+automatic_response = "The configured graph follows only its declared authenticated fallback or repair policy."
+recovery_commands = ["crucible --format jsonl store ensure {content_id} --in {store_deployment}", "crucible --format jsonl store verify {store_deployment}", "{documented_store_repair_command}"]
+observables = ["corrupt placement identity", "valid placement identity", "content digest", "fallback route", "repair disposition"]
+post_recovery_invariant = "Only authenticated bytes are returned and repair does not alter the logical content identity."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["tier-corruption-fallback", "physical-corruption-rejection"]
+
+[[injections]]
+id = "interrupt-pack-index-publication"
+title = "Interrupt pack or index publication or repacking"
+failure_class = "storage-pack-publication"
+surface = "fault-build-trigger"
+implementation_state = "fault-build-hook-required"
+trigger = "crucible.destructive-recovery.pack-index-interruption"
+production_artifact_state = "absent"
+action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.pack-index-interruption {fault_build_command}"
+prior_state = "The old pack index generation and every object it names are readable and authenticated."
+symptom = "Restart selects the old complete index generation and reports incomplete pack material as unreachable."
+automatic_response = "Publication keeps the old reader generation valid and cleanup reclaims only unindexed complete or partial packs."
+recovery_commands = ["crucible --format jsonl store status {store_deployment}", "crucible --format jsonl store verify {store_deployment}", "{repeat_documented_repack_command}"]
+observables = ["old index generation", "new index generation", "reader generation", "unreachable packs", "cleanup disposition"]
+post_recovery_invariant = "The old generation remains readable until a complete new generation is atomically visible."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["pack-generation-restart", "unindexed-pack-cleanup"]
+
+[[injections]]
+id = "fail-vm-during-atomic-world-fork"
+title = "Fail one VM during atomic world fork"
+failure_class = "world-fork-atomicity"
+surface = "fault-build-trigger"
+implementation_state = "fault-build-hook-required"
+trigger = "crucible.destructive-recovery.world-fork-one-vm-failure"
+production_artifact_state = "absent"
+action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.world-fork-one-vm-failure {fault_build_command}"
+prior_state = "The source world, its template identity, and all target resource reservations are authenticated before checkout."
+symptom = "Campaign status exposes no partial child world or modeled result."
+automatic_response = "A proven no-child failure rolls back its exact slot; an ambiguous partial failure quarantines the aggregate world."
+recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} explain-attempt {campaign} --snapshot {snapshot} --attempt {attempt}"]
+observables = ["source world identity", "target generations", "published child world count", "quarantine state", "template availability"]
+post_recovery_invariant = "No partial world is visible; the template is either explicitly reusable or explicitly invalidated."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["partial-world-quarantine", "world-resource-preflight"]
+
+[[injections]]
+id = "alias-child-ring-or-overlay"
+title = "Alias one child ring or disk overlay in a fault build"
+failure_class = "world-resource-alias"
+surface = "fault-build-trigger"
+implementation_state = "fault-build-hook-required"
+trigger = "crucible.destructive-recovery.child-resource-alias"
+production_artifact_state = "absent"
+action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.child-resource-alias {fault_build_command}"
+prior_state = "The source world is authenticated and target node resource identities are unique before readiness."
+symptom = "Child readiness rejects the aliased ring or overlay before guest execution."
+automatic_response = "The target world stays unpublished and the exact resource owner rolls back or quarantines every affected lease."
+recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} explain-attempt {campaign} --snapshot {snapshot} --attempt {attempt}"]
+observables = ["ring identity", "overlay identity", "readiness verdict", "guest execution count", "resource quarantine"]
+post_recovery_invariant = "No child reaches guest execution with aliased writable or communication resources."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["world-resource-preflight"]
+
+[[injections]]
+id = "exceed-host-resource-budget"
+title = "Exceed process, memory, or descriptor budget"
+failure_class = "host-resource-pressure"
+surface = "operator-command"
+implementation_state = "operator-command-available"
+action = "systemd-run --user --scope --property TasksMax={process_limit} --property MemoryMax={memory_limit} --property LimitNOFILE={descriptor_limit} {daemon_command}"
+prior_state = "The configured host budget, semantic priority order, and durable cold fallbacks are recorded before pressure."
+symptom = "Status reports bounded backpressure or deterministic demotion without unexplained idle or resource growth."
+automatic_response = "Admission refuses excess work or demotes the deterministic coldest eligible hot template while retaining fallback."
+recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} frontier {campaign} --snapshot {snapshot} --limit 32 --pages 1"]
+observables = ["process usage", "resident memory", "descriptor usage", "backpressure reason", "demotion identity", "semantic priority order"]
+post_recovery_invariant = "Usage stays within the declared ceiling and resource pressure never changes strict semantic priority."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["deterministic-pressure-demotion"]
+
+[[injections]]
+id = "cancel-during-child-creation"
+title = "Request cancellation during child creation"
+failure_class = "child-creation-cancellation"
+surface = "operator-command"
+implementation_state = "operator-command-available"
+action = "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} pause {campaign} --expected {snapshot} --command {command_id} --active retry"
+prior_state = "The accepted attempt, child-creation runtime incarnation, and host resource reservation are observable."
+symptom = "The pause result and attempt explanation identify cancellation and its accounting explicitly."
+automatic_response = "Cancellation serializes with process creation, synchronously signals any installed child, and retains capacity until exit acknowledgement."
+recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} explain-attempt {campaign} --snapshot {snapshot} --attempt {attempt}"]
+observables = ["cancellation command", "runtime incarnation", "process signal outcome", "exit acknowledgement", "capacity release", "orphan audit"]
+post_recovery_invariant = "Outcome and accounting are explicit and no child process, cgroup, ring, overlay, or descriptor remains orphaned."
+backend_scope = "constrained-host-and-each-targeted-backend"
+prerequisites = ["cancellation-before-begin", "cancellation-resource-reap"]
+
+[[prerequisite_tests]]
+id = "worker-operational-requeue"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/executor_worker/tests.rs"
+selector = "executor_worker::tests::operational_worker_failure_requeues_without_growing_the_bounded_queue"
+
+[[prerequisite_tests]]
+id = "publication-ledger-conditionality"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/assignment_ledger/tests.rs"
+selector = "assignment_ledger::tests::memory_ledger_matches_conditional_publish_contract"
+
+[[prerequisite_tests]]
+id = "publishing-restart-recovery"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/executor_supervisor/tests.rs"
+selector = "executor_supervisor::tests::restart_recovers_publishing_without_losing_the_expected_observation"
+
+[[prerequisite_tests]]
+id = "durable-running-restart"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/executor_supervisor/tests.rs"
+selector = "executor_supervisor::tests::durable_restart_replaces_stale_running_and_preserves_completion"
+
+[[prerequisite_tests]]
+id = "durable-hot-catalog-restart"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/durable_managed_hot_checkpoint_pool/tests.rs"
+selector = "durable_managed_hot_checkpoint_pool::tests::restart_reconstructs_all_records_as_cold_without_claiming_live_sources"
+
+[[prerequisite_tests]]
+id = "paused-root-restart"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/executor_supervisor/tests.rs"
+selector = "executor_supervisor::tests::paused_execution_resumes_from_the_exact_root_and_survives_restart"
+
+[[prerequisite_tests]]
+id = "exact-capture-cancel-before-write"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/exact_checkpoint_store/tests.rs"
+selector = "exact_checkpoint_store::tests::cancellation_after_preparation_stops_before_the_first_publication_write"
+
+[[prerequisite_tests]]
+id = "failed-source-staging-cleanup"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/tests.rs"
+selector = "content_store::tests::changing_and_failing_sources_leave_no_published_object_or_staging_file"
+
+[[prerequisite_tests]]
+id = "multipart-interruption"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/s3.rs"
+selector = "content_store::s3::tests::interrupted_upload_aborts_and_failed_abort_is_explicit"
+
+[[prerequisite_tests]]
+id = "store-credential-expiry"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/s3.rs"
+selector = "content_store::s3::tests::credential_expiry_and_configuration_bounds_fail_closed"
+
+[[prerequisite_tests]]
+id = "tier-corruption-fallback"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/tests.rs"
+selector = "content_store::tests::read_through_cache_failure_does_not_hide_authenticated_source_bytes"
+
+[[prerequisite_tests]]
+id = "physical-corruption-rejection"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/tests.rs"
+selector = "content_store::tests::compressed_directory_rejects_oversized_sources_and_corrupt_physical_records"
+
+[[prerequisite_tests]]
+id = "pack-generation-restart"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/tests.rs"
+selector = "content_store::tests::packed_backend_restarts_repackages_and_keeps_old_reader_inodes_valid"
+
+[[prerequisite_tests]]
+id = "unindexed-pack-cleanup"
+package = "crucible-cas"
+source = "crates/crucible-cas/src/content_store/tests.rs"
+selector = "content_store::tests::packed_backend_rejects_corruption_and_cleans_unindexed_complete_packs"
+
+[[prerequisite_tests]]
+id = "partial-world-quarantine"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/qemu_hot_fork_world_resource.rs"
+selector = "qemu_hot_fork_world_resource::tests::partial_world_ambiguous_failure_quarantines_the_aggregate"
+
+[[prerequisite_tests]]
+id = "world-resource-preflight"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs"
+selector = "qemu_hot_fork_world_factory::tests::target_world_resource_preflight_rejects_before_source_checkout_or_guard_installation"
+
+[[prerequisite_tests]]
+id = "deterministic-pressure-demotion"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/hot_checkpoint_manager/tests.rs"
+selector = "hot_checkpoint_manager::tests::pressure_demotes_the_coldest_exact_coordinate_deterministically"
+
+[[prerequisite_tests]]
+id = "cancellation-before-begin"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/qemu_resource_guard/tests.rs"
+selector = "qemu_resource_guard::tests::cancellation_that_wins_before_begin_signals_and_rolls_back"
+
+[[prerequisite_tests]]
+id = "cancellation-resource-reap"
+package = "crucible-daemon"
+source = "crates/crucible-daemon/src/qemu_resource_guard/tests.rs"
+selector = "qemu_resource_guard::tests::failed_reap_quarantines_process_and_filesystem_authority_once"

@@ -106,6 +106,22 @@ const fn unsupported(name: &'static str, owner: &'static str) -> CampaignGateSpe
     }
 }
 
+const fn manual(
+    name: &'static str,
+    owner: &'static str,
+    artifact_contract: &'static str,
+    nix_attr: &'static str,
+) -> CampaignGateSpec {
+    CampaignGateSpec {
+        name,
+        owner,
+        contract: CampaignGateContract::Manual {
+            artifact_contract,
+            nix_attr,
+        },
+    }
+}
+
 const HOT_FORK_EQUIVALENCE_SELECTORS: &[LibraryExactSelector] = &[
     LibraryExactSelector {
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
@@ -180,7 +196,12 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         )],
         "checks.crucible.phase5.gates.campaignContinuityV2",
     ),
-    unsupported("gate:campaign-destructive-recovery", "crucible-daemon"),
+    manual(
+        "gate:campaign-destructive-recovery",
+        "crucible-daemon",
+        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-destructive-recovery-contract.toml",
+        "checks.crucible.phase9.gates.campaignDestructiveRecoveryContract",
+    ),
     unsupported("gate:campaign-dogfood", "crucible-cli"),
     automated(
         "gate:campaign-model",
