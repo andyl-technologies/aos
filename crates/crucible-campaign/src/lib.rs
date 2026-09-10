@@ -157,7 +157,9 @@ pub use finding_candidate::{
     FindingSignatureMinimizationEvidence, FindingTriageEvidenceSet,
 };
 pub use finding_triage_evidence::{
-    FindingTriageReplayEvidence, MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES,
+    FindingTriageReplayEvidence, FindingTriageReplayStorageDescription,
+    FindingTriageReplayStorageObject, FindingTriageReplayStorageObjectRole,
+    MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
