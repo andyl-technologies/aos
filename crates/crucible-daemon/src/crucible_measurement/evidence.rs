@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! canonical CBOR map:
-//!   schema_version: 1
+//!   schema_version: 1 | 2
 //!   scenario: <scenario definition identity>
 //!   configuration: <configuration identity>
 //!   definitions: <measurement-definition identity>
@@ -16,6 +16,7 @@
 //!     at: <terminal virtual time>
 //!     node_icounts: {<node>: <retired instructions>}
 //!     scheduler_quiescent: <boolean>
+//!   observation_boundary: <v2-only exact post-quantum execution boundary>
 //! ```
 //!
 //! Decoding is strict: bytes are size-bounded before allocation, the CBOR must
@@ -35,8 +36,8 @@ use crucible::model::{
     validate_measurement_event_log,
 };
 use crucible::{
-    GuestMeasurementEvent, GuestMeasurementValue, Icount, NodeId, ObservableEventPayload,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, VirtualTime,
+    EventLogOffset, GuestMeasurementEvent, GuestMeasurementValue, Icount, NodeId,
+    ObservableEventPayload, SchedulerEventLogEntry, SchedulerEventLogPayload, VirtualTime,
 };
 use crucible_campaign::{CampaignHash, ConfigurationId, MeasurementSet, ScenarioDefId};
 use crucible_cas::content_store::{ContentId, ObjectKind};
@@ -53,6 +54,9 @@ pub const CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2: u32 = 2;
 
 /// Content-object schema for canonical measurement replay evidence.
 pub const CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1: u32 = 1;
+
+/// Content-object schema retaining an exact observation-stop boundary.
+pub const CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2: u32 = 2;
 
 /// Maximum canonical bytes retained by one measurement replay-evidence leaf.
 ///
@@ -72,6 +76,88 @@ pub struct CrucibleMeasurementReplayEvidence {
     definitions: CampaignHash,
     entries: Vec<SchedulerEventLogEntry>,
     terminal: MeasurementTerminalState,
+    observation_boundary: Option<CrucibleObservationBoundaryEvidence>,
+}
+
+/// Independently retained scheduler coordinates for an observation stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CrucibleObservationBoundaryEvidence {
+    frontier: VirtualTime,
+    quantum_start_completed_quanta: u64,
+    completed_quanta: u64,
+    quantum_start_events: u64,
+    event_log_offset: EventLogOffset,
+    scheduler_quiescent: bool,
+}
+
+impl CrucibleObservationBoundaryEvidence {
+    /// Builds an exact boundary captured from one completed scheduler quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the quantum coordinate did not advance exactly
+    /// once or the offset precedes the pre-quantum event count.
+    pub fn new(
+        frontier: VirtualTime,
+        quantum_start_completed_quanta: u64,
+        completed_quanta: u64,
+        quantum_start_events: u64,
+        event_log_offset: EventLogOffset,
+        scheduler_quiescent: bool,
+    ) -> Result<Self, CrucibleMeasurementError> {
+        if quantum_start_completed_quanta.checked_add(1) != Some(completed_quanta)
+            || event_log_offset.events < quantum_start_events
+        {
+            return Err(CrucibleMeasurementError::EvidenceBindingMismatch {
+                binding: "observation-boundary",
+            });
+        }
+        Ok(Self {
+            frontier,
+            quantum_start_completed_quanta,
+            completed_quanta,
+            quantum_start_events,
+            event_log_offset,
+            scheduler_quiescent,
+        })
+    }
+
+    /// Returns the exact frontier reported by the matching quantum.
+    #[must_use]
+    pub const fn frontier(self) -> VirtualTime {
+        self.frontier
+    }
+
+    /// Returns the completed-quantum coordinate before the matching drive.
+    #[must_use]
+    pub const fn quantum_start_completed_quanta(self) -> u64 {
+        self.quantum_start_completed_quanta
+    }
+
+    /// Returns the completed-quantum coordinate after the matching drive.
+    #[must_use]
+    pub const fn completed_quanta(self) -> u64 {
+        self.completed_quanta
+    }
+
+    /// Returns the retained event count before the matching drive.
+    #[must_use]
+    pub const fn quantum_start_events(self) -> u64 {
+        self.quantum_start_events
+    }
+
+    /// Returns the exact event-log offset reported by the matching quantum.
+    #[must_use]
+    pub const fn event_log_offset(self) -> EventLogOffset {
+        self.event_log_offset
+    }
+
+    /// Returns whether the matching quantum reported scheduler-owned quiescence.
+    #[must_use]
+    pub const fn scheduler_quiescent(self) -> bool {
+        self.scheduler_quiescent
+    }
 }
 
 impl CrucibleMeasurementReplayEvidence {
@@ -98,6 +184,7 @@ impl CrucibleMeasurementReplayEvidence {
             definitions: campaign_hash(definitions.content_hash()),
             entries,
             terminal,
+            observation_boundary: None,
         };
         // Reject the caller's effective attempt/journal budget before hashing
         // the log or allocating the canonical payload.
@@ -134,6 +221,22 @@ impl CrucibleMeasurementReplayEvidence {
     #[must_use]
     pub const fn terminal(&self) -> &MeasurementTerminalState {
         &self.terminal
+    }
+
+    /// Returns the exact observation-stop execution boundary, when retained.
+    #[must_use]
+    pub const fn observation_boundary(&self) -> Option<CrucibleObservationBoundaryEvidence> {
+        self.observation_boundary
+    }
+
+    /// Returns the exact content-object schema used by this evidence leaf.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        if self.observation_boundary.is_some() {
+            CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+        } else {
+            CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1
+        }
     }
 
     /// Replays the raw leaf against its exact semantic bindings.
@@ -235,11 +338,32 @@ impl CrucibleMeasurementReplayEvidence {
                 reason: error.to_string(),
             }
         })?;
-        if wire.schema_version != CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1 {
+        if !matches!(
+            wire.schema_version,
+            CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1
+                | CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+        ) {
             return Err(CrucibleMeasurementError::UnsupportedEvidenceSchema {
                 actual: wire.schema_version,
-                expected: CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1,
+                expected: CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2,
             });
+        }
+        let boundary_matches_schema = wire.observation_boundary.is_some()
+            == (wire.schema_version == CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2);
+        if !boundary_matches_schema {
+            return Err(CrucibleMeasurementError::EvidenceBindingMismatch {
+                binding: "observation-boundary-schema",
+            });
+        }
+        if let Some(boundary) = wire.observation_boundary {
+            CrucibleObservationBoundaryEvidence::new(
+                boundary.frontier,
+                boundary.quantum_start_completed_quanta,
+                boundary.completed_quanta,
+                boundary.quantum_start_events,
+                boundary.event_log_offset,
+                boundary.scheduler_quiescent,
+            )?;
         }
         let value = Self::from(wire);
 
@@ -267,7 +391,7 @@ impl CrucibleMeasurementReplayEvidence {
         let bytes = self.canonical_bytes()?;
         Ok(ContentId::for_bytes(
             ObjectKind::Trace,
-            CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1,
+            self.schema_version(),
             &bytes,
         ))
     }
@@ -350,12 +474,46 @@ pub fn evaluate_crucible_measurement_publication(
         definitions: campaign_hash(definitions.content_hash()),
         entries,
         terminal,
+        observation_boundary: None,
     };
+    evaluate_crucible_measurement_evidence(evidence, definitions, maximum_evidence_bytes)
+}
+
+/// Evaluates one run and retains its exact observation-stop boundary.
+///
+/// # Errors
+///
+/// Returns the same failures as the ordinary measurement publication path.
+pub fn evaluate_crucible_observation_measurement_publication(
+    scenario: ScenarioDefId,
+    configuration: ConfigurationId,
+    definitions: &MeasurementDefinitions,
+    entries: Vec<SchedulerEventLogEntry>,
+    terminal: MeasurementTerminalState,
+    observation_boundary: CrucibleObservationBoundaryEvidence,
+    maximum_evidence_bytes: usize,
+) -> Result<CrucibleMeasurementPublication, CrucibleMeasurementError> {
+    let evidence = CrucibleMeasurementReplayEvidence {
+        scenario,
+        configuration,
+        definitions: campaign_hash(definitions.content_hash()),
+        entries,
+        terminal,
+        observation_boundary: Some(observation_boundary),
+    };
+    evaluate_crucible_measurement_evidence(evidence, definitions, maximum_evidence_bytes)
+}
+
+fn evaluate_crucible_measurement_evidence(
+    evidence: CrucibleMeasurementReplayEvidence,
+    definitions: &MeasurementDefinitions,
+    maximum_evidence_bytes: usize,
+) -> Result<CrucibleMeasurementPublication, CrucibleMeasurementError> {
     let evidence_bytes = evidence.canonical_bytes_with_limit(maximum_evidence_bytes)?;
-    let evaluation = evidence.replay(scenario, configuration, definitions)?;
+    let evaluation = evidence.replay(evidence.scenario, evidence.configuration, definitions)?;
     let evidence_id = ContentId::for_bytes(
         ObjectKind::Trace,
-        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1,
+        evidence.schema_version(),
         &evidence_bytes,
     );
     let measurement_set = MeasurementSet::from_evaluation(
@@ -424,6 +582,8 @@ struct EvidenceWireV1 {
     definitions: CampaignHash,
     entries: BoundedEntries,
     terminal: TerminalStateWire,
+    #[serde(default)]
+    observation_boundary: Option<CrucibleObservationBoundaryEvidence>,
 }
 
 #[derive(Serialize)]
@@ -434,17 +594,20 @@ struct EvidenceWireRef<'a> {
     definitions: CampaignHash,
     entries: &'a [SchedulerEventLogEntry],
     terminal: TerminalStateRef<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation_boundary: Option<&'a CrucibleObservationBoundaryEvidence>,
 }
 
 impl<'a> From<&'a CrucibleMeasurementReplayEvidence> for EvidenceWireRef<'a> {
     fn from(value: &'a CrucibleMeasurementReplayEvidence) -> Self {
         Self {
-            schema_version: CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1,
+            schema_version: value.schema_version(),
             scenario: value.scenario,
             configuration: value.configuration,
             definitions: value.definitions,
             entries: &value.entries,
             terminal: TerminalStateRef::from(&value.terminal),
+            observation_boundary: value.observation_boundary.as_ref(),
         }
     }
 }
@@ -457,6 +620,7 @@ impl From<EvidenceWireV1> for CrucibleMeasurementReplayEvidence {
             definitions: value.definitions,
             entries: value.entries.0,
             terminal: value.terminal.into(),
+            observation_boundary: value.observation_boundary,
         }
     }
 }

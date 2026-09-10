@@ -936,6 +936,7 @@ fn observation_rejections(
             ));
         }
         crate::StopOutcome::Reached(_)
+        | crate::StopOutcome::ObservationReached(_)
         | crate::StopOutcome::TerminalSuccess
         | crate::StopOutcome::ModeledTimeout(_) => {}
     }

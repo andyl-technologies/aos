@@ -4,6 +4,7 @@ use super::*;
 use crate::{CampaignDiscoveryResult, DiscoveryRequest};
 
 const EXTENDED_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION: u32 = 2;
+const OBSERVATION_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION: u32 = 3;
 
 /// Strict principal-bound request for one idempotent discovery admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +27,9 @@ impl SubmitCampaignDiscoveryRequest {
         campaign: CampaignName,
         command: DiscoveryRequest,
     ) -> Result<Self, CampaignCodecError> {
-        let schema_version = if command.uses_extended_stop_schema() {
+        let schema_version = if command.uses_observation_stop_schema() {
+            OBSERVATION_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION
+        } else if command.uses_extended_stop_schema() {
             EXTENDED_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION
         } else {
             CAMPAIGN_SERVICE_SCHEMA_VERSION
@@ -94,7 +97,9 @@ impl Canonical for SubmitCampaignDiscoveryRequest {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            CAMPAIGN_SERVICE_SCHEMA_VERSION | EXTENDED_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION
+            CAMPAIGN_SERVICE_SCHEMA_VERSION
+                | EXTENDED_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION
+                | OBSERVATION_STOP_DISCOVERY_REQUEST_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign service schema version",
