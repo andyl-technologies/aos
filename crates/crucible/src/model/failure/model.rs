@@ -852,10 +852,15 @@ impl FailureTriageResult {
             .iter()
             .map(|run| run.cluster_id)
             .collect::<BTreeSet<_>>();
-        if minimization_ids.len() != minimization.runs.len() {
+        let minimized_members = minimization
+            .runs
+            .iter()
+            .map(|run| (run.cluster_id, run.representative_artifact))
+            .collect::<BTreeSet<_>>();
+        if minimized_members.len() != minimization.runs.len() {
             return Err(EngineError::UnifiedOperationEvidenceMismatch {
                 operation: "failure-triage-result",
-                reason: "duplicate minimization run for cluster",
+                reason: "duplicate minimization run for cluster member",
             });
         }
         let report_ids = report_set
@@ -963,11 +968,6 @@ impl FailureTriageResult {
             .iter()
             .map(|report| (report.cluster_id, report))
             .collect::<BTreeMap<_, _>>();
-        let runs_by_cluster = minimization
-            .runs
-            .iter()
-            .map(|run| (run.cluster_id, run))
-            .collect::<BTreeMap<_, _>>();
         for cluster in &clustering.clusters {
             if cluster.id != cluster.signature_key.content_hash() {
                 return Err(EngineError::UnifiedOperationEvidenceMismatch {
@@ -981,18 +981,17 @@ impl FailureTriageResult {
                     reason: "cluster has no representative",
                 },
             )?;
-            let run = runs_by_cluster.get(&cluster.id).ok_or(
-                EngineError::UnifiedOperationEvidenceMismatch {
+            let run = minimization
+                .runs
+                .iter()
+                .find(|run| {
+                    run.cluster_id == cluster.id
+                        && run.representative_artifact == representative.reproduction_artifact
+                })
+                .ok_or(EngineError::UnifiedOperationEvidenceMismatch {
                     operation: "failure-triage-result",
-                    reason: "missing minimization run for cluster",
-                },
-            )?;
-            if run.representative_artifact != representative.reproduction_artifact {
-                return Err(EngineError::UnifiedOperationEvidenceMismatch {
-                    operation: "failure-triage-result",
-                    reason: "minimization run does not use cluster representative",
-                });
-            }
+                    reason: "missing minimization run for cluster representative",
+                })?;
             if run.minimization.original.artifact.id() != representative.reproduction_artifact {
                 return Err(EngineError::UnifiedOperationEvidenceMismatch {
                     operation: "failure-triage-result",
@@ -1031,6 +1030,37 @@ impl FailureTriageResult {
             }
         }
         for run in &minimization.runs {
+            let cluster = clustering
+                .clusters
+                .iter()
+                .find(|cluster| cluster.id == run.cluster_id)
+                .ok_or(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "failure-triage-result",
+                    reason: "minimization run does not belong to a cluster",
+                })?;
+            if !cluster
+                .members
+                .iter()
+                .any(|member| member.reproduction_artifact == run.representative_artifact)
+                || run.minimization.original.artifact.id() != run.representative_artifact
+                || run.target_signature_key != cluster.signature_key
+                || run.minimized_signature_key != cluster.signature_key
+                || !run.preserves_signature()
+            {
+                return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "failure-triage-result",
+                    reason: "minimization run does not match its cluster member",
+                });
+            }
+            let representative = cluster.representative_member().ok_or(
+                EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "failure-triage-result",
+                    reason: "minimized cluster has no representative",
+                },
+            )?;
+            if run.representative_artifact != representative.reproduction_artifact {
+                continue;
+            }
             let report = reports_by_cluster.get(&run.cluster_id).ok_or(
                 EngineError::UnifiedOperationEvidenceMismatch {
                     operation: "failure-triage-result",
@@ -1487,12 +1517,12 @@ pub(in crate::model) struct FailureClusterBuilder {
     pub(in crate::model) members: BTreeMap<ContentHash, FailureClusterMember>,
 }
 
-/// Signature-preserving minimization evidence for one failure cluster.
+/// Signature-preserving minimization evidence for one failure-cluster member.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FailureSignaturePreservingMinimizationRun {
-    /// Cluster whose representative was minimized.
+    /// Cluster whose selected member was minimized.
     pub cluster_id: ContentHash,
-    /// Content-address-least reproduction artifact selected from the cluster.
+    /// Reproduction artifact selected from the cluster.
     pub representative_artifact: ContentHash,
     /// Signature key that must be preserved by every accepted candidate.
     pub target_signature_key: FailureSignatureKey,
@@ -1534,18 +1564,26 @@ impl FailureSignaturePreservingMinimizationRun {
 pub struct FailureSignaturePreservingMinimizationResult {
     /// Active signature policy used as the candidate accept predicate.
     pub policy: SignaturePolicy,
-    /// One minimized representative per cluster, ordered by cluster id.
+    /// Minimized members ordered by cluster id and original artifact.
+    ///
+    /// The default path contains one content-address-least representative per
+    /// cluster. Forensic all-member minimization adds one run for every other
+    /// member while retaining the representative run used by the report.
     pub runs: Vec<FailureSignaturePreservingMinimizationRun>,
 }
 
 impl FailureSignaturePreservingMinimizationResult {
-    /// Returns the number of clusters minimized.
+    /// Returns the number of distinct clusters represented by the runs.
     #[must_use]
     pub fn cluster_count(&self) -> usize {
-        self.runs.len()
+        self.runs
+            .iter()
+            .map(|run| run.cluster_id)
+            .collect::<BTreeSet<_>>()
+            .len()
     }
 
-    /// Returns the number of minimal representatives emitted.
+    /// Returns the number of minimal member reproductions emitted.
     #[must_use]
     pub fn minimized_count(&self) -> usize {
         self.runs.len()
