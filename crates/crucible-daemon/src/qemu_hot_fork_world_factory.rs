@@ -1327,6 +1327,7 @@ fn map_hot_fork_terminal_fingerprint_capture_failure<F, D>(
     let class = match &error {
         SchedulerError::OperationalBoundary { class, .. } => Some(*class),
         SchedulerError::NotImplemented { .. }
+        // crucible-lint: allow host-nondeterminism-state -- this arm only classifies an already-produced scheduler failure as terminal and cannot feed an observation back into forked execution.
         | SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
