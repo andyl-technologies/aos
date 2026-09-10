@@ -263,6 +263,55 @@
           expect_failure missing-needed missing-needed.json \
             "provider SONAME is absent from the consumer DT_NEEDED set"
 
+          graph_root=/nix/store/00000000000000000000000000000000-root
+          graph_dependency=/nix/store/11111111111111111111111111111111-dependency
+          graph_disconnected=/nix/store/22222222222222222222222222222222-disconnected
+          jq -cn \
+            --arg root "$graph_root" \
+            --arg dependency "$graph_dependency" \
+            --arg disconnected "$graph_disconnected" \
+            '[
+              {path:$root,narHash:"sha256:root",narSize:1,references:[$dependency]},
+              {path:$dependency,narHash:"sha256:dependency",narSize:2,references:[$dependency]},
+              {path:$disconnected,narHash:"sha256:disconnected",narSize:3,references:[]}
+            ]' > graph-valid.json
+
+          expect_graph_failure() {
+            label=$1
+            if jq -c --arg root "$graph_root" \
+              -f ${../../pkgs/build-support/_ability-closure-graph.jq} \
+              "graph-$label.json" > /dev/null 2> "graph-$label.stderr"; then
+              echo "ability closure graph negative check unexpectedly passed: $label" >&2
+              exit 1
+            fi
+            grep -F "ability closure export graph is malformed or incomplete" \
+              "graph-$label.stderr" > /dev/null
+          }
+
+          jq '.[2].path = .[1].path' graph-valid.json > graph-duplicate.json
+          expect_graph_failure duplicate
+
+          jq 'del(.[0])' graph-valid.json > graph-missing-root.json
+          expect_graph_failure missing-root
+
+          jq 'del(.[1])' graph-valid.json > graph-missing-reference.json
+          expect_graph_failure missing-reference
+
+          jq '.[2].path = "/nix/store/not-a-store-path"' \
+            graph-valid.json > graph-malformed-path.json
+          expect_graph_failure malformed-path
+
+          jq -c --arg root "$graph_root" \
+            -f ${../../pkgs/build-support/_ability-closure-graph.jq} \
+            graph-valid.json > graph-reachable.jsonl
+          test "$(wc -l < graph-reachable.jsonl)" -eq 2
+          grep -Fq "$graph_root" graph-reachable.jsonl
+          grep -Fq "$graph_dependency" graph-reachable.jsonl
+          if grep -Fq "$graph_disconnected" graph-reachable.jsonl; then
+            echo "ability closure graph retained a disconnected export member" >&2
+            exit 1
+          fi
+
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';

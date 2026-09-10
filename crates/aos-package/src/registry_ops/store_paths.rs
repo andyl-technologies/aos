@@ -17,6 +17,17 @@ use std::process::Command;
 pub(in crate::registry_ops) fn nix_command(program: &str) -> Command {
     let mut command = Command::new(program);
     command.envs(aos_nix_env());
+    #[cfg(test)]
+    for (source, target) in [
+        ("AOS_TEST_ABILITY_NIX_STORE_DIR", "NIX_STORE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_STATE_DIR", "NIX_STATE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_LOG_DIR", "NIX_LOG_DIR"),
+        ("AOS_TEST_ABILITY_NIX_REMOTE", "NIX_REMOTE"),
+    ] {
+        if let Some(value) = std::env::var_os(source) {
+            command.env(target, value);
+        }
+    }
     command
 }
 

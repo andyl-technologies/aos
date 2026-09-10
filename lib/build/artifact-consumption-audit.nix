@@ -177,7 +177,14 @@ in
               key=$(jq -r ".[$spec].key" work/specs.json)
               root_path=$(jq -r ".[$spec].path" work/specs.json)
               graph=$(jq -r ".[$spec].graph" work/specs.json)
-              jq -c --arg graph "$graph" '.[$graph][]' "$NIX_ATTRS_JSON_FILE" > work/graph.jsonl
+              jq -c --arg graph "$graph" '.[$graph][]' "$NIX_ATTRS_JSON_FILE" > work/exported-graph.jsonl
+              jq -s . work/exported-graph.jsonl > work/exported-graph.json
+
+              # A .drv export graph can contain realized input outputs that
+              # are disconnected from the root's ordinary reference edges.
+              jq -c --arg root "$root_path" \
+                -f ${../../pkgs/build-support/_ability-closure-graph.jq} \
+                work/exported-graph.json > work/graph.jsonl
 
               : > work/closure-members.jsonl
               while IFS= read -r member; do
@@ -188,6 +195,8 @@ in
                 references='[]'
                 while IFS= read -r reference; do
                   [ -n "$reference" ] || continue
+                  # Registry reference lists omit a member's own edge while retaining the member.
+                  [ "$reference" != "$member_path" ] || continue
                   reference_hash=$(store_hash "$reference")
                   references=$(printf '%s\n' "$references" \
                     | jq -c --arg value "$reference_hash" '. + [$value] | sort | unique')

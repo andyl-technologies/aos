@@ -170,6 +170,10 @@
       ++ builtins.map (package: package.abilities) (builtins.attrValues abilityReferenceRegistryPackages);
     pname = "aos-ability-reference-nginx-graph";
   };
+  abilityPackageSmokeGraph = mkReferenceGraph {
+    rootPaths = [ability-package-smoke ability-package-smoke.abilities];
+    pname = "aos-ability-package-smoke-graph";
+  };
   abilityEvaluatorIfdFixture = builtins.derivation {
     name = "aos-ability-forbidden-ifd";
     system = stdenv.buildPlatform.system;
@@ -448,6 +452,11 @@ in
         NIX_LOG_DIR="$ability_nix_log" \
         NIX_REMOTE=local \
           ${buildNix}/bin/nix-store --load-db < ${abilityReferenceNginxGraph}/registration
+        NIX_STORE_DIR=/nix/store \
+        NIX_STATE_DIR="$ability_nix_state" \
+        NIX_LOG_DIR="$ability_nix_log" \
+        NIX_REMOTE=local \
+          ${buildNix}/bin/nix-store --load-db < ${abilityPackageSmokeGraph}/registration
 
         export AOS_TEST_ABILITY_NIX_STORE_DIR=/nix/store
         export AOS_TEST_ABILITY_NIX_STATE_DIR="$ability_nix_state"

@@ -457,6 +457,7 @@
                 ${stdenv.coreutils}/bin/env -i \
                   HOME=/homeless-shelter \
                   NIX_ATTRS_JSON_FILE="$NIX_ATTRS_JSON_FILE" \
+                  ABILITY_CLOSURE_GRAPH_JQ=${./build-support/_ability-closure-graph.jq} \
                   PATH="$PATH" \
                   TMPDIR=/build \
                   out="$out" \
