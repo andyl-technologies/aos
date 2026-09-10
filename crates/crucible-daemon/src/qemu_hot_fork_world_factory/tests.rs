@@ -14,9 +14,8 @@ use std::time::Duration;
 
 use crucible::{
     Configuration, ContentHash, Decision, EventLog, ExecutionFingerprint, FingerprintSample,
-    Icount, MarkerId, NodeId, ObservableEvent, Plan, Properties, ScenarioDefForm,
-    ScenarioSelectableLimits, ScenarioSelectables, SchedulerEventLogEntry, SchedulerQuiescence,
-    Seed, SelectionDecision, World,
+    Icount, MarkerId, NodeId, ObservableEvent, ScenarioDefForm, ScenarioSelectableLimits,
+    ScenarioSelectables, SchedulerEventLogEntry, SchedulerQuiescence, SelectionDecision,
 };
 use crucible_api::ProductionFaultEvidenceSnapshot;
 use crucible_api::vm_lifecycle::{
@@ -57,17 +56,25 @@ use crucible_qemu::{
 use rustix::process::{Pid, PidfdFlags, pidfd_open};
 
 use super::*;
+use crate::packaged_qemu_executor::PackagedQemuInitialExecutionRunner;
+use crate::qemu_campaign_lifecycle::{
+    QemuAttemptExecutionEvidence, QemuTerminalEvidenceExecutionRunner,
+    QemuTerminalEvidenceExecutionRunnerError,
+};
 use crate::{
     AttemptExecutionKey, AttemptExecutionRuntimeBasis, AttemptResultStageOutcome,
     AttemptWorkerReconcileOutcome, CompletionOutcome, CrucibleExecutionModel,
     CrucibleExecutionRunner, CrucibleMaterializationTier, ExactCheckpointStore,
     ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity, LocalAttemptWorker,
     LocalExecutorSupervisor, MemoryAssignmentLedger, PreparedAttemptWorkResult,
-    QemuAttemptOperationalBoundary, QemuAttemptResourceGuard, QemuFreshModeledDriver,
-    QemuHotFirstExecutionRouter, RepositoryAttemptAdmission, RepositoryAttemptWorker,
-    decode_crucible_configuration_artifact_with_selections, encode_crucible_configuration_artifact,
-    encode_crucible_scenario_artifact, prepare_attempt_result, publish_prepared_attempt_result,
-    reconcile_published_attempt_result, stage_prepared_attempt_result,
+    QemuAttemptExecutionRouter, QemuAttemptOperationalBoundary, QemuAttemptResourceGuard,
+    QemuAttemptStartReplayProof, QemuAttemptStartVerifier, QemuFreshModeledDriver,
+    QemuHotFirstExecutionRouter, QemuOrdinaryResumeRunner, QemuSavepointReplayProof,
+    QemuSelectedOriginResumeRunner, QemuSelectedOriginVerifier, RepositoryAttemptAdmission,
+    RepositoryAttemptWorker, decode_crucible_configuration_artifact_with_selections,
+    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
+    prepare_attempt_result, publish_prepared_attempt_result, reconcile_published_attempt_result,
+    stage_prepared_attempt_result,
 };
 
 struct ScriptedWorldGuard {
@@ -739,6 +746,15 @@ impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
         Ok(())
     }
 
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        let hash = ContentHash::from_bytes(node.name.as_bytes());
+        Ok(FingerprintSample {
+            node,
+            at: self.frontier,
+            fingerprint: ExecutionFingerprint { hash },
+        })
+    }
+
     fn shutdown(
         &mut self,
     ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
@@ -859,7 +875,9 @@ impl QemuFreshAttemptDriver for BranchReplayDriver {
         final_events: Vec<crucible::SchedulerEventLogEntry>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         assert!(final_events.is_empty());
-        Ok(AttemptExecutionProduct::observation(candidate))
+        let result = crate::PreparedSemanticAttemptResult::new(candidate, None)
+            .expect("prepared branch replay result");
+        Ok(AttemptExecutionProduct::prepared_semantic(result))
     }
 }
 
@@ -879,6 +897,74 @@ impl CrucibleExecutionRunner for NeverFallbackRunner {
         Err(AttemptWorkerFailure::Terminal(
             "fallback must not run for an exact retained source world",
         ))
+    }
+}
+
+impl QemuSelectedOriginVerifier for NeverFallbackRunner {
+    fn verify_selected_origin(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+    ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>> {
+        panic!("hot-world fixture never verifies a fallback selected origin")
+    }
+}
+
+impl QemuAttemptStartVerifier for NeverFallbackRunner {
+    fn verify_attempt_start(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+    ) -> Result<QemuAttemptStartReplayProof, AttemptWorkerFailure<Self::Error>> {
+        panic!("hot-world fixture never verifies a fallback attempt start")
+    }
+}
+
+struct NeverResumeRunner;
+
+impl CrucibleExecutionRunner for NeverResumeRunner {
+    type Error = &'static str;
+
+    fn execute(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        panic!("packaged hot-world fixture never executes an exact resume")
+    }
+}
+
+impl QemuSelectedOriginResumeRunner for NeverResumeRunner {
+    fn authenticate_selected_resume_boundary(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+    ) -> Result<
+        Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
+        AttemptWorkerFailure<Self::Error>,
+    > {
+        panic!("packaged hot-world fixture never authenticates an exact resume")
+    }
+
+    fn execute_verified_selected_origin(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _proof: QemuSavepointReplayProof,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        panic!("packaged hot-world fixture never executes a selected exact resume")
+    }
+}
+
+impl QemuOrdinaryResumeRunner for NeverResumeRunner {
+    fn execute_verified_attempt_start(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _proof: QemuAttemptStartReplayProof,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        panic!("packaged hot-world fixture never executes an ordinary exact resume")
     }
 }
 
@@ -1319,13 +1405,23 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
         observations: observations.clone(),
     };
     let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
-    let mut runner = QemuHotForkWorldExecutionRunner::new(
+    let runner = QemuHotForkWorldExecutionRunner::new(
         factory,
         BranchReplayDriver {
             candidate,
             observations: observations.clone(),
         },
     );
+    let fallback_calls = Arc::new(AtomicUsize::new(0));
+    let runner = QemuHotFirstExecutionRouter::new(
+        runner,
+        NeverFallbackRunner {
+            calls: Arc::clone(&fallback_calls),
+        },
+    );
+    let runner = PackagedQemuInitialExecutionRunner::<_, NeverFallbackRunner>::HotFork(runner);
+    let runner = QemuAttemptExecutionRouter::new(runner, NeverResumeRunner);
+    let mut runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence.clone());
     let context = execution_context(&input, 0x83);
     let (parent, selected, selected_value) = match input.start() {
         crate::CrucibleResolvedAttemptStart::Branch {
@@ -1346,19 +1442,17 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
     };
 
     let outcome = runner
-        .try_execute(&input, &context)
-        .expect("hot-world runner must execute the selected branch");
-    let QemuHotForkWorldExecutionAttempt::Executed(outcome) = outcome else {
-        panic!("scripted retained source must not decline")
-    };
+        .execute(&input, &context)
+        .expect("packaged hot-world route must execute the selected branch");
     assert_eq!(
         outcome.materialization(),
         CrucibleMaterializationTier::HotFork
     );
     assert!(matches!(
         outcome.product(),
-        AttemptExecutionProduct::Observation(_)
+        AttemptExecutionProduct::PreparedSemantic(_)
     ));
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
     assert_eq!(
         *observations
             .replay_requests
@@ -1428,19 +1522,20 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
     );
     assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
     assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
+    runner
+        .reconcile_execution(AttemptExecutionDisposition::Canceled)
+        .expect_err("a packaged route reconciles one successful execution exactly once");
+    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
 }
 
 #[test]
 fn hot_world_runner_honors_an_inherited_quantum_boundary_without_driving() {
     let completed_quanta = 3;
     let stop = StopCondition::ExecutionQuanta(completed_quanta);
-    let scenario = ScenarioDefForm::from_components(
-        &World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty world"),
-        &Plan::empty(),
-        &Properties::empty(),
-        Seed::from_u64(7),
-    )
-    .expect("minimal scenario");
+    let scenario = crucible::happy_path_scenario()
+        .expect("hot-fork terminal evidence scenario")
+        .scenario;
     let input = execution_input_for_scenario_with_stop(scenario, stop.clone());
     let crate::CrucibleResolvedAttemptStart::Discover { configuration } = input.start() else {
         panic!("inherited-boundary fixture must begin at discovery")
@@ -1462,32 +1557,53 @@ fn hot_world_runner_honors_an_inherited_quantum_boundary_without_driving() {
         .map(|entry| CampaignHash::from_bytes(entry.observation.content_hash().bytes))
         .collect::<BTreeSet<_>>();
     let observations = InheritedBoundaryObservations::new();
-    let mut runner = QemuHotForkWorldExecutionRunner::new(
+    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(
         InheritedBoundaryLifecycleFactory {
             start_events: prefix.entries,
             completed_quanta,
             frontier: crucible::VirtualTime { ticks: 9 },
             observations: observations.clone(),
         },
-        QemuFreshModeledDriver::new(),
     );
+    let runner = QemuHotForkWorldExecutionRunner::new(factory, QemuFreshModeledDriver::new());
+    let fallback_calls = Arc::new(AtomicUsize::new(0));
+    let runner = QemuHotFirstExecutionRouter::new(
+        runner,
+        NeverFallbackRunner {
+            calls: Arc::clone(&fallback_calls),
+        },
+    );
+    let mut runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence);
     let context = execution_context(&input, 0x84);
 
     let outcome = runner
-        .try_execute(&input, &context)
+        .execute(&input, &context)
         .expect("hot-world runner should stop at the inherited boundary");
-    let QemuHotForkWorldExecutionAttempt::Executed(outcome) = outcome else {
-        panic!("scripted retained source must not decline")
-    };
     let AttemptExecutionProduct::PreparedSemantic(result) = outcome.product() else {
         panic!("inherited absolute stop must produce a prepared semantic result")
     };
     let candidate = result.observation();
+    let expected_nodes = input
+        .scenario()
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    let terminal_nodes = result
+        .terminal_fingerprints()
+        .expect("prepared hot-fork terminal fingerprints")
+        .iter()
+        .map(|sample| sample.node.clone())
+        .collect::<BTreeSet<_>>();
 
     assert_eq!(
         outcome.materialization(),
         CrucibleMaterializationTier::HotFork
     );
+    assert!(!expected_nodes.is_empty());
+    assert_eq!(terminal_nodes, expected_nodes);
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
     assert_eq!(candidate.observation().stop(), &StopOutcome::Reached(stop));
     assert_eq!(candidate.coverage().identities(), &expected_coverage);
     assert_eq!(observations.drives.load(Ordering::SeqCst), 0);
@@ -1592,6 +1708,85 @@ fn observed_hot_fork_factory_preserves_recovery_ownership_for_quarantine() {
             .terminal_fingerprints()
             .is_some()
     );
+}
+
+#[test]
+fn packaged_route_quarantines_a_hot_world_when_terminal_result_preparation_fails() {
+    let input = branch_execution_input(
+        ChoiceSource::Scheduler {
+            producer: String::from("terminal-preparation"),
+        },
+        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("terminal preparation branch domain")),
+        ChoiceValue::Boolean(false),
+        ChoiceValue::Boolean(true),
+        "scheduler.terminal-preparation",
+    );
+    let (_repository, _store, _lineage, _attempt, candidate, _scenario) =
+        repository_execution_fixture();
+    let observations = BranchReplayObservations::new();
+    let factory = BranchReplayLifecycleFactory {
+        observations: observations.clone(),
+    };
+    let (factory, completed_evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
+    let hot = QemuHotForkWorldExecutionRunner::new(
+        factory,
+        BranchReplayDriver {
+            candidate,
+            observations: observations.clone(),
+        },
+    );
+    let fallback_calls = Arc::new(AtomicUsize::new(0));
+    let hot_first = QemuHotFirstExecutionRouter::new(
+        hot,
+        NeverFallbackRunner {
+            calls: Arc::clone(&fallback_calls),
+        },
+    );
+    let initial = PackagedQemuInitialExecutionRunner::<_, NeverFallbackRunner>::HotFork(hot_first);
+    let router = QemuAttemptExecutionRouter::new(initial, NeverResumeRunner);
+    let mut runner =
+        QemuTerminalEvidenceExecutionRunner::new(router, QemuAttemptExecutionEvidence::default());
+    let context = execution_context(&input, 0x86);
+
+    let failure = runner
+        .execute(&input, &context)
+        .expect_err("unrelated evidence must reject terminal result preparation");
+    assert!(matches!(
+        failure,
+        AttemptWorkerFailure::Terminal(
+            QemuTerminalEvidenceExecutionRunnerError::MissingTerminalFingerprints
+        )
+    ));
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
+    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 0);
+    runner.quarantine_pending_execution();
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
+
+    let (router, _unrelated_evidence) = runner.into_parts();
+    let mut runner = QemuTerminalEvidenceExecutionRunner::new(router, completed_evidence);
+    let outcome = runner
+        .execute(&input, &context)
+        .expect("a clean execution may follow quarantined result preparation");
+    let AttemptExecutionProduct::PreparedSemantic(result) = outcome.product() else {
+        panic!("clean packaged hot execution must produce a prepared result")
+    };
+    let observation = result
+        .observation()
+        .observation()
+        .id()
+        .expect("observation id");
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
+
+    assert_eq!(
+        runner
+            .reconcile_execution(AttemptExecutionDisposition::Observation(observation))
+            .expect("reconcile the clean packaged hot execution"),
+        AttemptExecutionReconciliationStep::Complete
+    );
+    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
 }
 
 #[test]

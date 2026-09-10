@@ -1011,6 +1011,13 @@ where
     pub const fn lifecycle_factory(&self) -> &F {
         &self.factory
     }
+
+    /// Transfers a pending retained world to the factory's quarantine owner.
+    pub(crate) fn quarantine_pending_execution(&mut self) {
+        if let Some(lifecycle) = self.pending.take() {
+            self.factory.quarantine(lifecycle);
+        }
+    }
 }
 
 /// Failure from one production whole-world execution phase.
@@ -1371,9 +1378,7 @@ where
     F: QemuHotForkWorldLifecycleFactory,
 {
     fn drop(&mut self) {
-        if let Some(lifecycle) = self.pending.take() {
-            self.factory.quarantine(lifecycle);
-        }
+        self.quarantine_pending_execution();
     }
 }
 

@@ -2,13 +2,13 @@
 
 use super::*;
 
-enum PackagedQemuInitialExecutionRunner<H, F> {
+pub(crate) enum PackagedQemuInitialExecutionRunner<H, F> {
     HotFork(H),
     Fresh(F),
 }
 
 #[derive(Debug, thiserror::Error)]
-enum PackagedQemuInitialExecutionRunnerError<H, F> {
+pub(crate) enum PackagedQemuInitialExecutionRunnerError<H, F> {
     #[error("packaged hot-first QEMU execution failed")]
     HotFork(#[source] H),
     #[error("packaged fresh QEMU execution failed")]
@@ -74,19 +74,22 @@ where
 }
 
 pub(super) struct PackagedQemuInitialRunnerBuild<R> {
-    pub(super) runners: Vec<R>,
+    pub(super) runners: Vec<(R, QemuAttemptExecutionEvidence)>,
     pub(super) hot_fork_owner: Option<Box<dyn PackagedQemuHotForkSourceOwner>>,
 }
 
 impl<R> PackagedQemuInitialRunnerBuild<R> {
-    pub(super) fn fresh(runners: Vec<R>) -> Self {
+    pub(super) fn fresh(runners: Vec<(R, QemuAttemptExecutionEvidence)>) -> Self {
         Self {
             runners,
             hot_fork_owner: None,
         }
     }
 
-    fn hot_fork(runners: Vec<R>, owner: Box<dyn PackagedQemuHotForkSourceOwner>) -> Self {
+    fn hot_fork(
+        runners: Vec<(R, QemuAttemptExecutionEvidence)>,
+        owner: Box<dyn PackagedQemuHotForkSourceOwner>,
+    ) -> Self {
         Self {
             runners,
             hot_fork_owner: Some(owner),
@@ -128,6 +131,13 @@ where
             Self::Fresh(runner) => runner
                 .reconcile_execution(disposition)
                 .map_err(|failure| failure.map(PackagedQemuInitialExecutionRunnerError::Fresh)),
+        }
+    }
+
+    fn quarantine_pending_execution(&mut self) {
+        match self {
+            Self::HotFork(runner) => runner.quarantine_pending_execution(),
+            Self::Fresh(runner) => runner.quarantine_pending_execution(),
         }
     }
 }
@@ -260,11 +270,18 @@ where
                                 ),
                                 lifecycles: lifecycles.clone(),
                             };
-                            PackagedQemuInitialExecutionRunner::Fresh(
-                                QemuFreshExecutionRunner::new(
+                            let (lifecycle_factory, evidence) =
+                                QemuObservedFreshAttemptLifecycleFactory::with_evidence(
                                     lifecycle_factory,
-                                    QemuFreshModeledDriver,
+                                );
+                            (
+                                PackagedQemuInitialExecutionRunner::Fresh(
+                                    QemuFreshExecutionRunner::new(
+                                        lifecycle_factory,
+                                        QemuFreshModeledDriver,
+                                    ),
                                 ),
+                                evidence,
                             )
                         })
                         .collect(),
@@ -345,6 +362,7 @@ where
                 });
             let mut runners = Vec::with_capacity(worker_count);
             for slot in 0..worker_count {
+                let evidence = QemuAttemptExecutionEvidence::default();
                 let lifecycle = lifecycle_config
                     .clone()
                     .with_run_state_root(worker_state_root.join(format!("worker-{slot:03}")));
@@ -355,6 +373,11 @@ where
                     ),
                     lifecycles: lifecycles.clone(),
                 };
+                let fallback_lifecycles =
+                    QemuObservedFreshAttemptLifecycleFactory::with_shared_evidence(
+                        fallback_lifecycles,
+                        evidence.clone(),
+                    );
                 let fallback =
                     QemuFreshExecutionRunner::new(fallback_lifecycles, QemuFreshModeledDriver);
                 let provider = match pool.provider() {
@@ -377,10 +400,17 @@ where
                     inner: hot_factory,
                     lifecycles: lifecycles.clone(),
                 };
+                let hot_factory = QemuObservedFreshAttemptLifecycleFactory::with_shared_evidence(
+                    hot_factory,
+                    evidence.clone(),
+                );
                 let hot_runner =
                     QemuHotForkWorldExecutionRunner::new(hot_factory, QemuFreshModeledDriver);
-                runners.push(PackagedQemuInitialExecutionRunner::HotFork(
-                    crate::QemuHotFirstExecutionRouter::new(hot_runner, fallback),
+                runners.push((
+                    PackagedQemuInitialExecutionRunner::HotFork(
+                        crate::QemuHotFirstExecutionRouter::new(hot_runner, fallback),
+                    ),
+                    evidence,
                 ));
             }
 

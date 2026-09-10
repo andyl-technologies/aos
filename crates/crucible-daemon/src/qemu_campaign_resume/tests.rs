@@ -28,9 +28,10 @@ use crucible_cas::content_store::{
 use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
 
 use super::*;
+use crate::qemu_campaign_lifecycle::QemuTerminalEvidenceExecutionRunner;
 use crate::{
     CapturedAttemptCheckpoint, CrucibleResolvedAttemptStart, ExecutionCancellation,
-    ExecutionCheckpointRequest,
+    ExecutionCheckpointRequest, QemuFreshModeledDriver,
 };
 
 #[derive(Default)]
@@ -419,13 +420,12 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
 }
 
 #[test]
-fn observed_resume_factory_publishes_the_exact_terminal_world_node_set() {
+fn observed_resume_factory_retains_the_exact_terminal_world_node_set_in_the_result() {
     let calls = Arc::new(ResumeCalls::default());
-    let observed = Arc::new(Mutex::new(None));
-    let input = test_input();
+    let input = modeled_test_input_with_stop(StopCondition::ExecutionQuanta(5));
     let terminal_at = VirtualTime { ticks: 23 };
     let state = ProductionVmLifecycleResumeState::new(
-        test_configuration(),
+        input.start().configuration().clone(),
         Vec::new(),
         0,
         5,
@@ -439,16 +439,20 @@ fn observed_resume_factory_publishes_the_exact_terminal_world_node_set() {
         final_events: Vec::new(),
     };
     let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
-    let mut runner = QemuProductionExactResumeExecutionRunner::new(
+    let runner = QemuProductionExactResumeExecutionRunner::new(
         test_checkpoint_store(),
         factory,
-        FakeResumeDriver { calls, observed },
+        QemuFreshModeledDriver::new(),
     );
+    let mut runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence.clone());
     let checkpoint = checkpoint_id("observed-resume-terminal-fingerprints");
 
-    runner
+    let outcome = runner
         .execute(&input, &test_context(Some(checkpoint)))
         .expect("observed exact resume");
+    let AttemptExecutionProduct::PreparedSemantic(result) = outcome.product() else {
+        panic!("completed exact resume must return a prepared semantic result")
+    };
 
     let mut expected_nodes = input
         .scenario()
@@ -477,6 +481,7 @@ fn observed_resume_factory_publishes_the_exact_terminal_world_node_set() {
             .terminal_fingerprints(),
         Some(expected.as_slice())
     );
+    assert_eq!(result.terminal_fingerprints(), Some(expected.as_slice()));
 }
 
 #[test]
@@ -837,6 +842,54 @@ fn test_input_with_stop(stop: StopCondition) -> CrucibleAttemptExecution {
         "qemu-test",
         BTreeMap::from([(String::from("control"), 1)]),
         1,
+        1,
+    )
+    .expect("campaign lineage");
+    let path = BranchPath::new(Vec::new()).expect("genesis branch path");
+    let attempt = Attempt::new(
+        AttemptStart::Discover {
+            configuration: configuration_content,
+        },
+        path.id().expect("branch path id"),
+        stop,
+    )
+    .expect("discovery attempt");
+
+    CrucibleAttemptExecution::from_test_parts(
+        lineage,
+        scenario,
+        attempt,
+        path,
+        CrucibleResolvedAttemptStart::Discover { configuration },
+    )
+}
+
+fn modeled_test_input_with_stop(stop: StopCondition) -> CrucibleAttemptExecution {
+    let scenario = crucible::crash_restart_scenario()
+        .expect("built-in scenario")
+        .scenario;
+    let definition = scenario.scenario_def();
+    let scenario_artifact =
+        crate::encode_crucible_scenario_artifact(&scenario).expect("encoded scenario artifact");
+    let scenario_id = scenario_artifact.scenario();
+    let scenario_content = scenario_artifact.id().expect("scenario artifact id");
+    let configuration = Configuration::genesis(definition);
+    let configuration_artifact =
+        crate::encode_crucible_configuration_artifact(&scenario_artifact, &configuration.schedule)
+            .expect("encoded configuration artifact");
+    let configuration_id = configuration_artifact.configuration();
+    let configuration_content = configuration_artifact
+        .id()
+        .expect("configuration artifact id");
+    let lineage = CampaignLineage::new(
+        scenario_id,
+        scenario_content,
+        configuration_id,
+        configuration_content,
+        "crucible-test",
+        "qemu-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        scenario_artifact.payload_schema(),
         1,
     )
     .expect("campaign lineage");

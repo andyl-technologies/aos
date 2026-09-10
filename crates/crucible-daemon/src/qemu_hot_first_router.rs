@@ -181,6 +181,20 @@ where
             }
         }
     }
+
+    fn quarantine_pending_execution(&mut self) {
+        let Some(route) = self.pending.take() else {
+            return;
+        };
+        match route {
+            QemuHotFirstPendingRoute::HotFork => {
+                self.hot_fork.quarantine_pending_execution();
+            }
+            QemuHotFirstPendingRoute::Fallback => {
+                self.fallback.quarantine_pending_execution();
+            }
+        }
+    }
 }
 
 impl<F, D, R> crate::QemuSelectedOriginVerifier for QemuHotFirstExecutionRouter<F, D, R>

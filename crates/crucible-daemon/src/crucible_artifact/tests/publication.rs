@@ -278,8 +278,93 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         None,
     )
     .expect("bind v2 observation result");
-    let v2_result = prepare_automatic_signature_preserving_finding(
-        observation_result,
+    let v2_bytes = observation_result
+        .canonical_bytes()
+        .expect("encode v2 observation result");
+    assert_eq!(
+        PreparedSemanticResultVersion::from_payload(&v2_bytes),
+        Some(PreparedSemanticResultVersion::V2)
+    );
+    assert_eq!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&v2_bytes)
+            .expect("decode v2 observation result"),
+        observation_result
+    );
+
+    let mut terminal_fingerprints = scenario
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| FingerprintSample {
+            node: node.id.clone(),
+            at: VirtualTime { ticks: 23 },
+            fingerprint: ExecutionFingerprint {
+                hash: ContentHash::from_bytes(node.id.name.as_bytes()),
+            },
+        })
+        .collect::<Vec<_>>();
+    terminal_fingerprints.sort_by(|left, right| left.node.name.cmp(&right.node.name));
+    assert!(!terminal_fingerprints.is_empty());
+
+    let terminal_result = observation_result
+        .clone()
+        .with_terminal_fingerprints(terminal_fingerprints.clone())
+        .expect("attach terminal fingerprint set");
+    terminal_result
+        .verify_terminal_fingerprints(&scenario)
+        .expect("verify exact terminal world nodes");
+    let terminal_bytes = terminal_result
+        .canonical_bytes()
+        .expect("encode v3 terminal observation result");
+    assert_eq!(
+        PreparedSemanticResultVersion::from_payload(&terminal_bytes),
+        Some(PreparedSemanticResultVersion::V3)
+    );
+    assert_eq!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&terminal_bytes)
+            .expect("decode v3 terminal observation result"),
+        terminal_result
+    );
+    let mut truncated_terminal_bytes = terminal_bytes.clone();
+    truncated_terminal_bytes.pop();
+    assert!(matches!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&truncated_terminal_bytes),
+        Err(PreparedSemanticResultCodecError::Truncated)
+    ));
+
+    let first_terminal = terminal_fingerprints
+        .first()
+        .expect("non-empty terminal fingerprint set")
+        .clone();
+    assert!(matches!(
+        observation_result
+            .clone()
+            .with_terminal_fingerprints(vec![first_terminal.clone(), first_terminal]),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "terminal fingerprint node order"
+        })
+    ));
+    assert!(matches!(
+        observation_result
+            .clone()
+            .with_terminal_fingerprints(vec![FingerprintSample {
+                node: crucible::NodeId {
+                    name: String::from("foreign-node"),
+                },
+                at: VirtualTime { ticks: 23 },
+                fingerprint: ExecutionFingerprint {
+                    hash: ContentHash::from_bytes(b"foreign-terminal-fingerprint"),
+                },
+            }])
+            .expect("structurally valid foreign terminal set")
+            .verify_terminal_fingerprints(&scenario),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "terminal fingerprint world nodes"
+        })
+    ));
+
+    let v3_result = prepare_automatic_signature_preserving_finding(
+        terminal_result,
         signature.clone(),
         &finding,
         FindingExactPins::default(),
@@ -327,19 +412,24 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             Ok((replay, vec![evidence]))
         },
     )
-    .expect("automatically prepare v2 finding candidate");
-    let prepared_v2 = v2_result
+    .expect("automatically prepare v3 finding candidate");
+    assert_eq!(
+        v3_result.terminal_fingerprints(),
+        Some(terminal_fingerprints.as_slice()),
+        "finding attachment must preserve the completed terminal set"
+    );
+    let prepared_v2 = v3_result
         .finding()
         .expect("automatic prepared finding")
         .clone();
-    let measurement_evidence = v2_result.measurement_replay_evidence().to_vec();
+    let measurement_evidence = v3_result.measurement_replay_evidence().to_vec();
     assert!(measurement_evidence.len() >= 2);
     assert!(
         measurement_evidence
             .iter()
             .any(|evidence| evidence.configuration() != child.configuration())
     );
-    v2_result
+    v3_result
         .verify_measurement_publications(&scenario)
         .expect("verify every authenticated v2 measurement owner");
 
@@ -419,13 +509,17 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         Err(PreparedSemanticResultCodecError::Measurement(_))
     ));
 
-    let v2_bytes = v2_result
+    let v3_bytes = v3_result
         .canonical_bytes()
-        .expect("encode v2 prepared result");
+        .expect("encode v3 prepared result");
     assert_eq!(
-        PreparedSemanticAttemptResult::from_canonical_bytes(&v2_bytes)
-            .expect("decode v2 prepared result"),
-        v2_result
+        PreparedSemanticResultVersion::from_payload(&v3_bytes),
+        Some(PreparedSemanticResultVersion::V3)
+    );
+    assert_eq!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&v3_bytes)
+            .expect("decode v3 prepared result"),
+        v3_result
     );
 
     let mut unordered_evidence = measurement_evidence.clone();

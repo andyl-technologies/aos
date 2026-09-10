@@ -44,6 +44,10 @@ use crate::executor_pool::{
 #[cfg(test)]
 use crate::executor_supervisor::LocalExecutionActivity;
 use crate::guest_selectable::GuestSelectableBoundaryDiagnosticRecorder;
+use crate::qemu_campaign_lifecycle::{
+    QemuAttemptExecutionEvidence, QemuObservedFreshAttemptLifecycleFactory,
+    QemuTerminalEvidenceExecutionRunner,
+};
 use crate::qemu_hot_fork_world_factory::AttemptWorkerFailureExt;
 use crate::{
     AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
@@ -90,6 +94,8 @@ use exact_pin_materializer::{
     PackagedExactPinMaterializerOwner, prepare_packaged_exact_pin_materializer,
 };
 pub use hot_fork::PackagedQemuHotForkSourceShutdownError;
+#[cfg(test)]
+pub(crate) use hot_fork::PackagedQemuInitialExecutionRunner;
 use hot_fork::{
     PackagedQemuHotForkDemotionError, PackagedQemuHotForkSourceOwner,
     PackagedQemuInitialRunnerBuild, authenticate_packaged_hot_fork_launch,
@@ -1029,7 +1035,14 @@ where
                             ),
                             lifecycles: lifecycles.clone(),
                         };
-                        QemuFreshExecutionRunner::new(fresh_lifecycles, QemuFreshModeledDriver)
+                        let (fresh_lifecycles, evidence) =
+                            QemuObservedFreshAttemptLifecycleFactory::with_evidence(
+                                fresh_lifecycles,
+                            );
+                        (
+                            QemuFreshExecutionRunner::new(fresh_lifecycles, QemuFreshModeledDriver),
+                            evidence,
+                        )
                     })
                     .collect(),
             ))
@@ -1194,7 +1207,7 @@ where
         .runners
         .into_iter()
         .enumerate()
-        .map(|(slot, fresh)| {
+        .map(|(slot, (fresh, evidence))| {
             let lifecycle = config
                 .lifecycle
                 .clone()
@@ -1206,12 +1219,17 @@ where
                 ),
                 lifecycles: lifecycles.clone(),
             };
+            let resume_lifecycles = QemuObservedFreshAttemptLifecycleFactory::with_shared_evidence(
+                resume_lifecycles,
+                evidence.clone(),
+            );
             let resume = QemuProductionExactResumeExecutionRunner::new(
                 Arc::clone(&checkpoints),
                 resume_lifecycles,
                 QemuFreshModeledDriver,
             );
             let runner = QemuAttemptExecutionRouter::new(fresh, resume);
+            let runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence);
             let model = CrucibleExecutionModel::new(store.clone(), runner);
             PackagedStatusAttemptWorker {
                 inner: RepositoryAttemptWorker::new(store.clone(), model)

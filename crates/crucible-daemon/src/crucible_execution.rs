@@ -820,6 +820,15 @@ pub trait CrucibleExecutionRunner {
     ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
+
+    /// Quarantines authority retained by a successful execution immediately.
+    ///
+    /// An outer runner must call this when its own result preparation fails
+    /// after the wrapped execution succeeded, because no durable semantic
+    /// disposition exists for ordinary reconciliation. The default is valid
+    /// only for runners whose successful execution retains no operational
+    /// authority. A wrapper over an arbitrary runner must forward this call.
+    fn quarantine_pending_execution(&mut self) {}
 }
 
 /// Execution-model adapter that authenticates artifacts before invoking a runner.

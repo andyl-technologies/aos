@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crucible::model::{MeasurementDefinitions, MeasurementTerminalState};
 use crucible::{
-    ContentHash, Decision, DeliveryOrderDecision, FindingDiscoveryPath, SelectionDecision,
-    VirtualTime,
+    ContentHash, Decision, DeliveryOrderDecision, ExecutionFingerprint, FindingDiscoveryPath,
+    FingerprintSample, SelectionDecision, VirtualTime,
 };
 use crucible_campaign::{
     AlternativeId, AssignmentId, AttemptResourceLimits, BooleanDomain, BudgetGrant,

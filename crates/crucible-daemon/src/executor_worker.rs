@@ -2452,6 +2452,7 @@ fn authenticate_prepared_measurements(
     let artifact = store.load_scenario_artifact(lineage.scenario_content())?;
     let scenario = crate::decode_crucible_scenario_artifact(&artifact)?;
     result.verify_measurement_publications(&scenario)?;
+    result.verify_terminal_fingerprints(&scenario)?;
     Ok(())
 }
 
