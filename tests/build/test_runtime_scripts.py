@@ -105,6 +105,47 @@ class RuntimeScriptTests(unittest.TestCase):
         )
 
 
+class FilteredRuntimeScriptTests(RuntimeScriptTests):
+    """Checks that selecting hard links preserves the original fixup contracts."""
+
+    def patch(self):
+        original = self.output
+        selected = self.root / "selected-scripts"
+        selected.mkdir()
+        subprocess.run(
+            [
+                os.environ["AOS_TEST_PERL"],
+                os.environ["AOS_TEST_SCRIPT_FILTER"],
+                str(original),
+                str(selected),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.output = selected
+        try:
+            super().patch()
+        finally:
+            self.output = original
+
+        for path in selected.iterdir():
+            path.unlink()
+        selected.rmdir()
+
+    def test_symlinks_and_binary_prefixes_are_not_selected(self):
+        outside = self.root / "outside"
+        outside.write_bytes(b"#!/bin/sh\nexit 0\n")
+        (self.output / "alias").symlink_to(outside)
+        binary = self.install("binary", b"\x00#! /bin/sh\n")
+
+        self.patch()
+
+        self.assertEqual(outside.read_bytes(), b"#!/bin/sh\nexit 0\n")
+        self.assertEqual(binary.read_bytes(), b"\x00#! /bin/sh\n")
+
+
 class BuildEnvironmentTests(unittest.TestCase):
     def test_target_inputs_do_not_override_native_paths_or_loader(self):
         with tempfile.TemporaryDirectory() as directory:

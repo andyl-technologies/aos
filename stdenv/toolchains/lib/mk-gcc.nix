@@ -55,6 +55,20 @@
       mkdir ${sourceDir} && (cd ${spec.src} && ${prev.tar}/bin/tar cf - .) | (cd ${sourceDir} && ${prev.tar}/bin/tar xf -)
     '';
 
+  sourceScriptFilter = spec.sourceScriptFilter or null;
+  sourceScriptFilterSetup = optionalString (sourceScriptFilter != null) ''
+    source_runtime_inputs="$TMPDIR/gcc-source-runtime-inputs"
+    mkdir "$source_runtime_inputs"
+    ${sourceScriptFilter}/bin/perl ${../../filter-runtime-scripts.pl} . "$source_runtime_inputs"
+  '';
+  sourceScriptRoot =
+    if sourceScriptFilter == null
+    then "."
+    else ''"$source_runtime_inputs"'';
+  sourceScriptFilterCleanup =
+    optionalString (sourceScriptFilter != null)
+    "\nrm -r \"$source_runtime_inputs\"";
+
   freezeAutotoolsDirs = spec.freezeAutotoolsDirs or (["."] ++ (map (dep: dep.name) inTreeDeps));
   freezeAutotoolsDirText = concat " " freezeAutotoolsDirs;
   freezeAutotoolsTimestamps = spec.freezeAutotoolsTimestamps or true;
@@ -131,8 +145,8 @@ in
         ${unpackInTreeDeps}
 
         # Upstream helpers can be executed directly by configure or make.
-        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
-          "$CONFIG_SHELL" ${../../runtime-scripts.sh} .
+        ${sourceScriptFilterSetup}AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} ${sourceScriptRoot}${sourceScriptFilterCleanup}
 
         ${spec.postUnpack or ""}
         ${freezeAutotoolsScript}
