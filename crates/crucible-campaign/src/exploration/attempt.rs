@@ -2,6 +2,176 @@
 
 use super::*;
 
+/// Modeled scheduler control applied when continuing an authenticated boundary.
+///
+/// The campaign layer owns the closed control shape and its resource bounds.
+/// An executor that recognizes the override form must additionally decode each
+/// decision with its scheduler schema and reject unsupported decision kinds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttemptContinuationInput {
+    /// Re-seeds post-boundary deterministic decision streams.
+    SchedulerReseed {
+        /// Exact scheduler frontier where the new seed begins.
+        source_frontier_ticks: u64,
+        /// Complete deterministic stream seed.
+        seed: [u8; 32],
+    },
+    /// Applies an ordered, finite set of recorded scheduler overrides.
+    SchedulerOverrides {
+        /// Exact scheduler frontier where override matching begins.
+        source_frontier_ticks: u64,
+        /// Canonical scheduler decision records in requested order.
+        decisions: Vec<Vec<u8>>,
+    },
+}
+
+impl AttemptContinuationInput {
+    /// Builds a bounded scheduler re-seed input.
+    #[must_use]
+    pub const fn scheduler_reseed(source_frontier_ticks: u64, seed: [u8; 32]) -> Self {
+        Self::SchedulerReseed {
+            source_frontier_ticks,
+            seed,
+        }
+    }
+
+    /// Builds a bounded ordered scheduler-override input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the set is empty, contains duplicate
+    /// records, or exceeds the fixed count, item, or aggregate byte bounds.
+    pub fn scheduler_overrides(
+        source_frontier_ticks: u64,
+        decisions: Vec<Vec<u8>>,
+    ) -> Result<Self, CampaignCodecError> {
+        validate_continuation_override_decisions(&decisions)?;
+        Ok(Self::SchedulerOverrides {
+            source_frontier_ticks,
+            decisions,
+        })
+    }
+
+    /// Returns the exact scheduler frontier where this input begins.
+    #[must_use]
+    pub const fn source_frontier_ticks(&self) -> u64 {
+        match self {
+            Self::SchedulerReseed {
+                source_frontier_ticks,
+                ..
+            }
+            | Self::SchedulerOverrides {
+                source_frontier_ticks,
+                ..
+            } => *source_frontier_ticks,
+        }
+    }
+
+    fn validate(&self) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::SchedulerReseed { .. } => Ok(()),
+            Self::SchedulerOverrides { decisions, .. } => {
+                validate_continuation_override_decisions(decisions)
+            }
+        }
+    }
+}
+
+impl Canonical for AttemptContinuationInput {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::SchedulerReseed {
+                source_frontier_ticks,
+                seed,
+            } => {
+                encoder.u8(0);
+                encoder.u64(*source_frontier_ticks);
+                encoder.fixed(seed);
+            }
+            Self::SchedulerOverrides {
+                source_frontier_ticks,
+                decisions,
+            } => {
+                encoder.u8(1);
+                encoder.u64(*source_frontier_ticks);
+                decisions.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::scheduler_reseed(
+                decoder.u64()?,
+                decoder.fixed::<32>()?,
+            )),
+            1 => {
+                let source_frontier_ticks = decoder.u64()?;
+                let mut aggregate_bytes = 0;
+                let decisions = decoder.sequence_bounded(
+                    MAX_CONTINUATION_OVERRIDE_DECISIONS,
+                    "attempt-continuation-override-count",
+                    |decoder| {
+                        decoder.byte_sequence_bounded_charged(
+                            MAX_CONTINUATION_OVERRIDE_DECISION_BYTES,
+                            "attempt-continuation-override-item-bytes",
+                            &mut aggregate_bytes,
+                            MAX_CONTINUATION_OVERRIDE_BYTES,
+                            "attempt-continuation-override-aggregate-bytes",
+                        )
+                    },
+                )?;
+                Self::scheduler_overrides(source_frontier_ticks, decisions)
+            }
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "attempt-continuation-input",
+                tag,
+            }),
+        }
+    }
+}
+
+fn validate_continuation_override_decisions(
+    decisions: &[Vec<u8>],
+) -> Result<(), CampaignCodecError> {
+    if decisions.is_empty() {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "attempt continuation override set is empty",
+        });
+    }
+    if decisions.len() > MAX_CONTINUATION_OVERRIDE_DECISIONS {
+        return Err(CampaignCodecError::LimitExceeded {
+            limit: "attempt-continuation-override-count",
+        });
+    }
+
+    let mut aggregate_bytes = 0usize;
+    let mut unique = BTreeSet::new();
+    for decision in decisions {
+        if decision.len() > MAX_CONTINUATION_OVERRIDE_DECISION_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "attempt-continuation-override-item-bytes",
+            });
+        }
+        aggregate_bytes = aggregate_bytes.checked_add(decision.len()).ok_or(
+            CampaignCodecError::LimitExceeded {
+                limit: "attempt-continuation-override-aggregate-bytes",
+            },
+        )?;
+        if aggregate_bytes > MAX_CONTINUATION_OVERRIDE_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "attempt-continuation-override-aggregate-bytes",
+            });
+        }
+        if !unique.insert(decision) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "attempt continuation override set contains a duplicate decision",
+            });
+        }
+    }
+    Ok(())
+}
+
 /// One branch-point-scoped edge in an authenticated execution path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BranchPathSegment {
@@ -234,6 +404,7 @@ pub struct Attempt {
     start: AttemptStart,
     path: BranchPathId,
     stop: StopCondition,
+    continuation_input: Option<AttemptContinuationInput>,
 }
 
 impl Attempt {
@@ -263,6 +434,41 @@ impl Attempt {
             start,
             path,
             stop,
+            continuation_input: None,
+        })
+    }
+
+    /// Builds a semantic continuation whose execution input is part of its identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] unless `start` is an `AfterAttempt`
+    /// continuation, when the stop condition is invalid, or when a directly
+    /// constructed override input is empty, duplicated, or exceeds its bounds.
+    pub fn new_with_continuation_input(
+        start: AttemptStart,
+        path: BranchPathId,
+        stop: StopCondition,
+        continuation_input: AttemptContinuationInput,
+    ) -> Result<Self, CampaignCodecError> {
+        if !matches!(start, AttemptStart::AfterAttempt { .. }) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "attempt continuation input requires an after-attempt start",
+            });
+        }
+        continuation_input.validate()?;
+        stop.validate()?;
+        let schema_version = if stop.uses_observation_wire_schema() {
+            OBSERVATION_CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
+        } else {
+            CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
+        };
+        Ok(Self {
+            schema_version,
+            start,
+            path,
+            stop,
+            continuation_input: Some(continuation_input),
         })
     }
 
@@ -282,6 +488,12 @@ impl Attempt {
     #[must_use]
     pub const fn stop(&self) -> &StopCondition {
         &self.stop
+    }
+
+    /// Returns the modeled input applied at an authenticated continuation boundary.
+    #[must_use]
+    pub const fn continuation_input(&self) -> Option<&AttemptContinuationInput> {
+        self.continuation_input.as_ref()
     }
 
     pub(crate) const fn schema_version(&self) -> u32 {
@@ -348,6 +560,14 @@ impl Canonical for Attempt {
         self.start.encode(encoder);
         self.path.encode(encoder);
         self.stop.encode(encoder);
+        if matches!(
+            self.schema_version,
+            CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
+                | OBSERVATION_CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
+        ) && let Some(continuation_input) = &self.continuation_input
+        {
+            continuation_input.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -358,6 +578,8 @@ impl Canonical for Attempt {
                 | ATTEMPT_SCHEMA_VERSION
                 | AFTER_ATTEMPT_SCHEMA_VERSION
                 | OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION
+                | CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
+                | OBSERVATION_CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported attempt schema version",
@@ -366,22 +588,43 @@ impl Canonical for Attempt {
         let start = AttemptStart::decode(decoder)?;
         let path = BranchPathId::decode(decoder)?;
         let stop = StopCondition::decode(decoder)?;
+        let continuation_input = matches!(
+            schema_version,
+            CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
+                | OBSERVATION_CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
+        )
+        .then(|| AttemptContinuationInput::decode(decoder))
+        .transpose()?;
         let compatible = match schema_version {
             RECORD_SCHEMA_VERSION => {
                 !stop.uses_extended_wire_schema()
+                    && !stop.uses_observation_wire_schema()
                     && !matches!(start, AttemptStart::AfterAttempt { .. })
             }
             ATTEMPT_SCHEMA_VERSION => {
                 stop.uses_extended_wire_schema()
                     && !matches!(start, AttemptStart::AfterAttempt { .. })
             }
-            AFTER_ATTEMPT_SCHEMA_VERSION => matches!(start, AttemptStart::AfterAttempt { .. }),
-            OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION => stop.uses_observation_wire_schema(),
+            AFTER_ATTEMPT_SCHEMA_VERSION => {
+                matches!(start, AttemptStart::AfterAttempt { .. })
+                    && !stop.uses_observation_wire_schema()
+                    && continuation_input.is_none()
+            }
+            OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION => {
+                stop.uses_observation_wire_schema() && continuation_input.is_none()
+            }
+            CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION => {
+                matches!(start, AttemptStart::AfterAttempt { .. })
+                    && !stop.uses_observation_wire_schema()
+                    && continuation_input.is_some()
+            }
+            OBSERVATION_CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION => {
+                matches!(start, AttemptStart::AfterAttempt { .. })
+                    && stop.uses_observation_wire_schema()
+                    && continuation_input.is_some()
+            }
             _ => false,
         };
-        let compatible = compatible
-            && (stop.uses_observation_wire_schema()
-                == (schema_version == OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION));
         if !compatible {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "attempt schema disagrees with start or stop semantics",
@@ -392,6 +635,7 @@ impl Canonical for Attempt {
             start,
             path,
             stop,
+            continuation_input,
         })
     }
 }

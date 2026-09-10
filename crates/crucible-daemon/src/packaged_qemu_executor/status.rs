@@ -40,10 +40,11 @@ use crate::executor_supervisor::LocalExecutionActivity;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
     AttemptWorkResult, AttemptWorkerFailure, CapturedAttemptCheckpoint, DirectoryAssignmentLedger,
-    ExactCheckpointStore, LocalAttemptWorker, QemuFreshAttemptLifecycleFactory,
-    QemuFreshAttemptLifecycleOwner, QemuHotForkWorldLifecycleFactory,
-    QemuHotForkWorldLifecycleStart, QemuProductionExactResumeLifecycleFactory,
-    QemuProductionExactResumeLifecycleOwner, QueuedAttempt,
+    ExactCheckpointStore, LocalAttemptWorker, QemuAttemptContinuation,
+    QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner,
+    QemuHotForkWorldLifecycleFactory, QemuHotForkWorldLifecycleStart,
+    QemuProductionExactResumeLifecycleFactory, QemuProductionExactResumeLifecycleOwner,
+    QueuedAttempt,
 };
 
 const MAX_PACKAGED_STATUS_ATTEMPT_RECORDS: usize = 65_536;
@@ -356,6 +357,13 @@ where
 {
     type Lifecycle = PackagedStatusLifecycle<F::Lifecycle>;
     type Error = F::Error;
+
+    fn configure_attempt_continuation(
+        &mut self,
+        continuation: Option<QemuAttemptContinuation<'_>>,
+    ) -> bool {
+        self.inner.configure_attempt_continuation(continuation)
+    }
 
     fn start_fresh_lifecycle(
         &mut self,

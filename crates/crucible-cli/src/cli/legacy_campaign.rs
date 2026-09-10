@@ -20,9 +20,9 @@ use crucible_api as campaign_output_api;
 use crucible_daemon::ExactCheckpointStore;
 use crucible_daemon::campaign_store_composition::{DirectoryBlobBackend, ImmutableBlobBackend};
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignReplayClosure, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
-    GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignWatchFrame,
-    run_guarded_default_campaign,
+    GuardedCampaignContinuationControl, GuardedCampaignReplayClosure, GuardedDefaultCampaignRun,
+    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
+    GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
 };
 
 /// Returns whether the shared campaign owner can resume this logical checkpoint exactly.
@@ -38,30 +38,36 @@ pub(super) fn guarded_campaign_resume_eligible(
             plan.terminal_condition,
             RunTerminalCondition::Quiescence
                 | RunTerminalCondition::VirtualTime
+                | RunTerminalCondition::Property
                 | RunTerminalCondition::Stopped
         )
         && (plan.terminal_condition != RunTerminalCondition::VirtualTime
             || plan.max_virtual_time_ticks.is_some())
+        && (plan.terminal_condition != RunTerminalCondition::Property
+            || !evidence.scenario_form.properties().assertions().is_empty())
         && campaign_resume_evidence_supported(evidence)
 }
 
-/// Returns whether the shared campaign owner can execute an unchanged fork exactly.
+/// Returns whether the shared campaign owner can execute a standard fork exactly.
 pub(super) fn guarded_campaign_fork_eligible(
     plan: &ForkInvocationPlan,
     evidence: &ResumeHandleEvidence,
 ) -> bool {
-    plan.fork_seed.is_none()
-        && plan.decision_overrides.is_empty()
-        && plan.execution_mode == RunExecutionMode::ToCompletion
+    plan.execution_mode == RunExecutionMode::ToCompletion
         && plan.startup_commands == [SessionCommandKind::Fork, SessionCommandKind::Continue]
         && plan.initial_control_commands == [SessionCommandKind::Query]
         && plan.accepted_interactive_commands.is_empty()
         && matches!(
             plan.terminal_condition,
-            RunTerminalCondition::VirtualTime | RunTerminalCondition::Stopped
+            RunTerminalCondition::Quiescence
+                | RunTerminalCondition::VirtualTime
+                | RunTerminalCondition::Property
+                | RunTerminalCondition::Stopped
         )
         && (plan.terminal_condition != RunTerminalCondition::VirtualTime
             || plan.max_virtual_time_ticks.is_some())
+        && (plan.terminal_condition != RunTerminalCondition::Property
+            || !evidence.scenario_form.properties().assertions().is_empty())
         && campaign_resume_evidence_supported(evidence)
 }
 
@@ -107,6 +113,15 @@ pub(super) fn run_local_qemu_campaign_resume_workflow(
         ));
     }
 
+    run_local_qemu_campaign_continuation_workflow(backend, resume_plan, evidence, None)
+}
+
+fn run_local_qemu_campaign_continuation_workflow(
+    backend: &ResolvedLocalBackend,
+    resume_plan: &ResumeInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+    continuation_control: Option<GuardedCampaignContinuationControl>,
+) -> Result<ResumeWorkflowReport, CliError> {
     let deployment_path = resolve_guarded_campaign_deployment_path(None)?;
     let deployment = load_guarded_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, None)?;
@@ -120,7 +135,7 @@ pub(super) fn run_local_qemu_campaign_resume_workflow(
         }
     };
     let lifecycle = production_qemu_lifecycle_config(backend)?;
-    let final_stop = guarded_resume_stop(resume_plan)?;
+    let final_stop = guarded_resume_stop(resume_plan, evidence)?;
     let checkpoint_directory = tempfile::Builder::new()
         .prefix("crucible-campaign-resume-")
         .tempdir()
@@ -142,14 +157,24 @@ pub(super) fn run_local_qemu_campaign_resume_workflow(
         lifecycle,
         deployment.host,
         resources,
-    )
-    .with_resume_source(
-        evidence.schedule.clone(),
-        evidence.replay_closure.clone(),
-        evidence.checkpoint.clone(),
-        final_stop,
-        Arc::clone(&checkpoints),
     );
+    let request = match continuation_control {
+        Some(control) => request.with_controlled_resume_source(
+            evidence.schedule.clone(),
+            evidence.replay_closure.clone(),
+            evidence.checkpoint.clone(),
+            final_stop,
+            Arc::clone(&checkpoints),
+            control,
+        ),
+        None => request.with_resume_source(
+            evidence.schedule.clone(),
+            evidence.replay_closure.clone(),
+            evidence.checkpoint.clone(),
+            final_stop,
+            Arc::clone(&checkpoints),
+        ),
+    };
     let request = if resume_plan.watch_streams_live_status {
         request.with_watch_frames()
     } else {
@@ -166,7 +191,7 @@ pub(super) fn run_local_qemu_campaign_resume_workflow(
     )
 }
 
-/// Forks one local-QEMU checkpoint without changing its replay decisions.
+/// Forks one local-QEMU checkpoint through campaign-owned continuation control.
 pub(super) fn run_local_qemu_campaign_fork_workflow(
     backend: &ResolvedLocalBackend,
     fork_plan: &ForkInvocationPlan,
@@ -190,9 +215,40 @@ pub(super) fn run_local_qemu_campaign_fork_workflow(
         initial_control_commands: fork_plan.initial_control_commands.clone(),
         accepted_interactive_commands: Vec::new(),
     };
-    let resumed = run_local_qemu_campaign_resume_workflow(backend, &resume_plan, evidence)?;
+    let control = guarded_campaign_fork_control(fork_plan, evidence)?;
+    let resumed =
+        run_local_qemu_campaign_continuation_workflow(backend, &resume_plan, evidence, control)?;
 
     Ok(campaign_fork_workflow_report(fork_plan, evidence, resumed))
+}
+
+fn guarded_campaign_fork_control(
+    plan: &ForkInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> Result<Option<GuardedCampaignContinuationControl>, CliError> {
+    if let Some(seed) = plan.fork_seed {
+        return Ok(Some(GuardedCampaignContinuationControl::reseed(
+            evidence.checkpoint.virtual_time,
+            crucible::Seed::from_u64(seed),
+        )));
+    }
+    if plan.decision_overrides.is_empty() {
+        return Ok(None);
+    }
+
+    let overrides = fork_override_decisions(plan)
+        .into_iter()
+        .filter_map(|decision| match decision {
+            crucible::Decision::Override(decision) => Some(decision),
+            _ => None,
+        })
+        .collect();
+    GuardedCampaignContinuationControl::scheduler_overrides(
+        evidence.checkpoint.virtual_time,
+        overrides,
+    )
+    .map(Some)
+    .map_err(|error| campaign_run_error("model fork continuation input", error))
 }
 
 fn campaign_fork_workflow_report(
@@ -213,16 +269,29 @@ fn campaign_fork_workflow_report(
     }
 }
 
-fn guarded_resume_stop(plan: &ResumeInvocationPlan) -> Result<StopCondition, CliError> {
+fn guarded_resume_stop(
+    plan: &ResumeInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> Result<StopCondition, CliError> {
     match plan.terminal_condition {
-        RunTerminalCondition::Quiescence => Ok(StopCondition::NextChoice),
+        RunTerminalCondition::Quiescence => Ok(StopCondition::Observation(
+            ObservationCondition::SchedulerQuiescent,
+        )),
         RunTerminalCondition::VirtualTime => plan
             .max_virtual_time_ticks
             .map(StopCondition::VirtualTimeNanoseconds)
             .ok_or_else(|| usage_error("resume --until virtual-time requires --max-virtual-time")),
         RunTerminalCondition::Stopped => Ok(StopCondition::Terminal),
-        RunTerminalCondition::Property => Err(backend_error(
-            "campaign-backed QEMU resume does not support property breakpoints",
+        RunTerminalCondition::Property
+            if evidence.scenario_form.properties().assertions().is_empty() =>
+        {
+            Err(invalid_scenario(format!(
+                "resume --until property requires scenario {} to declare at least one assertion",
+                evidence.scenario.id().to_hex()
+            )))
+        }
+        RunTerminalCondition::Property => Ok(StopCondition::Observation(
+            ObservationCondition::AnyAssertionViolationTransition,
         )),
     }
 }
@@ -510,12 +579,8 @@ fn campaign_resume_workflow_report(
     let final_state = match resume_plan.terminal_condition {
         RunTerminalCondition::Quiescence => String::from("quiescent"),
         RunTerminalCondition::VirtualTime => String::from("virtual-time"),
+        RunTerminalCondition::Property => String::from("property-failed"),
         RunTerminalCondition::Stopped => String::from("stopped"),
-        RunTerminalCondition::Property => {
-            return Err(campaign_run_error_message(
-                "property resume entered the selection-free campaign path",
-            ));
-        }
     };
     let mut run = campaign_run_report_with_state(
         campaign,
@@ -547,11 +612,6 @@ fn campaign_resume_status(
         StopOutcome::AssertionFailure(_) | StopOutcome::ScenarioFailure(_) => {
             (BackendCommandStatus::Failed, OutcomeKind::Failed)
         }
-        StopOutcome::Reached(StopCondition::NextChoice)
-            if plan.terminal_condition == RunTerminalCondition::Quiescence =>
-        {
-            (BackendCommandStatus::Passed, OutcomeKind::Passed)
-        }
         StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline))
             if plan.terminal_condition == RunTerminalCondition::VirtualTime
                 && plan.max_virtual_time_ticks == Some(*deadline) =>
@@ -563,9 +623,25 @@ fn campaign_resume_status(
                 "campaign resume ended at an unexpected nonterminal boundary",
             ));
         }
+        outcome
+            if plan.terminal_condition == RunTerminalCondition::Quiescence
+                && outcome.reaches(&StopCondition::Observation(
+                    ObservationCondition::SchedulerQuiescent,
+                )) =>
+        {
+            (BackendCommandStatus::Passed, OutcomeKind::Passed)
+        }
+        outcome
+            if plan.terminal_condition == RunTerminalCondition::Property
+                && outcome.reaches(&StopCondition::Observation(
+                    ObservationCondition::AnyAssertionViolationTransition,
+                )) =>
+        {
+            (BackendCommandStatus::Failed, OutcomeKind::Failed)
+        }
         StopOutcome::ObservationReached(_) => {
             return Err(campaign_run_error_message(
-                "campaign resume ended at an unsupported observation boundary",
+                "campaign resume ended at an unexpected observation boundary",
             ));
         }
     })
@@ -1212,6 +1288,20 @@ mod tests {
 
     fn resume_evidence(schedule: Schedule, frontier: VirtualTime) -> ResumeHandleEvidence {
         let scenario_form = default_run_plan().scenario.scenario_form().clone();
+        resume_evidence_for_scenario(scenario_form, schedule, frontier)
+    }
+
+    fn resume_evidence_with_assertion(frontier: VirtualTime) -> ResumeHandleEvidence {
+        let scenario_form = default_run_plan().scenario.scenario_form().clone();
+        assert!(!scenario_form.properties().assertions().is_empty());
+        resume_evidence_for_scenario(scenario_form, Schedule::empty(), frontier)
+    }
+
+    fn resume_evidence_for_scenario(
+        scenario_form: crucible::ScenarioDefForm,
+        schedule: Schedule,
+        frontier: VirtualTime,
+    ) -> ResumeHandleEvidence {
         let scenario = scenario_form.scenario_def();
         let configuration = crucible::Configuration {
             def: scenario.clone(),
@@ -1445,7 +1535,21 @@ mod tests {
 
         let mut property = default.clone();
         property.terminal_condition = RunTerminalCondition::Property;
-        assert!(!guarded_campaign_resume_eligible(&property, &evidence));
+        assert_eq!(
+            guarded_campaign_resume_eligible(&property, &evidence),
+            !evidence.scenario_form.properties().assertions().is_empty()
+        );
+        let property_evidence = resume_evidence_with_assertion(VirtualTime { ticks: 5 });
+        let mut property = default_resume_plan(&property_evidence, temporary.path());
+        property.terminal_condition = RunTerminalCondition::Property;
+        assert!(guarded_campaign_resume_eligible(
+            &property,
+            &property_evidence
+        ));
+        assert_eq!(
+            guarded_resume_stop(&property, &property_evidence).expect("property stop"),
+            StopCondition::Observation(ObservationCondition::AnyAssertionViolationTransition)
+        );
         let mut interactive = default.clone();
         interactive.execution_mode = RunExecutionMode::Interactive;
         interactive.startup_commands = vec![SessionCommandKind::Start];
@@ -1460,7 +1564,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_fork_route_accepts_only_unchanged_standard_workflows() {
+    fn campaign_fork_route_accepts_standard_controlled_workflows() {
         let temporary = TempDir::new().expect("fork route workspace");
         let evidence = resume_evidence(Schedule::empty(), VirtualTime { ticks: 5 });
         let default = default_fork_plan(&evidence, temporary.path());
@@ -1474,22 +1578,42 @@ mod tests {
 
         let mut reseeded = default.clone();
         reseeded.fork_seed = Some(7);
-        assert!(!guarded_campaign_fork_eligible(&reseeded, &evidence));
+        assert!(guarded_campaign_fork_eligible(&reseeded, &evidence));
+        assert!(
+            guarded_campaign_fork_control(&reseeded, &evidence)
+                .expect("model reseed control")
+                .is_some()
+        );
 
         let mut overridden = default.clone();
         overridden.decision_overrides = vec![ForkDecisionOverride {
             decision: String::from("network:delivery"),
             value: String::from("alternate"),
         }];
-        assert!(!guarded_campaign_fork_eligible(&overridden, &evidence));
+        assert!(guarded_campaign_fork_eligible(&overridden, &evidence));
+        assert!(
+            guarded_campaign_fork_control(&overridden, &evidence)
+                .expect("model override control")
+                .is_some()
+        );
 
         let mut property = default.clone();
         property.terminal_condition = RunTerminalCondition::Property;
-        assert!(!guarded_campaign_fork_eligible(&property, &evidence));
+        assert_eq!(
+            guarded_campaign_fork_eligible(&property, &evidence),
+            !evidence.scenario_form.properties().assertions().is_empty()
+        );
+        let property_evidence = resume_evidence_with_assertion(VirtualTime { ticks: 5 });
+        let mut property = default_fork_plan(&property_evidence, temporary.path());
+        property.terminal_condition = RunTerminalCondition::Property;
+        assert!(guarded_campaign_fork_eligible(
+            &property,
+            &property_evidence
+        ));
 
         let mut quiescence = default.clone();
         quiescence.terminal_condition = RunTerminalCondition::Quiescence;
-        assert!(!guarded_campaign_fork_eligible(&quiescence, &evidence));
+        assert!(guarded_campaign_fork_eligible(&quiescence, &evidence));
 
         let mut interactive = default.clone();
         interactive.execution_mode = RunExecutionMode::Interactive;

@@ -2675,6 +2675,170 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
 }
 
 #[test]
+fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
+    let origin = stored_id!(
+        AttemptId,
+        ObjectKind::CampaignFact,
+        "continuation-input-origin"
+    );
+    let reached = stored_id!(
+        ConfigurationArtifactId,
+        ObjectKind::Configuration,
+        "continuation-input-reached"
+    );
+    let path = stored_id!(
+        BranchPathId,
+        ObjectKind::CampaignFact,
+        "continuation-input-path"
+    );
+    let start = AttemptStart::AfterAttempt { origin, reached };
+
+    let base_seed = AttemptContinuationInput::scheduler_reseed(17, [0; 32]);
+    let mut changed_seed_bytes = [0; 32];
+    changed_seed_bytes[31] = 1;
+    let changed_seed = AttemptContinuationInput::scheduler_reseed(17, changed_seed_bytes);
+    let seed_attempt = Attempt::new_with_continuation_input(
+        start,
+        path,
+        StopCondition::Terminal,
+        base_seed.clone(),
+    )
+    .expect("seed continuation attempt");
+    let changed_seed_attempt =
+        Attempt::new_with_continuation_input(start, path, StopCondition::Terminal, changed_seed)
+            .expect("changed-seed continuation attempt");
+
+    assert_eq!(seed_attempt.schema_version(), 5);
+    assert_eq!(seed_attempt.continuation_input(), Some(&base_seed));
+    assert_ne!(
+        seed_attempt.id().expect("seed attempt id"),
+        changed_seed_attempt.id().expect("changed seed attempt id")
+    );
+    assert_eq!(
+        Attempt::from_canonical_bytes(&seed_attempt.canonical_bytes())
+            .expect("canonical seed continuation attempt"),
+        seed_attempt
+    );
+
+    let observed_attempt = Attempt::new_with_continuation_input(
+        start,
+        path,
+        StopCondition::Observation(ObservationCondition::SchedulerQuiescent),
+        base_seed.clone(),
+    )
+    .expect("observed continuation attempt");
+    assert_eq!(observed_attempt.schema_version(), 6);
+    assert_eq!(
+        Attempt::from_canonical_bytes(&observed_attempt.canonical_bytes())
+            .expect("canonical observed continuation attempt"),
+        observed_attempt
+    );
+
+    let first = vec![0x10, 0x20];
+    let second = vec![0x30, 0x40];
+    let changed = vec![0x30, 0x41];
+    let ordered =
+        AttemptContinuationInput::scheduler_overrides(17, vec![first.clone(), second.clone()])
+            .expect("ordered override input");
+    let reordered =
+        AttemptContinuationInput::scheduler_overrides(17, vec![second.clone(), first.clone()])
+            .expect("reordered override input");
+    let changed_value =
+        AttemptContinuationInput::scheduler_overrides(17, vec![first.clone(), changed])
+            .expect("changed override input");
+
+    let ordered_attempt =
+        Attempt::new_with_continuation_input(start, path, StopCondition::Terminal, ordered.clone())
+            .expect("ordered override attempt");
+    let reordered_attempt =
+        Attempt::new_with_continuation_input(start, path, StopCondition::Terminal, reordered)
+            .expect("reordered override attempt");
+    let changed_value_attempt =
+        Attempt::new_with_continuation_input(start, path, StopCondition::Terminal, changed_value)
+            .expect("changed override attempt");
+    assert_ne!(
+        ordered_attempt.id().expect("ordered override attempt id"),
+        reordered_attempt
+            .id()
+            .expect("reordered override attempt id")
+    );
+    assert_ne!(
+        ordered_attempt.id().expect("ordered override attempt id"),
+        changed_value_attempt
+            .id()
+            .expect("changed override attempt id")
+    );
+    assert_eq!(
+        decode::<AttemptContinuationInput>(&encode(&ordered)).expect("canonical override input"),
+        ordered
+    );
+
+    assert!(matches!(
+        AttemptContinuationInput::scheduler_overrides(17, Vec::new()),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "attempt continuation override set is empty"
+        })
+    ));
+    assert!(matches!(
+        AttemptContinuationInput::scheduler_overrides(17, vec![first.clone(), first]),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "attempt continuation override set contains a duplicate decision"
+        })
+    ));
+    assert!(matches!(
+        AttemptContinuationInput::scheduler_overrides(17, vec![vec![0; 1024 * 1024 + 1]]),
+        Err(CampaignCodecError::LimitExceeded {
+            limit: "attempt-continuation-override-item-bytes"
+        })
+    ));
+    assert!(matches!(
+        AttemptContinuationInput::scheduler_overrides(17, vec![vec![0]; 4_097]),
+        Err(CampaignCodecError::LimitExceeded {
+            limit: "attempt-continuation-override-count"
+        })
+    ));
+    assert_eq!(
+        decode::<AttemptContinuationInput>(&[2]),
+        Err(CampaignCodecError::UnknownTag {
+            kind: "attempt-continuation-input",
+            tag: 2
+        })
+    );
+    assert_eq!(
+        decode::<AttemptContinuationInput>(&[0]),
+        Err(CampaignCodecError::Truncated)
+    );
+
+    assert!(matches!(
+        Attempt::new_with_continuation_input(
+            AttemptStart::Discover {
+                configuration: reached
+            },
+            path,
+            StopCondition::Terminal,
+            base_seed,
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "attempt continuation input requires an after-attempt start"
+        })
+    ));
+    assert!(matches!(
+        Attempt::new_with_continuation_input(
+            start,
+            path,
+            StopCondition::Terminal,
+            AttemptContinuationInput::SchedulerOverrides {
+                source_frontier_ticks: 17,
+                decisions: Vec::new(),
+            },
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "attempt continuation override set is empty"
+        })
+    ));
+}
+
+#[test]
 fn scenario_default_records_have_frozen_versioned_vectors() {
     let branch_point = BranchPointId::from_hash(hash("scenario-default-branch-point"));
     let parent = stored_id!(

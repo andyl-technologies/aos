@@ -26,7 +26,7 @@ use thiserror::Error;
 use super::{
     AttemptExecutionContext, AttemptWorkerFailure, CapturedAttemptCheckpoint,
     MAX_QEMU_ATTEMPT_GENERATION_NODES, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuFreshAttemptLifecycleFactory,
+    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuAttemptContinuation, QemuFreshAttemptLifecycleFactory,
     QemuFreshAttemptLifecycleOwner,
 };
 
@@ -271,6 +271,13 @@ where
 {
     type Lifecycle = QemuObservedFreshAttemptLifecycle<F::Lifecycle>;
     type Error = QemuObservedFreshAttemptLifecycleFactoryError<F::Error>;
+
+    fn configure_attempt_continuation(
+        &mut self,
+        continuation: Option<QemuAttemptContinuation<'_>>,
+    ) -> bool {
+        self.inner.configure_attempt_continuation(continuation)
+    }
 
     fn start_fresh_lifecycle(
         &mut self,
