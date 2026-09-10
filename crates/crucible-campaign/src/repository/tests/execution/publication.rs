@@ -2,11 +2,13 @@
 
 use super::*;
 use crate::{
-    CampaignFindingOccurrenceObject, CampaignFindingOccurrenceObjectKind, FindingTriageEvidenceSet,
+    CampaignFindingOccurrenceObject, CampaignFindingOccurrenceObjectKind,
+    CampaignFindingTriageReplayRole, FindingTriageEvidenceSet,
     GetCampaignFindingOccurrenceObjectRequest, GetCampaignFindingOccurrenceObjectResponse,
+    GetCampaignFindingTriageReplaySegmentRequest, GetCampaignFindingTriageReplaySegmentResponse,
     MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES, QueryCampaignFindingOccurrencesRequest,
-    QueryCampaignFindingOccurrencesResponse,
+    MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
+    QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
 };
 
 /// Installs a frozen historical finding through the same snapshot transition
@@ -81,6 +83,91 @@ fn install_historical_finding_successor(
     ));
 
     CampaignSnapshotId::from_content_id(snapshot_content).expect("historical snapshot ID")
+}
+
+/// Fetches and authenticates every stored envelope for one segmented replay.
+fn query_segmented_triage_replay(
+    client: &crate::CampaignClient<RepositoryCampaignService<'_, AllowCampaignQueries>>,
+    first_request: GetCampaignFindingTriageReplaySegmentRequest,
+) -> (
+    FindingTriageReplayEvidence,
+    crate::FindingTriageReplayStorageDescription,
+) {
+    let first_response = client
+        .get_campaign_finding_triage_replay_segment(&first_request)
+        .expect("authenticated first triage replay segment");
+    let first_encoded = first_response.canonical_bytes();
+    assert!(first_encoded.len() <= MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES);
+    let first_decoded =
+        GetCampaignFindingTriageReplaySegmentResponse::from_canonical_bytes(&first_encoded)
+            .expect("decode first triage replay segment");
+    first_decoded
+        .validate_for(&first_request)
+        .expect("validate first triage replay segment");
+
+    let description = first_decoded.description().clone();
+    assert_eq!(description.evidence(), first_request.evidence());
+    let mut stored_envelopes = Vec::with_capacity(description.objects().len());
+    for object in description.objects() {
+        let segment_count = object
+            .stored_envelope_bytes()
+            .div_ceil(MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES);
+        let mut stored_envelope = Vec::with_capacity(
+            usize::try_from(object.stored_envelope_bytes())
+                .expect("triage replay stored envelope length"),
+        );
+        for segment_index in 0..u32::try_from(segment_count).expect("triage replay segment count") {
+            let segment_request = GetCampaignFindingTriageReplaySegmentRequest::new(
+                first_request.principal().clone(),
+                first_request.campaign().clone(),
+                first_request.snapshot(),
+                first_request.finding(),
+                first_request.bundle(),
+                first_request.role(),
+                first_request.evidence(),
+                object.ordinal(),
+                object.content(),
+                segment_index,
+            )
+            .expect("triage replay segment request");
+            let segment_response = if object.ordinal() == 0 && segment_index == 0 {
+                first_decoded.clone()
+            } else {
+                client
+                    .get_campaign_finding_triage_replay_segment(&segment_request)
+                    .expect("authenticated triage replay segment")
+            };
+            let segment_encoded = segment_response.canonical_bytes();
+            assert!(segment_encoded.len() <= MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES);
+            let segment_decoded =
+                GetCampaignFindingTriageReplaySegmentResponse::from_canonical_bytes(
+                    &segment_encoded,
+                )
+                .expect("decode triage replay segment");
+            segment_decoded
+                .validate_for(&segment_request)
+                .expect("validate triage replay segment");
+            assert_eq!(segment_decoded.description(), &description);
+            assert!(
+                segment_decoded.range_length() <= MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES
+            );
+            stored_envelope.extend_from_slice(segment_decoded.range_bytes());
+        }
+        assert_eq!(
+            u64::try_from(stored_envelope.len()).expect("triage replay stored envelope length"),
+            object.stored_envelope_bytes()
+        );
+        stored_envelopes.push(stored_envelope);
+    }
+    let replay =
+        FindingTriageReplayEvidence::from_storage_envelopes(&description, &stored_envelopes)
+            .expect("authenticate and reassemble segmented triage replay evidence");
+    assert_eq!(
+        replay.id().expect("reassembled triage replay ID"),
+        first_request.evidence()
+    );
+
+    (replay, description)
 }
 
 #[test]
@@ -1629,19 +1716,11 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         for occurrence in response.entries() {
             let bundle_id = occurrence.bundle().id().expect("queried bundle ID");
             queried_bundle_ids.insert(bundle_id);
-            let mut object_kinds = vec![
+            let object_kinds = [
                 CampaignFindingOccurrenceObjectKind::Observation,
                 CampaignFindingOccurrenceObjectKind::Reproduction,
                 CampaignFindingOccurrenceObjectKind::MinimizedReproduction,
             ];
-            if occurrence.bundle().triage_evidence().is_some() {
-                object_kinds.extend([
-                    CampaignFindingOccurrenceObjectKind::MinimizationOriginalTriageEvidence,
-                    CampaignFindingOccurrenceObjectKind::MinimizationSelectedTriageEvidence,
-                    CampaignFindingOccurrenceObjectKind::VerificationOriginalTriageEvidence,
-                    CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence,
-                ]);
-            }
             for kind in object_kinds {
                 let object_request = GetCampaignFindingOccurrenceObjectRequest::new(
                     principal.clone(),
@@ -1665,12 +1744,6 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
                     )
                 {
                     assert!(encoded.len() > 32 * 1024 * 1024);
-                }
-                if matches!(
-                    kind,
-                    CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence
-                ) {
-                    assert!(encoded.len() > MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES);
                 }
                 let decoded =
                     GetCampaignFindingOccurrenceObjectResponse::from_canonical_bytes(&encoded)
@@ -1697,59 +1770,56 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
                             occurrence.bundle().minimized()
                         );
                     }
-                    CampaignFindingOccurrenceObject::MinimizationOriginalTriageEvidence(value) => {
-                        queried_rich_triage_objects += 1;
-                        assert_eq!(
-                            value
-                                .id()
-                                .expect("minimization original triage evidence ID"),
-                            occurrence
-                                .bundle()
-                                .triage_evidence()
-                                .expect("bundle triage evidence")
-                                .minimization_original()
-                        );
-                    }
-                    CampaignFindingOccurrenceObject::MinimizationSelectedTriageEvidence(value) => {
-                        queried_rich_triage_objects += 1;
-                        assert_eq!(
-                            value
-                                .id()
-                                .expect("minimization selected triage evidence ID"),
-                            occurrence
-                                .bundle()
-                                .triage_evidence()
-                                .expect("bundle triage evidence")
-                                .minimization_selected()
-                        );
-                    }
-                    CampaignFindingOccurrenceObject::VerificationOriginalTriageEvidence(value) => {
-                        queried_rich_triage_objects += 1;
-                        assert_eq!(
-                            value
-                                .id()
-                                .expect("verification original triage evidence ID"),
-                            occurrence
-                                .bundle()
-                                .triage_evidence()
-                                .expect("bundle triage evidence")
-                                .verification_original()
-                        );
-                    }
-                    CampaignFindingOccurrenceObject::VerificationSelectedTriageEvidence(value) => {
-                        queried_rich_triage_objects += 1;
-                        assert_eq!(
-                            value
-                                .id()
-                                .expect("verification selected triage evidence ID"),
-                            occurrence
-                                .bundle()
-                                .triage_evidence()
-                                .expect("bundle triage evidence")
-                                .verification_selected()
-                        );
-                    }
+                    unexpected => panic!(
+                        "ordinary occurrence query returned segmented triage object {unexpected:?}"
+                    ),
                 }
+            }
+
+            let Some(triage_evidence) = occurrence.bundle().triage_evidence() else {
+                continue;
+            };
+            let replay_roles = [
+                (
+                    CampaignFindingTriageReplayRole::MinimizationOriginal,
+                    triage_evidence.minimization_original(),
+                ),
+                (
+                    CampaignFindingTriageReplayRole::MinimizationSelected,
+                    triage_evidence.minimization_selected(),
+                ),
+                (
+                    CampaignFindingTriageReplayRole::VerificationOriginal,
+                    triage_evidence.verification_original(),
+                ),
+                (
+                    CampaignFindingTriageReplayRole::VerificationSelected,
+                    triage_evidence.verification_selected(),
+                ),
+            ];
+            for (role, evidence) in replay_roles {
+                let first_request = GetCampaignFindingTriageReplaySegmentRequest::new(
+                    principal.clone(),
+                    campaign.clone(),
+                    incorporated.new_snapshot,
+                    incorporated.finding,
+                    bundle_id,
+                    role,
+                    evidence,
+                    0,
+                    evidence.content_id(),
+                    0,
+                )
+                .expect("first triage replay segment request");
+                let (_, description) = query_segmented_triage_replay(&client, first_request);
+                if role == CampaignFindingTriageReplayRole::VerificationSelected {
+                    assert_eq!(
+                        description.logical_payload_bytes(),
+                        MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES as u64
+                    );
+                    assert!(description.objects().len() > 1);
+                }
+                queried_rich_triage_objects += 1;
             }
         }
         after = response.next_after();
