@@ -27,6 +27,21 @@
     inherit (spec) url sha256;
   };
 
+  sourceScriptFilter = spec.sourceScriptFilter or null;
+  sourceScriptFilterSetup = optionalString (sourceScriptFilter != null) ''
+    source_runtime_inputs="$TMPDIR/libc-runtime-scripts"
+    mkdir -p "$source_runtime_inputs"
+    ${sourceScriptFilter}/bin/perl ${../../filter-runtime-scripts.pl} . "$source_runtime_inputs"
+  '';
+  sourceScriptRoot =
+    if sourceScriptFilter == null
+    then "."
+    else ''"$source_runtime_inputs"'';
+  sourceScriptFilterCleanup = optionalString (sourceScriptFilter != null) ''
+
+    rm -rf "$source_runtime_inputs"
+  '';
+
   basePathDeps = [
     prev.coreutils
     gcc
@@ -129,8 +144,8 @@ in
         chmod -R u+w .
 
         # Upstream helpers can be executed directly by configure or make.
-        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
-          "$CONFIG_SHELL" ${../../runtime-scripts.sh} .
+        ${sourceScriptFilterSetup}AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} ${sourceScriptRoot}${sourceScriptFilterCleanup}
 
         ${spec.postUnpack or ""}
 
