@@ -63,6 +63,7 @@ use crate::{
     LocalExecutorError, LocalExecutorSupervisor,
 };
 
+mod physical_quota;
 mod s3;
 
 #[derive(Default)]

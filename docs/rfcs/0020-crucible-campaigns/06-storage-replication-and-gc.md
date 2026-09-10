@@ -2063,7 +2063,10 @@ revalidates its remote monotonic generation, deletes only the unreachable
 committed object, and reauthenticates the retained object. A publication after
 planning changes that generation and prevents every deletion. Composed broader
 transform tiers still require their additional policy-specific administration
-before global deletion. Read-through cache eviction is implemented for unique,
+before global deletion. The physical-quota integration regression revokes its
+operational guard after planning, proves global apply retains the complete
+candidate set and planned journal, and completes exact deletion only after the
+guard is restored. Read-through cache eviction is implemented for unique,
 physically independent cache and required-source placements under the v2
 policy-aware plan.
 

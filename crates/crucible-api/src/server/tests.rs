@@ -8,8 +8,14 @@ use std::error::Error;
 use axum::body::to_bytes;
 use axum::extract::State;
 use axum::http::Version;
+use bytes::Bytes;
+use futures_util::stream;
 
 use crate::lifecycle::QuiescentLifecycleLoop;
+use crucible::{
+    CheckpointKind, Configuration, Decision, DeliveryOrderDecision, Schedule, VirtualTime,
+};
+use std::collections::BTreeMap;
 
 use super::*;
 
@@ -70,6 +76,54 @@ fn rpc_request(body: impl Into<String>) -> Request<Body> {
         .expect("test request must be well-formed")
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn resume_body_rejects_declared_oversize_before_collection() {
+    let request = Request::builder()
+        .version(Version::HTTP_2)
+        .header(
+            CONTENT_LENGTH,
+            RESUME_SESSION_RPC_BODY_MAX_BYTES.saturating_add(1),
+        )
+        .body(Body::empty())
+        .expect("oversize request fixture must be well-formed");
+
+    let response = read_resume_session_rpc_body(request)
+        .await
+        .expect_err("oversize resume body must reject before collection");
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(
+        response_text(response)
+            .await
+            .expect("oversize response should be text")
+            .contains("resume-session-request-too-large")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resume_body_rejects_oversize_chunked_stream_during_collection() {
+    let body = Body::from_stream(stream::iter([
+        Ok::<_, std::convert::Infallible>(Bytes::from_static(b"1234")),
+        Ok(Bytes::from_static(b"56789")),
+    ]));
+    let request = Request::builder()
+        .version(Version::HTTP_2)
+        .body(body)
+        .expect("chunked oversize request fixture must be well-formed");
+
+    let response = read_bounded_resume_session_rpc_body(request, 8)
+        .await
+        .expect_err("chunked resume body must stop at the collection bound");
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(
+        response_text(response)
+            .await
+            .expect("oversize response should be text")
+            .contains("resume-session-request-too-large")
+    );
+}
+
 async fn wait_until_control_lock_is_held(state: &TestState) {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -98,6 +152,145 @@ fn destroy_session_request() -> String {
     format!(
         "crucible.rpc/destroy-session-request\nsession-id=42\nepoch=7\nseed={TEST_SEED}\nexpected-epoch=none\n"
     )
+}
+
+fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
+    let scenario = crucible::happy_path_scenario()
+        .expect("resume parser scenario should build")
+        .scenario;
+    let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+        at: VirtualTime { ticks: 1 },
+        order: Vec::new(),
+    }));
+    let configuration = Configuration {
+        def: scenario.scenario_def(),
+        schedule: schedule.clone(),
+    };
+    let parent = Configuration::genesis(configuration.def.clone());
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        Some(&parent),
+        VirtualTime { ticks: 1 },
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("resume parser checkpoint should build");
+    let replay_closure = ResumeReplayClosure::new(
+        &scenario,
+        &schedule,
+        &checkpoint,
+        7,
+        b"production-parser-replay-closure".to_vec(),
+    )
+    .expect("bounded replay closure should build");
+    let request = ResumeSessionRequest::new(
+        scenario.clone(),
+        schedule.clone(),
+        checkpoint.clone(),
+        scenario.seed(),
+    )
+    .with_replay_closure(replay_closure.clone());
+    let mut wire = String::from("crucible.rpc/resume-session-request\n");
+    push_wire_line(&mut wire, "scenario-id", &scenario.id().to_hex());
+    push_wire_line(&mut wire, "scenario-seed", &scenario.seed().to_hex());
+    push_wire_line(
+        &mut wire,
+        "app-random-draw-cap",
+        &scenario.app_random_draw_cap().to_string(),
+    );
+    push_wire_line(
+        &mut wire,
+        "scenario-payload",
+        &hex_encode(&scenario.to_compact_binary()),
+    );
+    push_wire_line(&mut wire, "seed", &scenario.seed().to_hex());
+    push_wire_line(
+        &mut wire,
+        "schedule",
+        &hex_encode(&schedule.to_compact_binary()),
+    );
+    push_wire_line(
+        &mut wire,
+        "checkpoint",
+        &hex_encode(&checkpoint.to_compact_binary()),
+    );
+    push_wire_line(
+        &mut wire,
+        "campaign-replay-closure-version",
+        &replay_closure.schema_version().to_string(),
+    );
+    push_wire_line(
+        &mut wire,
+        "campaign-replay-closure-identity",
+        &replay_closure.identity().to_hex(),
+    );
+    push_wire_line(
+        &mut wire,
+        "campaign-replay-closure-size",
+        &replay_closure.payload_len().to_string(),
+    );
+    push_wire_line(
+        &mut wire,
+        "campaign-replay-closure-payload",
+        &hex_encode(replay_closure.payload()),
+    );
+    (request, wire)
+}
+
+#[test]
+fn production_resume_parser_authenticates_complete_closure_envelope() {
+    let (request, wire) = resume_request_with_closure();
+    assert_eq!(
+        parse_resume_session_request(wire.as_bytes()).expect("canonical envelope should parse"),
+        request,
+    );
+
+    let closure = request
+        .replay_closure
+        .as_ref()
+        .expect("fixture should carry replay closure");
+    let wrong_size = wire.replace(
+        &format!("campaign-replay-closure-size={}\n", closure.payload_len()),
+        &format!(
+            "campaign-replay-closure-size={}\n",
+            closure.payload_len().saturating_add(1)
+        ),
+    );
+    assert!(parse_resume_session_request(wrong_size.as_bytes()).is_err());
+
+    let wrong_identity = wire.replace(
+        &closure.identity().to_hex(),
+        &ContentHash::default().to_hex(),
+    );
+    assert!(parse_resume_session_request(wrong_identity.as_bytes()).is_err());
+
+    let extra_field = format!("{wire}unexpected=field\n");
+    assert!(parse_resume_session_request(extra_field.as_bytes()).is_err());
+
+    let partial = wire.lines().take(9).collect::<Vec<_>>().join("\n") + "\n";
+    assert!(parse_resume_session_request(partial.as_bytes()).is_err());
+
+    let oversize = wire
+        .replace(
+            &format!("campaign-replay-closure-size={}\n", closure.payload_len()),
+            &format!(
+                "campaign-replay-closure-size={}\n",
+                RESUME_REPLAY_CLOSURE_MAX_BYTES.saturating_add(1)
+            ),
+        )
+        .replace(
+            &format!(
+                "campaign-replay-closure-payload={}\n",
+                hex_encode(closure.payload())
+            ),
+            "campaign-replay-closure-payload=\n",
+        );
+    assert!(
+        parse_resume_session_request(oversize.as_bytes())
+            .expect_err("declared oversize closure must reject")
+            .contains("maximum")
+    );
 }
 
 fn attach_request() -> String {
