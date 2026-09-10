@@ -15,8 +15,8 @@ use crate::{
     BranchRequest, BranchRequestResult, CampaignCodecError, CampaignCommandResult, CampaignFact,
     CampaignHash, CampaignLineageId, CampaignPolicyId, CampaignRecordKind, CampaignRepository,
     CampaignRepositoryError, CampaignSnapshot, CampaignSnapshotId, CampaignState,
-    ChoiceOpportunityId, ControlRequest, MerkleMap, MerkleMapLookupProof, MerkleMapPageProof,
-    ObjectEnvelope,
+    ChoiceOpportunityId, ControlRequest, FindingCandidateBundleId, MerkleMap, MerkleMapLookupProof,
+    MerkleMapPageProof, ObjectEnvelope,
 };
 
 mod create;
@@ -44,14 +44,16 @@ pub use list::{
 pub use pin::{PinCampaignRequest, PinCampaignResponse};
 pub use query::{
     CampaignChoiceEntry, CampaignChoiceObject, CampaignChoiceObjectKind, CampaignFindingObject,
-    CampaignFindingObjectKind, CampaignGraphEntry, ExplainCampaignAttemptRequest,
-    ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
+    CampaignFindingObjectKind, CampaignFindingOccurrence, CampaignGraphEntry,
+    ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
     GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
     GetCampaignFindingObjectResponse, GetCampaignFrontierObjectRequest,
     GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
+    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
     QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
     QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
 };
@@ -177,6 +179,8 @@ pub enum CampaignServiceOperation {
     QueryCampaignFrontier,
     /// Read complete finding records from the authenticated findings index.
     QueryCampaignFindings,
+    /// Read retained candidate bundles from one authenticated finding.
+    QueryCampaignFindingOccurrences,
     /// Read one exact dependency named by an authenticated finding.
     GetCampaignFindingObject,
     /// Explain one exact attempt, execution basis, proposal, and completion.
@@ -488,6 +492,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this query's exact snapshot.
     pub fn validate_for_query_campaign_findings(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact finding-occurrence query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this query's exact snapshot.
+    pub fn validate_for_query_campaign_finding_occurrences(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1819,6 +1836,21 @@ pub trait CampaignService {
     ) -> Result<SubmitCampaignBranchResponse, Self::Error>;
 }
 
+/// Optional campaign-service surface for proof-bearing finding occurrences.
+pub trait CampaignFindingOccurrenceService: CampaignService {
+    /// Returns one bounded page of owner-validated candidate occurrences.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, finding membership, occurrence proof generation,
+    /// or candidate validation fails.
+    fn query_campaign_finding_occurrences(
+        &self,
+        request: &QueryCampaignFindingOccurrencesRequest,
+    ) -> Result<QueryCampaignFindingOccurrencesResponse, Self::Error>;
+}
+
 /// Failure from the checked campaign-service client.
 #[derive(Debug, Error)]
 pub enum CampaignClientError {
@@ -2172,6 +2204,35 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_query_campaign_findings(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Queries one finding's candidate occurrences and validates both Merkle proofs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, finding, occurrence page, or cursor relation.
+    pub fn query_campaign_finding_occurrences(
+        &self,
+        request: &QueryCampaignFindingOccurrencesRequest,
+    ) -> Result<QueryCampaignFindingOccurrencesResponse, CampaignClientError>
+    where
+        S: CampaignFindingOccurrenceService,
+    {
+        let response = match self.service.query_campaign_finding_occurrences(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_query_campaign_finding_occurrences(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }

@@ -1,6 +1,84 @@
 //! Observation and finding publication tests.
 
 use super::*;
+use crate::{
+    MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS, QueryCampaignFindingOccurrencesRequest,
+    QueryCampaignFindingOccurrencesResponse,
+};
+
+/// Installs a frozen historical finding through the same snapshot transition
+/// shape written by earlier repository versions.
+fn install_historical_finding_successor(
+    repository: &CampaignRepository,
+    campaign: &str,
+    parent: CampaignSnapshotId,
+    finding: &Finding,
+) -> CampaignSnapshotId {
+    let finding_id = finding.id().expect("historical finding ID");
+    assert_eq!(
+        repository
+            .put_finding(finding)
+            .expect("store historical finding"),
+        finding_id.content_id()
+    );
+
+    let loaded_parent = repository
+        .read_snapshot(parent.content_id())
+        .expect("historical finding parent");
+    let mut roots = loaded_parent.snapshot.roots();
+    roots.findings = repository
+        .merkle
+        .insert(
+            roots.findings,
+            finding_signature_key(finding.signature().cluster_key()),
+            finding_id.content_id(),
+        )
+        .expect("historical finding root")
+        .content_id();
+    roots.coordination = repository
+        .coordination_with_parent_result(parent.content_id(), &loaded_parent)
+        .expect("historical coordination root");
+    let transition = repository
+        .put_fact(&CampaignFact::FindingPublished(finding_id))
+        .expect("historical finding transition");
+    let snapshot = repository
+        .budgeted_successor(
+            parent,
+            loaded_parent.snapshot.lineage(),
+            loaded_parent.snapshot.active_policy(),
+            roots,
+            CampaignFactId::from_content_id(transition).expect("historical transition identity"),
+        )
+        .expect("historical finding snapshot");
+    let snapshot_content = repository
+        .put_snapshot(&snapshot)
+        .expect("store historical finding snapshot");
+
+    let campaign_ref = campaign_ref(campaign).expect("historical campaign ref");
+    match repository
+        .refs
+        .read_ref(&campaign_ref)
+        .expect("read historical campaign ref")
+    {
+        None => assert!(matches!(
+            repository
+                .refs
+                .compare_exchange(&campaign_ref, None, parent.content_id())
+                .expect("install historical parent ref"),
+            RefCasOutcome::Advanced { .. }
+        )),
+        Some(current) => assert_eq!(current, parent.content_id()),
+    }
+    assert!(matches!(
+        repository
+            .refs
+            .compare_exchange(&campaign_ref, Some(parent.content_id()), snapshot_content)
+            .expect("install historical finding ref"),
+        RefCasOutcome::Advanced { .. }
+    ));
+
+    CampaignSnapshotId::from_content_id(snapshot_content).expect("historical snapshot ID")
+}
 
 #[test]
 fn observations_publish_exact_roots_replay_and_retain_determinism_conflicts() {
@@ -556,7 +634,7 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
             fingerprint,
             1,
             b"verified minimized reproduction".to_vec(),
-            minimization,
+            minimization.clone(),
         )
         .expect("publish minimized reproduction");
     let signature = FindingSignature::new(
@@ -573,7 +651,7 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
         .publish_finding_with_retention(
             "minimized-finding",
             observed.new_snapshot,
-            signature,
+            signature.clone(),
             observed.observation,
             original,
             Some(minimized),
@@ -634,6 +712,135 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
     assert_eq!(
         blobs.object_count().expect("object count after rejection"),
         count_before
+    );
+
+    let signature_minimization = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        vec![Some(signature.clone()), Some(signature.clone())],
+        vec![Some(signature.clone()), Some(signature.clone())],
+    )
+    .expect("signature minimization evidence");
+    let bundle = FindingCandidateBundle::new(
+        observed.observation,
+        signature.clone(),
+        original,
+        minimized,
+        signature_minimization,
+        FindingExactPins::default(),
+    )
+    .expect("finding candidate bundle");
+    let bundle_id = repository
+        .publish_finding_candidate_bundle(&bundle)
+        .expect("publish finding candidate bundle");
+    let legacy_minimized = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"legacy minimized reproduction without retained trace".to_vec(),
+        )
+        .expect("publish schema-v1 minimized reproduction");
+    assert_ne!(legacy_minimized, original);
+    assert_ne!(legacy_minimized, minimized);
+
+    let legacy_v1_occurrences = repository
+        .merkle
+        .insert(
+            MerkleMap::empty_content_id().expect("empty occurrence root"),
+            finding_occurrence_key(observed.observation),
+            observed.observation.content_id(),
+        )
+        .expect("schema-v1 occurrence root")
+        .content_id();
+    let legacy_v1 = Finding::new(
+        signature.clone(),
+        observed.observation,
+        original,
+        observed.new_snapshot,
+        FindingOccurrenceSet::new(legacy_v1_occurrences, 1, observed.observation)
+            .expect("schema-v1 occurrence set"),
+        Some(legacy_minimized),
+        BTreeSet::new(),
+    )
+    .expect("schema-v1 finding");
+    assert_eq!(legacy_v1.schema_version(), 1);
+    let legacy_v1_snapshot = install_historical_finding_successor(
+        &repository,
+        "minimized-finding-v1-cold",
+        observed.new_snapshot,
+        &legacy_v1,
+    );
+    let cold_v1 = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        cold_v1
+            .head("minimized-finding-v1-cold")
+            .expect("cold schema-v1 history validation")
+            .snapshot_id(),
+        legacy_v1_snapshot
+    );
+    let upgraded_v1 = cold_v1
+        .incorporate_finding_candidate_bundle(
+            "minimized-finding-v1-cold",
+            legacy_v1_snapshot,
+            bundle_id,
+        )
+        .expect("upgrade cold schema-v1 finding");
+    assert!(!upgraded_v1.replayed);
+    let upgraded_v1_finding = cold_v1
+        .read_finding(upgraded_v1.finding.content_id())
+        .expect("upgraded schema-v1 finding");
+    assert_eq!(upgraded_v1_finding.schema_version(), 4);
+    assert_eq!(upgraded_v1_finding.observation(), legacy_v1.observation());
+    assert_eq!(upgraded_v1_finding.reproduction(), legacy_v1.reproduction());
+    assert_eq!(
+        upgraded_v1_finding.first_seen_snapshot(),
+        legacy_v1.first_seen_snapshot()
+    );
+    assert_eq!(upgraded_v1_finding.minimized(), Some(legacy_minimized));
+    assert_eq!(upgraded_v1_finding.candidate_bundle(), Some(bundle_id));
+    assert_eq!(upgraded_v1_finding.candidate_occurrence_count(), 1);
+    cold_v1.evict_local_checkpoint(upgraded_v1.new_snapshot.content_id());
+    assert_eq!(
+        cold_v1
+            .head("minimized-finding-v1-cold")
+            .expect("cold schema-v1-to-v4 history validation")
+            .snapshot_id(),
+        upgraded_v1.new_snapshot
+    );
+
+    let upgraded = repository
+        .incorporate_finding_candidate_bundle(
+            "minimized-finding",
+            published.new_snapshot,
+            bundle_id,
+        )
+        .expect("upgrade schema-v2 finding with candidate occurrence");
+    assert!(!upgraded.replayed);
+
+    let upgraded_finding = repository
+        .read_finding(upgraded.finding.content_id())
+        .expect("upgraded finding");
+    assert_eq!(upgraded_finding.schema_version(), 4);
+    assert_eq!(upgraded_finding.observation(), stored.observation());
+    assert_eq!(upgraded_finding.reproduction(), stored.reproduction());
+    assert_eq!(upgraded_finding.minimized(), stored.minimized());
+    assert_eq!(
+        upgraded_finding.first_seen_snapshot(),
+        stored.first_seen_snapshot()
+    );
+    assert_eq!(upgraded_finding.candidate_bundle(), Some(bundle_id));
+    assert_eq!(upgraded_finding.candidate_occurrence_count(), 1);
+    repository.evict_local_checkpoint(upgraded.new_snapshot.content_id());
+    assert_eq!(
+        repository
+            .head("minimized-finding")
+            .expect("cold schema-v2-to-v4 history validation")
+            .snapshot_id(),
+        upgraded.new_snapshot
     );
 }
 
@@ -739,7 +946,7 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
     .expect("signature minimization evidence");
     let bundle = FindingCandidateBundle::new(
         observed.observation,
-        signature,
+        signature.clone(),
         original,
         minimized,
         signature_minimization,
@@ -756,14 +963,268 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         bundle_id
     );
 
-    let incorporated = repository
-        .incorporate_finding_candidate_bundle(
+    let second_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "finding-candidate-occurrence-two",
+    );
+    let second_requested = repository
+        .submit_known_branch_request(
             "finding-candidate-incorporation",
             observed.new_snapshot,
+            &second_request,
+        )
+        .expect("submit second occurrence request");
+    let second_proposal = finite_proposal(
+        &second_request,
+        &policy,
+        &repository
+            .head("finding-candidate-incorporation")
+            .expect("second occurrence request head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let second_proposed = repository
+        .issue_proposal(
+            "finding-candidate-incorporation",
+            second_requested.new_snapshot,
+            &second_proposal,
+        )
+        .expect("issue second occurrence proposal");
+    let (second_selection, second_path, second_attempt) =
+        branch_attempt(&repository, &second_request, &second_proposal);
+    let second_admitted = repository
+        .admit_proposal(
+            "finding-candidate-incorporation",
+            second_proposed.new_snapshot,
+            second_proposed.proposal,
+            &second_selection,
+            &second_path,
+            &second_attempt,
+        )
+        .expect("admit second occurrence attempt");
+    let second_observation = Observation::new(
+        second_admitted.attempt,
+        observation.child(),
+        observation.child_content(),
+        second_path.id().expect("second occurrence path ID"),
+        observation.stop().clone(),
+        observation.measurements(),
+        observation.properties(),
+        observation.coverage(),
+        BTreeSet::from([second_request.opportunity()]),
+    )
+    .expect("second occurrence observation");
+    let second_observed = repository
+        .publish_observation(
+            "finding-candidate-incorporation",
+            second_admitted.new_snapshot,
+            &second_observation,
+        )
+        .expect("publish second occurrence observation");
+    assert_ne!(second_observation.attempt(), observation.attempt());
+    assert_ne!(second_observed.observation, observed.observation);
+
+    let second_original = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            second_observation.child(),
+            second_observation.child_content(),
+            fingerprint,
+            1,
+            b"verified second original candidate reproduction".to_vec(),
+        )
+        .expect("publish second original reproduction");
+    let second_final_state =
+        CampaignHash::derive("test-finding", b"second durable candidate final state");
+    let second_minimization = FindingMinimizationEvidence::new(
+        second_original,
+        1,
+        b"seeded shortest-first; candidates=4096; bytes=134217728".to_vec(),
+        vec![FindingMinimizationAttempt::new(
+            0,
+            CampaignHash::derive("test-finding", b"second candidate artifact"),
+            CampaignHash::derive("test-finding", b"second candidate schedule"),
+            second_final_state,
+            Some(fingerprint),
+            true,
+        )],
+        second_final_state,
+    )
+    .expect("second minimization evidence");
+    let second_minimized = repository
+        .publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            second_observation.child(),
+            second_observation.child_content(),
+            fingerprint,
+            1,
+            b"verified second minimized candidate reproduction".to_vec(),
+            second_minimization.clone(),
+        )
+        .expect("publish second minimized reproduction");
+    let second_signature_minimization = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &second_minimization,
+        vec![Some(signature.clone()), Some(signature.clone())],
+        vec![Some(signature.clone()), Some(signature.clone())],
+    )
+    .expect("second signature minimization evidence");
+    let second_bundle = FindingCandidateBundle::new(
+        second_observed.observation,
+        signature.clone(),
+        second_original,
+        second_minimized,
+        second_signature_minimization,
+        FindingExactPins::default(),
+    )
+    .expect("second finding candidate bundle");
+    assert_eq!(second_bundle.signature(), bundle.signature());
+    let second_bundle_id = repository
+        .publish_finding_candidate_bundle(&second_bundle)
+        .expect("publish second finding candidate bundle");
+    assert_ne!(second_bundle_id, bundle_id);
+
+    let fresh_ref = campaign_ref("finding-candidate-fresh-v4").expect("fresh campaign ref");
+    assert!(matches!(
+        repository
+            .refs
+            .compare_exchange(&fresh_ref, None, second_observed.new_snapshot.content_id(),)
+            .expect("install fresh candidate parent ref"),
+        RefCasOutcome::Advanced { .. }
+    ));
+    let fresh = repository
+        .incorporate_finding_candidate_bundle(
+            "finding-candidate-fresh-v4",
+            second_observed.new_snapshot,
             bundle_id,
         )
-        .expect("incorporate finding candidate");
+        .expect("incorporate fresh schema-v4 finding");
+    assert!(!fresh.replayed);
+    let fresh_finding = repository
+        .read_finding(fresh.finding.content_id())
+        .expect("fresh schema-v4 finding");
+    assert_eq!(fresh_finding.schema_version(), 4);
+    assert_eq!(fresh_finding.candidate_occurrence_count(), 1);
+    assert_eq!(fresh_finding.candidate_bundle(), Some(bundle_id));
+
+    // Preserve an authentic schema-v3 predecessor, validate it from cold
+    // storage, then upgrade it with the independently admitted occurrence.
+    let legacy_occurrences = repository
+        .merkle
+        .insert(
+            MerkleMap::empty_content_id().expect("empty occurrence root"),
+            finding_occurrence_key(observed.observation),
+            observed.observation.content_id(),
+        )
+        .expect("legacy occurrence root")
+        .content_id();
+    let legacy_finding = Finding::new_with_candidate_bundle(
+        signature.clone(),
+        observed.observation,
+        original,
+        second_observed.new_snapshot,
+        FindingOccurrenceSet::new(legacy_occurrences, 1, observed.observation)
+            .expect("legacy occurrence set"),
+        Some(minimized),
+        FindingExactPins::default(),
+        bundle_id,
+    )
+    .expect("schema-v3 finding");
+    assert_eq!(legacy_finding.schema_version(), 3);
+    let legacy_snapshot_id = install_historical_finding_successor(
+        &repository,
+        "finding-candidate-incorporation",
+        second_observed.new_snapshot,
+        &legacy_finding,
+    );
+
+    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        cold.head("finding-candidate-incorporation")
+            .expect("cold schema-v3 history validation")
+            .snapshot_id(),
+        legacy_snapshot_id
+    );
+    let incorporated = cold
+        .incorporate_finding_candidate_bundle(
+            "finding-candidate-incorporation",
+            legacy_snapshot_id,
+            second_bundle_id,
+        )
+        .expect("upgrade cold schema-v3 finding with second occurrence");
     assert!(!incorporated.replayed);
+    let repeated_finding = repository
+        .read_finding(incorporated.finding.content_id())
+        .expect("repeated finding");
+    assert_eq!(repeated_finding.schema_version(), 4);
+    assert_eq!(repeated_finding.signature(), &signature);
+    assert_eq!(repeated_finding.observation(), legacy_finding.observation());
+    assert_eq!(
+        repeated_finding.reproduction(),
+        legacy_finding.reproduction()
+    );
+    assert_eq!(repeated_finding.minimized(), legacy_finding.minimized());
+    assert_eq!(repeated_finding.occurrence_count(), 2);
+    assert_eq!(repeated_finding.candidate_occurrence_count(), 2);
+    assert_eq!(repeated_finding.candidate_bundle(), Some(bundle_id));
+    assert_eq!(
+        repeated_finding.latest_candidate_bundle(),
+        Some(second_bundle_id)
+    );
+    for retained_bundle in [bundle_id, second_bundle_id] {
+        repository
+            .authenticate_current_finding_candidate_incorporation(
+                &campaign,
+                incorporated.finding,
+                retained_bundle,
+            )
+            .expect("authenticate retained occurrence bundle");
+    }
+
+    let principal = CampaignPrincipal::new("operator:alice").expect("principal");
+    let client = crate::CampaignClient::new(RepositoryCampaignService::new(
+        &repository,
+        AllowCampaignQueries,
+    ));
+    let mut after = None;
+    let mut queried_bundle_ids = BTreeSet::new();
+    loop {
+        let request = QueryCampaignFindingOccurrencesRequest::new(
+            principal.clone(),
+            campaign.clone(),
+            incorporated.new_snapshot,
+            incorporated.finding,
+            after,
+            MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS,
+        )
+        .expect("occurrence query request");
+        let response = client
+            .query_campaign_finding_occurrences(&request)
+            .expect("authenticated occurrence page");
+        let decoded = QueryCampaignFindingOccurrencesResponse::from_canonical_bytes(
+            &response.canonical_bytes(),
+        )
+        .expect("decode occurrence page");
+        decoded
+            .validate_for(&request)
+            .expect("validate decoded occurrence page");
+        for occurrence in response.entries() {
+            queried_bundle_ids.insert(occurrence.bundle().id().expect("queried bundle ID"));
+        }
+        after = response.next_after();
+        if after.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        queried_bundle_ids,
+        BTreeSet::from([bundle_id, second_bundle_id])
+    );
     let orphaned =
         CampaignRepository::new(repository.blobs.clone(), Arc::new(MemoryRefBackend::new()));
     assert!(
