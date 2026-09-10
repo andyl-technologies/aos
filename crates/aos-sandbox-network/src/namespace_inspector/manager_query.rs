@@ -20,6 +20,9 @@ use super::launch_contract::{
 
 pub(super) mod codec;
 
+#[cfg(test)]
+mod manifest_tests;
+
 const SNAPSHOT_MAGIC: &[u8; 8] = b"AOSNIMS1";
 const SNAPSHOT_KIND: u8 = 2;
 const MAXIMUM_UNIT_ID_BYTES: usize = 256;
