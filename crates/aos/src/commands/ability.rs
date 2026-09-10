@@ -5,15 +5,15 @@ use std::fs::File;
 use std::io::{Read as _, Take};
 use std::num::NonZeroU64;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_ability_inspect::{
-    render, render_projection, render_slice, ArtifactConsumptionExplanation,
+    ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES, ArtifactConsumptionExplanation,
     ArtifactConsumptionQuery, CheckedArtifactConsumptionEvidence, DiagnosticBundle,
-    DiagnosticBundleAudience, ExecutionTimeline, GraphQuery, InspectionBundle, InspectionView,
-    OperatorObservation, OperatorQuery, OperatorView, PendingStateAvailability, ProjectionKind,
-    RenderFormat, TimelineEventInput, TimelineEventKind, TimelineProvenance, TimelineTiming,
-    ViewAnchor, ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES, INSPECTION_BUNDLE_MAX_BYTES,
-    INSPECTION_QUERY_MAX_BYTES, OPERATOR_OBSERVATION_MAX_BYTES, OPERATOR_QUERY_MAX_BYTES,
+    DiagnosticBundleAudience, ExecutionTimeline, GraphQuery, INSPECTION_BUNDLE_MAX_BYTES,
+    INSPECTION_QUERY_MAX_BYTES, InspectionBundle, InspectionView, OPERATOR_OBSERVATION_MAX_BYTES,
+    OPERATOR_QUERY_MAX_BYTES, OperatorObservation, OperatorQuery, OperatorView,
+    PendingStateAvailability, ProjectionKind, RenderFormat, TimelineEventInput, TimelineEventKind,
+    TimelineProvenance, TimelineTiming, ViewAnchor, render, render_projection, render_slice,
 };
 use aos_ability_model::{LocalKey, PlanNodeKey, RequiredFeature, TransactionId};
 use aos_ability_runtime::execution::{

@@ -32,20 +32,20 @@ pub mod transition;
 pub mod value;
 
 pub use artifact_consumption::{
-    ArtifactConsumptionContract, ArtifactConsumptionEvidenceDocument, ArtifactConsumptionMechanism,
+    ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA, ArtifactConsumptionContract,
+    ArtifactConsumptionEvidenceDocument, ArtifactConsumptionMechanism,
     ArtifactConsumptionObservation, ArtifactConsumptionPlatforms, ArtifactFileEvidence,
-    ArtifactRetentionRequirement, ElfSearchPathKind, ElfStartupLinkageContract,
-    ElfStartupLinkageObservation, ElfSymbolVersion, ObservedPathConsumptionContract,
-    ObservedPathConsumptionObservation, ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA,
-    BUILD_TOOL_EXECUTION_FEATURE, ELF_STARTUP_LINKAGE_FEATURE, HELPER_EXECUTION_FEATURE,
-    IMMUTABLE_DATA_INPUT_FEATURE, RUNTIME_PLUGIN_LOAD_FEATURE,
+    ArtifactRetentionRequirement, BUILD_TOOL_EXECUTION_FEATURE, ELF_STARTUP_LINKAGE_FEATURE,
+    ElfSearchPathKind, ElfStartupLinkageContract, ElfStartupLinkageObservation, ElfSymbolVersion,
+    HELPER_EXECUTION_FEATURE, IMMUTABLE_DATA_INPUT_FEATURE, ObservedPathConsumptionContract,
+    ObservedPathConsumptionObservation, RUNTIME_PLUGIN_LOAD_FEATURE,
 };
 pub use diagnostic::{Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase};
 pub use document::{
-    decode_canonical, encode_canonical, AbilityActivationMode, AggregateOutput,
-    BindingPlanDocument, BranchSelection, DesiredStateDocument, EffectPlanDocument,
-    EnvironmentDocument, ExecutionDocument, InterfaceDocument, MergeRecord, PackageDocument,
-    RequiredFeature, SkippedOperationRecord, VersionedDocument,
+    AbilityActivationMode, AggregateOutput, BindingPlanDocument, BranchSelection,
+    DesiredStateDocument, EffectPlanDocument, EnvironmentDocument, ExecutionDocument,
+    InterfaceDocument, MergeRecord, PackageDocument, RequiredFeature, SkippedOperationRecord,
+    VersionedDocument, decode_canonical, encode_canonical,
 };
 pub use identity::{
     AggregateId, EnvironmentId, ExecutionStage, IncarnationId, InstanceId, InterfaceKey,
@@ -53,7 +53,7 @@ pub use identity::{
     ScopedOperationKey, TransactionId,
 };
 pub use interface::*;
-pub use limits::{LimitProfile, ABILITY_LIMITS_V1};
+pub use limits::{ABILITY_LIMITS_V1, LimitProfile};
 pub use plan::*;
 pub use schema::*;
 pub use transition::*;
