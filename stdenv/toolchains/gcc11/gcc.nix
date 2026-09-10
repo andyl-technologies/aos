@@ -114,11 +114,22 @@ in
       ''--with-build-sysroot="$TMPDIR/sysroot"''
       "--program-transform-name="
     ];
-    makeFlags = [
-      ''BOOT_CFLAGS="-O2 -static"''
-      ''CFLAGS_FOR_TARGET="-O2"''
-      ''LDFLAGS_FOR_TARGET="-static"''
-    ];
+    makeFlags =
+      [
+        ''BOOT_CFLAGS="-O2 -static"''
+        ''CFLAGS_FOR_TARGET="-O2"''
+        ''LDFLAGS_FOR_TARGET="-static"''
+      ]
+      ++ (
+        if hostPlatform.constraints.cpu == "riscv64"
+        then [
+          # GCC overrides configure's build compiler when it configures GMP.
+          # Pass static linking through make so GMP's standalone probes work.
+          ''CC_FOR_BUILD="${prev.gcc}/bin/gcc -static"''
+          ''CXX_FOR_BUILD="${prev.gcc}/bin/g++ -static"''
+        ]
+        else []
+      );
     postInstall = ''
       # Symlink binutils tools so gcc can find as/ld.
       mkdir -p "$out/${targetPlatform.config}/bin"
