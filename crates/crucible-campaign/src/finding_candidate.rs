@@ -536,7 +536,6 @@ impl FindingCandidateBundle {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] under the same conditions as [`Self::new`].
-    #[allow(clippy::too_many_arguments)]
     pub fn new_with_triage_evidence(
         observation: ObservationId,
         signature: FindingSignature,
@@ -558,6 +557,7 @@ impl FindingCandidateBundle {
         )
     }
 
+    // crucible-lint: allow rust-allow -- the versioned constructor validates every authenticated bundle field and its schema/evidence agreement.
     #[allow(clippy::too_many_arguments)]
     fn new_versioned(
         schema_version: u32,

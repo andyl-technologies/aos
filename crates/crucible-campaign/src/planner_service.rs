@@ -276,6 +276,7 @@ impl PlannerSearchCandidate {
     ///
     /// Returns [`CampaignCodecError`] when the ordinal or depth is zero or the
     /// edge does not derive from the exact point, domain semantics, and value.
+    // crucible-lint: allow rust-allow -- the canonical order key keeps every authenticated identity and ordering field explicit for validation.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         input_view: crate::CampaignViewId,
