@@ -126,10 +126,12 @@ const LAZY_FRONTIER_MERKLE_SELECTORS: &[LibraryExactSelector] = &[LibraryExactSe
     name: "merkle::bulk::tests::million_dormant_continuations_use_bounded_production_frontier_pages",
 }];
 
-const LAZY_FRONTIER_DAEMON_SELECTORS: &[LibraryExactSelector] = &[LibraryExactSelector {
-    source: "crates/crucible-daemon/src/executor_pool/tests.rs",
-    name: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
-}];
+const CAMPAIGN_CONTROL_RESPONSIVENESS_SELECTORS: &[LibraryExactSelector] = &[
+    LibraryExactSelector {
+        source: "crates/crucible-daemon/src/executor_pool/tests.rs",
+        name: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
+    },
+];
 
 /// Canonical RFC-0020 campaign gate catalog.
 pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
@@ -233,7 +235,19 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         &[integration_target("crucible", "gate_content_address")],
         "checks.crucible.phase1.gates.contentAddress",
     ),
-    unsupported("gate:control-responsiveness", "crucible-daemon"),
+    automated(
+        "gate:control-responsiveness",
+        "crucible-daemon",
+        &[CampaignGateTarget {
+            package: "crucible-daemon",
+            kind: CampaignGateTargetKind::LibExact {
+                selectors: CAMPAIGN_CONTROL_RESPONSIVENESS_SELECTORS,
+                nix_source: "tests/crucible/phase4-control-responsiveness.nix",
+                ignored: false,
+            },
+        }],
+        "checks.crucible.phase4.gates.controlResponsiveness",
+    ),
     unsupported("gate:e2e-determinism", "crucible-harness"),
     unsupported("gate:exact-closure-streaming", "crucible-cas"),
     automated(
@@ -267,7 +281,7 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
             CampaignGateTarget {
                 package: "crucible-daemon",
                 kind: CampaignGateTargetKind::LibExact {
-                    selectors: LAZY_FRONTIER_DAEMON_SELECTORS,
+                    selectors: CAMPAIGN_CONTROL_RESPONSIVENESS_SELECTORS,
                     nix_source: "tests/crucible/phase4-lazy-frontier.nix",
                     ignored: false,
                 },

@@ -1201,6 +1201,7 @@ in rec {
         "checks.crucible.phase4.gates.branchPointModel" = phase4.gates.branchPointModel;
         "checks.crucible.phase4.gates.campaignMutationScaling" = phase4.gates.campaignMutationScaling;
         "checks.crucible.phase4.gates.campaignStatistics" = phase4.gates.campaignStatistics;
+        "checks.crucible.phase4.gates.controlResponsiveness" = phase4.gates.controlResponsiveness;
         "checks.crucible.phase4.gates.lazyFrontier" = phase4.gates.lazyFrontier;
         "checks.crucible.phase5.gates.campaignContinuityV2" = phase5.gates.campaignContinuityV2;
         "checks.crucible.phase5.gates.campaignStoreComposition" = phase5.gates.campaignStoreComposition;
@@ -1247,6 +1248,17 @@ in rec {
           ];
         };
         dependencies = [phase1.gates.campaignModel phase2.gates.typedChoice];
+      };
+      controlResponsiveness = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase4.gates.controlResponsiveness";
+        # lint needle: controlResponsiveness = import ./phase4-control-responsiveness.nix
+        gate = import ./phase4-control-responsiveness.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase4.gates.controlResponsiveness";
+          taskIds = ["T-CAM-4.5" "T-CAM-4.6" "T-CAM-4.9" "T-CAM-8.1" "T-CAM-8.2"];
+          dependencies = [];
+        };
+        dependencies = [];
       };
       lazyFrontier = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.lazyFrontier";

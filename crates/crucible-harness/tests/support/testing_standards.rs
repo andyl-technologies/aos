@@ -314,6 +314,36 @@ pub(super) fn source_shape_failures(
         }
     }
 
+    if standard.shape == TestShape::ControlResponsiveness {
+        for required in [
+            "CampaignClient::new(RepositoryCampaignService::new(",
+            "CampaignControlAction::Pause(ActiveAttemptPolicy::Drain)",
+            ".get_campaign_status(",
+            ".pin_campaign(",
+            "const CONTROL_BOUND: Duration = Duration::from_millis(250);",
+            "assert_eq!(saturated.active(), 3);",
+            "assert_eq!(saturated.queued(), 1);",
+            "pool.request_shutdown();",
+            "Err(LocalExecutorPoolServiceError::ShuttingDown)",
+            "state.cancellations_observed, 2,",
+            ".operational_activity_snapshot();",
+            "assert!(activity.worker_in_flight);",
+            "assert!(activity.cancellation_requested);",
+            "assert_eq!(report.active(), 0);",
+            "assert_eq!(report.queued(), 0);",
+            "assert_eq!(report.executions(), 2,",
+            "assert_eq!(report.terminal_stops(), 3);",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove bounded pause, status, pin, shutdown, admission closure, executing cancellation retention, queued draining, and final accounting under saturation",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
     if standard.shape == TestShape::CampaignComponentContract {
         for required in [
             "serve_loopback_campaign_once",

@@ -61,9 +61,15 @@ in
 
           target="$TMPDIR/control-responsiveness-target"
           exact_test="executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy"
-          list_output=$(cargo test --frozen --offline \
+          if list_output=$(cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml --target-dir "$target" \
-            -p crucible-daemon --lib "$exact_test" -- --exact --list 2>&1)
+            -p crucible-daemon --lib "$exact_test" -- --exact --list 2>&1); then
+            :
+          else
+            cargo_status=$?
+            printf '%s\n' "$list_output" >&2
+            exit "$cargo_status"
+          fi
           exact_count=$(printf '%s\n' "$list_output" | grep -Fxc "$exact_test: test" || true)
           if [ "$exact_count" -ne 1 ]; then
             printf '%s\n' "$list_output" >&2
@@ -71,10 +77,16 @@ in
             exit 1
           fi
 
-          test_output=$(cargo test --frozen --offline \
+          if test_output=$(cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml --target-dir "$target" \
             -p crucible-daemon --lib "$exact_test" -- \
-            --exact --test-threads=1 2>&1)
+            --exact --test-threads=1 2>&1); then
+            :
+          else
+            cargo_status=$?
+            printf '%s\n' "$test_output" >&2
+            exit "$cargo_status"
+          fi
           printf '%s\n' "$test_output"
           if ! printf '%s\n' "$test_output" \
             | grep -F "test result: ok. 1 passed;" >/dev/null; then
