@@ -13,9 +13,10 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use crucible::{
-    Configuration, ContentHash, Decision, EventLog, Icount, MarkerId, NodeId, ObservableEvent,
-    Plan, Properties, ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables,
-    SchedulerEventLogEntry, SchedulerQuiescence, Seed, SelectionDecision, World,
+    Configuration, ContentHash, Decision, EventLog, ExecutionFingerprint, FingerprintSample,
+    Icount, MarkerId, NodeId, ObservableEvent, Plan, Properties, ScenarioDefForm,
+    ScenarioSelectableLimits, ScenarioSelectables, SchedulerEventLogEntry, SchedulerQuiescence,
+    Seed, SelectionDecision, World,
 };
 use crucible_api::ProductionFaultEvidenceSnapshot;
 use crucible_api::vm_lifecycle::{
@@ -404,6 +405,7 @@ struct BranchReplayObservations {
     terminal_fingerprint_prepares: Arc<AtomicUsize>,
     shutdowns: Arc<AtomicUsize>,
     recoveries: Arc<AtomicUsize>,
+    recovery_failures_remaining: Arc<AtomicUsize>,
     quarantines: Arc<AtomicUsize>,
 }
 
@@ -416,6 +418,7 @@ impl BranchReplayObservations {
             terminal_fingerprint_prepares: Arc::new(AtomicUsize::new(0)),
             shutdowns: Arc::new(AtomicUsize::new(0)),
             recoveries: Arc::new(AtomicUsize::new(0)),
+            recovery_failures_remaining: Arc::new(AtomicUsize::new(0)),
             quarantines: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -531,6 +534,15 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
         Ok(())
     }
 
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        let hash = ContentHash::from_bytes(node.name.as_bytes());
+        Ok(FingerprintSample {
+            node,
+            at: crucible::VirtualTime { ticks: 1 },
+            fingerprint: ExecutionFingerprint { hash },
+        })
+    }
+
     fn shutdown(
         &mut self,
     ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
@@ -602,8 +614,18 @@ impl QemuHotForkWorldLifecycleFactory for BranchReplayLifecycleFactory {
         ))
     }
 
-    fn recover(&mut self, _lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
+    fn recover(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
         self.observations.recoveries.fetch_add(1, Ordering::SeqCst);
+        if self
+            .observations
+            .recovery_failures_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(lifecycle);
+        }
         Ok(())
     }
 
@@ -1293,10 +1315,12 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
     let (_repository, _store, _lineage, _attempt, candidate, _scenario) =
         repository_execution_fixture();
     let observations = BranchReplayObservations::new();
+    let factory = BranchReplayLifecycleFactory {
+        observations: observations.clone(),
+    };
+    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
     let mut runner = QemuHotForkWorldExecutionRunner::new(
-        BranchReplayLifecycleFactory {
-            observations: observations.clone(),
-        },
+        factory,
         BranchReplayDriver {
             candidate,
             observations: observations.clone(),
@@ -1369,6 +1393,32 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
         1
     );
     assert_eq!(observations.shutdowns.load(Ordering::SeqCst), 1);
+
+    let expected_nodes = input
+        .scenario()
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    let terminal_fingerprints = evidence
+        .snapshot()
+        .expect("hot-fork evidence snapshot")
+        .terminal_fingerprints()
+        .expect("hot-fork terminal fingerprints")
+        .to_vec();
+    assert!(!terminal_fingerprints.is_empty());
+    assert_eq!(
+        terminal_fingerprints
+            .iter()
+            .map(|sample| sample.node.clone())
+            .collect::<BTreeSet<_>>(),
+        expected_nodes
+    );
+    assert!(terminal_fingerprints.iter().all(|sample| {
+        sample.at == crucible::VirtualTime { ticks: 1 }
+            && sample.fingerprint.hash == ContentHash::from_bytes(sample.node.name.as_bytes())
+    }));
 
     assert_eq!(
         runner
@@ -1490,6 +1540,58 @@ fn hot_world_runner_materializes_a_discrete_typed_branch_from_its_parent() {
     );
 
     run_branch_through_hot_world_runner(input, false);
+}
+
+#[test]
+fn observed_hot_fork_factory_preserves_recovery_ownership_for_quarantine() {
+    let input = branch_execution_input(
+        ChoiceSource::Scheduler {
+            producer: String::from("observed-recovery"),
+        },
+        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("recovery branch domain")),
+        ChoiceValue::Boolean(false),
+        ChoiceValue::Boolean(true),
+        "scheduler.observed-recovery",
+    );
+    let (_repository, _store, _lineage, _attempt, candidate, _scenario) =
+        repository_execution_fixture();
+    let observations = BranchReplayObservations::new();
+    observations
+        .recovery_failures_remaining
+        .store(1, Ordering::SeqCst);
+    let factory = BranchReplayLifecycleFactory {
+        observations: observations.clone(),
+    };
+    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
+    let mut runner = QemuHotForkWorldExecutionRunner::new(
+        factory,
+        BranchReplayDriver {
+            candidate,
+            observations: observations.clone(),
+        },
+    );
+
+    let executed = runner
+        .try_execute(&input, &execution_context(&input, 0x85))
+        .expect("observed hot-fork execution");
+    assert!(matches!(
+        executed,
+        QemuHotForkWorldExecutionAttempt::Executed(_)
+    ));
+
+    runner
+        .reconcile_execution(AttemptExecutionDisposition::Canceled)
+        .expect_err("failed source recovery must quarantine retained ownership");
+
+    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
+    assert!(
+        evidence
+            .snapshot()
+            .expect("recovery evidence snapshot")
+            .terminal_fingerprints()
+            .is_some()
+    );
 }
 
 #[test]

@@ -1,4 +1,4 @@
-//! Bounded process-local evidence capture for fresh QEMU attempts.
+//! Bounded process-local evidence capture for QEMU attempts.
 //!
 //! This observer decorates a resource-owned lifecycle without acquiring any
 //! launch or shutdown authority of its own. It retains exact event,
@@ -7,8 +7,8 @@
 //! repository accepts the observation.
 //!
 //! The guarded portable-report owner attaches this observer to fresh production
-//! lifecycles. Exact-resume and hot-fork runners honor the common preparation
-//! hook, but their raw production factories do not publish into this store.
+//! lifecycles. Exact-resume and hot-fork factory adapters preserve the same
+//! capture contract for owners that retain and consume the evidence handle.
 
 use crucible::{
     Configuration, FingerprintSample, NodeId, QuantumTerminalVerdict, SchedulerError,
@@ -33,7 +33,7 @@ use super::{
 const MAX_EXECUTION_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES * 2;
 const MAX_TERMINAL_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES;
 
-/// Fresh lifecycle wrapper that records exact process-local execution evidence.
+/// Lifecycle wrapper that records exact process-local execution evidence.
 ///
 /// Resource enforcement remains wholly owned by the wrapped lifecycle. This
 /// observer records only successfully completed scheduler operations and never
@@ -48,7 +48,7 @@ pub struct QemuObservedFreshAttemptLifecycle<L> {
 }
 
 impl<L> QemuObservedFreshAttemptLifecycle<L> {
-    pub(super) fn new(
+    pub(crate) fn new(
         lifecycle: L,
         fingerprint_nodes: Vec<NodeId>,
         evidence: QemuAttemptExecutionEvidence,
@@ -61,6 +61,18 @@ impl<L> QemuObservedFreshAttemptLifecycle<L> {
             staged_terminal_fingerprints: None,
             evidence,
         }
+    }
+
+    pub(crate) fn lifecycle(&self) -> &L {
+        &self.lifecycle
+    }
+
+    pub(crate) fn lifecycle_mut(&mut self) -> &mut L {
+        &mut self.lifecycle
+    }
+
+    pub(crate) fn into_recovery_parts(self) -> (L, Vec<NodeId>, QemuAttemptExecutionEvidence) {
+        (self.lifecycle, self.fingerprint_nodes, self.evidence)
     }
 }
 
@@ -233,7 +245,7 @@ where
 mod store;
 pub use store::{QemuAttemptExecutionEvidence, QemuAttemptExecutionEvidenceSnapshot};
 
-/// Adds bounded process-local evidence capture to any fresh lifecycle factory.
+/// Adds bounded process-local evidence capture to a QEMU lifecycle factory.
 pub struct QemuObservedFreshAttemptLifecycleFactory<F> {
     inner: F,
     evidence: QemuAttemptExecutionEvidence,
@@ -252,9 +264,58 @@ impl<F> QemuObservedFreshAttemptLifecycleFactory<F> {
             evidence,
         )
     }
+
+    pub(crate) fn inner_mut(&mut self) -> &mut F {
+        &mut self.inner
+    }
+
+    pub(crate) fn prepare_observation(
+        &self,
+        source: &crucible::ScenarioDefForm,
+    ) -> Result<Vec<NodeId>, AttemptWorkerFailure<SchedulerError>> {
+        self.evidence
+            .reset()
+            .map_err(AttemptWorkerFailure::Retryable)?;
+        let vm_nodes = source.world().vm_nodes();
+        if vm_nodes.len() > MAX_TERMINAL_FINGERPRINT_SAMPLES {
+            return Err(AttemptWorkerFailure::Terminal(store::evidence_limit(
+                "qemu-terminal-fingerprint-node-count",
+                0,
+                vm_nodes.len() as u64,
+                MAX_TERMINAL_FINGERPRINT_SAMPLES as u64,
+            )));
+        }
+        let mut fingerprint_nodes = vm_nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        fingerprint_nodes.sort_by(|left, right| left.name.cmp(&right.name));
+        if let Some(duplicate) = fingerprint_nodes
+            .windows(2)
+            .find(|pair| pair[0] == pair[1])
+            .map(|pair| pair[0].name.clone())
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "authenticated World contains duplicate VM node `{duplicate}` for fingerprint capture"
+                    ),
+                },
+            ));
+        }
+        Ok(fingerprint_nodes)
+    }
+
+    pub(crate) fn observe<L>(
+        &self,
+        lifecycle: L,
+        fingerprint_nodes: Vec<NodeId>,
+    ) -> QemuObservedFreshAttemptLifecycle<L> {
+        QemuObservedFreshAttemptLifecycle::new(lifecycle, fingerprint_nodes, self.evidence.clone())
+    }
 }
 
-/// Failure to construct an evidence-observed fresh QEMU lifecycle.
+/// Failure to construct an evidence-observed QEMU lifecycle.
 #[derive(Debug, Error)]
 pub enum QemuObservedFreshAttemptLifecycleFactoryError<E> {
     /// The wrapped guarded lifecycle factory rejected construction.
@@ -289,54 +350,18 @@ where
         signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
-        self.evidence
-            .reset()
-            .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Evidence)
-            .map_err(AttemptWorkerFailure::Retryable)?;
-        let vm_nodes = source.world().vm_nodes();
-        if vm_nodes.len() > MAX_TERMINAL_FINGERPRINT_SAMPLES {
-            let error = store::evidence_limit(
-                "qemu-terminal-fingerprint-node-count",
-                0,
-                vm_nodes.len() as u64,
-                MAX_TERMINAL_FINGERPRINT_SAMPLES as u64,
-            );
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuObservedFreshAttemptLifecycleFactoryError::Evidence(error),
-            ));
-        }
-        let mut fingerprint_nodes = vm_nodes
-            .iter()
-            .map(|node| node.id.clone())
-            .collect::<Vec<_>>();
-        fingerprint_nodes.sort_by(|left, right| left.name.cmp(&right.name));
-        if let Some(duplicate) = fingerprint_nodes
-            .windows(2)
-            .find(|pair| pair[0] == pair[1])
-            .map(|pair| pair[0].name.clone())
-        {
-            let error = SchedulerError::BoundaryViolation {
-                message: format!(
-                    "authenticated World contains duplicate VM node `{duplicate}` for fingerprint capture"
-                ),
-            };
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuObservedFreshAttemptLifecycleFactoryError::Evidence(error),
-            ));
-        }
+        let fingerprint_nodes = self
+            .prepare_observation(source)
+            .map_err(map_observed_evidence_failure::<F::Error>)?;
         let lifecycle = self
             .inner
             .start_fresh_lifecycle(scenario, source, start, signal_fault_replay, context)
-            .map_err(map_factory_failure)?;
-        Ok(QemuObservedFreshAttemptLifecycle::new(
-            lifecycle,
-            fingerprint_nodes,
-            self.evidence.clone(),
-        ))
+            .map_err(map_observed_inner_failure)?;
+        Ok(self.observe(lifecycle, fingerprint_nodes))
     }
 }
 
-fn map_factory_failure<E>(
+pub(crate) fn map_observed_inner_failure<E>(
     failure: AttemptWorkerFailure<E>,
 ) -> AttemptWorkerFailure<QemuObservedFreshAttemptLifecycleFactoryError<E>> {
     match failure {
@@ -348,6 +373,22 @@ fn map_factory_failure<E>(
         ),
         AttemptWorkerFailure::Terminal(error) => AttemptWorkerFailure::Terminal(
             QemuObservedFreshAttemptLifecycleFactoryError::Inner(error),
+        ),
+    }
+}
+
+pub(crate) fn map_observed_evidence_failure<E>(
+    failure: AttemptWorkerFailure<SchedulerError>,
+) -> AttemptWorkerFailure<QemuObservedFreshAttemptLifecycleFactoryError<E>> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => AttemptWorkerFailure::Retryable(
+            QemuObservedFreshAttemptLifecycleFactoryError::Evidence(error),
+        ),
+        AttemptWorkerFailure::Canceled(error) => AttemptWorkerFailure::Canceled(
+            QemuObservedFreshAttemptLifecycleFactoryError::Evidence(error),
+        ),
+        AttemptWorkerFailure::Terminal(error) => AttemptWorkerFailure::Terminal(
+            QemuObservedFreshAttemptLifecycleFactoryError::Evidence(error),
         ),
     }
 }

@@ -25,7 +25,9 @@ use crucible_qemu::{
 };
 
 use crate::qemu_campaign_lifecycle::{
-    QemuFreshScenarioResourceError, validate_fresh_qemu_scenario_resources,
+    QemuFreshScenarioResourceError, QemuObservedFreshAttemptLifecycle,
+    QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
+    validate_fresh_qemu_scenario_resources,
 };
 use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionDisposition,
@@ -377,6 +379,78 @@ where
 
     fn quarantine(&mut self) {
         QemuProductionHotForkWorldLifecycle::quarantine(self);
+    }
+}
+
+impl<L> QemuHotForkWorldLifecycleOwner for QemuObservedFreshAttemptLifecycle<L>
+where
+    L: QemuHotForkWorldLifecycleOwner,
+{
+    fn runtime_basis(&self) -> crate::AttemptExecutionRuntimeBasis {
+        self.lifecycle().runtime_basis()
+    }
+
+    fn start_materialization(
+        &self,
+    ) -> Result<crate::QemuFreshStartMaterialization, SchedulerError> {
+        self.lifecycle().start_materialization()
+    }
+
+    fn reconcile_execution_disposition(
+        &mut self,
+        disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
+        self.lifecycle_mut()
+            .reconcile_execution_disposition(disposition)
+    }
+
+    fn quarantine(&mut self) {
+        self.lifecycle_mut().quarantine();
+    }
+}
+
+impl<F> QemuHotForkWorldLifecycleFactory for QemuObservedFreshAttemptLifecycleFactory<F>
+where
+    F: QemuHotForkWorldLifecycleFactory,
+{
+    type Lifecycle = QemuObservedFreshAttemptLifecycle<F::Lifecycle>;
+    type Error = QemuObservedFreshAttemptLifecycleFactoryError<F::Error>;
+
+    fn try_start(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
+    {
+        let fingerprint_nodes = self
+            .prepare_observation(input.scenario())
+            .map_err(|failure| {
+                failure.map(QemuObservedFreshAttemptLifecycleFactoryError::Evidence)
+            })?;
+        let started = self
+            .inner_mut()
+            .try_start(input, context)
+            .map_err(|failure| failure.map(QemuObservedFreshAttemptLifecycleFactoryError::Inner))?;
+
+        Ok(match started {
+            QemuHotForkWorldLifecycleStart::Declined => QemuHotForkWorldLifecycleStart::Declined,
+            QemuHotForkWorldLifecycleStart::Started(lifecycle) => {
+                QemuHotForkWorldLifecycleStart::Started(self.observe(lifecycle, fingerprint_nodes))
+            }
+        })
+    }
+
+    fn recover(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
+        let (lifecycle, fingerprint_nodes, evidence) = lifecycle.into_recovery_parts();
+
+        self.inner_mut().recover(lifecycle).map_err(|lifecycle| {
+            QemuObservedFreshAttemptLifecycle::new(lifecycle, fingerprint_nodes, evidence)
+        })
+    }
+
+    fn quarantine(&mut self, lifecycle: Self::Lifecycle) {
+        let (lifecycle, _, _) = lifecycle.into_recovery_parts();
+        self.inner_mut().quarantine(lifecycle);
     }
 }
 

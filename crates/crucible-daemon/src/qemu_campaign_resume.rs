@@ -23,7 +23,11 @@ use crucible_api::{ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState};
 use crucible_campaign::ExactCheckpointId;
 use crucible_cas::content_store::StoreError;
 
-use crate::qemu_campaign_lifecycle::classify_production_lifecycle_failure;
+use crate::qemu_campaign_lifecycle::{
+    QemuObservedFreshAttemptLifecycle, QemuObservedFreshAttemptLifecycleFactory,
+    QemuObservedFreshAttemptLifecycleFactoryError, classify_production_lifecycle_failure,
+    map_observed_evidence_failure, map_observed_inner_failure,
+};
 use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionProduct,
     AttemptWorkerFailure, CheckpointHandoffFailure, CrucibleAttemptExecution,
@@ -53,6 +57,15 @@ pub trait QemuProductionExactResumeLifecycleOwner: QemuFreshAttemptLifecycleOwne
 impl QemuProductionExactResumeLifecycleOwner for ProductionVmLifecycleLoop {
     fn resume_state(&self) -> Result<ProductionVmLifecycleResumeState, SchedulerError> {
         ProductionVmLifecycleLoop::resume_state(self)
+    }
+}
+
+impl<L> QemuProductionExactResumeLifecycleOwner for QemuObservedFreshAttemptLifecycle<L>
+where
+    L: QemuProductionExactResumeLifecycleOwner,
+{
+    fn resume_state(&self) -> Result<ProductionVmLifecycleResumeState, SchedulerError> {
+        self.lifecycle().resume_state()
     }
 }
 
@@ -167,6 +180,69 @@ where
             context,
         )
         .map_err(classify_production_lifecycle_failure)
+    }
+}
+
+impl<F> QemuProductionExactResumeLifecycleFactory for QemuObservedFreshAttemptLifecycleFactory<F>
+where
+    F: QemuProductionExactResumeLifecycleFactory,
+{
+    type Lifecycle = QemuObservedFreshAttemptLifecycle<F::Lifecycle>;
+    type Error = QemuObservedFreshAttemptLifecycleFactoryError<F::Error>;
+
+    fn authenticate_resume_boundary(
+        &mut self,
+        checkpoints: &ExactCheckpointStore,
+        checkpoint: ExactCheckpointId,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+        context: &AttemptExecutionContext,
+    ) -> Result<
+        Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
+        AttemptWorkerFailure<Self::Error>,
+    > {
+        self.inner_mut()
+            .authenticate_resume_boundary(
+                checkpoints,
+                checkpoint,
+                scenario,
+                source,
+                initial,
+                post_selection,
+                context,
+            )
+            .map_err(map_observed_inner_failure)
+    }
+
+    fn start_resume_lifecycle(
+        &mut self,
+        checkpoints: &ExactCheckpointStore,
+        checkpoint: ExactCheckpointId,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+        context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        let fingerprint_nodes = self
+            .prepare_observation(source)
+            .map_err(map_observed_evidence_failure::<F::Error>)?;
+        let lifecycle = self
+            .inner_mut()
+            .start_resume_lifecycle(
+                checkpoints,
+                checkpoint,
+                scenario,
+                source,
+                initial,
+                post_selection,
+                context,
+            )
+            .map_err(map_observed_inner_failure)?;
+
+        Ok(self.observe(lifecycle, fingerprint_nodes))
     }
 }
 
