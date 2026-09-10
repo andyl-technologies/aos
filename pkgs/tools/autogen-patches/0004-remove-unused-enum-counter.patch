@@ -1,0 +1,19 @@
+--- a/autoopts/usage.c
++++ b/autoopts/usage.c
+@@ -1150,7 +1150,6 @@
+      */
+     if (displayEnum) {
+         int        ct     = opts->optCt;
+-        int        optNo  = 0;
+         tOptDesc * od     = opts->pOptDesc;
+ 
+         fputc(NL, option_usage_fp);
+@@ -1161,7 +1160,7 @@
+             case OPARG_TYPE_MEMBERSHIP:
+                 (*(od->pOptProc))(OPTPROC_EMIT_USAGE, od);
+             }
+-        } while (od++, optNo++, (--ct > 0));
++        } while (od++, (--ct > 0));
+     }
+ 
+     /*
