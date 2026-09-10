@@ -21,6 +21,8 @@
 //! occurrences, [`replay_oracle`] compares replay hashes, [`reproduction`] owns
 //! the versioned reproduction artifact format, [`segment_replay`] coordinates
 //! checkpoint-parallel replay, and [`spec_index`] owns the crate-to-RFC map.
+//! The package also contains an unshipped native event collector binary for
+//! bounded, read-only inspection of preserved production run-state trees.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
