@@ -10,8 +10,17 @@ use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::io::{self, Write};
 
+/// Schema version encoded by [`FailureTriageReplayEvidence::to_compact_binary`].
+pub const FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+
+// The final magic byte is the payload schema. This assertion keeps the public
+// version used by campaign envelopes synchronized with the compact codec.
 const FAILURE_TRIAGE_REPLAY_EVIDENCE_MAGIC: &[u8] =
     b"CRUCIBLE_FAILURE_TRIAGE_REPLAY_EVIDENCE\0\x01";
+const _: () = assert!(
+    FAILURE_TRIAGE_REPLAY_EVIDENCE_MAGIC[FAILURE_TRIAGE_REPLAY_EVIDENCE_MAGIC.len() - 1] as u32
+        == FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
+);
 const MAX_FAILURE_SOURCE_BYTES: usize = 1024 * 1024;
 const MAX_CAUSAL_ENTRIES_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CAUSAL_ENTRIES: usize = 65_536;
