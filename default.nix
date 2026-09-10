@@ -1354,6 +1354,10 @@ in {
         if buildPlatform.isLinux && buildPlatform.isx86_64
         then import ./tests/build/bootstrap-seed.nix {pkgs = buildPackages;}
         else null;
+      artifact-consumption =
+        if hostPlatform.isLinux && hostPlatform.is64bit
+        then import ./tests/build/artifact-consumption.nix {inherit pkgs lib;}
+        else null;
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
       cross-platform-foundation = import ./tests/build/cross-platform-foundation.nix {
         pkgs = buildPackages;
@@ -1413,7 +1417,7 @@ in {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
+        inherit artifact-consumption critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1425,6 +1429,7 @@ in {
               then [bootstrap-seed]
               else []
             )
+            ++ lib.optional (artifact-consumption != null) artifact-consumption
             ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm

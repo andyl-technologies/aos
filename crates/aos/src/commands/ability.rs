@@ -7,10 +7,12 @@ use std::num::NonZeroU64;
 
 use anyhow::{Context as _, Result, bail};
 use aos_ability_inspect::{
-    DiagnosticBundle, DiagnosticBundleAudience, ExecutionTimeline, GraphQuery,
-    INSPECTION_BUNDLE_MAX_BYTES, INSPECTION_QUERY_MAX_BYTES, InspectionBundle, InspectionView,
-    PendingStateAvailability, ProjectionKind, RenderFormat, TimelineEventInput, TimelineEventKind,
-    TimelineProvenance, TimelineTiming, ViewAnchor, render, render_projection, render_slice,
+    ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES, ArtifactConsumptionExplanation,
+    ArtifactConsumptionQuery, CheckedArtifactConsumptionEvidence, DiagnosticBundle,
+    DiagnosticBundleAudience, ExecutionTimeline, GraphQuery, INSPECTION_BUNDLE_MAX_BYTES,
+    INSPECTION_QUERY_MAX_BYTES, InspectionBundle, InspectionView, PendingStateAvailability,
+    ProjectionKind, RenderFormat, TimelineEventInput, TimelineEventKind, TimelineProvenance,
+    TimelineTiming, ViewAnchor, render, render_projection, render_slice,
 };
 use aos_ability_model::{LocalKey, PlanNodeKey, RequiredFeature, TransactionId};
 use aos_ability_runtime::execution::{
@@ -23,8 +25,9 @@ use aos_core::output::{OutputMode, Printer};
 use aos_package::config_eval::ability_store::RetainedAbilityDiagnosticSource;
 
 use crate::cli::{
-    AbilityCommand, AbilityDiagnosticArgs, AbilityDiagnosticAudience, AbilityInspectArgs,
-    AbilityProjection, AbilityRenderFormat,
+    AbilityArtifactConsumptionArgs, AbilityCommand, AbilityDiagnosticArgs,
+    AbilityDiagnosticAudience, AbilityInspectArgs, AbilityProjection, AbilityRenderFormat,
+    ArtifactConsumptionRenderFormat,
 };
 
 /// Runs one offline ability inspection command.
@@ -37,8 +40,86 @@ use crate::cli::{
 pub fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
     match command {
         AbilityCommand::Inspect(args) => inspect(args, printer),
+        AbilityCommand::ArtifactConsumption(args) => artifact_consumption(args, printer),
         AbilityCommand::Diagnostic(args) => diagnostic(args, printer),
     }
+}
+
+fn artifact_consumption(args: &AbilityArtifactConsumptionArgs, printer: &Printer) -> Result<()> {
+    let bytes = read_bounded_file(
+        &args.evidence,
+        ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES,
+        "artifact-consumption evidence",
+    )?;
+    let checked = CheckedArtifactConsumptionEvidence::decode(&bytes)
+        .context("checking realized artifact-consumption evidence")?;
+    let provider_content = args
+        .provider_content
+        .as_deref()
+        .map(Sha256Digest::parse)
+        .transpose()
+        .context("parsing --provider-content")?;
+    let explanation = checked
+        .query(&ArtifactConsumptionQuery::new(
+            args.consumer.clone(),
+            provider_content,
+        ))
+        .context("querying realized artifact-consumption evidence")?;
+    let format = args.format.unwrap_or_else(|| {
+        if printer.mode() == OutputMode::Json {
+            ArtifactConsumptionRenderFormat::Json
+        } else {
+            ArtifactConsumptionRenderFormat::Text
+        }
+    });
+
+    match format {
+        ArtifactConsumptionRenderFormat::Text => {
+            printer.raw(&render_artifact_consumption_text(&explanation));
+        }
+        ArtifactConsumptionRenderFormat::Json => {
+            let bytes = aos_contract::canonical::to_vec(&explanation)
+                .context("encoding artifact-consumption explanation")?;
+            let output = std::str::from_utf8(&bytes)
+                .context("artifact-consumption explanation JSON is not UTF-8")?;
+            printer.raw(output);
+        }
+    }
+    Ok(())
+}
+
+fn render_artifact_consumption_text(explanation: &ArtifactConsumptionExplanation) -> String {
+    let consumer = format!(
+        "{}{}",
+        explanation.consumer.artifact.store_path, explanation.consumer.path
+    );
+    let provider = format!(
+        "{}{}",
+        explanation.provider.artifact.store_path, explanation.provider.path
+    );
+    let symbols = explanation
+        .linkage
+        .symbols
+        .iter()
+        .map(|symbol| format!("{}@{}", symbol.name, symbol.version))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "{consumer}\n  consumes: {provider}\n  mechanism: ELF startup DT_NEEDED ({})\n  exact provider: {}\n  loader: {}\n  search path ({}): {}\n  symbol versions: {symbols}\n  provider ELF compatible: {}\n  loader ELF compatible: {}\n  search resolves exact provider: {}\n  provider retained by consumer closure: {}\n",
+        explanation.linkage.soname,
+        explanation.provider.artifact.content,
+        explanation.linkage.loader,
+        match explanation.linkage.search_path_kind {
+            aos_ability_model::ElfSearchPathKind::Runpath => "DT_RUNPATH",
+            aos_ability_model::ElfSearchPathKind::Rpath => "DT_RPATH",
+        },
+        explanation.linkage.search_path.join(":"),
+        explanation.provider_elf_compatible,
+        explanation.loader_elf_compatible,
+        explanation.search_resolves_exact_provider,
+        explanation.provider_retained_by_consumer,
+    ) + "  provenance: reported realized-build gate observation\n  limits: no publication authentication, live loader enforcement, runtime rebinding, plugin or explicit-load, helper-execution, build-tool, or data-input claim\n"
 }
 
 fn diagnostic(args: &AbilityDiagnosticArgs, printer: &Printer) -> Result<()> {
@@ -287,20 +368,26 @@ const fn compensation_reconciliation_kind(result: ReconciliationResult) -> Timel
 }
 
 fn read_bounded_bundle(args: &AbilityInspectArgs) -> Result<Vec<u8>> {
-    let file = File::open(&args.bundle)
-        .with_context(|| format!("opening inspection bundle {}", args.bundle.display()))?;
-    let limit = u64::try_from(INSPECTION_BUNDLE_MAX_BYTES)
-        .context("inspection bundle byte limit does not fit this platform")?;
+    read_bounded_file(
+        &args.bundle,
+        u64::try_from(INSPECTION_BUNDLE_MAX_BYTES)
+            .context("inspection bundle byte limit does not fit this platform")?,
+        "inspection bundle",
+    )
+}
+
+fn read_bounded_file(path: &std::path::Path, limit: u64, label: &str) -> Result<Vec<u8>> {
+    let file = File::open(path).with_context(|| format!("opening {label} {}", path.display()))?;
     let mut reader: Take<File> = file.take(limit.saturating_add(1));
     let mut bytes = Vec::new();
     reader
         .read_to_end(&mut bytes)
-        .with_context(|| format!("reading inspection bundle {}", args.bundle.display()))?;
-    if bytes.len() > INSPECTION_BUNDLE_MAX_BYTES {
+        .with_context(|| format!("reading {label} {}", path.display()))?;
+    if bytes.len() as u64 > limit {
         bail!(
-            "inspection bundle {} exceeds the {} byte limit",
-            args.bundle.display(),
-            INSPECTION_BUNDLE_MAX_BYTES
+            "{label} {} exceeds the {} byte limit",
+            path.display(),
+            limit
         );
     }
     Ok(bytes)
