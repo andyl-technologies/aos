@@ -1551,8 +1551,16 @@ fn worker_count_is_bounded_by_static_and_supervisor_capacity() {
 
 #[test]
 fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
+    #[derive(Default)]
+    struct BusyWorkerState {
+        entered: usize,
+        executions: Vec<ExecutionId>,
+        cancellations_observed: usize,
+        release: bool,
+    }
+
     struct CountingBlockingWorker {
-        entered: Arc<(Mutex<usize>, Condvar)>,
+        state: Arc<(Mutex<BusyWorkerState>, Condvar)>,
     }
 
     impl LocalAttemptWorker for CountingBlockingWorker {
@@ -1560,8 +1568,10 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
 
         fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
             {
-                let (entered, changed) = self.entered.as_ref();
-                *entered.lock().expect("worker entry count") += 1;
+                let (state, changed) = self.state.as_ref();
+                let mut state = state.lock().expect("busy worker state");
+                state.entered += 1;
+                state.executions.push(queued.execution());
                 changed.notify_all();
             }
             assert!(
@@ -1570,6 +1580,17 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
                     .wait_for_cancellation(Duration::from_secs(2)),
                 "worker did not observe shutdown cancellation"
             );
+
+            let (state, changed) = self.state.as_ref();
+            let mut state = state.lock().expect("busy worker state");
+            state.cancellations_observed += 1;
+            changed.notify_all();
+            let (state, timeout) = changed
+                .wait_timeout_while(state, Duration::from_secs(2), |state| !state.release)
+                .expect("busy worker release notification");
+            assert!(!timeout.timed_out(), "worker release was not acknowledged");
+            drop(state);
+
             AttemptWorkResult::new(
                 queued,
                 Err(AttemptWorkerFailure::Canceled("control-path shutdown")),
@@ -1608,25 +1629,31 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
         MemoryAssignmentLedger::default(),
         AllowAllAttemptAdmission,
         epoch,
-        ExecutorCapacity::new(2, 2, 4096, 8192, 64).expect("two-slot capacity"),
+        ExecutorCapacity::new(3, 3, 3072, 6144, 96).expect("three-slot capacity"),
     );
-    let capability =
-        LocalExecutorCapabilityService::new(supervisor, description_with_slots(epoch, 2))
-            .expect("two-slot capability");
-    let entered = Arc::new((Mutex::new(0), Condvar::new()));
+    let capability = LocalExecutorCapabilityService::new(
+        supervisor,
+        description_with_limits(
+            epoch,
+            3,
+            AttemptResourceLimits::new(3, 3072, 6144, 96).expect("three-slot resource ceiling"),
+        ),
+    )
+    .expect("three-slot capability");
+    let worker_state = Arc::new((Mutex::new(BusyWorkerState::default()), Condvar::new()));
     let pool = LocalExecutorWorkerPool::start(
         capability,
         CampaignExecutorStore::new(Arc::clone(&repository)),
         checkpoint_store(),
         (0..2)
             .map(|_| CountingBlockingWorker {
-                entered: Arc::clone(&entered),
+                state: Arc::clone(&worker_state),
             })
             .collect(),
     )
     .expect("two-worker pool");
     let mut executor = pool.service();
-    for byte in [0xa1, 0xa2] {
+    for byte in [0xa1, 0xa2, 0xa3] {
         assert!(matches!(
             executor
                 .submit_attempt(&request(epoch, byte))
@@ -1635,21 +1662,20 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
             SubmitAttemptDisposition::Accepted { .. }
         ));
     }
-    let (entered_count, changed) = entered.as_ref();
-    let entered_count = changed
+    let (state, changed) = worker_state.as_ref();
+    let state = changed
         .wait_timeout_while(
-            entered_count.lock().expect("worker entry count"),
+            state.lock().expect("busy worker state"),
             Duration::from_secs(2),
-            |entered| *entered != 2,
+            |state| state.entered != 2,
         )
         .expect("worker entry notification")
         .0;
-    assert_eq!(*entered_count, 2, "both worker slots must be occupied");
-    drop(entered_count);
-    assert_eq!(
-        executor.report().expect("saturated pool report").active(),
-        2
-    );
+    assert_eq!(state.entered, 2, "both worker slots must be occupied");
+    drop(state);
+    let saturated = executor.report().expect("saturated pool report");
+    assert_eq!(saturated.active(), 3);
+    assert_eq!(saturated.queued(), 1);
 
     let principal = CampaignPrincipal::new("operator:lazy-frontier").expect("principal");
     let name = CampaignName::new(campaign).expect("campaign name");
@@ -1657,7 +1683,7 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
         repository.as_ref(),
         AllowCampaignControl,
     ));
-    let started = Instant::now();
+    let pause_started = Instant::now();
     let paused = client
         .apply_campaign_command(
             &ApplyCampaignCommandRequest::new(
@@ -1675,6 +1701,12 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
             .expect("pause request"),
         )
         .expect("pause while every executor slot is busy");
+    assert!(
+        pause_started.elapsed() < CONTROL_BOUND,
+        "pause exceeded the bounded control path"
+    );
+
+    let status_started = Instant::now();
     let status = client
         .get_campaign_status(
             &GetCampaignStatusRequest::new(principal.clone(), name.clone(), paused.new_snapshot())
@@ -1682,6 +1714,12 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
         )
         .expect("status while every executor slot is busy");
     assert_eq!(status.snapshot(), paused.new_snapshot());
+    assert!(
+        status_started.elapsed() < CONTROL_BOUND,
+        "status exceeded the bounded control path"
+    );
+
+    let pin_started = Instant::now();
     let pinned = client
         .pin_campaign(
             &PinCampaignRequest::new(
@@ -1706,15 +1744,15 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
         .expect("pin while every executor slot is busy");
     assert_ne!(pinned.new_snapshot(), paused.new_snapshot());
     assert!(
-        started.elapsed() < CONTROL_BOUND,
-        "pause, status, and pin exceeded the bounded control path"
+        pin_started.elapsed() < CONTROL_BOUND,
+        "pin exceeded the bounded control path"
     );
     assert_eq!(
         executor
             .report()
             .expect("post-control pool report")
             .active(),
-        2
+        3
     );
 
     let shutdown_started = Instant::now();
@@ -1723,6 +1761,49 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
         shutdown_started.elapsed() < CONTROL_BOUND,
         "shutdown acknowledgement exceeded the bounded control path"
     );
+
+    let rejected_started = Instant::now();
+    assert!(matches!(
+        executor.submit_attempt(&request(epoch, 0xa4)),
+        Err(LocalExecutorPoolServiceError::ShuttingDown)
+    ));
+    assert!(
+        rejected_started.elapsed() < CONTROL_BOUND,
+        "post-shutdown admission rejection exceeded the bounded control path"
+    );
+
+    let (state, changed) = worker_state.as_ref();
+    let mut state = changed
+        .wait_timeout_while(
+            state.lock().expect("busy worker state"),
+            CONTROL_BOUND,
+            |state| state.cancellations_observed != 2,
+        )
+        .expect("worker cancellation notification")
+        .0;
+    assert_eq!(
+        state.cancellations_observed, 2,
+        "shutdown must signal every executing worker"
+    );
+    let activity_during_exit = executor
+        .shared
+        .executor
+        .lock()
+        .expect("executor supervisor")
+        .supervisor()
+        .operational_activity_snapshot();
+    for execution in &state.executions {
+        let activity = activity_during_exit
+            .iter()
+            .find(|activity| activity.execution == *execution)
+            .expect("executing reservation retained until worker exit");
+        assert!(activity.worker_in_flight);
+        assert!(activity.cancellation_requested);
+    }
+    state.release = true;
+    changed.notify_all();
+    drop(state);
+
     let (joined_tx, joined_rx) = mpsc::sync_channel(1);
     let joiner = thread::spawn(move || {
         joined_tx
@@ -1740,8 +1821,9 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
         "worker cleanup and joining exceeded the bounded shutdown path"
     );
     assert_eq!(report.active(), 0);
-    assert_eq!(report.executions(), 2);
-    assert_eq!(report.terminal_stops(), 2);
+    assert_eq!(report.queued(), 0);
+    assert_eq!(report.executions(), 2, "queued work must not execute");
+    assert_eq!(report.terminal_stops(), 3);
 }
 
 #[test]
@@ -3892,6 +3974,18 @@ fn description(epoch: DaemonEpoch) -> ExecutorDescription {
 }
 
 fn description_with_slots(epoch: DaemonEpoch, maximum_slots: u32) -> ExecutorDescription {
+    description_with_limits(
+        epoch,
+        maximum_slots,
+        AttemptResourceLimits::new(2, 4096, 8192, 64).expect("resource ceiling"),
+    )
+}
+
+fn description_with_limits(
+    epoch: DaemonEpoch,
+    maximum_slots: u32,
+    resource_ceiling: AttemptResourceLimits,
+) -> ExecutorDescription {
     let compatibility = ExecutorCompatibilityProfile::new(
         "crucible-v1",
         "qemu-build-v1",
@@ -3906,7 +4000,7 @@ fn description_with_slots(epoch: DaemonEpoch, maximum_slots: u32) -> ExecutorDes
         BTreeSet::from([String::from("deterministic-tcg-v1")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         maximum_slots,
-        AttemptResourceLimits::new(2, 4096, 8192, 64).expect("resource ceiling"),
+        resource_ceiling,
         BTreeSet::from([CampaignHash::derive(
             "crucible.test.executor-pool-namespace.v1",
             b"local",
