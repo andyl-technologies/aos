@@ -3,6 +3,9 @@
   mkDerivation,
   fetchCargoDeps,
   fetchurl,
+  lib,
+  stdenv,
+  buildPackages,
   rust,
   jq,
   pkg-config,
@@ -10,6 +13,17 @@
   systemd,
 }: let
   version = "1.2.1";
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  nativeCargoTarget = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
+  targetCargoTarget = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.hostPlatform.config);
+  rustForBuild =
+    if isLinuxCross
+    then rust.passthru.buildTool
+    else rust;
+  releaseDirectory =
+    if isLinuxCross
+    then "target/${stdenv.hostPlatform.config}/release"
+    else "target/release";
   upstreamSrc = fetchurl {
     urls = ["https://github.com/systemd/zram-generator/archive/refs/tags/v${version}.tar.gz"];
     hash = "sha256-nILNPbOG6C+6Kt/gHD0JQ2yenP48qLs0HX64gnaMWK8=";
@@ -48,7 +62,7 @@ in
     pname = "zram-generator";
     inherit version src;
 
-    buildDeps = [rust jq pkg-config lowdown];
+    buildDeps = [rustForBuild jq pkg-config lowdown];
     runtimeDeps = [systemd];
     propagatedDeps = [];
     disallowedReferences = [cargoDeps rust];
@@ -83,18 +97,38 @@ in
       }
       {
         name = "configure";
-        script = ''
-          export CARGO_HOME="$TMPDIR/cargo"
-          export CARGO_INCREMENTAL=0
-          mkdir -p "$CARGO_HOME" .cargo
-          cat > .cargo/config.toml <<EOF
-          [source.crates-io]
-          replace-with = "vendored-sources"
+        script =
+          ''
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_INCREMENTAL=0
+            mkdir -p "$CARGO_HOME" .cargo
+            cat > .cargo/config.toml <<EOF
+            [source.crates-io]
+            replace-with = "vendored-sources"
 
-          [source.vendored-sources]
-          directory = "${cargoDeps}"
-          EOF
-        '';
+            [source.vendored-sources]
+            directory = "${cargoDeps}"
+            EOF
+          ''
+          + lib.optionalString isLinuxCross ''
+            # Build scripts execute on the builder, while the generator and
+            # integration tests link for the target platform.
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc-for-build <<'EOF'
+            #!${buildPackages.bash}/bin/bash
+            unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset AOS_OBJECT_FORMAT AOS_RUST_TARGET AOS_GOARCH AOS_GOOS
+            unset AOS_HARDENING_DISABLE AOS_HARDENING_ENABLE
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH
+            unset LIBRARY_PATH NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
+            exec ${buildPackages.cc}/bin/cc "$@"
+            EOF
+            chmod +x .aos-build-tools/cc-for-build
+            export PATH="${rustForBuild}/bin:$PATH"
+            export CARGO_TARGET_${nativeCargoTarget}_LINKER="$PWD/.aos-build-tools/cc-for-build"
+            export CARGO_TARGET_${targetCargoTarget}_LINKER="${stdenv.cc}/bin/cc"
+            export CARGO_BUILD_TARGET=${stdenv.hostPlatform.config}
+          '';
       }
       {
         name = "build";
@@ -113,15 +147,30 @@ in
       }
       {
         name = "check";
-        script = ''
-          export SYSTEMD_UTIL_DIR=${systemd}/lib/systemd
-          cargo test --release --frozen --offline
-        '';
+        script =
+          if isLinuxCross
+          then ''
+            export SYSTEMD_UTIL_DIR=${systemd}/lib/systemd
+            cargo test --release --frozen --offline --lib --bin zram-generator
+            cargo test --release --frozen --offline --test test_cases --no-run
+
+            # The integration constructor creates user and mount namespaces,
+            # which user-mode emulation cannot provide. Run its assertions on
+            # the builder; target integration coverage needs a full target VM.
+            export SYSTEMD_UTIL_DIR=${buildPackages.systemd}/lib/systemd
+            export PATH="${buildPackages.diffutils}/bin:${buildPackages.coreutils}/bin:$PATH"
+            cargo test --release --frozen --offline \
+              --target ${stdenv.buildPlatform.config} --test test_cases
+          ''
+          else ''
+            export SYSTEMD_UTIL_DIR=${systemd}/lib/systemd
+            cargo test --release --frozen --offline
+          '';
       }
       {
         name = "install";
         script = ''
-          install -Dm755 target/release/zram-generator "$out/bin/zram-generator"
+          install -Dm755 ${releaseDirectory}/zram-generator "$out/bin/zram-generator"
           mkdir -p "$out/lib/systemd/system-generators"
           ln -s ../../../bin/zram-generator \
             "$out/lib/systemd/system-generators/zram-generator"
