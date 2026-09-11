@@ -13,13 +13,15 @@
 //! Runtime-holder admission additionally commits an exact intent digest in the
 //! operation record. Activation commits its binding and current head in the
 //! same transaction as the ownership publication and gate release. The durable
-//! operation formats are closed and preserve legacy encodings:
+//! operation format is one closed schema:
 //!
 //! ```text
-//! V1 = version:u8 state:u8 effect_count:u32le
-//! V2 = version:u8 state:u8 flags:u8 reserved:u8 effect_count:u32le
-//! V3 = V2 header with version=3 || runtime_intent_digest:32bytes
+//! V1 = version:u8 || state:u8 || flags:u8 || reserved:u8
+//!      || effect_count:u32le || runtime_intent_digest_or_zero:32bytes
 //! ```
+//!
+//! The zero digest slot denotes an operation without a holder intent. Runtime
+//! authority records require and cross-check the exact nonzero digest.
 
 use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
@@ -59,9 +61,9 @@ use effect::{
 };
 
 const RECORD_VERSION: u8 = 1;
-const OPERATION_RECORD_VERSION: u8 = 2;
-const RUNTIME_OPERATION_RECORD_VERSION: u8 = 3;
 const OPERATION_FLAG_OWNERSHIP_GATED: u8 = 1;
+const OPERATION_RUNTIME_INTENT_DIGEST_BYTES: usize = 32;
+const OPERATION_RECORD_BYTES: usize = 8 + OPERATION_RUNTIME_INTENT_DIGEST_BYTES;
 const OPERATION_KEY_BYTES: usize = 16;
 const EFFECT_KEY_BYTES: usize = 20;
 // The default journal transaction bound is 4096 records. Admission also
@@ -844,7 +846,7 @@ where
         records.push(JournalRecord::put(
             RecordNamespace::Operation,
             operation_id.into_bytes().to_vec(),
-            encode_runtime_operation(
+            encode_operation(
                 OperationState::Accepted,
                 operation.effect_count,
                 true,
@@ -940,7 +942,7 @@ where
         records.push(JournalRecord::put(
             RecordNamespace::Operation,
             plan.operation_id.into_bytes().to_vec(),
-            encode_runtime_operation(
+            encode_operation(
                 if plan.ownership_gate.is_some() {
                     OperationState::OwnershipPending
                 } else {
@@ -2050,7 +2052,7 @@ where
         let record = JournalRecord::put(
             RecordNamespace::Operation,
             operation_id.into_bytes().to_vec(),
-            encode_runtime_operation(
+            encode_operation(
                 state,
                 effect_count,
                 operation.ownership_gated,
@@ -2091,7 +2093,7 @@ where
             records.push(JournalRecord::put(
                 RecordNamespace::Operation,
                 operation_id.into_bytes().to_vec(),
-                encode_runtime_operation(
+                encode_operation(
                     state,
                     effect_count,
                     operation.ownership_gated,
@@ -2126,106 +2128,73 @@ fn decode_operation_key(bytes: &[u8]) -> Result<OperationId, ReconcilerError> {
     Ok(OperationId::from_bytes(value))
 }
 
-fn encode_operation(state: OperationState, effect_count: u32, ownership_gated: bool) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(8);
-    bytes.push(OPERATION_RECORD_VERSION);
-    bytes.push(state as u8);
-    bytes.push(u8::from(ownership_gated) * OPERATION_FLAG_OWNERSHIP_GATED);
-    bytes.push(0);
-    bytes.extend_from_slice(&effect_count.to_le_bytes());
-    bytes
-}
-
-fn encode_runtime_operation(
+fn encode_operation(
     state: OperationState,
     effect_count: u32,
     ownership_gated: bool,
     runtime_intent_digest: Option<ObjectDigest>,
 ) -> Vec<u8> {
-    let mut bytes = encode_operation(state, effect_count, ownership_gated);
-    if let Some(digest) = runtime_intent_digest {
-        bytes[0] = RUNTIME_OPERATION_RECORD_VERSION;
-        bytes.extend_from_slice(digest.as_bytes());
+    let mut bytes = Vec::with_capacity(OPERATION_RECORD_BYTES);
+    bytes.push(RECORD_VERSION);
+    bytes.push(state as u8);
+    bytes.push(u8::from(ownership_gated) * OPERATION_FLAG_OWNERSHIP_GATED);
+    bytes.push(0);
+    bytes.extend_from_slice(&effect_count.to_le_bytes());
+    match runtime_intent_digest {
+        Some(digest) => bytes.extend_from_slice(digest.as_bytes()),
+        None => bytes.extend_from_slice(&[0; OPERATION_RUNTIME_INTENT_DIGEST_BYTES]),
     }
     bytes
 }
 
 fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, ReconcilerError> {
-    if bytes.first() == Some(&RUNTIME_OPERATION_RECORD_VERSION) {
-        if bytes.len() != 40 {
-            return Err(ReconcilerError::CorruptLedger(
-                "invalid runtime operation length",
-            ));
-        }
-        // V3 preserves the V2 fixed header and adds an independent commitment
-        // to the exact pending holder intent. Legacy records remain byte-exact.
-        let mut header = [0; 8];
-        header.copy_from_slice(&bytes[..8]);
-        header[0] = OPERATION_RECORD_VERSION;
-        let mut operation = decode_operation(&header)?;
-        let digest: [u8; 32] = bytes[8..]
-            .try_into()
-            .map_err(|_| ReconcilerError::CorruptLedger("invalid runtime intent digest"))?;
-        if !operation.ownership_gated
-            || digest == [0; 32]
-            || operation.effect_count as usize > MAXIMUM_GATED_EFFECTS - 1
-        {
-            return Err(ReconcilerError::CorruptLedger(
-                "invalid runtime operation provenance",
-            ));
-        }
-        operation.runtime_intent_digest = Some(ObjectDigest::from_bytes(digest));
-        return Ok(operation);
+    let bytes: &[u8; OPERATION_RECORD_BYTES] = bytes.try_into().map_err(|_| {
+        ReconcilerError::CorruptLedger("invalid operation record version, flags, or length")
+    })?;
+    let [version, state, flags, reserved, fields @ ..] = bytes;
+    if *version != RECORD_VERSION || *flags & !OPERATION_FLAG_OWNERSHIP_GATED != 0 || *reserved != 0
+    {
+        return Err(ReconcilerError::CorruptLedger(
+            "invalid operation record version, flags, or length",
+        ));
     }
-    let (state, effect_count, ownership_gated) = match bytes {
-        [RECORD_VERSION, state, effect_count @ ..] if effect_count.len() == 4 => (
-            OperationState::from_byte(*state)?,
-            u32::from_le_bytes(
-                effect_count
-                    .try_into()
-                    .map_err(|_| ReconcilerError::CorruptLedger("invalid effect count"))?,
-            ),
-            false,
-        ),
-        [
-            OPERATION_RECORD_VERSION,
-            state,
-            flags,
-            reserved,
-            effect_count @ ..,
-        ] if effect_count.len() == 4
-            && flags & !OPERATION_FLAG_OWNERSHIP_GATED == 0
-            && *reserved == 0 =>
-        {
-            (
-                OperationState::from_byte(*state)?,
-                u32::from_le_bytes(
-                    effect_count
-                        .try_into()
-                        .map_err(|_| ReconcilerError::CorruptLedger("invalid effect count"))?,
-                ),
-                flags & OPERATION_FLAG_OWNERSHIP_GATED != 0,
-            )
-        }
-        _ => {
-            return Err(ReconcilerError::CorruptLedger(
-                "invalid operation record version, flags, or length",
-            ));
-        }
-    };
+    let state = OperationState::from_byte(*state)?;
+    let effect_count = u32::from_le_bytes(
+        fields[..4]
+            .try_into()
+            .map_err(|_| ReconcilerError::CorruptLedger("invalid effect count"))?,
+    );
+    let ownership_gated = *flags & OPERATION_FLAG_OWNERSHIP_GATED != 0;
     if effect_count == 0 || effect_count as usize > MAXIMUM_EFFECTS {
         return Err(ReconcilerError::CorruptLedger("invalid effect count"));
+    }
+    if ownership_gated && effect_count as usize > MAXIMUM_GATED_EFFECTS {
+        return Err(ReconcilerError::CorruptLedger(
+            "invalid ownership-gated effect count",
+        ));
     }
     if state == OperationState::OwnershipPending && !ownership_gated {
         return Err(ReconcilerError::CorruptLedger(
             "ownership-pending operation lacks gated provenance",
         ));
     }
+    let digest: [u8; OPERATION_RUNTIME_INTENT_DIGEST_BYTES] = fields[4..]
+        .try_into()
+        .map_err(|_| ReconcilerError::CorruptLedger("invalid runtime intent digest"))?;
+    let runtime_intent_digest = (digest != [0; OPERATION_RUNTIME_INTENT_DIGEST_BYTES])
+        .then(|| ObjectDigest::from_bytes(digest));
+    if runtime_intent_digest.is_some()
+        && (!ownership_gated || effect_count as usize > MAXIMUM_GATED_EFFECTS - 1)
+    {
+        return Err(ReconcilerError::CorruptLedger(
+            "invalid runtime operation provenance",
+        ));
+    }
     Ok(OperationRecord {
         state,
         effect_count,
         ownership_gated,
-        runtime_intent_digest: None,
+        runtime_intent_digest,
     })
 }
 
@@ -2834,7 +2803,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_intent_rejects_unprotected_admission_and_missing_pending_recovery() {
+    fn runtime_intent_rejects_unprotected_admission_and_missing_recovery_links() {
         use aos_sandbox_core::PrincipalId;
         let directory = TestDirectory::new();
         let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
@@ -2884,6 +2853,39 @@ mod tests {
             )
             .unwrap();
         assert!(reconciler.accept(&plan).is_err());
+        assert_eq!(reconciler.executor.apply_calls, 0);
+
+        let directory = TestDirectory::new();
+        let journal = protected_runtime_journal(&directory);
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        reconciler.accept(&plan).unwrap();
+        let mut operation = reconciler
+            .journal
+            .get(RecordNamespace::Operation, plan.operation_id().as_bytes())
+            .unwrap()
+            .to_vec();
+        operation[8..].fill(0);
+        reconciler
+            .journal_mut()
+            .commit(
+                &JournalTransaction::new(
+                    [0xa2; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::Operation,
+                        plan.operation_id().into_bytes().to_vec(),
+                        operation,
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let error = reconciler.accept(&plan).unwrap_err();
+        assert!(matches!(
+            error,
+            ReconcilerError::RuntimeAuthority(
+                crate::runtime_authority::RuntimeAuthorityError::CorruptState
+            )
+        ));
         assert_eq!(reconciler.executor.apply_calls, 0);
     }
 
@@ -4550,7 +4552,7 @@ mod tests {
                             JournalRecord::put(
                                 RecordNamespace::Operation,
                                 plan.operation_id().into_bytes().to_vec(),
-                                encode_operation(state, 1, true),
+                                encode_operation(state, 1, true, None),
                             ),
                             JournalRecord::delete(
                                 RecordNamespace::OwnershipGate,
@@ -4570,10 +4572,13 @@ mod tests {
     }
 
     #[test]
-    fn operation_records_decode_legacy_v1_and_reject_unknown_v2_flags() {
-        let legacy = [RECORD_VERSION, OperationState::Accepted as u8, 1, 0, 0, 0];
+    fn operation_record_v1_is_fixed_and_rejects_noncanonical_headers() {
+        let bytes = encode_operation(OperationState::Accepted, 1, false, None);
+        assert_eq!(bytes.len(), OPERATION_RECORD_BYTES);
+        assert_eq!(&bytes[..8], &[RECORD_VERSION, 1, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(&bytes[8..], &[0; OPERATION_RUNTIME_INTENT_DIGEST_BYTES]);
         assert_eq!(
-            decode_operation(&legacy).unwrap(),
+            decode_operation(&bytes).unwrap(),
             OperationRecord {
                 state: OperationState::Accepted,
                 effect_count: 1,
@@ -4581,33 +4586,96 @@ mod tests {
                 runtime_intent_digest: None,
             }
         );
-        let mut unknown_flags = encode_operation(OperationState::Accepted, 1, false);
-        unknown_flags[2] = 0x80;
-        assert!(matches!(
-            decode_operation(&unknown_flags),
-            Err(ReconcilerError::CorruptLedger(_))
-        ));
+
+        let mut invalid = vec![
+            bytes[..6].to_vec(),
+            bytes[..8].to_vec(),
+            bytes[..39].to_vec(),
+            [bytes.clone(), vec![0]].concat(),
+        ];
+        for version in [0, 2, 3] {
+            let mut unknown_version = bytes.clone();
+            unknown_version[0] = version;
+            invalid.push(unknown_version);
+        }
+        for (offset, value) in [(1, 0), (2, 0x80), (3, 1)] {
+            let mut invalid_header = bytes.clone();
+            invalid_header[offset] = value;
+            invalid.push(invalid_header);
+        }
+        for count in [0_u32, u32::MAX] {
+            let mut invalid_count = bytes.clone();
+            invalid_count[4..8].copy_from_slice(&count.to_le_bytes());
+            invalid.push(invalid_count);
+        }
+        for malformed in invalid {
+            assert!(matches!(
+                decode_operation(&malformed),
+                Err(ReconcilerError::CorruptLedger(_))
+            ));
+        }
     }
 
     #[test]
-    fn runtime_operation_v3_requires_gated_bounded_nonzero_intent_provenance() {
+    fn operation_record_v1_binds_only_gated_bounded_intent_provenance() {
         let intent = ObjectDigest::from_bytes([0x81; 32]);
-        let bytes =
-            encode_runtime_operation(OperationState::OwnershipPending, 1, true, Some(intent));
+        let bytes = encode_operation(OperationState::OwnershipPending, 1, true, Some(intent));
+        assert_eq!(bytes[0], RECORD_VERSION);
+        assert_eq!(&bytes[8..], intent.as_bytes());
         assert_eq!(
             decode_operation(&bytes).unwrap().runtime_intent_digest,
             Some(intent)
         );
-        for malformed in [
-            bytes[..39].to_vec(),
-            encode_runtime_operation(OperationState::Accepted, 1, false, Some(intent)),
-            encode_runtime_operation(
+
+        let without_intent = encode_operation(OperationState::OwnershipPending, 1, true, None);
+        assert_eq!(
+            decode_operation(&without_intent)
+                .unwrap()
+                .runtime_intent_digest,
+            None
+        );
+
+        assert!(
+            decode_operation(&encode_operation(
                 OperationState::Accepted,
-                1,
+                4093,
+                false,
+                None,
+            ))
+            .is_ok()
+        );
+        assert!(
+            decode_operation(&encode_operation(
+                OperationState::OwnershipPending,
+                4092,
                 true,
-                Some(ObjectDigest::from_bytes([0; 32])),
-            ),
-            encode_runtime_operation(OperationState::Accepted, 4092, true, Some(intent)),
+                None,
+            ))
+            .is_ok()
+        );
+        assert!(
+            decode_operation(&encode_operation(
+                OperationState::OwnershipPending,
+                4093,
+                true,
+                None,
+            ))
+            .is_err()
+        );
+        assert!(
+            decode_operation(&encode_operation(
+                OperationState::OwnershipPending,
+                4091,
+                true,
+                Some(intent),
+            ))
+            .is_ok()
+        );
+
+        for malformed in [
+            encode_operation(OperationState::OwnershipPending, 1, false, None),
+            encode_operation(OperationState::Accepted, 1, false, Some(intent)),
+            encode_operation(OperationState::OwnershipPending, 4092, true, Some(intent)),
         ] {
             assert!(decode_operation(&malformed).is_err());
         }
@@ -4674,7 +4742,7 @@ mod tests {
                 2 => JournalRecord::put(
                     RecordNamespace::Operation,
                     gated.operation_id().into_bytes().to_vec(),
-                    encode_operation(OperationState::Accepted, 1, true),
+                    encode_operation(OperationState::Accepted, 1, true, None),
                 ),
                 3 => {
                     let mut bytes = reconciler

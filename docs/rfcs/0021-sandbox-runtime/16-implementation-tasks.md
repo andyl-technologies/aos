@@ -1873,13 +1873,13 @@ facts. Journal namespace 10 is reserved for runtime-authority pending intents,
 immutable holder decisions, and ordered current heads; previous namespace codes
 remain unchanged.
 
-An ownership-gated operation can now admit a typed holder intent. Its V3 operation
-record independently commits the exact holder, decision kind, and expected
-revision; V1/V2 operation records and V1 ownership gates retain their encodings.
+An ownership-gated operation can admit a typed holder intent. The sole fixed-width
+V1 operation record carries the ownership-gated flag and an exact holder-intent
+digest slot; operations without holder intent use the canonical zero slot.
 Admission commits the pending intent with the operation and effects. Activation
 rechecks the expected revision and atomically commits the immutable holder
-decision, current head, ownership publication, and gate release. Legacy operations
-cannot silently replace a sandbox's established holder decision.
+decision, current head, ownership publication, and gate release. Unknown versions,
+flags, malformed lengths, or missing required intent provenance fail closed.
 
 Protected replay checks both directions between operations, pending intents,
 activated decisions, and publications, as well as complete monotone revision
@@ -1890,7 +1890,7 @@ with direct exact-current checks for each sandbox head.
 
 The five-crate default-feature suite passes 513 unit tests, one integration test,
 and eighteen doctests, including competing intents, protected reopen, missing
-records, V3 provenance, and renewal/history regressions. Controller strict
+records, V1 provenance, and renewal/history regressions. Controller strict
 all-target/all-feature Clippy passes with dependency linting excluded; including
 dependencies reports existing disallowed `HashMap` use in generated protobuf
 code. Warning-denied controller rustdoc, changed-file formatting, and diff checks
