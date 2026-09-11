@@ -33,6 +33,8 @@ pub const POSTGRESQL_SUBMITTED_REVISION_OUTPUT: &str = "submitted-revision";
 pub const POSTGRESQL_OBSERVED_REVISION_OUTPUT: &str = "observed-revision";
 /// Names the consumer-context readiness output from a PostgreSQL observation.
 pub const POSTGRESQL_READY_OUTPUT: &str = "ready";
+/// Limits PostgreSQL role and database names to the server's identifier width.
+pub const POSTGRESQL_IDENTIFIER_MAX_BYTES: u64 = 63;
 
 /// Builds the production PostgreSQL materialization and lifecycle interface.
 ///
@@ -221,7 +223,7 @@ pub fn postgresql_request_schema() -> Result<ValueSchema> {
             (
                 LocalKey::new("database")?,
                 ValueSchema::String {
-                    max_length: 128,
+                    max_length: POSTGRESQL_IDENTIFIER_MAX_BYTES,
                     syntax: Some(StringSyntax::LocalKeyV1),
                 },
             ),
@@ -246,7 +248,7 @@ pub fn postgresql_request_schema() -> Result<ValueSchema> {
             (
                 LocalKey::new("role")?,
                 ValueSchema::String {
-                    max_length: 128,
+                    max_length: POSTGRESQL_IDENTIFIER_MAX_BYTES,
                     syntax: Some(StringSyntax::LocalKeyV1),
                 },
             ),
@@ -279,7 +281,7 @@ pub fn postgresql_observation_schema() -> Result<ValueSchema> {
             (
                 LocalKey::new("database")?,
                 ValueSchema::String {
-                    max_length: 128,
+                    max_length: POSTGRESQL_IDENTIFIER_MAX_BYTES,
                     syntax: Some(StringSyntax::LocalKeyV1),
                 },
             ),
@@ -299,7 +301,7 @@ pub fn postgresql_observation_schema() -> Result<ValueSchema> {
             (
                 LocalKey::new("role")?,
                 ValueSchema::String {
-                    max_length: 128,
+                    max_length: POSTGRESQL_IDENTIFIER_MAX_BYTES,
                     syntax: Some(StringSyntax::LocalKeyV1),
                 },
             ),

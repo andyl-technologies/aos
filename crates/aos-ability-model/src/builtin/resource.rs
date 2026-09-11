@@ -40,8 +40,8 @@ pub use network_policy::{
 };
 pub use postgresql::{
     POSTGRESQL_CONFIGURATION_REVISION_OUTPUT, POSTGRESQL_EFFECTS_INTERFACE_NAME,
-    POSTGRESQL_HANDLER_ENTRY_POINT, POSTGRESQL_HANDLER_KEY, POSTGRESQL_OBSERVATION_SCHEMA,
-    POSTGRESQL_OBSERVED_REVISION_OUTPUT, POSTGRESQL_READY_OUTPUT,
+    POSTGRESQL_HANDLER_ENTRY_POINT, POSTGRESQL_HANDLER_KEY, POSTGRESQL_IDENTIFIER_MAX_BYTES,
+    POSTGRESQL_OBSERVATION_SCHEMA, POSTGRESQL_OBSERVED_REVISION_OUTPUT, POSTGRESQL_READY_OUTPUT,
     POSTGRESQL_SUBMITTED_REVISION_OUTPUT, postgresql_effects_interface,
     postgresql_effects_interface_key, postgresql_handler, postgresql_handler_key,
     postgresql_observation_schema, postgresql_provider, postgresql_request_schema,
@@ -60,7 +60,7 @@ mod tests {
     use super::*;
     use crate::{
         HostStorageAction, InterfaceDocument, OperationFamily, ResourceLifetime, ServiceAction,
-        ValuePhase, ValueVisibility,
+        ValuePhase, ValueSchema, ValueVisibility,
     };
 
     #[test]
@@ -163,5 +163,25 @@ mod tests {
         let encoded = crate::encode_canonical(&document).unwrap();
         let text = std::str::from_utf8(&encoded).unwrap();
         assert!(!text.contains("secret"));
+
+        let ValueSchema::Record { fields, .. } = &document.interface.request else {
+            panic!("PostgreSQL request must remain a closed record");
+        };
+        for field in ["database", "role"] {
+            assert_eq!(
+                fields[field],
+                ValueSchema::String {
+                    max_length: POSTGRESQL_IDENTIFIER_MAX_BYTES,
+                    syntax: Some(crate::StringSyntax::LocalKeyV1),
+                }
+            );
+        }
+        assert_eq!(
+            fields["cluster"],
+            ValueSchema::String {
+                max_length: 128,
+                syntax: Some(crate::StringSyntax::LocalKeyV1),
+            }
+        );
     }
 }
