@@ -209,7 +209,7 @@ fn guest_static_build_contract_is_declared_for_aos_package() {
         assert!(package.contains("target-feature=+crt-static"));
         assert!(package.contains("-p crucible-guest --bin crucible-guest"));
         assert!(package.contains("patchelf --print-interpreter"));
-        assert!(package.contains("packaged_guest_system=${lib.system}"));
+        assert!(package.contains("packaged_guest_system=${stdenv.hostPlatform.system}"));
         assert!(package.contains("instruction_abi_architectures=x86_64,aarch64"));
     }
 }
