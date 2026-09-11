@@ -22,7 +22,7 @@ in
     };
 
     # Automake invokes both Autoconf and Perl during its build.  Build-dep
-    # splicing selects their native outputs while the installed Darwin scripts
+    # splicing selects their native outputs while the installed cross scripts
     # retain the corresponding target runtimes below.
     buildDeps = [
       gnumake
@@ -62,7 +62,7 @@ in
       {
         name = "install";
         script =
-          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          if stdenv.isCross && (stdenv.hostPlatform.isDarwin || stdenv.hostPlatform.isLinux)
           then ''
             make install
 
