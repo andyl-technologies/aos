@@ -31,7 +31,7 @@ in
         then [buildPackages.rpcsvc-proto]
         else [gcc]
       );
-    runtimeDeps = [gettext];
+    runtimeDeps = [gettext gcc];
     propagatedDeps = [];
 
     phases = [
@@ -45,6 +45,10 @@ in
       {
         name = "configure";
         script = ''
+          # The installed generator requires a real target-hosted preprocessor,
+          # independently of the build-local launcher used to generate headers.
+          sed -i 's|"/lib/cpp"|"${gcc}/bin/cpp"|' rpcgen/rpc_main.c
+
           ./configure \
             $configureFlags \
             --prefix=$out

@@ -8,6 +8,7 @@
   check,
   gettext,
   lvm2,
+  ncurses,
   readline,
   util-linux,
   dosfstools,
@@ -34,7 +35,8 @@ in
       python3
       buildPackages.glibc-locales
     ];
-    runtimeDeps = [gettext lvm2 readline util-linux];
+    # The interactive CLI links ncurses directly alongside readline.
+    runtimeDeps = [gettext lvm2 ncurses readline util-linux];
     propagatedDeps = [util-linux];
     phases = [
       {
