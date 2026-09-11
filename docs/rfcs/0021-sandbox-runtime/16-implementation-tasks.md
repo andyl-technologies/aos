@@ -834,29 +834,29 @@ completes. The Git history remains authoritative for code details.
   review. Carrier framing, transcript authentication, systemd unit binding,
   service deployment, and the controller client remain open.
 - `d5a36f038` — foundation toward `SBX-CTRL-03`, `SBX-BPROTO-04`, and
-  `SBX-HOST-01`: ownership-gated effects now use an opaque V2 plan derived
+  `SBX-HOST-01`: the controller effect ledger now uses one rich V1 record with
+  a closed header flag selecting the byte-exact generic body or the
+  authority-bound body. Ownership-gated effects use an opaque V1 plan derived
   solely from one exact publication-draft template and bound to operation,
   ordered step, Host audience/method, descriptor-free body, and portable
   semantics. The reconciler selects authority and durably records the selected
-  publication, binding, lease facts, attenuation scalars, deadline-bearing
-  body, and complete Apply packet before broker I/O. Restart queries that exact
-  attempt; Pending or indeterminate transport retains it, while only
-  authenticated Absent permits a newly selected attempt that is itself
-  committed before Apply. Historical validation is anchored at the activated
-  publication and remains independent of today's current pointer. Host
-  completion tokens bind the exact effect and packet, and stored observations
-  are deterministically revalidated for canonical shape, assignment fence, and
-  derived runtime handle before recovery. Non-Host, non-Apply, descriptor
-  effects, cross-attempt receipts, operation/step swaps, crafted V2 policy
-  violations, and unsupported legacy gated V1 state fail closed before
-  executor I/O; the public raw attempt-selection path is removed. The
-  unreleased V2 format deliberately persists no unauthenticated clock
-  provenance or boot identity, and V1 bytes remain golden-stable in all four
-  states. The slice passes 129 sandbox and 59 broker-protocol unit tests, a
-  downstream API test, doctests, strict all-target Clippy, warning-denied
-  rustdoc, formatting, and multi-round independent adversarial review. The
-  production seqpacket client, systemd service binding, and Host Apply
-  advertisement remain open.
+  publication, binding, lease facts, attenuation scalars, paired Host boot,
+  deadline-bearing body, and complete Apply packet before broker I/O. Restart
+  queries that exact attempt; Pending or indeterminate transport retains it,
+  while only authenticated Absent permits a newly selected attempt that is
+  itself committed before Apply. Historical validation is anchored at the
+  activated publication and remains independent of today's current pointer.
+  Host completion tokens bind the exact effect and packet, and stored
+  observations are deterministically revalidated for canonical shape,
+  assignment fence, and derived runtime handle before recovery. Non-Host,
+  non-Apply, descriptor effects, cross-attempt receipts, operation/step swaps,
+  crafted policy violations, non-V1 versions, unknown flags, and generic
+  records under gated provenance fail closed before executor I/O; the public
+  raw attempt-selection path is removed. Generic V1 bytes remain golden-stable
+  in all four states, and fixed digests pin the authority body and binding
+  domains. The controller suite passes 402 unit tests plus its downstream API
+  tests. The production seqpacket client, systemd service binding, and Host
+  Apply advertisement remain open.
 - `d96752e94` — further foundation toward `SBX-FS-02`: structural-index V1
   includes a fixed-width canonical child-lookup table. Entries sort by parent,
   full domain-separated SHA-256 component digest, and record ID; lookup uses a

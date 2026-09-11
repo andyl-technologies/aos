@@ -30,10 +30,10 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    AuthorityBoundEffectPlanV2, BrokerDispatchAttemptError, BrokerDispatchAttemptV1,
+    AuthorityBoundEffectPlanV1, BrokerDispatchAttemptError, BrokerDispatchAttemptV1,
     BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, GuardianPlanRequestV1,
     IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction,
-    OwnershipTransactionReceiptV1, PreparedAuthorityEffectV2, RecordNamespace, SignedBrokerPlan,
+    OwnershipTransactionReceiptV1, PreparedAuthorityEffectV1, RecordNamespace, SignedBrokerPlan,
     SignedOwnershipLease,
 };
 use aos_sandbox_ownership_protocol::{OwnershipClaimAction, OwnershipClaimV1};
@@ -170,13 +170,13 @@ impl AuthorityPublicationDraftV1 {
     pub fn bind_effect(
         &self,
         template_digest: ObjectDigest,
-    ) -> Result<AuthorityBoundEffectPlanV2, AuthorityPublicationError> {
+    ) -> Result<AuthorityBoundEffectPlanV1, AuthorityPublicationError> {
         let template = self
             .templates
             .iter()
             .find(|template| template.digest == template_digest)
             .ok_or(AuthorityPublicationError::TemplateAbsent)?;
-        AuthorityBoundEffectPlanV2::from_template(
+        AuthorityBoundEffectPlanV1::from_template(
             self.digest,
             template.audience,
             template.method,
@@ -899,22 +899,17 @@ pub(crate) fn validate_durable_effect_attempt(
     audience: BrokerAudience,
     template_digest: ObjectDigest,
     body_without_deadline: &[u8],
-    prepared_effect: &PreparedAuthorityEffectV2,
+    prepared_effect: &PreparedAuthorityEffectV1,
     current_host_boot_id: Option<[u8; 16]>,
 ) -> Result<(), AuthorityPublicationError> {
     validate_publication_namespace(journal)?;
     if prepared_effect.binding_digest() != binding_digest {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
-    match (
-        prepared_effect.preparation_host_boot_id(),
-        current_host_boot_id,
-    ) {
-        (Some(prepared), Some(current)) if prepared != current => {
-            return Err(AuthorityPublicationError::CorruptCurrent);
-        }
-        (None, Some(_)) => return Err(AuthorityPublicationError::MigrationRequired),
-        _ => {}
+    if current_host_boot_id
+        .is_some_and(|current| prepared_effect.preparation_host_boot_id() != current)
+    {
+        return Err(AuthorityPublicationError::CorruptCurrent);
     }
     let activated = journal
         .get(
@@ -960,14 +955,11 @@ pub(crate) fn validate_durable_effect_attempt(
     let reconstructed = if template.plan().protocol_version() == ProtocolVersion::new(1, 0)
         && template.semantics().verb() == BrokerVerb::HostLaunch
     {
-        let host_boot_id = prepared_effect
-            .preparation_host_boot_id()
-            .ok_or(AuthorityPublicationError::MigrationRequired)?;
         BrokerDispatchAttemptV1::from_recovered_host_launch_with_guardian_at(
             template,
             &artifacts.lease,
             prepared_effect.attempt().body(),
-            host_boot_id,
+            prepared_effect.preparation_host_boot_id(),
             prepared_effect.attempt().deadline_boottime_nanoseconds(),
             prepared_effect.preparation_wall_seconds(),
             prepared_effect.preparation_boottime_nanoseconds(),
@@ -1244,9 +1236,6 @@ pub enum AuthorityPublicationError {
     /// A durable current record is malformed or internally inconsistent.
     #[error("durable authority publication is corrupt")]
     CorruptCurrent,
-    /// A deferred effect record lacks the mandatory current Host boot binding.
-    #[error("authority effect record requires migration before Host execution")]
-    MigrationRequired,
     /// An idempotency key was previously bound to another publication.
     #[error("authority publication idempotency conflict")]
     IdempotencyConflict,

@@ -335,21 +335,22 @@ that exact current publication or a valid successor. Renewal may change only
 the lease-bound artifacts for the same authority and source draft at an
 unchanged assignment epoch and desired generation.
 
-The generic effect ledger retains its exact V1 encoding for ungated effects.
-An ownership-gated operation instead requires an authority-bound record for
-every step. Its V2 binding is constructed only from a template in the gate's
-exact publication draft; it records and recomputes the source-draft digest,
-broker audience and method, template digest, deadline-free request body digest,
-and portable semantic-identity commitment. The binding digest also commits the
-operation ID and ordered step, preventing valid values from being exchanged
-between journal keys. Callers cannot provide those fields independently. The
-binding currently admits only descriptor-free Host `ApplyRuntime`; Mount,
-Storage, Network, Guardian, Guest, other methods, and every descriptor-bearing
-template are rejected before journal admission. Recovery reports legacy V1
-records under ownership-gated operation provenance as migration-required rather
-than silently reinterpreting them. It rejects a missing or extra effect, a
-template absent from the gate draft, and any substituted body or semantic
-commitment.
+The effect ledger uses one V1 encoding for generic and authority-bound effects.
+Its fourth header byte is a closed flags field: zero selects the byte-exact
+generic body and `AUTHORITY_BOUND=1` selects the authority body. Unknown
+versions, unknown flags, and a record variant that does not match its operation
+provenance are corrupt state. An ownership-gated operation requires an
+authority-bound record for every step. Its V1 binding is constructed only from
+a template in the gate's exact publication draft; it records and recomputes the
+source-draft digest, broker audience and method, template digest, deadline-free
+request body digest, and portable semantic-identity commitment. The binding
+digest also commits the operation ID and ordered step, preventing valid values
+from being exchanged between journal keys. Callers cannot provide those fields
+independently. The binding currently admits only descriptor-free Host
+`ApplyRuntime`; Mount, Storage, Network, Guardian, Guest, other methods, and
+every descriptor-bearing template are rejected before journal admission.
+Recovery rejects a missing or extra effect, a template absent from the gate
+draft, and any substituted body or semantic commitment.
 
 Before the first external broker call, the sole journal-owning reconciler
 selects the current publication. It accepts the activated publication or a
@@ -371,17 +372,17 @@ and durably replaces the dispatch record before issuing its Apply. A crash at
 that boundary therefore recovers by querying the replacement rather than
 replaying an unrecorded request.
 
-Authority-bound records use Effect V3 for this boot-bearing dispatch. An Effect
-V2 Planned record has no dispatch or BOOTTIME claim; recovery may retain it and
-its first attempt is written directly as V3 with a fresh boot. A dispatch-bearing
-V2 record predates the boot field. If it is already completed or permanently
-blocked it remains readable as history but cannot be re-encoded as V3; if it is
-Applying it requires explicit migration before executor I/O. Completed V3
-history remains valid across a reboot because it is receipt history, while an
-ambiguous Applying V3 attempt must still name the current boot. Generic Effect
-V1 bytes and the V2 binding/digest domains are unchanged.
+The authority-bound V1 variant carries the complete binding and a fixed
+dispatch slot. A `Planned` record has no dispatch and requires every byte of
+that slot to be zero. `Applying`, `Applied`, and `PermanentlyBlocked` records
+require a dispatch with a nonzero preparation Host boot ID in addition to the
+selected publication, lease, attenuation scalars, body, and packet. Completed
+V1 history remains valid across a reboot because it is receipt history, while
+an ambiguous `Applying` V1 attempt must still name the current boot. Generic V1
+bytes remain golden-stable in all four states. The authority body and binding
+digests use their sole V1 domains.
 
-Each durable dispatch also commits the Effect V2 binding digest. Recovery
+Each durable dispatch also commits the Effect V1 binding digest. Recovery
 reconstructs the selected publication relative to the gate's permanent
 activated publication, not relative to whichever publication is current at
 query time; a same-draft lease renewal may therefore leave historical attempts
@@ -401,11 +402,9 @@ Descriptor-bearing attempts remain disabled until a
 durable, deterministic FD-reacquisition contract is defined; descriptor
 integers are never persisted as capabilities.
 
-The Effect V2 layout is not yet released and therefore has no compatibility
-decoder for earlier experimental bytes. Its current canonical layout omits raw
-clock provenance and boot ID. Legacy Effect V1 golden encodings remain frozen
-for all four states; finding V1 under gated provenance requires explicit
-migration.
+The V1 decoder has no predecessor-format or migration branch. It rejects any
+non-V1 version before interpreting the body and never treats malformed or
+variant-mismatched bytes as historical authority.
 
 The protocol error code is the single source of truth for recovery behavior.
 Wrong authority epoch, already-owned acquisition, and stale renewal fences

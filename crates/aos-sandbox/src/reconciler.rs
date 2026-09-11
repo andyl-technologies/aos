@@ -35,9 +35,8 @@ use crate::journal::{
 };
 use crate::publication::{
     AuthorityPublicationActivationPartsV1, AuthorityPublicationActivationV1,
-    AuthorityPublicationDraftV1, AuthorityPublicationError, AuthorityPublicationStore,
-    validate_durable_effect_attempt, validate_durable_gate_publication,
-    validate_publication_namespace,
+    AuthorityPublicationDraftV1, AuthorityPublicationStore, validate_durable_effect_attempt,
+    validate_durable_gate_publication, validate_publication_namespace,
 };
 
 mod effect;
@@ -53,8 +52,8 @@ pub(crate) use runtime_authority::{
 };
 
 pub use effect::{
-    AuthorityBoundEffectPlanV2, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV2,
-    EffectDomain, EffectPlan, PreparedAuthorityEffectV2, ValidatedHostEffectReceiptV1,
+    AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1,
+    EffectDomain, EffectPlan, PreparedAuthorityEffectV1, ValidatedHostEffectReceiptV1,
 };
 use effect::{
     EffectLedgerRecord, EffectState, MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,
@@ -144,7 +143,7 @@ impl OperationPlan {
         request_digest: [u8; 32],
         desired_key: Vec<u8>,
         desired_value: Vec<u8>,
-        effects: Vec<AuthorityBoundEffectPlanV2>,
+        effects: Vec<AuthorityBoundEffectPlanV1>,
         claim: OwnershipClaimV1,
         publication_draft: AuthorityPublicationDraftV1,
     ) -> Result<Self, ReconcilerError> {
@@ -486,8 +485,8 @@ pub trait SingleNodeEffectExecutor {
         &mut self,
         _operation_id: OperationId,
         _step: u32,
-        _prepared: &PreparedAuthorityEffectV2,
-    ) -> Result<AuthorityEffectObservationV2, EffectFailure> {
+        _prepared: &PreparedAuthorityEffectV1,
+    ) -> Result<AuthorityEffectObservationV1, EffectFailure> {
         Err(EffectFailure::Permanent(
             "authority-bound effect execution is unsupported".to_owned(),
         ))
@@ -503,7 +502,7 @@ pub trait SingleNodeEffectExecutor {
         &mut self,
         _operation_id: OperationId,
         _step: u32,
-        _prepared: &PreparedAuthorityEffectV2,
+        _prepared: &PreparedAuthorityEffectV1,
     ) -> Result<ValidatedHostEffectReceiptV1, EffectFailure> {
         Err(EffectFailure::Permanent(
             "authority-bound effect execution is unsupported".to_owned(),
@@ -642,9 +641,6 @@ pub enum ReconcilerError {
     /// Durable operation or effect bytes violate the closed versioned schema.
     #[error("corrupt durable effect ledger: {0}")]
     CorruptLedger(&'static str),
-    /// A legacy ownership-gated effect requires an explicit durable migration.
-    #[error("legacy ownership-gated effects require migration")]
-    MigrationRequired,
     /// An executor returned unbounded or empty evidence.
     #[error("effect executor violated its output contract: {0}")]
     InvalidExecutorOutput(&'static str),
@@ -1139,7 +1135,7 @@ where
                             binding.template_digest,
                             timing,
                         )?;
-                        Some(PreparedAuthorityEffectV2::new(
+                        Some(PreparedAuthorityEffectV1::new(
                             binding.digest,
                             selected_publication,
                             timing.clock(),
@@ -1738,14 +1734,10 @@ where
                             dispatch,
                             current_host_boot_id,
                         )
-                        .map_err(|error| {
-                            if matches!(error, AuthorityPublicationError::MigrationRequired) {
-                                ReconcilerError::MigrationRequired
-                            } else {
-                                ReconcilerError::CorruptLedger(
-                                    "authority effect dispatch is missing or corrupt",
-                                )
-                            }
+                        .map_err(|_| {
+                            ReconcilerError::CorruptLedger(
+                                "authority effect dispatch is missing or corrupt",
+                            )
                         })?;
                         if let EffectState::Applied { receipt, .. } = &effect.state {
                             dispatch
@@ -1758,10 +1750,14 @@ where
                         }
                     }
                 }
-                (Some(_), None) => return Err(ReconcilerError::MigrationRequired),
+                (Some(_), None) => {
+                    return Err(ReconcilerError::CorruptLedger(
+                        "effect record authority flag does not match operation provenance",
+                    ));
+                }
                 (None, Some(_)) => {
                     return Err(ReconcilerError::CorruptLedger(
-                        "effect record version does not match operation provenance",
+                        "effect record authority flag does not match operation provenance",
                     ));
                 }
             }
@@ -1838,7 +1834,7 @@ where
         effect_count: u32,
         attempt: u32,
         plan: EffectPlan,
-        dispatch: Option<PreparedAuthorityEffectV2>,
+        dispatch: Option<PreparedAuthorityEffectV1>,
         authority_gate: Option<(SandboxId, ObjectDigest)>,
     ) -> Result<ReconcileOutcome, ReconcilerError> {
         let receipt = if let Some(prepared) = dispatch.as_ref() {
@@ -1860,11 +1856,11 @@ where
                 }
             };
             match observed {
-                AuthorityEffectObservationV2::Applied(receipt) => {
+                AuthorityEffectObservationV1::Applied(receipt) => {
                     receipt.into_effect_receipt_for(prepared)?
                 }
-                AuthorityEffectObservationV2::Pending => return Ok(ReconcileOutcome::RetryPending),
-                AuthorityEffectObservationV2::Absent => {
+                AuthorityEffectObservationV1::Pending => return Ok(ReconcileOutcome::RetryPending),
+                AuthorityEffectObservationV1::Absent => {
                     let binding = plan.authority().ok_or(ReconcilerError::CorruptLedger(
                         "authority dispatch has no binding",
                     ))?;
@@ -1887,7 +1883,7 @@ where
                         binding.template_digest,
                         timing,
                     )?;
-                    let fresh = PreparedAuthorityEffectV2::new(
+                    let fresh = PreparedAuthorityEffectV1::new(
                         binding.digest,
                         publication_digest,
                         timing.clock(),
@@ -1988,7 +1984,7 @@ where
         effect_count: u32,
         attempt: u32,
         plan: EffectPlan,
-        dispatch: Option<PreparedAuthorityEffectV2>,
+        dispatch: Option<PreparedAuthorityEffectV1>,
         failure: EffectFailure,
     ) -> Result<ReconcileOutcome, ReconcilerError> {
         failure.validate()?;
@@ -2449,7 +2445,9 @@ mod tests {
         descriptor_free_mount_activation_fixture, descriptor_host_activation_fixture,
         signed_guardian_plan,
     };
-    use crate::publication::{AuthorityPublicationDraftV1, AuthorityPublicationStore};
+    use crate::publication::{
+        AuthorityPublicationDraftV1, AuthorityPublicationError, AuthorityPublicationStore,
+    };
 
     struct TestDirectory(PathBuf);
 
@@ -2489,7 +2487,7 @@ mod tests {
         host_boot_id: Option<[u8; 16]>,
     }
 
-    fn host_receipt_bytes(prepared: &PreparedAuthorityEffectV2) -> Vec<u8> {
+    fn host_receipt_bytes(prepared: &PreparedAuthorityEffectV1) -> Vec<u8> {
         let request = ApplyRuntimeRequest::decode_from_slice(prepared.attempt().body()).unwrap();
         let fence = request.fence.as_option().unwrap();
         let incarnation: [u8; 16] = fence.incarnation_id.as_slice().try_into().unwrap();
@@ -2509,7 +2507,7 @@ mod tests {
         observation.encode_to_vec()
     }
 
-    fn host_receipt(prepared: &PreparedAuthorityEffectV2) -> ValidatedHostEffectReceiptV1 {
+    fn host_receipt(prepared: &PreparedAuthorityEffectV1) -> ValidatedHostEffectReceiptV1 {
         prepared
             .validate_host_receipt(host_receipt_bytes(prepared))
             .unwrap()
@@ -2578,19 +2576,19 @@ mod tests {
             &mut self,
             operation_id: OperationId,
             step: u32,
-            prepared: &PreparedAuthorityEffectV2,
-        ) -> Result<AuthorityEffectObservationV2, EffectFailure> {
+            prepared: &PreparedAuthorityEffectV1,
+        ) -> Result<AuthorityEffectObservationV1, EffectFailure> {
             self.observe_calls += 1;
             Ok(if self.authority_pending {
-                AuthorityEffectObservationV2::Pending
+                AuthorityEffectObservationV1::Pending
             } else if self.applied.contains_key(&(operation_id, step)) {
-                AuthorityEffectObservationV2::Applied(
+                AuthorityEffectObservationV1::Applied(
                     self.authority_receipt_override
                         .take()
                         .unwrap_or_else(|| host_receipt(prepared)),
                 )
             } else {
-                AuthorityEffectObservationV2::Absent
+                AuthorityEffectObservationV1::Absent
             })
         }
 
@@ -2598,7 +2596,7 @@ mod tests {
             &mut self,
             operation_id: OperationId,
             step: u32,
-            prepared: &PreparedAuthorityEffectV2,
+            prepared: &PreparedAuthorityEffectV1,
         ) -> Result<ValidatedHostEffectReceiptV1, EffectFailure> {
             self.apply_calls += 1;
             if let Some(failure) = self.failures.pop_front() {
@@ -2699,16 +2697,6 @@ mod tests {
         )
         .unwrap()
         .0
-    }
-
-    fn authority_effect_v3_as_legacy_v2(mut bytes: Vec<u8>) -> Vec<u8> {
-        const HOST_BOOT_OFFSET: usize = 369;
-        const HOST_BOOT_BYTES: usize = 16;
-
-        assert_eq!(bytes[0], effect::AUTHORITY_EFFECT_VERSION);
-        bytes[0] = effect::LEGACY_AUTHORITY_EFFECT_VERSION;
-        bytes.drain(HOST_BOOT_OFFSET..HOST_BOOT_OFFSET + HOST_BOOT_BYTES);
-        bytes
     }
 
     #[test]
@@ -3732,7 +3720,7 @@ mod tests {
             match mutation {
                 "body" => *body.last_mut().unwrap() ^= 1,
                 "packet" => *packet.last_mut().unwrap() ^= 1,
-                "boot" => host_boot_id = Some([0x93; 16]),
+                "boot" => host_boot_id = [0x93; 16],
                 _ => unreachable!(),
             }
             let substituted = BrokerDispatchAttemptV1::from_durable_parts(
@@ -3743,7 +3731,7 @@ mod tests {
                 body,
                 packet,
             );
-            record.dispatch = Some(PreparedAuthorityEffectV2::from_durable_parts(
+            record.dispatch = Some(PreparedAuthorityEffectV1::from_durable_parts(
                 durable.binding_digest(),
                 durable.publication_digest(),
                 durable.preparation_wall_seconds(),
@@ -3782,7 +3770,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_v3_host_launch_remains_historical_after_reboot() {
+    fn completed_v1_host_launch_remains_historical_after_reboot() {
         let directory = TestDirectory::new();
         let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         let mut reconciler = Reconciler::new(journal, Executor::default());
@@ -3803,108 +3791,6 @@ mod tests {
         let apply_calls = reconciler.executor.apply_calls;
 
         reconciler.executor.host_boot_id = Some([0x93; 16]);
-        assert_eq!(
-            reconciler.reconcile_once(plan.operation_id()).unwrap(),
-            ReconcileOutcome::Succeeded
-        );
-        assert_eq!(reconciler.executor.apply_calls, apply_calls);
-    }
-
-    #[test]
-    fn applying_v2_authority_dispatch_requires_migration_before_executor_io() {
-        let directory = TestDirectory::new();
-        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
-        let mut reconciler = Reconciler::new(journal, Executor::default());
-        let (plan, draft, prepared) = gated_operation_with_publication(1);
-        reconciler.accept(&plan).unwrap();
-        let activation = gate_activation(&mut reconciler, &draft, &prepared);
-        reconciler
-            .activate_ownership_gate(plan.operation_id(), activation)
-            .unwrap();
-        reconciler.reconcile_once(plan.operation_id()).unwrap();
-        let effect_key = effect_key(plan.operation_id(), 0);
-        let v3 = reconciler
-            .journal
-            .get(RecordNamespace::Effect, &effect_key)
-            .unwrap()
-            .to_vec();
-        let v2 = authority_effect_v3_as_legacy_v2(v3);
-        let decoded = decode_effect(&v2).unwrap();
-        assert_eq!(
-            decoded
-                .dispatch
-                .as_ref()
-                .unwrap()
-                .preparation_host_boot_id(),
-            None
-        );
-        assert!(matches!(
-            encode_effect(&decoded),
-            Err(ReconcilerError::MigrationRequired)
-        ));
-        reconciler
-            .journal_mut()
-            .commit(
-                &JournalTransaction::new(
-                    [0xe4; 16],
-                    vec![JournalRecord::put(
-                        RecordNamespace::Effect,
-                        effect_key.to_vec(),
-                        v2,
-                    )],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-
-        assert!(matches!(
-            reconciler.reconcile_once(plan.operation_id()),
-            Err(ReconcilerError::MigrationRequired)
-        ));
-        assert_eq!(reconciler.executor.observe_calls, 0);
-        assert_eq!(reconciler.executor.apply_calls, 0);
-    }
-
-    #[test]
-    fn completed_v2_authority_dispatch_remains_readable_but_not_reencodable() {
-        let directory = TestDirectory::new();
-        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
-        let mut reconciler = Reconciler::new(journal, Executor::default());
-        let (plan, draft, prepared) = gated_operation_with_publication(1);
-        reconciler.accept(&plan).unwrap();
-        let activation = gate_activation(&mut reconciler, &draft, &prepared);
-        reconciler
-            .activate_ownership_gate(plan.operation_id(), activation)
-            .unwrap();
-        reconciler.reconcile_once(plan.operation_id()).unwrap();
-        reconciler.reconcile_once(plan.operation_id()).unwrap();
-        let effect_key = effect_key(plan.operation_id(), 0);
-        let v3 = reconciler
-            .journal
-            .get(RecordNamespace::Effect, &effect_key)
-            .unwrap()
-            .to_vec();
-        let v2 = authority_effect_v3_as_legacy_v2(v3);
-        assert!(matches!(
-            encode_effect(&decode_effect(&v2).unwrap()),
-            Err(ReconcilerError::MigrationRequired)
-        ));
-        reconciler
-            .journal_mut()
-            .commit(
-                &JournalTransaction::new(
-                    [0xe5; 16],
-                    vec![JournalRecord::put(
-                        RecordNamespace::Effect,
-                        effect_key.to_vec(),
-                        v2,
-                    )],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        let apply_calls = reconciler.executor.apply_calls;
-
         assert_eq!(
             reconciler.reconcile_once(plan.operation_id()).unwrap(),
             ReconcileOutcome::Succeeded
@@ -3999,7 +3885,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_durable_bytes_omit_clock_provenance_but_bind_host_boot() {
+    fn v1_durable_bytes_omit_clock_provenance_but_bind_host_boot() {
         let directory = TestDirectory::new();
         let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         let mut reconciler = Reconciler::new(journal, Executor::default());
@@ -4020,13 +3906,13 @@ mod tests {
         let durable = record.dispatch.as_ref().unwrap();
         let alternate_clock = RawPairedClockSample::new_untrusted(
             RawClockProvenance::new_untrusted([0xee; 16]).unwrap(),
-            durable.preparation_host_boot_id().unwrap(),
+            durable.preparation_host_boot_id(),
             durable.preparation_wall_seconds(),
             durable.preparation_boottime_nanoseconds(),
         )
         .unwrap();
         let mut alternate = record.clone();
-        alternate.dispatch = Some(PreparedAuthorityEffectV2::new(
+        alternate.dispatch = Some(PreparedAuthorityEffectV1::new(
             durable.binding_digest(),
             durable.publication_digest(),
             alternate_clock,
@@ -4044,7 +3930,7 @@ mod tests {
             durable.preparation_boottime_nanoseconds(),
         )
         .unwrap();
-        alternate.dispatch = Some(PreparedAuthorityEffectV2::new(
+        alternate.dispatch = Some(PreparedAuthorityEffectV1::new(
             durable.binding_digest(),
             durable.publication_digest(),
             another_boot,
@@ -4188,7 +4074,7 @@ mod tests {
             durable.attempt().body().to_vec(),
             packet,
         );
-        record.dispatch = Some(PreparedAuthorityEffectV2::from_durable_parts(
+        record.dispatch = Some(PreparedAuthorityEffectV1::from_durable_parts(
             durable.binding_digest(),
             durable.publication_digest(),
             durable.preparation_wall_seconds(),
@@ -4301,7 +4187,7 @@ mod tests {
     }
 
     #[test]
-    fn crafted_non_host_v2_planned_and_applying_records_fail_before_executor_io() {
+    fn crafted_non_host_v1_planned_and_applying_records_fail_before_executor_io() {
         for applying in [false, true] {
             let directory = TestDirectory::new();
             let (journal, _) =
@@ -4322,7 +4208,7 @@ mod tests {
                 .get(RecordNamespace::Effect, &key)
                 .unwrap()
                 .to_vec();
-            // V2 fixed header + operation + step + source digest precede audience.
+            // The fixed header + operation + step + source digest precede audience.
             bytes[70] = 2;
             reconciler
                 .journal_mut()
@@ -4901,17 +4787,10 @@ mod tests {
             let activation_error = reconciler
                 .activate_ownership_gate(gated.operation_id(), activation)
                 .unwrap_err();
-            if corruption >= 2 {
-                assert!(matches!(
-                    activation_error,
-                    ReconcilerError::MigrationRequired
-                ));
-            } else {
-                assert!(matches!(
-                    activation_error,
-                    ReconcilerError::CorruptLedger(_)
-                ));
-            }
+            assert!(matches!(
+                activation_error,
+                ReconcilerError::CorruptLedger(_)
+            ));
             assert!(
                 AuthorityPublicationStore::new(reconciler.journal_mut())
                     .current(draft.manifest().manifest().sandbox())
@@ -4919,11 +4798,7 @@ mod tests {
                     .is_none()
             );
             let recovered = reconciler.ownership_gate(gated.operation_id());
-            if corruption >= 2 {
-                assert!(matches!(recovered, Err(ReconcilerError::MigrationRequired)));
-            } else {
-                assert!(matches!(recovered, Err(ReconcilerError::CorruptLedger(_))));
-            }
+            assert!(matches!(recovered, Err(ReconcilerError::CorruptLedger(_))));
         }
     }
 
