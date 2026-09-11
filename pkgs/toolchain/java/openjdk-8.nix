@@ -32,7 +32,7 @@
   bootstrapTools,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
-  buildTools =
+  platformTools =
     if isDarwinCross
     then buildPackages
     else {
@@ -55,6 +55,14 @@
         openjdk-7
         ;
     };
+
+  # Boot Java runs generators on the build machine; native compilation stays targeted.
+  buildTools =
+    platformTools
+    // lib.optionalAttrs (stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) {
+      inherit (buildPackages) openjdk-7;
+    };
+
   bootstrapJdk =
     if isDarwinCross
     then buildPackages.openjdk-8
