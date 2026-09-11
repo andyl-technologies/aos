@@ -409,14 +409,21 @@ in
               --with-crypto-impl=openssl \
               --with-tls-impl=openssl
           ''
-          else ''
-            YACC='bison -y' ./configure \
-              $configureFlags \
-              --prefix=$out \
-              --enable-shared \
-              --with-crypto-impl=openssl \
-              --with-tls-impl=openssl
-          '';
+          else
+            lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+              # These runtime-only probes were verified against the target
+              # AOS glibc; configure cannot execute them in cross mode.
+              export krb5_cv_attr_constructor_destructor=yes,yes
+              export ac_cv_printf_positional=yes
+            ''
+            + ''
+              YACC='bison -y' ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --enable-shared \
+                --with-crypto-impl=openssl \
+                --with-tls-impl=openssl
+            '';
       }
       {
         name = "build";
