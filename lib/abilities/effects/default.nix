@@ -6,8 +6,17 @@
 ##! retains every referenced artifact, and rejects incomplete or cyclic graphs.
 let
   schemas = import ../schema.nix;
+  diagnostics = import ../diagnostic.nix;
 
-  fail = message: throw "ability effects: ${message}";
+  fail = message:
+    diagnostics.throw "value-type-mismatch" "ability effects: ${message}";
+  normalizeOperationFamily = import ../_operation-family.nix {inherit fail;};
+  failLimit = message:
+    diagnostics.throw "limit-exceeded" "ability effects: ${message}";
+  failMissingReference = message:
+    diagnostics.throw "missing-reference" "ability effects: ${message}";
+  failSchedulingCycle = message:
+    diagnostics.throw "scheduling-cycle" "ability effects: ${message}";
 
   profile = {
     max_document_bytes = 32 * 1024 * 1024;
@@ -345,56 +354,6 @@ let
   in
     reverseList state.reversed;
 
-  normalizeOperationFamily = value: let
-    kind =
-      if builtins.isAttrs value && builtins.isString (value.kind or null)
-      then value.kind
-      else fail "operation family must contain a string kind";
-    simple = [
-      "verify-artifact"
-      "prepare-managed-configuration"
-      "validate-candidate"
-      "publish-configuration"
-      "prepare-manager-configuration"
-      "observe-readiness"
-      "release-resource"
-      "record-generation-association"
-    ];
-  in
-    if builtins.elem kind simple
-    then requireAttrs "operation family '${kind}'" ["kind"] value
-    else if kind == "credential"
-    then let
-      checked = requireAttrs "credential operation family" ["kind" "action"] value;
-    in
-      checked // {action = requireChoice "credential action" ["acquire" "deliver"] checked.action;}
-    else if kind == "service-lifecycle"
-    then let
-      checked = requireAttrs "service lifecycle operation family" ["kind" "action"] value;
-    in
-      checked // {action = requireChoice "service lifecycle action" ["start" "reload" "restart" "stop"] checked.action;}
-    else if kind == "kubernetes-object"
-    then let
-      checked = requireAttrs "Kubernetes object operation family" ["kind" "action"] value;
-    in
-      checked // {action = requireChoice "Kubernetes object action" ["apply" "delete" "observe"] checked.action;}
-    else if kind == "network-endpoint"
-    then let
-      checked = requireAttrs "network endpoint operation family" ["kind" "action"] value;
-    in
-      checked // {action = requireChoice "network endpoint action" ["materialize" "observe" "release"] checked.action;}
-    else if kind == "host-storage"
-    then let
-      checked = requireAttrs "host storage operation family" ["kind" "action"] value;
-    in
-      checked // {action = requireChoice "host storage action" ["ensure" "observe" "release"] checked.action;}
-    else if kind == "host-network-policy"
-    then let
-      checked = requireAttrs "host network policy operation family" ["kind" "action"] value;
-    in
-      checked // {action = requireChoice "host network policy action" ["apply" "observe" "remove"] checked.action;}
-    else fail "operation family '${kind}' is unsupported";
-
   normalizeAggregateId = context: value: let
     checked = requireAttrs context ["provider" "group"] value;
   in {
@@ -521,7 +480,7 @@ let
 
   requireCanonicalLiteral = depth: value:
     if depth > profile.max_depth
-    then fail "literal input exceeds ${builtins.toString profile.max_depth} structural levels"
+    then failLimit "literal input exceeds ${builtins.toString profile.max_depth} structural levels"
     else if builtins.isBool value || value == null
     then value
     else if builtins.isInt value && value >= -maxSafeInteger && value <= maxSafeInteger
@@ -549,14 +508,14 @@ let
 
   containsTypedReference = depth: value:
     if depth > profile.max_depth
-    then fail "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
+    then failLimit "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
     else if isTypedReference value
     then true
     else if builtins.isList value
     then
       if builtins.length value <= profile.max_collection_items
       then builtins.any (containsTypedReference (depth + 1)) value
-      else fail "effect input collection exceeds the bounded profile"
+      else failLimit "effect input collection exceeds the bounded profile"
     else if builtins.isAttrs value
     then
       if
@@ -566,12 +525,12 @@ let
         (name: isAsciiString name && builtins.stringLength name <= maxStringLength)
         (builtins.attrNames value)
       then builtins.any (containsTypedReference (depth + 1)) (builtins.attrValues value)
-      else fail "effect input object exceeds the bounded canonical key profile"
+      else failLimit "effect input object exceeds the bounded canonical key profile"
     else false;
 
   collectionItemCount = depth: value:
     if depth > profile.max_depth
-    then fail "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
+    then failLimit "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
     else if isTypedReference value
     then 0
     else if builtins.isList value
@@ -585,7 +544,7 @@ let
     in
       if count <= profile.max_collection_items
       then count
-      else fail "effect input exceeds ${builtins.toString profile.max_collection_items} collection items"
+      else failLimit "effect input exceeds ${builtins.toString profile.max_collection_items} collection items"
     else if builtins.isAttrs value
     then let
       names = builtins.attrNames value;
@@ -603,7 +562,7 @@ let
         (name: isAsciiString name && builtins.stringLength name <= maxStringLength)
         names
       then count
-      else fail "effect input exceeds the bounded canonical object profile"
+      else failLimit "effect input exceeds the bounded canonical object profile"
     else 0;
 
   boundedAdd = limit: left: right:
@@ -613,7 +572,7 @@ let
 
   canonicalDocumentStats = depth: value:
     if depth > profile.max_depth
-    then fail "normalized effect plan exceeds ${builtins.toString profile.max_depth} structural levels"
+    then failLimit "normalized effect plan exceeds ${builtins.toString profile.max_depth} structural levels"
     else if value == null || builtins.isBool value
     then {
       items = 0;
@@ -656,7 +615,7 @@ let
     in
       if stats.items <= profile.max_collection_items
       then stats
-      else fail "normalized effect plan exceeds the collection item limit"
+      else failLimit "normalized effect plan exceeds the collection item limit"
     else if builtins.isAttrs value
     then let
       names = builtins.attrNames value;
@@ -692,7 +651,7 @@ let
       if !validNames
       then fail "normalized effect plan contains a non-canonical object member name"
       else if stats.items > profile.max_collection_items
-      then fail "normalized effect plan exceeds the collection item limit"
+      then failLimit "normalized effect plan exceeds the collection item limit"
       else stats
     else fail "normalized effect plan is outside the canonical JSON value domain";
 
@@ -752,7 +711,7 @@ let
 
   normalizeExpression = rootDepth: scope: depth: value:
     if depth > profile.max_depth
-    then fail "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
+    then failLimit "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
     else if builtins.isAttrs value && (value._type or null) == "aos-effect-result-reference"
     then {
       source = "operation-result";
@@ -790,7 +749,7 @@ let
 
   collectResults = depth: value:
     if depth > profile.max_depth
-    then fail "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
+    then failLimit "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
     else if builtins.isAttrs value && (value._type or null) == "aos-effect-result-reference"
     then [value]
     else if builtins.isList value
@@ -801,7 +760,7 @@ let
 
   collectArtifacts = depth: value:
     if depth > profile.max_depth
-    then fail "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
+    then failLimit "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
     else if builtins.isAttrs value && (value._type or null) == "aos-artifact-reference"
     then [(normalizeArtifactReference "effect input artifact" value)]
     else if builtins.isList value
@@ -1125,11 +1084,11 @@ let
     providerReadiness = builtins.map (normalizeProviderReadiness rootDepth scope) checked.providerReadiness;
   in
     if builtins.length scope > profile.max_depth
-    then fail "effect graph scope exceeds ${builtins.toString profile.max_depth} components"
+    then failLimit "effect graph scope exceeds ${builtins.toString profile.max_depth} components"
     else if builtins.length branchContext > profile.max_depth
-    then fail "effect branch nesting exceeds ${builtins.toString profile.max_depth} levels"
+    then failLimit "effect branch nesting exceeds ${builtins.toString profile.max_depth} levels"
     else if builtins.length names > profile.max_nodes
-    then fail "effect graph exceeds ${builtins.toString profile.max_nodes} local nodes"
+    then failLimit "effect graph exceeds ${builtins.toString profile.max_nodes} local nodes"
     else
       nodes
       // {
@@ -1196,17 +1155,17 @@ let
           + 2 * builtins.length releasedTargets;
       in
         if ready == []
-        then fail "effect graph contains a scheduling cycle"
+        then failSchedulingCycle "effect graph contains a scheduling cycle"
         else if roundWork > remainingWork
-        then fail "effect graph exceeds the bounded acyclicity analysis budget"
+        then failLimit "effect graph exceeds the bounded acyclicity analysis budget"
         else removeReady (remainingWork - roundWork) nextRemaining nextIndegrees;
   in
     if builtins.length identities != builtins.length (builtins.attrNames known)
     then fail "effect graph contains duplicate node identities"
     else if startupWork > maxAnalysisSteps
-    then fail "effect graph exceeds the bounded acyclicity analysis budget"
+    then failLimit "effect graph exceeds the bounded acyclicity analysis budget"
     else if hasMissing
-    then fail "effect graph references a missing node"
+    then failMissingReference "effect graph references a missing node"
     else removeReady (maxAnalysisSteps - startupWork) identities indegrees;
 
   conditional = mode: args: let
@@ -1386,7 +1345,7 @@ in rec {
       (operationsByBinding.${readiness.binding} or []);
     internalProviderReadiness = builtins.map (readiness:
       if !(builtins.hasAttr (builtins.toJSON readiness.producer) operationIdentities)
-      then fail "provider-readiness declaration names a missing producer operation"
+      then failMissingReference "provider-readiness declaration names a missing producer operation"
       else if readinessConsumers readiness == []
       then fail "provider-readiness declaration names a binding unused in its graph"
       else readiness)
@@ -1400,15 +1359,15 @@ in rec {
   in
     assert builtins.deepSeq checkedScope true;
       if nodeCount > profile.max_nodes
-      then fail "effect graph exceeds ${builtins.toString profile.max_nodes} nodes"
+      then failLimit "effect graph exceeds ${builtins.toString profile.max_nodes} nodes"
       else if builtins.length authored.edges > profile.max_edges
-      then fail "effect graph exceeds ${builtins.toString profile.max_edges} edges"
+      then failLimit "effect graph exceeds ${builtins.toString profile.max_edges} edges"
       else if artifactCount > profile.max_collection_items
-      then fail "effect graph exceeds the artifact collection limit"
+      then failLimit "effect graph exceeds the artifact collection limit"
       else if readinessCount > profile.max_collection_items
-      then fail "effect graph exceeds the provider-readiness collection limit"
+      then failLimit "effect graph exceeds the provider-readiness collection limit"
       else if edgeCount > profile.max_edges
-      then fail "effect graph exceeds ${builtins.toString profile.max_edges} edges"
+      then failLimit "effect graph exceeds ${builtins.toString profile.max_edges} edges"
       else let
         providerReadiness =
           builtins.map (readiness: {
@@ -1434,7 +1393,7 @@ in rec {
       in
         assert builtins.deepSeq documentStats true;
           if documentStats.bytes > profile.max_document_bytes
-          then fail "normalized effect plan exceeds the encoded byte limit"
+          then failLimit "normalized effect plan exceeds the encoded byte limit"
           else assert validateAcyclic normalized; normalized;
 
   inherit profile;

@@ -106,6 +106,28 @@ fn bounded_ordering_accepts_a_conflicting_access_chain() {
 }
 
 #[test]
+fn missing_edge_endpoint_does_not_create_a_spurious_cycle() {
+    let mut fixture = plan_fixture();
+    let destination = fixture.effect_plan.operations[0].key.clone();
+    fixture.effect_plan.edges.push(DependencyEdge {
+        from: operation_node("missing"),
+        to: PlanNodeKey::Operation { key: destination },
+        kind: DependencyKind::OrderingOnly,
+    });
+
+    let errors = fixture
+        .validate()
+        .expect_err("a missing edge endpoint must fail closed");
+    let codes = errors
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect::<Vec<_>>();
+
+    assert_eq!(codes, vec![DiagnosticCode::MissingReference]);
+}
+
+#[test]
 fn read_only_primary_cannot_authorize_write_recovery() {
     let mut fixture = plan_fixture();
     let primary = fixture.interfaces[0].interface.methods[&key("observe")].clone();

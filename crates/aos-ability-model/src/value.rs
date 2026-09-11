@@ -38,6 +38,17 @@ pub enum ValueError {
     },
 }
 
+impl ValueError {
+    /// Returns the stable diagnostic code for this canonical-value failure.
+    #[must_use]
+    pub const fn diagnostic_code(&self) -> crate::DiagnosticCode {
+        match self {
+            Self::Limit { .. } => crate::DiagnosticCode::LimitExceeded,
+            Self::Canonical { .. } => crate::DiagnosticCode::ValueTypeMismatch,
+        }
+    }
+}
+
 /// Holds one value already checked against the canonical JSON dialect.
 ///
 /// Schema validation remains a separate operation because the expected schema

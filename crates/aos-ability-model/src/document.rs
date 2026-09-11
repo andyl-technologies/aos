@@ -115,6 +115,20 @@ pub enum DocumentError {
     InvalidLimitProfile,
 }
 
+impl DocumentError {
+    /// Returns the stable diagnostic code for this decoding or envelope failure.
+    #[must_use]
+    pub const fn diagnostic_code(&self) -> crate::DiagnosticCode {
+        match self {
+            Self::Limit { .. } | Self::InvalidLimitProfile => crate::DiagnosticCode::LimitExceeded,
+            Self::Decode { .. } => crate::DiagnosticCode::ValueTypeMismatch,
+            Self::Schema { .. } => crate::DiagnosticCode::UnsupportedSchema,
+            Self::RequiredFeatureOrder => crate::DiagnosticCode::NonCanonicalOrder,
+            Self::UnsupportedFeature { .. } => crate::DiagnosticCode::UnsupportedRequiredFeature,
+        }
+    }
+}
+
 /// Defines behavior shared by every versioned ability document envelope.
 pub trait VersionedDocument: Serialize + DeserializeOwned {
     /// Gives the exact versioned schema discriminator and digest domain.

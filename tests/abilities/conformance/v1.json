@@ -1,0 +1,3404 @@
+{
+  "cases": [
+    {
+      "arguments": {
+        "helper": "boolean"
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "kind": "boolean"
+        }
+      },
+      "id": "schema-boolean",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "integer",
+        "value": {
+          "maximum": 19,
+          "minimum": -7
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "kind": "integer",
+          "maximum": 19,
+          "minimum": -7
+        }
+      },
+      "id": "schema-integer",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "string",
+        "value": {
+          "maxLength": 64,
+          "syntax": "local-key-v1"
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "kind": "string",
+          "max_length": 64,
+          "syntax": "local-key-v1"
+        }
+      },
+      "id": "schema-string",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "enum",
+        "value": {
+          "values": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "kind": "string-enum",
+          "values": [
+            "alpha",
+            "zeta"
+          ]
+        }
+      },
+      "id": "schema-enum-canonical-order",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "list",
+        "value": {
+          "element": {
+            "kind": "boolean"
+          },
+          "maxItems": 4
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "element": {
+            "kind": "boolean"
+          },
+          "kind": "list",
+          "max_items": 4
+        }
+      },
+      "id": "schema-list",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "list",
+        "value": {
+          "element": {
+            "kind": "boolean"
+          },
+          "maxItems": 0
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "element": {
+            "kind": "boolean"
+          },
+          "kind": "list",
+          "max_items": 0
+        }
+      },
+      "id": "schema-list-zero-capacity",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "map",
+        "value": {
+          "keyMaxLength": 32,
+          "keySyntax": "qualified-name-v1",
+          "maxEntries": 3,
+          "value": {
+            "kind": "boolean"
+          }
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "key": {
+            "max_length": 32,
+            "syntax": "qualified-name-v1"
+          },
+          "kind": "map",
+          "max_entries": 3,
+          "value": {
+            "kind": "boolean"
+          }
+        }
+      },
+      "id": "schema-map",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "map",
+        "value": {
+          "keyMaxLength": 32,
+          "keySyntax": "qualified-name-v1",
+          "maxEntries": 0,
+          "value": {
+            "kind": "boolean"
+          }
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "key": {
+            "max_length": 32,
+            "syntax": "qualified-name-v1"
+          },
+          "kind": "map",
+          "max_entries": 0,
+          "value": {
+            "kind": "boolean"
+          }
+        }
+      },
+      "id": "schema-map-zero-capacity",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "record",
+        "value": {
+          "fields": {
+            "enabled": {
+              "kind": "boolean"
+            },
+            "label": {
+              "kind": "string",
+              "max_length": 64,
+              "syntax": "local-key-v1"
+            }
+          },
+          "optional": [
+            "label"
+          ]
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "fields": {
+            "enabled": {
+              "kind": "boolean"
+            },
+            "label": {
+              "kind": "string",
+              "max_length": 64,
+              "syntax": "local-key-v1"
+            }
+          },
+          "kind": "record",
+          "optional_fields": [
+            "label"
+          ]
+        }
+      },
+      "id": "schema-record",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "tagged-union",
+        "value": {
+          "tag": "kind",
+          "variants": {
+            "ready": {
+              "fields": {
+                "kind": {
+                  "kind": "string-enum",
+                  "values": [
+                    "ready"
+                  ]
+                },
+                "value": {
+                  "kind": "boolean"
+                }
+              },
+              "kind": "record",
+              "optional_fields": []
+            },
+            "waiting": {
+              "fields": {
+                "kind": {
+                  "kind": "string-enum",
+                  "values": [
+                    "waiting"
+                  ]
+                }
+              },
+              "kind": "record",
+              "optional_fields": []
+            }
+          }
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "kind": "tagged-union",
+          "tag": "kind",
+          "variants": {
+            "ready": {
+              "fields": {
+                "kind": {
+                  "kind": "string-enum",
+                  "values": [
+                    "ready"
+                  ]
+                },
+                "value": {
+                  "kind": "boolean"
+                }
+              },
+              "kind": "record",
+              "optional_fields": []
+            },
+            "waiting": {
+              "fields": {
+                "kind": {
+                  "kind": "string-enum",
+                  "values": [
+                    "waiting"
+                  ]
+                }
+              },
+              "kind": "record",
+              "optional_fields": []
+            }
+          }
+        }
+      },
+      "id": "schema-tagged-union",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "optional",
+        "value": {
+          "value": {
+            "kind": "boolean"
+          }
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "kind": "optional",
+          "value": {
+            "kind": "boolean"
+          }
+        }
+      },
+      "id": "schema-optional",
+      "operation": "schema",
+      "rust": "value-schema"
+    },
+    {
+      "arguments": {
+        "helper": "typed-references"
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "artifact": {
+            "kind": "artifact-reference"
+          },
+          "operation_result": {
+            "kind": "operation-result-reference"
+          },
+          "provider_assignment": {
+            "kind": "provider-assignment"
+          },
+          "resource": {
+            "kind": "resource-reference"
+          }
+        }
+      },
+      "id": "schema-typed-references",
+      "operation": "schema",
+      "rust": "schema-bundle"
+    },
+    {
+      "arguments": {
+        "helper": "identities"
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "context": {
+            "_type": "aos-instance-context",
+            "id": {
+              "_type": "aos-instance-id",
+              "environment": {
+                "_type": "aos-environment-id",
+                "authority": "deployment",
+                "key": "corpus",
+                "stage": "host"
+              },
+              "key": "provider"
+            },
+            "values": {
+              "enabled": true
+            }
+          },
+          "environment": {
+            "authority": "deployment",
+            "key": "corpus",
+            "stage": "host"
+          },
+          "instance": {
+            "environment": {
+              "_type": "aos-environment-id",
+              "authority": "deployment",
+              "key": "corpus",
+              "stage": "host"
+            },
+            "key": "provider"
+          },
+          "request": {
+            "consumer": {
+              "environment": {
+                "_type": "aos-environment-id",
+                "authority": "deployment",
+                "key": "corpus",
+                "stage": "host"
+              },
+              "key": "consumer"
+            },
+            "key": "request",
+            "scope": [
+              "corpus"
+            ]
+          }
+        }
+      },
+      "id": "authoring-identities-and-instance",
+      "operation": "authoring-helper",
+      "rust": "identity-bundle"
+    },
+    {
+      "arguments": {
+        "helper": "requests-and-references"
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "artifact": {
+            "_type": "aos-artifact-reference",
+            "closure": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "content": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "nar_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "store_path": "/nix/store/00000000000000000000000000000000-corpus"
+          },
+          "binding": {
+            "_type": "aos-ability-binding-reference",
+            "binding": "corpus.binding",
+            "interface": {
+              "abi": 1,
+              "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "name": "aos.test.corpus"
+            },
+            "provider": {
+              "environment": {
+                "authority": "deployment",
+                "key": "corpus",
+                "stage": "host"
+              },
+              "key": "provider"
+            },
+            "provider_key": "provider",
+            "requirement": "lower"
+          },
+          "contribution": {
+            "_type": "aos-ability-contribution",
+            "grant": "corpus.binding",
+            "request": {
+              "_type": "aos-request-id",
+              "consumer": {
+                "_type": "aos-instance-id",
+                "environment": {
+                  "_type": "aos-environment-id",
+                  "authority": "deployment",
+                  "key": "corpus",
+                  "stage": "host"
+                },
+                "key": "consumer"
+              },
+              "key": "request",
+              "scope": [
+                "corpus"
+              ]
+            },
+            "slot": "consumer.request",
+            "value": {
+              "enabled": true
+            }
+          },
+          "guarantee": {
+            "descriptor": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "name": "aos.test.guarantee",
+            "version": 1
+          },
+          "import": {
+            "_type": "aos-ability-import",
+            "interface": {
+              "abi": 1,
+              "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "name": "aos.test.corpus"
+            },
+            "request": {
+              "enabled": true
+            }
+          },
+          "resource": {
+            "_type": "aos-resource-reference",
+            "interface": {
+              "abi": 1,
+              "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "name": "aos.test.corpus"
+            },
+            "lifetime": "instance",
+            "operations": [
+              "observe",
+              "write"
+            ],
+            "resource": {
+              "key": "resource",
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "corpus",
+                  "stage": "host"
+                },
+                "key": "provider"
+              }
+            }
+          },
+          "result": {
+            "_type": "aos-request-output-reference",
+            "output": "endpoint",
+            "request": "child"
+          }
+        }
+      },
+      "id": "authoring-requests-outputs-and-references",
+      "operation": "authoring-helper",
+      "rust": "authoring-reference-bundle"
+    },
+    {
+      "arguments": {
+        "interface": {
+          "abi": 1,
+          "configuration": {
+            "kind": "boolean"
+          },
+          "guarantees": [],
+          "lifecycle": {
+            "persistent_delete_method": null,
+            "releases_ephemeral_on_disable": true,
+            "retains_persistent_by_default": true,
+            "stable_resource_identity": true
+          },
+          "methods": {
+            "observe": {
+              "guarantees": [],
+              "operation_family": {
+                "kind": "observe-readiness"
+              },
+              "outcome": {
+                "completion_evidence": {
+                  "kind": "boolean"
+                },
+                "indeterminate": "reconcile",
+                "observation_evidence": {
+                  "kind": "optional",
+                  "value": {
+                    "kind": "boolean"
+                  }
+                },
+                "supports_rejected_before_effect": true
+              },
+              "outputs": {
+                "ready": {
+                  "lifetime": "attempt",
+                  "phase": "observation",
+                  "schema": {
+                    "kind": "boolean"
+                  },
+                  "visibility": "protected"
+                }
+              },
+              "parameters": {
+                "fields": {},
+                "kind": "record",
+                "optional_fields": []
+              },
+              "permitted_operations": [
+                "observe"
+              ],
+              "target_resource": "aos.test.corpus"
+            }
+          },
+          "name": "aos.test.corpus",
+          "outputs": {
+            "endpoint": {
+              "lifetime": "instance",
+              "phase": "planning",
+              "schema": {
+                "kind": "string",
+                "max_length": 256,
+                "syntax": null
+              },
+              "visibility": "public"
+            }
+          },
+          "request": {
+            "fields": {
+              "enabled": {
+                "kind": "boolean"
+              },
+              "label": {
+                "kind": "optional",
+                "value": {
+                  "kind": "string",
+                  "max_length": 64,
+                  "syntax": "local-key-v1"
+                }
+              }
+            },
+            "kind": "record",
+            "optional_fields": [
+              "label"
+            ]
+          }
+        },
+        "required_features": []
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "interface": {
+            "abi": 1,
+            "configuration": {
+              "kind": "boolean"
+            },
+            "guarantees": [],
+            "lifecycle": {
+              "persistent_delete_method": null,
+              "releases_ephemeral_on_disable": true,
+              "retains_persistent_by_default": true,
+              "stable_resource_identity": true
+            },
+            "methods": {
+              "observe": {
+                "guarantees": [],
+                "operation_family": {
+                  "kind": "observe-readiness"
+                },
+                "outcome": {
+                  "completion_evidence": {
+                    "kind": "boolean"
+                  },
+                  "indeterminate": "reconcile",
+                  "observation_evidence": {
+                    "kind": "optional",
+                    "value": {
+                      "kind": "boolean"
+                    }
+                  },
+                  "supports_rejected_before_effect": true
+                },
+                "outputs": {
+                  "ready": {
+                    "lifetime": "attempt",
+                    "phase": "observation",
+                    "schema": {
+                      "kind": "boolean"
+                    },
+                    "visibility": "protected"
+                  }
+                },
+                "parameters": {
+                  "fields": {},
+                  "kind": "record",
+                  "optional_fields": []
+                },
+                "permitted_operations": [
+                  "observe"
+                ],
+                "target_resource": "aos.test.corpus"
+              }
+            },
+            "name": "aos.test.corpus",
+            "outputs": {
+              "endpoint": {
+                "lifetime": "instance",
+                "phase": "planning",
+                "schema": {
+                  "kind": "string",
+                  "max_length": 256,
+                  "syntax": null
+                },
+                "visibility": "public"
+              }
+            },
+            "request": {
+              "fields": {
+                "enabled": {
+                  "kind": "boolean"
+                },
+                "label": {
+                  "kind": "optional",
+                  "value": {
+                    "kind": "string",
+                    "max_length": 64,
+                    "syntax": "local-key-v1"
+                  }
+                }
+              },
+              "kind": "record",
+              "optional_fields": [
+                "label"
+              ]
+            }
+          },
+          "required_features": [],
+          "schema": "aos.ability.interface/v1"
+        }
+      },
+      "id": "interface-request-output-and-method",
+      "operation": "interface-document",
+      "rust": "interface-document"
+    },
+    {
+      "arguments": {
+        "interface": {
+          "abi": 1,
+          "configuration": {
+            "kind": "boolean"
+          },
+          "guarantees": [],
+          "lifecycle": {
+            "persistent_delete_method": null,
+            "releases_ephemeral_on_disable": true,
+            "retains_persistent_by_default": true,
+            "stable_resource_identity": true
+          },
+          "methods": {
+            "observe": {
+              "guarantees": [],
+              "operation_family": {
+                "kind": "observe-readiness"
+              },
+              "outcome": {
+                "completion_evidence": {
+                  "kind": "boolean"
+                },
+                "indeterminate": "reconcile",
+                "observation_evidence": {
+                  "kind": "optional",
+                  "value": {
+                    "kind": "boolean"
+                  }
+                },
+                "supports_rejected_before_effect": true
+              },
+              "outputs": {
+                "ready": {
+                  "lifetime": "attempt",
+                  "phase": "observation",
+                  "schema": {
+                    "kind": "boolean"
+                  },
+                  "visibility": "protected"
+                }
+              },
+              "parameters": {
+                "fields": {},
+                "kind": "record",
+                "optional_fields": []
+              },
+              "permitted_operations": [
+                "observe"
+              ],
+              "target_resource": "aos.test.foreign"
+            }
+          },
+          "name": "aos.test.corpus",
+          "outputs": {
+            "endpoint": {
+              "lifetime": "instance",
+              "phase": "planning",
+              "schema": {
+                "kind": "string",
+                "max_length": 256,
+                "syntax": null
+              },
+              "visibility": "public"
+            }
+          },
+          "request": {
+            "fields": {
+              "enabled": {
+                "kind": "boolean"
+              },
+              "label": {
+                "kind": "optional",
+                "value": {
+                  "kind": "string",
+                  "max_length": 64,
+                  "syntax": "local-key-v1"
+                }
+              }
+            },
+            "kind": "record",
+            "optional_fields": [
+              "label"
+            ]
+          }
+        },
+        "required_features": []
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "method-contract-mismatch",
+        "outcome": "reject"
+      },
+      "id": "interface-foreign-method-target",
+      "operation": "interface-document",
+      "rust": "interface-document"
+    },
+    {
+      "arguments": {
+        "interface": {
+          "abi": 1,
+          "configuration": {
+            "kind": "boolean"
+          },
+          "guarantees": [],
+          "lifecycle": {
+            "persistent_delete_method": null,
+            "releases_ephemeral_on_disable": true,
+            "retains_persistent_by_default": true,
+            "stable_resource_identity": true
+          },
+          "methods": {
+            "observe": {
+              "guarantees": [],
+              "operation_family": {
+                "kind": "observe-readiness"
+              },
+              "outcome": {
+                "completion_evidence": {
+                  "kind": "boolean"
+                },
+                "indeterminate": "reconcile",
+                "observation_evidence": {
+                  "kind": "optional",
+                  "value": {
+                    "kind": "boolean"
+                  }
+                },
+                "supports_rejected_before_effect": true
+              },
+              "outputs": {
+                "ready": {
+                  "lifetime": "attempt",
+                  "phase": "observation",
+                  "schema": {
+                    "kind": "boolean"
+                  },
+                  "visibility": "protected"
+                }
+              },
+              "parameters": {
+                "fields": {},
+                "kind": "record",
+                "optional_fields": []
+              },
+              "permitted_operations": [
+                "observe"
+              ],
+              "target_resource": "aos.test.corpus"
+            }
+          },
+          "name": "aos.test.corpus",
+          "outputs": {
+            "endpoint": {
+              "lifetime": "instance",
+              "phase": "planning",
+              "schema": {
+                "kind": "string",
+                "max_length": 256,
+                "syntax": null
+              },
+              "visibility": "public"
+            }
+          },
+          "request": {
+            "fields": {
+              "enabled": {
+                "kind": "boolean"
+              },
+              "label": {
+                "kind": "optional",
+                "value": {
+                  "kind": "string",
+                  "max_length": 64,
+                  "syntax": "local-key-v1"
+                }
+              }
+            },
+            "kind": "record",
+            "optional_fields": [
+              "label"
+            ]
+          }
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "declaration": {
+            "aggregation": {
+              "controller_group": "corpus",
+              "key": "authorized-slot",
+              "merge_contract": null,
+              "reject_slot_collisions": true,
+              "scope": "provider-instance"
+            },
+            "implementation": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            "interface": {
+              "abi": 1,
+              "descriptor": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "name": "aos.test.corpus"
+            },
+            "name": "corpus"
+          },
+          "implementation": {
+            "artifact": {
+              "closure": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "content": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "nar_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "store_path": "/nix/store/00000000000000000000000000000000-corpus"
+            },
+            "implementation": {
+              "handler": "corpus-handler",
+              "kind": "terminal-handler"
+            },
+            "interface": {
+              "abi": 1,
+              "descriptor": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "name": "aos.test.corpus"
+            },
+            "owns_resource_kinds": [],
+            "requirements": []
+          },
+          "requirements": []
+        }
+      },
+      "id": "interface-implementation-and-declaration",
+      "operation": "interface-implementation",
+      "rust": "implementation-bundle"
+    },
+    {
+      "arguments": {
+        "request": true
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "aggregate": {
+            "group": "terminal",
+            "provider": {
+              "environment": {
+                "authority": "deployment",
+                "key": "corpus",
+                "stage": "host"
+              },
+              "key": "provider"
+            }
+          },
+          "child_requests": [],
+          "conditional_requirements": [],
+          "contributions": [
+            {
+              "grant": "corpus.binding",
+              "request": {
+                "consumer": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "corpus",
+                    "stage": "host"
+                  },
+                  "key": "consumer"
+                },
+                "key": "request",
+                "scope": [
+                  "corpus"
+                ]
+              },
+              "slot": "consumer.request",
+              "value": true
+            }
+          ],
+          "interface": {
+            "abi": 1,
+            "name": "aos.test.terminal"
+          },
+          "outputs": {},
+          "provider": {
+            "environment": {
+              "authority": "deployment",
+              "key": "corpus",
+              "stage": "host"
+            },
+            "key": "provider"
+          },
+          "resources": [],
+          "scope": [
+            "corpus"
+          ],
+          "terminal_handler": "terminal-handler"
+        }
+      },
+      "id": "terminal-compose",
+      "operation": "compose-terminal",
+      "rust": "composition-node"
+    },
+    {
+      "arguments": {},
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "_type": "aos-ability-expansion",
+          "nodes": [
+            {
+              "aggregate": {
+                "group": "configuration",
+                "provider": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "web",
+                    "stage": "host"
+                  },
+                  "key": "managed"
+                }
+              },
+              "child_requests": [],
+              "conditional_requirements": [],
+              "contributions": [
+                {
+                  "grant": "nginx-edge.configuration",
+                  "request": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-edge"
+                    },
+                    "key": "configuration",
+                    "scope": [
+                      "nginx-edge",
+                      "configuration"
+                    ]
+                  },
+                  "slot": "nginx-edge.configuration",
+                  "value": {
+                    "files": {
+                      "app-a": "a.example:8080",
+                      "app-b": "b.example:8081"
+                    }
+                  }
+                },
+                {
+                  "grant": "nginx-edge.metadata",
+                  "request": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-edge"
+                    },
+                    "key": "metadata",
+                    "scope": [
+                      "nginx-edge",
+                      "metadata"
+                    ]
+                  },
+                  "slot": "nginx-edge.metadata",
+                  "value": {
+                    "files": {
+                      "app-a": "owner=a.example",
+                      "app-b": "owner=b.example"
+                    }
+                  }
+                },
+                {
+                  "grant": "nginx-internal.configuration",
+                  "request": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-internal"
+                    },
+                    "key": "configuration",
+                    "scope": [
+                      "nginx-internal",
+                      "configuration"
+                    ]
+                  },
+                  "slot": "nginx-internal.configuration",
+                  "value": {
+                    "files": {
+                      "app-c": "c.internal:9000"
+                    }
+                  }
+                },
+                {
+                  "grant": "nginx-internal.metadata",
+                  "request": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-internal"
+                    },
+                    "key": "metadata",
+                    "scope": [
+                      "nginx-internal",
+                      "metadata"
+                    ]
+                  },
+                  "slot": "nginx-internal.metadata",
+                  "value": {
+                    "files": {
+                      "app-c": "owner=c.internal"
+                    }
+                  }
+                }
+              ],
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.managed-configuration"
+              },
+              "outputs": {
+                "publishedConfiguration": {
+                  "_type": "aos-resource-reference",
+                  "interface": {
+                    "abi": 1,
+                    "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "name": "aos.managed-configuration"
+                  },
+                  "lifetime": "instance",
+                  "operations": [
+                    "publish",
+                    "read"
+                  ],
+                  "resource": {
+                    "key": "published",
+                    "provider": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "managed"
+                    }
+                  }
+                }
+              },
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "web",
+                  "stage": "host"
+                },
+                "key": "managed"
+              },
+              "registry_key": "managed",
+              "resources": [],
+              "scope": [
+                "managed"
+              ],
+              "terminal_handler": null
+            },
+            {
+              "aggregate": {
+                "group": "nginx",
+                "provider": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "web",
+                    "stage": "host"
+                  },
+                  "key": "nginx-edge"
+                }
+              },
+              "child_requests": [
+                {
+                  "accepted_interfaces": [
+                    {
+                      "abi": 1,
+                      "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "name": "aos.managed-configuration"
+                    }
+                  ],
+                  "guarantees": [],
+                  "id": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-edge"
+                    },
+                    "key": "configuration",
+                    "scope": [
+                      "nginx-edge",
+                      "configuration"
+                    ]
+                  },
+                  "key": "configuration",
+                  "lifetime": "instance",
+                  "methods": [],
+                  "request": {
+                    "_type": "aos-request-id",
+                    "consumer": {
+                      "_type": "aos-instance-id",
+                      "environment": {
+                        "_type": "aos-environment-id",
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-edge"
+                    },
+                    "key": "configuration",
+                    "scope": [
+                      "nginx-edge",
+                      "configuration"
+                    ]
+                  },
+                  "slot": "nginx-edge.configuration",
+                  "through": {
+                    "_type": "aos-ability-binding-reference",
+                    "binding": "nginx-edge.configuration",
+                    "interface": {
+                      "abi": 1,
+                      "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "name": "aos.managed-configuration"
+                    },
+                    "provider": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "managed"
+                    },
+                    "provider_key": "managed",
+                    "requirement": "configuration"
+                  },
+                  "value": {
+                    "files": {
+                      "app-a": "a.example:8080",
+                      "app-b": "b.example:8081"
+                    }
+                  }
+                },
+                {
+                  "accepted_interfaces": [
+                    {
+                      "abi": 1,
+                      "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "name": "aos.managed-configuration"
+                    }
+                  ],
+                  "guarantees": [],
+                  "id": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-edge"
+                    },
+                    "key": "metadata",
+                    "scope": [
+                      "nginx-edge",
+                      "metadata"
+                    ]
+                  },
+                  "key": "metadata",
+                  "lifetime": "instance",
+                  "methods": [],
+                  "request": {
+                    "_type": "aos-request-id",
+                    "consumer": {
+                      "_type": "aos-instance-id",
+                      "environment": {
+                        "_type": "aos-environment-id",
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-edge"
+                    },
+                    "key": "metadata",
+                    "scope": [
+                      "nginx-edge",
+                      "metadata"
+                    ]
+                  },
+                  "slot": "nginx-edge.metadata",
+                  "through": {
+                    "_type": "aos-ability-binding-reference",
+                    "binding": "nginx-edge.metadata",
+                    "interface": {
+                      "abi": 1,
+                      "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "name": "aos.managed-configuration"
+                    },
+                    "provider": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "managed"
+                    },
+                    "provider_key": "managed",
+                    "requirement": "metadata"
+                  },
+                  "value": {
+                    "files": {
+                      "app-a": "owner=a.example",
+                      "app-b": "owner=b.example"
+                    }
+                  }
+                },
+                {
+                  "accepted_interfaces": [
+                    {
+                      "abi": 1,
+                      "descriptor": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                      "name": "aos.systemd-service"
+                    }
+                  ],
+                  "guarantees": [],
+                  "id": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-edge"
+                    },
+                    "key": "service",
+                    "scope": [
+                      "nginx-edge",
+                      "service"
+                    ]
+                  },
+                  "key": "service",
+                  "lifetime": "instance",
+                  "methods": [],
+                  "request": {
+                    "_type": "aos-request-id",
+                    "consumer": {
+                      "_type": "aos-instance-id",
+                      "environment": {
+                        "_type": "aos-environment-id",
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-edge"
+                    },
+                    "key": "service",
+                    "scope": [
+                      "nginx-edge",
+                      "service"
+                    ]
+                  },
+                  "slot": "nginx-edge.service",
+                  "through": {
+                    "_type": "aos-ability-binding-reference",
+                    "binding": "nginx-edge.service",
+                    "interface": {
+                      "abi": 1,
+                      "descriptor": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                      "name": "aos.systemd-service"
+                    },
+                    "provider": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "systemd"
+                    },
+                    "provider_key": "systemd",
+                    "requirement": "service"
+                  },
+                  "value": {
+                    "configuration": {
+                      "_type": "aos-request-output-reference",
+                      "output": "publishedConfiguration",
+                      "request": "configuration"
+                    },
+                    "unit": "nginx-edge.service"
+                  }
+                }
+              ],
+              "conditional_requirements": [],
+              "contributions": [
+                {
+                  "grant": "app-a.web",
+                  "request": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "app-a"
+                    },
+                    "key": "web",
+                    "scope": []
+                  },
+                  "slot": "app-a",
+                  "value": {
+                    "host": "a.example",
+                    "port": 8080
+                  }
+                },
+                {
+                  "grant": "app-b.web",
+                  "request": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "app-b"
+                    },
+                    "key": "web",
+                    "scope": []
+                  },
+                  "slot": "app-b",
+                  "value": {
+                    "host": "b.example",
+                    "port": 8081
+                  }
+                }
+              ],
+              "interface": {
+                "abi": 1,
+                "name": "aos.nginx-virtual-host"
+              },
+              "outputs": {
+                "count": 2
+              },
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "web",
+                  "stage": "host"
+                },
+                "key": "nginx-edge"
+              },
+              "registry_key": "nginx-edge",
+              "resources": [],
+              "scope": [
+                "nginx-edge"
+              ],
+              "terminal_handler": null
+            },
+            {
+              "aggregate": {
+                "group": "nginx",
+                "provider": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "web",
+                    "stage": "host"
+                  },
+                  "key": "nginx-internal"
+                }
+              },
+              "child_requests": [
+                {
+                  "accepted_interfaces": [
+                    {
+                      "abi": 1,
+                      "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "name": "aos.managed-configuration"
+                    }
+                  ],
+                  "guarantees": [],
+                  "id": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-internal"
+                    },
+                    "key": "configuration",
+                    "scope": [
+                      "nginx-internal",
+                      "configuration"
+                    ]
+                  },
+                  "key": "configuration",
+                  "lifetime": "instance",
+                  "methods": [],
+                  "request": {
+                    "_type": "aos-request-id",
+                    "consumer": {
+                      "_type": "aos-instance-id",
+                      "environment": {
+                        "_type": "aos-environment-id",
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-internal"
+                    },
+                    "key": "configuration",
+                    "scope": [
+                      "nginx-internal",
+                      "configuration"
+                    ]
+                  },
+                  "slot": "nginx-internal.configuration",
+                  "through": {
+                    "_type": "aos-ability-binding-reference",
+                    "binding": "nginx-internal.configuration",
+                    "interface": {
+                      "abi": 1,
+                      "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "name": "aos.managed-configuration"
+                    },
+                    "provider": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "managed"
+                    },
+                    "provider_key": "managed",
+                    "requirement": "configuration"
+                  },
+                  "value": {
+                    "files": {
+                      "app-c": "c.internal:9000"
+                    }
+                  }
+                },
+                {
+                  "accepted_interfaces": [
+                    {
+                      "abi": 1,
+                      "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "name": "aos.managed-configuration"
+                    }
+                  ],
+                  "guarantees": [],
+                  "id": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-internal"
+                    },
+                    "key": "metadata",
+                    "scope": [
+                      "nginx-internal",
+                      "metadata"
+                    ]
+                  },
+                  "key": "metadata",
+                  "lifetime": "instance",
+                  "methods": [],
+                  "request": {
+                    "_type": "aos-request-id",
+                    "consumer": {
+                      "_type": "aos-instance-id",
+                      "environment": {
+                        "_type": "aos-environment-id",
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-internal"
+                    },
+                    "key": "metadata",
+                    "scope": [
+                      "nginx-internal",
+                      "metadata"
+                    ]
+                  },
+                  "slot": "nginx-internal.metadata",
+                  "through": {
+                    "_type": "aos-ability-binding-reference",
+                    "binding": "nginx-internal.metadata",
+                    "interface": {
+                      "abi": 1,
+                      "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "name": "aos.managed-configuration"
+                    },
+                    "provider": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "managed"
+                    },
+                    "provider_key": "managed",
+                    "requirement": "metadata"
+                  },
+                  "value": {
+                    "files": {
+                      "app-c": "owner=c.internal"
+                    }
+                  }
+                },
+                {
+                  "accepted_interfaces": [
+                    {
+                      "abi": 1,
+                      "descriptor": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                      "name": "aos.systemd-service"
+                    }
+                  ],
+                  "guarantees": [],
+                  "id": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-internal"
+                    },
+                    "key": "service",
+                    "scope": [
+                      "nginx-internal",
+                      "service"
+                    ]
+                  },
+                  "key": "service",
+                  "lifetime": "instance",
+                  "methods": [],
+                  "request": {
+                    "_type": "aos-request-id",
+                    "consumer": {
+                      "_type": "aos-instance-id",
+                      "environment": {
+                        "_type": "aos-environment-id",
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-internal"
+                    },
+                    "key": "service",
+                    "scope": [
+                      "nginx-internal",
+                      "service"
+                    ]
+                  },
+                  "slot": "nginx-internal.service",
+                  "through": {
+                    "_type": "aos-ability-binding-reference",
+                    "binding": "nginx-internal.service",
+                    "interface": {
+                      "abi": 1,
+                      "descriptor": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                      "name": "aos.systemd-service"
+                    },
+                    "provider": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "systemd"
+                    },
+                    "provider_key": "systemd",
+                    "requirement": "service"
+                  },
+                  "value": {
+                    "configuration": {
+                      "_type": "aos-request-output-reference",
+                      "output": "publishedConfiguration",
+                      "request": "configuration"
+                    },
+                    "unit": "nginx-internal.service"
+                  }
+                }
+              ],
+              "conditional_requirements": [],
+              "contributions": [
+                {
+                  "grant": "app-c.web",
+                  "request": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "app-c"
+                    },
+                    "key": "web",
+                    "scope": []
+                  },
+                  "slot": "app-c",
+                  "value": {
+                    "host": "c.internal",
+                    "port": 9000
+                  }
+                }
+              ],
+              "interface": {
+                "abi": 1,
+                "name": "aos.nginx-virtual-host"
+              },
+              "outputs": {
+                "count": 1
+              },
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "web",
+                  "stage": "host"
+                },
+                "key": "nginx-internal"
+              },
+              "registry_key": "nginx-internal",
+              "resources": [],
+              "scope": [
+                "nginx-internal"
+              ],
+              "terminal_handler": null
+            },
+            {
+              "aggregate": {
+                "group": "services",
+                "provider": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "web",
+                    "stage": "host"
+                  },
+                  "key": "systemd"
+                }
+              },
+              "child_requests": [],
+              "conditional_requirements": [],
+              "contributions": [
+                {
+                  "grant": "nginx-edge.service",
+                  "request": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-edge"
+                    },
+                    "key": "service",
+                    "scope": [
+                      "nginx-edge",
+                      "service"
+                    ]
+                  },
+                  "slot": "nginx-edge.service",
+                  "value": {
+                    "configuration": {
+                      "_type": "aos-resource-reference",
+                      "interface": {
+                        "abi": 1,
+                        "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "name": "aos.managed-configuration"
+                      },
+                      "lifetime": "instance",
+                      "operations": [
+                        "publish",
+                        "read"
+                      ],
+                      "resource": {
+                        "key": "published",
+                        "provider": {
+                          "environment": {
+                            "authority": "deployment",
+                            "key": "web",
+                            "stage": "host"
+                          },
+                          "key": "managed"
+                        }
+                      }
+                    },
+                    "unit": "nginx-edge.service"
+                  }
+                },
+                {
+                  "grant": "nginx-internal.service",
+                  "request": {
+                    "consumer": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "nginx-internal"
+                    },
+                    "key": "service",
+                    "scope": [
+                      "nginx-internal",
+                      "service"
+                    ]
+                  },
+                  "slot": "nginx-internal.service",
+                  "value": {
+                    "configuration": {
+                      "_type": "aos-resource-reference",
+                      "interface": {
+                        "abi": 1,
+                        "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "name": "aos.managed-configuration"
+                      },
+                      "lifetime": "instance",
+                      "operations": [
+                        "publish",
+                        "read"
+                      ],
+                      "resource": {
+                        "key": "published",
+                        "provider": {
+                          "environment": {
+                            "authority": "deployment",
+                            "key": "web",
+                            "stage": "host"
+                          },
+                          "key": "managed"
+                        }
+                      }
+                    },
+                    "unit": "nginx-internal.service"
+                  }
+                }
+              ],
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "name": "aos.systemd-service"
+              },
+              "outputs": {
+                "manager": {
+                  "_type": "aos-resource-reference",
+                  "interface": {
+                    "abi": 1,
+                    "descriptor": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "name": "aos.systemd-service"
+                  },
+                  "lifetime": "instance",
+                  "operations": [
+                    "observe",
+                    "start"
+                  ],
+                  "resource": {
+                    "key": "manager",
+                    "provider": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "web",
+                        "stage": "host"
+                      },
+                      "key": "systemd"
+                    }
+                  }
+                }
+              },
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "web",
+                  "stage": "host"
+                },
+                "key": "systemd"
+              },
+              "registry_key": "systemd",
+              "resources": [],
+              "scope": [
+                "systemd"
+              ],
+              "terminal_handler": "systemd-service-handler"
+            }
+          ],
+          "round": 3
+        }
+      },
+      "id": "recursive-expansion",
+      "operation": "expand-reference",
+      "rust": "canonical-value"
+    },
+    {
+      "arguments": {},
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "artifacts": [],
+          "decisions": [],
+          "edges": [],
+          "merges": [],
+          "operations": [],
+          "provider_readiness": []
+        }
+      },
+      "id": "empty-transition",
+      "operation": "transition-empty",
+      "rust": "effect-plan"
+    },
+    {
+      "arguments": {
+        "helper": "reference-helpers"
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "after": {
+            "_type": "aos-effect-invocation",
+            "accesses": [],
+            "authority": "provider",
+            "controller": null,
+            "deadline": {
+              "attempt_timeout_millis": 1000,
+              "total_recovery_millis": 4000
+            },
+            "dependencies": [
+              {
+                "kind": "required-success",
+                "node": "source"
+              }
+            ],
+            "family": {
+              "kind": "observe-readiness"
+            },
+            "inputPhase": "observation",
+            "inputs": {},
+            "method": "observe",
+            "phase": "converging",
+            "preconditions": [],
+            "recovery": {
+              "cancel": null,
+              "compensate": null,
+              "reconcile": null,
+              "retry": {
+                "kind": "disabled"
+              }
+            },
+            "target": {
+              "_type": "aos-resource-reference",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "lifetime": "instance",
+              "operations": [
+                "observe",
+                "write"
+              ],
+              "resource": {
+                "key": "resource",
+                "provider": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "corpus",
+                    "stage": "host"
+                  },
+                  "key": "provider"
+                }
+              }
+            },
+            "through": {
+              "_type": "aos-ability-binding-reference",
+              "binding": "corpus.binding",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "corpus",
+                  "stage": "host"
+                },
+                "key": "provider"
+              },
+              "provider_key": "provider",
+              "requirement": "lower"
+            }
+          },
+          "ancestor_merged_result": {
+            "_type": "aos-effect-result-reference",
+            "key": "choice",
+            "kind": "merge",
+            "output": "ready",
+            "up": 1
+          },
+          "ancestor_result": {
+            "_type": "aos-effect-result-reference",
+            "key": "source",
+            "kind": "operation",
+            "output": "ready",
+            "up": 1
+          },
+          "communicate_with": {
+            "_type": "aos-effect-invocation",
+            "accesses": [],
+            "authority": "provider",
+            "controller": null,
+            "deadline": {
+              "attempt_timeout_millis": 1000,
+              "total_recovery_millis": 4000
+            },
+            "dependencies": [
+              {
+                "kind": "communication",
+                "node": "source"
+              }
+            ],
+            "family": {
+              "kind": "observe-readiness"
+            },
+            "inputPhase": "observation",
+            "inputs": {},
+            "method": "observe",
+            "phase": "converging",
+            "preconditions": [],
+            "recovery": {
+              "cancel": null,
+              "compensate": null,
+              "reconcile": null,
+              "retry": {
+                "kind": "disabled"
+              }
+            },
+            "target": {
+              "_type": "aos-resource-reference",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "lifetime": "instance",
+              "operations": [
+                "observe",
+                "write"
+              ],
+              "resource": {
+                "key": "resource",
+                "provider": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "corpus",
+                    "stage": "host"
+                  },
+                  "key": "provider"
+                }
+              }
+            },
+            "through": {
+              "_type": "aos-ability-binding-reference",
+              "binding": "corpus.binding",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "corpus",
+                  "stage": "host"
+                },
+                "key": "provider"
+              },
+              "provider_key": "provider",
+              "requirement": "lower"
+            }
+          },
+          "depends": {
+            "_type": "aos-effect-invocation",
+            "accesses": [],
+            "authority": "provider",
+            "controller": null,
+            "deadline": {
+              "attempt_timeout_millis": 1000,
+              "total_recovery_millis": 4000
+            },
+            "dependencies": [
+              {
+                "kind": "required-success",
+                "node": "source"
+              }
+            ],
+            "family": {
+              "kind": "observe-readiness"
+            },
+            "inputPhase": "observation",
+            "inputs": {},
+            "method": "observe",
+            "phase": "converging",
+            "preconditions": [],
+            "recovery": {
+              "cancel": null,
+              "compensate": null,
+              "reconcile": null,
+              "retry": {
+                "kind": "disabled"
+              }
+            },
+            "target": {
+              "_type": "aos-resource-reference",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "lifetime": "instance",
+              "operations": [
+                "observe",
+                "write"
+              ],
+              "resource": {
+                "key": "resource",
+                "provider": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "corpus",
+                    "stage": "host"
+                  },
+                  "key": "provider"
+                }
+              }
+            },
+            "through": {
+              "_type": "aos-ability-binding-reference",
+              "binding": "corpus.binding",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "corpus",
+                  "stage": "host"
+                },
+                "key": "provider"
+              },
+              "provider_key": "provider",
+              "requirement": "lower"
+            }
+          },
+          "graph": {
+            "_type": "aos-effect-graph",
+            "nodes": {
+              "source": {
+                "_type": "aos-effect-invocation",
+                "accesses": [],
+                "authority": "provider",
+                "controller": null,
+                "deadline": {
+                  "attempt_timeout_millis": 1000,
+                  "total_recovery_millis": 4000
+                },
+                "dependencies": [],
+                "family": {
+                  "kind": "observe-readiness"
+                },
+                "inputPhase": "observation",
+                "inputs": {},
+                "method": "observe",
+                "phase": "converging",
+                "preconditions": [],
+                "recovery": {
+                  "cancel": null,
+                  "compensate": null,
+                  "reconcile": null,
+                  "retry": {
+                    "kind": "disabled"
+                  }
+                },
+                "target": {
+                  "_type": "aos-resource-reference",
+                  "interface": {
+                    "abi": 1,
+                    "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "name": "aos.test.corpus"
+                  },
+                  "lifetime": "instance",
+                  "operations": [
+                    "observe",
+                    "write"
+                  ],
+                  "resource": {
+                    "key": "resource",
+                    "provider": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "corpus",
+                        "stage": "host"
+                      },
+                      "key": "provider"
+                    }
+                  }
+                },
+                "through": {
+                  "_type": "aos-ability-binding-reference",
+                  "binding": "corpus.binding",
+                  "interface": {
+                    "abi": 1,
+                    "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "name": "aos.test.corpus"
+                  },
+                  "provider": {
+                    "environment": {
+                      "authority": "deployment",
+                      "key": "corpus",
+                      "stage": "host"
+                    },
+                    "key": "provider"
+                  },
+                  "provider_key": "provider",
+                  "requirement": "lower"
+                }
+              }
+            },
+            "providerReadiness": []
+          },
+          "if_result": {
+            "_type": "aos-effect-conditional",
+            "alternatives": {
+              "false": {
+                "_type": "aos-effect-graph",
+                "nodes": {},
+                "providerReadiness": []
+              },
+              "true": {
+                "_type": "aos-effect-graph",
+                "nodes": {},
+                "providerReadiness": []
+              }
+            },
+            "mode": "boolean",
+            "outputs": {},
+            "selector": {
+              "_type": "aos-effect-result-reference",
+              "key": "source",
+              "kind": "operation",
+              "output": "ready",
+              "up": 0
+            },
+            "tag_field": null
+          },
+          "match_result": {
+            "_type": "aos-effect-conditional",
+            "alternatives": {
+              "ready": {
+                "_type": "aos-effect-graph",
+                "nodes": {},
+                "providerReadiness": []
+              },
+              "waiting": {
+                "_type": "aos-effect-graph",
+                "nodes": {},
+                "providerReadiness": []
+              }
+            },
+            "mode": "tag",
+            "outputs": {},
+            "selector": {
+              "_type": "aos-effect-result-reference",
+              "key": "source",
+              "kind": "operation",
+              "output": "state",
+              "up": 0
+            },
+            "tag_field": "kind"
+          },
+          "merged_result": {
+            "_type": "aos-effect-result-reference",
+            "key": "choice",
+            "kind": "merge",
+            "output": "ready",
+            "up": 0
+          },
+          "omitted": {
+            "_type": "aos-effect-graph",
+            "nodes": {},
+            "providerReadiness": []
+          },
+          "order_after": {
+            "_type": "aos-effect-invocation",
+            "accesses": [],
+            "authority": "provider",
+            "controller": null,
+            "deadline": {
+              "attempt_timeout_millis": 1000,
+              "total_recovery_millis": 4000
+            },
+            "dependencies": [
+              {
+                "kind": "ordering-only",
+                "node": {
+                  "_type": "aos-effect-node-reference",
+                  "key": "source",
+                  "kind": "operation"
+                }
+              }
+            ],
+            "family": {
+              "kind": "observe-readiness"
+            },
+            "inputPhase": "observation",
+            "inputs": {},
+            "method": "observe",
+            "phase": "converging",
+            "preconditions": [],
+            "recovery": {
+              "cancel": null,
+              "compensate": null,
+              "reconcile": null,
+              "retry": {
+                "kind": "disabled"
+              }
+            },
+            "target": {
+              "_type": "aos-resource-reference",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "lifetime": "instance",
+              "operations": [
+                "observe",
+                "write"
+              ],
+              "resource": {
+                "key": "resource",
+                "provider": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "corpus",
+                    "stage": "host"
+                  },
+                  "key": "provider"
+                }
+              }
+            },
+            "through": {
+              "_type": "aos-ability-binding-reference",
+              "binding": "corpus.binding",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "corpus",
+                  "stage": "host"
+                },
+                "key": "provider"
+              },
+              "provider_key": "provider",
+              "requirement": "lower"
+            }
+          },
+          "readiness": {
+            "_type": "aos-effect-graph",
+            "nodes": {
+              "source": {
+                "_type": "aos-effect-invocation",
+                "accesses": [],
+                "authority": "provider",
+                "controller": null,
+                "deadline": {
+                  "attempt_timeout_millis": 1000,
+                  "total_recovery_millis": 4000
+                },
+                "dependencies": [],
+                "family": {
+                  "kind": "observe-readiness"
+                },
+                "inputPhase": "observation",
+                "inputs": {},
+                "method": "observe",
+                "phase": "converging",
+                "preconditions": [],
+                "recovery": {
+                  "cancel": null,
+                  "compensate": null,
+                  "reconcile": null,
+                  "retry": {
+                    "kind": "disabled"
+                  }
+                },
+                "target": {
+                  "_type": "aos-resource-reference",
+                  "interface": {
+                    "abi": 1,
+                    "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "name": "aos.test.corpus"
+                  },
+                  "lifetime": "instance",
+                  "operations": [
+                    "observe",
+                    "write"
+                  ],
+                  "resource": {
+                    "key": "resource",
+                    "provider": {
+                      "environment": {
+                        "authority": "deployment",
+                        "key": "corpus",
+                        "stage": "host"
+                      },
+                      "key": "provider"
+                    }
+                  }
+                },
+                "through": {
+                  "_type": "aos-ability-binding-reference",
+                  "binding": "corpus.binding",
+                  "interface": {
+                    "abi": 1,
+                    "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "name": "aos.test.corpus"
+                  },
+                  "provider": {
+                    "environment": {
+                      "authority": "deployment",
+                      "key": "corpus",
+                      "stage": "host"
+                    },
+                    "key": "provider"
+                  },
+                  "provider_key": "provider",
+                  "requirement": "lower"
+                }
+              }
+            },
+            "providerReadiness": [
+              {
+                "binding": {
+                  "_type": "aos-ability-binding-reference",
+                  "binding": "corpus.binding",
+                  "interface": {
+                    "abi": 1,
+                    "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "name": "aos.test.corpus"
+                  },
+                  "provider": {
+                    "environment": {
+                      "authority": "deployment",
+                      "key": "corpus",
+                      "stage": "host"
+                    },
+                    "key": "provider"
+                  },
+                  "provider_key": "provider",
+                  "requirement": "lower"
+                },
+                "producer": {
+                  "_type": "aos-effect-result-reference",
+                  "key": "source",
+                  "kind": "operation",
+                  "output": "assignment",
+                  "up": 0
+                }
+              }
+            ]
+          },
+          "ready_after": {
+            "_type": "aos-effect-invocation",
+            "accesses": [],
+            "authority": "provider",
+            "controller": null,
+            "deadline": {
+              "attempt_timeout_millis": 1000,
+              "total_recovery_millis": 4000
+            },
+            "dependencies": [
+              {
+                "kind": "readiness",
+                "node": {
+                  "_type": "aos-effect-node-reference",
+                  "key": "choice",
+                  "kind": "decision"
+                }
+              }
+            ],
+            "family": {
+              "kind": "observe-readiness"
+            },
+            "inputPhase": "observation",
+            "inputs": {},
+            "method": "observe",
+            "phase": "converging",
+            "preconditions": [],
+            "recovery": {
+              "cancel": null,
+              "compensate": null,
+              "reconcile": null,
+              "retry": {
+                "kind": "disabled"
+              }
+            },
+            "target": {
+              "_type": "aos-resource-reference",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "lifetime": "instance",
+              "operations": [
+                "observe",
+                "write"
+              ],
+              "resource": {
+                "key": "resource",
+                "provider": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "corpus",
+                    "stage": "host"
+                  },
+                  "key": "provider"
+                }
+              }
+            },
+            "through": {
+              "_type": "aos-ability-binding-reference",
+              "binding": "corpus.binding",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "corpus",
+                  "stage": "host"
+                },
+                "key": "provider"
+              },
+              "provider_key": "provider",
+              "requirement": "lower"
+            }
+          },
+          "result": {
+            "_type": "aos-effect-result-reference",
+            "key": "source",
+            "kind": "operation",
+            "output": "ready",
+            "up": 0
+          },
+          "retain_with": {
+            "_type": "aos-effect-invocation",
+            "accesses": [],
+            "authority": "provider",
+            "controller": null,
+            "deadline": {
+              "attempt_timeout_millis": 1000,
+              "total_recovery_millis": 4000
+            },
+            "dependencies": [
+              {
+                "kind": "retention",
+                "node": {
+                  "_type": "aos-effect-node-reference",
+                  "key": "choice",
+                  "kind": "merge"
+                }
+              }
+            ],
+            "family": {
+              "kind": "observe-readiness"
+            },
+            "inputPhase": "observation",
+            "inputs": {},
+            "method": "observe",
+            "phase": "converging",
+            "preconditions": [],
+            "recovery": {
+              "cancel": null,
+              "compensate": null,
+              "reconcile": null,
+              "retry": {
+                "kind": "disabled"
+              }
+            },
+            "target": {
+              "_type": "aos-resource-reference",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "lifetime": "instance",
+              "operations": [
+                "observe",
+                "write"
+              ],
+              "resource": {
+                "key": "resource",
+                "provider": {
+                  "environment": {
+                    "authority": "deployment",
+                    "key": "corpus",
+                    "stage": "host"
+                  },
+                  "key": "provider"
+                }
+              }
+            },
+            "through": {
+              "_type": "aos-ability-binding-reference",
+              "binding": "corpus.binding",
+              "interface": {
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "aos.test.corpus"
+              },
+              "provider": {
+                "environment": {
+                  "authority": "deployment",
+                  "key": "corpus",
+                  "stage": "host"
+                },
+                "key": "provider"
+              },
+              "provider_key": "provider",
+              "requirement": "lower"
+            }
+          }
+        }
+      },
+      "id": "effect-reference-and-method-helpers",
+      "operation": "effects",
+      "rust": "canonical-value"
+    },
+    {
+      "arguments": {
+        "helper": "validate",
+        "value": {
+          "kind": "boolean",
+          "unexpected": true
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "value-type-mismatch",
+        "outcome": "reject"
+      },
+      "id": "schema-unknown-field",
+      "operation": "schema",
+      "rust": "schema-decode"
+    },
+    {
+      "arguments": {
+        "helper": "validate",
+        "value": {
+          "kind": "future-value"
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "value-type-mismatch",
+        "outcome": "reject"
+      },
+      "id": "schema-unknown-kind",
+      "operation": "schema",
+      "rust": "schema-decode"
+    },
+    {
+      "arguments": {
+        "helper": "generated-depth",
+        "value": {
+          "depth": 64
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "limit-exceeded",
+        "outcome": "reject"
+      },
+      "id": "schema-depth-limit",
+      "operation": "schema",
+      "rust": "schema-depth"
+    },
+    {
+      "arguments": {
+        "helper": "check-value",
+        "value": {
+          "schema": {
+            "kind": "boolean"
+          },
+          "value": "true"
+        }
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "value-type-mismatch",
+        "outcome": "reject"
+      },
+      "id": "request-value-type-mismatch",
+      "operation": "schema",
+      "rust": "schema-value"
+    },
+    {
+      "arguments": {
+        "interface": {
+          "abi": 1,
+          "configuration": {
+            "kind": "boolean"
+          },
+          "guarantees": [],
+          "lifecycle": {
+            "persistent_delete_method": null,
+            "releases_ephemeral_on_disable": true,
+            "retains_persistent_by_default": true,
+            "stable_resource_identity": true
+          },
+          "methods": {
+            "observe": {
+              "guarantees": [],
+              "operation_family": {
+                "kind": "observe-readiness"
+              },
+              "outcome": {
+                "completion_evidence": {
+                  "kind": "boolean"
+                },
+                "indeterminate": "reconcile",
+                "observation_evidence": {
+                  "kind": "optional",
+                  "value": {
+                    "kind": "boolean"
+                  }
+                },
+                "supports_rejected_before_effect": true
+              },
+              "outputs": {
+                "ready": {
+                  "lifetime": "attempt",
+                  "phase": "observation",
+                  "schema": {
+                    "kind": "boolean"
+                  },
+                  "visibility": "protected"
+                }
+              },
+              "parameters": {
+                "fields": {},
+                "kind": "record",
+                "optional_fields": []
+              },
+              "permitted_operations": [
+                "observe"
+              ],
+              "target_resource": "aos.test.corpus"
+            }
+          },
+          "name": "aos.test.corpus",
+          "outputs": {
+            "endpoint": {
+              "lifetime": "instance",
+              "phase": "future",
+              "schema": {
+                "kind": "string",
+                "max_length": 256,
+                "syntax": null
+              },
+              "visibility": "public"
+            }
+          },
+          "request": {
+            "fields": {
+              "enabled": {
+                "kind": "boolean"
+              },
+              "label": {
+                "kind": "optional",
+                "value": {
+                  "kind": "string",
+                  "max_length": 64,
+                  "syntax": "local-key-v1"
+                }
+              }
+            },
+            "kind": "record",
+            "optional_fields": [
+              "label"
+            ]
+          }
+        },
+        "required_features": []
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "value-type-mismatch",
+        "outcome": "reject"
+      },
+      "id": "output-phase-unknown",
+      "operation": "interface-document",
+      "rust": "interface-decode"
+    },
+    {
+      "arguments": {
+        "interface": {
+          "abi": 1,
+          "configuration": {
+            "kind": "boolean"
+          },
+          "guarantees": [],
+          "lifecycle": {
+            "persistent_delete_method": null,
+            "releases_ephemeral_on_disable": true,
+            "retains_persistent_by_default": true,
+            "stable_resource_identity": true
+          },
+          "methods": {
+            "observe": {
+              "guarantees": [],
+              "operation_family": {
+                "kind": "future-operation"
+              },
+              "outcome": {
+                "completion_evidence": {
+                  "kind": "boolean"
+                },
+                "indeterminate": "reconcile",
+                "observation_evidence": {
+                  "kind": "optional",
+                  "value": {
+                    "kind": "boolean"
+                  }
+                },
+                "supports_rejected_before_effect": true
+              },
+              "outputs": {
+                "ready": {
+                  "lifetime": "attempt",
+                  "phase": "observation",
+                  "schema": {
+                    "kind": "boolean"
+                  },
+                  "visibility": "protected"
+                }
+              },
+              "parameters": {
+                "fields": {},
+                "kind": "record",
+                "optional_fields": []
+              },
+              "permitted_operations": [
+                "observe"
+              ],
+              "target_resource": "aos.test.corpus"
+            }
+          },
+          "name": "aos.test.corpus",
+          "outputs": {
+            "endpoint": {
+              "lifetime": "instance",
+              "phase": "planning",
+              "schema": {
+                "kind": "string",
+                "max_length": 256,
+                "syntax": null
+              },
+              "visibility": "public"
+            }
+          },
+          "request": {
+            "fields": {
+              "enabled": {
+                "kind": "boolean"
+              },
+              "label": {
+                "kind": "optional",
+                "value": {
+                  "kind": "string",
+                  "max_length": 64,
+                  "syntax": "local-key-v1"
+                }
+              }
+            },
+            "kind": "record",
+            "optional_fields": [
+              "label"
+            ]
+          }
+        },
+        "required_features": []
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "value-type-mismatch",
+        "outcome": "reject"
+      },
+      "id": "method-semantics-unknown",
+      "operation": "interface-document",
+      "rust": "interface-decode"
+    },
+    {
+      "arguments": {},
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "result-phase-mismatch",
+        "outcome": "reject"
+      },
+      "id": "composition-result-phase-mismatch",
+      "operation": "composition-late-result",
+      "rust": "semantic-phase"
+    },
+    {
+      "arguments": {
+        "helper": "cycle"
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "scheduling-cycle",
+        "outcome": "reject"
+      },
+      "id": "effect-scheduling-cycle",
+      "operation": "effects",
+      "rust": "semantic-cycle"
+    },
+    {
+      "arguments": {
+        "helper": "missing-reference"
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "missing-reference",
+        "outcome": "reject"
+      },
+      "id": "effect-missing-reference",
+      "operation": "effects",
+      "rust": "semantic-missing-reference"
+    },
+    {
+      "arguments": {
+        "chunk_bytes": 1048576,
+        "count": 33
+      },
+      "consumers": [
+        "nix",
+        "evaluator",
+        "rust"
+      ],
+      "expected": {
+        "code": "limit-exceeded",
+        "outcome": "reject"
+      },
+      "id": "fallback-document-byte-limit",
+      "operation": "generated-fallback-document",
+      "rust": "generated-document-limit"
+    },
+    {
+      "arguments": {
+        "schema": "aos.ability.interface/v2"
+      },
+      "consumers": [
+        "rust"
+      ],
+      "expected": {
+        "code": "unsupported-schema",
+        "outcome": "reject"
+      },
+      "id": "interface-schema-discriminator-unknown",
+      "operation": "rust-document-schema",
+      "rust": "interface-schema"
+    },
+    {
+      "arguments": {
+        "interface": {
+          "abi": 1,
+          "configuration": {
+            "kind": "boolean"
+          },
+          "guarantees": [],
+          "lifecycle": {
+            "persistent_delete_method": null,
+            "releases_ephemeral_on_disable": true,
+            "retains_persistent_by_default": true,
+            "stable_resource_identity": true
+          },
+          "methods": {
+            "observe": {
+              "guarantees": [],
+              "operation_family": {
+                "kind": "observe-readiness"
+              },
+              "outcome": {
+                "completion_evidence": {
+                  "kind": "boolean"
+                },
+                "indeterminate": "reconcile",
+                "observation_evidence": {
+                  "kind": "optional",
+                  "value": {
+                    "kind": "boolean"
+                  }
+                },
+                "supports_rejected_before_effect": true
+              },
+              "outputs": {
+                "ready": {
+                  "lifetime": "attempt",
+                  "phase": "observation",
+                  "schema": {
+                    "kind": "boolean"
+                  },
+                  "visibility": "protected"
+                }
+              },
+              "parameters": {
+                "fields": {},
+                "kind": "record",
+                "optional_fields": []
+              },
+              "permitted_operations": [
+                "observe"
+              ],
+              "target_resource": "aos.test.corpus"
+            }
+          },
+          "name": "aos.test.corpus",
+          "outputs": {
+            "endpoint": {
+              "lifetime": "instance",
+              "phase": "planning",
+              "schema": {
+                "kind": "string",
+                "max_length": 256,
+                "syntax": null
+              },
+              "visibility": "public"
+            }
+          },
+          "request": {
+            "fields": {
+              "enabled": {
+                "kind": "boolean"
+              },
+              "label": {
+                "kind": "optional",
+                "value": {
+                  "kind": "string",
+                  "max_length": 64,
+                  "syntax": "local-key-v1"
+                }
+              }
+            },
+            "kind": "record",
+            "optional_fields": [
+              "label"
+            ]
+          }
+        },
+        "required_features": [
+          "future-semantics-v1"
+        ]
+      },
+      "consumers": [
+        "rust"
+      ],
+      "expected": {
+        "code": "unsupported-required-feature",
+        "outcome": "reject"
+      },
+      "id": "interface-unknown-required-feature",
+      "operation": "interface-document",
+      "rust": "interface-unsupported-feature"
+    },
+    {
+      "arguments": {
+        "depth": 12,
+        "path": "@secret-path@"
+      },
+      "consumers": [
+        "evaluator"
+      ],
+      "expected": {
+        "code": "restricted-evaluation-rejected",
+        "outcome": "reject"
+      },
+      "id": "restricted-secret-read-deep",
+      "operation": "restricted-secret-read",
+      "rust": "none"
+    },
+    {
+      "arguments": {
+        "depth": 12,
+        "sha256": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "url": "https://example.invalid/aos-authoring-conformance"
+      },
+      "consumers": [
+        "evaluator"
+      ],
+      "expected": {
+        "code": "restricted-evaluation-rejected",
+        "outcome": "reject"
+      },
+      "id": "restricted-network-effect-deep",
+      "operation": "restricted-network-fetch",
+      "rust": "none"
+    },
+    {
+      "arguments": {
+        "builder": "@builder@",
+        "depth": 12,
+        "system": "@system@"
+      },
+      "consumers": [
+        "evaluator"
+      ],
+      "expected": {
+        "code": "restricted-evaluation-rejected",
+        "outcome": "reject"
+      },
+      "id": "restricted-ifd-effect-deep",
+      "operation": "restricted-ifd",
+      "rust": "none"
+    },
+    {
+      "arguments": {},
+      "consumers": [
+        "evaluator"
+      ],
+      "expected": {
+        "code": "restricted-evaluation-rejected",
+        "outcome": "reject"
+      },
+      "id": "restricted-call-depth-limit",
+      "operation": "generated-call-depth",
+      "rust": "none"
+    },
+    {
+      "arguments": {
+        "chunks": 1024
+      },
+      "consumers": [
+        "evaluator"
+      ],
+      "expected": {
+        "code": "limit-exceeded",
+        "outcome": "reject"
+      },
+      "id": "restricted-stdout-limit",
+      "operation": "generated-output",
+      "rust": "none"
+    },
+    {
+      "arguments": {
+        "items": 2000000
+      },
+      "consumers": [
+        "evaluator"
+      ],
+      "expected": {
+        "code": "limit-exceeded",
+        "outcome": "reject"
+      },
+      "id": "restricted-wall-time-limit",
+      "operation": "generated-work",
+      "rust": "none"
+    }
+  ],
+  "public_helpers": {
+    "abilities": [
+      "artifactReference",
+      "bindingReference",
+      "compose",
+      "contribution",
+      "declarationModule",
+      "define",
+      "effects",
+      "environmentId",
+      "expand",
+      "guarantee",
+      "instance",
+      "instanceId",
+      "interfaceDocument",
+      "normalizeExport",
+      "normalizeExportDeclaration",
+      "normalizeImplementation",
+      "normalizeRequirements",
+      "pinInterface",
+      "request",
+      "requestId",
+      "resourceReference",
+      "resultOf",
+      "schemas",
+      "transition"
+    ],
+    "effects": [
+      "after",
+      "ancestorMergedResult",
+      "ancestorResult",
+      "communicateWith",
+      "decisionNode",
+      "depends",
+      "empty",
+      "graph",
+      "ifResult",
+      "invoke",
+      "matchResult",
+      "mergeNode",
+      "mergedResult",
+      "normalize",
+      "operationNode",
+      "orderAfter",
+      "profile",
+      "readyAfter",
+      "result",
+      "retainWith",
+      "when",
+      "withProviderReadiness"
+    ],
+    "schemas": [
+      "artifactReference",
+      "boolean",
+      "checkValue",
+      "enum",
+      "integer",
+      "list",
+      "map",
+      "operationResultReference",
+      "optional",
+      "providerAssignment",
+      "record",
+      "resourceReference",
+      "string",
+      "taggedUnion",
+      "validateSchema"
+    ]
+  },
+  "recipe_limits": {
+    "max_generated_depth": 64,
+    "max_generated_items": 2000000,
+    "max_generated_string_bytes": 34603008
+  },
+  "schema": "aos.ability.authoring-conformance/v1"
+}
