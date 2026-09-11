@@ -46,6 +46,12 @@ in
             lib/stackvma.c
         '';
       }
+      else if stdenv.isCross && stdenv.hostPlatform.isLinux
+      then {
+        # Configure selects this gnulib result for Linux, then erroneously
+        # runs the locale probe even in cross mode. Preserve its own default.
+        gl_cv_func_strcasecmp_works = "guessing yes";
+      }
       else {}
     )
   )
