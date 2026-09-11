@@ -23,6 +23,22 @@
     pkgs.runc
     pkgs.tar
   ];
+
+  # Match the transfer service's unpack destination to the native snapshotter
+  # selected for each qualification operation.
+  containerPlatform =
+    if pkgs.stdenv.hostPlatform.isAarch64
+    then "linux/arm64"
+    else "linux/amd64";
+  containerdConfig = pkgs.writeTextFile {
+    name = "qualification-containerd.toml";
+    text = ''
+      version = 3
+      [[plugins."io.containerd.transfer.v1.local".unpack_config]]
+        platform = "${containerPlatform}"
+        snapshotter = "native"
+    '';
+  };
 in
   assert identity != "";
   assert builtins.substring 0 1 assessmentRoot == "/";
@@ -129,6 +145,7 @@ in
       mkdir -p "$runtime_root" "$runtime_state"
 
       ${pkgs.containerd}/bin/containerd \
+        --config ${containerdConfig} \
         --address "$runtime_socket" \
         --root "$runtime_root" \
         --state "$runtime_state" \
