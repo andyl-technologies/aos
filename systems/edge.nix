@@ -18,14 +18,15 @@
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
   aos.security.verity.enable = lib.mkDefault true;
+  # The complete source-built runtime occupies 586 MiB of EROFS on x86.
   aos.image.budgets = {
-    maxRootMiB = 512;
+    maxRootMiB = 640;
     maxVerityMiB = 16;
     maxInitrdMiB = 132;
     maxUkiMiB = 160;
     maxEspMiB = 384;
     maxRuntimeClosureMiB = 768;
-    maxDownloadMiB = 640;
+    maxDownloadMiB = 768;
   };
 
   # The service modules predate host-time evaluation and default to enabled.

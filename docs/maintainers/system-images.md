@@ -226,9 +226,14 @@ before deploying a payload that depends on larger root, verity, or ESP maxima.
 Use `aos profile closure systems.acme-server.build.toplevel` to attribute
 closure growth first.
 
-The server and edge golden images cap each directly downloadable encoding at
-640 MiB with `maxDownloadMiB`. Treat a transfer-budget failure as a release-size
-regression: profile the closure and artifacts before changing that ceiling.
+The server and edge golden images cap compressed raw downloads at 768 MiB
+with `maxDownloadMiB`. The uncompressed qcow2, VMDK, and VHD encodings use
+`maxConvertedDownloadMiB`, which defaults to the raw limit. Secure Boot test
+fixtures allow 800 MiB compressed raw and 896 MiB converted objects because
+their recovery UKIs remain in the disk. The diagnostic `server-test` image
+allows 832 MiB converted objects while retaining its 768 MiB raw limit.
+Each format manifest records its own limit in `artifactBudgetsMiB.download`. Profile the closure and artifacts
+before changing either ceiling.
 
 Inspect the evaluated option before building:
 

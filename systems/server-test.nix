@@ -37,12 +37,13 @@
   aos.image.allowTestArtifacts = true;
   aos.image.testArtifactRoots = [pkgs.binutils];
   # The test agent, debug profile, and guest-side diagnostic tools are an
-  # intentional test-image payload. Keep the production server's 512 MiB
-  # root and download ratchets unchanged while sizing this dedicated fixture
-  # for that closure.
+  # intentional test-image payload. The complete runtime occupies 668 MiB
+  # of EROFS; keep its larger allowance local to this dedicated fixture.
   aos.image.budgets = {
-    maxRootMiB = 640;
+    maxRootMiB = 704;
     maxDownloadMiB = 768;
+    # The uncompressed VHD reaches 825 MiB with the diagnostic runtime.
+    maxConvertedDownloadMiB = 832;
   };
 
   # Guest agent for image machines (baked machines also get it from

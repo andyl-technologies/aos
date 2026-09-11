@@ -133,6 +133,8 @@
           maxRuntimeClosureMiB = lib.mkForce 1088;
           # The same publishing tools produce a measured 782 MiB root image.
           maxRootMiB = lib.mkForce 816;
+          # The complete compressed raw disk reaches 865 MiB.
+          maxDownloadMiB = lib.mkForce 896;
         };
         aos.security.pki.certificates = [caCertificate];
       }

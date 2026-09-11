@@ -46,6 +46,9 @@
   # make the registry entry register as an upgrade target.
   aos.system.version = "test-2";
 
+  # The Python HTTP fixture brings the source-built runtime closure to 807 MiB.
+  aos.image.budgets.maxRuntimeClosureMiB = 832;
+
   # symlink mode (the default) → baked into the system EROFS metadata
   # image, not /var/etc. Surfaces at /etc/aos/upgrade-test/marker.conf
   # only on this generation, so its appearance after the upgrade (and

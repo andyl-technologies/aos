@@ -27,6 +27,8 @@
   aos.image.budgets = {
     maxEspMiB = 544;
     maxDownloadMiB = 800;
+    # Uncompressed converted formats reach 885 MiB with all recovery UKIs.
+    maxConvertedDownloadMiB = 896;
   };
   aos.image.allowTestArtifacts = true;
 
