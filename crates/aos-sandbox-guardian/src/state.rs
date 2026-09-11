@@ -24,8 +24,8 @@ use aos_sandbox_core::{
     decode_local_lease_record, encode_local_lease_record,
 };
 use rustix::fs::{
-    CWD, FileType, FlockOperation, Mode, OFlags, ResolveFlags, flock, fstat, fsync, open, openat,
-    openat2, renameat, unlinkat,
+    FileType, FlockOperation, Mode, OFlags, flock, fstat, fsync, open, openat, readlinkat,
+    renameat, unlinkat,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -42,7 +42,9 @@ const STATE_INTEGRITY_DOMAIN: &[u8] = b"aos-guardian-local-state-v1\0";
 const SYSTEMD_PUBLIC_STATE_PREFIX: &str = "/var/lib/aos/lease-guards";
 const SYSTEMD_PUBLIC_STATE_PREFIX_RELATIVE: &str = "var/lib/aos/lease-guards";
 const SYSTEMD_PRIVATE_STATE_PREFIX_RELATIVE: &str = "var/lib/private/aos/lease-guards";
+const SYSTEMD_PRIVATE_STATE_LINK_PREFIX: &str = "../../private/aos/lease-guards";
 const SYSTEMD_ADMINISTRATOR_UID: u32 = 0;
+const SYSTEMD_ADMINISTRATOR_GID: u32 = 0;
 
 /// Stores the complete boot-local authority needed to recover one guardian.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,21 +249,22 @@ impl GuardianStateStore {
     ///
     /// The supplied path must byte-for-byte equal the lowercase incarnation
     /// path below `/var/lib/aos/lease-guards`. Resolution starts from a retained
-    /// descriptor for `/`: every ancestor is root-owned and not group- or
-    /// other-writable, the public final component is a root-owned symlink, and
-    /// the corresponding `/var/lib/private` path is independently resolved
-    /// without following symlinks. Both paths must resolve to the same directory
-    /// inode, owned by the current guardian UID with exact mode 0700.
+    /// descriptor for `/`. Every fixed ancestor is opened one component at a
+    /// time without following links, then checked for exact administrator
+    /// ownership and non-writable permissions. The public final symlink has one
+    /// exact relative target, and the corresponding `/var/lib/private` path is
+    /// independently walked. Both paths must resolve to the same directory
+    /// inode, owned by the current Guardian UID/GID with exact mode 0700.
     ///
     /// Mount crossings are permitted because systemd bind-mounts the private
-    /// state directory inside the service mount namespace. Every resolution
-    /// still requires `openat2` beneath/no-magic-link enforcement; kernels or
-    /// sandboxes that cannot enforce it are rejected without a fallback.
+    /// state directory inside the service mount namespace. Retained parent
+    /// descriptors and single-component `openat` calls provide the no-link and
+    /// no-escape guarantees for this fixed, non-hostile path vocabulary.
     ///
     /// # Errors
     ///
-    /// Returns [`GuardianStateStoreError`] for a path mismatch, unsupported
-    /// protected resolution, insecure systemd topology, locking, or I/O failure.
+    /// Returns [`GuardianStateStoreError`] for a path mismatch, insecure systemd
+    /// topology, locking, or I/O failure.
     pub(crate) fn open_systemd_managed(
         path: impl AsRef<Path>,
         expected_incarnation: [u8; 16],
@@ -273,26 +276,30 @@ impl GuardianStateStore {
             return Err(GuardianStateStoreError::UnexpectedManagedDirectory);
         }
 
-        let root = openat2(
-            CWD,
-            "/",
-            strict_directory_flags(),
-            Mode::empty(),
-            ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_SYMLINKS,
-        )
-        .map_err(managed_open_error)?;
+        let root =
+            open("/", strict_directory_flags(), Mode::empty()).map_err(managed_open_error)?;
         let incarnation = hex::encode(expected_incarnation);
         let public_relative =
             PathBuf::from(SYSTEMD_PUBLIC_STATE_PREFIX_RELATIVE).join(&incarnation);
         let private_relative =
-            PathBuf::from(SYSTEMD_PRIVATE_STATE_PREFIX_RELATIVE).join(incarnation);
+            PathBuf::from(SYSTEMD_PRIVATE_STATE_PREFIX_RELATIVE).join(&incarnation);
+        let private_link_target =
+            PathBuf::from(SYSTEMD_PRIVATE_STATE_LINK_PREFIX).join(incarnation);
         let current_uid = rustix::process::geteuid().as_raw();
+        let current_gid = rustix::process::getegid().as_raw();
         let directory = open_systemd_managed_at(
             root.as_fd(),
             &public_relative,
             &private_relative,
-            SYSTEMD_ADMINISTRATOR_UID,
-            current_uid,
+            &private_link_target,
+            ManagedIdentity {
+                uid: SYSTEMD_ADMINISTRATOR_UID,
+                gid: SYSTEMD_ADMINISTRATOR_GID,
+            },
+            ManagedIdentity {
+                uid: current_uid,
+                gid: current_gid,
+            },
         )?;
 
         Self::initialize(directory, StateDirectoryPolicy::SystemdManaged)
@@ -458,9 +465,6 @@ pub enum GuardianStateStoreError {
     /// The systemd-managed public/private directory topology is insecure.
     #[error("guardian systemd state directory topology is insecure")]
     InsecureManagedDirectory,
-    /// The kernel cannot enforce the managed directory resolution policy.
-    #[error("guardian systemd state opening requires supported, permitted openat2 resolution")]
-    UnsupportedManagedOpen,
     /// A state file has an unexpected type, owner, links, or permissions.
     #[error("guardian state file metadata is insecure")]
     InsecureStateFile,
@@ -487,6 +491,12 @@ enum StateDirectoryPolicy {
     SystemdManaged,
 }
 
+#[derive(Clone, Copy)]
+struct ManagedIdentity {
+    uid: u32,
+    gid: u32,
+}
+
 pub(crate) fn systemd_managed_state_path(expected_incarnation: [u8; 16]) -> PathBuf {
     PathBuf::from(SYSTEMD_PUBLIC_STATE_PREFIX).join(hex::encode(expected_incarnation))
 }
@@ -495,46 +505,57 @@ fn open_systemd_managed_at(
     root: BorrowedFd<'_>,
     public_relative: &Path,
     private_relative: &Path,
-    administrator_uid: u32,
-    guardian_uid: u32,
+    expected_link_target: &Path,
+    administrator: ManagedIdentity,
+    guardian: ManagedIdentity,
 ) -> Result<OwnedFd, GuardianStateStoreError> {
-    validate_administrative_directory(root, administrator_uid)?;
+    validate_administrative_directory(root, administrator.uid, administrator.gid)?;
 
     let public_components = managed_relative_components(public_relative)?;
     let (public_name, public_ancestors) = public_components
         .split_last()
         .ok_or(GuardianStateStoreError::InsecureManagedDirectory)?;
-    let public_parent = walk_administrative_directories(root, public_ancestors, administrator_uid)?;
-    let public_link = openat2(
-        &public_parent,
-        *public_name,
-        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-        ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS,
-    )
-    .map_err(managed_open_error)?;
-    validate_public_symlink(&public_link, administrator_uid)?;
-
-    // Resolve the public link from the retained namespace root. Its relative
-    // target may contain `..`, but BENEATH prevents it from escaping `/` and
-    // NO_MAGICLINKS excludes procfs-style descriptor indirection.
-    let public_target = resolve_public_directory(root, public_relative)?;
+    let public_parent = walk_administrative_directories(
+        root,
+        public_ancestors,
+        administrator.uid,
+        administrator.gid,
+    )?;
+    let public_link = open_validated_public_link(
+        public_parent.as_fd(),
+        public_name,
+        expected_link_target,
+        administrator.uid,
+        administrator.gid,
+    )?;
 
     let private_components = managed_relative_components(private_relative)?;
     let (private_name, private_ancestors) = private_components
         .split_last()
         .ok_or(GuardianStateStoreError::InsecureManagedDirectory)?;
-    let private_parent =
-        walk_administrative_directories(root, private_ancestors, administrator_uid)?;
-    let private_directory = openat2(
+    let private_parent = walk_administrative_directories(
+        root,
+        private_ancestors,
+        administrator.uid,
+        administrator.gid,
+    )?;
+    let private_directory = openat(
         &private_parent,
         *private_name,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
-        ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_SYMLINKS,
     )
     .map_err(managed_open_error)?;
-    validate_managed_state_directory(&private_directory, guardian_uid)?;
+    validate_managed_state_directory(&private_directory, guardian.uid, guardian.gid)?;
+
+    let public_target = open_public_target_with_link_sandwich(
+        public_parent.as_fd(),
+        public_name,
+        expected_link_target,
+        administrator.uid,
+        administrator.gid,
+        public_link.as_fd(),
+    )?;
 
     let public_metadata = fstat(&public_target).map_err(GuardianStateStoreError::Io)?;
     let private_metadata = fstat(&private_directory).map_err(GuardianStateStoreError::Io)?;
@@ -547,18 +568,65 @@ fn open_systemd_managed_at(
     Ok(private_directory)
 }
 
-fn resolve_public_directory(
-    root: BorrowedFd<'_>,
-    public_relative: &Path,
+fn open_validated_public_link(
+    public_parent: BorrowedFd<'_>,
+    public_name: &OsStr,
+    expected_link_target: &Path,
+    administrator_uid: u32,
+    administrator_gid: u32,
 ) -> Result<OwnedFd, GuardianStateStoreError> {
-    openat2(
-        root,
-        public_relative,
+    let public_link = openat(
+        public_parent,
+        public_name,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(managed_open_error)?;
+    validate_public_symlink(&public_link, administrator_uid, administrator_gid)?;
+
+    // An empty readlinkat path reads the retained O_PATH symlink itself rather
+    // than resolving its directory entry a second time.
+    let observed_target = readlinkat(&public_link, "", Vec::new()).map_err(managed_open_error)?;
+    if observed_target.as_bytes() != expected_link_target.as_os_str().as_bytes() {
+        return Err(GuardianStateStoreError::InsecureManagedDirectory);
+    }
+
+    Ok(public_link)
+}
+
+fn open_public_target_with_link_sandwich(
+    public_parent: BorrowedFd<'_>,
+    public_name: &OsStr,
+    expected_link_target: &Path,
+    administrator_uid: u32,
+    administrator_gid: u32,
+    initial_public_link: BorrowedFd<'_>,
+) -> Result<OwnedFd, GuardianStateStoreError> {
+    // This one deliberately followed link may cross mounts. Its result is
+    // accepted only when it is the independently walked private directory.
+    let public_target = openat(
+        public_parent,
+        public_name,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
-        ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS,
     )
-    .map_err(managed_open_error)
+    .map_err(managed_open_error)?;
+    let final_public_link = open_validated_public_link(
+        public_parent,
+        public_name,
+        expected_link_target,
+        administrator_uid,
+        administrator_gid,
+    )?;
+    let initial_metadata = fstat(initial_public_link).map_err(GuardianStateStoreError::Io)?;
+    let final_metadata = fstat(&final_public_link).map_err(GuardianStateStoreError::Io)?;
+    if initial_metadata.st_dev != final_metadata.st_dev
+        || initial_metadata.st_ino != final_metadata.st_ino
+    {
+        return Err(GuardianStateStoreError::InsecureManagedDirectory);
+    }
+
+    Ok(public_target)
 }
 
 fn managed_relative_components(path: &Path) -> Result<Vec<&OsStr>, GuardianStateStoreError> {
@@ -587,21 +655,16 @@ fn walk_administrative_directories(
     root: BorrowedFd<'_>,
     components: &[&OsStr],
     administrator_uid: u32,
+    administrator_gid: u32,
 ) -> Result<OwnedFd, GuardianStateStoreError> {
     let mut current = None;
     for component in components {
         let parent = current
             .as_ref()
             .map_or(root, |directory: &OwnedFd| directory.as_fd());
-        let child = openat2(
-            parent,
-            *component,
-            strict_directory_flags(),
-            Mode::empty(),
-            ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_SYMLINKS,
-        )
-        .map_err(managed_open_error)?;
-        validate_administrative_directory(&child, administrator_uid)?;
+        let child = openat(parent, *component, strict_directory_flags(), Mode::empty())
+            .map_err(managed_open_error)?;
+        validate_administrative_directory(&child, administrator_uid, administrator_gid)?;
         current = Some(child);
     }
     current.ok_or(GuardianStateStoreError::InsecureManagedDirectory)
@@ -614,10 +677,12 @@ fn strict_directory_flags() -> OFlags {
 fn validate_administrative_directory(
     descriptor: impl AsFd,
     administrator_uid: u32,
+    administrator_gid: u32,
 ) -> Result<(), GuardianStateStoreError> {
     let metadata = fstat(descriptor).map_err(GuardianStateStoreError::Io)?;
     if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
         || metadata.st_uid != administrator_uid
+        || metadata.st_gid != administrator_gid
         || metadata.st_mode & 0o022 != 0
     {
         return Err(GuardianStateStoreError::InsecureManagedDirectory);
@@ -628,10 +693,12 @@ fn validate_administrative_directory(
 fn validate_public_symlink(
     descriptor: impl AsFd,
     administrator_uid: u32,
+    administrator_gid: u32,
 ) -> Result<(), GuardianStateStoreError> {
     let metadata = fstat(descriptor).map_err(GuardianStateStoreError::Io)?;
     if FileType::from_raw_mode(metadata.st_mode) != FileType::Symlink
         || metadata.st_uid != administrator_uid
+        || metadata.st_gid != administrator_gid
     {
         return Err(GuardianStateStoreError::InsecureManagedDirectory);
     }
@@ -641,10 +708,12 @@ fn validate_public_symlink(
 fn validate_managed_state_directory(
     descriptor: impl AsFd,
     guardian_uid: u32,
+    guardian_gid: u32,
 ) -> Result<(), GuardianStateStoreError> {
     let metadata = fstat(descriptor).map_err(GuardianStateStoreError::Io)?;
     if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
         || metadata.st_uid != guardian_uid
+        || metadata.st_gid != guardian_gid
         || metadata.st_mode & 0o7777 != 0o700
     {
         return Err(GuardianStateStoreError::InsecureManagedDirectory);
@@ -661,8 +730,15 @@ fn validate_state_directory(
         StateDirectoryPolicy::Generic => metadata.st_mode & 0o077 == 0,
         StateDirectoryPolicy::SystemdManaged => metadata.st_mode & 0o7777 == 0o700,
     };
+    let group_is_current = match policy {
+        StateDirectoryPolicy::Generic => true,
+        StateDirectoryPolicy::SystemdManaged => {
+            metadata.st_gid == rustix::process::getegid().as_raw()
+        }
+    };
     if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
         || metadata.st_uid != rustix::process::geteuid().as_raw()
+        || !group_is_current
         || !permissions_are_private
     {
         return Err(GuardianStateStoreError::InsecureDirectory);
@@ -671,16 +747,13 @@ fn validate_state_directory(
 }
 
 fn managed_open_error(error: rustix::io::Errno) -> GuardianStateStoreError {
-    if error == rustix::io::Errno::NOSYS
-        || error == rustix::io::Errno::PERM
-        || error == rustix::io::Errno::INVAL
-    {
-        GuardianStateStoreError::UnsupportedManagedOpen
-    } else if error == rustix::io::Errno::LOOP
+    if error == rustix::io::Errno::LOOP
         || error == rustix::io::Errno::XDEV
         || error == rustix::io::Errno::NOTDIR
         || error == rustix::io::Errno::ISDIR
         || error == rustix::io::Errno::ACCESS
+        || error == rustix::io::Errno::PERM
+        || error == rustix::io::Errno::INVAL
     {
         GuardianStateStoreError::InsecureManagedDirectory
     } else {
@@ -738,18 +811,21 @@ fn take_slice<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::fs;
     use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
+    use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::{PermissionsExt as _, symlink};
     use std::path::{Path, PathBuf};
 
-    use rustix::fs::{Mode, OFlags, open, openat2};
+    use rustix::fs::{Mode, OFlags, open, openat};
 
     use super::{
-        GuardianStateStore, GuardianStateStoreError, LOCK_FILE, NEXT_FILE, STATE_FILE,
-        StateDirectoryPolicy, managed_open_error, open_systemd_managed_at,
-        resolve_public_directory, strict_directory_flags, systemd_managed_state_path,
-        validate_managed_state_directory, validate_public_symlink,
+        GuardianStateStore, GuardianStateStoreError, LOCK_FILE, ManagedIdentity, NEXT_FILE,
+        STATE_FILE, StateDirectoryPolicy, managed_open_error, managed_relative_components,
+        open_public_target_with_link_sandwich, open_systemd_managed_at, open_validated_public_link,
+        strict_directory_flags, systemd_managed_state_path, validate_managed_state_directory,
+        validate_public_symlink, walk_administrative_directories,
     };
 
     const INCARNATION: [u8; 16] = [0xab; 16];
@@ -761,6 +837,7 @@ mod tests {
         root_path: PathBuf,
         public_relative: PathBuf,
         private_relative: PathBuf,
+        private_link_target: PathBuf,
         public_path: PathBuf,
         private_path: PathBuf,
     }
@@ -796,11 +873,10 @@ mod tests {
                 panic!("cannot create managed private directory {private_path:?}: {error}")
             });
             set_mode(&private_path, 0o700);
-            symlink(
-                format!("../../private/aos/lease-guards/{INCARNATION_HEX}"),
-                &public_path,
-            )
-            .unwrap_or_else(|error| panic!("cannot create managed public symlink: {error}"));
+            let private_link_target =
+                PathBuf::from(format!("../../private/aos/lease-guards/{INCARNATION_HEX}"));
+            symlink(&private_link_target, &public_path)
+                .unwrap_or_else(|error| panic!("cannot create managed public symlink: {error}"));
 
             let root = open(temporary.path(), strict_directory_flags(), Mode::empty())
                 .unwrap_or_else(|error| panic!("cannot open managed fixture root: {error}"));
@@ -811,6 +887,7 @@ mod tests {
                 root_path,
                 public_relative,
                 private_relative,
+                private_link_target,
                 public_path,
                 private_path,
             }
@@ -818,12 +895,15 @@ mod tests {
 
         fn open_directory(&self) -> Result<OwnedFd, GuardianStateStoreError> {
             let uid = rustix::process::geteuid().as_raw();
+            let gid = rustix::process::getegid().as_raw();
+            let identity = ManagedIdentity { uid, gid };
             open_systemd_managed_at(
                 self.root.as_fd(),
                 &self.public_relative,
                 &self.private_relative,
-                uid,
-                uid,
+                &self.private_link_target,
+                identity,
+                identity,
             )
         }
 
@@ -860,6 +940,24 @@ mod tests {
     }
 
     #[test]
+    fn managed_components_reject_every_noncanonical_form() {
+        for bytes in [
+            b"".as_slice(),
+            b"/var/lib".as_slice(),
+            b"var//lib".as_slice(),
+            b"var/./lib".as_slice(),
+            b"var/../lib".as_slice(),
+            b"var/li\0b".as_slice(),
+        ] {
+            let path = Path::new(OsStr::from_bytes(bytes));
+            assert!(matches!(
+                managed_relative_components(path),
+                Err(GuardianStateStoreError::InsecureManagedDirectory)
+            ));
+        }
+    }
+
+    #[test]
     fn managed_layout_opens_the_independently_resolved_private_inode() {
         let fixture = ManagedFixture::new();
         fs::write(fixture.private_path.join(NEXT_FILE), b"stale")
@@ -882,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_layout_rejects_a_public_link_to_the_wrong_directory() {
+    fn managed_layout_rejects_noncanonical_public_link_bytes() {
         let fixture = ManagedFixture::new();
         let other = fixture
             .root_path
@@ -899,12 +997,111 @@ mod tests {
     }
 
     #[test]
+    fn managed_layout_rejects_a_public_private_inode_mismatch() {
+        let fixture = ManagedFixture::new();
+        let other_relative = PathBuf::from("var/lib/private/aos/lease-guards/other");
+        let other = fixture.root_path.join(&other_relative);
+        fs::create_dir(&other)
+            .unwrap_or_else(|error| panic!("cannot create alternate private directory: {error}"));
+        set_mode(&other, 0o700);
+        let uid = rustix::process::geteuid().as_raw();
+        let gid = rustix::process::getegid().as_raw();
+        let identity = ManagedIdentity { uid, gid };
+
+        assert!(matches!(
+            open_systemd_managed_at(
+                fixture.root.as_fd(),
+                &fixture.public_relative,
+                &other_relative,
+                &fixture.private_link_target,
+                identity,
+                identity,
+            ),
+            Err(GuardianStateStoreError::InsecureManagedDirectory)
+        ));
+    }
+
+    #[test]
     fn managed_layout_rejects_an_absolute_public_link_target() {
         let fixture = ManagedFixture::new();
         fixture.replace_public_link(&fixture.private_path);
 
         assert!(matches!(
             fixture.open_directory(),
+            Err(GuardianStateStoreError::InsecureManagedDirectory)
+        ));
+    }
+
+    #[test]
+    fn retained_public_parent_prevents_path_replacement_redirection() {
+        let fixture = ManagedFixture::new();
+        let uid = rustix::process::geteuid().as_raw();
+        let gid = rustix::process::getegid().as_raw();
+        let components = managed_relative_components(&fixture.public_relative)
+            .unwrap_or_else(|error| panic!("public path was malformed: {error}"));
+        let (public_name, public_ancestors) = components
+            .split_last()
+            .unwrap_or_else(|| panic!("public path was empty"));
+        let public_parent =
+            walk_administrative_directories(fixture.root.as_fd(), public_ancestors, uid, gid)
+                .unwrap_or_else(|error| panic!("cannot retain public parent: {error}"));
+        let public_parent_path = fixture.root_path.join("var/lib/aos/lease-guards");
+        let moved_parent_path = fixture.root_path.join("var/lib/aos/lease-guards-moved");
+        fs::rename(&public_parent_path, &moved_parent_path)
+            .unwrap_or_else(|error| panic!("cannot move public parent: {error}"));
+        fs::create_dir(&public_parent_path)
+            .unwrap_or_else(|error| panic!("cannot replace public parent: {error}"));
+        symlink("wrong", public_parent_path.join(INCARNATION_HEX))
+            .unwrap_or_else(|error| panic!("cannot create replacement public link: {error}"));
+
+        assert!(
+            open_validated_public_link(
+                public_parent.as_fd(),
+                public_name,
+                &fixture.private_link_target,
+                uid,
+                gid,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn public_link_inode_sandwich_rejects_same_target_replacement() {
+        let fixture = ManagedFixture::new();
+        let uid = rustix::process::geteuid().as_raw();
+        let gid = rustix::process::getegid().as_raw();
+        let components = managed_relative_components(&fixture.public_relative)
+            .unwrap_or_else(|error| panic!("public path was malformed: {error}"));
+        let (public_name, public_ancestors) = components
+            .split_last()
+            .unwrap_or_else(|| panic!("public path was empty"));
+        let public_parent =
+            walk_administrative_directories(fixture.root.as_fd(), public_ancestors, uid, gid)
+                .unwrap_or_else(|error| panic!("cannot retain public parent: {error}"));
+        let initial_link = open_validated_public_link(
+            public_parent.as_fd(),
+            public_name,
+            &fixture.private_link_target,
+            uid,
+            gid,
+        )
+        .unwrap_or_else(|error| panic!("cannot retain initial public link: {error}"));
+        let replacement = fixture.public_path.with_extension("replacement");
+        symlink(&fixture.private_link_target, &replacement)
+            .unwrap_or_else(|error| panic!("cannot create replacement public link: {error}"));
+        fs::rename(&replacement, &fixture.public_path)
+            .unwrap_or_else(|error| panic!("cannot install replacement public link: {error}"));
+
+        assert!(matches!(
+            open_public_target_with_link_sandwich(
+                public_parent.as_fd(),
+                public_name,
+                &fixture.private_link_target,
+                uid,
+                gid,
+                initial_link.as_fd(),
+            ),
             Err(GuardianStateStoreError::InsecureManagedDirectory)
         ));
     }
@@ -917,6 +1114,26 @@ mod tests {
         fs::create_dir(&fixture.public_path)
             .unwrap_or_else(|error| panic!("cannot create public directory: {error}"));
         set_mode(&fixture.public_path, 0o700);
+
+        assert!(matches!(
+            fixture.open_directory(),
+            Err(GuardianStateStoreError::InsecureManagedDirectory)
+        ));
+    }
+
+    #[test]
+    fn managed_layout_rejects_a_symlinked_private_leaf() {
+        let fixture = ManagedFixture::new();
+        let other = fixture
+            .root_path
+            .join("var/lib/private/aos/lease-guards/other");
+        fs::create_dir(&other)
+            .unwrap_or_else(|error| panic!("cannot create alternate private directory: {error}"));
+        set_mode(&other, 0o700);
+        fs::remove_dir(&fixture.private_path)
+            .unwrap_or_else(|error| panic!("cannot remove private directory: {error}"));
+        symlink("other", &fixture.private_path)
+            .unwrap_or_else(|error| panic!("cannot replace private directory with link: {error}"));
 
         assert!(matches!(
             fixture.open_directory(),
@@ -938,9 +1155,28 @@ mod tests {
     }
 
     #[test]
-    fn managed_layout_rejects_a_group_writable_administrative_ancestor() {
+    fn managed_layout_rejects_writable_administrative_ancestors() {
         let fixture = ManagedFixture::new();
-        set_mode(&fixture.root_path.join("var/lib/aos"), 0o775);
+        let ancestor = fixture.root_path.join("var/lib/aos");
+
+        for mode in [0o775, 0o757] {
+            set_mode(&ancestor, mode);
+            assert!(matches!(
+                fixture.open_directory(),
+                Err(GuardianStateStoreError::InsecureManagedDirectory)
+            ));
+        }
+    }
+
+    #[test]
+    fn managed_layout_rejects_a_symlinked_administrative_ancestor() {
+        let fixture = ManagedFixture::new();
+        let ancestor = fixture.root_path.join("var/lib/aos");
+        let retained = fixture.root_path.join("var/lib/aos-retained");
+        fs::rename(&ancestor, &retained)
+            .unwrap_or_else(|error| panic!("cannot retain administrative ancestor: {error}"));
+        symlink("aos-retained", &ancestor)
+            .unwrap_or_else(|error| panic!("cannot substitute administrative ancestor: {error}"));
 
         assert!(matches!(
             fixture.open_directory(),
@@ -952,15 +1188,22 @@ mod tests {
     fn managed_layout_rejects_wrong_administrator_and_guardian_owners() {
         let fixture = ManagedFixture::new();
         let uid = rustix::process::geteuid().as_raw();
+        let gid = rustix::process::getegid().as_raw();
         let wrong_uid = if uid == 0 { 1 } else { 0 };
+        let wrong_gid = if gid == 0 { 1 } else { 0 };
+        let current = ManagedIdentity { uid, gid };
 
         assert!(matches!(
             open_systemd_managed_at(
                 fixture.root.as_fd(),
                 &fixture.public_relative,
                 &fixture.private_relative,
-                wrong_uid,
-                uid,
+                &fixture.private_link_target,
+                ManagedIdentity {
+                    uid: wrong_uid,
+                    gid,
+                },
+                current,
             ),
             Err(GuardianStateStoreError::InsecureManagedDirectory)
         ));
@@ -969,15 +1212,47 @@ mod tests {
                 fixture.root.as_fd(),
                 &fixture.public_relative,
                 &fixture.private_relative,
-                uid,
-                wrong_uid,
+                &fixture.private_link_target,
+                current,
+                ManagedIdentity {
+                    uid: wrong_uid,
+                    gid,
+                },
+            ),
+            Err(GuardianStateStoreError::InsecureManagedDirectory)
+        ));
+        assert!(matches!(
+            open_systemd_managed_at(
+                fixture.root.as_fd(),
+                &fixture.public_relative,
+                &fixture.private_relative,
+                &fixture.private_link_target,
+                ManagedIdentity {
+                    uid,
+                    gid: wrong_gid,
+                },
+                current,
+            ),
+            Err(GuardianStateStoreError::InsecureManagedDirectory)
+        ));
+        assert!(matches!(
+            open_systemd_managed_at(
+                fixture.root.as_fd(),
+                &fixture.public_relative,
+                &fixture.private_relative,
+                &fixture.private_link_target,
+                current,
+                ManagedIdentity {
+                    uid,
+                    gid: wrong_gid,
+                },
             ),
             Err(GuardianStateStoreError::InsecureManagedDirectory)
         ));
     }
 
     #[test]
-    fn managed_layout_rejects_a_procfs_magic_link() {
+    fn managed_component_walk_rejects_a_procfs_magic_link() {
         let temporary = tempfile::tempdir()
             .unwrap_or_else(|error| panic!("cannot create magic-link target: {error}"));
         let target = open(
@@ -989,9 +1264,11 @@ mod tests {
         let root = open("/", strict_directory_flags(), Mode::empty())
             .unwrap_or_else(|error| panic!("cannot open namespace root: {error}"));
         let magic_link = PathBuf::from(format!("proc/self/fd/{}", target.as_raw_fd()));
+        let components = managed_relative_components(&magic_link)
+            .unwrap_or_else(|error| panic!("magic-link test path was malformed: {error}"));
 
         assert!(matches!(
-            resolve_public_directory(root.as_fd(), &magic_link),
+            walk_administrative_directories(root.as_fd(), &components, 0, 0),
             Err(GuardianStateStoreError::InsecureManagedDirectory)
         ));
     }
@@ -1047,20 +1324,22 @@ mod tests {
     }
 
     #[test]
-    fn managed_open_errors_fail_closed_without_an_openat2_fallback() {
+    fn managed_open_errors_classify_topology_failures_as_insecure() {
         for error in [
-            rustix::io::Errno::NOSYS,
+            rustix::io::Errno::LOOP,
             rustix::io::Errno::PERM,
             rustix::io::Errno::INVAL,
+            rustix::io::Errno::ACCESS,
+            rustix::io::Errno::NOTDIR,
         ] {
             assert!(matches!(
                 managed_open_error(error),
-                GuardianStateStoreError::UnsupportedManagedOpen
+                GuardianStateStoreError::InsecureManagedDirectory
             ));
         }
         assert!(matches!(
-            managed_open_error(rustix::io::Errno::LOOP),
-            GuardianStateStoreError::InsecureManagedDirectory
+            managed_open_error(rustix::io::Errno::IO),
+            GuardianStateStoreError::Io(rustix::io::Errno::IO)
         ));
     }
 
@@ -1068,19 +1347,20 @@ mod tests {
     fn public_symlink_and_private_directory_owner_checks_are_exact() {
         let fixture = ManagedFixture::new();
         let uid = rustix::process::geteuid().as_raw();
+        let gid = rustix::process::getegid().as_raw();
         let wrong_uid = if uid == 0 { 1 } else { 0 };
+        let wrong_gid = if gid == 0 { 1 } else { 0 };
         let public_parent = open(
             fixture.root_path.join("var/lib/aos/lease-guards"),
             strict_directory_flags(),
             Mode::empty(),
         )
         .unwrap_or_else(|error| panic!("cannot open public parent: {error}"));
-        let public_link = openat2(
+        let public_link = openat(
             &public_parent,
             INCARNATION_HEX,
             OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
-            rustix::fs::ResolveFlags::BENEATH | rustix::fs::ResolveFlags::NO_MAGICLINKS,
         )
         .unwrap_or_else(|error| panic!("cannot open public link itself: {error}"));
         let private_directory = open(
@@ -1090,14 +1370,22 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("cannot open private directory: {error}"));
 
-        assert!(validate_public_symlink(&public_link, uid).is_ok());
+        assert!(validate_public_symlink(&public_link, uid, gid).is_ok());
         assert!(matches!(
-            validate_public_symlink(&public_link, wrong_uid),
+            validate_public_symlink(&public_link, wrong_uid, gid),
             Err(GuardianStateStoreError::InsecureManagedDirectory)
         ));
-        assert!(validate_managed_state_directory(&private_directory, uid).is_ok());
         assert!(matches!(
-            validate_managed_state_directory(&private_directory, wrong_uid),
+            validate_public_symlink(&public_link, uid, wrong_gid),
+            Err(GuardianStateStoreError::InsecureManagedDirectory)
+        ));
+        assert!(validate_managed_state_directory(&private_directory, uid, gid).is_ok());
+        assert!(matches!(
+            validate_managed_state_directory(&private_directory, wrong_uid, gid),
+            Err(GuardianStateStoreError::InsecureManagedDirectory)
+        ));
+        assert!(matches!(
+            validate_managed_state_directory(&private_directory, uid, wrong_gid),
             Err(GuardianStateStoreError::InsecureManagedDirectory)
         ));
     }

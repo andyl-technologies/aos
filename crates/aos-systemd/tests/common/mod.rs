@@ -360,7 +360,7 @@ impl FakeService {
     fn control_group(&self) -> String {
         let name = self.state.observed_unit.lock().unwrap();
         if name.starts_with("aos-lease-guard-") {
-            format!("/aos.slice/aos-assignment-guardians.slice/{name}")
+            format!("/aos.slice/aos-assignment.slice/aos-assignment-guardians.slice/{name}")
         } else {
             format!("/aos.slice/aos-sandboxes.slice/{name}")
         }

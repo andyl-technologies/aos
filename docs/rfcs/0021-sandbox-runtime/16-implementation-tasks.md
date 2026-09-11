@@ -6851,6 +6851,42 @@ margin, hard-deadline path, and kernel lease gate remain separate dependencies.
 `SBX-GUARD-01`, the dependent runtime tasks, and end-to-end qualification all
 remain open.
 
+### Guardian managed-state traversal correction (source only, unqualified)
+
+The Guardian's fixed systemd-managed state opener now retains a descriptor for
+each path component and advances with one-component `openat` calls using
+`O_PATH`, `O_DIRECTORY`, `O_NOFOLLOW`, and `O_CLOEXEC`. This is a narrow rule
+for the compile-time `/var/lib/aos/lease-guards` and
+`/var/lib/private/aos/lease-guards` vocabulary plus one exact lowercase
+incarnation. It is not a fallback for a caller-controlled or otherwise hostile
+path; those paths continue to require their existing protected-resolution
+policy.
+
+Every administrative directory is checked for exact root UID/GID ownership and
+no group or other write permission. The retained public symlink is root-owned,
+its bytes exactly name the expected relative private-incarnation path, and its
+inode is sampled around the one deliberate follow. The private path is walked
+independently, its leaf must have the current dynamic UID/GID and exact mode
+0700, and the followed public target must be the same device and inode. Mount
+crossings remain permitted because systemd constructs the DynamicUser state
+view with mounts. Pure tests cover malformed components, unexpected links and
+link bytes, insecure ownership and modes, public/private inode disagreement,
+retained-parent replacement, and replacement of the public link with a new
+inode carrying the same bytes.
+
+The transient unit retains `DynamicUser=true`, `RestrictSUIDSGID=true`, empty
+capability sets, and `NoNewPrivileges=true`; it additionally requests private
+network and IPC namespaces. The expected Guardian cgroup now includes
+systemd's encoded intermediate `aos-assignment.slice` component. No systemd
+patch, extra activation descriptor, fixed shared service identity, protocol
+change, or readiness advertisement is introduced.
+
+This is source-only corrective work. No Nix build or VM result qualifies the
+unit's startup, state mount, readiness notification, cgroup observation,
+expiry behavior, or payload coupling. The enforcing SELinux stage-0 hold and
+all Host, Guardian, Network, and release-readiness holds remain in force.
+`SBX-GUARD-01` and its dependent tasks remain open.
+
 ### Guardian-bound Host dispatch and effect recovery (partial)
 
 The current implementation uses one exact Host protocol 1.0 profile. Apply,

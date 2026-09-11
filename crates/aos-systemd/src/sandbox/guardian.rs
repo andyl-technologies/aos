@@ -505,9 +505,9 @@ impl GuardianUnitSpec {
     /// the unit's lifetime start limit permits only its first activation. This
     /// prevents a payload dependency from rearming a dead Guardian during the
     /// exact handoff. Each assignment receives a separate dynamic service
-    /// identity and 0700 durable state directory. The only allowed address
-    /// family is `AF_UNIX` for the one readiness datagram;
-    /// bind/listen/connect/accept are denied.
+    /// identity, 0700 durable state directory, and private network and IPC
+    /// namespaces. The only allowed address family is `AF_UNIX` for the one
+    /// readiness datagram; bind/listen/connect/accept are denied.
     ///
     /// # Errors
     ///
@@ -605,6 +605,8 @@ impl GuardianUnitSpec {
             string_array_property("SystemCallArchitectures", vec!["native".to_owned()])?,
             string_property("ProtectSystem", "strict"),
             string_property("ProtectHome", "yes"),
+            bool_property("PrivateNetwork", true),
+            bool_property("PrivateIPC", true),
             bool_property("PrivateTmp", true),
             bool_property("PrivateDevices", true),
             bool_property("ProtectKernelTunables", true),
@@ -868,6 +870,8 @@ mod tests {
                 "SystemCallArchitectures",
                 "ProtectSystem",
                 "ProtectHome",
+                "PrivateNetwork",
+                "PrivateIPC",
                 "PrivateTmp",
                 "PrivateDevices",
                 "ProtectKernelTunables",
@@ -916,6 +920,8 @@ mod tests {
                 ("SystemCallArchitectures", "as".to_owned()),
                 ("ProtectSystem", "s".to_owned()),
                 ("ProtectHome", "s".to_owned()),
+                ("PrivateNetwork", "b".to_owned()),
+                ("PrivateIPC", "b".to_owned()),
                 ("PrivateTmp", "b".to_owned()),
                 ("PrivateDevices", "b".to_owned()),
                 ("ProtectKernelTunables", "b".to_owned()),
@@ -946,6 +952,19 @@ mod tests {
                 .find(|(property, _)| property == name)
                 .unwrap_or_else(|| panic!("missing {name}"));
             assert_eq!(u64::try_from(value).unwrap_or(u64::MAX), 0);
+        }
+        for name in [
+            "DynamicUser",
+            "NoNewPrivileges",
+            "PrivateNetwork",
+            "PrivateIPC",
+            "RestrictSUIDSGID",
+        ] {
+            let (_, value) = properties
+                .iter()
+                .find(|(property, _)| property == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            assert!(bool::try_from(value).unwrap_or(false), "{name} is not true");
         }
         let (_, interval) = properties
             .iter()

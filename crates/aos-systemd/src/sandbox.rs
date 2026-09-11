@@ -44,7 +44,8 @@ const GUARD_PREFIX: &str = "aos-lease-guard-";
 const SANDBOX_SLICE: &str = "aos-sandboxes.slice";
 // Hyphens encode slice ancestry: systemd nests this slice beneath aos.slice.
 const SANDBOX_SLICE_CGROUP: &str = "/aos.slice/aos-sandboxes.slice";
-const GUARDIAN_SLICE_CGROUP: &str = "/aos.slice/aos-assignment-guardians.slice";
+const GUARDIAN_SLICE_CGROUP: &str =
+    "/aos.slice/aos-assignment.slice/aos-assignment-guardians.slice";
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 128 * 1024;
 const MAX_DEVICES: usize = 64;
@@ -1373,6 +1374,13 @@ mod tests {
         assert_eq!(
             name.guardian(),
             "aos-lease-guard-abababababababababababababababab.service"
+        );
+        assert_eq!(
+            name.guardian_cgroup_path().as_str(),
+            concat!(
+                "/aos.slice/aos-assignment.slice/aos-assignment-guardians.slice/",
+                "aos-lease-guard-abababababababababababababababab.service"
+            )
         );
         assert_eq!(
             SandboxUnitName::from_service_name(name.as_str()),
