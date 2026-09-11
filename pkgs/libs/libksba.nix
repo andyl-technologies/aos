@@ -42,90 +42,118 @@ in
     hardeningDisable = ["strictflexarrays3"];
     hardeningEnable = ["strictflexarrays1"];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd libksba-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script =
-          if stdenv.isCross && stdenv.hostPlatform.isDarwin
-          then ''
-            # asn1-gentables executes on the Linux build machine. Preserve
-            # this package's flexible-array hardening workaround, but remove
-            # the target-only arm PAC token and every target SDK/compiler flag.
-            native_cc="$BUILD_CC"
-            mkdir -p .aos-build-tools
-            cat > .aos-build-tools/cc-for-build <<EOF
-            #!$CONFIG_SHELL
-            native_hardening=
-            for token in \$AOS_HARDENING_ENABLE; do
-              case "\$token" in
-                pacret) ;;
-                *) native_hardening="\$native_hardening \$token" ;;
-              esac
-            done
-            export AOS_HARDENING_ENABLE="\$native_hardening"
-            unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
-            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
-            unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
-            exec "$native_cc" "\$@"
-            EOF
-            chmod +x .aos-build-tools/cc-for-build
-            export CC_FOR_BUILD="$PWD/.aos-build-tools/cc-for-build"
-
-            # gpgrt-config is a target shell script. Execute it with the native
-            # configure shell while making it resolve the target .pc metadata.
-            cat > .aos-build-tools/gpgrt-config <<EOF
-            #!$CONFIG_SHELL
-            exec "$CONFIG_SHELL" ${libgpg-error}/bin/gpgrt-config "\$@"
-            EOF
-            chmod +x .aos-build-tools/gpgrt-config
-            export GPGRT_CONFIG="$PWD/.aos-build-tools/gpgrt-config"
-            export PKG_CONFIG_LIBDIR=
-            export PKG_CONFIG_PATH="${libgpg-error}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-
-            ./configure \
-              $configureFlags \
-              --prefix=$out \
-              --disable-static \
-              --with-libgpg-error-prefix=${libgpg-error}
-          ''
-          else ''
-            # Recent libgpg-error releases provide gpgrt-config instead of
-            # gpg-error-config; runtime dependencies are not on the build PATH.
-            export GPGRT_CONFIG=${libgpg-error}/bin/gpgrt-config
-
-            ./configure \
-              $configureFlags \
-              --prefix=$out \
-              --disable-static \
-              --with-libgpg-error-prefix=${libgpg-error}
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf $src
+            cd libksba-${version}
           '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script =
-          if stdenv.hostPlatform.isDarwin
-          then ''
-            make install
-            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/ksba-config"
-          ''
-          else ''
-            make install
+        }
+      ]
+      ++ (
+        if stdenv.isCross && stdenv.hostPlatform.isLinux
+        then [
+          {
+            name = "patch";
+            script = ''
+              # The native generator retains full strict-flex-array hardening.
+              # Give its variable-length names an actual flexible array and
+              # allocate the terminator explicitly instead of using char[1].
+              sed -i \
+                -e 's/char name\[1\];/char name[];/' \
+                  -e 's/sizeof \*item + strlen (name)/sizeof *item + strlen (name) + 1/' \
+                  src/asn1-gentables.c
+                sed -i 's/char filename\[1\];/char filename[];/' src/asn1-func.h
+                sed -i \
+                  's/sizeof \*tree + (file_name? strlen (file_name):1)/sizeof *tree + (file_name? strlen (file_name):1) + 1/' \
+                  src/asn1-parse.y src/asn1-parse.c
+                sed -i \
+                  's/sizeof \*tree + strlen (mod_name)/sizeof *tree + strlen (mod_name) + 1/' \
+                  src/asn1-func2.c
+            '';
+          }
+        ]
+        else []
+      )
+      ++ [
+        {
+          name = "configure";
+          script =
+            if stdenv.isCross && stdenv.hostPlatform.isDarwin
+            then ''
+              # asn1-gentables executes on the Linux build machine. Preserve
+              # this package's flexible-array hardening workaround, but remove
+              # the target-only arm PAC token and every target SDK/compiler flag.
+              native_cc="$BUILD_CC"
+              mkdir -p .aos-build-tools
+              cat > .aos-build-tools/cc-for-build <<EOF
+              #!$CONFIG_SHELL
+              native_hardening=
+              for token in \$AOS_HARDENING_ENABLE; do
+                case "\$token" in
+                  pacret) ;;
+                  *) native_hardening="\$native_hardening \$token" ;;
+                esac
+              done
+              export AOS_HARDENING_ENABLE="\$native_hardening"
+              unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+              unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+              unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+              exec "$native_cc" "\$@"
+              EOF
+              chmod +x .aos-build-tools/cc-for-build
+              export CC_FOR_BUILD="$PWD/.aos-build-tools/cc-for-build"
+
+              # gpgrt-config is a target shell script. Execute it with the native
+              # configure shell while making it resolve the target .pc metadata.
+              cat > .aos-build-tools/gpgrt-config <<EOF
+              #!$CONFIG_SHELL
+              exec "$CONFIG_SHELL" ${libgpg-error}/bin/gpgrt-config "\$@"
+              EOF
+              chmod +x .aos-build-tools/gpgrt-config
+              export GPGRT_CONFIG="$PWD/.aos-build-tools/gpgrt-config"
+              export PKG_CONFIG_LIBDIR=
+              export PKG_CONFIG_PATH="${libgpg-error}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+              ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --disable-static \
+                --with-libgpg-error-prefix=${libgpg-error}
+            ''
+            else ''
+              # Recent libgpg-error releases provide gpgrt-config instead of
+              # gpg-error-config; runtime dependencies are not on the build PATH.
+              export GPGRT_CONFIG=${libgpg-error}/bin/gpgrt-config
+
+              ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --disable-static \
+                --with-libgpg-error-prefix=${libgpg-error}
+            '';
+        }
+        {
+          name = "build";
+          script = ''
+            make -j$NIX_BUILD_CORES
           '';
-      }
-    ];
+        }
+        {
+          name = "install";
+          script =
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              make install
+              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/ksba-config"
+            ''
+            else ''
+              make install
+            '';
+        }
+      ];
 
     meta = {
       description = "X.509 and CMS (PKCS#7) library used by GnuPG's gpgsm";
