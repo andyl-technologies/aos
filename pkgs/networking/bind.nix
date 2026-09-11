@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   gnumake,
   perl,
   pkg-config,
@@ -80,31 +82,45 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix="$out" \
-            --sysconfdir="$out/etc" \
-            --localstatedir=/var \
-            --enable-dnstap \
-            --enable-doh \
-            --enable-geoip \
-            --enable-year2038 \
-            --enable-full-report \
-            --with-liburcu=membarrier \
-            --with-maxminddb=${libmaxminddb} \
-            --with-libnghttp2=yes \
-            --with-openssl=${openssl} \
-            --with-gssapi=${krb5}/bin/krb5-config \
-            --with-lmdb=${lmdb} \
-            --with-libxml2=yes \
-            --with-json-c=yes \
-            --with-zlib=yes \
-            --with-readline=readline \
-            --with-libidn2=${libidn2} \
-            --with-cmocka=detect \
-            --with-jemalloc=detect
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # protoc-c runs on the builder, but dnstap and unit tests link
+            # target libraries. Prefer their metadata over native build tools.
+            export PKG_CONFIG_PATH="${protobuf-c}/lib/pkgconfig:${cmocka}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+            # The cross linker cannot use the final installation paths to
+            # resolve indirect dependencies among BIND's in-tree libraries.
+            for library in lib/*; do
+              [ -d "$library" ] || continue
+              LDFLAGS="$LDFLAGS -Wl,-rpath-link,$PWD/$library/.libs"
+            done
+            export LDFLAGS
+          ''
+          + ''
+            ./configure \
+              $configureFlags \
+              --prefix="$out" \
+              --sysconfdir="$out/etc" \
+              --localstatedir=/var \
+              --enable-dnstap \
+              --enable-doh \
+              --enable-geoip \
+              --enable-year2038 \
+              --enable-full-report \
+              --with-liburcu=membarrier \
+              --with-maxminddb=${libmaxminddb} \
+              --with-libnghttp2=yes \
+              --with-openssl=${openssl} \
+              --with-gssapi=${krb5}/bin/krb5-config \
+              --with-lmdb=${lmdb} \
+              --with-libxml2=yes \
+              --with-json-c=yes \
+              --with-zlib=yes \
+              --with-readline=readline \
+              --with-libidn2=${libidn2} \
+              --with-cmocka=detect \
+              --with-jemalloc=detect
+          '';
       }
       {
         name = "build";
