@@ -796,6 +796,16 @@ in
           find root/nix/store -maxdepth 3 -type d \( -name man -o -name info -o -name doc -o -name include \) \
             ! -path 'root/nix/store/*/lib/systemd/*' -print0 \
             | xargs -0 -r rm -rf
+
+          # The initrd executes recovery tools but never links programs. Drop
+          # static link inputs from copied library directories, retaining shared
+          # libraries and nested plugin directories. Do not follow a lib symlink
+          # back into an immutable store output outside this staging tree.
+          for library_dir in root/nix/store/*/lib; do
+            [ -d "$library_dir" ] && [ ! -L "$library_dir" ] || continue
+            find "$library_dir" -maxdepth 1 -type f \
+              \( -name '*.a' -o -name '*.la' \) -delete
+          done
         '';
       }
       {

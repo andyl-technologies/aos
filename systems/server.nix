@@ -21,7 +21,7 @@
   aos.image.budgets = {
     maxRootMiB = 640;
     maxVerityMiB = 16;
-    maxInitrdMiB = 128;
+    maxInitrdMiB = 132;
     maxUkiMiB = 160;
     maxEspMiB = 384;
     maxRuntimeClosureMiB = 768;

@@ -315,7 +315,9 @@ in {
     budgets = {
       maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
-      maxInitrdMiB = positiveMiB 128 "Maximum initrd artifact size before it is embedded in a UKI.";
+      # The recovery-capable runtime is 129 MiB after development-input pruning.
+      # Keep its measured allowance below the independent UKI and ESP budgets.
+      maxInitrdMiB = positiveMiB 132 "Maximum initrd artifact size before it is embedded in a UKI.";
       maxUkiMiB = positiveMiB 160 "Maximum signed Unified Kernel Image size.";
       maxEspMiB = positiveMiB 384 "EFI System Partition capacity, including two UKIs and update headroom.";
       maxRuntimeClosureMiB = positiveMiB 768 "Maximum NAR size of the system toplevel runtime closure.";
