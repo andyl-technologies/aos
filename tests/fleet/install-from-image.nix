@@ -64,7 +64,12 @@
       # its immutable root so the harness can reconnect after the UEFI reboot.
       # Keep the larger contract local to this test image; production server
       # variants retain their 512 MiB root budget.
-      aos.image.budgets.maxRootMiB = 640;
+      aos.image.budgets = {
+        maxRootMiB = 640;
+        # The measured-boot candidate also retains the Python HTTP upgrade
+        # fixture. Its audited runtime closure is 813 MiB.
+        maxRuntimeClosureMiB = 896;
+      };
       aos.boot.kernelParams = ["net.ifnames=0"];
       environment.etc."systemd/network/10-fleet-eth0.network".text = ''
         [Match]
@@ -113,9 +118,9 @@
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
     {
-      # Git is fixture tooling for the registry workflow and intentionally
-      # expands this image beyond the production server contract.
-      environment.systemPackages = [pkgs.git];
+      # The registry workflow uses basic Git transport operations. Reuse the
+      # runtime client without pulling development-language helpers into boot.
+      environment.systemPackages = [pkgs.git-minimal];
       aos.image.budgets.maxRootMiB = 640;
     }
   ];
@@ -391,15 +396,15 @@ in {
 
       # ════ 3. UPDATE — registry add + metadata sync, pure porcelain ════
       target.succeed(
-          f"HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm registry add --no-verify "
+          f"HOME=/tmp USER=root PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm registry add --no-verify "
           f"git://registry:9418/sysreg --name sysreg --branch {branch} 2>&1",
           timeout=120,
       )
       target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm update 2>&1", timeout=120
+          "HOME=/tmp USER=root PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm update 2>&1", timeout=120
       )
       out = target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm search bc 2>&1",
+          "HOME=/tmp USER=root PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm search bc 2>&1",
           timeout=60,
       )
       assert "bc" in out, f"apm search did not surface bc: {out!r}"
@@ -407,7 +412,7 @@ in {
       # ════ 4. INSTALL a package — closure must come off the wire ═══════
       target.fail("${pkgs.nix}/bin/nix-store --check-validity '${pkgs.bc}'")
       out = target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm install bc "
+          "HOME=/tmp USER=root PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm install bc "
           "--registry sysreg --yes 2>&1",
           timeout=600,
       )
@@ -415,7 +420,7 @@ in {
           f"apm install did not download anything: {out!r}"
       )
       out = target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm list --installed 2>&1"
+          "HOME=/tmp USER=root PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm list --installed 2>&1"
       )
       assert "bc" in out, f"bc missing from apm list: {out!r}"
       target.succeed(
@@ -441,13 +446,13 @@ in {
           [registry.signing]
           required = false
           EOF
-          ${pkgs.git}/bin/git clone git://registry:9418/sysreg \\
+          ${pkgs.git-minimal}/bin/git clone git://registry:9418/sysreg \\
             /var/lib/apm/registries/sysreg
           ln -sfn /var/lib/apm/registries/sysreg /var/lib/apm/remote/sysreg
       """), timeout=120)
 
       out = target.succeed(
-          "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
+          "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
           timeout=120,
       )
       assert "test-2" in out, f"dry-run did not surface test-2: {out!r}"
@@ -456,7 +461,7 @@ in {
       # into the inactive slot. Configuration remains on generation 1 until
       # the candidate boots and re-evaluates the retained host inputs.
       out = target.succeed(
-          "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
+          "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
           timeout=1800,
       )
       print("=== apm upgrade --system output ===\n" + out)
