@@ -19,6 +19,7 @@
   lib,
 }: let
   aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
+  imagePlatformChecks = import ./image-platform.nix;
 
   # --- Assertion enforcement ------------------------------------------
   #
@@ -1211,6 +1212,10 @@
       {
         ok = imageBudgetCheckWired;
         message = "per-image budget check must be exposed";
+      }
+      {
+        ok = imagePlatformChecks;
+        message = "cross images must retain target identity and native construction tools";
       }
       {
         ok = defaultRootPartitionHasHeadroom;
