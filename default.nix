@@ -402,6 +402,7 @@
   nativeAbilityScenarioIds = [
     "ability-native-activation"
     "ability-native-kubernetes"
+    "ability-native-postgresql"
     "ability-native-recovery"
   ];
   qualificationRequirementChecks = scenarioId:
@@ -435,6 +436,10 @@
       mkNativeAbilityScenario
       "ability-native-kubernetes"
       ./tests/fleet/ability-native-kubernetes.nix;
+    ability-native-postgresql =
+      mkNativeAbilityScenario
+      "ability-native-postgresql"
+      ./tests/fleet/ability-native-postgresql.nix;
     ability-native-recovery =
       mkNativeAbilityScenario
       "ability-native-recovery"
@@ -1718,6 +1723,7 @@ in {
       runtimeConfigNames = [
         "ability-native-activation"
         "ability-native-kubernetes"
+        "ability-native-postgresql"
         "ability-native-power-loss"
         "apm-desired-sequencing"
         "apm-sysroot-lock"

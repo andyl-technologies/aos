@@ -57,6 +57,77 @@
     }
     else staticAbilityContractSource;
 
+  postgresqlProviderUsers = builtins.listToAttrs (map (slot: let
+    suffix =
+      if slot < 10
+      then "0${toString slot}"
+      else toString slot;
+  in {
+    name = "aos-ability-pg-${suffix}";
+    value = {
+      uid = 7100 + slot;
+      group = "aos-ability-postgresql";
+      home = "/var/lib/aos/ability-runtime/postgresql";
+      shell = "/sbin/nologin";
+      description = "AOS native PostgreSQL provider slot ${toString slot}";
+      extraGroups = [];
+    };
+  }) (lib.range 0 63));
+
+  postgresqlProbeUsers = builtins.listToAttrs (map (slot: let
+    suffix =
+      if slot < 10
+      then "0${toString slot}"
+      else toString slot;
+  in {
+    name = "aos-ability-pg-probe-${suffix}";
+    value = {
+      uid = 7200 + slot;
+      group = "aos-ability-pg-probe-${suffix}";
+      home = "/var/empty";
+      shell = "/sbin/nologin";
+      description = "AOS native PostgreSQL probe slot ${toString slot}";
+      extraGroups = [];
+    };
+  }) (lib.range 0 63));
+
+  postgresqlBrokerUsers = builtins.listToAttrs (map (slot: let
+    suffix =
+      if slot < 10
+      then "0${toString slot}"
+      else toString slot;
+  in {
+    name = "aos-ability-pg-broker-${suffix}";
+    value = {
+      uid = 7300 + slot;
+      group = "aos-ability-pg-probe-${suffix}";
+      home = "/var/empty";
+      shell = "/sbin/nologin";
+      description = "AOS native PostgreSQL endpoint broker slot ${toString slot}";
+      extraGroups = [];
+    };
+  }) (lib.range 0 63));
+
+  postgresqlProbeGroups = builtins.listToAttrs (map (slot: let
+    suffix =
+      if slot < 10
+      then "0${toString slot}"
+      else toString slot;
+  in {
+    name = "aos-ability-pg-probe-${suffix}";
+    value = {
+      gid = 7200 + slot;
+      members = [];
+    };
+  }) (lib.range 0 63));
+
+  postgresqlSocketTmpfiles = lib.concatMapStringsSep "\n" (slot: let
+    suffix =
+      if slot < 10
+      then "0${toString slot}"
+      else toString slot;
+  in "d /run/aos-ability-postgresql/${suffix} 2710 aos-ability-pg-${suffix} aos-ability-pg-probe-${suffix} -") (lib.range 0 63);
+
   initrdActivationSelection = {
     schema = "aos.ability.initrd-activation-selection/v1";
     execution_stage = "initrd";
@@ -115,6 +186,43 @@ in {
   };
 
   config = {
+    # A retained storage allocation owns one provider slot. Distinct numeric
+    # identities keep PostgreSQL processes and writable resource directories
+    # isolated even when another digest is known.
+    aos.users.users =
+      postgresqlProviderUsers
+      // postgresqlProbeUsers
+      // postgresqlBrokerUsers;
+    aos.users.groups =
+      postgresqlProbeGroups
+      // {
+        aos-ability-postgresql = {
+          gid = 71;
+          members = [];
+        };
+      };
+
+    # Server principals can traverse shared parents without listing them. A
+    # probe and broker identities reach only the socket root and their matching
+    # setgid leaf. Only the probe principal is mapped to the database admin.
+    # Root retains every marker, credential, endpoint, and policy record.
+    environment.etc."tmpfiles.d/aos-ability-runtime.conf".text = ''
+      d /var/lib/aos/ability-runtime                    0710 root aos-ability-postgresql -
+      d /var/lib/aos/ability-runtime/credential-sources 0700 root root                   -
+      d /var/lib/aos/ability-runtime/credentials        0700 root root                   -
+      d /var/lib/aos/ability-runtime/endpoints          0700 root root                   -
+      d /var/lib/aos/ability-runtime/network-policy     0700 root root                   -
+      d /var/lib/aos/ability-runtime/storage            0710 root aos-ability-postgresql -
+      d /var/lib/aos/ability-runtime/postgresql         0710 root aos-ability-postgresql -
+      d /run/aos-ability-postgresql                     0711 root root                   -
+      ${postgresqlSocketTmpfiles}
+    '';
+
+    systemd.services.aos-activate = {
+      requires = ["systemd-tmpfiles-setup.service"];
+      after = ["systemd-tmpfiles-setup.service"];
+    };
+
     system.build.staticAbilityContract = staticAbilityContract;
     system.build.initrdAbilityActivationSelection = initrdActivationSelection;
 

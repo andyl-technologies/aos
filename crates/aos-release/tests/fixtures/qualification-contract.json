@@ -185,11 +185,37 @@
     },
     {
       "checks": [
+        "authenticated-provider-bindings-and-exact-handler-artifacts",
+        "exact-seven-operation-ten-edge-provisioning-graph",
+        "runtime-output-data-flow-and-schema-valid-observations",
+        "loopback-sql-readiness-and-enforced-non-loopback-denial",
+        "stopped-divergent-and-child-drift-reconciliation",
+        "exact-six-operation-five-edge-teardown-and-persistent-retention"
+      ],
+      "id": "ability-native-postgresql",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {},
+      "method": "automated",
+      "phase": "staging",
+      "production_only": false,
+      "regressions": [
+        "checks.fleet.ability-native-postgresql"
+      ],
+      "scope": "release"
+    },
+    {
+      "checks": [
         "exact-boot-initrd-artifact-and-static-stage-handoff-contract",
         "process-loss-after-external-effect-reconciles-before-retry",
         "power-loss-after-external-effect-reconciles-after-boot",
         "fresh-receiving-authority-and-resource-incarnations",
-        "retained-plan-journal-and-independent-service-observation"
+        "retained-plan-journal-and-independent-service-observation",
+        "gc-after-crashed-unlocked-partial-activation-retains-recovery-set"
       ],
       "id": "ability-native-recovery",
       "invalidated_by": [

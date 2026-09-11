@@ -240,27 +240,28 @@ in
   assert builtins.elem scenarioId [
     "ability-native-activation"
     "ability-native-kubernetes"
+    "ability-native-postgresql"
     "ability-native-recovery"
   ];
   assert checks != [];
-  executable
-  // {
-    passthru =
-      (executable.passthru or {})
-      // {
-        qualification = {
-          inherit
-            checks
-            fixtureArchive
-            fixtureContractDigest
-            fixtureRoots
-            fixtureScript
-            narSupport
-            scenarioId
-            setupModule
-            ;
-          imageVariant = "server";
-          publishedGuestTools = true;
+    executable
+    // {
+      passthru =
+        (executable.passthru or {})
+        // {
+          qualification = {
+            inherit
+              checks
+              fixtureArchive
+              fixtureContractDigest
+              fixtureRoots
+              fixtureScript
+              narSupport
+              scenarioId
+              setupModule
+              ;
+            imageVariant = "server";
+            publishedGuestTools = true;
+          };
         };
-      };
-  }
+    }

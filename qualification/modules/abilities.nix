@@ -22,6 +22,14 @@
       "forged-mapping-grant-and-namespace-rejected-without-mutation"
       "object-update-removal-and-retained-owner-evidence"
     ];
+    ability-native-postgresql = [
+      "authenticated-provider-bindings-and-exact-handler-artifacts"
+      "exact-seven-operation-ten-edge-provisioning-graph"
+      "runtime-output-data-flow-and-schema-valid-observations"
+      "loopback-sql-readiness-and-enforced-non-loopback-denial"
+      "stopped-divergent-and-child-drift-reconciliation"
+      "exact-six-operation-five-edge-teardown-and-persistent-retention"
+    ];
     ability-native-recovery = [
       "exact-boot-initrd-artifact-and-static-stage-handoff-contract"
       "process-loss-after-external-effect-reconciles-before-retry"
@@ -34,6 +42,7 @@
   requiredRegressions = {
     ability-native-activation = ["checks.fleet.ability-native-activation"];
     ability-native-kubernetes = ["checks.fleet.ability-native-kubernetes"];
+    ability-native-postgresql = ["checks.fleet.ability-native-postgresql"];
     ability-native-recovery = ["checks.fleet.ability-native-power-loss"];
   };
   preservesRequiredValues = id: let
@@ -69,6 +78,15 @@ in {
         production_only = false;
         checks = requiredChecks.ability-native-kubernetes;
         regressions = requiredRegressions.ability-native-kubernetes;
+        invalidated_by = requiredInvalidation;
+      };
+      ability-native-postgresql = {
+        phase = "staging";
+        scope = "release";
+        method = "automated";
+        production_only = false;
+        checks = requiredChecks.ability-native-postgresql;
+        regressions = requiredRegressions.ability-native-postgresql;
         invalidated_by = requiredInvalidation;
       };
       ability-native-recovery = {

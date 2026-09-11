@@ -1314,6 +1314,30 @@ CHECK_DETAILS = {
     "object-update-removal-and-retained-owner-evidence": (
         "Object updates and removals converged while retaining exact owner evidence."
     ),
+    "authenticated-provider-bindings-and-exact-handler-artifacts": (
+        "The published guest admitted only authenticated PostgreSQL provider "
+        "bindings and release-bound handler artifacts."
+    ),
+    "exact-seven-operation-ten-edge-provisioning-graph": (
+        "PostgreSQL provisioning executed its exact seven-operation, ten-edge "
+        "graph with required-success ordering."
+    ),
+    "runtime-output-data-flow-and-schema-valid-observations": (
+        "Runtime outputs flowed through typed resource state whose observations "
+        "matched every declared schema."
+    ),
+    "loopback-sql-readiness-and-enforced-non-loopback-denial": (
+        "Independent SQL probes passed through IPv4 and IPv6 loopback brokers "
+        "while non-loopback traffic remained denied."
+    ),
+    "stopped-divergent-and-child-drift-reconciliation": (
+        "Stopped, divergent, and child-resource drift was authenticated and "
+        "reconciled before PostgreSQL effects resumed."
+    ),
+    "exact-six-operation-five-edge-teardown-and-persistent-retention": (
+        "Teardown executed its exact six-operation, five-edge graph and retained "
+        "the persistent PostgreSQL storage identity."
+    ),
     "exact-boot-initrd-artifact-and-static-stage-handoff-contract": (
         "The exact published QCOW2 and slot-A UKI booted with its assembly-bound "
         "initrd, static stage contracts, initrd selection, and durable host receipt."
@@ -1331,6 +1355,10 @@ CHECK_DETAILS = {
     "retained-plan-journal-and-independent-service-observation": (
         "Plan and journal bytes survived recovery, cleanup, and GC while an "
         "independent service observation passed."
+    ),
+    "gc-after-crashed-unlocked-partial-activation-retains-recovery-set": (
+        "Unlocked collection during a crashed partial activation retained the "
+        "complete recovery set and the same activation resumed afterward."
     ),
 }
 
