@@ -143,10 +143,10 @@ in {
   cilium = mkCliProbe {
     package = "cilium";
     primaryInput = "The packaged Cilium debugging client's version command.";
-    primaryOperation = "Print local version information without contacting an agent.";
-    primaryExpected = "The client returns success and identifies Cilium.";
+    primaryOperation = "Print client and daemon version status without requiring a running agent.";
+    primaryExpected = "The client returns success and reports its local version.";
     primaryCommand = ''["@out@/bin/cilium-dbg", "version"]'';
-    primaryCheck = ''result.returncode == 0 and "cilium" in (result.stdout + result.stderr).lower()'';
+    primaryCheck = ''result.returncode == 0 and result.stdout.startswith("Client: ")'';
     badInput = "A cilium-dbg invocation naming an unknown operation.";
     badOperation = "Parse the unsupported operation without contacting an agent.";
     badExpected = "The client rejects the unsupported operation.";

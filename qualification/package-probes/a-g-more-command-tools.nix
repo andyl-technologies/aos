@@ -294,7 +294,7 @@
         '';
         steps = [
           {
-            argv = ["@out@/bin/gperf" "--language=C" "--struct-type" "--lookup-function-name=lookup" "--output-file=keywords.c" "keywords.gperf"];
+            argv = ["@out@/bin/gperf" "--language=ANSI-C" "--struct-type" "--lookup-function-name=lookup" "--output-file=keywords.c" "keywords.gperf"];
             exit_code = 0;
             stdout.exact = "";
             stderr.exact = "";

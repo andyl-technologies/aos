@@ -226,7 +226,7 @@
         '';
         steps = [
           {
-            argv = ["@out@/bin/checkmodule" "-M" "-m" "-o" "probe.mod" "probe.te"];
+            argv = ["@out@/bin/checkmodule" "-M" "-m" "-o" "aos_probe.mod" "probe.te"];
             exit_code = 0;
             stdout.exact = "";
             stderr.exact = "";
@@ -245,7 +245,7 @@
         '';
         steps = [
           {
-            argv = ["@out@/bin/checkmodule" "-M" "-m" "-o" "invalid.mod" "invalid.te"];
+            argv = ["@out@/bin/checkmodule" "-M" "-m" "-o" "aos_bad.mod" "invalid.te"];
             exit_code = 1;
             stdout.exact = "";
             observes_rejection = true;
@@ -313,11 +313,11 @@
             stderr.exact = "";
           }
           {
-            argv = ["@out@/bin/cryptsetup" "luksFormat" "--batch-mode" "--type=luks2" "--key-file=key" "container.img"];
+            argv = ["@out@/sbin/cryptsetup" "luksFormat" "--batch-mode" "--type=luks2" "--key-file=key" "container.img"];
             exit_code = 0;
           }
           {
-            argv = ["@out@/bin/cryptsetup" "luksDump" "container.img"];
+            argv = ["@out@/sbin/cryptsetup" "luksDump" "container.img"];
             exit_code = 0;
           }
         ];
@@ -339,11 +339,11 @@
             stderr.exact = "";
           }
           {
-            argv = ["@out@/bin/cryptsetup" "luksFormat" "--batch-mode" "--type=luks2" "--key-file=key" "container.img"];
+            argv = ["@out@/sbin/cryptsetup" "luksFormat" "--batch-mode" "--type=luks2" "--key-file=key" "container.img"];
             exit_code = 0;
           }
           {
-            argv = ["@out@/bin/cryptsetup" "open" "--test-passphrase" "--key-file=wrong-key" "container.img"];
+            argv = ["@out@/sbin/cryptsetup" "open" "--test-passphrase" "--key-file=wrong-key" "container.img"];
             exit_code = 2;
             observes_rejection = true;
           }
@@ -532,7 +532,14 @@
         files."catalog.po" = ''
           msgid ""
           msgstr ""
+          "Project-Id-Version: aos-probe 1.0\n"
+          "PO-Revision-Date: 2026-01-01 00:00+0000\n"
+          "Last-Translator: Qualification <qualification@example.invalid>\n"
+          "Language-Team: Qualification\n"
+          "Language: en\n"
+          "MIME-Version: 1.0\n"
           "Content-Type: text/plain; charset=UTF-8\n"
+          "Content-Transfer-Encoding: 8bit\n"
 
           msgid "hello"
           msgstr "qualified"

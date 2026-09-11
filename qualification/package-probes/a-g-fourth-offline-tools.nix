@@ -344,11 +344,11 @@ in {
             stderr.exact = "";
           }
           {
-            argv = ["@out@/bin/sgdisk" "--clear" "--new=1:2048:-2048" "--typecode=1:8300" "disk.img"];
+            argv = ["@out@/sbin/sgdisk" "--clear" "--new=1:2048:-2048" "--typecode=1:8300" "disk.img"];
             exit_code = 0;
           }
           {
-            argv = ["@out@/bin/sgdisk" "--verify" "disk.img"];
+            argv = ["@out@/sbin/sgdisk" "--verify" "disk.img"];
             exit_code = 0;
           }
         ];
@@ -367,7 +367,7 @@ in {
             stderr.exact = "";
           }
           {
-            argv = ["@out@/bin/sgdisk" "--clear" "tiny.img"];
+            argv = ["@out@/sbin/sgdisk" "--clear" "tiny.img"];
             exit_code = 4;
             observes_rejection = true;
           }

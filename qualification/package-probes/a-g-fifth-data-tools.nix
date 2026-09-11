@@ -187,12 +187,16 @@ in {
             exit_code = 0;
           }
           {
-            argv = ["@python@" "-c" ''
-              import pathlib, ssl
-              expected = ssl.PEM_cert_to_DER_cert(pathlib.Path("certificate.pem").read_text())
-              assert pathlib.Path("recovered-0.der").read_bytes() == expected
-              print("efitools round trip passed")
-            ''];
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import pathlib, ssl
+                expected = ssl.PEM_cert_to_DER_cert(pathlib.Path("certificate.pem").read_text())
+                assert pathlib.Path("recovered-0.der").read_bytes() == expected
+                print("efitools round trip passed")
+              ''
+            ];
             exit_code = 0;
             stdout.exact = "efitools round trip passed\n";
             stderr.exact = "";
@@ -252,7 +256,10 @@ in {
       schemas = [schema for root in roots for schema in root.findall("schema")]
       interface = next(schema for schema in schemas if schema.get("id") == "org.gnome.desktop.interface")
       color_scheme = next(key for key in interface.findall("key") if key.get("name") == "color-scheme")
-      assert color_scheme.get("type") == "s" and color_scheme.find("default") is not None
+      enum_id = color_scheme.get("enum")
+      enumeration = next(enum for root in roots for enum in root.findall("enum") if enum.get("id") == enum_id)
+      assert {value.get("nick") for value in enumeration.findall("value")} == {"default", "prefer-dark", "prefer-light"}
+      assert color_scheme.find("default").text.strip() == "'default'"
       print("gsettings-desktop-schemas data passed")
     '';
     badInput = "A request for a schema ID absent from the installed catalog.";

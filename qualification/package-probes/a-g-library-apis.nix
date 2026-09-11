@@ -171,7 +171,7 @@ in {
     package = "boost";
     compiler = "@cxx@";
     sourceSuffix = "cc";
-    compileArguments = ["-I@out@/include"];
+    compileArguments = ["-I@output:dev@/include"];
     primaryInput = "The decimal string 42.";
     primaryOperation = "Convert the string to an integer with boost::lexical_cast.";
     primarySource = ''

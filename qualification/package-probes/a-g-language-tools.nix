@@ -93,13 +93,25 @@
         bad_input = {
           input = "A Go program with a missing expression in a declaration.";
           operation = "Compile the malformed program with the packaged Go toolchain.";
-          expected = "The Go parser rejects the source with status 1.";
+          expected = "The Go parser reports a syntax error for the malformed source.";
           files."invalid.go" = "package main\nfunc main() { value := ; _ = value }\n";
           steps = [
             {
-              argv = ["@out@/bin/go" "run" "@work@/bad-input/invalid.go"];
-              exit_code = 1;
+              argv = [
+                "@python@"
+                "-c"
+                ''
+                  import subprocess, sys
+                  result = subprocess.run(["@out@/bin/go", "run", "@work@/bad-input/invalid.go"], capture_output=True, text=True)
+                  assert result.returncode in (1, 2) and result.stdout == ""
+                  assert "invalid.go:2:" in result.stderr and "syntax error" in result.stderr
+                  sys.stderr.write("go rejected malformed source\n")
+                  raise SystemExit(7)
+                ''
+              ];
+              exit_code = 7;
               stdout.exact = "";
+              stderr.exact = "go rejected malformed source\n";
               observes_rejection = true;
               timeout_seconds = 120;
             }
