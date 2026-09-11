@@ -54,6 +54,7 @@
     else "linux/amd64";
   containerdConfig = pkgs.writeTextFile {
     name = "aos-container-runtime-test.toml";
+    destination = "/config.toml";
     text = ''
       version = 3
       [[plugins."io.containerd.transfer.v1.local".unpack_config]]
@@ -75,7 +76,7 @@
           Type = "notify";
           ExecStart =
             "${pkgs.containerd}/bin/containerd"
-            + " --config ${containerdConfig}"
+            + " --config ${containerdConfig}/config.toml"
             + " --address /run/aos-containerd/containerd.sock"
             + " --root /var/lib/aos-containerd"
             + " --state /run/aos-containerd";

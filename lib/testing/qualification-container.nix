@@ -32,6 +32,7 @@
     else "linux/amd64";
   containerdConfig = pkgs.writeTextFile {
     name = "qualification-containerd.toml";
+    destination = "/config.toml";
     text = ''
       version = 3
       [[plugins."io.containerd.transfer.v1.local".unpack_config]]
@@ -145,7 +146,7 @@ in
       mkdir -p "$runtime_root" "$runtime_state"
 
       ${pkgs.containerd}/bin/containerd \
-        --config ${containerdConfig} \
+        --config ${containerdConfig}/config.toml \
         --address "$runtime_socket" \
         --root "$runtime_root" \
         --state "$runtime_state" \
