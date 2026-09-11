@@ -75,7 +75,9 @@ in
         readline
       ]
       ++ (
-        if isDarwinCross
+        # Native bootstrap dependencies happen to expose these headers and
+        # libraries. Cross interpreters need the target variants explicitly.
+        if stdenv.isCross
         then [
           bzip2
           ncurses
