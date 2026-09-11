@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   gnumake,
   autoconf,
   automake,
@@ -13,12 +15,14 @@
   gmp,
   guile,
   libffi,
+  libatomic_ops,
   libunistring,
   libxcrypt,
   libxml2,
   zlib,
 }: let
   version = "5.18.16";
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   guile3Patch = fetchurl {
     urls = [
       "https://gitweb.gentoo.org/repo/gentoo.git/plain/sys-devel/autogen/files/autogen-5.18.16-guile-3.patch?id=43bcc61c56a5a7de0eaf806efec7d8c0e4c01ae7"
@@ -42,8 +46,12 @@ in
     # executable's DT_NEEDED set. Declare them here so the scrub phase retains
     # the corresponding RPATH entries instead of treating them as build-only
     # transitive references.
-    runtimeDeps = [gc gmp guile libffi libunistring libxcrypt libxml2 zlib];
-    propagatedDeps = [gc gmp guile libffi libunistring libxcrypt libxml2 zlib];
+    runtimeDeps =
+      [gc gmp guile libffi libunistring libxcrypt libxml2 zlib]
+      ++ lib.optionals isLinuxCross [libatomic_ops gnumake];
+    propagatedDeps =
+      [gc gmp guile libffi libunistring libxcrypt libxml2 zlib]
+      ++ lib.optionals isLinuxCross [libatomic_ops];
 
     # Output specifications end in the classic struct-hack member
     # `char os_sfx[1]`, with the allocation extended for the actual suffix.
@@ -71,24 +79,54 @@ in
           patch -p1 < ${./autogen-patches/0003-fix-definition-buffer-growth.patch}
           patch -p1 < ${./autogen-patches/0004-remove-unused-enum-counter.patch}
           sed -i 's|/usr/bin/file|${file}/bin/file|g' configure config/libtool.m4
-        '';
+          ${lib.optionalString isLinuxCross ''
+            # The error test already removes native abort notices. Normalize
+            # the execution wrapper's notice while retaining error assertions.
+            patch -p1 < ${./autogen-patches/0005-normalize-emulator-abort-notice.patch}
+
+            # Linux target programs run through the configured execution
+            # wrapper. Use the just-built generators for documentation and
+            # tests instead of searching PATH for a pre-existing AutoGen.
+            sed -i \
+              -e '/^  AGexe=/c\  AGexe=$ag_top_builddir/agen5/$AGnam' \
+              -e '/^  GDexe=/c\  GDexe=$ag_top_builddir/getdefs/$GDnam' \
+              -e '/^  CLexe=/c\  CLexe=$ag_top_builddir/columns/$CLnam' \
+              configure configure.ac
+
+            # make-gperf invokes this embedded path after installation, so it
+            # must identify the target make rather than the native build tool.
+            sed -i 's|mk=`set -- $(MAKE) ; command -v $$1`|mk=${gnumake}/bin/make|' \
+              agen5/Makefile.am agen5/Makefile.in
+          ''}'';
       }
       {
         name = "configure";
-        script = ''
-          export MAN_PAGE_DATE=1970-01-01
-          # Several installed helper programs link the in-tree libopts via
-          # libtool. Give those helpers a final-store RPATH in addition to the
-          # temporary build-tree path that libtool records.
-          export LDFLAGS="$LDFLAGS -Wl,-rpath,$out/lib"
-          ./configure $configureFlags \
-            --prefix="$out" \
-            --disable-dependency-tracking \
-            --with-libxml2=${libxml2} \
-            --with-libxml2-cflags=-I${libxml2}/include/libxml2 \
-            --enable-timeout=78 \
-            CFLAGS=-D_FILE_OFFSET_BITS=64
-        '';
+        script =
+          lib.optionalString isLinuxCross ''
+            # Upstream either aborts or disables these libc features when it
+            # cannot execute target programs during cross configuration.
+            export ag_cv_run_strcspn=yes
+            export ag_cv_run_uname_syscall=yes
+            export libopts_cv_with_libregex=yes
+            export libopts_cv_run_realpath=yes
+            export libopts_cv_run_strftime=yes
+            export libopts_cv_run_fopen_binary=yes
+            export libopts_cv_run_fopen_text=yes
+          ''
+          + ''
+            export MAN_PAGE_DATE=1970-01-01
+            # Several installed helper programs link the in-tree libopts via
+            # libtool. Give those helpers a final-store RPATH in addition to the
+            # temporary build-tree path that libtool records.
+            export LDFLAGS="$LDFLAGS -Wl,-rpath,$out/lib"
+            ./configure $configureFlags \
+              --prefix="$out" \
+              --disable-dependency-tracking \
+              --with-libxml2=${libxml2} \
+              --with-libxml2-cflags=-I${libxml2}/include/libxml2 \
+              --enable-timeout=78 \
+              CFLAGS=-D_FILE_OFFSET_BITS=64
+          '';
       }
       {
         name = "build";
