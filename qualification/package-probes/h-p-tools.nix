@@ -303,11 +303,11 @@ in {
     package = "nix";
     executable = "nix-instantiate";
     primaryInput = "A pure Nix arithmetic expression adding 19 and 23.";
-    primaryOperation = "Evaluate the expression through nix-instantiate.";
+    primaryOperation = "Evaluate the expression through nix-instantiate with its dummy store backend.";
     primaryExpected = "The evaluator prints the integer value 42.";
     primarySteps = [
       {
-        argv = ["--eval" "--expr" "19 + 23"];
+        argv = ["--store" "dummy://" "--eval" "--expr" "19 + 23"];
         exit_code = 0;
         stdout.exact = "42\n";
         stderr.exact = "";
@@ -318,7 +318,7 @@ in {
     badExpected = "The evaluator exits with its syntax-error status.";
     badSteps = [
       {
-        argv = ["--eval" "--expr" "let answer = ; in answer"];
+        argv = ["--store" "dummy://" "--eval" "--expr" "let answer = ; in answer"];
         exit_code = 1;
         observes_rejection = true;
       }
