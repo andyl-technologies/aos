@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   linux-pam,
+  libxcrypt,
   openpam,
   openssl,
   zlib,
@@ -37,7 +38,9 @@ in
       ++ (
         if stdenv.hostPlatform.isDarwin
         then [bash]
-        else []
+        # OpenSSH links crypt directly; PAM's dependency does not preserve
+        # that library's runtime path through the reference scrub phase.
+        else [libxcrypt]
       );
     propagatedDeps = [];
 
@@ -156,7 +159,7 @@ in
 
       rpath = testing.mkRPATHCheck {
         pkg = self;
-        bins = ["ssh"];
+        bins = ["ssh" "sshd" "/libexec/sshd-auth" "/libexec/sshd-session"];
       };
 
       config-validity = testing.mkVMTest {
