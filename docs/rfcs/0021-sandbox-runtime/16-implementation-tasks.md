@@ -7313,12 +7313,11 @@ effect. Once the second sample is reached, expiry or another clock failure
 leaves the operation `Ambiguous` for observation rather than converting it to
 `Aborted`.
 
-This is source-only retirement machinery, not production enablement. A live
-`DesiredState` supersession currently rejects the operation before expiry can
-retire it; that ordering must be resolved or proven impossible before Apply
-opens. Production still constructs
-`StorageApplyReadiness::WorkspaceBackendUnavailable`, so Apply remains
-unadvertised and no checkbox is closed by this increment.
+This is source-only retirement machinery, not production enablement. The
+previously open `DesiredState` supersession ordering gap is resolved by signed
+commit `468830250e7a4abd47b61ab241b9261cde8d4fc8`, recorded below. Production
+still constructs `StorageApplyReadiness::WorkspaceBackendUnavailable`, so Apply
+remains unadvertised and no checkbox is closed by this increment.
 
 Validation passed the broker suite (27/27). A full Storage baseline passed 266
 tests with three pre-existing VM tests ignored before the final workspace-remove
@@ -7330,6 +7329,72 @@ lints. An earlier prohibited `nix develop -c cargo check` attempt began five
 dependency realizations but was interrupted before Cargo started; it supplies
 no validation evidence. No AOS package or VM qualification result was produced
 for this increment.
+
+### Storage Prepared supersession retirement (source qualified)
+
+Signed commit `468830250e7a4abd47b61ab241b9261cde8d4fc8` closes the
+Prepared supersession ordering gap without changing the sole Storage v1 durable
+format or adding a compatibility ladder. Generic execution and
+workspace-remove now share one final authority decision before an equality-only
+rejection. For the exact current `Prepared` row, that decision reauthenticates
+the operation fence, pending effect, and current `DesiredState` head before
+using any of them as retirement authority.
+
+A distinct current head authorizes retirement only when it strictly dominates
+the historical fence in the reachable admission lineage. Both fences must bind
+the configured node and ownership authority and the same sandbox. A higher
+assignment epoch dominates after those configuration checks. Within one epoch,
+the incarnation must match; a higher desired generation dominates, while an
+equal desired generation requires the exact assignment and plan digests and a
+strictly higher lease generation. Stale, malformed, tampered,
+equal-but-different, incomparable, wrong-sandbox, wrong-node, and
+wrong-ownership heads fail closed without sampling time or mutating the
+journal.
+
+Strict authenticated supersession atomically publishes the existing `Aborted`
+tombstone and deletes only the exact operation's sole physical-catalog
+reservation. It performs no pin or ZFS dispatch. `Ambiguous`, `Committed`, and
+already-`Aborted` rows are terminal exclusions and cannot retire through this
+rule. Retained authority and preparation history continue to authenticate;
+exact aborted replay returns the same mutation identity, the released `N+1`
+catalog generation can be used by a distinct replacement, and an indeterminate
+retirement commit poisons cached authority until protected reopen replays the
+durable prefix.
+
+Production startup applies the same retirement sequence before workspace
+inventory and activation-plan validation. It authenticates authority first and
+acquires one trusted kernel clock sample lazily, caching it only if an
+exact-current `Prepared` row needs freshness classification; superseded-only and
+terminal rows do not sample time. Authenticated expiry retires the exact-current
+row. Fresh authority preserves it for recovery, and authenticated clock
+non-continuity, including an old boot identity or provenance mismatch, also
+preserves it as `Prepared` and leaves runtime readiness `RecoveryPending` for
+observation. Failure to acquire the trusted sample, or missing or tampered
+authority, remains a fatal startup recovery error without opening workspace
+inventory or changing the row or reservation. Startup retirement uncertainty
+returns `ReopenRequired`; the poisoned in-process authority cannot be used again
+before protected reopen.
+
+Validation passed the deterministic Storage library suite with 277 tests, zero
+failures, and three pre-existing systemd/VM tests ignored. Focused adversarial
+coverage includes generic and workspace-remove parity, higher-epoch and
+higher-lease dominance, stale and incomparable lineages, exact Fresh and
+Expired heads, clock discontinuity and acquisition failure, terminal
+exclusions, workspace-plan ordering, restart/reopen, and uncertain commit
+poisoning. Offline all-target Cargo check, all-target test compilation, no-deps
+Cargo doc, scoped rustfmt, and diff checks passed. Dependency-inclusive Clippy
+stopped on pre-existing generated `aos-proto` disallowed-`HashMap` diagnostics;
+the no-deps run reached Storage and reported only the existing dead-code,
+argument-count, type-complexity, collapsible-if, large-error, needless-borrow,
+and test-only unwrap findings.
+
+This remains source qualification, not Storage Apply readiness. Production
+continues to construct `StorageApplyReadiness::WorkspaceBackendUnavailable` and
+advertises no Apply method. Missing-initial workspace-pin repair, Mount
+production authority, platform and enforcing-SELinux qualification, hermetic
+Nix integration, and installed x86_64/AArch64 VM evidence remain open, along
+with the previously recorded Snapshot and Clone authority gaps. No task
+checkbox is added or closed by this increment.
 
 ### Network Prepared-to-Aborted retirement (source qualified)
 
