@@ -10,6 +10,7 @@
   swig,
   python3,
   linux-headers,
+  lib,
   stdenv,
 }: let
   version = "0.9.5";
@@ -46,17 +47,23 @@ in
       }
       {
         name = "configure";
-        script = ''
-          export ACLOCAL_PATH="${libtool}/share/aclocal:${pkg-config}/share/aclocal"
-          autoreconf -fiv
-          ./configure $configureFlags \
-            --prefix="$out" \
-            --with-python3 \
-            PYTHON=${python3}/bin/python3
-          sed -i \
-            's|/usr/include/linux/capability.h|${linux-headers}/include/linux/capability.h|g' \
-            bindings/python3/Makefile
-        '';
+        script =
+          lib.optionalString stdenv.isCross ''
+            # cap-ng uses kernel syscall numbers to find the current thread.
+            # Build-dependency splicing otherwise supplies native headers.
+            export C_INCLUDE_PATH="${linux-headers}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+          ''
+          + ''
+            export ACLOCAL_PATH="${libtool}/share/aclocal:${pkg-config}/share/aclocal"
+            autoreconf -fiv
+            ./configure $configureFlags \
+              --prefix="$out" \
+              --with-python3 \
+              PYTHON=${python3}/bin/python3
+            sed -i \
+              's|/usr/include/linux/capability.h|${linux-headers}/include/linux/capability.h|g' \
+              bindings/python3/Makefile
+          '';
       }
       {
         name = "build";
