@@ -1596,7 +1596,9 @@
             if stdenv.hostPlatform.isDarwin
             then darwinGcc
             else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            then linuxHostedCc
+            # Preserve the public package identity so build dependencies
+            # resolve to native GCC rather than the target-hosted wrapper.
+            then linuxHostedCc // {pname = "gcc";}
             else stdenv.gcc
           ))
         // {version = "16.2.0";};
