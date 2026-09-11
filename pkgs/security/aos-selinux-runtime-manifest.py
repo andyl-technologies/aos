@@ -17,7 +17,7 @@ STORE_PATH = re.compile(
 )
 SONAME = re.compile(r"lib[A-Za-z0-9+_.-]+\.so(?:\.[0-9]+)*")
 MAGIC = b"AOS_AUTHENTICATED_RUNTIME_CLOSURE"
-VERSION = b"2"
+VERSION = b"1"
 
 
 def fail(message: str) -> "None":
@@ -612,15 +612,15 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_manifest_v2(data: bytes, expected_policy_digest: str) -> None:
-    """Rejects malformed, downgraded, or mixed-version manifest encodings."""
+def validate_manifest_v1(data: bytes, expected_policy_digest: str) -> None:
+    """Rejects malformed, wrong-version, or mixed-layout manifest encodings."""
 
     fields = data.split(b"\0")
     if not fields or fields[-1] != b"":
         fail("runtime-closure manifest is not NUL terminated")
     fields.pop()
     if len(fields) < 8 or fields[0] != MAGIC or fields[1] != VERSION:
-        fail("runtime-closure manifest is not the exact v2 encoding")
+        fail("runtime-closure manifest is not the exact v1 encoding")
     if fields[5] != expected_policy_digest.encode("ascii"):
         fail("runtime-closure manifest has the wrong immutable policy identity")
     try:
@@ -663,7 +663,7 @@ def write_manifest(
     payload = b"\0".join(fields) + b"\0"
     digest = hashlib.sha256(payload).hexdigest()
     encoded = payload + digest.encode("ascii") + b"\0"
-    validate_manifest_v2(encoded, policy_digest)
+    validate_manifest_v1(encoded, policy_digest)
     output.write_bytes(encoded)
     return digest
 

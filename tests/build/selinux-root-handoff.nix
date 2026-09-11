@@ -100,7 +100,7 @@ in
           fields = pathlib.Path(sys.argv[1]).read_bytes().split(b"\0")
           assert fields[-1] == b"", fields[-1]
           assert fields[0] == b"AOS_AUTHENTICATED_RUNTIME_CLOSURE", fields[0]
-          assert fields[1] == b"2", fields[1]
+          assert fields[1] == b"1", fields[1]
           assert fields[4].endswith(b"/bin/aos-selinux-runtime-roots"), fields[4]
           policy = pathlib.Path(
               "${stage0.expectedPolicy}"

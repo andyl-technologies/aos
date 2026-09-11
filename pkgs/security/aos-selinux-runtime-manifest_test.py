@@ -415,7 +415,7 @@ class ManifestEncodingTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(SystemExit):
                 manifest.physical_lower_path(invalid)
 
-    def test_v2_validator_rejects_recomputed_v1_and_mixed_layouts(self) -> None:
+    def test_v1_validator_rejects_v2_mixed_layout_and_tamper(self) -> None:
         policy_digest = "b" * 64
         roots = [b"0123456789abcdfghijklmnpqrsvwxyz-root"]
 
@@ -433,17 +433,24 @@ class ManifestEncodingTests(unittest.TestCase):
             b"1",
             *roots,
         ]
-        manifest.validate_manifest_v2(encode(valid_fields), policy_digest)
+        manifest.validate_manifest_v1(encode(valid_fields), policy_digest)
 
-        downgraded = valid_fields.copy()
-        downgraded[1] = b"1"
+        future_v2 = valid_fields.copy()
+        future_v2[1] = b"2"
         mixed = valid_fields.copy()
         del mixed[5]
-        for fields in (downgraded, mixed):
-            with self.subTest(fields=fields), self.assertRaises(SystemExit):
-                manifest.validate_manifest_v2(encode(fields), policy_digest)
+        tampered = bytearray(encode(valid_fields))
+        tampered[-2] ^= 1
+        invalid_encodings = {
+            "future-v2": encode(future_v2),
+            "mixed-layout": encode(mixed),
+            "tampered-digest": bytes(tampered),
+        }
+        for case, encoded in invalid_encodings.items():
+            with self.subTest(case=case), self.assertRaises(SystemExit):
+                manifest.validate_manifest_v1(encoded, policy_digest)
 
-    def test_stage0_requires_v2_and_policy_identity_before_root_count(self) -> None:
+    def test_stage0_requires_v1_and_policy_identity_before_root_count(self) -> None:
         source = module_path.with_name("aos-selinux-stage0.c").read_text(
             encoding="utf-8"
         )
@@ -451,7 +458,7 @@ class ManifestEncodingTests(unittest.TestCase):
         pin_end = source.index("\n}\n", pin_start)
         pin = source[pin_start:pin_end]
 
-        self.assertIn('#define AOS_MANIFEST_VERSION "2"', source)
+        self.assertIn('#define AOS_MANIFEST_VERSION "1"', source)
         version = pin.index("AOS_MANIFEST_VERSION")
         policy = pin.index("AOS_EXPECTED_POLICY_SHA256")
         count = pin.index("count = strtoul")
