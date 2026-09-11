@@ -4,7 +4,12 @@
 ##! The same vocabulary is decoded by the native ability validator. These
 ##! helpers also validate concrete Nix values early, before serialization.
 let
-  fail = message: throw "ability schema: ${message}";
+  diagnostics = import ./diagnostic.nix;
+
+  fail = message:
+    diagnostics.throw "value-type-mismatch" "ability schema: ${message}";
+  failLimit = message:
+    diagnostics.throw "limit-exceeded" "ability schema: ${message}";
 
   maxSafeInteger = 9007199254740991;
   maxStringLength = 1048576;
@@ -132,7 +137,7 @@ let
     exact = allowed: requireAttrs context (["kind"] ++ allowed) schema;
   in
     if depth > maxSchemaDepth
-    then fail "${context} exceeds ${builtins.toString maxSchemaDepth} structural levels"
+    then failLimit "${context} exceeds ${builtins.toString maxSchemaDepth} structural levels"
     else if schema.kind == "boolean"
     then exact []
     else if schema.kind == "integer"
@@ -169,7 +174,7 @@ let
       if values == []
       then fail "${context}.values must contain at least one value"
       else if builtins.length values > maxCollectionItems
-      then fail "${context}.values exceeds ${builtins.toString maxCollectionItems} entries"
+      then failLimit "${context}.values exceeds ${builtins.toString maxCollectionItems} entries"
       else if values != checked.values
       then fail "${context}.values must be sorted and unique"
       else checked
@@ -202,7 +207,7 @@ let
       unknownOptional = builtins.filter (name: !(builtins.hasAttr name fields)) optionalFields;
     in
       if builtins.length (builtins.attrNames fields) + builtins.length optionalFields > maxCollectionItems
-      then fail "${context} exceeds ${builtins.toString maxCollectionItems} field entries"
+      then failLimit "${context} exceeds ${builtins.toString maxCollectionItems} field entries"
       else if unknownOptional != []
       then fail "${context} names unknown optional fields: ${builtins.concatStringsSep ", " unknownOptional}"
       else
@@ -238,7 +243,7 @@ let
       if variantNames == []
       then fail "${context}.variants must contain at least one variant"
       else if builtins.length variantNames > maxCollectionItems
-      then fail "${context}.variants exceeds ${builtins.toString maxCollectionItems} entries"
+      then failLimit "${context}.variants exceeds ${builtins.toString maxCollectionItems} entries"
       else checked // {inherit tag variants;}
     else if schema.kind == "optional"
     then let

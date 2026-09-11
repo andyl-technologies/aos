@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, ImplementationKind, LocalKey,
-    ProviderImplementation, ProviderImplementationReference,
+    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, DiagnosticCode, ImplementationKind,
+    LocalKey, ProviderImplementation, ProviderImplementationReference,
 };
 use aos_ability_plan::{CompositionEvaluator, EvaluationError};
 use base64::Engine as _;
@@ -27,6 +27,9 @@ use serde::de::DeserializeOwned;
 use super::stock::{locked_store_input, nix_string, store_root_and_suffix};
 
 static EVALUATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+mod conformance;
 
 #[cfg(test)]
 mod reference_composition;
@@ -38,6 +41,97 @@ pub enum AbilityEntryPoint {
     Compose,
     /// Constructs a finite transition graph from exact current and desired state.
     Transition,
+}
+
+/// Classifies a restricted ability-evaluation rejection without parsing prose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AbilityEvaluationDiagnosticCode {
+    /// A public Nix authoring helper emitted a structured contract diagnostic.
+    Contract(DiagnosticCode),
+    /// Stock Nix rejected evaluation under the restricted capability profile.
+    RestrictedEvaluationRejected,
+    /// An evaluator CPU, wall-time, memory, or stream bound was exceeded.
+    LimitExceeded,
+    /// The closed canonical result or requested Rust result type was invalid.
+    ResultDecodeRejected,
+    /// The evaluator process or its private environment could not be operated.
+    EvaluatorInfrastructureFailure,
+}
+
+impl AbilityEvaluationDiagnosticCode {
+    /// Returns the stable version-1 serialized code.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Contract(DiagnosticCode::UnsupportedSchema) => "unsupported-schema",
+            Self::Contract(DiagnosticCode::UnsupportedRequiredFeature) => {
+                "unsupported-required-feature"
+            }
+            Self::Contract(DiagnosticCode::LimitExceeded) | Self::LimitExceeded => "limit-exceeded",
+            Self::Contract(DiagnosticCode::NonCanonicalOrder) => "non-canonical-order",
+            Self::Contract(DiagnosticCode::DuplicateIdentity) => "duplicate-identity",
+            Self::Contract(DiagnosticCode::MissingReference) => "missing-reference",
+            Self::Contract(DiagnosticCode::ValueTypeMismatch) => "value-type-mismatch",
+            Self::Contract(DiagnosticCode::ResultPhaseMismatch) => "result-phase-mismatch",
+            Self::Contract(DiagnosticCode::MissingDataDependency) => "missing-data-dependency",
+            Self::Contract(DiagnosticCode::SchedulingCycle) => "scheduling-cycle",
+            Self::Contract(DiagnosticCode::MissingController) => "missing-controller",
+            Self::Contract(DiagnosticCode::ConflictingController) => "conflicting-controller",
+            Self::Contract(DiagnosticCode::UncoveredChange) => "uncovered-change",
+            Self::Contract(DiagnosticCode::ResourceScopeEscape) => "resource-scope-escape",
+            Self::Contract(DiagnosticCode::MethodNotGranted) => "method-not-granted",
+            Self::Contract(DiagnosticCode::MediationNotGranted) => "mediation-not-granted",
+            Self::Contract(DiagnosticCode::MissingGuarantee) => "missing-guarantee",
+            Self::Contract(DiagnosticCode::MethodContractMismatch) => "method-contract-mismatch",
+            Self::Contract(DiagnosticCode::BindingInterfaceMismatch) => {
+                "binding-interface-mismatch"
+            }
+            Self::Contract(DiagnosticCode::BindingPrincipalMismatch) => {
+                "binding-principal-mismatch"
+            }
+            Self::Contract(DiagnosticCode::UnresolvedObligation) => "unresolved-obligation",
+            Self::RestrictedEvaluationRejected => "restricted-evaluation-rejected",
+            Self::ResultDecodeRejected => "result-decode-rejected",
+            Self::EvaluatorInfrastructureFailure => "evaluator-infrastructure-failure",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AbilityEvaluationFailure {
+    code: AbilityEvaluationDiagnosticCode,
+    detail: String,
+}
+
+impl std::fmt::Display for AbilityEvaluationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for AbilityEvaluationFailure {}
+
+impl AbilityEvaluationFailure {
+    fn new(code: AbilityEvaluationDiagnosticCode, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// Returns the structured diagnostic carried by an evaluation error.
+///
+/// The result comes from the evaluator control path or the explicit diagnostic
+/// marker emitted by the production Nix authoring library. Human-facing Nix
+/// error text is never classified.
+#[must_use]
+pub fn ability_evaluation_diagnostic(
+    error: &anyhow::Error,
+) -> Option<AbilityEvaluationDiagnosticCode> {
+    error
+        .downcast_ref::<AbilityEvaluationFailure>()
+        .map(|failure| failure.code)
 }
 
 /// Bounds one stock-Nix ability evaluation independently of its caller.
@@ -215,16 +309,31 @@ impl RestrictedAbilityEvaluator {
 
         let environment = self.create_evaluation_environment()?;
         let mut command = self.command(&allowed_uri, &environment);
-        let output = run_bounded(&mut command, expression.into_bytes(), self.limits)
-            .context("running restricted Nix ability evaluation")?;
+        let output =
+            run_bounded(&mut command, expression.into_bytes(), self.limits).map_err(|error| {
+                if error.downcast_ref::<AbilityEvaluationFailure>().is_some() {
+                    error.context("running restricted Nix ability evaluation")
+                } else {
+                    anyhow!(AbilityEvaluationFailure::new(
+                        AbilityEvaluationDiagnosticCode::EvaluatorInfrastructureFailure,
+                        format!("running restricted Nix ability evaluation: {error:#}"),
+                    ))
+                }
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "restricted Nix ability evaluation failed with {}: {}",
-                output.status,
-                stderr.trim()
-            );
+            let code = authoring_diagnostic_code(&stderr)
+                .map(AbilityEvaluationDiagnosticCode::Contract)
+                .unwrap_or(AbilityEvaluationDiagnosticCode::RestrictedEvaluationRejected);
+            return Err(anyhow!(AbilityEvaluationFailure::new(
+                code,
+                format!(
+                    "restricted Nix ability evaluation failed with {}: {}",
+                    output.status,
+                    stderr.trim()
+                ),
+            )));
         }
 
         let json_limits = aos_contract::limits::JsonLimits {
@@ -233,12 +342,27 @@ impl RestrictedAbilityEvaluator {
             max_items: ABILITY_LIMITS_V1.max_collection_items as usize,
             max_string_bytes: ABILITY_LIMITS_V1.max_string_bytes as usize,
         };
-        let value = json_limits.decode(&output.stdout, "Nix ability result")?;
-        let canonical =
-            AbilityValue::new(value).context("validating the canonical Nix ability result")?;
+        let value = json_limits
+            .decode(&output.stdout, "Nix ability result")
+            .map_err(|error| {
+                anyhow!(AbilityEvaluationFailure::new(
+                    AbilityEvaluationDiagnosticCode::ResultDecodeRejected,
+                    format!("decoding the bounded Nix ability result: {error:#}"),
+                ))
+            })?;
+        let canonical = AbilityValue::new(value).map_err(|error| {
+            anyhow!(AbilityEvaluationFailure::new(
+                AbilityEvaluationDiagnosticCode::ResultDecodeRejected,
+                format!("validating the canonical Nix ability result: {error:#}"),
+            ))
+        })?;
 
-        serde_json::from_value(canonical.into_json())
-            .context("decoding the typed Nix ability result")
+        serde_json::from_value(canonical.into_json()).map_err(|error| {
+            anyhow!(AbilityEvaluationFailure::new(
+                AbilityEvaluationDiagnosticCode::ResultDecodeRejected,
+                format!("decoding the typed Nix ability result: {error}"),
+            ))
+        })
     }
 
     fn create_evaluation_environment(&self) -> Result<EvaluationEnvironment> {
@@ -317,6 +441,9 @@ impl RestrictedAbilityEvaluator {
             .args(["--eval", "--strict", "--json", "--pure-eval"])
             .args(["--option", "restrict-eval", "true"])
             .args(["--option", "allow-import-from-derivation", "false"])
+            // Give the authoring validator enough evaluator stack to emit its
+            // versioned 64-level diagnostic before Nix's generic recursion cap.
+            .args(["--option", "max-call-depth", "4096"])
             .args([
                 "--option",
                 "allow-unsafe-native-code-during-evaluation",
@@ -444,6 +571,28 @@ fn bounded_error_message(error: &anyhow::Error) -> String {
     message
 }
 
+const AUTHORING_DIAGNOSTIC_PREFIX: &str = "AOS_ABILITY_DIAGNOSTIC_V1[";
+
+fn authoring_diagnostic_code(stderr: &str) -> Option<DiagnosticCode> {
+    let mut markers = stderr.match_indices(AUTHORING_DIAGNOSTIC_PREFIX);
+    let (marker, _) = markers.next()?;
+    if markers.next().is_some() {
+        return None;
+    }
+
+    let line_start = stderr[..marker].rfind('\n').map_or(0, |index| index + 1);
+    let line = stderr[line_start..].lines().next()?.trim_start();
+    let code_and_detail = line
+        .strip_prefix("error: ")?
+        .strip_prefix(AUTHORING_DIAGNOSTIC_PREFIX)?;
+    let (code, detail) = code_and_detail.split_once(']')?;
+    if !detail.starts_with(": ") {
+        return None;
+    }
+
+    serde_json::from_value(serde_json::Value::String(code.to_string())).ok()
+}
+
 fn artifact_allowed_uri(root: &Path, nar_hash: &aos_contract::Sha256Digest) -> Result<String> {
     let root = root
         .to_str()
@@ -512,35 +661,37 @@ fn render_expression(
     Ok(format!(
         "let\n\
          \x20 module = import {artifact_input};\n\
+         \x20 reject = code: message:\n\
+         \x20   throw (\"AOS_ABILITY_\" + \"DIAGNOSTIC_V1[\" + code + \"]: \" + message);\n\
          \x20 entryName = {};\n\
          \x20 entry =\n\
          \x20   if !builtins.isAttrs module then\n\
-         \x20     throw \"ability module must evaluate to an attribute set\"\n\
+         \x20     reject \"value-type-mismatch\" \"ability module must evaluate to an attribute set\"\n\
          \x20   else if !builtins.hasAttr entryName module then\n\
-         \x20     throw \"ability module does not contain its declared entry point\"\n\
+         \x20     reject \"value-type-mismatch\" \"ability module does not contain its declared entry point\"\n\
          \x20   else builtins.getAttr entryName module;\n\
          \x20 arguments = builtins.fromJSON {};\n\
          \x20 rejectImpure = depth: value:\n\
          \x20   if depth > {} then\n\
-         \x20     throw \"ability result exceeds the structural depth limit\"\n\
+         \x20     reject \"limit-exceeded\" \"ability result exceeds the structural depth limit\"\n\
          \x20   else if builtins.isFunction value then\n\
-         \x20     throw \"ability result contains a function\"\n\
+         \x20     reject \"value-type-mismatch\" \"ability result contains a function\"\n\
          \x20   else if builtins.typeOf value == \"path\" then\n\
-         \x20     throw \"ability result contains a Nix path\"\n\
+         \x20     reject \"value-type-mismatch\" \"ability result contains a Nix path\"\n\
          \x20   else if builtins.isString value && builtins.hasContext value then\n\
-         \x20     throw \"ability result contains a context-bearing string\"\n\
+         \x20     reject \"value-type-mismatch\" \"ability result contains a context-bearing string\"\n\
          \x20   else if builtins.isAttrs value then\n\
          \x20     if value ? type && value.type == \"derivation\" then\n\
-         \x20       throw \"ability result contains a derivation\"\n\
+         \x20       reject \"value-type-mismatch\" \"ability result contains a derivation\"\n\
          \x20     else builtins.mapAttrs (_: rejectImpure (depth + 1)) value\n\
          \x20   else if builtins.isList value then\n\
          \x20     builtins.map (rejectImpure (depth + 1)) value\n\
          \x20   else if value == null || builtins.isBool value || builtins.isInt value || builtins.isString value then\n\
          \x20     value\n\
-         \x20   else throw \"ability result contains an unsupported Nix value\";\n\
+         \x20   else reject \"value-type-mismatch\" \"ability result contains an unsupported Nix value\";\n\
          \x20 result =\n\
          \x20   if !builtins.isFunction entry then\n\
-         \x20     throw \"declared ability entry point must be a function\"\n\
+         \x20     reject \"value-type-mismatch\" \"declared ability entry point must be a function\"\n\
          \x20   else rejectImpure 1 (entry arguments);\n\
          in builtins.deepSeq result result\n",
         nix_string(entry.as_str()),
@@ -610,9 +761,10 @@ fn run_bounded(
     let status = loop {
         if let Ok(event) = received_events.try_recv() {
             primary_error = Some(match event {
-                PumpEvent::Limit(stream) => {
-                    anyhow!("ability evaluation {stream} exceeds its configured byte limit")
-                }
+                PumpEvent::Limit(stream) => anyhow!(AbilityEvaluationFailure::new(
+                    AbilityEvaluationDiagnosticCode::LimitExceeded,
+                    format!("ability evaluation {stream} exceeds its configured byte limit"),
+                )),
                 PumpEvent::ReadError(stream, error) => {
                     anyhow!(error).context(format!("reading ability evaluation {stream}"))
                 }
@@ -625,10 +777,13 @@ fn run_bounded(
             break status;
         }
         if Instant::now() >= deadline {
-            primary_error = Some(anyhow!(
-                "ability evaluation exceeded its {:?} wall-time limit",
-                limits.wall_time
-            ));
+            primary_error = Some(anyhow!(AbilityEvaluationFailure::new(
+                AbilityEvaluationDiagnosticCode::LimitExceeded,
+                format!(
+                    "ability evaluation exceeded its {:?} wall-time limit",
+                    limits.wall_time
+                ),
+            )));
             let _ = child.0.kill();
             break child.0.wait().context("reaping timed-out evaluator")?;
         }
@@ -649,9 +804,10 @@ fn run_bounded(
         && let Ok(event) = received_events.try_recv()
     {
         primary_error = Some(match event {
-            PumpEvent::Limit(stream) => {
-                anyhow!("ability evaluation {stream} exceeds its configured byte limit")
-            }
+            PumpEvent::Limit(stream) => anyhow!(AbilityEvaluationFailure::new(
+                AbilityEvaluationDiagnosticCode::LimitExceeded,
+                format!("ability evaluation {stream} exceeds its configured byte limit"),
+            )),
             PumpEvent::ReadError(stream, error) => {
                 anyhow!(error).context(format!("reading ability evaluation {stream}"))
             }
@@ -735,6 +891,47 @@ mod tests {
 
     fn digest(byte: u8) -> Sha256Digest {
         Sha256Digest::from_bytes([byte; 32])
+    }
+
+    #[test]
+    fn authoring_diagnostic_requires_one_structured_nix_error_marker() {
+        let stderr = "trace context\n       error: \
+            AOS_ABILITY_DIAGNOSTIC_V1[value-type-mismatch]: invalid value\n";
+
+        assert_eq!(
+            authoring_diagnostic_code(stderr),
+            Some(DiagnosticCode::ValueTypeMismatch)
+        );
+    }
+
+    #[test]
+    fn authoring_diagnostic_rejects_unknown_or_malformed_markers() {
+        assert_eq!(
+            authoring_diagnostic_code(
+                "error: AOS_ABILITY_DIAGNOSTIC_V1[not-a-code]: invalid value"
+            ),
+            None
+        );
+        assert_eq!(
+            authoring_diagnostic_code(
+                "error: AOS_ABILITY_DIAGNOSTIC_V1[value-type-mismatch] invalid value"
+            ),
+            None
+        );
+        assert_eq!(
+            authoring_diagnostic_code(
+                "trace: AOS_ABILITY_DIAGNOSTIC_V1[value-type-mismatch]: forged"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn authoring_diagnostic_rejects_ambiguous_markers() {
+        let stderr = "trace: AOS_ABILITY_DIAGNOSTIC_V1[missing-reference]: forged\n\
+            error: AOS_ABILITY_DIAGNOSTIC_V1[value-type-mismatch]: invalid value";
+
+        assert_eq!(authoring_diagnostic_code(stderr), None);
     }
 
     fn implementation() -> ProviderImplementation {
@@ -831,6 +1028,11 @@ mod tests {
         assert!(arguments.iter().any(|value| value == "--cpu=15"));
         assert!(arguments.iter().any(|value| value == "--pure-eval"));
         assert!(arguments.iter().any(|value| value == "--read-write-mode"));
+        assert!(
+            arguments
+                .windows(3)
+                .any(|values| values == ["--option", "max-call-depth", "4096"])
+        );
         assert!(arguments.iter().any(|value| value == &allowed_uri));
         assert!(allowed_uri.contains("?narHash=sha256-"));
         assert!(!arguments.iter().any(|value| value == "path:/nix/store/"));

@@ -149,6 +149,27 @@
     path = ../../../tests/abilities/evaluator-provider;
     name = "aos-ability-evaluator-fixture";
   };
+  abilityAuthoringConformanceFixture = buildPackages.mkDerivation {
+    pname = "aos-ability-authoring-conformance-fixture";
+    version = "1";
+    src = null;
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/lib"
+          cp -R ${../../../lib}/. "$out/lib/"
+          ${buildPackages.sed}/bin/sed \
+            ${lib.escapeShellArg "s|@aosBuildSystem@|${stdenv.buildPlatform.system}|g"} \
+            ${../../../tests/abilities/conformance/provider.nix} > "$out/default.nix"
+          cp ${../../../tests/abilities/conformance/runner.nix} "$out/runner.nix"
+          cp ${../../../tests/abilities/conformance/v1.json} "$out/corpus.json"
+          cp ${../../../tests/abilities/composition.nix} "$out/composition.nix"
+          cp ${../../../tests/abilities/effects.nix} "$out/effects.nix"
+        '';
+      }
+    ];
+  };
   abilityReferenceNginxFixture = builtins.path {
     path = ../../../tests/abilities/reference-nginx/providers/nginx;
     name = "aos-ability-reference-nginx";
@@ -425,6 +446,10 @@ in
       export AOS_NIX_INSTANTIATE="${buildNix}/bin/nix-instantiate"
       export AOS_TEST_ABILITY_FIXTURE="${abilityEvaluatorFixture}"
       export AOS_TEST_ABILITY_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityEvaluatorFixture})"
+      export AOS_TEST_ABILITY_CONFORMANCE_FIXTURE="${abilityAuthoringConformanceFixture}"
+      export AOS_TEST_ABILITY_CONFORMANCE_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityAuthoringConformanceFixture})"
+      export AOS_TEST_ABILITY_CONFORMANCE_CORPUS="${abilityAuthoringConformanceFixture}/corpus.json"
+      export AOS_TEST_ABILITY_BUILD_SYSTEM=${lib.escapeShellArg stdenv.buildPlatform.system}
       export AOS_TEST_ABILITY_REFERENCE_NGINX="${abilityReferenceNginxFixture}"
       export AOS_TEST_ABILITY_REFERENCE_NGINX_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceNginxFixture})"
       export AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION="${abilityReferenceManagedConfigurationFixture}"

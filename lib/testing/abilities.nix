@@ -311,6 +311,9 @@
     };
   proseBefore = proseVariant "Original package guidance.";
   proseAfter = proseVariant "Revised package guidance with no contract change.";
+  authoringConformance = import ./ability-authoring-conformance.nix {
+    inherit pkgs lib;
+  };
 in
   assert reservedAbilityOutputRejected "abilities";
   assert reservedAbilityOutputRejected "abilityPackage";
@@ -641,4 +644,5 @@ in
           '';
         }
       ];
+      buildDeps = [authoringConformance];
     }

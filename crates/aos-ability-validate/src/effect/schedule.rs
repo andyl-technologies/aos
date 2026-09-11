@@ -524,7 +524,10 @@ pub(super) fn scheduling_adjacency(
         .map(|node| (node, BTreeSet::new()))
         .collect();
     for edge in &document.edges {
-        if edge.kind.is_scheduling() {
+        if edge.kind.is_scheduling()
+            && adjacency.contains_key(&edge.from)
+            && adjacency.contains_key(&edge.to)
+        {
             adjacency
                 .entry(edge.from.clone())
                 .or_default()

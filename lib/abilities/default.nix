@@ -9,8 +9,19 @@
 }: let
   schemas = import ./schema.nix;
   effects = import ./effects;
+  diagnostics = import ./diagnostic.nix;
 
-  fail = message: throw "abilities: ${message}";
+  fail = message:
+    diagnostics.throw "value-type-mismatch" "abilities: ${message}";
+  normalizeOperationFamily = import ./_operation-family.nix {inherit fail;};
+  failLimit = message:
+    diagnostics.throw "limit-exceeded" "abilities: ${message}";
+  failMissingReference = message:
+    diagnostics.throw "missing-reference" "abilities: ${message}";
+  failResultPhase = message:
+    diagnostics.throw "result-phase-mismatch" "abilities: ${message}";
+  failMethodContract = message:
+    diagnostics.throw "method-contract-mismatch" "abilities: ${message}";
 
   requireAttrs = context: allowed: value: let
     unexpected =
@@ -144,7 +155,7 @@
 
   canonicalValueStats = context: depth: value:
     if depth > 64
-    then fail "${context} exceeds 64 structural levels"
+    then failLimit "${context} exceeds 64 structural levels"
     else if value == null || builtins.isBool value
     then {
       inherit value;
@@ -193,7 +204,7 @@
         inherit value;
         inherit (stats) items bytes;
       }
-      else fail "${context} exceeds the collection item limit"
+      else failLimit "${context} exceeds the collection item limit"
     else if builtins.isAttrs value
     then let
       names = builtins.attrNames value;
@@ -229,7 +240,7 @@
       if !validNames
       then fail "${context} contains a non-canonical object member name"
       else if stats.items > maxCollectionItems
-      then fail "${context} exceeds the collection item limit"
+      then failLimit "${context} exceeds the collection item limit"
       else {
         inherit value;
         inherit (stats) items bytes;
@@ -274,9 +285,9 @@
     normalized = {outputs = builtins.mapAttrs (_: child: child.value) values;};
   in
     if stats.items > maxCollectionItems
-    then fail "requirement '${alias}' fallback exceeds the collection item limit"
+    then failLimit "requirement '${alias}' fallback exceeds the collection item limit"
     else if stats.bytes > maxDocumentBytes
-    then fail "requirement '${alias}' fallback exceeds the encoded byte limit"
+    then failLimit "requirement '${alias}' fallback exceeds the encoded byte limit"
     else normalized;
 
   normalizeEnvironmentId = value: let
@@ -355,7 +366,10 @@
       then checked.scope
       else fail "aggregation scope must be 'provider-instance'";
     key = requireLocalKey "aggregation key" checked.key;
-    reject_slot_collisions = checked.rejectSlotCollisions;
+    reject_slot_collisions =
+      if builtins.isBool checked.rejectSlotCollisions
+      then checked.rejectSlotCollisions
+      else fail "aggregation rejectSlotCollisions must be a Boolean";
     merge_contract =
       if (checked.mergeContract or null) == null
       then null
@@ -367,7 +381,18 @@
     checked = requireAttrs context ["schema" "phase" "visibility" "lifetime"] value;
   in {
     schema = schemas.validateSchema "${context} schema" checked.schema;
-    inherit (checked) phase visibility lifetime;
+    phase =
+      requireChoice
+      "${context} phase"
+      ["evaluation" "artifact" "planning" "admission" "runtime" "observation"]
+      checked.phase;
+    visibility =
+      requireChoice "${context} visibility" ["public" "protected" "private"] checked.visibility;
+    lifetime =
+      requireChoice
+      "${context} lifetime"
+      ["attempt" "transaction" "instance" "persistent"]
+      checked.lifetime;
   };
 
   normalizeOutcome = context: value: let
@@ -375,8 +400,15 @@
   in {
     completion_evidence = schemas.validateSchema "${context} completionEvidence" checked.completionEvidence;
     observation_evidence = schemas.validateSchema "${context} observationEvidence" checked.observationEvidence;
-    supports_rejected_before_effect = checked.supportsRejectedBeforeEffect;
-    inherit (checked) indeterminate;
+    supports_rejected_before_effect =
+      if builtins.isBool checked.supportsRejectedBeforeEffect
+      then checked.supportsRejectedBeforeEffect
+      else fail "${context} supportsRejectedBeforeEffect must be a Boolean";
+    indeterminate =
+      requireChoice
+      "${context} indeterminate semantics"
+      ["reconcile" "intervention-required"]
+      checked.indeterminate;
   };
 
   normalizeLifecycle = value: let
@@ -388,10 +420,14 @@
         "persistentDeleteMethod"
       ]
       value;
+    requireBoolean = field: candidate:
+      if builtins.isBool candidate
+      then candidate
+      else fail "lifecycle ${field} must be a Boolean";
   in {
-    stable_resource_identity = checked.stableResourceIdentity;
-    releases_ephemeral_on_disable = checked.releasesEphemeralOnDisable;
-    retains_persistent_by_default = checked.retainsPersistentByDefault;
+    stable_resource_identity = requireBoolean "stableResourceIdentity" checked.stableResourceIdentity;
+    releases_ephemeral_on_disable = requireBoolean "releasesEphemeralOnDisable" checked.releasesEphemeralOnDisable;
+    retains_persistent_by_default = requireBoolean "retainsPersistentByDefault" checked.retainsPersistentByDefault;
     persistent_delete_method =
       if (checked.persistentDeleteMethod or null) == null
       then null
@@ -411,7 +447,7 @@
       ]
       value;
   in {
-    operation_family = checked.operationFamily;
+    operation_family = normalizeOperationFamily checked.operationFamily;
     parameters = schemas.validateSchema "method '${name}' parameters" checked.parameters;
     target_resource = requireQualifiedName "method '${name}' targetResource" checked.targetResource;
     outputs =
@@ -423,6 +459,13 @@
     guarantees = canonicalGuarantees "method '${name}' guarantees" (checked.guarantees or []);
     outcome = normalizeOutcome "method '${name}' outcome" checked.outcome;
   };
+
+  normalizeOwnedMethod = interface: name: value: let
+    method = normalizeMethod name value;
+  in
+    if method.target_resource == interface
+    then method
+    else failMethodContract "method '${name}' targetResource must equal its owning interface";
 
   configurationSchemaIsLiteral = schema:
     if
@@ -509,7 +552,7 @@
           name: normalizeOutput "interface output '${requireLocalKey "output name" name}'"
         )
         checked.outputs;
-      methods = builtins.mapAttrs normalizeMethod (checked.methods or {});
+      methods = builtins.mapAttrs (normalizeOwnedMethod checked.interface) (checked.methods or {});
       lifecycle = normalizeLifecycle checked.lifecycle;
       guarantees = canonicalGuarantees "export guarantees" (checked.guarantees or []);
       aggregation = normalizeAggregation checked.aggregation;
@@ -687,7 +730,7 @@
 
   containsRequestOutput = depth: value:
     if depth > 64
-    then fail "composition value exceeds 64 structural levels"
+    then failLimit "composition value exceeds 64 structural levels"
     else if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
     then true
     else if builtins.isAttrs value && !((value.type or null) == "derivation")
@@ -998,7 +1041,7 @@
         child =
           if builtins.length matches == 1
           then builtins.head matches
-          else fail "resultOf names unknown child request '${value.request}' in '${sourceName}'";
+          else failMissingReference "resultOf names unknown child request '${value.request}' in '${sourceName}'";
         targetName = child.through.provider_key;
         referenceName = "${sourceName}.${value.request}.${value.output}";
       in
@@ -1010,15 +1053,15 @@
           targetExport = (validateProvider targetName).export;
         in
           if !(builtins.hasAttr value.output targetExport.outputs)
-          then fail "resultOf references absent output '${targetName}.${value.output}'"
+          then failMissingReference "resultOf references absent output '${targetName}.${value.output}'"
           else if !(builtins.hasAttr value.output nodes.${targetName}.outputs)
-          then fail "provider '${targetName}' omitted output '${value.output}'"
+          then failMissingReference "provider '${targetName}' omitted output '${value.output}'"
           else let
             descriptor = targetExport.outputs.${value.output};
             targetValue = nodes.${targetName}.outputs.${value.output};
           in
             if !(builtins.elem descriptor.phase ["evaluation" "planning"])
-            then fail "resultOf '${referenceName}' is unavailable during pure composition"
+            then failResultPhase "resultOf '${referenceName}' is unavailable during pure composition"
             else if descriptor.schema != schema
             then fail "resultOf '${referenceName}' has a different output schema"
             else resolveComposition nodes targetName schema targetValue (trail ++ [referenceName])
@@ -1110,9 +1153,9 @@
       if round > 64
       then fail "composition did not converge within 64 rounds"
       else if builtins.length (builtins.attrNames pending) > 100000
-      then fail "composition exceeds 100000 provider aggregates"
+      then failLimit "composition exceeds 100000 provider aggregates"
       else if countPending pending > 2000000
-      then fail "composition exceeds 2000000 contributions"
+      then failLimit "composition exceeds 2000000 contributions"
       else let
         nodes = composeRound pending;
         following = nextPending nodes;
@@ -1230,7 +1273,7 @@ in rec {
     scope =
       if builtins.length scope <= 64
       then scope
-      else fail "request scope exceeds 64 components";
+      else failLimit "request scope exceeds 64 components";
     key = requireLocalKey "request key" checked.key;
   };
 

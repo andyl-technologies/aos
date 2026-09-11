@@ -1170,13 +1170,13 @@ fn validate_declared_collection_bound(
     path: &SchemaPath,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if value == 0 || value > maximum {
+    if value > maximum {
         push_diagnostic(
             diagnostics,
             schema_diagnostic(
                 DiagnosticCode::LimitExceeded,
                 path,
-                format!("declared collection bound must be in 1..={maximum}"),
+                format!("declared collection bound must be in 0..={maximum}"),
             ),
         );
     }
@@ -1290,6 +1290,36 @@ mod tests {
         let value = literal(serde_json::json!({"name": "nginx.virtual-host"}));
 
         assert!(validate_value(&schema, &value).is_ok());
+    }
+
+    #[test]
+    fn validates_empty_record() {
+        let schema = ValueSchema::Record {
+            fields: BTreeMap::new(),
+            optional_fields: Vec::new(),
+        };
+        let value = literal(serde_json::json!({}));
+
+        assert!(validate_value(&schema, &value).is_ok());
+    }
+
+    #[test]
+    fn validates_zero_capacity_list_and_map() {
+        let list_schema = ValueSchema::List {
+            element: Box::new(ValueSchema::Boolean),
+            max_items: 0,
+        };
+        let map_schema = ValueSchema::Map {
+            key: aos_ability_model::StringConstraint {
+                max_length: 32,
+                syntax: None,
+            },
+            value: Box::new(ValueSchema::Boolean),
+            max_entries: 0,
+        };
+
+        assert!(validate_value(&list_schema, &literal(serde_json::json!([]))).is_ok());
+        assert!(validate_value(&map_schema, &literal(serde_json::json!({}))).is_ok());
     }
 
     #[test]

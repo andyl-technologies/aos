@@ -37,6 +37,16 @@ effects out of portable model/validation/inspection code.
 | VM/fleet and release qualification | Existing test harnesses and qualification catalog | Production path is exercised with independent probes; fresh evidence binds exact subjects and required coverage; cached regression output is not release admission |
 | Optional Crucible instrumentation | AOS guest adapter and existing generic interfaces | Ordinary runtime needs no Crucible; enabled assertions/choices use the same execution; advanced campaign gates track PR #194 explicitly |
 
+The Nix schemas-and-helpers row now has one checked-in version-1 corpus with 39
+cases: 20 forced accepts and 19 exact coded rejects. It inventories the public
+request, output, method, schema, and effect helpers and exercises the same values
+through Nix authoring, the restricted evaluator, and the Rust decoders and
+validator where each surface applies. Restricted cases attempt secret reads,
+network fetches, and import-from-derivation, and cover depth, document, output,
+and work bounds. The config-evaluation gate also seeds a private Nix store from
+an explicit closure graph, verifies its inputs, and reruns the production
+evaluation twice for byte-identical output.
+
 The documentation and operator-tools row has concrete shared-inspector evidence
 in the current tree. One canonical public-reference input and bounded query
 produce byte-identical `aos.ability.reference-inspection-slice/v1` output in
