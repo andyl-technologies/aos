@@ -644,7 +644,19 @@ in
                   "$freetype_check_makefile"
               done
             ''
-            else "make stamps/patch-boot.stamp"
+            else
+              "make stamps/patch-boot.stamp"
+              + lib.optionalString (stdenv.hostPlatform.isAarch64 && stdenv.hostPlatform.isLinux) ''
+
+                # The AArch64 port retains an unused min template that collides
+                # with HotSpot's deliberate min macro prohibition. Remove the
+                # dead declaration from both stages without changing VM behavior.
+                for source_tree in openjdk openjdk-boot; do
+                  runtime_source="$source_tree/hotspot/src/cpu/aarch64/vm/sharedRuntime_aarch64.cpp"
+                  test "$(grep -Ec '\bmin[[:blank:]]*\(' "$runtime_source")" = 1
+                  perl -0pi -e 's/template <class T> static const T& min \(const T& a, const T& b\) \{\n  return \(a > b\) \? b : a;\n\}\n\n// or die "missing obsolete AArch64 min template\n"' "$runtime_source"
+                done
+              ''
           }
 
                   # Pre-create output directories in lib/rt/ to work around JamVM
