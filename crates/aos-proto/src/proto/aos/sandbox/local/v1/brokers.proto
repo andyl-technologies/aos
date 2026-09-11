@@ -120,8 +120,9 @@ message BrokerDescriptorDispositionEntry {
   BrokerDescriptorDisposition disposition = 3;
 }
 
-// Exact portable signed artifacts carried by protocol-1.1 authority-bearing
-// methods. These bytes are untrusted until the selected broker verifies them
+// Exact portable signed artifacts carried by authority-bearing methods in exact
+// protocol 1.0.
+// These bytes are untrusted until the selected broker verifies them
 // against protected node-local trust, clock, revocation, and durable-fence
 // state. Trust policies, public keys, local deadlines, and journal records are
 // never supplied by the requester.

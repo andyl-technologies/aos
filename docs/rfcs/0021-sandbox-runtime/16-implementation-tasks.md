@@ -500,12 +500,13 @@ completes. The Git history remains authoritative for code details.
   post-launch identity evidence are implemented; observe and inventory dispatch
   also remain open.
 - `b0a41d107` — foundation toward `SBX-BPROTO-04` and `SBX-HOST-01`: host
-  observation and complete runtime inventory now dispatch under both protocol
-  1.0 and 1.1, reject authorization carriers, require exact durable identity,
-  order and bound authoritative systemd observations, and commit observation
-  sequences only after complete success. The protocol permits a canonical
-  empty successful body only for an empty host inventory. Production launch
-  remains gated on stable pin handoff and post-launch identity evidence.
+  observation and complete runtime inventory gained dispatch that rejects
+  authorization carriers, requires exact durable identity, orders and bounds
+  authoritative systemd observations, and commits observation sequences only
+  after complete success. The protocol permits a canonical empty successful
+  body only for an empty host inventory. Production launch remains gated on
+  stable pin handoff and post-launch identity evidence.
+  Later `5d7e5bd9cf` hard-cuts the current Host protocol and state to exact 1.0.
 - `727da7f3e` — executable evidence toward `SBX-P0-02`: an
   architecture-neutral Linux UAPI probe now fails closed unless fs-verity can
   enable, measure, and prevent writable reopen and FUSE passthrough can
@@ -598,13 +599,14 @@ completes. The Git history remains authoritative for code details.
   protected key lifecycle, and broker admission path remain open.
 - `ab36dc2b9` — foundation toward `SBX-BPROTO-04`, `SBX-CTRL-03`,
   `SBX-STOR-01`, and `SBX-NET-01`: additive Storage and Network Apply and
-  Inventory method tags now have a closed protocol/method/role/carrier matrix.
-  Apply requires the signed authority carrier, Inventory rejects it, the two
-  local brokers accept no descriptor carriers, and cross-protocol or
-  non-controller replay fails closed. Protocol 1.1 enables signed effects while
-  1.0 remains inventory-only. A future remote transport must authenticate the
-  broker audience and define a separately versioned non-SCM_RIGHTS carrier
-  profile; local descriptor integers are never portable.
+  Inventory method tags introduced a closed protocol/method/role/carrier matrix.
+  Apply required the signed authority carrier, Inventory rejected it, the two
+  local brokers accepted no descriptor carriers, and cross-protocol or
+  non-controller replay failed closed. Later `a591dbf84` and `9faf26a75`
+  hard-cut the current Network and Storage protocols, respectively, to exact
+  1.0. A future remote transport must authenticate the broker audience and
+  define a separately versioned non-SCM_RIGHTS carrier profile; local descriptor
+  integers are never portable.
 - `ffb886353` — foundation toward `SBX-CTRL-03`: an unprivileged controller
   boundary now bounds candidate request bytes before parsing, requires an
   injected endpoint compiler to retain the service-computed scoped digest,
@@ -1381,8 +1383,9 @@ completes. The Git history remains authoritative for code details.
   namespaces into a protected current-resource catalog and authoritative
   current-boot inventory.
 - `0772770f3` — foundation toward `SBX-NET-01` and `SBX-LIFE-06`: the packaged,
-  systemd-activated Network service exposes authenticated read-only inventory
-  through protocol 1.2 while continuing to withhold Apply.
+  systemd-activated Network service introduced authenticated read-only
+  inventory while continuing to withhold Apply. Later `a591dbf84` hard-cuts the
+  current Network protocol and state to exact 1.0.
 - `4cb0100c0`, `462567f52` — foundation toward `SBX-NET-01` and `SBX-LIFE-06`:
   protected Network rows retain monotonic arm, renewal, fence, disarm, and
   irreversible retirement state, with each transition bound to an exact typed
@@ -2620,9 +2623,9 @@ authorized Host RootMount query.
 
 The Host query reuses the exact current publication plan and ownership lease,
 but only after controller verification finds its distinct RootMount grant.
-Signed authority uses protocol 1.0 while the Host payload and RootMount
-carriers require 1.2 and 1.3 respectively; the controller and Host now agree on
-that split. The Mount client authenticates the actual response writer against a
+Signed authority, the Host payload, and RootMount carriers all use the exact
+protocol 1.0 baseline; the controller and Host now agree on that baseline. The
+Mount client authenticates the actual response writer against a
 trusted service cgroup and accepts no descriptors or outer authorization.
 
 The volatile result retains its live namespace target, Mount-produced catalog
@@ -4719,7 +4722,7 @@ compiled an independent fixed ZFS argument vector, admitted a closed environment
 and descriptor set, bounded captured output, authenticated the worker exchange,
 and checked the broker deadline around worker I/O. It also added exact ZFS
 `list`, `get`, and `holds` observation plans, strict worker-local parsers and a
-pre/post-state evaluator, typed v2 observation verbs and results, and a private
+pre/post-state evaluator, typed observation verbs and results, and a private
 `SystemdZfsProcessBackend` adapter under the existing store-lifetime lock.
 
 At the committed `e44660eb0` baseline, the worker and observer use poll-based
@@ -5022,13 +5025,15 @@ Apply therefore remains unadvertised, and `SBX-STOR-01`, `SBX-P0-07`, and
 
 ### Signed Storage catalog preparation retention (in progress)
 
-The local commit `1d36f09ae` advances `SBX-STOR-01` with a library coordinator
-path for independently authorized `PrepareCatalog`. The coordinator decodes
-the canonical protocol 1.3 request, validates its signed preparation grant,
-requires exact trusted inventory and durable catalog-head bindings, invokes a
-protected resolver, and seals the resulting non-authorizing receipt and
-retained record. The store commits that record with its current fence, effect
-intent, and operation fence in one catalog-head compare-and-swap transaction.
+The local commit `1d36f09ae` advanced `SBX-STOR-01` with a library coordinator
+path for independently authorized `PrepareCatalog`. At that commit, the
+coordinator decoded the canonical `PrepareCatalog` request, validated its signed
+preparation grant, required exact trusted inventory and durable catalog-head
+bindings, invoked a protected resolver, and sealed the resulting non-authorizing
+receipt and retained record. The store committed that record with its current
+fence, effect intent, and operation fence in one catalog-head compare-and-swap
+transaction. Later `9faf26a75` hard-cuts the current carrier and protocol to
+exact 1.0.
 Preparation performs no physical ZFS effect and does not advance the catalog
 head.
 

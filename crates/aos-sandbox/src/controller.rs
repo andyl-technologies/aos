@@ -990,7 +990,7 @@ where
     /// Queries and durably records Mount's complete destination-slot inventory.
     ///
     /// The one-shot client authenticates the actual hello and response writers,
-    /// validates the closed protocol 1.4 response, and commits the exact query
+    /// validates the exact protocol 1.0 response, and commits the exact query
     /// and response. The resulting snapshot is observation evidence only.
     ///
     /// # Errors
@@ -1009,9 +1009,9 @@ where
     /// Queries and durably records Storage's complete workspace inventory.
     ///
     /// The one-shot client authenticates the actual hello and response writers,
-    /// validates the protocol 1.2 resource snapshot, and commits the exact query
-    /// and response. The resulting snapshot is non-authorizing evidence for a
-    /// later whole-catalog projection.
+    /// validates the exact protocol 1.0 resource snapshot, and commits the
+    /// exact query and response. The resulting snapshot is non-authorizing
+    /// evidence for a later whole-catalog projection.
     ///
     /// # Errors
     ///
@@ -1030,9 +1030,9 @@ where
     /// Queries and durably records Network's complete namespace inventory.
     ///
     /// The one-shot client authenticates the actual hello and response writers,
-    /// validates the protocol 1.2 resource snapshot, and commits the exact query
-    /// and response. The resulting snapshot is non-authorizing evidence for a
-    /// later whole-catalog projection.
+    /// validates the exact protocol 1.0 resource snapshot, and commits the
+    /// exact query and response. The resulting snapshot is non-authorizing
+    /// evidence for a later whole-catalog projection.
     ///
     /// # Errors
     ///
