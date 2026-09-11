@@ -740,6 +740,7 @@ let
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
     "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";
     "toolchain/_linux-hosted-gcc.nix" = "cross-build-helper";
+    "toolchain/_linux-hosted-glibc.nix" = "cross-build-helper";
     "toolchain/go/_go-darwin.nix" = "cross-build-helper";
     "toolchain/go/_go-linux-cross.nix" = "cross-build-helper";
     "toolchain/java/_darwin-mig.nix" = "linux-only-build-helper";

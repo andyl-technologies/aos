@@ -129,7 +129,12 @@
   annotationProbe = support.annotate "rust" {
     meta = {license = "probe";};
   };
-  nestedSource = ../../qualification/modules;
+  # Anchor the nested path in its own store root in both checkout and flake evaluation.
+  sourceTree = builtins.path {
+    path = ../../qualification;
+    name = "qualification-source-fixture";
+  };
+  nestedSource = /. + builtins.unsafeDiscardStringContext (sourceTree + "/modules");
   derivationProbe = support.releaseDerivations {
     system = "x86_64-linux";
     names = ["aos"];
@@ -155,10 +160,7 @@
     };
   };
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
-  nestedSourceRoot = builtins.unsafeDiscardStringContext (toString (builtins.path {
-    path = nestedSource;
-    name = builtins.baseNameOf (toString nestedSource);
-  }));
+  nestedSourceRoot = builtins.unsafeDiscardStringContext (toString sourceTree);
   releasePackageByName = name:
     builtins.head (builtins.filter (package: package.name == name) releaseDerivations.packages);
   configuredPackage = releasePackageByName "k3s-worker";
