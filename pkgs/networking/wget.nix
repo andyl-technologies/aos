@@ -1,6 +1,8 @@
 ##! wget — Non-interactive network downloader
 {
   mkDerivation,
+  lib,
+  stdenv,
   fetchurl,
   patch,
   buildPackages,
@@ -35,19 +37,46 @@
   perl-uri,
 }: let
   version = "1.25.0";
-  perlTestDeps = [
-    perl-clone
-    perl-encode-locale
-    perl-http-daemon
-    perl-http-date
-    perl-http-message
-    perl-io-html
-    perl-io-socket-ssl
-    perl-lwp-mediatypes
-    perl-mozilla-ca
-    perl-net-ssleay
-    perl-timedate
-    perl-uri
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  testPerl =
+    if isLinuxCross
+    then buildPackages.perl
+    else perl;
+
+  # The HTTP/FTP test servers execute on the builder. Their XS modules must
+  # match the native interpreter while the requests exercise the target wget.
+  perlTestPackages =
+    if isLinuxCross
+    then buildPackages
+    else {
+      inherit
+        perl-clone
+        perl-encode-locale
+        perl-http-daemon
+        perl-http-date
+        perl-http-message
+        perl-io-html
+        perl-io-socket-ssl
+        perl-lwp-mediatypes
+        perl-mozilla-ca
+        perl-net-ssleay
+        perl-timedate
+        perl-uri
+        ;
+    };
+  perlTestDeps = map (name: perlTestPackages.${name}) [
+    "perl-clone"
+    "perl-encode-locale"
+    "perl-http-daemon"
+    "perl-http-date"
+    "perl-http-message"
+    "perl-io-html"
+    "perl-io-socket-ssl"
+    "perl-lwp-mediatypes"
+    "perl-mozilla-ca"
+    "perl-net-ssleay"
+    "perl-timedate"
+    "perl-uri"
   ];
   perlTestPath = builtins.concatStringsSep ":" (
     map (dependency: "${dependency}/lib/perl5") perlTestDeps
@@ -133,7 +162,7 @@ in
             -e '^#! */usr/bin/perl' \
             -e '^#! */usr/bin/env perl' \
             . | while IFS= read -r -d "" file; do
-            sed -i "1s|^#!.*|#!${perl}/bin/perl|" "$file"
+            sed -i "1s|^#!.*|#!${testPerl}/bin/perl|" "$file"
           done
           grep -rlZ \
             -e '^#! */bin/sh' \
@@ -147,17 +176,25 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix="$out" \
-            --enable-libproxy \
-            --with-ssl=openssl \
-            --with-libpsl \
-            --with-metalink \
-            --with-cares \
-            --with-gpgme-prefix=${gpgme}
-        '';
+        script =
+          lib.optionalString isLinuxCross ''
+            # GLib keeps unversioned linker symlinks in its development output.
+            # The native development tools on PATH must not select native libs.
+            export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            # Cross ld does not follow libproxy's RUNPATH to its private backend.
+            export LDFLAGS="-L${glib.dev}/lib -Wl,-rpath-link,${libproxy}/lib/libproxy''${LDFLAGS:+ $LDFLAGS}"
+          ''
+          + ''
+            ./configure \
+              $configureFlags \
+              --prefix="$out" \
+              --enable-libproxy \
+              --with-ssl=openssl \
+              --with-libpsl \
+              --with-metalink \
+              --with-cares \
+              --with-gpgme-prefix=${gpgme}
+          '';
       }
       {
         name = "build";
