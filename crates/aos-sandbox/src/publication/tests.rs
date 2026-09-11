@@ -1477,90 +1477,80 @@ fn draft_roundtrips_multiple_templates_for_one_audience() {
 }
 
 #[test]
-fn v1_and_v2_namespaces_require_migration_on_read_and_write() {
-    for (case, prefix) in [
-        (1_u8, LEGACY_CURRENT_KEY_PREFIX),
-        (2_u8, LEGACY_PREPARED_KEY_PREFIX),
-        (3_u8, LEGACY_V2_CURRENT_KEY_PREFIX),
-        (4_u8, LEGACY_V2_PREPARED_KEY_PREFIX),
-    ] {
-        let directory = TestDirectory::new();
-        let (mut journal, _) = Journal::open(directory.journal(), Default::default())
-            .unwrap_or_else(|error| panic!("test journal open failed: {error}"));
-        let mut key = prefix.to_vec();
-        key.extend_from_slice(&[case; 32]);
-        journal
-            .commit(
-                &JournalTransaction::new(
-                    [case; 16],
-                    vec![JournalRecord::put(
-                        RecordNamespace::DesiredState,
-                        key,
-                        vec![case],
-                    )],
-                )
-                .unwrap_or_else(|error| panic!("test transaction failed: {error}")),
-            )
-            .unwrap_or_else(|error| panic!("test commit failed: {error}"));
+fn rich_v1_codec_round_trips_and_rejects_non_v1_headers() {
+    let prepared = proposal(1, 190)
+        .prepare()
+        .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
+    assert_eq!(&prepared.canonical_bytes()[..10], b"AOSCPUB1\0\x01");
+    assert_eq!(
+        decode_prepared(prepared.canonical_bytes(), prepared.digest())
+            .unwrap_or_else(|error| panic!("test prepared decode failed: {error}")),
+        prepared
+    );
 
-        let prepared = proposal(1, 190)
-            .prepare()
-            .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
-        let mut store = AuthorityPublicationStore::new(&mut journal);
+    let current = encode_current(&prepared);
+    let decoded = decode_current(&current)
+        .unwrap_or_else(|error| panic!("test current decode failed: {error}"));
+    assert_eq!(decoded.canonical_bytes(), prepared.canonical_bytes());
+    assert_eq!(decoded.digest(), prepared.digest());
+
+    for version in [0_u16, 2] {
+        let mut prepared_bytes = prepared.canonical_bytes().to_vec();
+        prepared_bytes[8..10].copy_from_slice(&version.to_be_bytes());
         assert!(matches!(
-            store.current(prepared.sandbox),
-            Err(AuthorityPublicationError::MigrationRequired)
+            decode_prepared(&prepared_bytes, publication_digest(&prepared_bytes)),
+            Err(AuthorityPublicationError::CorruptCurrent)
         ));
+
+        let mut current_bytes = current.clone();
+        current_bytes[8..10].copy_from_slice(&version.to_be_bytes());
         assert!(matches!(
-            store.publish(
-                &prepared,
-                &IdempotencyKey::new(vec![case])
-                    .unwrap_or_else(|error| panic!("test idempotency key failed: {error}")),
-                OperationId::from_bytes([case; 16]),
-                [case + 10; 16],
-            ),
-            Err(AuthorityPublicationError::MigrationRequired)
+            decode_current(&current_bytes),
+            Err(AuthorityPublicationError::CorruptCurrent)
         ));
     }
+
+    let mut wrong_magic = prepared.canonical_bytes().to_vec();
+    wrong_magic[0] ^= 1;
+    assert!(matches!(
+        decode_prepared(&wrong_magic, publication_digest(&wrong_magic)),
+        Err(AuthorityPublicationError::CorruptCurrent)
+    ));
+
+    let mut wrong_current_magic = current;
+    wrong_current_magic[0] ^= 1;
+    assert!(matches!(
+        decode_current(&wrong_current_magic),
+        Err(AuthorityPublicationError::CorruptCurrent)
+    ));
 }
 
 #[test]
-fn legacy_magic_under_v3_keys_requires_migration() {
-    for magic in [LEGACY_V1_MAGIC, LEGACY_V2_MAGIC] {
-        let mut bytes = magic.to_vec();
-        bytes.extend_from_slice(&[0; CURRENT_HEADER_BYTES]);
-        assert!(matches!(
-            decode_prepared(&bytes, ObjectDigest::from_bytes([1; 32])),
-            Err(AuthorityPublicationError::MigrationRequired)
-        ));
-        assert!(matches!(
-            decode_current(&bytes),
-            Err(AuthorityPublicationError::MigrationRequired)
-        ));
-    }
-}
-
-#[test]
-fn unknown_publication_namespace_record_fails_closed() {
+fn non_v1_publication_prefix_fails_closed() {
     let directory = TestDirectory::new();
     let (mut journal, _) = Journal::open(directory.journal(), Default::default())
         .unwrap_or_else(|error| panic!("test journal failed: {error}"));
+    let prepared = proposal(1, 190)
+        .prepare()
+        .unwrap_or_else(|error| panic!("test prepare failed: {error}"));
+    let mut non_v1_key = CURRENT_KEY_PREFIX.to_vec();
+    let version_offset = non_v1_key.len() - 2;
+    assert_eq!(non_v1_key[version_offset], b'1');
+    non_v1_key[version_offset] = b'3';
+    non_v1_key.extend_from_slice(prepared.sandbox.as_bytes());
     journal
         .commit(
             &JournalTransaction::new(
                 [0xdb; 16],
                 vec![JournalRecord::put(
                     RecordNamespace::AuthorityPublication,
-                    b"unknown-publication-record".to_vec(),
-                    b"unknown".to_vec(),
+                    non_v1_key,
+                    encode_current(&prepared),
                 )],
             )
             .unwrap_or_else(|error| panic!("test transaction failed: {error}")),
         )
         .unwrap_or_else(|error| panic!("test corruption commit failed: {error}"));
-    let prepared = proposal(1, 190)
-        .prepare()
-        .unwrap_or_else(|error| panic!("test prepare failed: {error}"));
     assert!(matches!(
         AuthorityPublicationStore::new(&mut journal).current(prepared.sandbox),
         Err(AuthorityPublicationError::CorruptCurrent)

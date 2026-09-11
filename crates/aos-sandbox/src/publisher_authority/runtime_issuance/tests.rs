@@ -336,7 +336,7 @@ fn canonical_version_three_has_a_fixed_golden_and_closed_bounded_shape() {
     // Pins field order and complete audit facts; update only with an intentional format change.
     assert_eq!(
         format!("{:x}", Sha256::digest(&bytes)),
-        "f5140acb8cd78ed49cffdfd8169ea89ed078d6783d9759421b3a370e3f1ac684"
+        "b38b7635603b4ffa032bedf1f0a7371866493c7065a8a17ea481d26bc6f6e9a3"
     );
     let decoded = decode_record(&capability_key(capability.id()), &bytes, bytes.len()).unwrap();
     assert_eq!(decoded.runtime, Some(runtime.clone()));

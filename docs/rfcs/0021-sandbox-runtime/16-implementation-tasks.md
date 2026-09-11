@@ -736,10 +736,9 @@ completes. The Git history remains authoritative for code details.
   lease, and draft, then atomically installs the permanent prepared publication
   and current pointer with the accepted operation and activated gate. Recovery
   requires the permanent record plus the exact current publication or a valid
-  same-authority successor. Controller publication moves from the earlier V2
-  foundation to an isolated, closed V3 namespace; V1/V2 state requires explicit
-  migration, while unknown, malformed, substituted, orphaned, or colliding V3
-  state fails closed. The implementation passes 105 unit tests plus doctests,
+  same-authority successor. Controller publication uses its sole isolated,
+  closed V1 namespace; unknown, malformed, substituted, orphaned, or colliding
+  state fails closed. The implementation passes 104 unit tests plus doctests,
   strict all-target Clippy, warning-denied rustdoc, formatting, and adversarial
   review. The production explicit authority-resume path remains open.
 - `042ed7be3` — foundation toward `SBX-CTRL-03` and `SBX-MULTI-01`: the public

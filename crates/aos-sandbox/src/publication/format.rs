@@ -1,4 +1,4 @@
-//! Durable V3 prepared/current codecs and structural recovery validation.
+//! Durable V1 prepared/current codecs and structural recovery validation.
 //!
 //! The isolated journal namespace contains two bounded record shapes:
 //!
@@ -34,9 +34,6 @@ pub(super) fn encode_current(prepared: &PreparedAuthorityPublicationV1) -> Vec<u
 pub(super) fn decode_current(
     bytes: &[u8],
 ) -> Result<CurrentAuthorityPublicationV1, AuthorityPublicationError> {
-    if bytes.starts_with(LEGACY_V1_MAGIC) || bytes.starts_with(LEGACY_V2_MAGIC) {
-        return Err(AuthorityPublicationError::MigrationRequired);
-    }
     if bytes.len() < CURRENT_HEADER_BYTES
         || &bytes[..8] != MAGIC
         || bytes[8..10] != VERSION.to_be_bytes()
@@ -105,9 +102,6 @@ pub(super) fn decode_prepared(
     bytes: &[u8],
     expected_digest: ObjectDigest,
 ) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
-    if bytes.starts_with(LEGACY_V1_MAGIC) || bytes.starts_with(LEGACY_V2_MAGIC) {
-        return Err(AuthorityPublicationError::MigrationRequired);
-    }
     if bytes.len() > MAXIMUM_PUBLICATION_BYTES
         || bytes.len() < 10
         || &bytes[..8] != MAGIC

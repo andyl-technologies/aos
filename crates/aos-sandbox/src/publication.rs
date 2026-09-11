@@ -12,9 +12,8 @@
 //! this store intentionally owns no trust anchors or public keys. Journal
 //! recovery therefore does not replace cryptographic verification by the
 //! privileged broker before dispatch.
-//! Durable publication encoding and its isolated journal namespace are V3.
-//! V1 or V2 current or prepared state produces an explicit migration-required
-//! error before reads or writes.
+//! Durable publication encoding and its isolated journal namespace use one
+//! exact V1 schema. Unknown keys and non-V1 values fail closed as corruption.
 
 use std::collections::BTreeMap;
 
@@ -49,22 +48,16 @@ use draft::{
 };
 use format::{decode_current, decode_prepared, encode_current, validate_encoded_publication};
 
-const MAGIC: &[u8; 8] = b"AOSCPUB3";
-const LEGACY_V2_MAGIC: &[u8; 8] = b"AOSCPUB2";
-const LEGACY_V1_MAGIC: &[u8; 8] = b"AOSCPUB1";
-const VERSION: u16 = 3;
-const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-publication.v3\0";
+const MAGIC: &[u8; 8] = b"AOSCPUB1";
+const VERSION: u16 = 1;
+const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-publication.v1\0";
 const TEMPLATE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.broker-dispatch-template.v1\0";
 const MAXIMUM_TEMPLATES: usize = 256;
 const JOURNAL_RECORD_BYTES: usize = 16 * 1024 * 1024;
 const JOURNAL_RECORD_HEADER_BYTES: usize = 7;
 const CURRENT_HEADER_BYTES: usize = 186;
-const CURRENT_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.current.v3/";
-const PREPARED_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.prepared.v3/";
-const LEGACY_V2_CURRENT_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.current.v2/";
-const LEGACY_V2_PREPARED_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.prepared.v2/";
-const LEGACY_CURRENT_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.current.v1/";
-const LEGACY_PREPARED_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.prepared.v1/";
+const CURRENT_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.current.v1/";
+const PREPARED_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.prepared.v1/";
 const DRAFT_MAGIC: &[u8; 8] = b"AOSCDRF1";
 const DRAFT_VERSION: u16 = 1;
 const DRAFT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-authority-draft.v1\0";
@@ -195,7 +188,7 @@ impl AuthorityPublicationDraftV1 {
         .map_err(|_| AuthorityPublicationError::InvalidDraft)
     }
 
-    /// Binds checked ownership artifacts and prepares the current V3 publication.
+    /// Binds checked ownership artifacts and prepares the current V1 publication.
     ///
     /// # Errors
     ///
@@ -734,10 +727,10 @@ impl<'a> AuthorityPublicationStore<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`AuthorityPublicationError`] for legacy state, malformed or
-    /// substituted prepared bytes, a conflicting prepared-key value, or
-    /// corrupt current state. Final successor eligibility is deliberately
-    /// rechecked against the live journal immediately before gate activation.
+    /// Returns [`AuthorityPublicationError`] for malformed or substituted
+    /// prepared bytes, a conflicting prepared-key value, or corrupt current
+    /// state. Final successor eligibility is deliberately rechecked against
+    /// the live journal immediately before gate activation.
     pub(crate) fn prepare_gate_activation(
         &self,
         draft: &AuthorityPublicationDraftV1,
@@ -788,8 +781,7 @@ impl<'a> AuthorityPublicationStore<'a> {
     /// # Errors
     ///
     /// Returns [`AuthorityPublicationError::CorruptCurrent`] when the stored
-    /// value is not the exact self-contained V3 publication named by `digest`,
-    /// or [`AuthorityPublicationError::MigrationRequired`] for legacy state.
+    /// value is not the exact self-contained V1 publication named by `digest`.
     /// Returns a journal error if an earlier I/O failure poisoned the handle.
     pub fn prepared(
         &self,
@@ -1002,21 +994,7 @@ pub(crate) fn validate_publication_namespace(
     // Diagnostic materialized values can lag an ambiguously committed successor.
     // Never turn that stale snapshot into current publication or replay evidence.
     journal.ensure_healthy()?;
-    if journal
-        .records(RecordNamespace::DesiredState)
-        .any(|(key, _)| {
-            key.starts_with(LEGACY_CURRENT_KEY_PREFIX)
-                || key.starts_with(LEGACY_PREPARED_KEY_PREFIX)
-                || key.starts_with(LEGACY_V2_CURRENT_KEY_PREFIX)
-                || key.starts_with(LEGACY_V2_PREPARED_KEY_PREFIX)
-        })
-    {
-        return Err(AuthorityPublicationError::MigrationRequired);
-    }
     for (key, value) in journal.records(RecordNamespace::AuthorityPublication) {
-        if value.starts_with(LEGACY_V1_MAGIC) || value.starts_with(LEGACY_V2_MAGIC) {
-            return Err(AuthorityPublicationError::MigrationRequired);
-        }
         if let Some(suffix) = key.strip_prefix(CURRENT_KEY_PREFIX) {
             let sandbox_bytes: [u8; 16] = suffix
                 .try_into()
@@ -1056,8 +1034,6 @@ impl<'a> AuthorityPublicationStore<'a> {
     ///
     /// Returns [`AuthorityPublicationError::CorruptCurrent`] when durable state
     /// is not the exact bounded, cross-linked format emitted by preparation.
-    /// Returns [`AuthorityPublicationError::MigrationRequired`] when any V1 or
-    /// V2 current or prepared namespace remains in the journal.
     /// Returns a journal error if an earlier I/O failure poisoned the handle.
     /// This does not cryptographically reverify signatures because the journal
     /// deliberately has no trust-anchor or public-key dependency.
@@ -1257,7 +1233,7 @@ pub enum AuthorityPublicationError {
     #[error("authority publication prepared key conflicts with existing bytes")]
     PreparedConflict,
     /// The complete encoded publication cannot fit its bounded journal records.
-    #[error("authority publication exceeds the fixed V3 journal-record bound")]
+    #[error("authority publication exceeds the fixed V1 journal-record bound")]
     PublicationTooLarge,
     /// A generation would roll back.
     #[error("authority publication generation rollback")]
@@ -1268,8 +1244,8 @@ pub enum AuthorityPublicationError {
     /// A durable current record is malformed or internally inconsistent.
     #[error("durable authority publication is corrupt")]
     CorruptCurrent,
-    /// Durable publication V1 or V2 state requires an explicit migration.
-    #[error("durable authority publication V1 or V2 state requires migration")]
+    /// A deferred effect record lacks the mandatory current Host boot binding.
+    #[error("authority effect record requires migration before Host execution")]
     MigrationRequired,
     /// An idempotency key was previously bound to another publication.
     #[error("authority publication idempotency conflict")]

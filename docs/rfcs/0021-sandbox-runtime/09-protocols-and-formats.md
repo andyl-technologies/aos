@@ -311,13 +311,12 @@ receipts, pending intents, completed responses, and current pointers. Unknown
 namespaces, key shapes, magic, versions, and malformed cross-links are corrupt
 state rather than alternate formats.
 
-Controller publication uses an independently versioned V3 format in its own
-`AuthorityPublication` journal namespace. V3 retains a permanent prepared
+Controller publication uses one V1 format in its own `AuthorityPublication`
+journal namespace. V1 retains a permanent prepared
 record by publication digest and a sandbox-keyed current pointer whose embedded
 sandbox and complete prepared bytes must cross-link exactly. The namespace is
 closed: unknown key shapes, malformed or substituted values, missing permanent
-records, and digest collisions are corruption. V1 or V2 publication keys or
-magic require explicit authenticated migration rather than reinterpretation.
+records, digest collisions, wrong magic, and non-V1 versions are corruption.
 
 Ownership-gated admission atomically records desired state, the operation,
 every planned effect, idempotency, and a self-contained, lease-independent
