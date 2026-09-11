@@ -1660,6 +1660,7 @@ fn reclaim_disarmed_uki_storage(staging_dir: &Path, disabled_prefix: &str) -> Re
         {
             continue;
         }
+
         let file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -1669,6 +1670,7 @@ fn reclaim_disarmed_uki_storage(staging_dir: &Path, disabled_prefix: &str) -> Re
         if !metadata.is_file() || metadata.nlink() != 1 {
             bail!("disarmed inactive UKI must be an unshared regular file");
         }
+
         file.set_len(0)
             .context("reclaiming disarmed inactive UKI storage")?;
         file.sync_all()
