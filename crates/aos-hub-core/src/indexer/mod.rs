@@ -1228,14 +1228,12 @@ async fn validate_container_release(
         "container release identity '{}' does not match signed tag '{release_tag}'",
         release.identity.release
     );
-    // Phase 4 intentionally admits one base image. The signed schema is
-    // generic enough for future definitions, but widening the Hub catalog is a
-    // separate policy change rather than an accidental consequence of a new
-    // sidecar appearing on a registry surface.
     anyhow::ensure!(
-        release.identity.package == "aos"
-            && release.identity.image == "aos"
-            && release.nix.definition.attribute == "containerImages.aos",
+        crate::container_catalog::admits_base_image_definition(
+            &release.identity.package,
+            &release.identity.image,
+            &release.nix.definition.attribute,
+        ),
         "the initial container catalog only admits the 'aos' image"
     );
     let package = packages
