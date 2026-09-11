@@ -13,6 +13,8 @@
 }: let
   version = "1.5.1";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  # The AArch64 interpreter reuses operand slots through integer and floating
+  # pointers; its compiler must preserve those aliased accesses.
   isLinuxAarch64 = stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
   aarch64Patch = fetchurl {
     urls = [
@@ -128,7 +130,7 @@ in
               --with-classpath-install-dir=${classpath-0_93}
           ''
           else ''
-            CFLAGS="-O2 -std=gnu11 -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types" \
+            CFLAGS="-O2${lib.optionalString isLinuxAarch64 " -fno-strict-aliasing"} -std=gnu11 -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types" \
             ./configure \
               --prefix=$out \
               --with-classpath-install-dir=${classpath-0_93}
@@ -175,6 +177,29 @@ in
                 ${self}/bin/jamvm -cp "$PWD" JniReturns "$PWD/libjni-returns.so" \
                   > "$out/result"
                 grep -Fxq 'JNI narrow returns passed' "$out/result"
+              '';
+            }
+          ];
+        };
+      }
+      // lib.optionalAttrs isLinuxAarch64 {
+        float-conversions = pkgs.mkDerivation {
+          pname = "jamvm-floating-conversions";
+          version = "1";
+          src = null;
+          buildDeps = [self buildPackages.jikes];
+          phases = [
+            {
+              name = "check";
+              script = ''
+                cp ${./tests/FloatConversions.java} FloatConversions.java
+                ${buildPackages.jikes}/bin/jikes \
+                  -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
+                  FloatConversions.java
+
+                mkdir -p "$out"
+                ${self}/bin/jamvm -cp "$PWD" FloatConversions > "$out/result"
+                grep -Fxq 'Floating conversions passed' "$out/result"
               '';
             }
           ];
