@@ -68,6 +68,12 @@ in
         script = ''
           make install_device-mapper
 
+          # Without libudev at build time, upstream generates an external
+          # blkid rule using our own sbin directory. The helper belongs to
+          # util-linux; adding systemd here would create a dependency cycle.
+          sed -i "s|$out/sbin/blkid |${util-linux}/sbin/blkid |" \
+            $out/lib/udev/rules.d/13-dm-disk.rules
+
           # systemd can observe the initial dm add event before activation and
           # persist SYSTEMD_READY=0. Since libdevmapper cannot depend on
           # systemd's libudev in the bootstrap graph, clear that conservative
