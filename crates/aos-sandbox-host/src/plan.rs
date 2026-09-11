@@ -475,21 +475,32 @@ impl NspawnConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`HostError::InvalidPlan`] for nonabsolute/unnormalized paths,
-    /// an invalid `SELinux` context token, or zero timeouts.
+    /// Returns [`HostError::InvalidPlan`] for an invalid executable path,
+    /// incomplete readiness evidence, descriptor metadata drift, or zero
+    /// timeouts.
     pub fn from_readiness(
         readiness: BackendReadiness,
         timeout_start: Duration,
         timeout_stop: Duration,
     ) -> Result<Self> {
-        let executable = readiness.executable;
+        let BackendReadiness {
+            executable,
+            executable_device,
+            executable_inode,
+            executable_pin,
+            executable_snapshot,
+            probe_generation,
+            mac_policy_digest,
+            supervisor_profile_digest,
+            payload_filter_digest,
+        } = readiness;
         validate_fixed_nspawn_path(&executable)?;
-        if readiness.executable_device == 0
-            || readiness.executable_inode == 0
-            || readiness.probe_generation == 0
-            || readiness.mac_policy_digest == [0; 32]
-            || readiness.supervisor_profile_digest == [0; 32]
-            || readiness.payload_filter_digest == [0; 32]
+        if executable_device == 0
+            || executable_inode == 0
+            || probe_generation == 0
+            || mac_policy_digest == [0; 32]
+            || supervisor_profile_digest == [0; 32]
+            || payload_filter_digest == [0; 32]
         {
             return Err(HostError::InvalidPlan(
                 "nspawn backend readiness evidence is incomplete".to_owned(),
@@ -500,18 +511,17 @@ impl NspawnConfig {
                 "systemd operation timeouts must be nonzero".to_owned(),
             ));
         }
-        let executable_pin = open_executable_pin(&executable)?;
-        let executable_identity = rustix::fs::fstat(&executable_pin)
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        if executable_identity.st_dev != readiness.executable_device
-            || executable_identity.st_ino != readiness.executable_inode
+        let current_snapshot = nspawn_executable_snapshot(executable_pin.as_fd())?;
+        if current_snapshot != executable_snapshot
+            || current_snapshot.device != executable_device
+            || current_snapshot.inode != executable_inode
         {
             return Err(HostError::InvalidPlan(
                 "nspawn executable identity changed".to_owned(),
             ));
         }
         Ok(Self {
-            executable_snapshot: nspawn_executable_snapshot(executable_pin.as_fd())?,
+            executable_snapshot,
             executable_pin: Arc::new(executable_pin),
             timeout_start,
             timeout_stop,
@@ -878,9 +888,193 @@ fn canonical_hex(value: &str, length: usize) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::io::Write as _;
+    use std::os::fd::{AsRawFd as _, OwnedFd};
+    use std::path::Path;
+
     use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
 
     use super::*;
+
+    const ABSENT_NSPAWN_PATH: &str =
+        "/nix/store/00000000000000000000000000000000-aos-readiness-absent/bin/systemd-nspawn";
+
+    fn readiness_with_pin(executable_pin: OwnedFd) -> BackendReadiness {
+        let executable_snapshot = nspawn_executable_snapshot(executable_pin.as_fd()).unwrap();
+
+        BackendReadiness {
+            executable: ABSENT_NSPAWN_PATH.to_owned(),
+            executable_device: executable_snapshot.device,
+            executable_inode: executable_snapshot.inode,
+            executable_pin,
+            executable_snapshot,
+            probe_generation: 1,
+            mac_policy_digest: [1; 32],
+            supervisor_profile_digest: [2; 32],
+            payload_filter_digest: [3; 32],
+        }
+    }
+
+    fn readiness() -> BackendReadiness {
+        let executable = std::env::current_exe().unwrap();
+        let executable_pin = rustix::fs::open(
+            executable,
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+
+        readiness_with_pin(executable_pin)
+    }
+
+    #[test]
+    fn nspawn_readiness_transfers_the_exact_pin_without_reopening_its_path() {
+        assert!(!Path::new(ABSENT_NSPAWN_PATH).exists());
+        let readiness = readiness();
+        let admitted_descriptor = readiness.executable_pin.as_raw_fd();
+        let admitted_snapshot = readiness.executable_snapshot;
+
+        let config = NspawnConfig::from_readiness(
+            readiness,
+            Duration::from_secs(30),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+
+        assert_eq!(config.executable_pin.as_raw_fd(), admitted_descriptor);
+        assert_eq!(config.executable_snapshot, admitted_snapshot);
+        config.revalidate().unwrap();
+    }
+
+    #[test]
+    fn nspawn_readiness_rejects_each_incomplete_claim() {
+        let remove_claims: [fn(&mut BackendReadiness); 6] = [
+            |readiness| readiness.executable_device = 0,
+            |readiness| readiness.executable_inode = 0,
+            |readiness| readiness.probe_generation = 0,
+            |readiness| readiness.mac_policy_digest = [0; 32],
+            |readiness| readiness.supervisor_profile_digest = [0; 32],
+            |readiness| readiness.payload_filter_digest = [0; 32],
+        ];
+
+        for remove_claim in remove_claims {
+            let mut readiness = readiness();
+            remove_claim(&mut readiness);
+
+            assert!(
+                NspawnConfig::from_readiness(
+                    readiness,
+                    Duration::from_secs(30),
+                    Duration::from_secs(10),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn nspawn_readiness_rejects_invalid_path_and_zero_timeouts() {
+        let mut invalid_path = readiness();
+        invalid_path.executable = "/tmp/systemd-nspawn".to_owned();
+        assert!(
+            NspawnConfig::from_readiness(
+                invalid_path,
+                Duration::from_secs(30),
+                Duration::from_secs(10),
+            )
+            .is_err()
+        );
+
+        assert!(
+            NspawnConfig::from_readiness(readiness(), Duration::ZERO, Duration::from_secs(10),)
+                .is_err()
+        );
+        assert!(
+            NspawnConfig::from_readiness(readiness(), Duration::from_secs(30), Duration::ZERO,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn nspawn_readiness_rejects_declared_descriptor_identity_substitution() {
+        let mut changed_device = readiness();
+        changed_device.executable_device = changed_device.executable_device.wrapping_add(1);
+        assert!(
+            NspawnConfig::from_readiness(
+                changed_device,
+                Duration::from_secs(30),
+                Duration::from_secs(10),
+            )
+            .is_err()
+        );
+
+        let mut changed_inode = readiness();
+        changed_inode.executable_inode = changed_inode.executable_inode.wrapping_add(1);
+        assert!(
+            NspawnConfig::from_readiness(
+                changed_inode,
+                Duration::from_secs(30),
+                Duration::from_secs(10),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn nspawn_readiness_revalidates_every_executable_snapshot_field() {
+        let change_fields: [fn(&mut NspawnExecutableSnapshot); 9] = [
+            |snapshot| snapshot.device = snapshot.device.wrapping_add(1),
+            |snapshot| snapshot.inode = snapshot.inode.wrapping_add(1),
+            |snapshot| snapshot.bytes = snapshot.bytes.wrapping_add(1),
+            |snapshot| snapshot.uid = snapshot.uid.wrapping_add(1),
+            |snapshot| snapshot.mode ^= 0o100,
+            |snapshot| {
+                snapshot.modified_seconds = snapshot.modified_seconds.wrapping_add(1);
+            },
+            |snapshot| {
+                snapshot.modified_nanoseconds = snapshot.modified_nanoseconds.wrapping_add(1);
+            },
+            |snapshot| {
+                snapshot.changed_seconds = snapshot.changed_seconds.wrapping_add(1);
+            },
+            |snapshot| {
+                snapshot.changed_nanoseconds = snapshot.changed_nanoseconds.wrapping_add(1);
+            },
+        ];
+
+        for change_field in change_fields {
+            let mut readiness = readiness();
+            change_field(&mut readiness.executable_snapshot);
+
+            assert!(
+                NspawnConfig::from_readiness(
+                    readiness,
+                    Duration::from_secs(30),
+                    Duration::from_secs(10),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn nspawn_readiness_rejects_metadata_drift_on_the_retained_file() {
+        let mut executable = tempfile::tempfile().unwrap();
+        executable.write_all(b"admitted executable").unwrap();
+        let executable_pin = OwnedFd::from(executable.try_clone().unwrap());
+        let readiness = readiness_with_pin(executable_pin);
+
+        executable.set_len(128).unwrap();
+
+        assert!(
+            NspawnConfig::from_readiness(
+                readiness,
+                Duration::from_secs(30),
+                Duration::from_secs(10),
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn backend_feature_admission_is_an_exact_allowlist() {

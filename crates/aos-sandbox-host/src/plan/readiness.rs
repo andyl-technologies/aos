@@ -14,7 +14,7 @@ use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::validate_fixed_nspawn_path;
+use super::{NspawnExecutableSnapshot, validate_fixed_nspawn_path};
 use crate::{HostError, Result};
 
 const READINESS_CREDENTIAL_FILE: &str = "backend-readiness.json";
@@ -35,11 +35,13 @@ const MAXIMUM_WATERMARK_BYTES: usize = 4096;
 /// access to a user-namespace-shifted payload. Until those checks can be
 /// combined mechanically, hostd cannot construct this token and does not
 /// advertise runtime launch.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct BackendReadiness {
     pub(super) executable: String,
     pub(super) executable_device: u64,
     pub(super) executable_inode: u64,
+    pub(super) executable_pin: OwnedFd,
+    pub(super) executable_snapshot: NspawnExecutableSnapshot,
     pub(super) probe_generation: u64,
     pub(super) mac_policy_digest: [u8; 32],
     pub(super) supervisor_profile_digest: [u8; 32],
