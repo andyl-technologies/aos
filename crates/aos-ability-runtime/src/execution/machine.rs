@@ -671,7 +671,8 @@ where
             return Err(ExecutionError::RecoveryDeadlineExpired);
         }
 
-        let disposition = self.adapter.cancel(request, &control);
+        let cancellation_control = CancellationCallControl::new(&control);
+        let disposition = self.adapter.cancel(request, &cancellation_control);
         self.observe(Boundary::CancellationReturned, &control)?;
         let (result, evidence, outputs, step) = match disposition {
             CancellationDisposition::RejectedBeforeEffect(evidence) => (
@@ -798,6 +799,39 @@ where
 
     fn recovery_remaining_millis(&self) -> u64 {
         self.total_recovery.saturating_sub(self.elapsed_millis())
+    }
+}
+
+/// Keeps a cancellation adapter's postcondition work usable after cancellation.
+///
+/// The live cancellation signal selects the durable cancellation path. Once
+/// that intent is recorded, the adapter must still be able to run bounded
+/// helpers that establish or observe the requested postcondition.
+struct CancellationCallControl<'a> {
+    live: &'a dyn RuntimeControl,
+}
+
+impl<'a> CancellationCallControl<'a> {
+    fn new(live: &'a dyn RuntimeControl) -> Self {
+        Self { live }
+    }
+}
+
+impl RuntimeControl for CancellationCallControl<'_> {
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+
+    fn elapsed_millis(&self) -> u64 {
+        self.live.elapsed_millis()
+    }
+
+    fn attempt_remaining_millis(&self) -> u64 {
+        self.live.attempt_remaining_millis()
+    }
+
+    fn recovery_remaining_millis(&self) -> u64 {
+        self.live.recovery_remaining_millis()
     }
 }
 
@@ -991,6 +1025,43 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_adapter_receives_usable_control_with_live_budgets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new()?;
+        let mut journal = fixture.journal_with_intent()?;
+        let clock = TestClock::default();
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+        let mut hook = RecordingControlHook::default();
+        let mut adapter = TestAdapter::completed(fixture.evidence()?);
+        let request = AbilityValue::new(json!({"revision": 2}))?;
+        let context = AttemptContext {
+            elapsed_millis: 7,
+            attempt_timeout_millis: 40,
+            total_recovery_millis: 90,
+            ..fixture.context()
+        };
+
+        let step = OperationExecutor::new(&mut adapter, &clock, &cancellation, &mut hook).cancel(
+            &mut journal,
+            context,
+            &request,
+        )?;
+
+        assert_eq!(step, ExecutionStep::Indeterminate);
+        assert_eq!(adapter.cancel_control, Some((false, 7, 40, 83)));
+        assert_eq!(
+            hook.observations,
+            [
+                (Boundary::CancellationIntentDurable, true),
+                (Boundary::CancellationReturned, true),
+                (Boundary::CancellationOutcomeDurable, true),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn compensation_deadline_after_intent_records_durable_intervention()
     -> Result<(), Box<dyn std::error::Error>> {
         let fixture = Fixture::new()?;
@@ -1096,6 +1167,22 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingControlHook {
+        observations: Vec<(Boundary, bool)>,
+    }
+
+    impl BoundaryHook for RecordingControlHook {
+        fn observe(
+            &mut self,
+            boundary: Boundary,
+            control: &dyn RuntimeControl,
+        ) -> anyhow::Result<ExecutionBoundaryControl> {
+            self.observations.push((boundary, control.is_cancelled()));
+            Ok(ExecutionBoundaryControl::Continue)
+        }
+    }
+
     struct AdvanceAtEffectIntent {
         clock: Rc<Cell<u64>>,
         now: u64,
@@ -1143,6 +1230,7 @@ mod tests {
         execute_calls: usize,
         reconcile_calls: usize,
         cancel_calls: usize,
+        cancel_control: Option<(bool, u64, u64, u64)>,
     }
 
     impl TestAdapter {
@@ -1152,6 +1240,7 @@ mod tests {
                 execute_calls: 0,
                 reconcile_calls: 0,
                 cancel_calls: 0,
+                cancel_control: None,
             }
         }
     }
@@ -1213,9 +1302,15 @@ mod tests {
         fn cancel(
             &mut self,
             _request: &Self::Request,
-            _control: &dyn RuntimeControl,
+            control: &dyn RuntimeControl,
         ) -> CancellationDisposition<Self::Completion, Self::Observation> {
             self.cancel_calls += 1;
+            self.cancel_control = Some((
+                control.is_cancelled(),
+                control.elapsed_millis(),
+                control.attempt_remaining_millis(),
+                control.recovery_remaining_millis(),
+            ));
             CancellationDisposition::Indeterminate(test_record(
                 AbilityValue::new(json!({"reason": "test-only"}))
                     .expect("test observation must be bounded"),

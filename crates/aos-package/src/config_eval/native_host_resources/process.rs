@@ -282,3 +282,46 @@ fn budget_exhausted() -> io::Error {
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HELPER_TEST: &str =
+        "config_eval::native_host_resources::process::tests::host_resource_process_helper";
+
+    #[test]
+    fn cancellation_postcondition_helper_runs_with_usable_control() {
+        let mut command = helper_command();
+        let control = FixedBudgetControl::new(2_000);
+
+        let output = run_bounded(
+            &mut command,
+            None,
+            16 * 1024,
+            DescendantPolicy::Reap,
+            &control,
+        )
+        .expect("host-resource postcondition helper completes");
+
+        let marker = b"postcondition-established";
+        assert!(output.status.success());
+        assert!(
+            output
+                .stdout
+                .windows(marker.len())
+                .any(|window| window == marker)
+        );
+    }
+
+    #[test]
+    fn host_resource_process_helper() {
+        print!("postcondition-established");
+    }
+
+    fn helper_command() -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("test executable exists"));
+        command.args(["--exact", HELPER_TEST, "--nocapture"]);
+        command
+    }
+}
