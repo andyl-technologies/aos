@@ -47,12 +47,13 @@ use crucible_campaign::{
     CampaignRepositoryError, CandidateGeneratorSpec, CandidateGeneratorSpecId, ChoiceDomain,
     ChoiceOpportunity, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
     CoverageProjection, FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins,
-    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingReplayCaptureIncomplete,
-    FindingReplayCaptureSet, FindingReplaySignature, FindingSignature,
-    FindingSignatureMinimizationEvidence, FindingTriageEvidenceSet, FindingTriageReplayEvidence,
-    MeasurementSet, ObservationId, PropertyVerdictSet, ReproductionArtifact,
-    ReproductionArtifactId, ResolvedSelection, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, Selection, SelectionId, SelectionOrigin,
+    FindingExactRetention, FindingMinimizationAttempt, FindingMinimizationEvidence,
+    FindingReplayCaptureIncomplete, FindingReplayCaptureSet, FindingReplaySignature,
+    FindingSignature, FindingSignatureMinimizationEvidence, FindingTriageEvidenceSet,
+    FindingTriageReplayEvidence, MeasurementSet, ObservationId, PropertyVerdictSet,
+    ReproductionArtifact, ReproductionArtifactId, ResolvedSelection, ScenarioArtifact,
+    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, Selection, SelectionId,
+    SelectionOrigin,
 };
 use crucible_cas::content_store::ContentId;
 
@@ -404,6 +405,56 @@ impl PreparedCrucibleFindingCandidate {
         Ok(())
     }
 
+    /// Binds exact pins and the authenticated automatic-retention outcome.
+    ///
+    /// The replay capture roots must already be durable. Rebuilding the bundle
+    /// changes its identity, so the caller must stage the new root before
+    /// releasing publication and operational inventory guards.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when replay capture roots are absent, exact retention
+    /// was already bound, or the version-four bundle is invalid.
+    pub(crate) fn bind_exact_retention(
+        &mut self,
+        exact_pins: FindingExactPins,
+        exact_retention: FindingExactRetention,
+        evidence: Option<crucible_campaign::FindingExactRetentionEvidence>,
+    ) -> Result<(), CampaignCodecError> {
+        if self.bundle.exact_retention().is_some() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "finding exact retention cannot be rebound",
+            });
+        }
+
+        self.bundle = match evidence {
+            Some(evidence) => FindingCandidateBundle::new_with_authenticated_exact_retention(
+                self.bundle.observation(),
+                self.bundle.signature().clone(),
+                self.bundle.reproduction(),
+                self.bundle.minimized(),
+                self.bundle.signature_minimization().clone(),
+                exact_pins,
+                self.bundle.triage_evidence(),
+                self.bundle.replay_captures(),
+                exact_retention,
+                evidence,
+            )?,
+            None => FindingCandidateBundle::new_with_exact_retention(
+                self.bundle.observation(),
+                self.bundle.signature().clone(),
+                self.bundle.reproduction(),
+                self.bundle.minimized(),
+                self.bundle.signature_minimization().clone(),
+                exact_pins,
+                self.bundle.triage_evidence(),
+                self.bundle.replay_captures(),
+                exact_retention,
+            )?,
+        };
+        Ok(())
+    }
+
     /// Returns the deterministic root that must be staged before publication.
     ///
     /// # Errors
@@ -551,13 +602,13 @@ impl PreparedCrucibleFindingCandidate {
                 }
             }
         }
-        let bundle = store.publish_executor_finding_candidate(&self.bundle)?;
-        if bundle != self.id()? {
+        let publication = store.publish_executor_finding_candidate(&self.bundle)?;
+        if publication != self.id()? {
             return Err(CampaignRepositoryError::Integrity {
                 reason: "prepared-finding-bundle-publication-mismatch",
             });
         }
-        Ok(bundle)
+        Ok(publication)
     }
 }
 
@@ -2505,4 +2556,4 @@ fn campaign_configuration_id(id: crucible::ContentHash) -> ConfigurationId {
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #[allow(clippy::expect_used)]
-mod tests;
+pub(crate) mod tests;

@@ -237,6 +237,8 @@ where
                             observation,
                             finding_candidate,
                             finding_replay_captures,
+                            finding_exact_retention_roots,
+                            prepared_result_digest,
                             ..
                         } => AttemptRuntimeState::Publishing {
                             execution_basis,
@@ -246,6 +248,8 @@ where
                             observation,
                             finding_candidate,
                             finding_replay_captures,
+                            finding_exact_retention_roots,
+                            prepared_result_digest,
                         },
                         AttemptRuntimeState::Paused { .. }
                         | AttemptRuntimeState::CheckpointPromoting { .. }
@@ -559,6 +563,8 @@ where
                     observation,
                     finding_candidate,
                     finding_replay_captures,
+                    finding_exact_retention_roots,
+                    prepared_result_digest,
                 },
             ) if current_basis == execution_basis => {
                 match self.validator.validate_completion_artifacts(
@@ -576,6 +582,7 @@ where
                             finding_candidate: CompletedFindingCandidate::pending(
                                 finding_candidate,
                             ),
+                            prepared_result_digest,
                         };
                         let advance = self.advance_attempt(key, publishing, Some(completed))?;
                         if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -606,6 +613,8 @@ where
                             observation,
                             finding_candidate,
                             finding_replay_captures,
+                            finding_exact_retention_roots,
+                            prepared_result_digest,
                         };
                         let advance = self.advance_attempt(key, publishing, Some(recovery))?;
                         if let AttemptAdvance::CommittedAfterError(error) = advance {

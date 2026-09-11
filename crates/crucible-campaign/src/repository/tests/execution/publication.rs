@@ -2,14 +2,19 @@
 
 use super::*;
 use crate::{
-    CampaignFindingOccurrenceObject, CampaignFindingOccurrenceObjectKind,
-    CampaignFindingTriageReplayRole, FindingTriageEvidenceSet,
+    AuthenticatedFindingExactCheckpoint, CampaignExecutorStore, CampaignFindingOccurrenceObject,
+    CampaignFindingOccurrenceObjectKind, FindingExactCheckpointAuthenticationError,
+    FindingExactCheckpointAuthenticator, FindingExactRetention, FindingExactRetentionCandidate,
+    FindingExactRetentionDisposition, FindingExactRetentionEvidence,
+    FindingExactRetentionIncomplete, CampaignFindingTriageReplayRole, FindingTriageEvidenceSet,
     GetCampaignFindingOccurrenceObjectRequest, GetCampaignFindingOccurrenceObjectResponse,
     GetCampaignFindingTriageReplaySegmentRequest, GetCampaignFindingTriageReplaySegmentResponse,
     MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
     MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
     QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
+    ScenarioArtifactId,
 };
+use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 
 /// Installs a frozen historical finding through the same snapshot transition
 /// shape written by earlier repository versions.
@@ -937,17 +942,32 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
             .publish_finding_triage_replay_evidence(&verification_selected_triage)
             .expect("publish verification selected triage evidence"),
     );
-    let bundle = FindingCandidateBundle::new_with_triage_evidence(
+    let retention_basis = repository
+        .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
+        .expect("finding retention policy basis");
+    let exact_retention = FindingExactRetention::new(
+        retention_basis.snapshot(),
+        retention_basis.policy(),
+        retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )
+    .expect("incomplete exact retention");
+    let bundle = FindingCandidateBundle::new_with_exact_retention(
         observed.observation,
         signature.clone(),
         original,
         minimized,
         signature_minimization,
         FindingExactPins::default(),
-        triage_evidence,
+        Some(triage_evidence),
+        None,
+        exact_retention,
     )
     .expect("finding candidate bundle");
-    assert_eq!(bundle.schema_version(), 2);
+    assert_eq!(bundle.schema_version(), 4);
 
     let mismatched_triage_bundle = FindingCandidateBundle::new_with_triage_evidence(
         observed.observation,
@@ -1439,17 +1459,32 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
             vec![b't'; MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES],
         ),
     );
-    let second_bundle = FindingCandidateBundle::new_with_triage_evidence(
+    let second_retention_basis = repository
+        .attempt_retention_policy_basis_at(second_admitted.new_snapshot, second_admitted.attempt)
+        .expect("second finding retention policy basis");
+    let second_exact_retention = FindingExactRetention::new(
+        second_retention_basis.snapshot(),
+        second_retention_basis.policy(),
+        second_retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )
+    .expect("second incomplete exact retention");
+    let second_bundle = FindingCandidateBundle::new_with_exact_retention(
         second_observed.observation,
         signature.clone(),
         second_original,
         second_minimized,
         second_signature_minimization,
         FindingExactPins::default(),
-        second_triage_evidence,
+        Some(second_triage_evidence),
+        None,
+        second_exact_retention,
     )
     .expect("second finding candidate bundle");
-    assert_eq!(second_bundle.schema_version(), 2);
+    assert_eq!(second_bundle.schema_version(), 4);
     assert_eq!(second_bundle.signature(), bundle.signature());
     let second_bundle_id = repository
         .publish_finding_candidate_bundle(&second_bundle)
@@ -1457,7 +1492,7 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
     assert_eq!(
         repository
             .load_finding_candidate_bundle(second_bundle_id)
-            .expect("load schema-v2 finding candidate bundle"),
+            .expect("load schema-v4 finding candidate bundle"),
         second_bundle
     );
     assert_ne!(second_bundle_id, bundle_id);
@@ -1562,7 +1597,7 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         .incorporate_finding_candidate_bundle(
             "finding-candidate-fresh-v4",
             second_observed.new_snapshot,
-            bundle_id,
+            second_bundle_id,
         )
         .expect("incorporate fresh schema-v4 finding");
     assert!(!fresh.replayed);
@@ -1571,7 +1606,7 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         .expect("fresh schema-v4 finding");
     assert_eq!(fresh_finding.schema_version(), 4);
     assert_eq!(fresh_finding.candidate_occurrence_count(), 1);
-    assert_eq!(fresh_finding.candidate_bundle(), Some(bundle_id));
+    assert_eq!(fresh_finding.candidate_bundle(), Some(second_bundle_id));
 
     let downgraded_finding = Finding::new_with_candidate_bundle(
         fresh_finding.signature().clone(),
@@ -1586,7 +1621,7 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         .expect("downgraded occurrence set"),
         fresh_finding.minimized(),
         fresh_finding.exact_pin_retention().clone(),
-        bundle_id,
+        second_bundle_id,
     )
     .expect("schema-v3 downgrade candidate");
     let downgraded_snapshot = install_historical_finding_successor(
@@ -1981,6 +2016,152 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
 }
 
 #[test]
+fn exact_retention_rejects_source_snapshot_and_campaign_lineage_substitution() {
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "exact-retention-source");
+    let observed = repository
+        .publish_observation(
+            "exact-retention-source",
+            admitted.new_snapshot,
+            &observation,
+        )
+        .expect("publish source observation");
+
+    let other_lineage = CampaignLineage::new(
+        lineage.scenario(),
+        lineage.scenario_content(),
+        lineage.genesis(),
+        lineage.genesis_content(),
+        lineage.crucible_version(),
+        "qemu-other-lineage",
+        lineage.protocol_versions().clone(),
+        lineage.scenario_schema(),
+        lineage.exact_closure_schema(),
+    )
+    .expect("same-scenario alternate lineage");
+    let (_, other_admitted, other_observation) = admitted_observation_fixture(
+        &repository,
+        &other_lineage,
+        &policy,
+        "exact-retention-other-lineage",
+    );
+    let other_observed = repository
+        .publish_observation(
+            "exact-retention-other-lineage",
+            other_admitted.new_snapshot,
+            &other_observation,
+        )
+        .expect("publish alternate-lineage observation");
+
+    let fingerprint = CampaignHash::derive("test-finding", b"snapshot-bound retention");
+    let original = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"snapshot-bound original".to_vec(),
+        )
+        .expect("publish original reproduction");
+    let final_state = CampaignHash::derive("test-finding", b"snapshot-bound final state");
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        1,
+        b"snapshot-bound minimization".to_vec(),
+        vec![FindingMinimizationAttempt::new(
+            0,
+            CampaignHash::derive("test-finding", b"snapshot-bound candidate"),
+            CampaignHash::derive("test-finding", b"snapshot-bound schedule"),
+            final_state,
+            Some(fingerprint),
+            true,
+        )],
+        final_state,
+    )
+    .expect("minimization evidence");
+    let minimized = repository
+        .publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"snapshot-bound minimized".to_vec(),
+            minimization.clone(),
+        )
+        .expect("publish minimized reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.snapshot-bound-divergence".to_owned(),
+        Some(FindingTarget::Configuration(observation.child_content())),
+        BTreeSet::new(),
+    )
+    .expect("finding signature");
+    let signatures = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        vec![Some(signature.clone()), Some(signature.clone())],
+        vec![Some(signature.clone()), Some(signature.clone())],
+    )
+    .expect("signature minimization evidence");
+    let exact_retention = |snapshot| {
+        FindingExactRetention::new(
+            snapshot,
+            policy.id().ok(),
+            admitted.admission,
+            0,
+            FindingExactRetentionDisposition::Incomplete(
+                FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+            ),
+        )
+        .expect("exact retention evidence")
+    };
+    let bundle_with = |retention| {
+        FindingCandidateBundle::new_with_exact_retention(
+            observed.observation,
+            signature.clone(),
+            original,
+            minimized,
+            signatures.clone(),
+            FindingExactPins::default(),
+            None,
+            None,
+            retention,
+        )
+        .expect("exact retention bundle")
+    };
+
+    let substituted = bundle_with(exact_retention(other_admitted.new_snapshot));
+    assert!(matches!(
+        repository.publish_finding_candidate_bundle(&substituted),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "finding-exact-retention-attempt-is-not-in-source-snapshot"
+        })
+    ));
+
+    let bundle = bundle_with(exact_retention(admitted.new_snapshot));
+    let bundle_id = repository
+        .publish_finding_candidate_bundle(&bundle)
+        .expect("publish source-bound bundle");
+    assert!(matches!(
+        repository.incorporate_finding_candidate_bundle(
+            "exact-retention-other-lineage",
+            other_observed.new_snapshot,
+            bundle_id,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "finding-exact-retention-source-snapshot-lineage-mismatch"
+        })
+    ));
+}
+
+#[test]
 fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
     let (repository, lineage, policy) = fixture();
     let (_, admitted, basis) =
@@ -2288,5 +2469,550 @@ fn observation_ref_conflict_leaves_the_admitted_head_authoritative() {
             .expect("validation checkpoints")
             .len(),
         checkpoint_count
+    );
+}
+
+struct RecordingFindingCheckpointAuthenticator {
+    calls: Arc<Mutex<Vec<(ExactCheckpointId, u64)>>>,
+    metadata_bytes: u64,
+    scenario_override: Option<ScenarioDefId>,
+    configuration_override: Option<ConfigurationId>,
+    event_counts: BTreeMap<ExactCheckpointId, u64>,
+    failure: Option<FindingExactCheckpointAuthenticationError>,
+    object_source: Option<Arc<MemoryBlobBackend>>,
+}
+
+impl FindingExactCheckpointAuthenticator for RecordingFindingCheckpointAuthenticator {
+    fn authenticate_finding_exact_checkpoint(
+        &self,
+        checkpoint: ExactCheckpointId,
+        scenario: ScenarioDefId,
+        _scenario_artifact: ScenarioArtifactId,
+        configuration: ConfigurationId,
+        maximum_metadata_bytes: u64,
+    ) -> Result<AuthenticatedFindingExactCheckpoint, FindingExactCheckpointAuthenticationError>
+    {
+        self.calls
+            .lock()
+            .expect("record finding checkpoint authentication")
+            .push((checkpoint, maximum_metadata_bytes));
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        Ok(AuthenticatedFindingExactCheckpoint::new(
+            self.scenario_override.unwrap_or(scenario),
+            self.configuration_override.unwrap_or(configuration),
+            *self
+                .event_counts
+                .get(&checkpoint)
+                .expect("recorded checkpoint event count"),
+            self.metadata_bytes,
+        ))
+    }
+
+    fn read_finding_exact_checkpoint_object(
+        &self,
+        object: ContentId,
+    ) -> Result<BlobHandle, FindingExactCheckpointAuthenticationError> {
+        self.object_source
+            .as_ref()
+            .ok_or(FindingExactCheckpointAuthenticationError::AuthenticationFailed)?
+            .read(object, None)
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)
+    }
+}
+
+fn recording_finding_checkpoint_authenticator(
+    calls: Arc<Mutex<Vec<(ExactCheckpointId, u64)>>>,
+    metadata_bytes: u64,
+    event_counts: BTreeMap<ExactCheckpointId, u64>,
+) -> RecordingFindingCheckpointAuthenticator {
+    RecordingFindingCheckpointAuthenticator {
+        calls,
+        metadata_bytes,
+        scenario_override: None,
+        configuration_override: None,
+        event_counts,
+        failure: None,
+        object_source: None,
+    }
+}
+
+fn publish_test_exact_checkpoint_closure(
+    repository: &CampaignRepository,
+    label: &[u8],
+) -> (ExactCheckpointId, ContentId, Vec<u8>) {
+    let mut manifest_bytes = b"test exact manifest ".to_vec();
+    manifest_bytes.extend_from_slice(label);
+    let manifest = ContentId::for_bytes(ObjectKind::DeviceState, 1, &manifest_bytes);
+    repository
+        .blobs
+        .put_if_absent(manifest, &BlobHandle::from_bytes(manifest_bytes))
+        .expect("publish test exact manifest");
+
+    let mut leaf_bytes = b"test exact leaf ".to_vec();
+    leaf_bytes.extend_from_slice(label);
+    let leaf = ContentId::for_bytes(ObjectKind::Trace, 1, &leaf_bytes);
+    repository
+        .blobs
+        .put_if_absent(leaf, &BlobHandle::from_bytes(leaf_bytes.clone()))
+        .expect("publish test exact leaf");
+
+    let index = ContentEnvelope::new(
+        "crucible.test.exact-checkpoint-index",
+        1,
+        BTreeSet::from([ContentChild::new("object.0000", leaf).expect("index child")]),
+        b"test exact index".to_vec(),
+    )
+    .expect("test exact index");
+    let index_id = index.content_id(ObjectKind::ExactManifest);
+    repository
+        .blobs
+        .put_if_absent(index_id, &BlobHandle::from_bytes(index.canonical_bytes()))
+        .expect("publish test exact index");
+
+    let root = ContentEnvelope::new(
+        "crucible.test.exact-checkpoint-root",
+        4,
+        BTreeSet::from([
+            ContentChild::new("index.0000", index_id).expect("root index child"),
+            ContentChild::new("manifest", manifest).expect("root manifest child"),
+        ]),
+        b"test exact root".to_vec(),
+    )
+    .expect("test exact root");
+    let root_id = root.content_id(ObjectKind::ExactManifest);
+    repository
+        .blobs
+        .put_if_absent(root_id, &BlobHandle::from_bytes(root.canonical_bytes()))
+        .expect("publish test exact root");
+
+    (
+        ExactCheckpointId::from_content_id(root_id).expect("test exact checkpoint ID"),
+        leaf,
+        leaf_bytes,
+    )
+}
+
+fn delete_test_blob(blobs: &MemoryBlobBackend, id: ContentId) {
+    let mut inventory = blobs
+        .acquire_inventory_fence()
+        .expect("acquire test deletion fence");
+    inventory
+        .delete_candidate(id)
+        .expect("delete test blob candidate");
+}
+
+#[test]
+fn complete_exact_retention_requires_executor_authentication_and_cold_loads_attestation() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let (_, admitted, observation) = admitted_observation_fixture(
+        &repository,
+        &lineage,
+        &policy,
+        "authenticated-exact-retention",
+    );
+    let observed = repository
+        .publish_observation(
+            "authenticated-exact-retention",
+            admitted.new_snapshot,
+            &observation,
+        )
+        .expect("publish exact-retention observation");
+
+    let fingerprint = CampaignHash::derive("test-finding", b"authenticated retention");
+    let original = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"authenticated original".to_vec(),
+        )
+        .expect("publish authenticated original");
+    let final_state = CampaignHash::derive("test-finding", b"authenticated final state");
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        1,
+        b"authenticated minimization".to_vec(),
+        vec![FindingMinimizationAttempt::new(
+            0,
+            CampaignHash::derive("test-finding", b"authenticated candidate"),
+            CampaignHash::derive("test-finding", b"authenticated schedule"),
+            final_state,
+            Some(fingerprint),
+            true,
+        )],
+        final_state,
+    )
+    .expect("authenticated minimization evidence");
+    let minimized = repository
+        .publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"authenticated minimized".to_vec(),
+            minimization.clone(),
+        )
+        .expect("publish authenticated minimized reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.authenticated-retention".to_owned(),
+        Some(FindingTarget::Configuration(observation.child_content())),
+        BTreeSet::new(),
+    )
+    .expect("authenticated signature");
+    let signatures = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        vec![Some(signature.clone()), Some(signature.clone())],
+        vec![Some(signature.clone()), Some(signature.clone())],
+    )
+    .expect("authenticated signature evidence");
+
+    let checkpoint_blobs = Arc::new(MemoryBlobBackend::new(
+        "selected-exact-checkpoint-source",
+        64 * 1024 * 1024,
+    ));
+    let checkpoint_repository =
+        CampaignRepository::new(checkpoint_blobs.clone(), Arc::new(MemoryRefBackend::new()));
+    let (checkpoint, selected_leaf, selected_leaf_bytes) =
+        publish_test_exact_checkpoint_closure(&checkpoint_repository, b"selected");
+    let (unselected_checkpoint, _, _) =
+        publish_test_exact_checkpoint_closure(&checkpoint_repository, b"unselected");
+    let exact_pins = FindingExactPins::new(
+        BTreeSet::new(),
+        BTreeSet::new(),
+        BTreeSet::from([checkpoint]),
+        BTreeSet::new(),
+    )
+    .expect("selected exact pins");
+    let mut candidates = vec![
+        FindingExactRetentionCandidate::new(checkpoint, 5),
+        FindingExactRetentionCandidate::new(unselected_checkpoint, 6),
+    ];
+    candidates.sort_by_key(|candidate| candidate.checkpoint());
+    let evidence =
+        FindingExactRetentionEvidence::new(candidates, checkpoint, 5, None, exact_pins.clone())
+            .expect("authenticated inventory evidence");
+    let basis = repository
+        .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
+        .expect("retention policy basis");
+    let retention = FindingExactRetention::new(
+        basis.snapshot(),
+        basis.policy(),
+        basis.admission(),
+        2,
+        FindingExactRetentionDisposition::Complete,
+    )
+    .expect("complete retention outcome");
+    let single_candidate_evidence = FindingExactRetentionEvidence::new(
+        vec![FindingExactRetentionCandidate::new(checkpoint, 5)],
+        checkpoint,
+        5,
+        None,
+        exact_pins.clone(),
+    )
+    .expect("single-candidate exact evidence");
+    let single_candidate_retention = FindingExactRetention::new(
+        basis.snapshot(),
+        basis.policy(),
+        basis.admission(),
+        1,
+        FindingExactRetentionDisposition::Complete,
+    )
+    .expect("single-candidate exact retention");
+    let legacy_complete_bundle = FindingCandidateBundle::new_with_exact_retention(
+        observed.observation,
+        signature.clone(),
+        original,
+        minimized,
+        signatures.clone(),
+        exact_pins.clone(),
+        None,
+        None,
+        single_candidate_retention,
+    )
+    .expect("legacy V4 complete finding bundle");
+    let single_candidate_bundle = FindingCandidateBundle::new_with_authenticated_exact_retention(
+        observed.observation,
+        signature.clone(),
+        original,
+        minimized,
+        signatures.clone(),
+        exact_pins.clone(),
+        None,
+        None,
+        single_candidate_retention,
+        single_candidate_evidence,
+    )
+    .expect("single-candidate V5 finding bundle");
+    let bundle = FindingCandidateBundle::new_with_authenticated_exact_retention(
+        observed.observation,
+        signature,
+        original,
+        minimized,
+        signatures,
+        exact_pins,
+        None,
+        None,
+        retention,
+        evidence,
+    )
+    .expect("V5 finding bundle");
+    let bundle_id = bundle.id().expect("V5 finding bundle ID");
+    assert!(matches!(
+        repository.publish_finding_candidate_bundle(&bundle),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "finding-exact-checkpoint-authenticator-is-missing"
+        })
+    ));
+    assert!(
+        !repository
+            .blobs
+            .contains(bundle_id.content_id())
+            .expect("rejected bundle presence")
+    );
+
+    let repository = Arc::new(repository);
+    let candidate_events = BTreeMap::from([(checkpoint, 5), (unselected_checkpoint, 6)]);
+
+    let legacy_complete_authenticator = recording_finding_checkpoint_authenticator(
+        Arc::new(Mutex::new(Vec::new())),
+        17,
+        BTreeMap::from([(checkpoint, 5)]),
+    );
+    let legacy_complete_store = CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+        Arc::clone(&repository),
+        Arc::new(legacy_complete_authenticator),
+    );
+    assert!(matches!(
+        legacy_complete_store.publish_executor_finding_candidate(&legacy_complete_bundle),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "complete-finding-exact-retention-requires-authenticated-evidence"
+        })
+    ));
+
+    let mut failed_authenticator = recording_finding_checkpoint_authenticator(
+        Arc::new(Mutex::new(Vec::new())),
+        17,
+        candidate_events.clone(),
+    );
+    failed_authenticator.failure =
+        Some(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
+    let failed_store = CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+        Arc::clone(&repository),
+        Arc::new(failed_authenticator),
+    );
+    assert!(matches!(
+        failed_store.publish_executor_finding_candidate(&bundle),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "finding-exact-retention-candidate-authentication-failed"
+        })
+    ));
+
+    let mut wrong_scenario = recording_finding_checkpoint_authenticator(
+        Arc::new(Mutex::new(Vec::new())),
+        17,
+        candidate_events.clone(),
+    );
+    wrong_scenario.scenario_override = Some(ScenarioDefId::from_hash(CampaignHash::derive(
+        "test.wrong-finding-scenario",
+        b"wrong scenario",
+    )));
+    let wrong_scenario_store = CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+        Arc::clone(&repository),
+        Arc::new(wrong_scenario),
+    );
+    assert!(
+        wrong_scenario_store
+            .publish_executor_finding_candidate(&bundle)
+            .is_err()
+    );
+
+    let mut wrong_configuration = recording_finding_checkpoint_authenticator(
+        Arc::new(Mutex::new(Vec::new())),
+        17,
+        candidate_events.clone(),
+    );
+    wrong_configuration.configuration_override = Some(ConfigurationId::from_hash(
+        CampaignHash::derive("test.wrong-finding-configuration", b"wrong configuration"),
+    ));
+    let wrong_configuration_store =
+        CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+            Arc::clone(&repository),
+            Arc::new(wrong_configuration),
+        );
+    assert!(
+        wrong_configuration_store
+            .publish_executor_finding_candidate(&bundle)
+            .is_err()
+    );
+
+    let wrong_events = recording_finding_checkpoint_authenticator(
+        Arc::new(Mutex::new(Vec::new())),
+        17,
+        BTreeMap::from([(checkpoint, 4), (unselected_checkpoint, 6)]),
+    );
+    let wrong_events_store = CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+        Arc::clone(&repository),
+        Arc::new(wrong_events),
+    );
+    assert!(
+        wrong_events_store
+            .publish_executor_finding_candidate(&bundle)
+            .is_err()
+    );
+
+    let single_over_limit = recording_finding_checkpoint_authenticator(
+        Arc::new(Mutex::new(Vec::new())),
+        (64 * 1024 * 1024) + 1,
+        BTreeMap::from([(checkpoint, 5)]),
+    );
+    let single_over_limit_store =
+        CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+            Arc::clone(&repository),
+            Arc::new(single_over_limit),
+        );
+    assert!(matches!(
+        single_over_limit_store.publish_executor_finding_candidate(&single_candidate_bundle),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "finding-exact-retention-metadata-byte-limit"
+        })
+    ));
+
+    let mut single_at_limit = recording_finding_checkpoint_authenticator(
+        Arc::new(Mutex::new(Vec::new())),
+        64 * 1024 * 1024,
+        BTreeMap::from([(checkpoint, 5)]),
+    );
+    single_at_limit.object_source = Some(Arc::clone(&checkpoint_blobs));
+    let single_at_limit_store = CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+        Arc::clone(&repository),
+        Arc::new(single_at_limit),
+    );
+    single_at_limit_store
+        .publish_executor_finding_candidate(&single_candidate_bundle)
+        .expect("accept exact 64 MiB checkpoint metadata limit");
+
+    let aggregate_over_limit = recording_finding_checkpoint_authenticator(
+        Arc::new(Mutex::new(Vec::new())),
+        (32 * 1024 * 1024) + 1,
+        candidate_events.clone(),
+    );
+    let aggregate_over_limit_store =
+        CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+            Arc::clone(&repository),
+            Arc::new(aggregate_over_limit),
+        );
+    assert!(matches!(
+        aggregate_over_limit_store.publish_executor_finding_candidate(&bundle),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "finding-exact-retention-metadata-byte-limit"
+        })
+    ));
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut authenticator = recording_finding_checkpoint_authenticator(
+        Arc::clone(&calls),
+        32 * 1024 * 1024,
+        candidate_events.clone(),
+    );
+    authenticator.object_source = Some(Arc::clone(&checkpoint_blobs));
+    let executor = CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+        Arc::clone(&repository),
+        Arc::new(authenticator),
+    );
+    let publication = executor
+        .publish_executor_finding_candidate(&bundle)
+        .expect("publish executor-attested V5 bundle");
+    assert_eq!(publication, bundle_id);
+    let ordered_checkpoints = candidate_events.keys().copied().collect::<Vec<_>>();
+    assert_eq!(
+        calls.lock().expect("authentication calls").as_slice(),
+        &[
+            (ordered_checkpoints[0], 64 * 1024 * 1024),
+            (ordered_checkpoints[1], 32 * 1024 * 1024),
+        ]
+    );
+    assert!(
+        blobs
+            .contains(selected_leaf)
+            .expect("imported selected exact leaf presence")
+    );
+    assert!(
+        !blobs
+            .contains(unselected_checkpoint.content_id())
+            .expect("unselected exact root presence")
+    );
+    assert_eq!(
+        repository
+            .load_finding_candidate_bundle(bundle_id)
+            .expect("cold-load V5 attestation"),
+        bundle
+    );
+    assert!(matches!(
+        repository.incorporate_finding_candidate_bundle(
+            "authenticated-exact-retention",
+            observed.new_snapshot,
+            bundle_id,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "complete-finding-exact-retention-requires-executor-attested-incorporation"
+        })
+    ));
+    delete_test_blob(blobs.as_ref(), selected_leaf);
+    let head_before_rejection = repository
+        .head("authenticated-exact-retention")
+        .expect("head before missing selected descendant")
+        .snapshot_id();
+    assert!(
+        repository
+            .incorporate_checked_executor_finding_candidate_bundle(
+                "authenticated-exact-retention",
+                observed.new_snapshot,
+                bundle_id,
+                observed.observation,
+                CampaignHash::derive("test.checked-executor-completion", b"missing descendant"),
+            )
+            .is_err()
+    );
+    assert_eq!(
+        repository
+            .head("authenticated-exact-retention")
+            .expect("head after missing selected descendant")
+            .snapshot_id(),
+        head_before_rejection
+    );
+    repository
+        .blobs
+        .put_if_absent(selected_leaf, &BlobHandle::from_bytes(selected_leaf_bytes))
+        .expect("restore selected exact descendant");
+    let incorporated = repository
+        .incorporate_checked_executor_finding_candidate_bundle(
+            "authenticated-exact-retention",
+            observed.new_snapshot,
+            bundle_id,
+            observed.observation,
+            CampaignHash::derive("test.checked-executor-completion", b"exact completion"),
+        )
+        .expect("incorporate executor-attested V5 bundle");
+    assert!(!incorporated.replayed);
+    let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    assert!(
+        cold.incorporate_finding_candidate_bundle(
+            "authenticated-exact-retention",
+            observed.new_snapshot,
+            bundle_id,
+        )
+        .expect("cold replay of incorporated V5 bundle")
+        .replayed
     );
 }

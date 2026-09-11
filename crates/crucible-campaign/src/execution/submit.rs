@@ -4,9 +4,10 @@
 //! Their current wire shapes are:
 //!
 //! ```text
-//! SubmitAttemptRequestV5 = version | assignment | daemon-epoch | lineage |
+//! SubmitAttemptRequestV6 = version | assignment | daemon-epoch | lineage |
 //!                          attempt | resource-limits | retention-intent |
-//!                          selected-savepoint-start-mode
+//!                          start-mode | finding-retention-policy-basis
+//! FindingRetentionPolicyBasis = source-snapshot | admission | policy
 //! SubmitAttemptResponseV4 = version | assignment | daemon-epoch | attempt |
 //!                           request-digest | completed-disposition |
 //!                           finding-candidate
@@ -27,6 +28,7 @@ pub struct SubmitAttemptRequest {
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     start_mode: AttemptStartMode,
+    retention_policy_basis: Option<AttemptRetentionPolicyBasis>,
 }
 
 impl SubmitAttemptRequest {
@@ -57,6 +59,7 @@ impl SubmitAttemptRequest {
             resources,
             retention,
             start_mode: AttemptStartMode::Execute,
+            retention_policy_basis: None,
         };
         codec::ensure_encoded_size(
             &request,
@@ -94,6 +97,7 @@ impl SubmitAttemptRequest {
             resources,
             retention,
             start_mode: AttemptStartMode::CaptureMaterializedStart { configuration },
+            retention_policy_basis: None,
         };
         codec::ensure_encoded_size(
             &request,
@@ -137,6 +141,7 @@ impl SubmitAttemptRequest {
                 request,
                 configuration,
             },
+            retention_policy_basis: None,
         };
         codec::ensure_encoded_size(
             &request,
@@ -183,6 +188,7 @@ impl SubmitAttemptRequest {
                 selection,
                 request,
             },
+            retention_policy_basis: None,
         };
         codec::ensure_encoded_size(
             &request,
@@ -190,6 +196,35 @@ impl SubmitAttemptRequest {
             "submit-attempt-request-encoded-bytes",
         )?;
         Ok(request)
+    }
+
+    /// Binds the execution-basis admission and its authenticated retention policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the version-6 component message exceeds its strict
+    /// encoded bound.
+    pub fn with_retention_policy_basis(
+        mut self,
+        basis: AttemptRetentionPolicyBasis,
+    ) -> Result<Self, CampaignCodecError> {
+        if matches!(
+            self.start_mode,
+            AttemptStartMode::CaptureMaterializedStart { .. }
+                | AttemptStartMode::SavepointCapture { .. }
+        ) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "capture submit request cannot carry a retention policy basis",
+            });
+        }
+        self.schema_version = RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION;
+        self.retention_policy_basis = Some(basis);
+        codec::ensure_encoded_size(
+            &self,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "submit-attempt-request-encoded-bytes",
+        )?;
+        Ok(self)
     }
 
     /// Returns the idempotent operational assignment identity.
@@ -234,6 +269,12 @@ impl SubmitAttemptRequest {
         self.start_mode
     }
 
+    /// Returns the admission-bound finding-retention policy basis, when supplied.
+    #[must_use]
+    pub const fn retention_policy_basis(&self) -> Option<AttemptRetentionPolicyBasis> {
+        self.retention_policy_basis
+    }
+
     /// Returns the durable operational namespace selected by this assignment.
     #[must_use]
     pub const fn execution_scope(&self) -> AttemptExecutionScope {
@@ -254,6 +295,9 @@ impl SubmitAttemptRequest {
             SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION => {
                 "crucible.campaign.submit-attempt-request.v5"
             }
+            RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION => {
+                "crucible.campaign.submit-attempt-request.v6"
+            }
             _ => unreachable!("validated submit request schema"),
         };
         CampaignHash::derive(domain, &self.canonical_bytes())
@@ -266,12 +310,13 @@ impl SubmitAttemptRequest {
     /// share one running or completed execution only when this digest matches.
     #[must_use]
     pub fn execution_basis_digest(&self) -> CampaignHash {
-        attempt_execution_basis_digest_for_start_mode(
+        attempt_execution_basis_digest_with_retention_policy(
             self.lineage,
             self.attempt,
             self.resources,
             self.retention,
             self.start_mode,
+            self.retention_policy_basis,
         )
     }
 
@@ -304,8 +349,12 @@ impl Canonical for SubmitAttemptRequest {
         if self.schema_version == MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION
             || self.schema_version == SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION
             || self.schema_version == SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION
+            || self.schema_version == RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION
         {
             self.start_mode.encode(encoder);
+        }
+        if self.schema_version == RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION {
+            self.retention_policy_basis.encode(encoder);
         }
     }
 
@@ -330,6 +379,45 @@ impl Canonical for SubmitAttemptRequest {
         }
 
         let start_mode = AttemptStartMode::decode(decoder)?;
+        if schema_version == RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION {
+            let basis = Option::<AttemptRetentionPolicyBasis>::decode(decoder)?.ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "submit attempt request version 6 requires retention policy basis",
+                },
+            )?;
+            let request = match start_mode {
+                AttemptStartMode::Execute => Self::new(
+                    assignment,
+                    daemon_epoch,
+                    lineage,
+                    attempt,
+                    resources,
+                    retention,
+                ),
+                AttemptStartMode::CaptureMaterializedStart { .. }
+                | AttemptStartMode::SavepointCapture { .. } => {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "submit attempt request version 6 has a capture start mode",
+                    });
+                }
+                AttemptStartMode::SelectedSavepoint {
+                    snapshot,
+                    selection,
+                    request,
+                } => Self::new_selected_savepoint(
+                    assignment,
+                    daemon_epoch,
+                    lineage,
+                    attempt,
+                    resources,
+                    retention,
+                    snapshot,
+                    selection,
+                    request,
+                ),
+            }?;
+            return request.with_retention_policy_basis(basis);
+        }
         match (schema_version, start_mode) {
             (
                 MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION,

@@ -14,24 +14,26 @@ use crucible_cas::content_store::{
     BlobHandle, ContentId, ImmutableBlobBackend, MutableRefBackend, ObjectKind, PutReceipt,
     RefCasOutcome, RefName, RefPublicationGuard, StoreError,
 };
+use ed25519_dalek::VerifyingKey;
 use thiserror::Error;
 
 use crate::CampaignViewId;
 use crate::{
     ActiveAttemptPolicy, AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId,
-    AttemptAdmissionRole, AttemptId, AttemptStart, AttemptStartMode, BranchPath, BranchPathId,
-    BranchRequest, BranchRequestCause, BranchRequestId, CampaignCodecError, CampaignControlAction,
-    CampaignDerivation, CampaignFact, CampaignFactId, CampaignHash, CampaignLineage,
-    CampaignLineageId, CampaignMode, CampaignPlanningView, CampaignPolicy, CampaignPolicyId,
-    CampaignSnapshot, CampaignSnapshotId, CampaignState, CampaignStoreError,
-    CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource,
-    CanonicalBeamPlanner, CanonicalFrontierPlanner, CanonicalPuctPlanner, CanonicalSearchPlanner,
-    ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
-    ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
-    ContinuationProjection, ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch,
-    DebuggerAuthorityKey, DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile,
-    ExecutorRejection, ExpansionCredit, ExpansionState, ExpansionStateId, Finding,
-    FindingCandidateBundle, FindingCandidateBundleId, FindingCandidateOccurrenceSet, FindingId,
+    AttemptAdmissionRole, AttemptId, AttemptRetentionPolicyBasis, AttemptStart, AttemptStartMode,
+    BranchPath, BranchPathId, BranchRequest, BranchRequestCause, BranchRequestId,
+    CampaignCodecError, CampaignControlAction, CampaignDerivation, CampaignFact, CampaignFactId,
+    CampaignHash, CampaignLineage, CampaignLineageId, CampaignMode, CampaignPlanningView,
+    CampaignPolicy, CampaignPolicyId, CampaignSnapshot, CampaignSnapshotId, CampaignState,
+    CampaignStoreError, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
+    CandidateGeneratorSpecId, CandidateSource, CanonicalBeamPlanner, CanonicalFrontierPlanner,
+    CanonicalPuctPlanner, CanonicalSearchPlanner, ChoiceDomain, ChoiceDomainId, ChoiceGroup,
+    ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact,
+    ConfigurationArtifactId, ConfigurationId, ContinuationProjection, ControlRequest,
+    CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
+    DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile, ExecutorRejection,
+    ExpansionCredit, ExpansionState, ExpansionStateId, Finding, FindingCandidateBundle,
+    FindingCandidateBundleId, FindingCandidateOccurrenceSet, FindingId,
     FindingMinimizationEvidence, FindingOccurrenceSet, FindingTriageReplayEvidence,
     FindingTriageReplayEvidenceId, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
     GetAttemptExecutionResponse, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof,
@@ -768,13 +770,16 @@ pub struct ResolvedSelection {
 #[derive(Clone)]
 pub struct CampaignExecutorStore {
     repository: Arc<CampaignRepository>,
+    finding_exact_checkpoint_authenticator: Option<Arc<dyn FindingExactCheckpointAuthenticator>>,
+    finding_candidate_recovery_verifying_key: Option<VerifyingKey>,
 }
 
-/// GC-excluded immutable-object access for one executor publication handoff.
+/// GC-excluded immutable-object access for one executor finding handoff.
 ///
-/// This capability admits only version-one finding replay capture chunks and
-/// manifests. It does not expose the repository backend or mutable campaign
-/// refs, and its lifetime keeps destructive ref inventory excluded.
+/// This capability admits replay-capture publication while its repository
+/// guard also protects prepublished exact-checkpoint roots until the finding
+/// candidate becomes an operational root. It does not expose the repository
+/// backend or mutable campaign refs.
 pub struct CampaignExecutorPublicationGuard<'a> {
     repository: &'a CampaignRepository,
     _gc_exclusion: CampaignRepositoryGcExclusionGuard<'a>,
@@ -784,13 +789,56 @@ impl CampaignExecutorStore {
     /// Creates a narrow executor capability over one campaign repository.
     #[must_use]
     pub const fn new(repository: Arc<CampaignRepository>) -> Self {
-        Self { repository }
+        Self {
+            repository,
+            finding_exact_checkpoint_authenticator: None,
+            finding_candidate_recovery_verifying_key: None,
+        }
     }
 
-    /// Acquires GC-excluded access for a finding replay capture handoff.
+    /// Creates an executor capability with typed V5 checkpoint authentication.
     ///
-    /// The caller holds the returned guard across immutable chunk and manifest
-    /// writes and the later operational-ledger Publishing transition.
+    /// The authority is immutable for this facade and is used only while
+    /// publishing a complete exact-retention inventory under the executor's
+    /// operational publication fence.
+    #[must_use]
+    pub fn with_finding_exact_checkpoint_authenticator(
+        repository: Arc<CampaignRepository>,
+        authenticator: Arc<dyn FindingExactCheckpointAuthenticator>,
+    ) -> Self {
+        Self {
+            repository,
+            finding_exact_checkpoint_authenticator: Some(authenticator),
+            finding_candidate_recovery_verifying_key: None,
+        }
+    }
+
+    /// Installs the public half of one process-ephemeral recovery authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an integrity error when `key` is not a valid Ed25519 public key.
+    pub fn with_finding_candidate_recovery_verifying_key(
+        mut self,
+        key: [u8; 32],
+    ) -> Result<Self, CampaignRepositoryError> {
+        self.finding_candidate_recovery_verifying_key =
+            Some(VerifyingKey::from_bytes(&key).map_err(|_| {
+                CampaignRepositoryError::Integrity {
+                    reason: "finding-candidate-recovery-verifying-key-invalid",
+                }
+            })?);
+        Ok(self)
+    }
+
+    /// Acquires GC-excluded access for a finding publication handoff.
+    ///
+    /// The caller holds the returned guard across replay-capture writes,
+    /// exact-root selection, hidden prepared-journal creation, the Publishing
+    /// ledger transition, and visible-journal promotion. A Complete v5 finding
+    /// is also published under this guard while its full candidate inventory is
+    /// protected. Publishing releases the guard only after operational roots
+    /// protect the immutable closure; later publication is idempotent.
     ///
     /// # Errors
     ///
@@ -831,6 +879,35 @@ impl CampaignExecutorStore {
     ) -> Result<(), CampaignRepositoryError> {
         self.repository
             .validate_executor_execution_scope(lineage, attempt, start_mode)
+    }
+
+    /// Authenticates one admission-bound policy used for automatic finding retention.
+    ///
+    /// A successful `None` result identifies a legacy execution-basis admission
+    /// that has no canonical policy binding. Callers must preserve thin finding
+    /// evidence and report the localized missing-policy diagnostic instead of
+    /// consulting a mutable campaign head.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the admission, attempt, lineage, policy, or their
+    /// canonical relationships are unavailable or inconsistent.
+    pub fn validate_attempt_retention_policy_basis(
+        &self,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        basis: AttemptRetentionPolicyBasis,
+    ) -> Result<Option<crate::RetentionPolicy>, CampaignRepositoryError> {
+        self.repository
+            .validate_attempt_retention_policy_basis(lineage, attempt, basis)?;
+        basis
+            .policy()
+            .map(|policy| {
+                self.repository
+                    .read_policy(policy.content_id())
+                    .map(|policy| policy.retention())
+            })
+            .transpose()
     }
 
     /// Loads and authenticates one campaign compatibility lineage.
@@ -1358,7 +1435,95 @@ impl CampaignExecutorStore {
         &self,
         bundle: &FindingCandidateBundle,
     ) -> Result<FindingCandidateBundleId, CampaignRepositoryError> {
-        self.repository.publish_finding_candidate_bundle(bundle)
+        let expected = bundle.id()?;
+        if self.repository.blobs.contains(expected.content_id())? {
+            let published = self.repository.load_finding_candidate_bundle(expected)?;
+            if &published != bundle {
+                return Err(CampaignRepositoryError::Integrity {
+                    reason: "prepared-finding-bundle-publication-mismatch",
+                });
+            }
+            return Ok(expected);
+        }
+
+        match self.finding_exact_checkpoint_authenticator.as_deref() {
+            Some(authenticator) => self
+                .repository
+                .publish_finding_candidate_bundle_with_authenticator(bundle, authenticator),
+            None => self.repository.publish_finding_candidate_bundle(bundle),
+        }
+    }
+
+    /// Verifies one restart seal and mints single-use incorporation authority.
+    ///
+    /// The daemon recovery owner signs only after reopening the completed V15
+    /// assignment state and prepared-result journal and comparing their full
+    /// execution and publication identity. This store retains only that
+    /// process owner's public key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when durable recovery authentication fails.
+    pub fn authenticate_recovered_finding_candidate_incorporation(
+        &self,
+        context: FindingCandidateRecoveryContext,
+        seal: FindingCandidateRecoverySeal,
+    ) -> Result<FindingCandidateIncorporationAuthorization, CampaignRepositoryError> {
+        let verifier = self
+            .finding_candidate_recovery_verifying_key
+            .as_ref()
+            .ok_or(CampaignRepositoryError::Integrity {
+                reason: "finding-candidate-recovery-verifier-unavailable",
+            })?;
+        let material = context.seal_message();
+        verifier
+            .verify_strict(&material, &seal.signature())
+            .map_err(|_| CampaignRepositoryError::Integrity {
+                reason: "finding-candidate-recovery-seal-invalid",
+            })?;
+        let context_digest = CampaignHash::derive(
+            "crucible.campaign.finding-candidate-recovery-authorization.v1",
+            &material,
+        );
+        Ok(
+            FindingCandidateIncorporationAuthorization::for_authenticated_recovery(
+                context_digest,
+                context,
+            ),
+        )
+    }
+
+    /// Incorporates a trusted executor-published candidate into one campaign.
+    ///
+    /// The caller obtains this single-use operation only from a recovered V15
+    /// completed assignment-ledger entry and its matching prepared-result
+    /// journal. Checked live completion follows a crate-private incorporation
+    /// path bound directly to the typed response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale state, a mismatched candidate, or an invalid
+    /// cold attestation and retained-root closure.
+    pub fn incorporate_executor_finding_candidate(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        bundle: FindingCandidateBundleId,
+        authorization: FindingCandidateIncorporationAuthorization,
+    ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
+        let loaded = self.repository.load_finding_candidate_bundle(bundle)?;
+        let authorization = authorization
+            .bind(name, expected_snapshot, bundle, loaded.observation())
+            .ok_or(CampaignRepositoryError::Integrity {
+                reason: "finding-candidate-incorporation-authorization-mismatch",
+            })?;
+        self.repository
+            .incorporate_executor_finding_candidate_bundle(
+                name,
+                expected_snapshot,
+                bundle,
+                authorization,
+            )
     }
 
     /// Publishes one executor-prepared native finding replay record.
@@ -1656,7 +1821,12 @@ pub use budget::CampaignBudgetProjection;
 use attempt_closure::non_modeled_attempt_key;
 use finding::finding_occurrence_key;
 pub(crate) use finding::{finding_candidate_occurrence_key, finding_signature_key};
-pub use finding_candidate::AuthenticatedFindingCandidateIncorporation;
+pub use finding_candidate::{
+    AuthenticatedFindingCandidateIncorporation, AuthenticatedFindingExactCheckpoint,
+    FindingCandidateIncorporationAuthorization, FindingCandidateRecoveryContext,
+    FindingCandidateRecoverySeal, FindingExactCheckpointAuthenticationError,
+    FindingExactCheckpointAuthenticator,
+};
 
 pub use attempt_closure::NonModeledAttemptResult;
 pub use executor_driver::{

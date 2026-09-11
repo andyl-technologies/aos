@@ -858,7 +858,7 @@ where
                 .with_scheduler(scheduler);
             let checkpoint = self
                 .context
-                .prepare_and_stage_checkpoint(capture.into())
+                .prepare_and_stage_checkpoint(&capture.into())
                 .map_err(map_checkpoint_handoff_failure)?;
             return Ok(AttemptExecutionProduct::exact_checkpoint(checkpoint));
         }

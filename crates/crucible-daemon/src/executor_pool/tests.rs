@@ -30,11 +30,11 @@ use crucible_api::{
 };
 use crucible_campaign::{
     ActiveAttemptPolicy, ApplyCampaignCommandRequest, AssignmentId, Attempt, AttemptId,
-    AttemptResourceLimits, AttemptStart, BooleanDomain, BranchBudget, BranchPath,
-    BranchPathSegment, BranchRequest, BranchRequestCause, CampaignAuthorizationError,
-    CampaignClient, CampaignCommandId, CampaignControlAction, CampaignExecutorDriver,
-    CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignFactId, CampaignHash,
-    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy,
+    AttemptResourceLimits, AttemptStart, AuthenticatedFindingExactCheckpoint, BooleanDomain,
+    BranchBudget, BranchPath, BranchPathSegment, BranchRequest, BranchRequestCause,
+    CampaignAuthorizationError, CampaignClient, CampaignCommandId, CampaignControlAction,
+    CampaignExecutorDriver, CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignFactId,
+    CampaignHash, CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy,
     CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignSeed,
     CampaignServiceOperation, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
     CandidateSource, CanonicalBeamPlanner, CheckpointAttemptExecutionRequest,
@@ -44,19 +44,22 @@ use crucible_campaign::{
     ExactRational, ExecutionId, ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient,
     ExecutorCompatibilityProfile, ExecutorControlService, ExecutorDescription,
     ExecutorMaterializationCapability, ExecutorRejection, ExecutorResumeService, ExecutorService,
-    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, GetCampaignStatusRequest,
-    InterventionLearningPolicy, MeasurementSet, Objective, ObjectiveGoal, Observation,
-    ObservationCandidate, ObservationId, PinCampaignRequest, PinChange, PinRequest, PinRetention,
-    PlannerProposalDisposition, PlanningBudget, PlanningScanPosition, ProgressiveWideningPolicy,
-    PropertyVerdictSet, Proposal, PuctPolicy, PurePlannerEngine, RepositoryCampaignService,
-    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy,
-    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
+    ExecutorStatusService, ExplorerPolicy, FairnessPolicy,
+    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    GetCampaignStatusRequest, InterventionLearningPolicy, MeasurementSet, Objective, ObjectiveGoal,
+    Observation, ObservationCandidate, ObservationId, PinCampaignRequest, PinChange, PinRequest,
+    PinRetention, PlannerProposalDisposition, PlanningBudget, PlanningScanPosition,
+    ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy, PurePlannerEngine,
+    RepositoryCampaignService, ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
+    RetentionPolicy, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, Selection,
+    SelectionOrigin, StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    SubmitAttemptResponse, WorkerSlotId,
 };
+use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
-    MemoryRefBackend, ObjectKind, PlacementReceipt, PutReceipt, StoreError,
+    MemoryRefBackend, ObjectKind, PlacementReceipt, PutReceipt, RefStoreAdmin, StoreError,
 };
 use crucible_qemu::{QemuReplayOracleCheck, QemuReplayOracleValidation, QemuVmSnapshot};
 
@@ -89,6 +92,38 @@ mod checkpoint_promotion;
 
 struct TestDurableBackend {
     memory: MemoryBlobBackend,
+}
+
+struct TestFindingCheckpointAuthenticator {
+    source: Arc<MemoryBlobBackend>,
+}
+
+impl FindingExactCheckpointAuthenticator for TestFindingCheckpointAuthenticator {
+    fn authenticate_finding_exact_checkpoint(
+        &self,
+        _checkpoint: ExactCheckpointId,
+        scenario: ScenarioDefId,
+        _scenario_artifact: ScenarioArtifactId,
+        configuration: ConfigurationId,
+        _maximum_metadata_bytes: u64,
+    ) -> Result<AuthenticatedFindingExactCheckpoint, FindingExactCheckpointAuthenticationError>
+    {
+        Ok(AuthenticatedFindingExactCheckpoint::new(
+            scenario,
+            configuration,
+            0,
+            1,
+        ))
+    }
+
+    fn read_finding_exact_checkpoint_object(
+        &self,
+        object: ContentId,
+    ) -> Result<BlobHandle, FindingExactCheckpointAuthenticationError> {
+        self.source
+            .read(object, None)
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)
+    }
 }
 
 struct TransientExecutorReadBackend {
@@ -615,11 +650,62 @@ impl LocalAttemptWorker for PanickingWorker {
     }
 }
 
+struct PanickingCleanupWorker {
+    cleanup: Option<crate::NativeCheckpointCleanup>,
+}
+
+struct IdleCleanupWorker {
+    cleanup: Option<crate::NativeCheckpointCleanup>,
+}
+
+impl LocalAttemptWorker for IdleCleanupWorker {
+    type Error = &'static str;
+
+    fn execute(&mut self, _queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
+        unreachable!("idle cleanup worker receives no execution")
+    }
+
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        self.cleanup.take()
+    }
+}
+
+impl LocalAttemptWorker for PanickingCleanupWorker {
+    type Error = &'static str;
+
+    fn execute(&mut self, _queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
+        panic!("intentional worker panic after native checkpoint capture")
+    }
+
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        self.cleanup.take()
+    }
+}
+
 struct CandidateModel {
     candidate: ObservationCandidate,
     calls: Arc<AtomicUsize>,
     runtime_bases: Arc<Mutex<Vec<AttemptExecutionRuntimeBasis>>>,
     reconciliations: Arc<Mutex<Vec<AttemptExecutionDisposition>>>,
+}
+
+struct SuccessfulCleanupModel {
+    candidate: ObservationCandidate,
+    cleanup: Option<crate::NativeCheckpointCleanup>,
+}
+
+#[derive(Clone, Copy)]
+enum ReconciliationCleanupFailure {
+    Retryable,
+    Terminal,
+}
+
+struct ReconciliationCleanupModel {
+    candidate: ObservationCandidate,
+    retirement: Option<crucible_api::ProductionExactCheckpointRetirement>,
+    cleanup: Option<crate::NativeCheckpointCleanup>,
+    failure: ReconciliationCleanupFailure,
+    calls: Arc<AtomicUsize>,
 }
 
 struct ForeignCheckpointModel;
@@ -674,7 +760,7 @@ impl AttemptExecutionModel for StagingCheckpointModel {
             checkpoint_snapshot_for_scenario("staged-before-return", scenario),
             BlobHandle::from_bytes(vec![0x75; 512]),
         );
-        let checkpoint = context.prepare_and_stage_checkpoint(capture.into())?;
+        let checkpoint = context.prepare_and_stage_checkpoint(&capture.into())?;
 
         let (state, changed) = self.state.as_ref();
         let mut state = state.lock().expect("checkpoint stage state");
@@ -770,6 +856,250 @@ impl AttemptExecutionModel for CandidateModel {
         } else {
             Ok(AttemptExecutionReconciliationStep::Complete)
         }
+    }
+}
+
+impl AttemptExecutionModel for SuccessfulCleanupModel {
+    type Error = std::convert::Infallible;
+
+    fn execute(
+        &mut self,
+        _input: &AttemptExecutionInput,
+        _context: &AttemptExecutionContext,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        Ok(AttemptExecutionProduct::observation(self.candidate.clone()))
+    }
+
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        self.cleanup.take()
+    }
+}
+
+impl AttemptExecutionModel for ReconciliationCleanupModel {
+    type Error = &'static str;
+
+    fn execute(
+        &mut self,
+        _input: &AttemptExecutionInput,
+        _context: &AttemptExecutionContext,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        Ok(AttemptExecutionProduct::observation(self.candidate.clone()))
+    }
+
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        self.cleanup.take()
+    }
+
+    fn reconcile_execution(
+        &mut self,
+        _disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        let call = self.calls.fetch_add(1, Ordering::AcqRel);
+        if call != 0 {
+            return Ok(AttemptExecutionReconciliationStep::Complete);
+        }
+        self.cleanup = self
+            .retirement
+            .take()
+            .map(crate::NativeCheckpointCleanup::Retire);
+        match self.failure {
+            ReconciliationCleanupFailure::Retryable => {
+                Err(AttemptWorkerFailure::Retryable("retry reconciliation"))
+            }
+            ReconciliationCleanupFailure::Terminal => {
+                Err(AttemptWorkerFailure::Terminal("terminal reconciliation"))
+            }
+        }
+    }
+}
+
+#[test]
+fn repository_worker_drains_native_cleanup_after_successful_model_execution() {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "successful-native-cleanup-sidecar",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (lineage, _policy, _branch, admitted, candidate) =
+        campaign_attempt_fixture(&repository, "successful-native-cleanup-sidecar");
+    let epoch = DaemonEpoch::from_bytes([0x2d; 16]).expect("daemon epoch");
+    let request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x2e; 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage ID"),
+        admitted.attempt,
+        AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000).expect("resources"),
+        ExecutionRetentionIntent::Discard,
+    )
+    .expect("submit request");
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        capacity(),
+    );
+    supervisor
+        .submit_attempt(&request)
+        .expect("accept execution");
+    let queued = supervisor.next_queued().expect("queued execution");
+    let run_state = TempDir::new().expect("production cleanup run state");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+        .expect("production cleanup fixture");
+    let retirement = fixture.closure().native_retirement();
+    let mut worker = RepositoryAttemptWorker::new(
+        CampaignExecutorStore::new(repository),
+        SuccessfulCleanupModel {
+            candidate,
+            cleanup: Some(crate::NativeCheckpointCleanup::Retire(retirement.clone())),
+        },
+    );
+
+    let (_queued, result, cleanup) = worker.execute(queued).into_parts();
+
+    assert!(result.is_ok());
+    let Some(crate::NativeCheckpointCleanup::Retire(cleanup)) = cleanup else {
+        panic!("successful execution must return its native cleanup sidecar")
+    };
+    crucible_api::retire_production_exact_checkpoint_catalog(&cleanup)
+        .expect("retire returned cleanup sidecar");
+    let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("repeat native retirement");
+    assert!(!repeated.retired());
+}
+
+#[test]
+fn mixed_native_cleanup_partitions_retirement_before_quarantine() {
+    let retired_state = TempDir::new().expect("retired production run state");
+    let retired_fixture =
+        build_authenticated_production_checkpoint_codec_fixture(retired_state.path())
+            .expect("retired production fixture");
+    let retired_authority = retired_fixture.closure().native_retirement();
+    let quarantined_state = TempDir::new().expect("quarantined production run state");
+    let quarantined_fixture =
+        build_authenticated_production_checkpoint_codec_fixture(quarantined_state.path())
+            .expect("quarantined production fixture");
+    let quarantined_authority = quarantined_fixture.closure().native_retirement();
+    let cleanup = crate::NativeCheckpointCleanup::Batch(vec![
+        crate::NativeCheckpointCleanup::Quarantine(quarantined_authority.clone()),
+        crate::NativeCheckpointCleanup::Retire(retired_authority.clone()),
+    ]);
+
+    let (retirements, quarantines) = partition_native_checkpoint_cleanup(cleanup);
+
+    assert_eq!(retirements.len(), 1);
+    assert_eq!(quarantines.len(), 1);
+    crucible_api::retire_production_exact_checkpoint_catalog(&retirements[0])
+        .expect("complete safe retirement before quarantine");
+    let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&retired_authority)
+        .expect("repeat safe retirement");
+    assert!(!repeated.retired());
+    let quarantined =
+        crucible_api::retire_production_exact_checkpoint_catalog(&quarantined_authority)
+            .expect("test owner releases quarantined catalog");
+    assert!(quarantined.retired());
+}
+
+#[test]
+fn pool_drains_retryable_and_terminal_reconciliation_cleanup() {
+    assert_pool_drains_reconciliation_cleanup(ReconciliationCleanupFailure::Retryable, 0x34);
+    assert_pool_drains_reconciliation_cleanup(ReconciliationCleanupFailure::Terminal, 0x36);
+}
+
+fn assert_pool_drains_reconciliation_cleanup(failure: ReconciliationCleanupFailure, identity: u8) {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            format!("reconciliation-cleanup-{identity}"),
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (lineage, _policy, _branch, admitted, candidate) =
+        campaign_attempt_fixture(&repository, "reconciliation-cleanup");
+    let epoch = DaemonEpoch::from_bytes([identity; 16]).expect("daemon epoch");
+    let resources = AttemptResourceLimits::new(1, 4096, 8192, 64).expect("attempt resources");
+    let request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([identity.saturating_add(1); 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage ID"),
+        admitted.attempt,
+        resources,
+        ExecutionRetentionIntent::Discard,
+    )
+    .expect("submit request");
+    let profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
+    let supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        RepositoryAttemptAdmission::new(Arc::clone(&repository), profile.clone()),
+        epoch,
+        capacity(),
+    );
+    let capabilities = ExecutorCapabilitySet::new(
+        profile,
+        "x86_64",
+        BTreeSet::from([String::from("deterministic-tcg-v1")]),
+        BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
+        1,
+        resources,
+        BTreeSet::from([CampaignHash::derive(
+            "crucible.test.reconciliation-cleanup-namespace.v1",
+            &[identity],
+        )]),
+    )
+    .expect("capabilities");
+    let description = ExecutorDescription::new(epoch, capabilities).expect("description");
+    let capability =
+        LocalExecutorCapabilityService::new(supervisor, description).expect("capability service");
+    let run_state = TempDir::new().expect("reconciliation cleanup run state");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+        .expect("reconciliation cleanup fixture");
+    let retirement = fixture.closure().native_retirement();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let pool = LocalExecutorWorkerPool::start(
+        capability,
+        CampaignExecutorStore::new(Arc::clone(&repository)),
+        checkpoint_store(),
+        vec![RepositoryAttemptWorker::new(
+            CampaignExecutorStore::new(repository),
+            ReconciliationCleanupModel {
+                candidate,
+                retirement: Some(retirement.clone()),
+                cleanup: None,
+                failure,
+                calls: Arc::clone(&calls),
+            },
+        )],
+    )
+    .expect("reconciliation cleanup pool");
+    let mut service = pool.service();
+    service.submit_attempt(&request).expect("submit attempt");
+
+    match failure {
+        ReconciliationCleanupFailure::Retryable => {
+            wait_until(Duration::from_secs(2), || {
+                calls.load(Ordering::Acquire) >= 2
+            });
+        }
+        ReconciliationCleanupFailure::Terminal => {
+            wait_until(Duration::from_secs(2), || {
+                pool.service.shared.state.load(Ordering::Acquire) != POOL_RUNNING
+            });
+        }
+    }
+    let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("repeat reconciliation cleanup retirement");
+    assert!(!repeated.retired());
+
+    match failure {
+        ReconciliationCleanupFailure::Retryable => {
+            pool.request_shutdown();
+            pool.shutdown_and_join().expect("clean retryable shutdown");
+        }
+        ReconciliationCleanupFailure::Terminal => assert!(matches!(
+            pool.shutdown_and_join(),
+            Err(LocalExecutorPoolShutdownError::WorkerPanicked)
+        )),
     }
 }
 
@@ -886,6 +1216,7 @@ fn checkpoint_capture_publishes_once_and_reconciles_paused_without_rerun() {
         }],
         checkpoint_observer,
         None,
+        None,
     )
     .expect("checkpoint-observing worker pool");
     let assignment = request(epoch, 0x49);
@@ -989,6 +1320,7 @@ fn prepared_result_pool_executes_savepoint_capture_without_semantic_recovery() {
             journals.path().to_path_buf(),
             crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
         )),
+        None,
     )
     .expect("prepared-result checkpoint pool");
     let semantic = request(epoch, 0x4a);
@@ -1093,6 +1425,7 @@ fn newly_paused_checkpoint_is_enqueued_and_promoted_without_rerunning_attempt() 
             calls: Arc::clone(&promotion_calls),
         }],
         checkpoint_observer,
+        None,
         None,
     )
     .expect("promotion-enabled checkpoint pool");
@@ -1266,6 +1599,62 @@ fn worker_panic_fails_closed_and_releases_exact_reservation() {
         pool.shutdown_and_join(),
         Err(LocalExecutorPoolShutdownError::WorkerPanicked)
     ));
+}
+
+#[test]
+fn worker_panic_drains_captured_native_quarantine_before_retaining_thread() {
+    let run_state = TempDir::new().expect("panicking production run state");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+        .expect("panicking production fixture");
+    let retirement = fixture.closure().native_retirement();
+    let epoch = DaemonEpoch::from_bytes([0x35; 16]).expect("epoch");
+    let pool = pool(
+        epoch,
+        vec![PanickingCleanupWorker {
+            cleanup: Some(crate::NativeCheckpointCleanup::Quarantine(retirement)),
+        }],
+    );
+    let mut service = pool.service();
+    service
+        .submit_attempt(&request(epoch, 0x46))
+        .expect("accepted request");
+
+    wait_until(Duration::from_secs(2), || {
+        matches!(
+            service.submit_attempt(&request(epoch, 0x47)),
+            Err(LocalExecutorPoolServiceError::WorkerPanicked)
+        )
+    });
+    wait_until(Duration::from_secs(2), || {
+        pool.service
+            .shared
+            .executor
+            .lock()
+            .is_ok_and(|executor| executor.supervisor().active_count() == 0)
+    });
+
+    drop(pool);
+}
+
+#[test]
+fn idle_worker_drains_native_retirement_before_loop_exit() {
+    let run_state = TempDir::new().expect("idle production run state");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+        .expect("idle production fixture");
+    let retirement = fixture.closure().native_retirement();
+    let epoch = DaemonEpoch::from_bytes([0x37; 16]).expect("epoch");
+    let pool = pool(
+        epoch,
+        vec![IdleCleanupWorker {
+            cleanup: Some(crate::NativeCheckpointCleanup::Retire(retirement.clone())),
+        }],
+    );
+
+    pool.shutdown_and_join().expect("idle worker shutdown");
+
+    let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("repeat idle worker retirement");
+    assert!(!repeated.retired());
 }
 
 #[test]
@@ -2034,8 +2423,175 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
 #[test]
 fn complete_prepared_journal_recovers_without_rerunning_guest_work() {
     for prepublish_trace_leaf in [false, true] {
-        recover_complete_prepared_journal(prepublish_trace_leaf, false);
+        recover_complete_prepared_journal(prepublish_trace_leaf, false, false);
     }
+}
+
+#[test]
+fn legacy_publishing_state_promotes_a_valid_staged_journal() {
+    recover_complete_prepared_journal(false, false, true);
+}
+
+#[test]
+fn finding_gc_exclusion_spans_prepared_journal_commit() {
+    let blobs = Arc::new(TestDurableBackend::new());
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = Arc::new(CampaignRepository::new(blobs, refs.clone()));
+    let checkpoint_source = Arc::new(MemoryBlobBackend::new(
+        "finding-journal-checkpoint-source",
+        1024 * 1024,
+    ));
+    let checkpoint_leaf_bytes = b"finding journal checkpoint leaf".to_vec();
+    let checkpoint_leaf = ContentId::for_bytes(ObjectKind::DeviceState, 5, &checkpoint_leaf_bytes);
+    checkpoint_source
+        .put_if_absent(
+            checkpoint_leaf,
+            &BlobHandle::from_bytes(checkpoint_leaf_bytes),
+        )
+        .expect("publish finding journal checkpoint leaf");
+    let checkpoint_envelope = ContentEnvelope::new(
+        "crucible.test.finding-journal-checkpoint",
+        4,
+        BTreeSet::from(
+            [ContentChild::new("leaf", checkpoint_leaf).expect("checkpoint leaf child")],
+        ),
+        b"finding journal checkpoint root".to_vec(),
+    )
+    .expect("finding journal checkpoint envelope");
+    let checkpoint_root = checkpoint_envelope.content_id(ObjectKind::ExactManifest);
+    checkpoint_source
+        .put_if_absent(
+            checkpoint_root,
+            &BlobHandle::from_bytes(checkpoint_envelope.canonical_bytes()),
+        )
+        .expect("publish finding journal checkpoint root");
+    let checkpoint = ExactCheckpointId::parse(&format!(
+        "crucible.executor.exact-checkpoint-root@{checkpoint_root}"
+    ))
+    .expect("finding journal checkpoint ID");
+    let fixture = crate::crucible_artifact::tests::prepared_finding_recovery_fixture(
+        &repository,
+        "finding-journal-gc-guard",
+        checkpoint,
+    );
+    let candidate = fixture
+        .result
+        .finding()
+        .expect("complete finding")
+        .id()
+        .expect("complete finding ID");
+    let epoch = DaemonEpoch::from_bytes([0x91; 16]).expect("daemon epoch");
+    let request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x92; 16]).expect("assignment"),
+        epoch,
+        fixture.lineage.id().expect("lineage ID"),
+        fixture.attempt,
+        AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
+        ExecutionRetentionIntent::Discard,
+    )
+    .expect("submit request")
+    .with_retention_policy_basis(
+        repository
+            .attempt_retention_policy_basis_at(
+                repository
+                    .head("finding-journal-gc-guard")
+                    .expect("finding journal campaign head")
+                    .snapshot_id(),
+                fixture.attempt,
+            )
+            .expect("retention policy basis"),
+    )
+    .expect("policy-bound submit request");
+    let queued = QueuedAttempt::from_test_parts(
+        ExecutionId::from_bytes([0x93; 16]).expect("execution"),
+        request,
+    );
+    let prepared = StagedAttemptResult::from_test_parts(queued, fixture.result).into_prepared();
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let barrier = Arc::new(PreparedResultJournalTestBarrier {
+        entered: Mutex::new(Some(entered_tx)),
+        release: Arc::clone(&release),
+    });
+    let journals = TempDir::new().expect("prepared journals");
+    let config = PreparedResultJournalConfig::new(
+        journals.path().to_path_buf(),
+        crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+    )
+    .with_before_journal_barrier(barrier);
+    let supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        capacity(),
+    );
+    let capability = LocalExecutorCapabilityService::new(supervisor, description(epoch))
+        .expect("capability service");
+    let shared = Arc::new(SharedExecutor::new(
+        capability,
+        checkpoint_store(),
+        1,
+        0,
+        Vec::new(),
+        None,
+        Some(config),
+        None,
+    ));
+    let store = CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+        Arc::clone(&repository),
+        Arc::new(TestFindingCheckpointAuthenticator {
+            source: checkpoint_source,
+        }),
+    );
+    let journal_shared = Arc::clone(&shared);
+    let journal = thread::spawn(move || {
+        let guard = store
+            .acquire_finding_replay_publication_guard()
+            .expect("acquire finding publication guard");
+        publish_prepared_semantic_attempt_result(&store, prepared.result())
+            .expect("publish complete finding before its journal");
+        journal_before_releasing_finding_guard(&journal_shared, prepared, guard)
+            .expect("commit prepared journal while guarded")
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("journal reached guarded commit boundary");
+
+    let loaded = repository
+        .load_finding_candidate_bundle(candidate)
+        .expect("complete candidate exists before journal commit");
+    assert_eq!(
+        loaded.id().expect("loaded complete candidate ID"),
+        candidate
+    );
+    let closure = repository
+        .authenticated_closure_ids([candidate.content_id()])
+        .expect("complete candidate closure before journal commit");
+    assert!(closure.contains(&fixture.replay_capture_child));
+    assert!(closure.contains(&checkpoint_leaf));
+
+    let (inventory_tx, inventory_rx) = mpsc::channel();
+    let inventory = thread::spawn(move || {
+        let _fence = refs
+            .acquire_ref_inventory_fence()
+            .expect("acquire destructive inventory fence");
+        inventory_tx.send(()).expect("inventory completion");
+    });
+    assert!(matches!(
+        inventory_rx.recv_timeout(Duration::from_millis(50)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    let (released, changed) = release.as_ref();
+    *released.lock().expect("journal release") = true;
+    changed.notify_all();
+    let journaled = journal.join().expect("journal thread");
+    inventory_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("inventory proceeds after journal commit");
+    inventory.join().expect("inventory thread");
+    journaled.remove_journal().expect("remove prepared journal");
 }
 
 #[test]
@@ -2252,10 +2808,14 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
 
 #[test]
 fn transient_recovery_input_unavailability_retries_without_guest_work() {
-    recover_complete_prepared_journal(false, true);
+    recover_complete_prepared_journal(false, true, false);
 }
 
-fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_recovery_input: bool) {
+fn recover_complete_prepared_journal(
+    prepublish_trace_leaf: bool,
+    transient_recovery_input: bool,
+    legacy_publishing_state: bool,
+) {
     let blobs = Arc::new(TransientExecutorReadBackend::new(
         "prepared-recovery",
         64 * 1024 * 1024,
@@ -2313,6 +2873,10 @@ fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_reco
         .observation()
         .id()
         .expect("observation ID");
+    let prepared_result_digest = CampaignHash::derive(
+        "crucible.executor.prepared-result-ledger-binding.v1",
+        &prepared.canonical_bytes().expect("prepared bytes"),
+    );
 
     let epoch = DaemonEpoch::from_bytes([0x82; 16]).expect("daemon epoch");
     let request = SubmitAttemptRequest::new(
@@ -2323,7 +2887,13 @@ fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_reco
         AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
         ExecutionRetentionIntent::Discard,
     )
-    .expect("submit request");
+    .expect("submit request")
+    .with_retention_policy_basis(
+        repository
+            .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
+            .expect("retention policy basis"),
+    )
+    .expect("policy-bound submit request");
     let key = AttemptExecutionKey::for_request(&request);
     let producer_execution = ExecutionId::from_bytes([0x84; 16]).expect("producer execution");
     let ledger_root = TempDir::new().expect("assignment ledger");
@@ -2341,6 +2911,9 @@ fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_reco
                     observation: expected_observation,
                     finding_candidate: None,
                     finding_replay_captures: None,
+                    finding_exact_retention_roots: [None; 3],
+                    prepared_result_digest: (!legacy_publishing_state)
+                        .then_some(prepared_result_digest),
                 }),
             )
             .expect("stage producer publication"),
@@ -2348,7 +2921,9 @@ fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_reco
     );
     drop(ledger);
     let journals = TempDir::new().expect("prepared-result journals");
-    let (journal, _) = crate::DirectoryPreparedResultJournal::create(
+    // Simulate a crash after Publishing committed and before the hidden
+    // prepared journal was promoted into the visible recovery namespace.
+    let (journal, _) = crate::DirectoryPreparedResultJournal::prepare_staged(
         journals.path(),
         key,
         producer_execution,
@@ -2405,6 +2980,7 @@ fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_reco
             journals.path().to_path_buf(),
             crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
         )),
+        None,
     )
     .expect("prepared-result recovery pool");
     let mut service = pool.service();
@@ -2413,7 +2989,7 @@ fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_reco
     }
     let accepted = service.submit_attempt(&request).expect("submit recovery");
     let SubmitAttemptDisposition::Accepted { execution } = accepted.disposition() else {
-        panic!("recovery should receive a fresh supervisor execution")
+        panic!("recovery should receive a fresh supervisor execution: {accepted:?}")
     };
     assert_ne!(execution, producer_execution);
     let status_request = GetAttemptExecutionRequest::new(&request, execution).expect("status");
@@ -2475,6 +3051,7 @@ fn stable_completed_journal_requires_matching_authenticated_roots_before_cleanup
     )
     .expect("seed prepared journal");
     let journal_root = journal.root().to_path_buf();
+    let prepared_result_digest = journal.prepared_result_digest();
     drop(journal);
 
     let wrong_content = ContentId::for_bytes(ObjectKind::Observation, 1, b"wrong completion");
@@ -2488,6 +3065,7 @@ fn stable_completed_journal_requires_matching_authenticated_roots_before_cleanup
         execution,
         observation,
         finding_candidate: CompletedFindingCandidate::pending(None),
+        prepared_result_digest: Some(prepared_result_digest),
     };
     let mut ledger = MemoryAssignmentLedger::default();
     let mismatched = completed(wrong_observation);
@@ -2593,6 +3171,7 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
             journals.path().to_path_buf(),
             crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
         )),
+        None,
     )
     .expect("prepared-result recovery pool");
     let mut service = pool.service();
@@ -2686,6 +3265,7 @@ fn stable_journal_creation_failure_is_terminal_not_canceled() {
             journals.path().to_path_buf(),
             1,
         )),
+        None,
     )
     .expect("prepared-result pool");
     let mut service = pool.service();
@@ -2770,13 +3350,14 @@ fn repository_worker_rejects_a_checkpoint_from_another_scenario() {
         ForeignCheckpointModel,
     );
 
-    let (_queued, result) = worker.execute(queued).into_parts();
+    let (_queued, result, _retirement) = worker.execute(queued).into_parts();
 
     assert!(matches!(
         result,
         Err(AttemptWorkerFailure::Terminal(
             RepositoryAttemptWorkerError::IncompatibleResult {
                 reason: "exact checkpoint differs from assignment scenario",
+                ..
             }
         ))
     ));
@@ -2826,13 +3407,14 @@ fn repository_worker_rejects_branch_capture_before_model_execution() {
         },
     );
 
-    let (_queued, result) = worker.execute(queued).into_parts();
+    let (_queued, result, _retirement) = worker.execute(queued).into_parts();
 
     assert!(matches!(
         result,
         Err(AttemptWorkerFailure::Terminal(
             RepositoryAttemptWorkerError::IncompatibleResult {
                 reason: "materialized-start capture requires a discovery attempt",
+                ..
             }
         ))
     ));

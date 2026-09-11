@@ -97,6 +97,44 @@ impl ProductionExactCheckpointRetirementError {
 pub fn retire_production_exact_checkpoint_catalog(
     authority: &ProductionExactCheckpointRetirement,
 ) -> Result<ProductionExactCheckpointRetirementReport, ProductionExactCheckpointRetirementError> {
+    retire_production_exact_checkpoint_catalog_with(authority, &ProductionRetirementFilesystem)
+}
+
+trait RetirementFilesystem {
+    fn rename(&self, source: &Path, destination: &Path) -> std::io::Result<()>;
+
+    fn remove_dir_all(&self, path: &Path) -> std::io::Result<()>;
+
+    fn sync_parent(&self, path: &Path) -> std::io::Result<()>;
+}
+
+struct ProductionRetirementFilesystem;
+
+impl RetirementFilesystem for ProductionRetirementFilesystem {
+    fn rename(&self, source: &Path, destination: &Path) -> std::io::Result<()> {
+        fs::rename(source, destination)
+    }
+
+    fn remove_dir_all(&self, path: &Path) -> std::io::Result<()> {
+        fs::remove_dir_all(path)
+    }
+
+    fn sync_parent(&self, path: &Path) -> std::io::Result<()> {
+        match File::open(path) {
+            Ok(directory) => directory.sync_all(),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(source),
+        }
+    }
+}
+
+fn retire_production_exact_checkpoint_catalog_with<F>(
+    authority: &ProductionExactCheckpointRetirement,
+    filesystem: &F,
+) -> Result<ProductionExactCheckpointRetirementReport, ProductionExactCheckpointRetirementError>
+where
+    F: RetirementFilesystem,
+{
     let parent = &authority.run_state_root;
     let scenario_name = authority.scenario.to_hex();
     let active = parent.join(&scenario_name);
@@ -109,25 +147,25 @@ pub fn retire_production_exact_checkpoint_catalog(
     }
 
     if retired_present {
-        remove_retired_catalog(&retired, parent)?;
+        remove_retired_catalog(filesystem, &retired, parent)?;
     }
     if !active_present {
-        sync_catalog_parent(parent)?;
+        sync_catalog_parent(filesystem, parent)?;
         return Ok(ProductionExactCheckpointRetirementReport {
             scenario: authority.scenario,
             retired: false,
         });
     }
 
-    fs::rename(&active, &retired).map_err(|source| {
+    filesystem.rename(&active, &retired).map_err(|source| {
         ProductionExactCheckpointRetirementError::Io {
             operation: "rename",
             path: active.clone(),
             source,
         }
     })?;
-    sync_catalog_parent(parent)?;
-    remove_retired_catalog(&retired, parent)?;
+    sync_catalog_parent(filesystem, parent)?;
+    remove_retired_catalog(filesystem, &retired, parent)?;
 
     Ok(ProductionExactCheckpointRetirementReport {
         scenario: authority.scenario,
@@ -150,35 +188,173 @@ fn directory_presence(path: &Path) -> Result<bool, ProductionExactCheckpointReti
     }
 }
 
-fn remove_retired_catalog(
+fn remove_retired_catalog<F>(
+    filesystem: &F,
     retired: &Path,
     parent: &Path,
-) -> Result<(), ProductionExactCheckpointRetirementError> {
-    fs::remove_dir_all(retired).map_err(|source| ProductionExactCheckpointRetirementError::Io {
-        operation: "remove",
-        path: retired.to_path_buf(),
-        source,
+) -> Result<(), ProductionExactCheckpointRetirementError>
+where
+    F: RetirementFilesystem,
+{
+    filesystem.remove_dir_all(retired).map_err(|source| {
+        ProductionExactCheckpointRetirementError::Io {
+            operation: "remove",
+            path: retired.to_path_buf(),
+            source,
+        }
     })?;
-    sync_catalog_parent(parent)
+    sync_catalog_parent(filesystem, parent)
 }
 
-fn sync_catalog_parent(parent: &Path) -> Result<(), ProductionExactCheckpointRetirementError> {
-    let directory = match File::open(parent) {
-        Ok(directory) => directory,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(source) => {
-            return Err(ProductionExactCheckpointRetirementError::Io {
-                operation: "open parent for synchronization",
-                path: parent.to_path_buf(),
-                source,
-            });
-        }
-    };
-    directory
-        .sync_all()
+fn sync_catalog_parent<F>(
+    filesystem: &F,
+    parent: &Path,
+) -> Result<(), ProductionExactCheckpointRetirementError>
+where
+    F: RetirementFilesystem,
+{
+    filesystem
+        .sync_parent(parent)
         .map_err(|source| ProductionExactCheckpointRetirementError::Io {
             operation: "synchronize parent",
             path: parent.to_path_buf(),
             source,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    struct InjectedRetirementFilesystem {
+        fail_operation: &'static str,
+        failed: Cell<bool>,
+    }
+
+    impl InjectedRetirementFilesystem {
+        fn once(fail_operation: &'static str) -> Self {
+            Self {
+                fail_operation,
+                failed: Cell::new(false),
+            }
+        }
+
+        fn inject(&self, operation: &'static str) -> std::io::Result<()> {
+            if operation == self.fail_operation && !self.failed.replace(true) {
+                Err(std::io::Error::other(format!(
+                    "injected {operation} failure"
+                )))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl RetirementFilesystem for InjectedRetirementFilesystem {
+        fn rename(&self, source: &Path, destination: &Path) -> std::io::Result<()> {
+            self.inject("rename")?;
+            fs::rename(source, destination)
+        }
+
+        fn remove_dir_all(&self, path: &Path) -> std::io::Result<()> {
+            self.inject("remove")?;
+            fs::remove_dir_all(path)
+        }
+
+        fn sync_parent(&self, path: &Path) -> std::io::Result<()> {
+            self.inject("synchronize")?;
+            ProductionRetirementFilesystem.sync_parent(path)
+        }
+    }
+
+    fn retirement_fixture() -> (
+        tempfile::TempDir,
+        ProductionExactCheckpointRetirement,
+        PathBuf,
+        PathBuf,
+    ) {
+        let root = tempfile::tempdir().expect("retirement test root");
+        let scenario = ContentHash::from_bytes(b"injected native retirement");
+        let scenario_name = scenario.to_hex();
+        let active = root.path().join(&scenario_name);
+        let retired = root
+            .path()
+            .join(format!("{RETIRED_CATALOG_PREFIX}{scenario_name}"));
+        fs::create_dir(&active).expect("active native catalog");
+        fs::write(active.join("catalog"), b"native").expect("native catalog sentinel");
+        let authority =
+            ProductionExactCheckpointRetirement::new(root.path().to_path_buf(), scenario);
+        (root, authority, active, retired)
+    }
+
+    #[test]
+    fn retirement_retries_injected_rename_failure_with_same_authority() {
+        let (_root, authority, active, retired) = retirement_fixture();
+        let filesystem = InjectedRetirementFilesystem::once("rename");
+
+        let error = retire_production_exact_checkpoint_catalog_with(&authority, &filesystem)
+            .expect_err("injected rename must fail");
+        assert!(error.is_retryable());
+        assert!(active.exists());
+        assert!(!retired.exists());
+
+        let report = retire_production_exact_checkpoint_catalog_with(&authority, &filesystem)
+            .expect("retry injected rename");
+        assert!(report.retired());
+        assert!(!active.exists());
+        assert!(!retired.exists());
+    }
+
+    #[test]
+    fn retirement_retries_injected_remove_failure_from_renamed_generation() {
+        let (_root, authority, active, retired) = retirement_fixture();
+        let filesystem = InjectedRetirementFilesystem::once("remove");
+
+        let error = retire_production_exact_checkpoint_catalog_with(&authority, &filesystem)
+            .expect_err("injected remove must fail");
+        assert!(error.is_retryable());
+        assert!(!active.exists());
+        assert!(retired.exists());
+
+        let report = retire_production_exact_checkpoint_catalog_with(&authority, &filesystem)
+            .expect("retry injected remove");
+        assert!(!report.retired());
+        assert!(!retired.exists());
+    }
+
+    #[test]
+    fn retirement_retries_injected_parent_fsync_after_durable_rename() {
+        let (_root, authority, active, retired) = retirement_fixture();
+        let filesystem = InjectedRetirementFilesystem::once("synchronize");
+
+        let error = retire_production_exact_checkpoint_catalog_with(&authority, &filesystem)
+            .expect_err("injected parent synchronization must fail");
+        assert!(error.is_retryable());
+        assert!(!active.exists());
+        assert!(retired.exists());
+
+        let report = retire_production_exact_checkpoint_catalog_with(&authority, &filesystem)
+            .expect("retry injected parent synchronization");
+        assert!(!report.retired());
+        assert!(!retired.exists());
+    }
+
+    #[test]
+    fn terminal_namespace_rejection_keeps_authority_reusable() {
+        let (_root, authority, active, _retired) = retirement_fixture();
+        fs::remove_dir_all(&active).expect("remove active catalog directory");
+        fs::write(&active, b"invalid catalog entry").expect("replace catalog with file");
+
+        let error = retire_production_exact_checkpoint_catalog(&authority)
+            .expect_err("non-directory catalog must fail terminally");
+        assert!(!error.is_retryable());
+
+        fs::remove_file(&active).expect("remove invalid catalog entry");
+        fs::create_dir(&active).expect("repair active catalog directory");
+        let report = retire_production_exact_checkpoint_catalog(&authority)
+            .expect("reuse retained authority after repair");
+        assert!(report.retired());
+    }
 }

@@ -349,6 +349,15 @@ impl CapturedAttemptCheckpoint {
             Self::Production(capture) => Self::Production(capture.clone()),
         }
     }
+
+    pub(crate) fn native_retirement(
+        &self,
+    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+        match self {
+            Self::SingleNode(_) => None,
+            Self::Production(checkpoint) => Some(checkpoint.native_retirement()),
+        }
+    }
 }
 
 /// No-write-prepared exact capture ready for durable root staging.
@@ -433,6 +442,15 @@ impl AttemptCheckpointResult {
 
     pub(crate) const fn from_prepared(checkpoint: PreparedAttemptCheckpoint) -> Self {
         Self(AttemptCheckpointResultState::Prepared(checkpoint))
+    }
+
+    pub(crate) fn native_retirement(
+        &self,
+    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+        match &self.0 {
+            AttemptCheckpointResultState::Captured(checkpoint) => checkpoint.native_retirement(),
+            AttemptCheckpointResultState::Prepared(checkpoint) => checkpoint.native_retirement(),
+        }
     }
 
     pub(crate) fn into_state(self) -> AttemptCheckpointResultState {
@@ -723,6 +741,73 @@ pub struct ExactCheckpointStore {
 }
 
 impl ExactCheckpointStore {
+    pub(crate) fn read_finding_exact_checkpoint_object(
+        &self,
+        object: ContentId,
+    ) -> Result<BlobHandle, ExactCheckpointStoreError> {
+        if object.kind() != ObjectKind::ExactManifest
+            && !matches!(
+                object.kind(),
+                ObjectKind::RamExtent
+                    | ObjectKind::DiskExtent
+                    | ObjectKind::DeviceState
+                    | ObjectKind::Trace
+            )
+        {
+            return Err(invalid_root("unsupported finding checkpoint object kind"));
+        }
+
+        self.backend.read(object, None).map_err(Into::into)
+    }
+
+    pub(crate) fn finding_authentication_metadata_bytes(
+        &self,
+        root: ExactCheckpointId,
+        maximum: u64,
+    ) -> Result<u64, ExactCheckpointStoreError> {
+        if root.content_id().schema_version() != EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION {
+            return Err(invalid_root(
+                "finding evidence requires a production checkpoint root",
+            ));
+        }
+
+        let root_handle = self.backend.read(root.content_id(), None)?;
+        let root_bytes = root_handle.logical_length();
+        if root_bytes > maximum || root_bytes > production::MAX_PRODUCTION_ROOT_BYTES {
+            return Err(ExactCheckpointStoreError::ArtifactLimit {
+                artifact: "finding-candidate-metadata",
+                length: root_bytes,
+                maximum,
+            });
+        }
+        let bytes = root_handle.read_all(production::MAX_PRODUCTION_ROOT_BYTES)?;
+        let envelope = ContentEnvelope::from_canonical_bytes(&bytes)?;
+        if envelope.schema_name() != EXACT_CHECKPOINT_ROOT_SCHEMA
+            || envelope.schema_version() != EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+            || envelope.content_id(ObjectKind::ExactManifest) != root.content_id()
+        {
+            return Err(invalid_root(
+                "incompatible production root schema or identity",
+            ));
+        }
+
+        let mut total = root_bytes;
+        for child in envelope.children() {
+            let length = self.backend.read(child.id(), None)?.logical_length();
+            total = total
+                .checked_add(length)
+                .ok_or_else(|| invalid_root("finding checkpoint metadata byte count overflow"))?;
+            if total > maximum {
+                return Err(ExactCheckpointStoreError::ArtifactLimit {
+                    artifact: "finding-candidate-metadata",
+                    length: total,
+                    maximum,
+                });
+            }
+        }
+        Ok(total)
+    }
+
     /// Admits a durable streaming immutable backend and checkpoint byte ceiling.
     ///
     /// # Errors

@@ -182,8 +182,9 @@ impl FindingReplayCaptureStore {
     ///
     /// Exact retry is idempotent. The caller must hold repository GC exclusion
     /// from before the first chunk write through the operational Publishing
-    /// transition that retains every complete manifest root. The prepared
-    /// semantic result journal is written only after that transition.
+    /// transition that retains every complete manifest root. The hidden
+    /// prepared-result journal is written before that transition and becomes
+    /// visible only after the transition succeeds.
     ///
     /// # Errors
     ///

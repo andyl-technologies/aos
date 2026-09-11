@@ -440,6 +440,8 @@ impl GuardedDefaultCampaignRunRequest {
     /// Source replay authenticates the observation proof and retained scheduler
     /// evidence before the campaign admits the controlled continuation.
     #[must_use]
+    // crucible-lint: allow rust-allow -- the resume source keeps each authenticated replay and continuation authority explicit.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_controlled_observation_resume_source(
         mut self,
         // crucible-lint: allow host-nondeterminism-state -- the caller-supplied replay schedule is forwarded unchanged into exact source authentication.

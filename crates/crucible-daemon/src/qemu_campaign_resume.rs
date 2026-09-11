@@ -269,6 +269,8 @@ pub struct QemuProductionExactResumeExecutionRunner<F, D> {
     checkpoints: Arc<ExactCheckpointStore>,
     lifecycles: F,
     driver: D,
+    abandoned_native_checkpoint: Option<crate::NativeCheckpointCleanup>,
+    in_flight_native_checkpoint: Option<crucible_api::ProductionExactCheckpointRetirement>,
 }
 
 impl<F, D> QemuProductionExactResumeExecutionRunner<F, D> {
@@ -279,6 +281,8 @@ impl<F, D> QemuProductionExactResumeExecutionRunner<F, D> {
             checkpoints,
             lifecycles,
             driver,
+            abandoned_native_checkpoint: None,
+            in_flight_native_checkpoint: None,
         }
     }
 
@@ -300,10 +304,61 @@ impl<F, D> QemuProductionExactResumeExecutionRunner<F, D> {
         &self.driver
     }
 
-    /// Consumes the runner into its exact store, lifecycle factory, and driver.
-    #[must_use]
-    pub fn into_parts(self) -> (Arc<ExactCheckpointStore>, F, D) {
-        (self.checkpoints, self.lifecycles, self.driver)
+    fn retain_native_checkpoint_cleanup(&mut self, cleanup: crate::NativeCheckpointCleanup) {
+        crate::NativeCheckpointCleanup::retain(&mut self.abandoned_native_checkpoint, cleanup);
+    }
+
+    fn register_native_checkpoint_capture(
+        &mut self,
+        checkpoint: &crate::CapturedAttemptCheckpoint,
+    ) {
+        let Some(retirement) = checkpoint.native_retirement() else {
+            return;
+        };
+        if let Some(prior) = self.in_flight_native_checkpoint.replace(retirement) {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
+                prior,
+            ));
+        }
+    }
+
+    fn resolve_native_checkpoint_capture(
+        &mut self,
+        shutdown_succeeded: bool,
+        result_succeeded: bool,
+    ) {
+        let Some(retirement) = self.in_flight_native_checkpoint.take() else {
+            return;
+        };
+        if !shutdown_succeeded {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
+                retirement,
+            ));
+        } else if !result_succeeded {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Retire(
+                retirement,
+            ));
+        }
+    }
+
+    fn take_abandoned_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        if let Some(retirement) = self.in_flight_native_checkpoint.take() {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
+                retirement,
+            ));
+        }
+        self.abandoned_native_checkpoint.take()
+    }
+}
+
+impl<F, D> Drop for QemuProductionExactResumeExecutionRunner<F, D> {
+    fn drop(&mut self) {
+        if let Some(retirement) = self.in_flight_native_checkpoint.take() {
+            crate::NativeCheckpointCleanup::Quarantine(retirement).retain_for_process_lifetime();
+        }
+        if let Some(cleanup) = self.abandoned_native_checkpoint.take() {
+            cleanup.retain_for_process_lifetime();
+        }
     }
 }
 
@@ -446,6 +501,10 @@ where
     D: QemuFreshAttemptDriver,
 {
     type Error = QemuProductionExactResumeExecutionRunnerError<F::Error, D::Error>;
+
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        self.take_abandoned_checkpoint()
+    }
 
     fn execute(
         &mut self,
@@ -614,8 +673,9 @@ where
                             let capture = lifecycle
                                 .capture_attempt_checkpoint(context)
                                 .map_err(map_resume_checkpoint_capture_failure)?;
+                            self.register_native_checkpoint_capture(&capture);
                             context
-                                .prepare_and_stage_checkpoint(capture)
+                                .prepare_and_stage_checkpoint(&capture)
                                 .map(ResumeRunnerResult::Checkpoint)
                                 .map_err(map_resume_checkpoint_handoff_failure)
                         }
@@ -628,6 +688,7 @@ where
                 .map_err(map_resume_terminal_fingerprint_capture_failure)
         });
         let cleanup = lifecycle.shutdown();
+        self.resolve_native_checkpoint_capture(cleanup.is_ok(), driven.is_ok());
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
             (Err(failure), Ok(_)) => return Err(failure),
