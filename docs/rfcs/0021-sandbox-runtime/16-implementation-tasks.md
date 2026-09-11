@@ -7214,7 +7214,8 @@ result exists. Clone readiness additionally depends on authenticated source
 snapshot root metadata, and crash recovery between committed dataset creation
 and the first durable pin attempt still requires a complete recovery story.
 An exact retained Prepared request can resume before its authority deadline;
-an expired Prepared intent still lacks an authenticated abort/tombstone path.
+an expired Prepared intent now has the authenticated retirement path recorded
+below.
 Clone also lacks authenticated whole-tree source identity-map provenance: the
 root-attribute check alone does not prove every nested UID/GID composes with
 the target private-userns range.
@@ -7280,3 +7281,52 @@ Validation passed the readiness tests (16/16), nspawn tests (6/6), and complete
 Host suite (172 unit tests, one integration test, and two doctests), plus strict
 no-deps all-target/all-feature Clippy, warning-denied rustdoc, rustfmt, and diff
 checks. No Nix build or VM qualification was run.
+
+### Storage Prepared-to-Aborted retirement (source qualified)
+
+Commit `19b51baf` extends the sole existing Storage transaction v1 format with
+authenticated phase code 4 for `Aborted`. This is an in-place hard cut, not a
+v2 format or decoder ladder. A protected clock sample is classified as `Fresh`
+or `Expired` only after validating paired-clock provenance, the host boot,
+nondecreasing wall and BOOTTIME values, and bounded drift. Expiry is the exact
+authenticated BOOTTIME deadline; reaching a wall-clock expiry first is a
+fail-closed clock error, not permission to abort.
+
+Retirement revalidates the exact current `Prepared` entry, catalog commitment,
+and sole physical-catalog reservation. One atomic journal transaction deletes
+that reservation and writes the authenticated `Aborted` tombstone. An uncertain
+publication poisons the cached authority view until reopen. Reopen requires the
+terminal tombstone with no result or restored reservation, retains
+desired-state, effect, fence, catalog-preparation, workspace-publication, and
+UID-allocation history, and authenticates an aborted entry before startup skips
+it as terminal.
+
+An aborted proposal no longer contributes to catalog-generation or fork
+constraints, so a replacement operation may use the same next generation
+`N+1`. Exact replay returns the same aborted mutation identity, while reuse of
+the operation ID for different bytes remains equivocation and fails closed.
+The service maps exact aborted replay to a bounded, nonretryable `CONFLICT`.
+
+At the first pre-effect clock sample, authenticated expiry aborts both generic
+and workspace-remove operations before `Ambiguous` and before any pin or ZFS
+effect. Once the second sample is reached, expiry or another clock failure
+leaves the operation `Ambiguous` for observation rather than converting it to
+`Aborted`.
+
+This is source-only retirement machinery, not production enablement. A live
+`DesiredState` supersession currently rejects the operation before expiry can
+retire it; that ordering must be resolved or proven impossible before Apply
+opens. Production still constructs
+`StorageApplyReadiness::WorkspaceBackendUnavailable`, so Apply remains
+unadvertised and no checkbox is closed by this increment.
+
+Validation passed the broker suite (27/27). A full Storage baseline passed 266
+tests with three pre-existing VM tests ignored before the final workspace-remove
+test was added. That final test and all six focused abort tests, plus the
+lineage/projection targets, subsequently passed targeted runs. All-target
+offline Cargo check, no-deps Cargo doc, Cargo fmt, and diff checks passed. After
+the sole new lint was fixed, Clippy remained blocked only by pre-existing denied
+lints. An earlier prohibited `nix develop -c cargo check` attempt began five
+dependency realizations but was interrupted before Cargo started; it supplies
+no validation evidence. No AOS package or VM qualification result was produced
+for this increment.
