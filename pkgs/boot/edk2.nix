@@ -203,6 +203,11 @@ in
     pname = "edk2";
     inherit version src;
 
+    patches =
+      if buildAarch64Firmware
+      then [./edk2-armvirt-lpa2-early-map.patch]
+      else [];
+
     buildDeps = [
       gnumake
       python3
