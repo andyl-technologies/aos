@@ -5,6 +5,7 @@
   packageCoverage,
   releaseExecutor,
 }: let
+  platform = pkgs.stdenv.hostPlatform.system;
   packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
   contract = import ../../qualification {
     inherit lib;
@@ -100,7 +101,7 @@
     buildPath=$PATH
     export PATH=
     export AOS_QUALIFICATION_PACKAGE=fixture
-    export AOS_QUALIFICATION_PLATFORM=x86_64-linux
+    export AOS_QUALIFICATION_PLATFORM=${platform}
     export AOS_QUALIFICATION_PACKAGE_OUTPUTS='{"out":"/nix/store/00000000000000000000000000000000-fixture"}'
     export AOS_QUALIFICATION_PACKAGE_CLOSURE='["/nix/store/00000000000000000000000000000000-fixture"]'
     export AOS_QUALIFICATION_PACKAGE_PROFILE=$PWD/work/profile
@@ -276,7 +277,7 @@ in
   assert executor.passthru.qualification.platform == "x86_64-linux";
   assert executor.passthru.qualification.caseScenarios == {};
   assert executor.passthru.qualification.scenarios.package-function == "/nix/store/00000000000000000000000000000000-scenario/bin/run";
-  assert packageExecutor.passthru.qualification.platform == "x86_64-linux";
+  assert packageExecutor.passthru.qualification.platform == platform;
   assert packageExecutor.passthru.qualification.packageNames == ["fixture"];
   assert packageExecutor.passthru.qualification.probes == ["fixture"];
   assert packageExecutor.passthru.qualification.missingProbes == [];
@@ -298,34 +299,40 @@ in
     extra = packageProbe;
     fixture = packageProbe;
   };
+  assert releaseExecutor.passthru.qualification.platform == platform;
   assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
-  == [
-    "claim-container-x86_64-linux-functional"
-    "claim-container-x86_64-linux-qualified"
-    "claim-disk-x86_64-linux-functional"
-    "claim-disk-x86_64-linux-qualified"
-    "operator-recovery"
-    "package-function"
-    "production-recovery"
-    "rollout-health"
-    "rollout-observation"
-    "staging-delivery"
-  ];
-  assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
-  assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
-  assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
+  == builtins.sort builtins.lessThan (
+    [
+      "claim-container-${platform}-functional"
+      "claim-container-${platform}-qualified"
+      "claim-disk-${platform}-functional"
+      "claim-disk-${platform}-qualified"
+      "package-function"
+    ]
+    # Release-wide recovery and rollout scenarios currently run on x86 only.
+    ++ lib.optionals (platform == "x86_64-linux") [
+      "operator-recovery"
+      "production-recovery"
+      "rollout-health"
+      "rollout-observation"
+      "staging-delivery"
+    ]
+  );
+  assert builtins.match ".*/aos-qualification-${platform}-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
+  assert builtins.match ".*/aos-qualification-${platform}-container-lifecycle" releaseExecutor.passthru.qualification.scenarios."claim-container-${platform}-functional" != null;
+  assert builtins.match ".*/aos-qualification-${platform}-image-lifecycle" releaseExecutor.passthru.qualification.scenarios."claim-disk-${platform}-functional" != null;
   assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios
   == [
-    "package-function/aos-recovery/x86_64-linux"
-    "package-function/k3s-combined/x86_64-linux"
-    "package-function/k3s-control-plane/x86_64-linux"
-    "package-function/k3s-worker/x86_64-linux"
-    "package-function/k3s/x86_64-linux"
+    "package-function/aos-recovery/${platform}"
+    "package-function/k3s-combined/${platform}"
+    "package-function/k3s-control-plane/${platform}"
+    "package-function/k3s-worker/${platform}"
+    "package-function/k3s/${platform}"
   ];
-  assert builtins.match ".*/aos-qualification-x86_64-linux-aos-recovery" releaseExecutor.passthru.qualification.caseScenarios."package-function/aos-recovery/x86_64-linux" != null;
+  assert builtins.match ".*/aos-qualification-${platform}-aos-recovery" releaseExecutor.passthru.qualification.caseScenarios."package-function/aos-recovery/${platform}" != null;
   assert builtins.all (name:
-    builtins.match ".*/aos-qualification-x86_64-linux-${name}-fleet"
-    releaseExecutor.passthru.qualification.caseScenarios."package-function/${name}/x86_64-linux"
+    builtins.match ".*/aos-qualification-${platform}-${name}-fleet"
+    releaseExecutor.passthru.qualification.caseScenarios."package-function/${name}/${platform}"
     != null) ["k3s" "k3s-combined" "k3s-control-plane" "k3s-worker"];
   assert builtins.length contract.claims == 8;
   assert contract.support.default
