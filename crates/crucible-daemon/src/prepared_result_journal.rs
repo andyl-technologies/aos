@@ -1674,7 +1674,7 @@ mod tests {
                 TEST_PAYLOAD_LIMIT,
                 result.clone(),
             ),
-            Err(PreparedResultJournalError::RecoveryRequired)
+            Err(PreparedResultJournalError::Incomplete)
         ));
         let cleaned = DirectoryPreparedResultJournal::cleanup_orphans_after_ledger_check(
             namespace.path(),

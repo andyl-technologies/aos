@@ -22,10 +22,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let child = encode_crucible_configuration_artifact(&scenario_record, &schedule)
         .expect("finding configuration");
 
+    let repository_blobs = tempfile::tempdir().expect("campaign blob directory");
     let repository = Arc::new(CampaignRepository::new(
-        Arc::new(MemoryBlobBackend::new(
+        Arc::new(DirectoryBlobBackend::new(
             "prepared-finding-publication",
-            u64::MAX,
+            repository_blobs.path(),
         )),
         Arc::new(MemoryRefBackend::new()),
     ));
@@ -839,11 +840,36 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         })
     ));
 
-    let expected = prepared.id().expect("prepared candidate ID");
-    let expected_bundle = prepared.bundle().clone();
-    let durable_result =
+    let mut durable_result =
         PreparedSemanticAttemptResult::new(observation_candidate.clone(), Some(prepared.clone()))
             .expect("bind prepared semantic result");
+    let source_snapshot = repository
+        .head("prepared-finding")
+        .expect("finding retention source head")
+        .snapshot_id();
+    let retention_basis = repository
+        .attempt_retention_policy_basis_at(source_snapshot, attempt)
+        .expect("finding retention policy basis");
+    let exact_retention = FindingExactRetention::new(
+        retention_basis.snapshot(),
+        retention_basis.policy(),
+        retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )
+    .expect("incomplete finding exact retention");
+    let retained_finding = durable_result
+        .prepare_bound_finding_exact_retention(FindingExactPins::default(), exact_retention, None)
+        .expect("bind finding exact retention");
+    durable_result.commit_bound_production_replay_finding(retained_finding);
+    let prepared = durable_result
+        .finding()
+        .expect("policy-bound prepared finding")
+        .clone();
+    let expected = prepared.id().expect("prepared candidate ID");
+    let expected_bundle = prepared.bundle().clone();
     let durable_bytes = durable_result
         .canonical_bytes()
         .expect("encode prepared semantic result");

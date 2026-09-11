@@ -1826,14 +1826,18 @@ fn campaign_loopback_round_trips_retained_finding_occurrence_dependencies() {
         original_replay,
         minimized_replay,
     );
-    let upgraded = FindingCandidateBundle::new_with_triage_evidence(
+    let upgraded = FindingCandidateBundle::new_with_exact_retention(
         legacy.observation(),
         legacy.signature().clone(),
         legacy.reproduction(),
         legacy.minimized(),
         legacy.signature_minimization().clone(),
         legacy.exact_pins().clone(),
-        triage_evidence,
+        Some(triage_evidence),
+        legacy.replay_captures(),
+        legacy
+            .exact_retention()
+            .expect("retained fixture exact retention"),
     )
     .expect("build retained candidate with triage evidence");
     let bundle = repository
