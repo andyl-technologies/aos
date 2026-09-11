@@ -126,7 +126,7 @@ pub enum StorageAdmissionOutcome {
     },
     /// A future observer previously committed an exact result.
     Replay(crate::CommittedStorageResultV1),
-    /// The exact expired intent was durably retired before mutation.
+    /// The exact expired or strictly superseded intent was retired before mutation.
     Aborted {
         /// Deterministic identity of the retired mutation intent.
         mutation_digest: ObjectDigest,
@@ -192,6 +192,41 @@ struct AuthenticatedCatalogPreparation {
 /// coordinator consumes it synchronously rather than returning it to callers.
 pub(crate) struct FreshStorageEffectAuthority {
     entry: crate::StorageRecoveryEntry,
+}
+
+/// Identifies why startup retired one authenticated Prepared operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PreparedStorageRetirementReasonV1 {
+    /// The current protected clock reached the effect's exclusive deadline.
+    Expired,
+    /// A distinct authenticated DesiredState head strictly superseded the effect.
+    Superseded,
+}
+
+/// Reports one Prepared operation retired without dispatch during startup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PreparedStorageRetirementV1 {
+    /// Exact retired operation identity.
+    pub(crate) operation_id: [u8; 16],
+    /// Deterministic commitment of the retired mutation.
+    pub(crate) mutation_digest: ObjectDigest,
+    /// Authenticated reason that made dispatch unnecessary.
+    pub(crate) reason: PreparedStorageRetirementReasonV1,
+}
+
+enum PreparedStorageEffectAuthorizationV1 {
+    Fresh(Box<AuthenticatedPreparedStorageEffectV1>),
+    Retired,
+}
+
+enum PreparedStorageHeadV1 {
+    Current(Box<AuthenticatedPreparedStorageEffectV1>),
+    Superseded,
+}
+
+struct AuthenticatedPreparedStorageEffectV1 {
+    operation_fence: BrokerAuthorizationFenceV1,
+    effect: BrokerEffectIntentV1,
 }
 
 /// Proves a fresh authority check covered one exact root-pin attempt.
@@ -352,7 +387,7 @@ pub(crate) enum WorkspacePinExecutionOutcomeV1 {
     Satisfied,
     /// A prior ambiguous attempt forbids another dispatch.
     ObservationRequired,
-    /// The parent Prepared mutation expired before any pin or ZFS effect.
+    /// The parent Prepared mutation expired or was strictly superseded before any effect.
     Aborted { mutation_digest: ObjectDigest },
 }
 
@@ -750,6 +785,73 @@ impl StorageAdmissionCoordinator {
         &self,
     ) -> Result<Vec<crate::StorageRecoveryEntry>, ZfsHelperError> {
         Ok(self.transactions.recovery_entries()?.collect())
+    }
+
+    /// Retires authenticated inactive Prepared operations before startup observation.
+    ///
+    /// Entries are visited in stable operation-ID order. A fresh exact-current
+    /// authority remains Prepared. Clock non-continuity also retains an
+    /// exact-current entry for observation-only recovery. A strictly dominating
+    /// DesiredState head or authenticated expiry atomically publishes Aborted
+    /// and releases only that operation's physical-catalog reservation.
+    /// Superseded-only entries do not sample the clock; exact-current entries
+    /// share one lazily acquired sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ZfsHelperError`] when any Prepared operation, its effect, its
+    /// current DesiredState head, protected clock acquisition, or the atomic
+    /// journal transition fails closed. Authenticated clock non-continuity is
+    /// not an error: the entry remains Prepared. An indeterminate commit poisons
+    /// the transaction store until it is reopened.
+    pub(crate) fn retire_inactive_prepared_at_startup<F>(
+        &mut self,
+        trusted_clock: &mut F,
+    ) -> Result<Vec<PreparedStorageRetirementV1>, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let entries = self.recovery_entries()?;
+        let mut retired = Vec::new();
+        let mut cached_clock = None;
+
+        for entry in entries
+            .into_iter()
+            .filter(|entry| entry.phase() == DurableStoragePhase::Prepared)
+        {
+            let catalog = self.transactions.recover_catalog(entry)?;
+            let retirement_reason = match self.authenticate_prepared_head(entry)? {
+                PreparedStorageHeadV1::Superseded => PreparedStorageRetirementReasonV1::Superseded,
+                PreparedStorageHeadV1::Current(context) => {
+                    let current_clock = match cached_clock {
+                        Some(sample) => sample,
+                        None => {
+                            let sample = trusted_clock().map_err(|_| ZfsHelperError::Authority)?;
+                            cached_clock = Some(sample);
+                            sample
+                        }
+                    };
+                    match self
+                        .authority
+                        .classify_effect_clock(&context.effect, &current_clock)
+                    {
+                        Ok(BrokerEffectClockDispositionV1::Fresh) | Err(_) => continue,
+                        Ok(BrokerEffectClockDispositionV1::Expired) => {
+                            PreparedStorageRetirementReasonV1::Expired
+                        }
+                    }
+                }
+            };
+
+            self.transactions.abort_prepared_exact(entry, &catalog)?;
+            retired.push(PreparedStorageRetirementV1 {
+                operation_id: entry.operation_id(),
+                mutation_digest: entry.mutation_digest(),
+                reason: retirement_reason,
+            });
+        }
+
+        Ok(retired)
     }
 
     pub(crate) fn authenticate_workspace_pin_attempts(&self) -> Result<(), ZfsHelperError> {
@@ -1613,50 +1715,29 @@ impl StorageAdmissionCoordinator {
         if current_entry != entry || entry.phase() != DurableStoragePhase::Prepared {
             return Err(crate::StorageStateError::InvalidTransition.into());
         }
-        let current_fence_bytes = self
-            .transactions
-            .authority_record(RecordNamespace::DesiredState, &entry.sandbox_id())?
-            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
-            .to_vec();
-        let current_fence = self
-            .authority
-            .open_fence(&entry.sandbox_id(), &current_fence_bytes)
-            .map_err(|_| ZfsHelperError::Authority)?;
-        let (operation_fence, effect) = self.persisted_effect_context(entry)?;
-        if current_fence != operation_fence {
-            return Err(ZfsHelperError::Authority);
-        }
-        let current_clock = trusted_clock().map_err(|_| ZfsHelperError::Authority)?;
-        match self
-            .authority
-            .classify_effect_clock(&effect, &current_clock)
-            .map_err(|_| ZfsHelperError::Authority)?
-        {
-            BrokerEffectClockDispositionV1::Fresh => {}
-            BrokerEffectClockDispositionV1::Expired => {
-                self.transactions
-                    .abort_prepared_exact(entry, prepared.catalog())?;
-                return Ok(AuthorizedWorkspaceRemoveAttemptV1::Aborted {
-                    mutation_digest: entry.mutation_digest(),
-                });
-            }
-        }
+        let PreparedStorageEffectAuthorizationV1::Fresh(context) =
+            self.authorize_or_retire_prepared(entry, prepared.catalog(), trusted_clock)?
+        else {
+            return Ok(AuthorizedWorkspaceRemoveAttemptV1::Aborted {
+                mutation_digest: entry.mutation_digest(),
+            });
+        };
         let catalog = self.transactions.recover_catalog(entry)?;
 
         let attempt = self.transactions.plan_workspace_pin_remove_and_destroy(
             entry.operation_id(),
-            operation_fence.assignment().digest(),
+            context.operation_fence.assignment().digest(),
             host_scope,
-            *effect.clock_provenance(),
-            effect.effect_deadline_boottime_nanoseconds(),
+            *context.effect.clock_provenance(),
+            context.effect.effect_deadline_boottime_nanoseconds(),
             expected_pin,
         )?;
         let sealed_receipt = self
             .authority
             .seal_pin_attempt_receipt(
                 &attempt,
-                &effect,
-                &operation_fence,
+                &context.effect,
+                &context.operation_fence,
                 entry.operation_id(),
                 entry.request_id(),
             )
@@ -1674,10 +1755,10 @@ impl StorageAdmissionCoordinator {
         match outcome {
             BeginWorkspacePinAttemptV1::Dispatch(attempt) => {
                 self.authority
-                    .check_before_effect(&effect, trusted_clock)
+                    .check_before_effect(&context.effect, trusted_clock)
                     .map_err(|_| ZfsHelperError::Authority)?;
                 self.authority
-                    .verify_pin_attempt_receipt(&attempt, &effect, entry.operation_id())
+                    .verify_pin_attempt_receipt(&attempt, &context.effect, entry.operation_id())
                     .map_err(|_| ZfsHelperError::Authority)?;
                 let worker_authority = self.pin_worker_authority(entry, &attempt)?;
                 Ok(AuthorizedWorkspaceRemoveAttemptV1::Dispatch(Box::new(
@@ -2142,8 +2223,10 @@ impl StorageAdmissionCoordinator {
     ///
     /// The slow physical pre-observation has already completed. This method
     /// reopens the exact durable effect, operation fence, and current sandbox
-    /// fence; rejects superseded authority; samples trusted time; and consumes
-    /// the one-shot proof in the helper call made before returning.
+    /// fence; retires a strictly superseded intent without sampling time or
+    /// dispatching; and samples trusted time for an exact-current intent. An
+    /// authenticated expiry aborts before Ambiguous or dispatch. Only a Fresh
+    /// intent consumes the one-shot proof in the helper call made before return.
     pub(crate) fn execute_preobserved<B, F>(
         &mut self,
         helper: &mut StorageMutationHelper<B>,
@@ -2161,42 +2244,93 @@ impl StorageAdmissionCoordinator {
         if current_entry != entry || entry.phase() != DurableStoragePhase::Prepared {
             return Err(crate::StorageStateError::InvalidTransition.into());
         }
-        let current_fence_bytes = self
-            .transactions
-            .authority_record(RecordNamespace::DesiredState, &entry.sandbox_id())?
-            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
-            .to_vec();
-        let current_fence = self
-            .authority
-            .open_fence(&entry.sandbox_id(), &current_fence_bytes)
-            .map_err(|_| ZfsHelperError::Authority)?;
-        let (operation_fence, effect) = self.persisted_effect_context(entry)?;
-        if current_fence != operation_fence {
-            return Err(ZfsHelperError::Authority);
-        }
-        let current_clock = trusted_clock().map_err(|_| ZfsHelperError::Authority)?;
-        match self
-            .authority
-            .classify_effect_clock(&effect, &current_clock)
-            .map_err(|_| ZfsHelperError::Authority)?
-        {
-            BrokerEffectClockDispositionV1::Fresh => {}
-            BrokerEffectClockDispositionV1::Expired => {
-                self.transactions
-                    .abort_prepared_exact(entry, prepared.catalog())?;
-                return Ok(ZfsHelperOutcome::Aborted {
-                    mutation_digest: entry.mutation_digest(),
-                });
-            }
-        }
+        let PreparedStorageEffectAuthorizationV1::Fresh(context) =
+            self.authorize_or_retire_prepared(entry, prepared.catalog(), trusted_clock)?
+        else {
+            return Ok(ZfsHelperOutcome::Aborted {
+                mutation_digest: entry.mutation_digest(),
+            });
+        };
 
         let authority = FreshStorageEffectAuthority { entry };
         let protected_authority = &self.authority;
         helper.execute_preobserved(&mut self.transactions, prepared, authority, || {
             protected_authority
-                .check_before_effect(&effect, trusted_clock)
+                .check_before_effect(&context.effect, trusted_clock)
                 .map_err(|_| ZfsHelperError::Authority)
         })
+    }
+
+    fn authorize_or_retire_prepared<F>(
+        &mut self,
+        entry: crate::StorageRecoveryEntry,
+        catalog: &ResolvedCatalogCommitmentV1,
+        trusted_clock: &mut F,
+    ) -> Result<PreparedStorageEffectAuthorizationV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        match self.authenticate_prepared_head(entry)? {
+            PreparedStorageHeadV1::Current(context) => {
+                let current_clock = trusted_clock().map_err(|_| ZfsHelperError::Authority)?;
+                match self
+                    .authority
+                    .classify_effect_clock(&context.effect, &current_clock)
+                    .map_err(|_| ZfsHelperError::Authority)?
+                {
+                    BrokerEffectClockDispositionV1::Fresh => {
+                        return Ok(PreparedStorageEffectAuthorizationV1::Fresh(context));
+                    }
+                    BrokerEffectClockDispositionV1::Expired => {}
+                }
+            }
+            PreparedStorageHeadV1::Superseded => {}
+        }
+
+        self.transactions.abort_prepared_exact(entry, catalog)?;
+        Ok(PreparedStorageEffectAuthorizationV1::Retired)
+    }
+
+    fn authenticate_prepared_head(
+        &self,
+        entry: crate::StorageRecoveryEntry,
+    ) -> Result<PreparedStorageHeadV1, ZfsHelperError> {
+        if entry.phase() != DurableStoragePhase::Prepared
+            || self
+                .transactions
+                .current_recovery_entry(entry.operation_id())?
+                != entry
+        {
+            return Err(crate::StorageStateError::InvalidTransition.into());
+        }
+
+        // Authenticate the complete historical effect context and live head
+        // before using either one as an ordering or retirement authority.
+        let (operation_fence, effect) = self.persisted_effect_context(entry)?;
+        let current_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &entry.sandbox_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let current_fence = self
+            .authority
+            .open_fence(&entry.sandbox_id(), current_fence_bytes)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        self.authority
+            .check_current_fence(&current_fence)
+            .map_err(|_| ZfsHelperError::Authority)?;
+
+        if current_fence == operation_fence {
+            return Ok(PreparedStorageHeadV1::Current(Box::new(
+                AuthenticatedPreparedStorageEffectV1 {
+                    operation_fence,
+                    effect,
+                },
+            )));
+        }
+        if prepared_fence_is_strictly_superseded(&operation_fence, &current_fence) {
+            return Ok(PreparedStorageHeadV1::Superseded);
+        }
+        Err(ZfsHelperError::Authority)
     }
 
     pub(crate) fn authenticate_recovery_entry(
@@ -2939,6 +3073,44 @@ fn fence_is_same_or_successor(
             && current.plan_digest() == historical.plan_digest())
 }
 
+fn prepared_fence_is_strictly_superseded(
+    historical: &BrokerAuthorizationFenceV1,
+    current: &BrokerAuthorizationFenceV1,
+) -> bool {
+    let historical_assignment = historical.assignment();
+    let current_assignment = current.assignment();
+    // Both fences have already passed check_current_fence, which binds their
+    // node and ownership authority to this runtime configuration. Keeping the
+    // equality checks here makes the comparator fail closed if that precondition
+    // is ever weakened; it deliberately narrows generic cross-epoch admission.
+    if current.node() != historical.node()
+        || current_assignment.sandbox() != historical_assignment.sandbox()
+        || current.ownership_authority() != historical.ownership_authority()
+        || current_assignment.epoch() < historical_assignment.epoch()
+    {
+        return false;
+    }
+    if current_assignment.epoch() > historical_assignment.epoch() {
+        return true;
+    }
+    if current_assignment.incarnation() != historical_assignment.incarnation()
+        || current_assignment.desired_generation() < historical_assignment.desired_generation()
+    {
+        return false;
+    }
+    if current_assignment.desired_generation() > historical_assignment.desired_generation() {
+        return true;
+    }
+    if current_assignment.digest() != historical_assignment.digest()
+        || current.plan_digest() != historical.plan_digest()
+    {
+        return false;
+    }
+
+    current.local_lease_record().lease_generation()
+        > historical.local_lease_record().lease_generation()
+}
+
 /// Returns the closed method set safe for the current storage composition.
 ///
 /// Authoritative inventory, non-authorizing catalog preparation, isolated
@@ -3111,8 +3283,12 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::with_lease_key([42; 32])
+        }
+
+        fn with_lease_key(lease_key_bytes: [u8; 32]) -> Self {
             let plan_key = SigningKey::from_bytes(&[41; 32]);
-            let lease_key = SigningKey::from_bytes(&[42; 32]);
+            let lease_key = SigningKey::from_bytes(&lease_key_bytes);
             let plan_signer = key_ref("storage-plan", 3, KeyUsage::BrokerAuthorization, &plan_key);
             let lease_signer = key_ref("storage-lease", 7, KeyUsage::OwnershipLease, &lease_key);
             let plan_scope = TrustScopeId::from_bytes([43; 16]);
@@ -3143,6 +3319,10 @@ mod tests {
         }
 
         fn authority(&self) -> StorageAuthorityV1 {
+            self.authority_at_node(NODE)
+        }
+
+        fn authority_at_node(&self, node: NodeId) -> StorageAuthorityV1 {
             let plan = aos_sandbox_core::BrokerPlanTrustAnchor::from_trusted_configuration(
                 self.plan_policy.clone(),
                 self.plan_descriptor.clone(),
@@ -3162,7 +3342,7 @@ mod tests {
                 DecodeLimits::default(),
             )
             .unwrap();
-            StorageAuthorityV1::new(plan, lease, NODE, [51; 16], [52; 32]).unwrap()
+            StorageAuthorityV1::new(plan, lease, node, [51; 16], [52; 32]).unwrap()
         }
 
         fn protected_authority_binding(&self) -> ObjectDigest {
@@ -3303,6 +3483,90 @@ mod tests {
                 BrokerAudience::Storage,
                 ProtocolId::StorageBroker,
             )
+        }
+
+        fn artifacts_at_lease_generation(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            lease_generation: u64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = decode_resolved(request, catalog, peer(), peer_policy(), 100).unwrap();
+            let (preparation_bytes, _, _) = preparation_request(request, catalog);
+            let preparation = CanonicalStoragePreparationSemanticsV1::decode(
+                &preparation_bytes,
+                peer(),
+                peer_policy(),
+                100,
+            )
+            .unwrap();
+            let mut grants = vec![
+                BrokerGrant::new(
+                    semantics.broker_verb(),
+                    semantics.grant_target(),
+                    semantics.argument_commitment(),
+                    request.len() as u32,
+                    0,
+                )
+                .unwrap(),
+                BrokerGrant::new(
+                    preparation.broker_verb(),
+                    preparation.grant_target(),
+                    preparation.argument_commitment(),
+                    preparation_bytes.len() as u32,
+                    0,
+                )
+                .unwrap(),
+            ];
+            grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
+            self.signed_artifacts_at_lease_generation(
+                decode_assignment(request).unwrap(),
+                grants,
+                100,
+                300,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 0),
+                lease_generation,
+            )
+        }
+
+        fn artifacts_for_node(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            node: NodeId,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = decode_resolved(request, catalog, peer(), peer_policy(), 100).unwrap();
+            let (preparation_bytes, _, _) = preparation_request(request, catalog);
+            let preparation = CanonicalStoragePreparationSemanticsV1::decode(
+                &preparation_bytes,
+                peer(),
+                peer_policy(),
+                100,
+            )
+            .unwrap();
+            let mut grants = vec![
+                BrokerGrant::new(
+                    semantics.broker_verb(),
+                    semantics.grant_target(),
+                    semantics.argument_commitment(),
+                    request.len() as u32,
+                    0,
+                )
+                .unwrap(),
+                BrokerGrant::new(
+                    preparation.broker_verb(),
+                    preparation.grant_target(),
+                    preparation.argument_commitment(),
+                    preparation_bytes.len() as u32,
+                    0,
+                )
+                .unwrap(),
+            ];
+            grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
+            self.signed_artifacts_at_node(decode_assignment(request).unwrap(), grants, node, 1)
         }
 
         fn artifacts_for_kernel_clock_at_head(
@@ -3646,12 +3910,87 @@ mod tests {
             protocol: ProtocolId,
             protocol_version: ProtocolVersion,
         ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.signed_artifacts_at_lease_generation(
+                assignment,
+                grants,
+                valid_after,
+                expires,
+                lease_expires,
+                audience,
+                protocol,
+                protocol_version,
+                1,
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn signed_artifacts_at_lease_generation(
+            &self,
+            assignment: BrokerAssignment,
+            grants: Vec<BrokerGrant>,
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+            protocol_version: ProtocolVersion,
+            lease_generation: u64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.signed_artifacts_at_node_with_validity(
+                assignment,
+                grants,
+                NODE,
+                valid_after,
+                expires,
+                lease_expires,
+                audience,
+                protocol,
+                protocol_version,
+                lease_generation,
+            )
+        }
+
+        fn signed_artifacts_at_node(
+            &self,
+            assignment: BrokerAssignment,
+            grants: Vec<BrokerGrant>,
+            node: NodeId,
+            lease_generation: u64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.signed_artifacts_at_node_with_validity(
+                assignment,
+                grants,
+                node,
+                100,
+                300,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 0),
+                lease_generation,
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn signed_artifacts_at_node_with_validity(
+            &self,
+            assignment: BrokerAssignment,
+            grants: Vec<BrokerGrant>,
+            node: NodeId,
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+            protocol_version: ProtocolVersion,
+            lease_generation: u64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
             let plan = BrokerAuthorizationPlan::new(
                 audience,
                 protocol,
                 protocol_version,
                 assignment,
-                NODE,
+                node,
                 self.lease_signer.clone(),
                 grants,
                 ObjectDigest::from_bytes([48; 32]),
@@ -3670,8 +4009,8 @@ mod tests {
                     assignment.digest(),
                 )
                 .unwrap(),
-                NODE,
-                1,
+                node,
+                lease_generation,
                 valid_after,
                 lease_expires,
                 10,
@@ -3806,6 +4145,13 @@ mod tests {
         let fence = decoded.fence.get_or_insert_default();
         fence.incarnation_id = incarnation_id.to_vec();
         fence.assignment_epoch = assignment_epoch;
+        decoded.encode_to_vec()
+    }
+
+    fn with_assignment_digest(request: &[u8], assignment_digest: ObjectDigest) -> Vec<u8> {
+        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        decoded.fence.get_or_insert_default().assignment_digest =
+            assignment_digest.as_bytes().to_vec();
         decoded.encode_to_vec()
     }
 
@@ -3955,6 +4301,52 @@ mod tests {
             .unwrap()
     }
 
+    fn seal_current_fence(
+        coordinator: &StorageAdmissionCoordinator,
+        request: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        prior_fence: Option<&[u8]>,
+    ) -> Vec<u8> {
+        seal_current_fence_with_authority(
+            &coordinator.authority,
+            request,
+            artifacts,
+            catalog,
+            prior_fence,
+        )
+    }
+
+    fn seal_current_fence_with_authority(
+        authority: &StorageAuthorityV1,
+        request: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        prior_fence: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let semantics = decode_resolved(request, catalog, peer(), peer_policy(), 100).unwrap();
+        let assignment = decode_assignment(request).unwrap();
+        let admission = authority
+            .admit(
+                artifacts,
+                &semantics,
+                request,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                prior_fence,
+            )
+            .unwrap();
+        authority
+            .seal(
+                assignment.sandbox().as_bytes(),
+                semantics.header().request_id(),
+                semantics.operation_id(),
+                &admission,
+            )
+            .unwrap()
+            .current_fence
+    }
+
     fn request_with_generation(operation: u8, handle: u8, desired_generation: u64) -> Vec<u8> {
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
@@ -3974,6 +4366,24 @@ mod tests {
         value.operation_id = vec![operation; 16];
         value.storage_handle = vec![handle; 32];
         value.quota_bytes = 4096;
+        value.encode_to_vec()
+    }
+
+    fn with_assignment_epoch(request: &[u8], epoch: u64) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().assignment_epoch = epoch;
+        value.encode_to_vec()
+    }
+
+    fn with_incarnation(request: &[u8], incarnation: [u8; 16]) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().incarnation_id = incarnation.to_vec();
+        value.encode_to_vec()
+    }
+
+    fn with_sandbox(request: &[u8], sandbox: [u8; 16]) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().sandbox_id = sandbox.to_vec();
         value.encode_to_vec()
     }
 
@@ -5808,6 +6218,7 @@ mod tests {
                 )
                 .map_err(Into::into)
             },
+            &mut || Ok(vm_clock()),
             crate::runtime::runtime_configuration_binding(
                 fixture.protected_authority_binding(),
                 identity_pool,
@@ -6042,6 +6453,7 @@ mod tests {
                 )
                 .map_err(Into::into)
             },
+            &mut || Ok(vm_clock()),
             crate::runtime::runtime_configuration_binding(
                 fixture.protected_authority_binding(),
                 identity_pool,
@@ -6291,6 +6703,7 @@ mod tests {
                 )
                 .map_err(Into::into)
             },
+            &mut || Ok(vm_clock()),
             crate::runtime::runtime_configuration_binding(
                 fixture.protected_authority_binding(),
                 identity_pool,
@@ -9063,6 +9476,56 @@ mod tests {
     }
 
     #[test]
+    fn exact_fresh_head_crosses_ambiguous_and_dispatches_once() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let mut samples = 0;
+        assert!(matches!(
+            broker.preobserve_and_execute(&mut helper, [7; 16], &mut || {
+                samples += 1;
+                Ok(clock())
+            }),
+            Err(ZfsHelperError::ProcessContract)
+        ));
+        assert_eq!(samples, 2);
+        assert_eq!(executions.get(), 1);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Ambiguous)
+        );
+    }
+
+    #[test]
     fn failed_second_clock_sample_leaves_ambiguous_without_dispatch() {
         assert_second_clock_rejection(Err(StorageAdmissionError::VerificationFailed));
     }
@@ -9167,6 +9630,13 @@ mod tests {
             broker.transactions.phase([7; 16]).unwrap(),
             Some(DurableStoragePhase::Aborted)
         );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_none()
+        );
         assert!(matches!(
             broker.admit_apply_intent(
                 &request,
@@ -9262,6 +9732,13 @@ mod tests {
             broker.transactions.phase([8; 16]).unwrap(),
             Some(DurableStoragePhase::Aborted)
         );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[8; 16])
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             broker.transactions.workspace_pin_attempts().unwrap().len(),
             1
@@ -9286,7 +9763,116 @@ mod tests {
     }
 
     #[test]
-    fn superseded_current_fence_after_preobservation_prevents_dispatch() {
+    fn superseded_workspace_remove_retires_without_clock_or_pin_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, ensure, creation) = workspace_pin_ensure_dispatch(&directory, &fixture);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let proof = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 11);
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                ensure.attempt().attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(proof.clone()),
+            )
+            .unwrap();
+
+        let manifest = assignment_manifest_at(&sandbox_spec(72), 6);
+        let request = destroy_request(8, workspace_handle, manifest.digest());
+        let catalog = destroy_catalog(workspace_handle, 11);
+        let expected_head = broker.transactions.catalog_head_binding().unwrap();
+        let artifacts = fixture.artifacts_at_head(&request, &catalog, expected_head, 300);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::new(Cell::new(0)),
+            },
+        );
+        let prepared = helper.preobserve(&broker.transactions, [8; 16]).unwrap();
+
+        let superseding_request = destroy_request_at_generation(
+            9,
+            workspace_handle,
+            7,
+            assignment_manifest_at(&sandbox_spec(72), 7).digest(),
+        );
+        let superseding_artifacts =
+            fixture.artifacts_at_head(&superseding_request, &catalog, expected_head, 300);
+        let superseding_semantics =
+            decode_resolved(&superseding_request, &catalog, peer(), peer_policy(), 100).unwrap();
+        let prior_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let superseding_admission = broker
+            .authority
+            .admit(
+                &superseding_artifacts,
+                &superseding_semantics,
+                &superseding_request,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                Some(&prior_fence),
+            )
+            .unwrap();
+        let superseding_sealed = broker
+            .authority
+            .seal(&[2; 16], &[9; 16], &[9; 16], &superseding_admission)
+            .unwrap();
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            superseding_sealed.current_fence,
+        );
+
+        let attempts_before = broker.transactions.workspace_pin_attempts().unwrap().len();
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let mut samples = 0;
+        assert!(matches!(
+            broker.begin_workspace_pin_remove_and_destroy(prepared, host_scope, proof, &mut || {
+                samples += 1;
+                Ok(clock())
+            },),
+            Ok(AuthorizedWorkspaceRemoveAttemptV1::Aborted { .. })
+        ));
+        assert_eq!(samples, 0);
+        assert_eq!(
+            broker.transactions.workspace_pin_attempts().unwrap().len(),
+            attempts_before
+        );
+        assert_eq!(
+            broker.transactions.phase([8; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[8; 16])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn superseded_current_fence_after_preobservation_retires_without_dispatch() {
         let directory = TempDir::new().unwrap();
         let fixture = Fixture::new();
         let catalog = catalog(8, 9);
@@ -9364,15 +9950,937 @@ mod tests {
             superseding_sealed.current_fence,
         );
 
+        let mut samples = 0;
+        assert!(matches!(
+            broker.execute_preobserved(&mut helper, prepared, &mut || {
+                samples += 1;
+                Ok(clock())
+            }),
+            Ok(ZfsHelperOutcome::Aborted { .. })
+        ));
+        assert_eq!(samples, 0);
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_none()
+        );
+
+        prepare_for_apply(
+            &mut broker,
+            &superseding_request,
+            &superseding_artifacts,
+            &catalog,
+            &clock(),
+        );
+        assert!(matches!(
+            broker.admit_apply_intent(
+                &superseding_request,
+                &superseding_artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Ok(StorageAdmissionOutcome::Prepared { .. })
+        ));
+        drop(helper);
+        drop(broker);
+
+        let reopened = coordinator(&directory, &fixture);
+        assert_eq!(
+            reopened.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert_eq!(
+            reopened.transactions.phase([9; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+    }
+
+    #[test]
+    fn stale_tampered_and_incomparable_heads_cannot_retire_prepared() {
+        enum HeadCase {
+            Stale,
+            Tampered,
+            AssignmentDigest,
+            Incarnation,
+            Sandbox,
+            Node,
+            Ownership,
+        }
+
+        for case in [
+            HeadCase::Stale,
+            HeadCase::Tampered,
+            HeadCase::AssignmentDigest,
+            HeadCase::Incarnation,
+            HeadCase::Sandbox,
+            HeadCase::Node,
+            HeadCase::Ownership,
+        ] {
+            let directory = TempDir::new().unwrap();
+            let fixture = Fixture::new();
+            let catalog = catalog(8, 9);
+            let request = request_with_generation(7, 8, 5);
+            let artifacts = fixture.artifacts(
+                &request,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap();
+            let current = broker
+                .transactions
+                .authority_record(RecordNamespace::DesiredState, &[2; 16])
+                .unwrap()
+                .unwrap()
+                .to_vec();
+            let hostile_head = match case {
+                HeadCase::Tampered => {
+                    let mut tampered = current;
+                    tampered[0] ^= 1;
+                    tampered
+                }
+                HeadCase::Stale => {
+                    let stale_request = request_with_generation(9, 8, 4);
+                    let stale_artifacts = fixture.artifacts(
+                        &stale_request,
+                        &catalog,
+                        300,
+                        BrokerAudience::Storage,
+                        ProtocolId::StorageBroker,
+                    );
+                    seal_current_fence(&broker, &stale_request, &stale_artifacts, &catalog, None)
+                }
+                HeadCase::AssignmentDigest => {
+                    let incomparable_request = with_assignment_digest(
+                        &request_with_generation(9, 8, 5),
+                        ObjectDigest::from_bytes([77; 32]),
+                    );
+                    let incomparable_artifacts = fixture.artifacts(
+                        &incomparable_request,
+                        &catalog,
+                        300,
+                        BrokerAudience::Storage,
+                        ProtocolId::StorageBroker,
+                    );
+                    seal_current_fence(
+                        &broker,
+                        &incomparable_request,
+                        &incomparable_artifacts,
+                        &catalog,
+                        None,
+                    )
+                }
+                HeadCase::Incarnation => {
+                    let incomparable_request =
+                        with_incarnation(&request_with_generation(9, 8, 6), [78; 16]);
+                    let incomparable_artifacts = fixture.artifacts(
+                        &incomparable_request,
+                        &catalog,
+                        300,
+                        BrokerAudience::Storage,
+                        ProtocolId::StorageBroker,
+                    );
+                    seal_current_fence(
+                        &broker,
+                        &incomparable_request,
+                        &incomparable_artifacts,
+                        &catalog,
+                        None,
+                    )
+                }
+                HeadCase::Sandbox => {
+                    let wrong_sandbox_request =
+                        with_sandbox(&request_with_generation(9, 8, 6), [79; 16]);
+                    let wrong_sandbox_artifacts = fixture.artifacts(
+                        &wrong_sandbox_request,
+                        &catalog,
+                        300,
+                        BrokerAudience::Storage,
+                        ProtocolId::StorageBroker,
+                    );
+                    seal_current_fence(
+                        &broker,
+                        &wrong_sandbox_request,
+                        &wrong_sandbox_artifacts,
+                        &catalog,
+                        None,
+                    )
+                }
+                HeadCase::Node => {
+                    let wrong_node = NodeId::from_bytes([80; 16]);
+                    let candidate_request = request_with_generation(9, 8, 6);
+                    let candidate_artifacts =
+                        fixture.artifacts_for_node(&candidate_request, &catalog, wrong_node);
+                    seal_current_fence_with_authority(
+                        &fixture.authority_at_node(wrong_node),
+                        &candidate_request,
+                        &candidate_artifacts,
+                        &catalog,
+                        None,
+                    )
+                }
+                HeadCase::Ownership => {
+                    let wrong_fixture = Fixture::with_lease_key([81; 32]);
+                    let candidate_request = request_with_generation(9, 8, 6);
+                    let candidate_artifacts = wrong_fixture.artifacts(
+                        &candidate_request,
+                        &catalog,
+                        300,
+                        BrokerAudience::Storage,
+                        ProtocolId::StorageBroker,
+                    );
+                    seal_current_fence_with_authority(
+                        &wrong_fixture.authority(),
+                        &candidate_request,
+                        &candidate_artifacts,
+                        &catalog,
+                        None,
+                    )
+                }
+            };
+            broker.transactions.put_authority_record_for_test(
+                RecordNamespace::DesiredState,
+                &[2; 16],
+                hostile_head,
+            );
+
+            let executions = Rc::new(Cell::new(0));
+            let mut helper = StorageMutationHelper::new(
+                ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+                CountingBackend {
+                    executions: Rc::clone(&executions),
+                },
+            );
+            let prepared = broker.preobserve(&mut helper, [7; 16]).unwrap();
+            let mut samples = 0;
+            assert!(matches!(
+                broker.execute_preobserved(&mut helper, prepared, &mut || {
+                    samples += 1;
+                    Ok(clock())
+                }),
+                Err(ZfsHelperError::Authority)
+            ));
+            assert_eq!(samples, 0);
+            assert_eq!(executions.get(), 0);
+            assert_eq!(
+                broker.transactions.phase([7; 16]).unwrap(),
+                Some(DurableStoragePhase::Prepared)
+            );
+            assert!(
+                broker
+                    .transactions
+                    .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn newer_lease_for_exact_assignment_strictly_supersedes_prepared() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let request = request_with_generation(7, 8, 5);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let renewed_artifacts = fixture.artifacts_at_lease_generation(&request, &catalog, 2);
+        let prior = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let renewed_fence = seal_current_fence(
+            &broker,
+            &request,
+            &renewed_artifacts,
+            &catalog,
+            Some(&prior),
+        );
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            renewed_fence,
+        );
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let prepared = broker.preobserve(&mut helper, [7; 16]).unwrap();
         assert!(matches!(
             broker.execute_preobserved(&mut helper, prepared, &mut || Ok(clock())),
-            Err(ZfsHelperError::Authority)
+            Ok(ZfsHelperOutcome::Aborted { .. })
         ));
         assert_eq!(executions.get(), 0);
         assert_eq!(
             broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+    }
+
+    #[test]
+    fn higher_epoch_strictly_supersedes_prepared_without_clock_or_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let request = request_with_generation(7, 8, 5);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let successor = with_assignment_epoch(&request_with_generation(9, 8, 1), 5);
+        let successor_artifacts = fixture.artifacts(
+            &successor,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let prior = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let successor_fence = seal_current_fence(
+            &broker,
+            &successor,
+            &successor_artifacts,
+            &catalog,
+            Some(&prior),
+        );
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            successor_fence,
+        );
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let prepared = broker.preobserve(&mut helper, [7; 16]).unwrap();
+        let samples = Cell::new(0);
+        assert!(matches!(
+            broker.execute_preobserved(&mut helper, prepared, &mut || {
+                samples.set(samples.get() + 1);
+                Ok(clock())
+            }),
+            Ok(ZfsHelperOutcome::Aborted { .. })
+        ));
+        assert_eq!(samples.get(), 0);
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    fn validate_startup_workspace_catalog<F>(
+        coordinator: &mut StorageAdmissionCoordinator,
+        directory: &TempDir,
+        trusted_clock: &mut F,
+    ) -> Result<(), crate::StorageRuntimeError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+        let validated = crate::runtime::open_validated_workspace_catalog_after_startup(
+            coordinator,
+            trusted_clock,
+            || {
+                crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                    directory.path(),
+                    identity_pool,
+                )
+                .map_err(Into::into)
+            },
+        )?;
+        drop(validated);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_runtime_path_retains_exact_fresh_and_old_boot_prepared_for_recovery() {
+        for startup_clock in [clock(), clock_at([82; 16], 150, 100)] {
+            let directory = TempDir::new().unwrap();
+            let workspace_directory = TempDir::new().unwrap();
+            let fixture = Fixture::new();
+            let catalog = catalog(8, 9);
+            let request = request_with_generation(7, 8, 5);
+            let artifacts = fixture.artifacts(
+                &request,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap();
+
+            let samples = Cell::new(0);
+            validate_startup_workspace_catalog(&mut broker, &workspace_directory, &mut || {
+                samples.set(samples.get() + 1);
+                Ok(startup_clock)
+            })
+            .unwrap();
+            assert_eq!(samples.get(), 1);
+            assert_eq!(
+                broker.transactions.phase([7; 16]).unwrap(),
+                Some(DurableStoragePhase::Prepared)
+            );
+            assert!(
+                broker
+                    .transactions
+                    .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                    .unwrap()
+                    .is_some()
+            );
+
+            let executions = Rc::new(Cell::new(0));
+            let mut helper = StorageMutationHelper::new(
+                ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+                CountingBackend {
+                    executions: Rc::clone(&executions),
+                },
+            );
+            let pending =
+                crate::runtime::reconcile_transaction_recovery(&mut broker, &mut helper).unwrap();
+            assert_eq!(pending, 1);
+            assert_eq!(
+                crate::runtime::pending_startup_readiness(pending, true),
+                Some(crate::StorageRuntimeReadiness::RecoveryPending { operations: 1 })
+            );
+            assert_eq!(executions.get(), 0);
+        }
+    }
+
+    #[test]
+    fn startup_runtime_path_rejects_missing_or_tampered_prepared_authority_before_inventory() {
+        for missing in [true, false] {
+            let directory = TempDir::new().unwrap();
+            let workspace_directory = TempDir::new().unwrap();
+            let fixture = Fixture::new();
+            let catalog = catalog(8, 9);
+            let request = request_with_generation(7, 8, 5);
+            let artifacts = fixture.artifacts(
+                &request,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap();
+
+            if missing {
+                broker
+                    .transactions
+                    .remove_authority_record_for_test(RecordNamespace::DesiredState, &[2; 16]);
+            } else {
+                let mut tampered = broker
+                    .transactions
+                    .authority_record(RecordNamespace::DesiredState, &[2; 16])
+                    .unwrap()
+                    .unwrap()
+                    .to_vec();
+                tampered[0] ^= 1;
+                broker.transactions.put_authority_record_for_test(
+                    RecordNamespace::DesiredState,
+                    &[2; 16],
+                    tampered,
+                );
+            }
+
+            let samples = Cell::new(0);
+            let inventory_opened = Cell::new(false);
+            let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+            assert!(matches!(
+                crate::runtime::open_validated_workspace_catalog_after_startup(
+                    &mut broker,
+                    &mut || {
+                        samples.set(samples.get() + 1);
+                        Ok(clock())
+                    },
+                    || {
+                        inventory_opened.set(true);
+                        crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                            workspace_directory.path(),
+                            identity_pool,
+                        )
+                        .map_err(Into::into)
+                    },
+                ),
+                Err(crate::StorageRuntimeError::Recovery)
+            ));
+            assert_eq!(samples.get(), 0);
+            assert!(!inventory_opened.get());
+            assert_eq!(
+                broker.transactions.phase([7; 16]).unwrap(),
+                Some(DurableStoragePhase::Prepared)
+            );
+            assert!(
+                broker
+                    .transactions
+                    .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn startup_runtime_path_clock_acquisition_failure_preserves_prepared_and_inventory_order() {
+        let directory = TempDir::new().unwrap();
+        let workspace_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let request = request_with_generation(7, 8, 5);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let samples = Cell::new(0);
+        let inventory_opened = Cell::new(false);
+        let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+        assert!(matches!(
+            crate::runtime::open_validated_workspace_catalog_after_startup(
+                &mut broker,
+                &mut || {
+                    samples.set(samples.get() + 1);
+                    Err(StorageAdmissionError::VerificationFailed)
+                },
+                || {
+                    inventory_opened.set(true);
+                    crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                        workspace_directory.path(),
+                        identity_pool,
+                    )
+                    .map_err(Into::into)
+                },
+            ),
+            Err(crate::StorageRuntimeError::Recovery)
+        ));
+        assert_eq!(samples.get(), 1);
+        assert!(!inventory_opened.get());
+        assert!(!broker.transaction_journal_requires_reopen());
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
             Some(DurableStoragePhase::Prepared)
         );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn startup_retires_superseded_and_expired_prepared_but_not_ambiguous() {
+        let superseded_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let request = request_with_generation(7, 8, 5);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        {
+            let mut broker = initialized_coordinator(&superseded_directory, &fixture, &catalog);
+            prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+            let StorageAdmissionOutcome::Prepared { .. } = broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap()
+            else {
+                panic!("operation was not prepared")
+            };
+            let successor = request_with_generation(9, 8, 6);
+            let successor_artifacts = fixture.artifacts(
+                &successor,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let prior = broker
+                .transactions
+                .authority_record(RecordNamespace::DesiredState, &[2; 16])
+                .unwrap()
+                .unwrap()
+                .to_vec();
+            let successor_fence = seal_current_fence(
+                &broker,
+                &successor,
+                &successor_artifacts,
+                &catalog,
+                Some(&prior),
+            );
+            broker.transactions.put_authority_record_for_test(
+                RecordNamespace::DesiredState,
+                &[2; 16],
+                successor_fence,
+            );
+        }
+        let mut reopened = coordinator(&superseded_directory, &fixture);
+        let superseded_workspace_directory = TempDir::new().unwrap();
+        let superseded_samples = Cell::new(0);
+        validate_startup_workspace_catalog(
+            &mut reopened,
+            &superseded_workspace_directory,
+            &mut || {
+                superseded_samples.set(superseded_samples.get() + 1);
+                Ok(clock())
+            },
+        )
+        .unwrap();
+        assert_eq!(superseded_samples.get(), 0);
+        assert_eq!(
+            reopened.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+
+        let expired_directory = TempDir::new().unwrap();
+        let mut expired = initialized_coordinator(&expired_directory, &fixture, &catalog);
+        prepare_for_apply(&mut expired, &request, &artifacts, &catalog, &clock());
+        expired
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        let expired_workspace_directory = TempDir::new().unwrap();
+        let expired_samples = Cell::new(0);
+        validate_startup_workspace_catalog(&mut expired, &expired_workspace_directory, &mut || {
+            expired_samples.set(expired_samples.get() + 1);
+            Ok(clock_at([50; 16], 150, 200))
+        })
+        .unwrap();
+        assert_eq!(expired_samples.get(), 1);
+        assert_eq!(
+            expired.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            expired
+                .retire_inactive_prepared_at_startup(&mut || {
+                    panic!("terminal Aborted entry sampled startup time")
+                })
+                .unwrap()
+                .is_empty()
+        );
+
+        let committed_directory = TempDir::new().unwrap();
+        let mut committed = initialized_coordinator(&committed_directory, &fixture, &catalog);
+        prepare_for_apply(&mut committed, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = committed
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("operation was not prepared")
+        };
+        committed
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        committed
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(11),
+                ObjectDigest::from_bytes([78; 32]),
+            )
+            .unwrap();
+        let committed_workspace_directory = TempDir::new().unwrap();
+        validate_startup_workspace_catalog(
+            &mut committed,
+            &committed_workspace_directory,
+            &mut || panic!("terminal Committed entry sampled startup time"),
+        )
+        .unwrap();
+        assert_eq!(
+            committed.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Committed)
+        );
+
+        let ambiguous_directory = TempDir::new().unwrap();
+        let mut ambiguous = initialized_coordinator(&ambiguous_directory, &fixture, &catalog);
+        prepare_for_apply(&mut ambiguous, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = ambiguous
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("operation was not prepared")
+        };
+        ambiguous
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let ambiguous_workspace_directory = TempDir::new().unwrap();
+        validate_startup_workspace_catalog(
+            &mut ambiguous,
+            &ambiguous_workspace_directory,
+            &mut || panic!("Ambiguous entry sampled startup time"),
+        )
+        .unwrap();
+        assert_eq!(
+            ambiguous.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Ambiguous)
+        );
+        assert!(
+            ambiguous
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn uncertain_startup_supersession_requires_reopen_and_recovers_aborted() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let request = request_with_generation(7, 8, 5);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        let successor = request_with_generation(9, 8, 6);
+        let successor_artifacts = fixture.artifacts(
+            &successor,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let prior = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let successor_fence = seal_current_fence(
+            &broker,
+            &successor,
+            &successor_artifacts,
+            &catalog,
+            Some(&prior),
+        );
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            successor_fence,
+        );
+        broker.fail_after_next_journal_commit_for_test();
+
+        let workspace_directory = TempDir::new().unwrap();
+        let inventory_opened = Cell::new(false);
+        let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+        assert!(matches!(
+            crate::runtime::open_validated_workspace_catalog_after_startup(
+                &mut broker,
+                &mut || Ok(clock()),
+                || {
+                    inventory_opened.set(true);
+                    crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                        workspace_directory.path(),
+                        identity_pool,
+                    )
+                    .map_err(Into::into)
+                },
+            ),
+            Err(crate::StorageRuntimeError::ReopenRequired)
+        ));
+        assert!(!inventory_opened.get());
+        assert!(broker.transaction_journal_requires_reopen());
+        assert!(broker.recovery_entries().is_err());
+        drop(broker);
+
+        let mut reopened = coordinator(&directory, &fixture);
+        assert_eq!(
+            reopened.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            reopened
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_none()
+        );
+        let reopened_workspace_directory = TempDir::new().unwrap();
+        validate_startup_workspace_catalog(
+            &mut reopened,
+            &reopened_workspace_directory,
+            &mut || panic!("reopened terminal entry sampled startup time"),
+        )
+        .unwrap();
     }
 
     #[test]

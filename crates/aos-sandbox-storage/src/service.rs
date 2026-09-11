@@ -18,8 +18,7 @@
 use aos_proto::aos::sandbox::local::v1::{
     ApplyStorageRequest, BrokerErrorCode, BrokerMethod, StorageResult,
 };
-use aos_sandbox_core::{FeatureRef, ProtocolId, ProtocolVersion, RawClockProvenance};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_core::{FeatureRef, ProtocolId, ProtocolVersion};
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
@@ -43,7 +42,6 @@ use crate::runtime::{
 use crate::transport::{EXCHANGE_NANOSECONDS, accept_connection, boottime, receive, send};
 use crate::{StorageAdmissionError, StorageCatalogPreparationOutcomeV1};
 
-const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 const CATALOG_OBSERVATION_NANOSECONDS: u64 = 35_000_000_000;
 const CATALOG_OBSERVATION_QUIESCENCE_RESERVE_NANOSECONDS: u64 = 6_000_000_000;
 const INVENTORY_RESPONSE_RESERVE_NANOSECONDS: u64 = 1_000_000_000;
@@ -791,19 +789,7 @@ fn signed_plan_lease_feature() -> Result<FeatureRef, StorageServiceError> {
 
 fn trusted_paired_clock_sample()
 -> Result<aos_sandbox_core::RawPairedClockSample, StorageServiceError> {
-    let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
-    let provenance = RawClockProvenance::new_untrusted(KERNEL_CLOCK_PROVENANCE)
-        .map_err(|_| StorageServiceError::Clock)?;
-    let boot_id = KernelBootId::current()
-        .map_err(|_| StorageServiceError::Clock)?
-        .into_bytes();
-    aos_sandbox_core::RawPairedClockSample::new_untrusted(
-        provenance,
-        boot_id,
-        wall.tv_sec,
-        boottime()?,
-    )
-    .map_err(|_| StorageServiceError::Clock)
+    crate::runtime::trusted_paired_clock_sample().map_err(|_| StorageServiceError::Clock)
 }
 
 fn encode_success_or_resource_exhausted(

@@ -4,10 +4,10 @@
 //! lifetime of [`StorageTransactionStore`]. Each state transition is an atomic,
 //! checksummed journal transaction whose value is independently HMAC-authenticated.
 //! A mutation must be marked [`DurableStoragePhase::Ambiguous`] before a future
-//! helper may invoke ZFS. An expired Prepared intent can instead become an
-//! authenticated [`DurableStoragePhase::Aborted`] tombstone. Recovery exposes
-//! ambiguous work only for re-observation; this module contains no API that
-//! returns or reissues mutation argv.
+//! helper may invoke ZFS. An expired or strictly superseded Prepared intent can
+//! become an authenticated [`DurableStoragePhase::Aborted`] tombstone. Recovery
+//! exposes ambiguous work only for re-observation; this module contains no API
+//! that returns or reissues mutation argv.
 
 mod workspace_projection;
 
@@ -190,7 +190,7 @@ pub enum DurableStoragePhase {
     Ambiguous,
     /// The typed postcondition and committed result were durably published.
     Committed,
-    /// The expired intent was durably retired before any mutation was attempted.
+    /// The inactive intent was durably retired before any mutation was attempted.
     Aborted,
 }
 
@@ -347,7 +347,7 @@ pub enum BeginStorageTransaction {
     },
     /// The exact request already committed and returns its prior result.
     Replay(CommittedStorageResultV1),
-    /// The exact request expired and was durably retired before mutation.
+    /// The exact request expired or was superseded and retired before mutation.
     Aborted {
         /// Deterministic identity of the retired mutation intent.
         mutation_digest: ObjectDigest,

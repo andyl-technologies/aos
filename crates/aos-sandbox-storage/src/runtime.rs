@@ -19,8 +19,10 @@ use std::path::{Path, PathBuf};
 use aos_proto::aos::sandbox::local::v1::ApplyStorageRequest;
 use aos_sandbox_core::model::{IdentityProfile, SandboxSpec, UnmappableIdentityPolicy};
 use aos_sandbox_core::{
-    CanonicalAssignmentManifestV1, ObjectDigest, ProtocolVersion, RawPairedClockSample,
+    CanonicalAssignmentManifestV1, ObjectDigest, ProtocolVersion, RawClockProvenance,
+    RawPairedClockSample,
 };
+use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::semantics::storage::{CanonicalStorageSemanticsV1, StorageOperation};
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
@@ -68,6 +70,7 @@ const WORKSPACE_PIN_WORKER_SOCKET: &str = "/run/aos/sandbox-workspace-pin-worker
 const WORKSPACE_PIN_OBSERVER_SOCKET: &str = "/run/aos/sandbox-workspace-pin-observer/control.sock";
 const STARTUP_CATALOG_OBSERVATION_NANOSECONDS: u64 = 10_000_000_000;
 const STARTUP_CATALOG_WORKER_NANOSECONDS: u64 = 9_000_000_000;
+const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 
 /// Reports protected Storage runtime construction or recovery failure.
 #[derive(Debug, thiserror::Error)]
@@ -163,7 +166,7 @@ pub enum StoragePrepareReadiness {
 pub enum StorageRuntimeMutationOutcome {
     /// Exact postcondition evidence and physical catalog state were committed.
     Committed(CommittedStorageResultV1),
-    /// The exact expired intent was durably retired before mutation.
+    /// The exact expired or strictly superseded intent was retired before mutation.
     Aborted {
         /// Deterministic identity of the retired mutation intent.
         mutation_digest: ObjectDigest,
@@ -204,19 +207,25 @@ pub struct StorageBrokerRuntime {
 }
 
 impl StorageBrokerRuntime {
-    /// Opens protected state, anchors genesis, and performs startup observation.
+    /// Opens protected state, anchors genesis, and performs startup retirement and observation.
     ///
     /// `bootstrap_directory` is a root-owned fixed-file publication, not a
     /// request or controller-provided raw catalog. A truly unused journal is
     /// initialized atomically with the protected authority binding and genesis
     /// head. An initialized journal instead authenticates its current head and
     /// compares only its immutable genesis identity to the static publication.
+    /// Before workspace inventory opens, authenticated expired or strictly
+    /// superseded Prepared operations are durably retired. A clock sample that
+    /// is discontinuous with the authenticated effect leaves exact-current work
+    /// pending for observation.
     ///
     /// # Errors
     ///
     /// Returns [`StorageRuntimeError`] for insecure or malformed protected
     /// inputs, rollback, authority/genesis substitution, worker construction,
-    /// corrupt state, or failed observation-only recovery.
+    /// corrupt state, or failed observation-only recovery. An indeterminate
+    /// startup retirement returns [`StorageRuntimeError::ReopenRequired`]; a
+    /// later open must replay the durable journal prefix before serving.
     pub fn open_root_owned(
         authority_directory: &Path,
         bootstrap_directory: &Path,
@@ -242,14 +251,16 @@ impl StorageBrokerRuntime {
     /// Prepare. A configured invalid or rolled-back publication is classified
     /// as [`StoragePrepareReadiness::PolicyInvalid`] without manufacturing a
     /// fallback policy. Journal I/O or authenticated-state corruption remains
-    /// fatal to the whole runtime.
+    /// fatal to the whole runtime. Durable Prepared retirement follows the same
+    /// pre-inventory ordering as [`Self::open_root_owned`].
     ///
     /// # Errors
     ///
     /// Returns [`StorageRuntimeError`] under the same protected authority,
     /// bootstrap, journal, worker, and recovery failures as
     /// [`Self::open_root_owned`]. A policy rollback is classified rather than
-    /// returned, while an uncertain policy-floor commit is fatal.
+    /// returned, while an uncertain policy-floor or startup-retirement commit
+    /// is fatal and requires protected reopen.
     #[allow(clippy::too_many_arguments)]
     pub fn open_root_owned_with_resolver_policy(
         authority_directory: &Path,
@@ -334,15 +345,18 @@ impl StorageBrokerRuntime {
         // effect histories or the workspace inventory becomes an input.
         // Keep both exclusive journals for the runtime lifetime. Acquiring the
         // transaction journal first is the only permitted cross-journal order.
-        let pending_workspaces = authenticate_before_workspace_inventory(
-            || authenticate_startup_authority(&coordinator),
+        let mut startup_clock = || {
+            trusted_paired_clock_sample()
+                .map_err(|_| crate::StorageAdmissionError::VerificationFailed)
+        };
+        let workspaces = open_validated_workspace_catalog_after_startup(
+            &mut coordinator,
+            &mut startup_clock,
             || {
                 PendingStorageWorkspaceCatalogV1::open_root_owned(state_directory, identity_pool)
                     .map_err(Into::into)
             },
         )?;
-        let (workspace_plan, _) = coordinator.workspace_catalog_activation_plan()?;
-        let workspaces = pending_workspaces.validate_plan(workspace_plan)?;
         let broker_instance_id = random_challenge()?;
 
         let backend = SystemdZfsProcessBackend::new(executor);
@@ -366,9 +380,11 @@ impl StorageBrokerRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn from_protected_components_for_test<F>(
-        coordinator: StorageAdmissionCoordinator,
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_protected_components_for_test<F, C>(
+        mut coordinator: StorageAdmissionCoordinator,
         open_workspaces: F,
+        trusted_clock: &mut C,
         configuration_binding: ObjectDigest,
         pin_custody: WorkspacePinHostCustody,
         pin_contract: ZfsHelperContract,
@@ -378,17 +394,17 @@ impl StorageBrokerRuntime {
     ) -> Result<Self, StorageRuntimeError>
     where
         F: FnOnce() -> Result<PendingStorageWorkspaceCatalogV1, StorageRuntimeError>,
+        C: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
     {
         // Preserve the production construction order: prove the complete
         // mutator cgroup empty, authenticate the transaction journal, and only
         // then open the workspace journal under the already-held first lock.
         pin_executor.recover_quiescence()?;
-        let pending_workspaces = authenticate_before_workspace_inventory(
-            || authenticate_startup_authority(&coordinator),
+        let workspaces = open_validated_workspace_catalog_after_startup(
+            &mut coordinator,
+            trusted_clock,
             open_workspaces,
         )?;
-        let (workspace_plan, _) = coordinator.workspace_catalog_activation_plan()?;
-        let workspaces = pending_workspaces.validate_plan(workspace_plan)?;
 
         let mut runtime = Self {
             coordinator,
@@ -1080,19 +1096,22 @@ impl StorageBrokerRuntime {
 
     /// Executes one already-admitted Prepared effect under fresh authority.
     ///
-    /// This method performs pre-observation, reopens current durable authority,
-    /// samples the supplied protected clock before Ambiguous, durably crosses
-    /// Ambiguous, samples again, and dispatches exactly once. Service code must
-    /// not call it while [`Self::apply_readiness`] reports a held backend.
+    /// This method performs pre-observation and reopens current durable
+    /// authority. Strict authenticated supersession aborts without sampling.
+    /// An exact-current intent is sampled before Ambiguous; authenticated expiry
+    /// aborts at that sample. Only Fresh authority crosses Ambiguous, consumes
+    /// the one-shot proof with a second sample, and dispatches exactly once.
+    /// Service code must not call it while [`Self::apply_readiness`] reports a
+    /// held backend.
     ///
     /// # Errors
     ///
     /// Returns [`StorageRuntimeError::Recovery`] when persisted authority, an
     /// invalid clock sample, physical preconditions, dispatch, or postcondition
-    /// observation fails. Authenticated expiry at the first clock sample
-    /// returns [`StorageRuntimeMutationOutcome::Aborted`]. A failure after the
-    /// durable Ambiguous transition remains observation-only and is never
-    /// retried here.
+    /// observation fails. Strict supersession or authenticated expiry returns
+    /// [`StorageRuntimeMutationOutcome::Aborted`] under the ordering above. A
+    /// failure after the durable Ambiguous transition remains observation-only
+    /// and is never retried here.
     pub fn execute_admitted<F>(
         &mut self,
         operation_id: [u8; 16],
@@ -1209,28 +1228,7 @@ impl StorageBrokerRuntime {
     }
 
     fn reconcile_startup(&mut self) -> Result<StorageRuntimeReadiness, StorageRuntimeError> {
-        let entries = self
-            .coordinator
-            .recovery_entries()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        let mut pending = 0;
-        for entry in entries {
-            if matches!(
-                entry.phase(),
-                DurableStoragePhase::Committed | DurableStoragePhase::Aborted
-            ) {
-                continue;
-            }
-            match self
-                .coordinator
-                .reconcile_recovery(&mut self.helper, entry)
-                .map_err(|_| StorageRuntimeError::Recovery)?
-            {
-                ZfsHelperOutcome::Committed(_) => {}
-                ZfsHelperOutcome::Aborted { .. } => return Err(StorageRuntimeError::Recovery),
-                ZfsHelperOutcome::ObservationRequired { .. } => pending += 1,
-            }
-        }
+        let mut pending = reconcile_transaction_recovery(&mut self.coordinator, &mut self.helper)?;
         for dispatch in self
             .coordinator
             .workspace_pin_observation_dispatches()
@@ -1292,10 +1290,8 @@ impl StorageBrokerRuntime {
             .as_mut()
             .ok_or(StorageRuntimeError::Recovery)?
             .revalidate_plan(workspace_plan)?;
-        if pending != 0 || physical_plan.is_none() {
-            return Ok(StorageRuntimeReadiness::RecoveryPending {
-                operations: pending.max(1),
-            });
+        if let Some(readiness) = pending_startup_readiness(pending, physical_plan.is_some()) {
+            return Ok(readiness);
         }
 
         let now = boottime_now_nanoseconds()?;
@@ -1385,6 +1381,28 @@ fn finish_live_transaction_mutation<T, E>(
     }
 
     result.map_err(ordinary_error)
+}
+
+/// Samples the production kernel wall and boot clocks with the current boot identity.
+///
+/// # Errors
+///
+/// Returns [`StorageRuntimeError::Recovery`] when the kernel boot identity or
+/// either clock cannot form a valid paired sample.
+pub(crate) fn trusted_paired_clock_sample() -> Result<RawPairedClockSample, StorageRuntimeError> {
+    let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+    let provenance = RawClockProvenance::new_untrusted(KERNEL_CLOCK_PROVENANCE)
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+    let boot_id = KernelBootId::current()
+        .map_err(|_| StorageRuntimeError::Recovery)?
+        .into_bytes();
+    RawPairedClockSample::new_untrusted(
+        provenance,
+        boot_id,
+        wall.tv_sec,
+        boottime_now_nanoseconds().map_err(|_| StorageRuntimeError::Recovery)?,
+    )
+    .map_err(|_| StorageRuntimeError::Recovery)
 }
 
 fn finish_reopen_required_reconciliation(
@@ -1507,6 +1525,92 @@ fn authenticate_before_workspace_inventory<T>(
 ) -> Result<T, StorageRuntimeError> {
     authenticate()?;
     open_inventory()
+}
+
+/// Retires inactive transactions before opening and validating workspace state.
+///
+/// # Errors
+///
+/// Returns [`StorageRuntimeError`] for unauthenticated transaction authority,
+/// failed clock acquisition, retirement publication, workspace open, or plan
+/// validation. An indeterminate retirement commit requires protected reopen.
+pub(crate) fn open_validated_workspace_catalog_after_startup<F, O>(
+    coordinator: &mut StorageAdmissionCoordinator,
+    trusted_clock: &mut F,
+    open_inventory: O,
+) -> Result<ValidatedPendingStorageWorkspaceCatalogV1, StorageRuntimeError>
+where
+    F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    O: FnOnce() -> Result<PendingStorageWorkspaceCatalogV1, StorageRuntimeError>,
+{
+    authenticate_startup_authority(coordinator)?;
+    coordinator
+        .retire_inactive_prepared_at_startup(trusted_clock)
+        .map_err(|_| {
+            if coordinator.transaction_journal_requires_reopen() {
+                StorageRuntimeError::ReopenRequired
+            } else {
+                StorageRuntimeError::Recovery
+            }
+        })?;
+    let pending = authenticate_before_workspace_inventory(
+        || authenticate_startup_authority(coordinator),
+        open_inventory,
+    )?;
+    let (workspace_plan, _) = coordinator.workspace_catalog_activation_plan()?;
+    pending.validate_plan(workspace_plan).map_err(Into::into)
+}
+
+/// Reconciles nonterminal transaction entries through observation only.
+///
+/// # Errors
+///
+/// Returns [`StorageRuntimeError::Recovery`] when authenticated recovery or
+/// postcondition observation fails closed.
+pub(crate) fn reconcile_transaction_recovery<B: crate::helper::ZfsProcessBackend>(
+    coordinator: &mut StorageAdmissionCoordinator,
+    helper: &mut StorageMutationHelper<B>,
+) -> Result<usize, StorageRuntimeError> {
+    let entries = coordinator
+        .recovery_entries()
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+    let mut pending = 0;
+
+    for entry in entries {
+        if matches!(
+            entry.phase(),
+            DurableStoragePhase::Committed | DurableStoragePhase::Aborted
+        ) {
+            continue;
+        }
+        match coordinator
+            .reconcile_recovery(helper, entry)
+            .map_err(|_| StorageRuntimeError::Recovery)?
+        {
+            ZfsHelperOutcome::Committed(_) => {}
+            ZfsHelperOutcome::Aborted { .. } => return Err(StorageRuntimeError::Recovery),
+            ZfsHelperOutcome::ObservationRequired { .. } => pending += 1,
+        }
+    }
+
+    Ok(pending)
+}
+
+/// Classifies whether startup recovery must remain pending.
+pub(crate) const fn pending_startup_readiness(
+    pending_operations: usize,
+    has_physical_plan: bool,
+) -> Option<StorageRuntimeReadiness> {
+    if pending_operations != 0 || !has_physical_plan {
+        let operations = if pending_operations == 0 {
+            1
+        } else {
+            pending_operations
+        };
+        Some(StorageRuntimeReadiness::RecoveryPending { operations })
+    } else {
+        None
+    }
 }
 
 pub(crate) fn runtime_configuration_binding(
