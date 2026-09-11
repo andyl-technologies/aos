@@ -5,6 +5,7 @@
     compiler ? "@cc@",
     sourceSuffix ? "c",
     compileArguments,
+    compileTimeoutSeconds ? 60,
     primaryInput,
     primaryOperation,
     primarySource,
@@ -26,6 +27,7 @@
           steps = [
             {
               argv = [compiler "primary.${sourceSuffix}"] ++ compileArguments ++ ["-o" "primary-consumer"];
+              timeout_seconds = compileTimeoutSeconds;
               exit_code = 0;
               stdout.exact = "";
               stderr.exact = "";
@@ -47,6 +49,7 @@
           steps = [
             {
               argv = [compiler "bad-input.${sourceSuffix}"] ++ compileArguments ++ ["-o" "bad-input-consumer"];
+              timeout_seconds = compileTimeoutSeconds;
               exit_code = 0;
               stdout.exact = "";
               stderr.exact = "";
@@ -144,6 +147,9 @@ in {
 
   toml11 = mkLibraryProbe {
     package = "toml11";
+    # The public header instantiates a complete parser. Target-hosted C++
+    # compilation under emulation needs more time than the runtime checks.
+    compileTimeoutSeconds = 300;
     compiler = "@cxx@";
     sourceSuffix = "cc";
     compileArguments = ["-std=c++17" "-I@out@/include"];
