@@ -3,6 +3,7 @@
   mkGoPackage,
   fetchGoModules,
   fetchurl,
+  bash,
 }: let
   version = "2.37.1";
   src = fetchurl {
@@ -20,6 +21,19 @@ in
     goPackage = ".";
     goOutput = "direnv";
     doCheck = false;
+    runtimeDeps = [bash];
+    postInstall = ''
+      # Loading an approved .envrc executes Bash as part of direnv's runtime.
+      mkdir -p "$out/libexec"
+      mv "$out/bin/direnv" "$out/libexec/direnv"
+      cat > "$out/bin/direnv" <<EOF
+      #!${bash}/bin/bash
+      export PATH="${bash}/bin\''${PATH:+:}\$PATH"
+      exec "$out/libexec/direnv" "\$@"
+      EOF
+      chmod +x "$out/bin/direnv"
+    '';
+
     checks = {
       testing,
       self,
