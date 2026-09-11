@@ -332,14 +332,15 @@ in {
         stderr.exact = "";
       }
     ];
-    badInput = "A relative path, which is outside --path's accepted input domain.";
-    badOperation = "Attempt to escape the relative value as an absolute path.";
-    badExpected = "systemd-escape rejects the relative path.";
+    badInput = "An escaped unit-name component containing non-hexadecimal escape digits.";
+    badOperation = "Attempt to unescape the malformed component.";
+    badExpected = "systemd-escape rejects the invalid escape sequence.";
     badSteps = [
       {
-        argv = ["--path" "relative/path"];
+        argv = ["--unescape" "invalid\\xZZ"];
         exit_code = 1;
         stdout.exact = "";
+        stderr.exact = "Failed to unescape string: Invalid argument\n";
         observes_rejection = true;
       }
     ];

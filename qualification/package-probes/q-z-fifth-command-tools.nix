@@ -164,9 +164,9 @@ in {
           subprocess.run(command + ["kill-server"], env=environment, capture_output=True)
       print("tmux operation passed")
     '';
-    badInput = "A tmux command name outside the command table.";
-    badOperation = "Dispatch the unsupported command on an isolated socket.";
-    badExpected = "Tmux rejects the unknown command before creating a server.";
+    badInput = "A tmux command-line option outside the supported option grammar.";
+    badOperation = "Parse the unsupported option without contacting a server.";
+    badExpected = "Tmux rejects the unknown option before creating a server.";
     badScript = reject "tmux" ''
       import json, os, pathlib, subprocess
       environment = os.environ.copy()
@@ -174,8 +174,8 @@ in {
       locale = next(path for path in closure if "-glibc-locales-" in path)
       environment["LOCPATH"] = str(pathlib.Path(locale) / "lib/locale")
       environment["LC_ALL"] = "C.UTF-8"
-      result = subprocess.run(["@out@/bin/tmux", "qualification-invalid-command"], env=environment, capture_output=True, text=True)
-      assert result.returncode != 0 and "unknown command" in result.stderr
+      result = subprocess.run(["@out@/bin/tmux", "--aos-invalid-option"], env=environment, capture_output=True, text=True)
+      assert result.returncode != 0 and "unknown option" in result.stderr
     '';
   };
 

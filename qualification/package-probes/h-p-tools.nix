@@ -85,13 +85,13 @@ in {
     ];
     badInput = "An option name outside less's command-line grammar.";
     badOperation = "Invoke less with the unknown option.";
-    badExpected = "less rejects the option with a non-success status.";
+    badExpected = "less reports the unsupported option in its diagnostic output.";
     badSteps = [
       {
         argv = ["--definitely-not-a-less-option"];
         exit_code = 0;
         stdout.exact = "";
-        stderr.exact = "There is no definitely-not-a-less-option option (\"less --help\" for help)\n";
+        stderr.exact = "There is no --definitely-not-a-less-option option (\"less --help\" for help)\n";
         observes_rejection = true;
       }
     ];

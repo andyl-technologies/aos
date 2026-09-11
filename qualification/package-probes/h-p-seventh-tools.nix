@@ -14,6 +14,7 @@
     badExpected,
     badArguments,
     badCheck ? "result.returncode != 0",
+    environment ? {},
   }:
     testing.mkQualificationPackageProbe {
       name = package;
@@ -31,8 +32,9 @@
                 "@python@"
                 "-c"
                 ''
-                  import subprocess
-                  result = subprocess.run(["@out@/${directory}/${executable}"] + ${builtins.toJSON primaryArguments}, capture_output=True, text=True)
+                  import os, subprocess
+                  environment = dict(os.environ, **${builtins.toJSON environment})
+                  result = subprocess.run(["@out@/${directory}/${executable}"] + ${builtins.toJSON primaryArguments}, capture_output=True, text=True, env=environment)
                   assert ${primaryCheck}, (result.returncode, result.stdout, result.stderr)
                   print("${package} primary passed")
                 ''
@@ -55,8 +57,9 @@
                 "@python@"
                 "-c"
                 ''
-                  import subprocess, sys
-                  result = subprocess.run(["@out@/${directory}/${executable}"] + ${builtins.toJSON badArguments}, capture_output=True, text=True)
+                  import os, subprocess, sys
+                  environment = dict(os.environ, **${builtins.toJSON environment})
+                  result = subprocess.run(["@out@/${directory}/${executable}"] + ${builtins.toJSON badArguments}, capture_output=True, text=True, env=environment)
                   assert ${badCheck}, (result.returncode, result.stdout, result.stderr)
                   sys.stderr.write("${package} rejected invalid input\n")
                   raise SystemExit(7)
@@ -162,6 +165,8 @@ in {
     package = "lvm2";
     executable = "lvm";
     directory = "sbin";
+    # Help and command parsing need no persistent system configuration.
+    environment.LVM_SYSTEM_DIR = "";
     primaryInput = "The LVM command inventory.";
     primaryOperation = "Request help without scanning or changing block devices.";
     primaryExpected = "LVM lists its configuration, physical-volume, volume-group, and logical-volume commands.";

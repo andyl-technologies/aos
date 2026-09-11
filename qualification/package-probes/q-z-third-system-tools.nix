@@ -20,7 +20,7 @@
         '';
         steps = [
           {
-            argv = ["@out@/bin/runc" "--root" "@work@/primary/state" "spec" "--rootless"];
+            argv = ["@out@/sbin/runc" "--root" "@work@/primary/state" "spec" "--rootless"];
             exit_code = 0;
             stdout.exact = "";
             stderr.exact = "";
@@ -41,7 +41,7 @@
         files."config.json" = "{}\n";
         steps = [
           {
-            argv = ["@out@/bin/runc" "--root" "@work@/bad-input/state" "spec" "--rootless"];
+            argv = ["@out@/sbin/runc" "--root" "@work@/bad-input/state" "spec" "--rootless"];
             exit_code = 1;
             stdout.exact = "";
             observes_rejection = true;

@@ -19,7 +19,7 @@
           '';
           steps = [
             {
-              argv = ["@out@/bin/rustc" "answer.rs" "-o" "answer"];
+              argv = ["@out@/bin/rustc" "-C" "linker=@cc@" "answer.rs" "-o" "answer"];
               exit_code = 0;
               stdout.exact = "";
               stderr.exact = "";
@@ -40,7 +40,7 @@
           files."invalid.rs" = "fn main() { let answer = 19 + ; println!(\"{}\", answer); }\n";
           steps = [
             {
-              argv = ["@out@/bin/rustc" "invalid.rs" "-o" "invalid"];
+              argv = ["@out@/bin/rustc" "-C" "linker=@cc@" "invalid.rs" "-o" "invalid"];
               exit_code = 1;
               stdout.exact = "";
               observes_rejection = true;
