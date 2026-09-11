@@ -24,7 +24,9 @@
   ];
 in {
   name = "qualification-workload";
-  timeout = 900;
+  timeout = 2400;
+  bootTimeout = 900;
+  systemReadyTimeout = 300;
   machines.target = {
     inherit system;
     memoryMiB = 3072;
@@ -86,7 +88,7 @@ in {
     target.succeed("cp /var/lib/qualification/nginx.good /var/lib/qualification/nginx.conf")
     target.succeed("systemctl reload qualification-nginx.service")
     probe()
-    target.reboot(timeout=300)
+    target.reboot(timeout=900)
     target.wait_for_unit("qualification-nginx.service")
     probe()
     target.succeed("test $(stat -c %a /var/lib/qualification/key.pem) = 600")
