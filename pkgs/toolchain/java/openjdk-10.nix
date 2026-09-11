@@ -62,5 +62,12 @@ in
     # JDK-8299435 records the matching javac failure: jrtfs iterates a mutable
     # ImageReader child list. Resolving entries during that traversal can
     # extend the same list, even in a single-job build.
-    extraPatches = [./openjdk-patches/snapshot-jrt-directory-children-jdk10.patch];
+    extraPatches =
+      [./openjdk-patches/snapshot-jrt-directory-children-jdk10.patch]
+      # GCC rejects the duplicated using declaration in the AArch64 interpreter.
+      ++ (
+        if stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64
+        then [./openjdk-patches/remove-duplicate-aarch64-using-jdk10.patch]
+        else []
+      );
   }
