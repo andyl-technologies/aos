@@ -11,8 +11,9 @@ use aos_proto::aos::sandbox::local::v1::ApplyStorageRequest;
 use aos_sandbox::RecordNamespace;
 use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
-    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV1, BrokerEffectStatusV1,
-    BrokerLocalRecordDomain, ProtectedBrokerAuthorityConfiguration, VerifiedBrokerAdmission,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectClockDispositionV1, BrokerEffectIntentV1,
+    BrokerEffectStatusV1, BrokerLocalRecordDomain, ProtectedBrokerAuthorityConfiguration,
+    VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerGrantTarget, BrokerPlanTrustAnchor,
@@ -693,6 +694,20 @@ impl StorageAuthorityV1 {
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
         self.0.check_before_effect(effect, trusted_clock)
+    }
+
+    /// Classifies one already-read protected clock sample for a durable effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageAdmissionError::FenceRejected`] unless the sample has
+    /// valid paired-clock continuity with the authenticated effect.
+    pub(crate) fn classify_effect_clock(
+        &self,
+        effect: &BrokerEffectIntentV1,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<BrokerEffectClockDispositionV1, StorageAdmissionError> {
+        self.0.classify_effect_clock(effect, current_clock)
     }
 
     pub(crate) fn check_current_fence(

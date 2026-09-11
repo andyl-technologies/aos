@@ -45,6 +45,16 @@ pub enum BrokerAdmissionError {
     FenceRejected,
 }
 
+/// Classifies whether an authenticated effect may still cross its first
+/// physical-effect boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrokerEffectClockDispositionV1 {
+    /// The authenticated effect remains inside its exclusive deadline.
+    Fresh,
+    /// The authenticated effect has reached or passed its exclusive deadline.
+    Expired,
+}
+
 /// Supplies exact audience-owned facts to common authority admission.
 #[derive(Clone, Copy, Debug)]
 pub struct AdmissionRequest<'a> {
@@ -356,6 +366,28 @@ impl BrokerAuthority {
         effect: &BrokerEffectIntentV1,
         current_clock: &RawPairedClockSample,
     ) -> Result<(), BrokerAdmissionError> {
+        match self.classify_effect_clock(effect, current_clock)? {
+            BrokerEffectClockDispositionV1::Fresh => Ok(()),
+            BrokerEffectClockDispositionV1::Expired => Err(BrokerAdmissionError::FenceRejected),
+        }
+    }
+
+    /// Classifies one protected clock sample against an authenticated effect.
+    ///
+    /// This method distinguishes expiry only after authenticating the complete
+    /// paired-clock continuity contract. Callers may use [`Self::validate_effect_clock`]
+    /// when they do not need to distinguish an expired effect from another
+    /// fail-closed clock rejection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerAdmissionError::FenceRejected`] for reboot, provenance
+    /// substitution, backwards time, or excessive paired-clock drift.
+    pub fn classify_effect_clock(
+        &self,
+        effect: &BrokerEffectIntentV1,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<BrokerEffectClockDispositionV1, BrokerAdmissionError> {
         let wall_elapsed = current_clock
             .wall_seconds()
             .checked_sub(effect.admitted_wall_seconds())
@@ -368,14 +400,23 @@ impl BrokerAuthority {
             .ok_or(BrokerAdmissionError::FenceRejected)?;
         if current_clock.provenance().as_bytes() != *effect.clock_provenance()
             || wall_elapsed.abs_diff(boottime_elapsed) > CLOCK_PAIR_TOLERANCE_NANOSECONDS
-            || current_clock.wall_seconds() >= effect.plan_expires_seconds()
-            || current_clock.wall_seconds() >= effect.authority_expires_seconds()
             || current_clock.host_boot_id() != *effect.host_boot_id()
-            || current_clock.boottime_nanoseconds() >= effect.effect_deadline_boottime_nanoseconds()
         {
             return Err(BrokerAdmissionError::FenceRejected);
         }
-        Ok(())
+
+        if current_clock.boottime_nanoseconds() >= effect.effect_deadline_boottime_nanoseconds() {
+            Ok(BrokerEffectClockDispositionV1::Expired)
+        } else if current_clock.wall_seconds() >= effect.plan_expires_seconds()
+            || current_clock.wall_seconds() >= effect.authority_expires_seconds()
+        {
+            // The BOOTTIME deadline is derived conservatively from both wall
+            // expiries. Reaching either wall expiry first indicates clock
+            // inconsistency, not a safe tombstone condition.
+            Err(BrokerAdmissionError::FenceRejected)
+        } else {
+            Ok(BrokerEffectClockDispositionV1::Fresh)
+        }
     }
 
     /// Authenticates one assignment fence for its exact durable location.

@@ -163,6 +163,11 @@ pub enum StoragePrepareReadiness {
 pub enum StorageRuntimeMutationOutcome {
     /// Exact postcondition evidence and physical catalog state were committed.
     Committed(CommittedStorageResultV1),
+    /// The exact expired intent was durably retired before mutation.
+    Aborted {
+        /// Deterministic identity of the retired mutation intent.
+        mutation_digest: ObjectDigest,
+    },
     /// No mutation was retried; later observation is still required.
     ObservationRequired {
         /// Current durable crash phase.
@@ -1082,10 +1087,12 @@ impl StorageBrokerRuntime {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageRuntimeError::Recovery`] when persisted authority,
-    /// either fresh clock sample, physical preconditions, dispatch, or
-    /// postcondition observation fails. A failure after the durable Ambiguous
-    /// transition remains observation-only and is never retried here.
+    /// Returns [`StorageRuntimeError::Recovery`] when persisted authority, an
+    /// invalid clock sample, physical preconditions, dispatch, or postcondition
+    /// observation fails. Authenticated expiry at the first clock sample
+    /// returns [`StorageRuntimeMutationOutcome::Aborted`]. A failure after the
+    /// durable Ambiguous transition remains observation-only and is never
+    /// retried here.
     pub fn execute_admitted<F>(
         &mut self,
         operation_id: [u8; 16],
@@ -1126,11 +1133,17 @@ impl StorageBrokerRuntime {
                 );
                 let (pin_outcome, committed) = self
                     .finish_live_transaction_mutation(result, |_| StorageRuntimeError::Recovery)?;
-                if pin_outcome == WorkspacePinExecutionOutcomeV1::ObservationRequired {
-                    return Ok(StorageRuntimeMutationOutcome::ObservationRequired {
-                        phase: DurableStoragePhase::Ambiguous,
-                        mutation_digest,
-                    });
+                match pin_outcome {
+                    WorkspacePinExecutionOutcomeV1::Satisfied => {}
+                    WorkspacePinExecutionOutcomeV1::ObservationRequired => {
+                        return Ok(StorageRuntimeMutationOutcome::ObservationRequired {
+                            phase: DurableStoragePhase::Ambiguous,
+                            mutation_digest,
+                        });
+                    }
+                    WorkspacePinExecutionOutcomeV1::Aborted { mutation_digest } => {
+                        return self.finish_aborted_mutation(mutation_digest);
+                    }
                 }
                 committed.ok_or(StorageRuntimeError::Recovery)?
             }
@@ -1144,6 +1157,9 @@ impl StorageBrokerRuntime {
                     .map_err(|_| StorageRuntimeError::Recovery);
                 match self.finish_live_transaction_mutation(execution, |error| error)? {
                     ZfsHelperOutcome::Committed(committed) => committed,
+                    ZfsHelperOutcome::Aborted { mutation_digest } => {
+                        return self.finish_aborted_mutation(mutation_digest);
+                    }
                     ZfsHelperOutcome::ObservationRequired {
                         phase,
                         mutation_digest,
@@ -1167,11 +1183,17 @@ impl StorageBrokerRuntime {
             );
             let pin_outcome =
                 self.finish_live_transaction_mutation(result, |_| StorageRuntimeError::Recovery)?;
-            if pin_outcome == WorkspacePinExecutionOutcomeV1::ObservationRequired {
-                return Ok(StorageRuntimeMutationOutcome::ObservationRequired {
-                    phase: DurableStoragePhase::Committed,
-                    mutation_digest,
-                });
+            match pin_outcome {
+                WorkspacePinExecutionOutcomeV1::Satisfied => {}
+                WorkspacePinExecutionOutcomeV1::ObservationRequired => {
+                    return Ok(StorageRuntimeMutationOutcome::ObservationRequired {
+                        phase: DurableStoragePhase::Committed,
+                        mutation_digest,
+                    });
+                }
+                WorkspacePinExecutionOutcomeV1::Aborted { .. } => {
+                    return Err(StorageRuntimeError::Recovery);
+                }
             }
         }
 
@@ -1193,7 +1215,10 @@ impl StorageBrokerRuntime {
             .map_err(|_| StorageRuntimeError::Recovery)?;
         let mut pending = 0;
         for entry in entries {
-            if entry.phase() == DurableStoragePhase::Committed {
+            if matches!(
+                entry.phase(),
+                DurableStoragePhase::Committed | DurableStoragePhase::Aborted
+            ) {
                 continue;
             }
             match self
@@ -1202,6 +1227,7 @@ impl StorageBrokerRuntime {
                 .map_err(|_| StorageRuntimeError::Recovery)?
             {
                 ZfsHelperOutcome::Committed(_) => {}
+                ZfsHelperOutcome::Aborted { .. } => return Err(StorageRuntimeError::Recovery),
                 ZfsHelperOutcome::ObservationRequired { .. } => pending += 1,
             }
         }
@@ -1305,6 +1331,15 @@ impl StorageBrokerRuntime {
             _ => 1,
         };
         self.readiness = StorageRuntimeReadiness::RecoveryPending { operations };
+    }
+
+    fn finish_aborted_mutation(
+        &mut self,
+        mutation_digest: ObjectDigest,
+    ) -> Result<StorageRuntimeMutationOutcome, StorageRuntimeError> {
+        let readiness = self.reconcile_startup()?;
+        self.readiness = readiness;
+        Ok(StorageRuntimeMutationOutcome::Aborted { mutation_digest })
     }
 
     fn latch_reopen_required(&mut self) {
@@ -1589,6 +1624,7 @@ impl From<ZfsHelperOutcome> for StorageRuntimeMutationOutcome {
     fn from(value: ZfsHelperOutcome) -> Self {
         match value {
             ZfsHelperOutcome::Committed(result) => Self::Committed(result),
+            ZfsHelperOutcome::Aborted { mutation_digest } => Self::Aborted { mutation_digest },
             ZfsHelperOutcome::ObservationRequired {
                 phase,
                 mutation_digest,

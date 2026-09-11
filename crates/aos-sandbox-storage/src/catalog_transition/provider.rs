@@ -273,6 +273,45 @@ impl StorageCatalogTransitionProvider {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn aborted_reservation_record(
+        &self,
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        mutation_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+    ) -> Result<JournalRecord, StorageStateError> {
+        let reservation = self
+            .reservations
+            .get(&operation_id)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        if self.transitions.contains_key(&operation_id)
+            || reservation.payload.request_digest != *request_digest.as_bytes()
+            || reservation.payload.mutation_digest != *mutation_digest.as_bytes()
+            || reservation.payload.catalog != catalog.binding().into()
+            || reservation.payload.catalog_bytes_digest != digest_bytes(catalog.canonical_bytes())
+            || self
+                .head
+                .as_ref()
+                .is_none_or(|head| head.binding != reservation.predecessor.binding)
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        validate_reserved_transition_bound(reservation, catalog, key_id, secret)?;
+
+        Ok(JournalRecord::delete(
+            RecordNamespace::StorageCatalogReservation,
+            operation_id.to_vec(),
+        ))
+    }
+
+    pub(crate) fn install_abort(&mut self, operation_id: [u8; 16]) {
+        let removed = self.reservations.remove(&operation_id);
+        debug_assert!(removed.is_some());
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_transition(
         &self,
         operation_id: [u8; 16],
@@ -425,6 +464,14 @@ impl StorageCatalogTransitionProvider {
         let transition = self.transitions.get(&operation_id);
         if record_version != STORAGE_RECORD_VERSION {
             return Err(StorageStateError::CorruptRecord);
+        }
+
+        if phase == DurableStoragePhase::Aborted {
+            return if reservation.is_none() && transition.is_none() && result_catalog.is_none() {
+                Ok(None)
+            } else {
+                Err(StorageStateError::CorruptRecord)
+            };
         }
 
         let reservation = reservation.ok_or(StorageStateError::CorruptRecord)?;

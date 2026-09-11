@@ -10,7 +10,10 @@ use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::journal::RecordNamespace;
-use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1};
+use aos_sandbox_broker::{
+    BrokerAuthorizationFenceV1, BrokerEffectClockDispositionV1, BrokerEffectIntentV1,
+    BrokerEffectStatusV1,
+};
 use aos_sandbox_core::model::SandboxSpec;
 use aos_sandbox_core::{
     BrokerAssignment, BrokerGrantTarget, BrokerVerb, CanonicalAssignmentManifestV1, NodeId,
@@ -123,6 +126,11 @@ pub enum StorageAdmissionOutcome {
     },
     /// A future observer previously committed an exact result.
     Replay(crate::CommittedStorageResultV1),
+    /// The exact expired intent was durably retired before mutation.
+    Aborted {
+        /// Deterministic identity of the retired mutation intent.
+        mutation_digest: ObjectDigest,
+    },
 }
 
 /// Carries the terminal physical plan derived inside the locked coordinator.
@@ -334,6 +342,7 @@ pub(crate) enum AuthorizedWorkspaceRemoveAttemptV1 {
     Dispatch(Box<FreshWorkspaceRemoveDispatchV1>),
     ObserveOnly,
     Satisfied,
+    Aborted { mutation_digest: ObjectDigest },
 }
 
 /// Classifies whether synchronous pin coordination reached durable satisfaction.
@@ -343,6 +352,8 @@ pub(crate) enum WorkspacePinExecutionOutcomeV1 {
     Satisfied,
     /// A prior ambiguous attempt forbids another dispatch.
     ObservationRequired,
+    /// The parent Prepared mutation expired before any pin or ZFS effect.
+    Aborted { mutation_digest: ObjectDigest },
 }
 
 pub(crate) enum WorkspaceRemovePinRequirementV1 {
@@ -1615,9 +1626,21 @@ impl StorageAdmissionCoordinator {
         if current_fence != operation_fence {
             return Err(ZfsHelperError::Authority);
         }
-        self.authority
-            .check_before_effect(&effect, trusted_clock)
-            .map_err(|_| ZfsHelperError::Authority)?;
+        let current_clock = trusted_clock().map_err(|_| ZfsHelperError::Authority)?;
+        match self
+            .authority
+            .classify_effect_clock(&effect, &current_clock)
+            .map_err(|_| ZfsHelperError::Authority)?
+        {
+            BrokerEffectClockDispositionV1::Fresh => {}
+            BrokerEffectClockDispositionV1::Expired => {
+                self.transactions
+                    .abort_prepared_exact(entry, prepared.catalog())?;
+                return Ok(AuthorizedWorkspaceRemoveAttemptV1::Aborted {
+                    mutation_digest: entry.mutation_digest(),
+                });
+            }
+        }
         let catalog = self.transactions.recover_catalog(entry)?;
 
         let attempt = self.transactions.plan_workspace_pin_remove_and_destroy(
@@ -1808,6 +1831,10 @@ impl StorageAdmissionCoordinator {
             AuthorizedWorkspaceRemoveAttemptV1::ObserveOnly => {
                 Ok((WorkspacePinExecutionOutcomeV1::ObservationRequired, None))
             }
+            AuthorizedWorkspaceRemoveAttemptV1::Aborted { mutation_digest } => Ok((
+                WorkspacePinExecutionOutcomeV1::Aborted { mutation_digest },
+                None,
+            )),
         }
     }
 
@@ -2105,6 +2132,9 @@ impl StorageAdmissionCoordinator {
                 mutation_digest,
             },
             BeginStorageTransaction::Replay(result) => StorageAdmissionOutcome::Replay(result),
+            BeginStorageTransaction::Aborted { mutation_digest } => {
+                StorageAdmissionOutcome::Aborted { mutation_digest }
+            }
         })
     }
 
@@ -2144,9 +2174,21 @@ impl StorageAdmissionCoordinator {
         if current_fence != operation_fence {
             return Err(ZfsHelperError::Authority);
         }
-        self.authority
-            .check_before_effect(&effect, trusted_clock)
-            .map_err(|_| ZfsHelperError::Authority)?;
+        let current_clock = trusted_clock().map_err(|_| ZfsHelperError::Authority)?;
+        match self
+            .authority
+            .classify_effect_clock(&effect, &current_clock)
+            .map_err(|_| ZfsHelperError::Authority)?
+        {
+            BrokerEffectClockDispositionV1::Fresh => {}
+            BrokerEffectClockDispositionV1::Expired => {
+                self.transactions
+                    .abort_prepared_exact(entry, prepared.catalog())?;
+                return Ok(ZfsHelperOutcome::Aborted {
+                    mutation_digest: entry.mutation_digest(),
+                });
+            }
+        }
 
         let authority = FreshStorageEffectAuthority { entry };
         let protected_authority = &self.authority;
@@ -9035,6 +9077,212 @@ mod tests {
         )
         .unwrap();
         assert_second_clock_rejection(Ok(expired));
+    }
+
+    #[test]
+    fn authenticated_expired_first_sample_aborts_before_ambiguous_or_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("operation was not prepared")
+        };
+        let entry = broker.transactions.current_recovery_entry([7; 16]).unwrap();
+        let (_, effect) = broker.persisted_effect_context(entry).unwrap();
+        let one_nanosecond_before_deadline = clock_at([50; 16], 150, 199);
+        let at_deadline = clock_at([50; 16], 150, 200);
+        let wrong_boot = clock_at([51; 16], 150, 200);
+        let wrong_provenance = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"bad-kernel-clock").unwrap(),
+            [50; 16],
+            150,
+            200,
+        )
+        .unwrap();
+
+        assert_eq!(
+            broker
+                .authority
+                .classify_effect_clock(&effect, &one_nanosecond_before_deadline)
+                .unwrap(),
+            BrokerEffectClockDispositionV1::Fresh
+        );
+        assert_eq!(
+            broker
+                .authority
+                .classify_effect_clock(&effect, &at_deadline)
+                .unwrap(),
+            BrokerEffectClockDispositionV1::Expired
+        );
+        for invalid in [&wrong_boot, &wrong_provenance] {
+            assert!(
+                broker
+                    .authority
+                    .classify_effect_clock(&effect, invalid)
+                    .is_err()
+            );
+        }
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let mut samples = 0;
+        assert!(matches!(
+            broker.preobserve_and_execute(&mut helper, [7; 16], &mut || {
+                samples += 1;
+                Ok(at_deadline)
+            }),
+            Ok(ZfsHelperOutcome::Aborted {
+                mutation_digest: aborted
+            }) if aborted == mutation_digest
+        ));
+        assert_eq!(samples, 1);
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(matches!(
+            broker.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Ok(StorageAdmissionOutcome::Aborted {
+                mutation_digest: replayed
+            }) if replayed == mutation_digest
+        ));
+        drop(helper);
+        drop(broker);
+
+        let recovered = coordinator(&directory, &fixture);
+        assert_eq!(
+            recovered.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        crate::runtime::authenticate_startup_authority(&recovered).unwrap();
+    }
+
+    #[test]
+    fn expired_workspace_remove_first_sample_aborts_before_pin_attempt() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, ensure, creation) = workspace_pin_ensure_dispatch(&directory, &fixture);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let proof = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 11);
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                ensure.attempt().attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(proof.clone()),
+            )
+            .unwrap();
+
+        let manifest = assignment_manifest_at(&sandbox_spec(72), 6);
+        let request = destroy_request(8, workspace_handle, manifest.digest());
+        let catalog = destroy_catalog(workspace_handle, 11);
+        let expected_head = broker.transactions.catalog_head_binding().unwrap();
+        let artifacts = fixture.artifacts_at_head(&request, &catalog, expected_head, 300);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("workspace removal was not prepared")
+        };
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let prepared = helper.preobserve(&broker.transactions, [8; 16]).unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let mut samples = 0;
+
+        assert!(matches!(
+            broker.begin_workspace_pin_remove_and_destroy(
+                prepared,
+                host_scope,
+                proof,
+                &mut || {
+                    samples += 1;
+                    Ok(clock_at([50; 16], 150, 200))
+                },
+            ),
+            Ok(AuthorizedWorkspaceRemoveAttemptV1::Aborted {
+                mutation_digest: aborted
+            }) if aborted == mutation_digest
+        ));
+        assert_eq!(samples, 1);
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([8; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert_eq!(
+            broker.transactions.workspace_pin_attempts().unwrap().len(),
+            1
+        );
+        drop(helper);
+        drop(broker);
+
+        let recovered = coordinator(&directory, &fixture);
+        recovered.authenticate_workspace_pin_attempts().unwrap();
+        assert_eq!(
+            recovered.transactions.phase([8; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert_eq!(
+            recovered
+                .transactions
+                .workspace_pin_attempts()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

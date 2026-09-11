@@ -4,8 +4,10 @@
 //! lifetime of [`StorageTransactionStore`]. Each state transition is an atomic,
 //! checksummed journal transaction whose value is independently HMAC-authenticated.
 //! A mutation must be marked [`DurableStoragePhase::Ambiguous`] before a future
-//! helper may invoke ZFS. Recovery exposes that phase only for re-observation;
-//! this module contains no API that returns or reissues mutation argv.
+//! helper may invoke ZFS. An expired Prepared intent can instead become an
+//! authenticated [`DurableStoragePhase::Aborted`] tombstone. Recovery exposes
+//! ambiguous work only for re-observation; this module contains no API that
+//! returns or reissues mutation argv.
 
 mod workspace_projection;
 
@@ -188,6 +190,8 @@ pub enum DurableStoragePhase {
     Ambiguous,
     /// The typed postcondition and committed result were durably published.
     Committed,
+    /// The expired intent was durably retired before any mutation was attempted.
+    Aborted,
 }
 
 /// Carries an authenticated committed storage result.
@@ -343,6 +347,11 @@ pub enum BeginStorageTransaction {
     },
     /// The exact request already committed and returns its prior result.
     Replay(CommittedStorageResultV1),
+    /// The exact request expired and was durably retired before mutation.
+    Aborted {
+        /// Deterministic identity of the retired mutation intent.
+        mutation_digest: ObjectDigest,
+    },
 }
 
 /// Summarizes one bounded durable operation for startup reconciliation.
@@ -2115,6 +2124,9 @@ impl StorageTransactionStore {
                     (DurableStoragePhase::Committed, Some(result)) => {
                         BeginStorageTransaction::Replay(result)
                     }
+                    (DurableStoragePhase::Aborted, None) => {
+                        BeginStorageTransaction::Aborted { mutation_digest }
+                    }
                     (phase, _) => BeginStorageTransaction::ObserveOnly {
                         phase,
                         mutation_digest,
@@ -2127,7 +2139,8 @@ impl StorageTransactionStore {
             return Err(StorageStateError::Rollback);
         }
         if self.records.values().any(|record| {
-            catalog_forks(record.catalog, catalog.binding())
+            (record.phase != DurableStoragePhase::Aborted
+                && catalog_forks(record.catalog, catalog.binding()))
                 || record
                     .result
                     .is_some_and(|result| catalog_forks(result.catalog, catalog.binding()))
@@ -2665,6 +2678,56 @@ impl StorageTransactionStore {
         )
     }
 
+    /// Durably retires one exact Prepared intent without crossing Ambiguous.
+    ///
+    /// The authenticated operation tombstone and deletion of its sole pending
+    /// physical-catalog reservation are one journal transaction. Authority,
+    /// preparation, and workspace-publication records remain retained history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageStateError::InvalidTransition`] unless `entry` and
+    /// `catalog` identify the exact current Prepared operation and reservation.
+    /// Returns [`StorageStateError::Journal`] if the atomic publication fails;
+    /// an uncertain failure poisons the cached authority view until reopen.
+    pub(crate) fn abort_prepared_exact(
+        &mut self,
+        entry: StorageRecoveryEntry,
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
+        let current = self
+            .records
+            .get(&entry.operation_id)
+            .filter(|record| recovery_entry(record) == entry)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        if current.phase != DurableStoragePhase::Prepared
+            || current.result.is_some()
+            || current.request_digest != entry.request_digest
+            || current.mutation_digest != entry.mutation_digest
+            || current.catalog != catalog.binding()
+            || current.catalog_bytes != catalog.canonical_bytes()
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+
+        let reservation_deletion = self.catalog_transitions.aborted_reservation_record(
+            current.operation_id,
+            current.request_digest,
+            current.mutation_digest,
+            catalog,
+            self.key.key_id,
+            &self.key.secret,
+        )?;
+        let operation_id = current.operation_id;
+        let mut aborted = current.clone();
+        aborted.phase = DurableStoragePhase::Aborted;
+
+        self.publish_with(aborted, vec![reservation_deletion])?;
+        self.catalog_transitions.install_abort(operation_id);
+        Ok(())
+    }
+
     /// Durably crosses the point after which mutation outcome may be ambiguous.
     ///
     /// The privileged helper calls this and syncs it before invoking ZFS.
@@ -2785,7 +2848,8 @@ impl StorageTransactionStore {
             || verified.result_catalog.generation() <= record.catalog.generation()
             || verified.result_catalog.generation() < latest_generation
             || self.records.values().any(|existing| {
-                catalog_forks(existing.catalog, verified.result_catalog)
+                (existing.phase != DurableStoragePhase::Aborted
+                    && catalog_forks(existing.catalog, verified.result_catalog))
                     || existing.result.is_some_and(|result| {
                         catalog_forks(result.catalog, verified.result_catalog)
                     })
@@ -3742,7 +3806,8 @@ fn latest_generation(records: &BTreeMap<[u8; 16], DurableRecord>) -> u64 {
         .values()
         .flat_map(|record| {
             [
-                Some(record.catalog.generation()),
+                (record.phase != DurableStoragePhase::Aborted)
+                    .then_some(record.catalog.generation()),
                 record.result.map(|result| result.catalog.generation()),
             ]
         })
@@ -3926,6 +3991,7 @@ fn phase_code(phase: DurableStoragePhase) -> u8 {
         DurableStoragePhase::Prepared => 1,
         DurableStoragePhase::Ambiguous => 2,
         DurableStoragePhase::Committed => 3,
+        DurableStoragePhase::Aborted => 4,
     }
 }
 
@@ -4006,6 +4072,7 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
         1 => DurableStoragePhase::Prepared,
         2 => DurableStoragePhase::Ambiguous,
         3 => DurableStoragePhase::Committed,
+        4 => DurableStoragePhase::Aborted,
         _ => return Err(StorageStateError::CorruptRecord),
     };
     let operation_id = cursor.array()?;
@@ -7091,6 +7158,236 @@ mod tests {
         assert_eq!(entries[0].phase(), DurableStoragePhase::Prepared);
         assert_eq!(entries[0].catalog(), catalog.binding());
         assert_eq!(store.recover_catalog(entries[0]).unwrap(), catalog);
+    }
+
+    #[test]
+    fn prepared_abort_is_durable_replayable_and_releases_catalog_lineage() {
+        let directory = TempDir::new().unwrap();
+        let retired_catalog = catalog(7, "tank/aos/project/retired");
+        let replacement_catalog = catalog(7, "tank/aos/project/replacement");
+        let retired_operation = [81; 16];
+        let replacement_operation = [91; 16];
+        let retired_range = (u32::from(85_u8) * 65_536, 65_536);
+        let retired_mutation = {
+            let mut store =
+                StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+            initialize(&mut store, &retired_catalog);
+
+            let BeginStorageTransaction::Prepared { mutation_digest } = store
+                .begin_authorized_with_publication(
+                    retired_operation,
+                    digest(82),
+                    &retired_catalog,
+                    [83; 16],
+                    [84; 16],
+                    vec![1; 8],
+                    vec![2; 8],
+                    vec![3; 8],
+                    Some(publication_intent(retired_operation, &retired_catalog, 85)),
+                )
+                .unwrap()
+            else {
+                panic!("retired operation was not prepared")
+            };
+            let entry = store.current_recovery_entry(retired_operation).unwrap();
+
+            store.abort_prepared_exact(entry, &retired_catalog).unwrap();
+
+            assert_eq!(
+                store.phase(retired_operation).unwrap(),
+                Some(DurableStoragePhase::Aborted)
+            );
+            assert!(
+                store
+                    .authority_record(
+                        RecordNamespace::StorageCatalogReservation,
+                        &retired_operation,
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                store
+                    .authority_record(RecordNamespace::DesiredState, &[83; 16])
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                store
+                    .authority_record(RecordNamespace::Effect, &[84; 16])
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                store
+                    .authority_record(RecordNamespace::AuthorityPublication, &retired_operation)
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                store.workspace_identity_range(retired_operation).unwrap(),
+                Some(retired_range)
+            );
+            assert!(store.workspace_projection().unwrap().is_empty());
+            assert!(store.workspace_pin_attempts().unwrap().is_empty());
+            assert!(matches!(
+                store.begin_authorized_with_publication(
+                    retired_operation,
+                    digest(82),
+                    &retired_catalog,
+                    [83; 16],
+                    [84; 16],
+                    vec![1; 8],
+                    vec![2; 8],
+                    vec![3; 8],
+                    Some(publication_intent(retired_operation, &retired_catalog, 85)),
+                ),
+                Ok(BeginStorageTransaction::Aborted {
+                    mutation_digest: replayed
+                }) if replayed == mutation_digest
+            ));
+
+            assert!(matches!(
+                store.begin_authorized_with_publication(
+                    replacement_operation,
+                    digest(92),
+                    &replacement_catalog,
+                    [93; 16],
+                    [94; 16],
+                    vec![4; 8],
+                    vec![5; 8],
+                    vec![6; 8],
+                    Some(publication_intent(
+                        replacement_operation,
+                        &replacement_catalog,
+                        95,
+                    )),
+                ),
+                Ok(BeginStorageTransaction::Prepared { .. })
+            ));
+            mutation_digest
+        };
+
+        let reopened = StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        assert_eq!(
+            reopened.phase(retired_operation).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert_eq!(
+            reopened.phase(replacement_operation).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+        assert_eq!(
+            reopened
+                .workspace_identity_range(retired_operation)
+                .unwrap(),
+            Some(retired_range)
+        );
+        assert!(reopened.workspace_projection().unwrap().is_empty());
+        assert!(reopened.workspace_pin_attempts().unwrap().is_empty());
+        assert!(matches!(
+            reopened
+                .recovery_entries()
+                .unwrap()
+                .find(|entry| entry.operation_id() == retired_operation),
+            Some(entry)
+                if entry.phase() == DurableStoragePhase::Aborted
+                    && entry.mutation_digest() == retired_mutation
+        ));
+    }
+
+    #[test]
+    fn abort_rejects_nonprepared_or_inexact_operation() {
+        let directory = TempDir::new().unwrap();
+        let prepared_catalog = catalog(7, "tank/aos/project/work");
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &prepared_catalog);
+        let BeginStorageTransaction::Prepared { mutation_digest } = store
+            .begin([39; 16], digest(40), &prepared_catalog)
+            .unwrap()
+        else {
+            panic!("operation was not prepared")
+        };
+        let entry = store.current_recovery_entry([39; 16]).unwrap();
+        let other_catalog = catalog(7, "tank/aos/project/other");
+
+        assert!(matches!(
+            store.abort_prepared_exact(entry, &other_catalog),
+            Err(StorageStateError::InvalidTransition)
+        ));
+        store
+            .mark_mutation_ambiguous([39; 16], mutation_digest)
+            .unwrap();
+        assert!(matches!(
+            store.abort_prepared_exact(entry, &prepared_catalog),
+            Err(StorageStateError::InvalidTransition)
+        ));
+    }
+
+    #[test]
+    fn abort_post_commit_failure_poisons_cache_and_reopens_aborted() {
+        let directory = TempDir::new().unwrap();
+        let catalog = catalog(7, "tank/aos/project/work");
+        let operation_id = [51; 16];
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &catalog);
+        store.begin(operation_id, digest(52), &catalog).unwrap();
+        let entry = store.current_recovery_entry(operation_id).unwrap();
+        store.fail_after_next_journal_commit_for_test();
+
+        assert!(matches!(
+            store.abort_prepared_exact(entry, &catalog),
+            Err(StorageStateError::Journal(JournalError::Io(_)))
+        ));
+        assert!(matches!(
+            store.phase(operation_id),
+            Err(StorageStateError::Journal(JournalError::Poisoned))
+        ));
+        drop(store);
+
+        let reopened = StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        assert_eq!(
+            reopened.phase(operation_id).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            reopened
+                .authority_record(RecordNamespace::StorageCatalogReservation, &operation_id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reopen_rejects_aborted_operation_with_restored_reservation() {
+        let directory = TempDir::new().unwrap();
+        let catalog = catalog(7, "tank/aos/project/work");
+        let operation_id = [61; 16];
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &catalog);
+        store.begin(operation_id, digest(62), &catalog).unwrap();
+        let reservation = store
+            .authority_record(RecordNamespace::StorageCatalogReservation, &operation_id)
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let entry = store.current_recovery_entry(operation_id).unwrap();
+        store.abort_prepared_exact(entry, &catalog).unwrap();
+
+        store.put_authority_record_for_test(
+            RecordNamespace::StorageCatalogReservation,
+            &operation_id,
+            reservation,
+        );
+        drop(store);
+
+        assert!(matches!(
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0),
+            Err(StorageStateError::CorruptRecord)
+        ));
     }
 
     #[test]

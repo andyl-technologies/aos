@@ -46,6 +46,9 @@ pub(crate) enum ZfsHelperError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ZfsHelperOutcome {
     Committed(crate::CommittedStorageResultV1),
+    Aborted {
+        mutation_digest: ObjectDigest,
+    },
     ObservationRequired {
         phase: DurableStoragePhase,
         mutation_digest: ObjectDigest,

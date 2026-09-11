@@ -294,6 +294,9 @@ impl StorageRpcRuntime for StorageBrokerRuntime {
             crate::StorageAdmissionOutcome::Replay(result) => {
                 Ok(StorageRuntimeMutationOutcome::Committed(result))
             }
+            crate::StorageAdmissionOutcome::Aborted { mutation_digest } => {
+                Ok(StorageRuntimeMutationOutcome::Aborted { mutation_digest })
+            }
         }
     }
 }
@@ -609,6 +612,14 @@ impl<R: StorageRpcRuntime> StorageService<R> {
                 envelope,
                 BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT,
                 "Storage operation is durable and requires authoritative inventory",
+                false,
+                header.maximum_response_bytes(),
+            ),
+            Ok(StorageRuntimeMutationOutcome::Aborted { .. }) => encode_safe_error(
+                header.request_id(),
+                envelope,
+                BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT,
+                "expired Storage operation was durably aborted; prepare a new operation",
                 false,
                 header.maximum_response_bytes(),
             ),

@@ -11,7 +11,8 @@ mod config;
 mod record;
 
 pub use admission::{
-    AdmissionRequest, BrokerAdmissionError, BrokerAuthority, VerifiedBrokerAdmission,
+    AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerEffectClockDispositionV1,
+    VerifiedBrokerAdmission,
 };
 pub use aos_sandbox::RecordNamespace;
 pub use config::{
