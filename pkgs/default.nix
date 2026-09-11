@@ -842,6 +842,7 @@
         installBins = false;
         installLibs = false;
         installCargoArtifacts = true;
+        passthru = (args.passthru or {}) // {isCargoArtifacts = true;};
         doCheck = false;
         dontStrip = true;
         dontPatchELF = true;

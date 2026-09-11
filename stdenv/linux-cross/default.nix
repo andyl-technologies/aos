@@ -249,7 +249,11 @@
         # Target package outputs must never retain the scheduler-native cross
         # compiler. The extracted runtime above is the only permitted GCC
         # runtime path in a Linux cross-built closure.
-        disallowedReferences = (args.disallowedReferences or []) ++ [toolchain.gcc];
+        # Reusable Cargo build state retains compiler paths in debug metadata;
+        # it is not a runtime package and must remain usable by later builds.
+        disallowedReferences =
+          (args.disallowedReferences or [])
+          ++ lib.optionals (!((args.passthru or {}).isCargoArtifacts or false)) [toolchain.gcc];
       }
     );
 
