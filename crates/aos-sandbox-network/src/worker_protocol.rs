@@ -40,7 +40,9 @@ use crate::catalog::{
     encode_authenticated_resolution,
 };
 use crate::kernel_plan::NetworkKernelPlanV1;
-use crate::state::{AmbiguousNetworkDispatchV1, effect_digest};
+#[cfg(test)]
+use crate::state::AmbiguousNetworkDispatchV1;
+use crate::state::{PreparedNetworkDispatchV1, effect_digest};
 use crate::worker_replay::NetworkWorkerReplayLedger;
 
 const REQUEST_MAGIC: &[u8; 8] = b"AOSNWR01";
@@ -92,7 +94,7 @@ pub enum NetworkWorkerProtocolError {
 ///
 /// Decoding validates only the bounded canonical framing. Call
 /// [`Self::authenticate`] before using any field as authority.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct NetworkPrepareWorkerDispatchV1 {
     request_id: [u8; 16],
     effect_digest: ObjectDigest,
@@ -265,6 +267,20 @@ impl NetworkPrepareWorkerDispatchV1 {
         self,
         authority: &NetworkAuthorityV1,
     ) -> Result<AuthenticatedNetworkPrepareWorkerDispatchV1, NetworkWorkerProtocolError> {
+        let (current_fence, effect) = self.authenticate_association(authority)?;
+
+        Ok(AuthenticatedNetworkPrepareWorkerDispatchV1 {
+            request: self,
+            current_fence,
+            effect,
+        })
+    }
+
+    fn authenticate_association(
+        &self,
+        authority: &NetworkAuthorityV1,
+    ) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV1), NetworkWorkerProtocolError>
+    {
         let semantics = decode_admitted_semantics(&self.request_body)?;
         let assignment = self.kernel_plan.assignment();
         let resolution = authority
@@ -335,11 +351,7 @@ impl NetworkPrepareWorkerDispatchV1 {
             .check_current_fence(&current_fence)
             .map_err(|_| NetworkWorkerProtocolError::Authority)?;
 
-        Ok(AuthenticatedNetworkPrepareWorkerDispatchV1 {
-            request: self,
-            current_fence,
-            effect,
-        })
+        Ok((current_fence, effect))
     }
 
     fn request_id_sandbox(&self) -> [u8; 16] {
@@ -499,30 +511,107 @@ impl NetworkActivationAuthorizationV1<'_> {
     }
 }
 
+/// Retains a completely validated prospective dispatch until durability allows release.
+///
+/// The wrapper is non-clone and exposes no request access. Constructing it
+/// performs every caller-controlled validation while the durable row remains
+/// Prepared; releasing the contained request later is infallible.
+pub(crate) struct PrevalidatedNetworkPrepareDispatchV1 {
+    request: Box<NetworkPrepareWorkerDispatchV1>,
+}
+
+impl PrevalidatedNetworkPrepareDispatchV1 {
+    pub(crate) fn release(self) -> Box<NetworkPrepareWorkerDispatchV1> {
+        self.request
+    }
+}
+
+pub(crate) fn prevalidate_prepare_dispatch(
+    authority: &NetworkAuthorityV1,
+    durable: &PreparedNetworkDispatchV1,
+    request_body: &[u8],
+    kernel_plan: NetworkKernelPlanV1,
+) -> Result<PrevalidatedNetworkPrepareDispatchV1, NetworkWorkerProtocolError> {
+    let request = construct_prepare_dispatch(
+        authority,
+        durable.request_id,
+        durable.sandbox_id,
+        durable.transport_digest,
+        durable.semantic_digest,
+        durable.effect_digest,
+        &durable.catalog,
+        &durable.current_fence,
+        &durable.operation_fence,
+        &durable.effect,
+        request_body,
+        kernel_plan,
+    )?;
+    let (_, effect) = request.authenticate_association(authority)?;
+    if effect != *durable.effect_intent() {
+        return Err(NetworkWorkerProtocolError::Authority);
+    }
+
+    Ok(PrevalidatedNetworkPrepareDispatchV1 {
+        request: Box::new(request),
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn issue_prepare_dispatch(
     authority: &NetworkAuthorityV1,
     durable: AmbiguousNetworkDispatchV1,
     request_body: &[u8],
     kernel_plan: NetworkKernelPlanV1,
 ) -> Result<NetworkPrepareWorkerDispatchV1, NetworkWorkerProtocolError> {
+    construct_prepare_dispatch(
+        authority,
+        durable.request_id,
+        durable.sandbox_id,
+        durable.transport_digest,
+        durable.semantic_digest,
+        durable.effect_digest,
+        &durable.catalog,
+        &durable.current_fence,
+        &durable.operation_fence,
+        &durable.effect,
+        request_body,
+        kernel_plan,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn construct_prepare_dispatch(
+    authority: &NetworkAuthorityV1,
+    durable_request_id: [u8; 16],
+    durable_sandbox_id: [u8; 16],
+    durable_transport_digest: ObjectDigest,
+    durable_semantic_digest: ObjectDigest,
+    durable_effect_digest: ObjectDigest,
+    durable_catalog: &ResolvedNetworkPreparationV1,
+    durable_current_fence: &[u8],
+    durable_operation_fence: &[u8],
+    durable_effect: &[u8],
+    request_body: &[u8],
+    kernel_plan: NetworkKernelPlanV1,
+) -> Result<NetworkPrepareWorkerDispatchV1, NetworkWorkerProtocolError> {
     let transport_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
-    if transport_digest != durable.transport_digest
-        || durable.request_id == [0; 16]
-        || durable.sandbox_id != *kernel_plan.assignment().sandbox().as_bytes()
-        || !kernel_plan_matches_catalog(&kernel_plan, &durable.catalog)
-        || durable.effect_digest
+    if transport_digest != durable_transport_digest
+        || durable_request_id == [0; 16]
+        || durable_sandbox_id != *kernel_plan.assignment().sandbox().as_bytes()
+        || !kernel_plan_matches_catalog(&kernel_plan, durable_catalog)
+        || durable_effect_digest
             != effect_digest(
-                durable.request_id,
-                durable.transport_digest,
-                &durable.catalog,
+                durable_request_id,
+                durable_transport_digest,
+                durable_catalog,
             )
     {
         return Err(NetworkWorkerProtocolError::Authority);
     }
     let semantics = decode_admitted_semantics(request_body)?;
     let assignment = kernel_plan.assignment();
-    if semantics.header().request_id() != &durable.request_id
-        || semantics.argument_commitment().digest() != durable.semantic_digest
+    if semantics.header().request_id() != &durable_request_id
+        || semantics.argument_commitment().digest() != durable_semantic_digest
         || semantics.fence().sandbox_id() != assignment.sandbox().as_bytes()
         || semantics.fence().incarnation_id() != assignment.incarnation().as_bytes()
         || semantics.fence().assignment_epoch() != assignment.epoch().get()
@@ -532,7 +621,7 @@ pub(crate) fn issue_prepare_dispatch(
         return Err(NetworkWorkerProtocolError::Authority);
     }
     let current_fence = authority
-        .open_fence(&durable.sandbox_id, &durable.current_fence)
+        .open_fence(&durable_sandbox_id, durable_current_fence)
         .map_err(|_| NetworkWorkerProtocolError::Authority)?;
     if current_fence.assignment() != assignment {
         return Err(NetworkWorkerProtocolError::Authority);
@@ -542,28 +631,28 @@ pub(crate) fn issue_prepare_dispatch(
         .map_err(|_| NetworkWorkerProtocolError::Authority)?;
 
     let catalog = authority
-        .authenticate_protected_catalog_for_assignment(durable.catalog, assignment)
+        .authenticate_protected_catalog_for_assignment(durable_catalog.clone(), assignment)
         .map_err(|_| NetworkWorkerProtocolError::Authority)?;
     let payload = dispatch_payload(
-        durable.request_id,
-        durable.transport_digest,
-        durable.semantic_digest,
-        durable.effect_digest,
+        durable_request_id,
+        durable_transport_digest,
+        durable_semantic_digest,
+        durable_effect_digest,
         kernel_plan.digest(),
         &catalog.resolution,
     );
     let dispatch = authority
-        .seal_local(&durable.request_id, dispatch_domain()?, &payload)
+        .seal_local(&durable_request_id, dispatch_domain()?, &payload)
         .map_err(|_| NetworkWorkerProtocolError::Authority)?;
     let request = NetworkPrepareWorkerDispatchV1 {
-        request_id: durable.request_id,
-        effect_digest: durable.effect_digest,
+        request_id: durable_request_id,
+        effect_digest: durable_effect_digest,
         request_body: request_body.to_vec(),
         kernel_plan,
         catalog,
-        current_fence: durable.current_fence,
-        operation_fence: durable.operation_fence,
-        effect: durable.effect,
+        current_fence: durable_current_fence.to_vec(),
+        operation_fence: durable_operation_fence.to_vec(),
+        effect: durable_effect.to_vec(),
         dispatch,
     };
     request.validate_shape()?;

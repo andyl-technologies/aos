@@ -78,9 +78,9 @@ pub use allocation::{
 };
 pub use authorization::{NetworkAdmissionError, NetworkAuthorityV1};
 pub use broker::{
-    NetworkAdmissionOutcome, NetworkBrokerError, NetworkEffectDispatchPermitV1,
-    NetworkLifecycleAdmissionCoordinator, NetworkLifecycleAdmissionOutcome,
-    NetworkLifecycleEffectDispatchPermitV1, advertised_network_methods,
+    NetworkAdmissionOutcome, NetworkBrokerError, NetworkLifecycleAdmissionCoordinator,
+    NetworkLifecycleAdmissionOutcome, NetworkLifecycleEffectDispatchPermitV1,
+    NetworkPrepareExecutionOutcomeV1, advertised_network_methods,
 };
 pub use catalog::{
     AuthenticatedNetworkPreparationV1, NetworkCatalogBindingV1, ResolvedEndpointV1,

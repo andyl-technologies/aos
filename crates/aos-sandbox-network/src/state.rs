@@ -10,18 +10,19 @@
 //! sealed-pending-effect || optional verified-result
 //! ```
 //!
-//! The durable phase crosses to Ambiguous before a helper may attempt a kernel
-//! effect. Recovery from that boundary can only re-observe; it cannot reissue
-//! the effect. Committed results retain exact current-boot namespace identity
-//! without claiming that the pin is still present. Authoritative inventory is
-//! a later catalog concern.
+//! A Prepared effect whose authenticated deadline has elapsed becomes an
+//! Aborted tombstone before any helper authority is released. A fresh effect
+//! crosses to Ambiguous before a helper may attempt a kernel mutation; recovery
+//! from that boundary can only re-observe and cannot reissue. Committed results
+//! retain exact current-boot namespace identity without claiming that the pin
+//! is still present. Authoritative inventory is a later catalog concern.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_broker::{
-    BrokerAuthorizationFenceV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
+    BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb, ObjectDigest};
 use sha2::{Digest as _, Sha256};
@@ -49,6 +50,8 @@ pub enum DurableNetworkPhase {
     Ambiguous,
     /// A complete typed kernel observation was durably committed.
     Committed,
+    /// The authenticated intent expired before any effect authority was released.
+    Aborted,
 }
 
 /// Carries the exact physical identity committed for one preparation effect.
@@ -314,6 +317,7 @@ pub struct NetworkRecoverySnapshotV1 {
 /// There is deliberately no recovery accessor for this value. A process that
 /// loses it can only observe or clean up the recovered ambiguous operation;
 /// it cannot reconstruct effect-dispatch authority from durable state.
+#[cfg(test)]
 pub(crate) struct AmbiguousNetworkDispatchV1 {
     pub(crate) request_id: [u8; 16],
     pub(crate) sandbox_id: [u8; 16],
@@ -324,6 +328,30 @@ pub(crate) struct AmbiguousNetworkDispatchV1 {
     pub(crate) current_fence: Vec<u8>,
     pub(crate) operation_fence: Vec<u8>,
     pub(crate) effect: Vec<u8>,
+}
+
+/// Carries one exact current Prepared row through pre-effect validation.
+///
+/// This value is intentionally non-clone and has no recovery constructor. It
+/// can only be obtained while the journal's current sandbox fence still equals
+/// the row's authenticated operation fence.
+pub(crate) struct PreparedNetworkDispatchV1 {
+    pub(crate) request_id: [u8; 16],
+    pub(crate) sandbox_id: [u8; 16],
+    pub(crate) transport_digest: ObjectDigest,
+    pub(crate) semantic_digest: ObjectDigest,
+    pub(crate) effect_digest: ObjectDigest,
+    pub(crate) catalog: ResolvedNetworkPreparationV1,
+    pub(crate) current_fence: Vec<u8>,
+    pub(crate) operation_fence: Vec<u8>,
+    pub(crate) effect: Vec<u8>,
+    effect_intent: BrokerEffectIntentV1,
+}
+
+impl PreparedNetworkDispatchV1 {
+    pub(crate) const fn effect_intent(&self) -> &BrokerEffectIntentV1 {
+        &self.effect_intent
+    }
 }
 
 impl NetworkRecoverySnapshotV1 {
@@ -397,6 +425,9 @@ pub struct NetworkStateStore {
     journal: Journal,
     records: BTreeMap<[u8; 16], DurableRecord>,
     minimum_generation: u64,
+    commit_failed: bool,
+    #[cfg(test)]
+    fail_after_next_journal_commit: bool,
 }
 
 impl NetworkStateStore {
@@ -511,29 +542,51 @@ impl NetworkStateStore {
             journal,
             records,
             minimum_generation,
+            commit_failed: false,
+            #[cfg(test)]
+            fail_after_next_journal_commit: false,
         })
     }
 
     /// Returns bounded durable history for startup reconciliation.
     ///
     /// The result makes no current-kernel existence or readiness claim.
-    #[must_use]
-    pub fn recovery_snapshot(&self) -> NetworkRecoverySnapshotV1 {
-        NetworkRecoverySnapshotV1 {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkStateError::Journal`] when an indeterminate commit has
+    /// poisoned this process's authenticated materialized view.
+    pub fn recovery_snapshot(&self) -> Result<NetworkRecoverySnapshotV1, NetworkStateError> {
+        self.ensure_authority_readable()?;
+        Ok(NetworkRecoverySnapshotV1 {
             sequence: self.journal.snapshot_sequence(),
             entries: self.records.values().map(recovery_entry).collect(),
-        }
+        })
     }
 
-    /// Iterates the complete deterministic recovery set.
-    pub fn recovery_entries(&self) -> impl Iterator<Item = NetworkRecoveryEntry> + '_ {
-        self.records.values().map(recovery_entry)
+    /// Returns the complete deterministic recovery set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkStateError::Journal`] when an indeterminate commit has
+    /// poisoned this process's authenticated materialized view.
+    pub fn recovery_entries(&self) -> Result<Vec<NetworkRecoveryEntry>, NetworkStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.records.values().map(recovery_entry).collect())
     }
 
     /// Returns the durable phase for one request.
-    #[must_use]
-    pub fn phase(&self, request_id: [u8; 16]) -> Option<DurableNetworkPhase> {
-        self.records.get(&request_id).map(|record| record.phase)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkStateError::Journal`] when an indeterminate commit has
+    /// poisoned this process's authenticated materialized view.
+    pub fn phase(
+        &self,
+        request_id: [u8; 16],
+    ) -> Result<Option<DurableNetworkPhase>, NetworkStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.records.get(&request_id).map(|record| record.phase))
     }
 
     /// Reconstructs the exact protected preparation for a current recovery entry.
@@ -546,6 +599,7 @@ impl NetworkStateStore {
         &self,
         entry: &NetworkRecoveryEntry,
     ) -> Result<ResolvedNetworkPreparationV1, NetworkStateError> {
+        self.ensure_authority_readable()?;
         self.records
             .get(&entry.request_id)
             .filter(|record| recovery_entry(record) == *entry)
@@ -563,6 +617,7 @@ impl NetworkStateStore {
         &self,
         result: CommittedNetworkResultV1,
     ) -> Result<NetworkRecoveryEntry, NetworkStateError> {
+        self.ensure_authority_readable()?;
         self.records
             .get(&result.request_id)
             .filter(|record| {
@@ -572,8 +627,38 @@ impl NetworkStateStore {
             .ok_or(NetworkStateError::InvalidTransition)
     }
 
-    pub(crate) fn authority_record(&self, namespace: RecordNamespace, key: &[u8]) -> Option<&[u8]> {
-        self.journal.get(namespace, key)
+    pub(crate) fn authority_record(
+        &self,
+        namespace: RecordNamespace,
+        key: &[u8],
+    ) -> Result<Option<&[u8]>, NetworkStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.journal.get(namespace, key))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_after_next_journal_commit_for_test(&mut self) {
+        self.fail_after_next_journal_commit = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn journal_sequence_for_test(&self) -> u64 {
+        self.journal.snapshot_sequence()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn put_authority_record_for_test(
+        &mut self,
+        namespace: RecordNamespace,
+        key: &[u8],
+        value: Vec<u8>,
+        transaction_marker: u8,
+    ) -> Result<(), NetworkStateError> {
+        let transaction = JournalTransaction::new(
+            test_transaction_id(b"mislink", &[7; 16], &[transaction_marker]),
+            vec![JournalRecord::put(namespace, key.to_vec(), value)],
+        )?;
+        self.commit_journal(&transaction)
     }
 
     #[cfg(test)]
@@ -680,6 +765,7 @@ impl NetworkStateStore {
         authority: &NetworkAuthorityV1,
         record: DurableRecord,
     ) -> Result<NetworkBeginOutcome, NetworkStateError> {
+        self.ensure_authority_readable()?;
         if let Some(existing) = self.records.get(&record.request_id) {
             if existing.transport_digest != record.transport_digest
                 || existing.semantic_digest != record.semantic_digest
@@ -694,6 +780,9 @@ impl NetworkStateStore {
                 (DurableNetworkPhase::Committed, Some(result)) => {
                     NetworkBeginOutcome::Replay(result)
                 }
+                (DurableNetworkPhase::Aborted, None) => NetworkBeginOutcome::Aborted {
+                    effect_digest: existing.effect_digest,
+                },
                 (phase, _) => NetworkBeginOutcome::ObserveOnly {
                     phase,
                     effect_digest: existing.effect_digest,
@@ -714,14 +803,22 @@ impl NetworkStateStore {
         {
             return Err(NetworkStateError::Rollback);
         }
-        if self.records.values().any(|existing| {
+        for existing in self.records.values().filter(|existing| {
             existing.catalog.reserved_network_handle() == record.catalog.reserved_network_handle()
         }) {
-            return Err(NetworkStateError::Equivocation);
+            if existing.sandbox_id != record.sandbox_id || existing.catalog != record.catalog {
+                return Err(NetworkStateError::Equivocation);
+            }
+            if existing.phase != DurableNetworkPhase::Aborted {
+                return Err(NetworkStateError::PendingConflict);
+            }
         }
         if self.records.values().any(|existing| {
             existing.sandbox_id == record.sandbox_id
-                && existing.phase != DurableNetworkPhase::Committed
+                && matches!(
+                    existing.phase,
+                    DurableNetworkPhase::Prepared | DurableNetworkPhase::Ambiguous
+                )
         }) {
             return Err(NetworkStateError::PendingConflict);
         }
@@ -757,10 +854,149 @@ impl NetworkStateStore {
                 ),
             ],
         )?;
-        self.journal.commit(&transaction)?;
+        self.commit_journal(&transaction)?;
         let effect_digest = record.effect_digest;
         self.records.insert(record.request_id, record);
         Ok(NetworkBeginOutcome::Prepared { effect_digest })
+    }
+
+    /// Replays an exact authenticated Aborted tombstone without fresh effect authority.
+    ///
+    /// This terminal lookup is intentionally independent of the expired
+    /// request's former execution deadline. The transport bytes, sandbox, and
+    /// protected preparation must still match the local authenticated record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkStateError::Equivocation`] when the request identity
+    /// names an Aborted row but any immutable association differs.
+    pub(crate) fn replay_aborted(
+        &self,
+        request_id: [u8; 16],
+        sandbox_id: [u8; 16],
+        transport_digest: ObjectDigest,
+        catalog: &ResolvedNetworkPreparationV1,
+    ) -> Result<Option<ObjectDigest>, NetworkStateError> {
+        self.ensure_authority_readable()?;
+        let Some(record) = self.records.get(&request_id) else {
+            return Ok(None);
+        };
+        if record.phase != DurableNetworkPhase::Aborted {
+            return Ok(None);
+        }
+        if record.sandbox_id != sandbox_id
+            || record.transport_digest != transport_digest
+            || &record.catalog != catalog
+        {
+            return Err(NetworkStateError::Equivocation);
+        }
+
+        Ok(Some(record.effect_digest))
+    }
+
+    /// Reopens one exact current Prepared row for complete pre-effect validation.
+    ///
+    /// The returned move-only value retains the authenticated effect used for
+    /// the later clock classification. No durable phase changes here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkStateError::InvalidTransition`] unless the request and
+    /// effect identify the current Prepared row and its exact current sandbox
+    /// fence. Returns [`NetworkStateError::AuthorityLink`] when any persisted
+    /// fence, effect, or operation publication no longer authenticates.
+    pub(crate) fn prepare_effect_dispatch(
+        &self,
+        authority: &NetworkAuthorityV1,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+    ) -> Result<PreparedNetworkDispatchV1, NetworkStateError> {
+        let record = self.exact_current(request_id, effect_digest)?;
+        if record.phase != DurableNetworkPhase::Prepared
+            || record.custody.is_some()
+            || record.result.is_some()
+        {
+            return Err(NetworkStateError::InvalidTransition);
+        }
+        let operation_fence = record
+            .operation_fence
+            .as_deref()
+            .ok_or(NetworkStateError::AuthorityLink)?;
+        if self
+            .journal
+            .get(RecordNamespace::DesiredState, &record.sandbox_id)
+            != Some(record.current_fence.as_slice())
+            || self
+                .journal
+                .get(RecordNamespace::AuthorityPublication, &record.request_id)
+                != Some(operation_fence)
+            || self
+                .journal
+                .get(RecordNamespace::Effect, &record.request_id)
+                != Some(record.effect.as_slice())
+        {
+            return Err(NetworkStateError::InvalidTransition);
+        }
+
+        validate_record_links(&self.journal, authority, record)?;
+        let current_fence = authority
+            .open_fence(&record.sandbox_id, &record.current_fence)
+            .map_err(|_| NetworkStateError::AuthorityLink)?;
+        let durable_operation_fence = authority
+            .open_operation_fence(&record.request_id, operation_fence)
+            .map_err(|_| NetworkStateError::AuthorityLink)?;
+        if current_fence != durable_operation_fence {
+            return Err(NetworkStateError::AuthorityLink);
+        }
+        authority
+            .check_current_fence(&current_fence)
+            .map_err(|_| NetworkStateError::AuthorityLink)?;
+        let effect_intent = authority
+            .validate_operation_links(
+                &record.sandbox_id,
+                &record.request_id,
+                operation_fence,
+                &record.effect,
+            )
+            .map_err(|_| NetworkStateError::AuthorityLink)?;
+
+        Ok(prepared_dispatch(record, operation_fence, effect_intent))
+    }
+
+    /// Durably retires one exact expired Prepared intent before any effect.
+    ///
+    /// Authority, fence, effect, and append-only preparation records remain as
+    /// authenticated history. Only the operation phase changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkStateError::InvalidTransition`] unless `prepared`
+    /// remains the exact current Prepared row. A journal failure leaves the
+    /// journal's own poison/reopen semantics in force.
+    pub(crate) fn abort_prepared_exact(
+        &mut self,
+        authority: &NetworkAuthorityV1,
+        prepared: PreparedNetworkDispatchV1,
+    ) -> Result<(), NetworkStateError> {
+        let mut record = self.exact_prepared(authority, &prepared)?.clone();
+        record.phase = DurableNetworkPhase::Aborted;
+        self.publish(authority, record, b"aborted")
+    }
+
+    /// Durably crosses the effect boundary for one fully prevalidated row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkStateError::InvalidTransition`] unless `prepared`
+    /// remains the exact current Prepared operation.
+    pub(crate) fn mark_prevalidated_effect_ambiguous(
+        &mut self,
+        authority: &NetworkAuthorityV1,
+        prepared: PreparedNetworkDispatchV1,
+    ) -> Result<(), NetworkStateError> {
+        let mut record = self.exact_prepared(authority, &prepared)?.clone();
+        record.phase = DurableNetworkPhase::Ambiguous;
+        self.publish(authority, record, b"ambiguous")
     }
 
     /// Durably crosses the point after which a network effect may have run.
@@ -772,6 +1008,7 @@ impl NetworkStateStore {
     ///
     /// Returns [`NetworkStateError::InvalidTransition`] unless the exact
     /// prepared request and effect digest are current.
+    #[cfg(test)]
     pub(crate) fn mark_effect_ambiguous(
         &mut self,
         authority: &NetworkAuthorityV1,
@@ -907,10 +1144,76 @@ impl NetworkStateStore {
         request_id: [u8; 16],
         effect_digest: ObjectDigest,
     ) -> Result<&DurableRecord, NetworkStateError> {
+        self.ensure_authority_readable()?;
         self.records
             .get(&request_id)
             .filter(|record| record.effect_digest == effect_digest)
             .ok_or(NetworkStateError::InvalidTransition)
+    }
+
+    fn exact_prepared(
+        &self,
+        authority: &NetworkAuthorityV1,
+        prepared: &PreparedNetworkDispatchV1,
+    ) -> Result<&DurableRecord, NetworkStateError> {
+        self.ensure_authority_readable()?;
+        let record = self
+            .records
+            .get(&prepared.request_id)
+            .filter(|record| {
+                record.phase == DurableNetworkPhase::Prepared
+                    && record.sandbox_id == prepared.sandbox_id
+                    && record.transport_digest == prepared.transport_digest
+                    && record.semantic_digest == prepared.semantic_digest
+                    && record.effect_digest == prepared.effect_digest
+                    && record.catalog == prepared.catalog
+                    && record.current_fence == prepared.current_fence
+                    && record.operation_fence.as_deref()
+                        == Some(prepared.operation_fence.as_slice())
+                    && record.effect == prepared.effect
+                    && record.custody.is_none()
+                    && record.result.is_none()
+                    && self
+                        .journal
+                        .get(RecordNamespace::DesiredState, &record.sandbox_id)
+                        == Some(record.current_fence.as_slice())
+                    && self
+                        .journal
+                        .get(RecordNamespace::AuthorityPublication, &record.request_id)
+                        == Some(prepared.operation_fence.as_slice())
+                    && self
+                        .journal
+                        .get(RecordNamespace::Effect, &record.request_id)
+                        == Some(record.effect.as_slice())
+            })
+            .ok_or(NetworkStateError::InvalidTransition)?;
+
+        validate_record_links(&self.journal, authority, record)?;
+        let current_fence = authority
+            .open_fence(&record.sandbox_id, &record.current_fence)
+            .map_err(|_| NetworkStateError::AuthorityLink)?;
+        let operation_fence = authority
+            .open_operation_fence(&record.request_id, &prepared.operation_fence)
+            .map_err(|_| NetworkStateError::AuthorityLink)?;
+        if current_fence != operation_fence {
+            return Err(NetworkStateError::AuthorityLink);
+        }
+        authority
+            .check_current_fence(&current_fence)
+            .map_err(|_| NetworkStateError::AuthorityLink)?;
+        let effect = authority
+            .validate_operation_links(
+                &record.sandbox_id,
+                &record.request_id,
+                &prepared.operation_fence,
+                &record.effect,
+            )
+            .map_err(|_| NetworkStateError::AuthorityLink)?;
+        if effect != *prepared.effect_intent() {
+            return Err(NetworkStateError::AuthorityLink);
+        }
+
+        Ok(record)
     }
 
     fn publish(
@@ -931,9 +1234,43 @@ impl NetworkStateStore {
                 sealed_local,
             )],
         )?;
-        self.journal.commit(&transaction)?;
+        self.commit_journal(&transaction)?;
         self.records.insert(record.request_id, record);
         Ok(())
+    }
+
+    fn commit_journal(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), NetworkStateError> {
+        let result = self.journal.commit(transaction);
+        #[cfg(test)]
+        let result = result.and_then(|commit| {
+            if std::mem::take(&mut self.fail_after_next_journal_commit) {
+                // Model an error returned after durable commit but before the
+                // caller updates its authenticated materialized view.
+                Err(aos_sandbox::JournalError::Io(std::io::Error::other(
+                    "injected failure after durable network journal commit",
+                )))
+            } else {
+                Ok(commit)
+            }
+        });
+        if let Err(error) = result {
+            // An append or sync error may have reached durable storage. No
+            // cached record remains authoritative until protected reopen.
+            self.commit_failed = true;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_authority_readable(&self) -> Result<(), NetworkStateError> {
+        if self.commit_failed {
+            Err(aos_sandbox::JournalError::Poisoned.into())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -945,6 +1282,9 @@ pub(crate) enum NetworkBeginOutcome {
     },
     ObserveOnly {
         phase: DurableNetworkPhase,
+        effect_digest: ObjectDigest,
+    },
+    Aborted {
         effect_digest: ObjectDigest,
     },
     Replay(CommittedNetworkResultV1),
@@ -995,6 +1335,26 @@ fn recovery_entry(record: &DurableRecord) -> NetworkRecoveryEntry {
     }
 }
 
+fn prepared_dispatch(
+    record: &DurableRecord,
+    operation_fence: &[u8],
+    effect_intent: BrokerEffectIntentV1,
+) -> PreparedNetworkDispatchV1 {
+    PreparedNetworkDispatchV1 {
+        request_id: record.request_id,
+        sandbox_id: record.sandbox_id,
+        transport_digest: record.transport_digest,
+        semantic_digest: record.semantic_digest,
+        effect_digest: record.effect_digest,
+        catalog: record.catalog.clone(),
+        current_fence: record.current_fence.clone(),
+        operation_fence: operation_fence.to_vec(),
+        effect: record.effect.clone(),
+        effect_intent,
+    }
+}
+
+#[cfg(test)]
 fn ambiguous_dispatch(
     record: DurableRecord,
 ) -> Result<AmbiguousNetworkDispatchV1, NetworkStateError> {
@@ -1093,10 +1453,12 @@ fn validate_pending_uniqueness(
 ) -> Result<(), NetworkStateError> {
     let mut pending = BTreeMap::new();
     for record in records.values() {
-        if record.phase != DurableNetworkPhase::Committed
-            && pending
-                .insert(record.sandbox_id, record.request_id)
-                .is_some()
+        if matches!(
+            record.phase,
+            DurableNetworkPhase::Prepared | DurableNetworkPhase::Ambiguous
+        ) && pending
+            .insert(record.sandbox_id, record.request_id)
+            .is_some()
         {
             return Err(NetworkStateError::PendingConflict);
         }
@@ -1104,17 +1466,42 @@ fn validate_pending_uniqueness(
     Ok(())
 }
 
+/// Retains immutable handle identity plus the sole non-aborted owner.
+struct NetworkHandleLineage {
+    sandbox_id: [u8; 16],
+    catalog: ResolvedNetworkPreparationV1,
+    active_request: Option<[u8; 16]>,
+}
+
 fn validate_resource_uniqueness(
     records: &BTreeMap<[u8; 16], DurableRecord>,
 ) -> Result<(), NetworkStateError> {
-    let mut handles = BTreeMap::new();
+    let mut handles: BTreeMap<[u8; 32], NetworkHandleLineage> = BTreeMap::new();
     let mut physical_namespaces = BTreeMap::new();
     for record in records.values() {
-        if handles
-            .insert(*record.catalog.reserved_network_handle(), record.request_id)
-            .is_some()
-        {
-            return Err(NetworkStateError::Equivocation);
+        let handle = *record.catalog.reserved_network_handle();
+        match handles.get_mut(&handle) {
+            None => {
+                handles.insert(
+                    handle,
+                    NetworkHandleLineage {
+                        sandbox_id: record.sandbox_id,
+                        catalog: record.catalog.clone(),
+                        active_request: (record.phase != DurableNetworkPhase::Aborted)
+                            .then_some(record.request_id),
+                    },
+                );
+            }
+            Some(lineage) => {
+                if lineage.sandbox_id != record.sandbox_id || lineage.catalog != record.catalog {
+                    return Err(NetworkStateError::Equivocation);
+                }
+                if record.phase != DurableNetworkPhase::Aborted
+                    && lineage.active_request.replace(record.request_id).is_some()
+                {
+                    return Err(NetworkStateError::Equivocation);
+                }
+            }
         }
         let namespace_identity = record_namespace_identity(record);
         if let Some(namespace_identity) = namespace_identity
@@ -1321,12 +1708,18 @@ fn validate_record_shape(record: &DurableRecord) -> Result<(), NetworkStateError
                 && result.kernel_plan_digest.as_bytes() != &[0; 32]
                 && result.result_digest.as_bytes() != &[0; 32]
         }
-        (DurableNetworkPhase::Prepared | DurableNetworkPhase::Ambiguous, None) => true,
+        (
+            DurableNetworkPhase::Prepared
+            | DurableNetworkPhase::Ambiguous
+            | DurableNetworkPhase::Aborted,
+            None,
+        ) => true,
         _ => false,
     };
     let custody_shape_valid = match (record.phase, record.custody, record.result) {
         (DurableNetworkPhase::Prepared, None, None) => true,
         (DurableNetworkPhase::Ambiguous, _, None) => true,
+        (DurableNetworkPhase::Aborted, None, None) => true,
         (DurableNetworkPhase::Committed, Some(custody), Some(result)) => {
             custody.kernel_boot_id == result.kernel_boot_id
                 && custody.namespace_device == result.namespace_device
@@ -1463,6 +1856,7 @@ const fn phase_code(phase: DurableNetworkPhase) -> u8 {
         DurableNetworkPhase::Prepared => 1,
         DurableNetworkPhase::Ambiguous => 2,
         DurableNetworkPhase::Committed => 3,
+        DurableNetworkPhase::Aborted => 4,
     }
 }
 
@@ -1471,6 +1865,7 @@ fn decode_phase(code: u8) -> Result<DurableNetworkPhase, NetworkStateError> {
         1 => Ok(DurableNetworkPhase::Prepared),
         2 => Ok(DurableNetworkPhase::Ambiguous),
         3 => Ok(DurableNetworkPhase::Committed),
+        4 => Ok(DurableNetworkPhase::Aborted),
         _ => Err(NetworkStateError::CorruptRecord),
     }
 }
@@ -1649,7 +2044,62 @@ const fn journal_limits() -> JournalLimits {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
+
+    fn aborted_record() -> DurableRecord {
+        let catalog = ResolvedNetworkPreparationV1::new(
+            7,
+            [8; 32],
+            ObjectDigest::from_bytes([9; 32]),
+            vec![ResolvedEndpointV1::new([10; 16], ObjectDigest::from_bytes([11; 32])).unwrap()],
+        )
+        .unwrap();
+        let request_id = [1; 16];
+        let transport_digest = ObjectDigest::from_bytes([2; 32]);
+
+        DurableRecord {
+            phase: DurableNetworkPhase::Aborted,
+            request_id,
+            sandbox_id: [3; 16],
+            transport_digest,
+            semantic_digest: ObjectDigest::from_bytes([4; 32]),
+            verb: BrokerVerb::NetworkPrepare,
+            effect_digest: effect_digest(request_id, transport_digest, &catalog),
+            catalog,
+            current_fence: vec![5],
+            operation_fence: Some(vec![6]),
+            effect: vec![7],
+            custody: None,
+            result: None,
+        }
+    }
+
+    #[test]
+    fn aborted_phase_codec_is_canonical_and_unknown_values_fail_closed() {
+        let record = aborted_record();
+        let encoded = encode_record(&record).unwrap();
+
+        assert_eq!(&encoded[..8], MAGIC);
+        assert_eq!(u16::from_be_bytes([encoded[8], encoded[9]]), VERSION);
+        assert_eq!(encoded[10], 4);
+        assert_eq!(decode_record(&encoded).unwrap(), record);
+
+        let mut unknown_version = encoded.clone();
+        unknown_version[9] = 2;
+        assert!(matches!(
+            decode_record(&unknown_version),
+            Err(NetworkStateError::CorruptRecord)
+        ));
+
+        let mut unknown_phase = encoded;
+        unknown_phase[10] = 0xff;
+        assert!(matches!(
+            decode_record(&unknown_phase),
+            Err(NetworkStateError::CorruptRecord)
+        ));
+    }
 
     #[test]
     fn decoder_rejects_every_non_v1_record_version() {

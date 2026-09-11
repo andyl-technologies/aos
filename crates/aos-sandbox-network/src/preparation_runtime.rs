@@ -11,12 +11,13 @@
 //! be reconciled by retained-descriptor observation, while an already committed
 //! result may only be projected into the namespace catalog.
 
-use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
 use aos_sandbox_linux::pidfd::{NamespaceFd, SingleThreadedProcess};
 use sha2::{Digest as _, Sha256};
 
+use crate::authorization::NetworkAdmissionError;
 use crate::broker::{
-    NetworkBrokerError, NetworkEffectDispatchPermitV1, NetworkLifecycleAdmissionCoordinator,
+    NetworkBrokerError, NetworkLifecycleAdmissionCoordinator, NetworkPrepareExecutionOutcomeV1,
 };
 use crate::catalog::ResolvedNetworkPreparationV1;
 use crate::kernel_observation::NetworkKernelObservationV1;
@@ -31,7 +32,6 @@ use crate::namespace_observer::{
 };
 use crate::preparation_catalog::NetworkPreparationCatalogV1;
 use crate::state::{CommittedNetworkResultV1, NetworkStateError, VerifiedNetworkResultV1};
-use crate::worker_protocol::NetworkPrepareWorkerDispatchV1;
 use crate::worker_runtime::PreparedNetworkWorkerOutput;
 use crate::worker_runtime::RecoveredNetworkPreparationObservation;
 
@@ -159,28 +159,37 @@ impl FinalizedNetworkPreparationV1 {
     }
 }
 
-/// Consumes the sole ambiguity-transition permit into one worker dispatch.
+/// Prevalidates and consumes one fresh preparation into a worker dispatch.
 ///
-/// This is the only preparation-runtime entry point that can mint effect
-/// authority. If dispatch construction fails after the durable transition,
-/// callers must recover by observation or cleanup and must not call this again.
+/// This is the only production preparation entry point that can release effect
+/// authority. All caller-controlled request, plan, catalog, and dispatch
+/// validation completes before the clock sample or durable transition. Expired
+/// authority becomes an authenticated Aborted tombstone without a dispatch.
 ///
 /// # Errors
 ///
-/// Returns [`NetworkPreparationRuntimeError`] unless the exact request is still
-/// prepared and the supplied plan reproduces its authenticated preparation.
-pub fn begin_network_preparation_once(
+/// Returns [`NetworkPreparationRuntimeError`] unless the exact request remains
+/// Prepared, its complete prospective dispatch authenticates, the clock has
+/// valid continuity, and the terminal journal transition succeeds.
+pub fn begin_network_preparation_once<F>(
     coordinator: &mut NetworkLifecycleAdmissionCoordinator,
     request_id: [u8; 16],
     effect_digest: ObjectDigest,
     request_body: &[u8],
     kernel_plan: NetworkKernelPlanV1,
-) -> Result<NetworkPrepareWorkerDispatchV1, NetworkPreparationRuntimeError> {
-    let permit: NetworkEffectDispatchPermitV1 =
-        coordinator.mark_prepare_effect_ambiguous(request_id, effect_digest)?;
-
+    trusted_clock: &mut F,
+) -> Result<NetworkPrepareExecutionOutcomeV1, NetworkPreparationRuntimeError>
+where
+    F: FnMut() -> Result<RawPairedClockSample, NetworkAdmissionError>,
+{
     coordinator
-        .issue_prepare_worker_dispatch(permit, request_body, kernel_plan)
+        .begin_prepare_effect_once(
+            request_id,
+            effect_digest,
+            request_body,
+            kernel_plan,
+            trusted_clock,
+        )
         .map_err(Into::into)
 }
 
@@ -555,14 +564,19 @@ mod tests {
             let request = self.request.clone();
             let plan = self.plan.clone();
             let effect_digest = self.effect_digest;
-            begin_network_preparation_once(
+            let outcome = begin_network_preparation_once(
                 self.coordinator_mut(),
                 REQUEST_ID,
                 effect_digest,
                 &request,
                 plan,
+                &mut || Ok(clock()),
             )
             .unwrap();
+            assert!(matches!(
+                outcome,
+                NetworkPrepareExecutionOutcomeV1::Dispatch(_)
+            ));
         }
 
         fn bind_pin_custody(&mut self) {
@@ -870,7 +884,7 @@ mod tests {
                 NetworkNamespaceObserverError::Changed
             ))
         ));
-        let snapshot = case.coordinator().preparation_recovery_snapshot();
+        let snapshot = case.coordinator().preparation_recovery_snapshot().unwrap();
         let entry = &snapshot.entries()[0];
         assert_eq!(entry.phase(), DurableNetworkPhase::Ambiguous);
         assert!(entry.result().is_none());
@@ -903,10 +917,11 @@ mod tests {
                 effect_digest,
                 &request,
                 plan,
+                &mut || Ok(clock()),
             )
             .is_err()
         );
-        let snapshot = case.coordinator().preparation_recovery_snapshot();
+        let snapshot = case.coordinator().preparation_recovery_snapshot().unwrap();
         let entry = &snapshot.entries()[0];
         assert_eq!(entry.phase(), DurableNetworkPhase::Ambiguous);
         assert!(entry.custody().is_none());
@@ -962,6 +977,7 @@ mod tests {
                 effect_digest,
                 &request,
                 plan,
+                &mut || Ok(clock()),
             )
             .is_err()
         );
@@ -1044,7 +1060,11 @@ mod tests {
             .is_err()
         );
         assert_eq!(
-            case.coordinator().preparation_recovery_snapshot().entries()[0].phase(),
+            case.coordinator()
+                .preparation_recovery_snapshot()
+                .unwrap()
+                .entries()[0]
+                .phase(),
             DurableNetworkPhase::Committed,
         );
         case.assert_no_catalog_row();

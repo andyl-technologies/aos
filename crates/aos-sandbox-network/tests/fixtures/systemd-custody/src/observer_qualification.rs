@@ -49,8 +49,9 @@ use aos_sandbox_network::{
     NetworkNamespaceCatalogV1, NetworkNamespaceStoreName, NetworkPolicyCatalogV1,
     NetworkPolicyProfileV1, NetworkPolicyProgramV1, NetworkPreparationCatalogOutcomeV1,
     NetworkPreparationCatalogV1, NetworkPreparationFinalizationInput,
-    NetworkPreparationReservationV1, NetworkPrepareWorkerDispatchV1, NetworkStateStore,
-    ObservedIpAddressV1, PreparedNetworkWorkerOutput, StableRtnetlinkNamespaceInventoryV1,
+    NetworkPreparationReservationV1, NetworkPrepareExecutionOutcomeV1,
+    NetworkPrepareWorkerDispatchV1, NetworkStateStore, ObservedIpAddressV1,
+    PreparedNetworkWorkerOutput, StableRtnetlinkNamespaceInventoryV1,
     SystemdNetworkLifecycleAdmissionExecutor, VerifiedNetworkResultV1, adopt_systemd_activation,
     begin_network_preparation_once, finalize_executed_network_preparation,
     observe_stable_network_kernel, observe_stable_rtnetlink_namespace,
@@ -278,19 +279,23 @@ pub(crate) fn prepare_worker_dispatch(
         bail!("worker qualification did not create a fresh prepared operation");
     };
     let durable_kernel_plan = kernel_plan.clone();
-    let dispatch = begin_network_preparation_once(
+    let outcome = begin_network_preparation_once(
         &mut coordinator,
         REQUEST_ID,
         effect_digest,
         &request,
         kernel_plan,
+        &mut || Ok(window.clock),
     )?;
+    let NetworkPrepareExecutionOutcomeV1::Dispatch(dispatch) = outcome else {
+        bail!("fresh worker qualification effect was unexpectedly aborted");
+    };
     let durable_resolution = resolution.clone();
     let summary = PreparedWorkerQualification {
         coordinator,
         preparations,
         preparation: prepared.preparation().clone(),
-        dispatch,
+        dispatch: *dispatch,
         kernel_plan: durable_kernel_plan,
         resolution: durable_resolution,
         request_body: request,
@@ -371,7 +376,7 @@ pub(crate) fn commit_worker_preparation(
         0,
     )
     .context("reopen committed worker operation state")?;
-    let recovery = recovery_store.recovery_snapshot();
+    let recovery = recovery_store.recovery_snapshot()?;
     ensure!(
         recovery.entries().len() == 1
             && recovery.entries()[0].request_id() == output.request_id()
@@ -756,7 +761,7 @@ fn run_observation(
         &artifacts,
         prepared.preparation(),
         &resolution,
-        kernel_plan.digest(),
+        kernel_plan,
         namespace_path,
     )?;
     let publication = coordinator
@@ -1147,7 +1152,7 @@ fn commit_or_recover(
     artifacts: &ValidatedUntrustedAuthorizationArtifacts,
     preparation: &aos_sandbox_network::AuthenticatedNetworkPreparationV1,
     resolution: &aos_sandbox_network::ResolvedNetworkPreparationV1,
-    kernel_plan_digest: ObjectDigest,
+    kernel_plan: NetworkKernelPlanV1,
     namespace_path: &Path,
 ) -> Result<aos_sandbox_network::CommittedNetworkResultV1> {
     let outcome = coordinator.admit_apply_intent(
@@ -1165,7 +1170,19 @@ fn commit_or_recover(
     let NetworkAdmissionOutcome::Prepared { effect_digest } = outcome else {
         bail!("observer qualification found an unfinished non-replay operation");
     };
-    drop(coordinator.mark_prepare_effect_ambiguous(REQUEST_ID, effect_digest)?);
+    let kernel_plan_digest = kernel_plan.digest();
+    let outcome = begin_network_preparation_once(
+        coordinator,
+        REQUEST_ID,
+        effect_digest,
+        request,
+        kernel_plan,
+        &mut clock,
+    )?;
+    let NetworkPrepareExecutionOutcomeV1::Dispatch(dispatch) = outcome else {
+        bail!("fresh observer qualification effect was unexpectedly aborted");
+    };
+    drop(dispatch);
 
     let namespace_file = File::open(namespace_path).context("open observed namespace")?;
     let namespace = NamespaceFd::from_owned(namespace_file.into(), NamespaceKind::Network)

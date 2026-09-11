@@ -12,6 +12,7 @@
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::RecordNamespace;
+use aos_sandbox_broker::BrokerEffectClockDispositionV1;
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::pidfd::NamespaceFd;
@@ -21,7 +22,9 @@ use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use sha2::{Digest as _, Sha256};
 
 use crate::NetworkKernelPlanV1;
-use crate::authorization::{NetworkAuthorityV1, decode_assignment};
+use crate::authorization::{
+    NetworkAdmissionError, NetworkAuthorityV1, decode_assignment, decode_request_id,
+};
 use crate::catalog::{AuthenticatedNetworkPreparationV1, ResolvedNetworkPreparationV1};
 use crate::lifecycle_state::{
     AmbiguousNetworkLifecycleDispatchV1, CommittedNetworkLifecycleResultV1,
@@ -39,15 +42,17 @@ use crate::namespace_catalog::{
 };
 use crate::preparation_catalog::{NetworkPreparationCatalogError, NetworkPreparationCatalogV1};
 #[cfg(test)]
-use crate::state::NetworkRecoveryEntry;
+use crate::state::{AmbiguousNetworkDispatchV1, NetworkRecoveryEntry};
 use crate::state::{
-    AmbiguousNetworkDispatchV1, CommittedNetworkResultV1, DurableNetworkPhase, NetworkBeginOutcome,
-    NetworkNamespaceCustodyV1, NetworkStateError, NetworkStateStore, PreparedNetworkRecordInput,
-    VerifiedNetworkResultV1, prepared_record,
+    CommittedNetworkResultV1, DurableNetworkPhase, NetworkBeginOutcome, NetworkNamespaceCustodyV1,
+    NetworkStateError, NetworkStateStore, PreparedNetworkRecordInput, VerifiedNetworkResultV1,
+    prepared_record,
 };
+#[cfg(test)]
+use crate::worker_protocol::issue_prepare_dispatch;
 use crate::worker_protocol::{
-    NetworkPrepareWorkerDispatchV1, NetworkWorkerProtocolError, issue_prepare_dispatch,
-    kernel_plan_matches_catalog,
+    NetworkPrepareWorkerDispatchV1, NetworkWorkerProtocolError, kernel_plan_matches_catalog,
+    prevalidate_prepare_dispatch,
 };
 use crate::worker_runtime::RecoveredNetworkPreparationObservation;
 
@@ -92,8 +97,25 @@ pub enum NetworkAdmissionOutcome {
         /// Deterministic identity of the one-shot preparation effect.
         effect_digest: ObjectDigest,
     },
+    /// The exact expired intent was durably retired before effect authority.
+    Aborted {
+        /// Deterministic identity of the retired preparation effect.
+        effect_digest: ObjectDigest,
+    },
     /// The exact request already committed and returns its prior result.
     Replay(CommittedNetworkResultV1),
+}
+
+/// Classifies one fully prevalidated preparation execution decision.
+#[derive(Debug, Eq, PartialEq)]
+pub enum NetworkPrepareExecutionOutcomeV1 {
+    /// The exact Prepared row became Ambiguous and released one worker request.
+    Dispatch(Box<NetworkPrepareWorkerDispatchV1>),
+    /// The exact expired Prepared row became an authenticated Aborted tombstone.
+    Aborted {
+        /// Deterministic identity of the retired preparation effect.
+        effect_digest: ObjectDigest,
+    },
 }
 
 /// Classifies durable existing-handle admission without executing an effect.
@@ -120,8 +142,9 @@ pub enum NetworkLifecycleAdmissionOutcome {
 /// This non-clone value exists only in memory after the exact synchronous
 /// `Prepared -> Ambiguous` journal transition. Recovery deliberately cannot
 /// reconstruct it, so an ambiguous operation is observation/cleanup-only.
+#[cfg(test)]
 #[must_use]
-pub struct NetworkEffectDispatchPermitV1 {
+pub(crate) struct NetworkEffectDispatchPermitV1 {
     durable: AmbiguousNetworkDispatchV1,
 }
 
@@ -179,7 +202,7 @@ impl NetworkAdmissionCoordinator {
         let sandbox_id = *assignment.sandbox().as_bytes();
         let prior_fence = self
             .state
-            .authority_record(RecordNamespace::DesiredState, &sandbox_id)
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
             .map(<[u8]>::to_vec);
         admit_apply_intent_with_prior(
             &self.authority,
@@ -303,9 +326,15 @@ impl NetworkAdmissionCoordinator {
     /// Returns bounded authenticated durable history for recovery.
     ///
     /// This is not current kernel inventory or readiness evidence.
-    #[must_use]
-    pub fn recovery_snapshot(&self) -> crate::state::NetworkRecoverySnapshotV1 {
-        self.state.recovery_snapshot()
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkBrokerError::State`] when an indeterminate commit has
+    /// poisoned the creation journal's authenticated materialized view.
+    pub fn recovery_snapshot(
+        &self,
+    ) -> Result<crate::state::NetworkRecoverySnapshotV1, NetworkBrokerError> {
+        self.state.recovery_snapshot().map_err(Into::into)
     }
 }
 
@@ -322,6 +351,19 @@ fn admit_apply_intent_with_prior(
     current_clock: &RawPairedClockSample,
     prior_fence: Option<&[u8]>,
 ) -> Result<NetworkAdmissionOutcome, NetworkBrokerError> {
+    let assignment = decode_assignment(request_body).map_err(|_| NetworkBrokerError::Request)?;
+    let catalog = authority
+        .validate_catalog(catalog, assignment)
+        .map_err(|_| NetworkBrokerError::Authority)?;
+    let sandbox_id = *assignment.sandbox().as_bytes();
+    let request_id = decode_request_id(request_body).map_err(|_| NetworkBrokerError::Request)?;
+    let transport_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
+    if let Some(effect_digest) =
+        state.replay_aborted(request_id, sandbox_id, transport_digest, catalog)?
+    {
+        return Ok(NetworkAdmissionOutcome::Aborted { effect_digest });
+    }
+
     let semantics = CanonicalNetworkSemanticsV1::decode(
         request_body,
         peer,
@@ -329,14 +371,8 @@ fn admit_apply_intent_with_prior(
         current_clock.boottime_nanoseconds(),
     )
     .map_err(|_| NetworkBrokerError::Request)?;
-    let assignment = decode_assignment(request_body).map_err(|_| NetworkBrokerError::Request)?;
-    let catalog = authority
-        .validate_catalog(catalog, assignment)
-        .map_err(|_| NetworkBrokerError::Authority)?;
     validate_catalog(&semantics, catalog)?;
 
-    let sandbox_id = *assignment.sandbox().as_bytes();
-    let request_id = *semantics.header().request_id();
     let admission = authority
         .admit(
             artifacts,
@@ -359,7 +395,7 @@ fn admit_apply_intent_with_prior(
     let record = prepared_record(PreparedNetworkRecordInput {
         request_id,
         sandbox_id,
-        transport_digest: ObjectDigest::from_bytes(Sha256::digest(request_body).into()),
+        transport_digest,
         semantic_digest: semantics.argument_commitment().digest(),
         verb: semantics.broker_verb(),
         catalog: catalog.clone(),
@@ -379,6 +415,9 @@ fn admit_apply_intent_with_prior(
             phase,
             effect_digest,
         },
+        NetworkBeginOutcome::Aborted { effect_digest } => {
+            NetworkAdmissionOutcome::Aborted { effect_digest }
+        }
         NetworkBeginOutcome::Replay(result) => NetworkAdmissionOutcome::Replay(result),
     })
 }
@@ -431,13 +470,15 @@ impl NetworkLifecycleAdmissionCoordinator {
         let assignment =
             decode_assignment(request_body).map_err(|_| NetworkBrokerError::Request)?;
         let sandbox_id = *assignment.sandbox().as_bytes();
+        let creation_fence = self
+            .creation_state
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?;
         let prior_fence = self
             .authority
             .latest_fence(
                 &sandbox_id,
                 [
-                    self.creation_state
-                        .authority_record(RecordNamespace::DesiredState, &sandbox_id),
+                    creation_fence,
                     self.lifecycle_state.current_fence(&sandbox_id),
                 ],
             )
@@ -457,39 +498,57 @@ impl NetworkLifecycleAdmissionCoordinator {
         )
     }
 
-    /// Durably crosses the preparation boundary before first worker dispatch.
+    /// Fully validates and classifies one Prepared effect before releasing it.
+    ///
+    /// Request, plan, catalog, fence, effect, dispatch identity, and bounds are
+    /// checked before the protected clock is sampled. An expired effect is
+    /// durably aborted. A fresh effect synchronously crosses to Ambiguous and
+    /// then releases the already-validated worker request without another
+    /// caller-controlled validation step.
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkBrokerError::State`] unless the exact preparation is
-    /// the current prepared creation record.
-    pub fn mark_prepare_effect_ambiguous(
+    /// Returns [`NetworkBrokerError`] when durable state is not the exact
+    /// current Prepared row, prospective dispatch validation fails, the clock
+    /// lacks authenticated continuity, or the terminal journal write fails.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_prepare_effect_once<F>(
         &mut self,
         request_id: [u8; 16],
         effect_digest: ObjectDigest,
-    ) -> Result<NetworkEffectDispatchPermitV1, NetworkBrokerError> {
-        let durable = self.creation_state.mark_effect_ambiguous(
+        request_body: &[u8],
+        kernel_plan: NetworkKernelPlanV1,
+        trusted_clock: &mut F,
+    ) -> Result<NetworkPrepareExecutionOutcomeV1, NetworkBrokerError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, NetworkAdmissionError>,
+    {
+        let prepared = self.creation_state.prepare_effect_dispatch(
             &self.authority,
             request_id,
             effect_digest,
         )?;
-        Ok(NetworkEffectDispatchPermitV1 { durable })
-    }
-
-    /// Consumes a fresh preparation permit into one authenticated worker request.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NetworkBrokerError::WorkerProtocol`] when the request, plan,
-    /// catalog, fence, or effect relationship differs from durable admission.
-    pub fn issue_prepare_worker_dispatch(
-        &self,
-        permit: NetworkEffectDispatchPermitV1,
-        request_body: &[u8],
-        kernel_plan: NetworkKernelPlanV1,
-    ) -> Result<NetworkPrepareWorkerDispatchV1, NetworkBrokerError> {
-        issue_prepare_dispatch(&self.authority, permit.durable, request_body, kernel_plan)
-            .map_err(Into::into)
+        let prospective =
+            prevalidate_prepare_dispatch(&self.authority, &prepared, request_body, kernel_plan)?;
+        let current_clock = trusted_clock().map_err(|_| NetworkBrokerError::Authority)?;
+        match self
+            .authority
+            .classify_effect_clock(prepared.effect_intent(), &current_clock)
+            .map_err(|_| NetworkBrokerError::Authority)?
+        {
+            BrokerEffectClockDispositionV1::Expired => {
+                self.creation_state
+                    .abort_prepared_exact(&self.authority, prepared)?;
+                Ok(NetworkPrepareExecutionOutcomeV1::Aborted { effect_digest })
+            }
+            BrokerEffectClockDispositionV1::Fresh => {
+                self.creation_state
+                    .mark_prevalidated_effect_ambiguous(&self.authority, prepared)?;
+                Ok(NetworkPrepareExecutionOutcomeV1::Dispatch(
+                    prospective.release(),
+                ))
+            }
+        }
     }
 
     /// Binds an ambiguous preparation to confirmed systemd namespace custody.
@@ -578,7 +637,8 @@ impl NetworkLifecycleAdmissionCoordinator {
     ) -> Result<RecoveredNetworkPreparationObservation<'a>, NetworkBrokerError> {
         let entry = self
             .creation_state
-            .recovery_entries()
+            .recovery_entries()?
+            .into_iter()
             .find(|entry| {
                 entry.request_id() == request_id && entry.effect_digest() == effect_digest
             })
@@ -612,9 +672,15 @@ impl NetworkLifecycleAdmissionCoordinator {
     ///
     /// The snapshot contains no effect-dispatch permit and makes no current
     /// kernel or namespace-catalog claim.
-    #[must_use]
-    pub fn preparation_recovery_snapshot(&self) -> crate::state::NetworkRecoverySnapshotV1 {
-        self.creation_state.recovery_snapshot()
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkBrokerError::State`] when an indeterminate commit has
+    /// poisoned the creation journal's authenticated materialized view.
+    pub fn preparation_recovery_snapshot(
+        &self,
+    ) -> Result<crate::state::NetworkRecoverySnapshotV1, NetworkBrokerError> {
+        self.creation_state.recovery_snapshot().map_err(Into::into)
     }
 
     /// Authenticates and journals one current-handle lifecycle intent.
@@ -667,13 +733,15 @@ impl NetworkLifecycleAdmissionCoordinator {
         let request_id = *semantics.header().request_id();
         let transport_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
         let semantic_digest = semantics.argument_commitment().digest();
+        let creation_fence = self
+            .creation_state
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?;
         let prior_fence = self
             .authority
             .latest_fence(
                 &sandbox_id,
                 [
-                    self.creation_state
-                        .authority_record(RecordNamespace::DesiredState, &sandbox_id),
+                    creation_fence,
                     self.lifecycle_state.current_fence(&sandbox_id),
                 ],
             )
@@ -853,11 +921,15 @@ impl NetworkLifecycleAdmissionCoordinator {
     }
 
     #[cfg(test)]
-    pub(crate) fn creation_fence_for_test(&self, sandbox_id: [u8; 16]) -> Vec<u8> {
-        self.creation_state
-            .authority_record(RecordNamespace::DesiredState, &sandbox_id)
+    pub(crate) fn creation_fence_for_test(
+        &self,
+        sandbox_id: [u8; 16],
+    ) -> Result<Vec<u8>, NetworkStateError> {
+        Ok(self
+            .creation_state
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
             .map(<[u8]>::to_vec)
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 }
 
@@ -1344,6 +1416,16 @@ pub(crate) mod tests {
         .unwrap()
     }
 
+    fn clock_at(boottime_nanoseconds: u64) -> RawPairedClockSample {
+        RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [50; 16],
+            150,
+            boottime_nanoseconds,
+        )
+        .unwrap()
+    }
+
     fn expired_clock() -> RawPairedClockSample {
         RawPairedClockSample::new_untrusted(
             RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
@@ -1550,6 +1632,74 @@ pub(crate) mod tests {
         kernel_plan: NetworkKernelPlanV1,
         namespaces: NetworkNamespaceCatalogV1,
         coordinator: NetworkLifecycleAdmissionCoordinator,
+    }
+
+    struct PreparedExecutionCase {
+        _directory: TempDir,
+        creation_directory: PathBuf,
+        lifecycle_directory: PathBuf,
+        request: Vec<u8>,
+        resolution: ResolvedNetworkPreparationV1,
+        plan: NetworkKernelPlanV1,
+        artifacts: ValidatedUntrustedAuthorizationArtifacts,
+        preparation: AuthenticatedNetworkPreparationV1,
+        effect_digest: ObjectDigest,
+        coordinator: NetworkLifecycleAdmissionCoordinator,
+    }
+
+    fn prepared_execution_case(fixture: &Fixture) -> PreparedExecutionCase {
+        let (request, resolution, plan) = isolated_worker_case();
+        prepared_execution_case_from(fixture, request, resolution, plan)
+    }
+
+    fn prepared_execution_case_from(
+        fixture: &Fixture,
+        request: Vec<u8>,
+        resolution: ResolvedNetworkPreparationV1,
+        plan: NetworkKernelPlanV1,
+    ) -> PreparedExecutionCase {
+        let directory = TempDir::new().unwrap();
+        let creation_directory = directory.path().join("creation");
+        let lifecycle_directory = directory.path().join("lifecycle");
+        fs::create_dir(&creation_directory).unwrap();
+        fs::create_dir(&lifecycle_directory).unwrap();
+
+        let authority = fixture.authority();
+        let artifacts = fixture.artifacts(&request);
+        let preparation = authenticated_catalog(&authority, resolution.clone(), &request);
+        let creation_state =
+            NetworkStateStore::open_for_test(&creation_directory, &authority, 0).unwrap();
+        let lifecycle_state =
+            NetworkLifecycleStateStore::open_for_test(&lifecycle_directory, &authority).unwrap();
+        let mut coordinator =
+            NetworkLifecycleAdmissionCoordinator::new(authority, creation_state, lifecycle_state);
+        let NetworkAdmissionOutcome::Prepared { effect_digest } = coordinator
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &preparation,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("execution case did not prepare");
+        };
+
+        PreparedExecutionCase {
+            _directory: directory,
+            creation_directory,
+            lifecycle_directory,
+            request,
+            resolution,
+            plan,
+            artifacts,
+            preparation,
+            effect_digest,
+            coordinator,
+        }
     }
 
     fn lifecycle_case(fixture: &Fixture) -> LifecycleCase {
@@ -2840,7 +2990,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         let conflicting_fence = authority.seal_fence(&[2; 16], &admission).unwrap();
-        let creation_fence = case.coordinator.creation_fence_for_test([2; 16]);
+        let creation_fence = case.coordinator.creation_fence_for_test([2; 16]).unwrap();
 
         assert!(matches!(
             authority.latest_fence(
@@ -3178,7 +3328,10 @@ pub(crate) mod tests {
 
         let mut fence_mislink = lifecycle_case(&fixture);
         admit_arm(&mut fence_mislink, &fixture);
-        let creation_fence = fence_mislink.coordinator.creation_fence_for_test([2; 16]);
+        let creation_fence = fence_mislink
+            .coordinator
+            .creation_fence_for_test([2; 16])
+            .unwrap();
         assert!(!creation_fence.is_empty());
         fence_mislink
             .coordinator
@@ -3289,6 +3442,600 @@ pub(crate) mod tests {
         )
     }
 
+    #[test]
+    fn prevalidated_effect_clock_has_an_exact_boottime_boundary() {
+        let fixture = Fixture::new();
+        let mut fresh = prepared_execution_case(&fixture);
+        let mut fresh_samples = 0;
+        let fresh_outcome = fresh
+            .coordinator
+            .begin_prepare_effect_once(
+                [7; 16],
+                fresh.effect_digest,
+                &fresh.request,
+                fresh.plan,
+                &mut || {
+                    fresh_samples += 1;
+                    Ok(clock_at(179))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(fresh_samples, 1);
+        assert!(matches!(
+            fresh_outcome,
+            NetworkPrepareExecutionOutcomeV1::Dispatch(_)
+        ));
+        assert_eq!(
+            fresh.coordinator.creation_state.phase([7; 16]).unwrap(),
+            Some(DurableNetworkPhase::Ambiguous)
+        );
+
+        let mut expired = prepared_execution_case(&fixture);
+        let mut expired_samples = 0;
+        let expired_outcome = expired
+            .coordinator
+            .begin_prepare_effect_once(
+                [7; 16],
+                expired.effect_digest,
+                &expired.request,
+                expired.plan,
+                &mut || {
+                    expired_samples += 1;
+                    Ok(clock_at(180))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(expired_samples, 1);
+        assert!(matches!(
+            expired_outcome,
+            NetworkPrepareExecutionOutcomeV1::Aborted { effect_digest }
+                if effect_digest == expired.effect_digest
+        ));
+        assert_eq!(
+            expired.coordinator.creation_state.phase([7; 16]).unwrap(),
+            Some(DurableNetworkPhase::Aborted)
+        );
+    }
+
+    #[test]
+    fn malformed_or_substituted_dispatch_is_rejected_before_clock_or_journal() {
+        let fixture = Fixture::new();
+        let mut malformed = prepared_execution_case(&fixture);
+        let sequence = malformed
+            .coordinator
+            .creation_state
+            .journal_sequence_for_test();
+        let mut malformed_samples = 0;
+
+        assert!(
+            malformed
+                .coordinator
+                .begin_prepare_effect_once(
+                    [7; 16],
+                    malformed.effect_digest,
+                    &[0xff],
+                    malformed.plan,
+                    &mut || {
+                        malformed_samples += 1;
+                        Ok(clock_at(179))
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(malformed_samples, 0);
+        assert_eq!(
+            malformed
+                .coordinator
+                .creation_state
+                .journal_sequence_for_test(),
+            sequence
+        );
+        assert_eq!(
+            malformed.coordinator.creation_state.phase([7; 16]).unwrap(),
+            Some(DurableNetworkPhase::Prepared)
+        );
+
+        let (request, resolution, valid_plan, substituted_plan) = nonempty_worker_case();
+        let mut substituted =
+            prepared_execution_case_from(&fixture, request, resolution, valid_plan);
+        let sequence = substituted
+            .coordinator
+            .creation_state
+            .journal_sequence_for_test();
+        let mut substituted_samples = 0;
+
+        assert!(
+            substituted
+                .coordinator
+                .begin_prepare_effect_once(
+                    [7; 16],
+                    substituted.effect_digest,
+                    &substituted.request,
+                    substituted_plan,
+                    &mut || {
+                        substituted_samples += 1;
+                        Ok(clock_at(179))
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(substituted_samples, 0);
+        assert_eq!(
+            substituted
+                .coordinator
+                .creation_state
+                .journal_sequence_for_test(),
+            sequence
+        );
+        assert_eq!(
+            substituted
+                .coordinator
+                .creation_state
+                .phase([7; 16])
+                .unwrap(),
+            Some(DurableNetworkPhase::Prepared)
+        );
+    }
+
+    #[test]
+    fn invalid_protected_clocks_leave_prepared_state_unchanged() {
+        let fixture = Fixture::new();
+        let wrong_boot = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [51; 16],
+            150,
+            179,
+        )
+        .unwrap();
+        let wrong_provenance = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"bad-kernel-clock").unwrap(),
+            [50; 16],
+            150,
+            179,
+        )
+        .unwrap();
+        let backwards = clock_at(99);
+        let wall_only_advance = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [50; 16],
+            200,
+            100,
+        )
+        .unwrap();
+
+        for invalid_clock in [wrong_boot, wrong_provenance, backwards, wall_only_advance] {
+            let mut case = prepared_execution_case(&fixture);
+            let sequence = case.coordinator.creation_state.journal_sequence_for_test();
+            let mut samples = 0;
+
+            assert!(
+                case.coordinator
+                    .begin_prepare_effect_once(
+                        [7; 16],
+                        case.effect_digest,
+                        &case.request,
+                        case.plan,
+                        &mut || {
+                            samples += 1;
+                            Ok(invalid_clock)
+                        },
+                    )
+                    .is_err()
+            );
+            assert_eq!(samples, 1);
+            assert_eq!(
+                case.coordinator.creation_state.journal_sequence_for_test(),
+                sequence
+            );
+            assert_eq!(
+                case.coordinator.creation_state.phase([7; 16]).unwrap(),
+                Some(DurableNetworkPhase::Prepared)
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_transition_rechecks_every_persisted_authority_link() {
+        let fixture = Fixture::new();
+        for (namespace, key, marker) in [
+            (RecordNamespace::DesiredState, [2; 16], 1),
+            (RecordNamespace::AuthorityPublication, [7; 16], 2),
+            (RecordNamespace::Effect, [7; 16], 3),
+        ] {
+            let mut case = prepared_execution_case(&fixture);
+            let (authority, state) = (
+                &case.coordinator.authority,
+                &mut case.coordinator.creation_state,
+            );
+            let prepared = state
+                .prepare_effect_dispatch(authority, [7; 16], case.effect_digest)
+                .unwrap();
+            state
+                .put_authority_record_for_test(namespace, &key, vec![99; 32], marker)
+                .unwrap();
+
+            assert!(state.abort_prepared_exact(authority, prepared).is_err());
+            assert_eq!(
+                state.phase([7; 16]).unwrap(),
+                Some(DurableNetworkPhase::Prepared)
+            );
+        }
+    }
+
+    #[test]
+    fn expired_abort_is_durable_replayable_and_cannot_reach_downstream_phases() {
+        let fixture = Fixture::new();
+        let mut case = prepared_execution_case(&fixture);
+        let crash_before_abort = copy_network_state_directory(&case.creation_directory);
+        let sequence_before = case
+            .coordinator
+            .preparation_recovery_snapshot()
+            .unwrap()
+            .sequence();
+        let outcome = case
+            .coordinator
+            .begin_prepare_effect_once(
+                [7; 16],
+                case.effect_digest,
+                &case.request,
+                case.plan.clone(),
+                &mut || Ok(clock_at(180)),
+            )
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            NetworkPrepareExecutionOutcomeV1::Aborted { .. }
+        ));
+
+        let sequence_after = case
+            .coordinator
+            .preparation_recovery_snapshot()
+            .unwrap()
+            .sequence();
+        assert!(sequence_after > sequence_before);
+        assert!(
+            case.coordinator
+                .bind_effect_namespace_custody(
+                    [7; 16],
+                    case.effect_digest,
+                    [10; 32],
+                    [50; 16],
+                    51,
+                    52,
+                    case.plan.digest(),
+                )
+                .is_err()
+        );
+        let verified = VerifiedNetworkResultV1::verify_preparation(
+            [7; 16],
+            ObjectDigest::from_bytes(Sha256::digest(&case.request).into()),
+            &case.resolution,
+            [50; 16],
+            51,
+            52,
+            case.plan.digest(),
+            ObjectDigest::from_bytes([54; 32]),
+        )
+        .unwrap();
+        assert!(
+            case.coordinator
+                .commit_verified_preparation([7; 16], case.effect_digest, verified)
+                .is_err()
+        );
+
+        assert!(matches!(
+            case.coordinator.admit_apply_intent(
+                &case.request,
+                &case.artifacts,
+                &case.preparation,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock_at(180),
+            ),
+            Ok(NetworkAdmissionOutcome::Aborted { effect_digest })
+                if effect_digest == case.effect_digest
+        ));
+        assert_eq!(
+            case.coordinator
+                .preparation_recovery_snapshot()
+                .unwrap()
+                .sequence(),
+            sequence_after
+        );
+
+        let mut substituted_request =
+            ApplyNetworkRequest::decode_from_slice(&case.request).unwrap();
+        substituted_request.endpoint_ids.push(vec![99; 16]);
+        let substituted_request = substituted_request.encode_to_vec();
+        assert!(matches!(
+            case.coordinator.admit_apply_intent(
+                &substituted_request,
+                &case.artifacts,
+                &case.preparation,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(NetworkBrokerError::State(NetworkStateError::Equivocation))
+        ));
+        let substituted_resolution = catalog_for(9, 10, 12, &[]);
+        let substituted_preparation = authenticated_catalog(
+            &case.coordinator.authority,
+            substituted_resolution,
+            &case.request,
+        );
+        assert!(matches!(
+            case.coordinator.admit_apply_intent(
+                &case.request,
+                &case.artifacts,
+                &substituted_preparation,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(NetworkBrokerError::State(NetworkStateError::Equivocation))
+        ));
+        assert_eq!(
+            case.coordinator
+                .preparation_recovery_snapshot()
+                .unwrap()
+                .sequence(),
+            sequence_after
+        );
+
+        drop(case.coordinator);
+        let authority = fixture.authority();
+        let prepared_reopen =
+            NetworkStateStore::open_for_test(crash_before_abort.path(), &authority, 0).unwrap();
+        assert_eq!(
+            prepared_reopen.phase([7; 16]).unwrap(),
+            Some(DurableNetworkPhase::Prepared)
+        );
+        drop(prepared_reopen);
+
+        let creation =
+            NetworkStateStore::open_for_test(&case.creation_directory, &authority, 0).unwrap();
+        let lifecycle =
+            NetworkLifecycleStateStore::open_for_test(&case.lifecycle_directory, &authority)
+                .unwrap();
+        let recovered = NetworkLifecycleAdmissionCoordinator::new(authority, creation, lifecycle);
+        let snapshot = recovered.preparation_recovery_snapshot().unwrap();
+        let entry = &snapshot.entries()[0];
+        assert_eq!(entry.phase(), DurableNetworkPhase::Aborted);
+        assert_eq!(entry.catalog_resolution(), &case.resolution);
+
+        let namespace = NamespaceFd::current_network().unwrap();
+        assert!(
+            recovered
+                .recover_ambiguous_preparation_observation([7; 16], case.effect_digest, &namespace,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn abort_failure_poisons_authority_until_reopen() {
+        let fixture = Fixture::new();
+        let mut case = prepared_execution_case(&fixture);
+        let sequence_before = case.coordinator.creation_state.journal_sequence_for_test();
+        case.coordinator
+            .creation_state
+            .fail_after_next_journal_commit_for_test();
+
+        assert!(
+            case.coordinator
+                .begin_prepare_effect_once(
+                    [7; 16],
+                    case.effect_digest,
+                    &case.request,
+                    case.plan.clone(),
+                    &mut || Ok(clock_at(180)),
+                )
+                .is_err()
+        );
+        assert!(case.coordinator.creation_state.journal_sequence_for_test() > sequence_before);
+        assert!(matches!(
+            case.coordinator.creation_state.recovery_snapshot(),
+            Err(NetworkStateError::Journal(
+                aos_sandbox::JournalError::Poisoned
+            ))
+        ));
+        assert!(matches!(
+            case.coordinator.creation_state.recovery_entries(),
+            Err(NetworkStateError::Journal(
+                aos_sandbox::JournalError::Poisoned
+            ))
+        ));
+        assert!(matches!(
+            case.coordinator.creation_state.phase([7; 16]),
+            Err(NetworkStateError::Journal(
+                aos_sandbox::JournalError::Poisoned
+            ))
+        ));
+        assert!(matches!(
+            case.coordinator.preparation_recovery_snapshot(),
+            Err(NetworkBrokerError::State(NetworkStateError::Journal(
+                aos_sandbox::JournalError::Poisoned
+            )))
+        ));
+        assert!(matches!(
+            case.coordinator.begin_prepare_effect_once(
+                [7; 16],
+                case.effect_digest,
+                &case.request,
+                case.plan,
+                &mut || Ok(clock_at(179)),
+            ),
+            Err(NetworkBrokerError::State(NetworkStateError::Journal(
+                aos_sandbox::JournalError::Poisoned
+            )))
+        ));
+        drop(case.coordinator);
+
+        let authority = fixture.authority();
+        let reopened_creation =
+            NetworkStateStore::open_for_test(&case.creation_directory, &authority, 0).unwrap();
+        assert_eq!(
+            reopened_creation.phase([7; 16]).unwrap(),
+            Some(DurableNetworkPhase::Aborted)
+        );
+        assert_eq!(
+            reopened_creation.recovery_entries().unwrap()[0].phase(),
+            DurableNetworkPhase::Aborted
+        );
+        assert_eq!(
+            reopened_creation.recovery_snapshot().unwrap().entries()[0].phase(),
+            DurableNetworkPhase::Aborted
+        );
+
+        let reopened_lifecycle =
+            NetworkLifecycleStateStore::open_for_test(&case.lifecycle_directory, &authority)
+                .unwrap();
+        let reopened = NetworkLifecycleAdmissionCoordinator::new(
+            authority,
+            reopened_creation,
+            reopened_lifecycle,
+        );
+        assert_eq!(
+            reopened.preparation_recovery_snapshot().unwrap().entries()[0].phase(),
+            DurableNetworkPhase::Aborted
+        );
+    }
+
+    #[test]
+    fn aborted_handle_lineage_allows_only_exact_resolution_replacement() {
+        let fixture = Fixture::new();
+        let mut exact = prepared_execution_case(&fixture);
+        exact
+            .coordinator
+            .begin_prepare_effect_once(
+                [7; 16],
+                exact.effect_digest,
+                &exact.request,
+                exact.plan,
+                &mut || Ok(clock_at(180)),
+            )
+            .unwrap();
+        let replacement = request_for(8, 2, &[]);
+        let replacement_artifacts = fixture.artifacts(&replacement);
+        let replacement_preparation = authenticated_catalog(
+            &exact.coordinator.authority,
+            exact.resolution.clone(),
+            &replacement,
+        );
+        assert!(matches!(
+            exact.coordinator.admit_apply_intent(
+                &replacement,
+                &replacement_artifacts,
+                &replacement_preparation,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Ok(NetworkAdmissionOutcome::Prepared { .. })
+        ));
+        let phases = exact
+            .coordinator
+            .preparation_recovery_snapshot()
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|entry| entry.phase())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            phases,
+            vec![DurableNetworkPhase::Aborted, DurableNetworkPhase::Prepared]
+        );
+
+        let blocked = request_for(9, 2, &[]);
+        let blocked_artifacts = fixture.artifacts(&blocked);
+        let blocked_preparation = authenticated_catalog(
+            &exact.coordinator.authority,
+            exact.resolution.clone(),
+            &blocked,
+        );
+        assert!(matches!(
+            exact.coordinator.admit_apply_intent(
+                &blocked,
+                &blocked_artifacts,
+                &blocked_preparation,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(NetworkBrokerError::State(
+                NetworkStateError::PendingConflict
+            ))
+        ));
+
+        let mut changed_resolution = prepared_execution_case(&fixture);
+        changed_resolution
+            .coordinator
+            .begin_prepare_effect_once(
+                [7; 16],
+                changed_resolution.effect_digest,
+                &changed_resolution.request,
+                changed_resolution.plan,
+                &mut || Ok(clock_at(180)),
+            )
+            .unwrap();
+        let replacement = request_for(8, 2, &[]);
+        let changed = catalog_for(9, 10, 12, &[]);
+        let changed_preparation = authenticated_catalog(
+            &changed_resolution.coordinator.authority,
+            changed,
+            &replacement,
+        );
+        assert!(matches!(
+            changed_resolution.coordinator.admit_apply_intent(
+                &replacement,
+                &fixture.artifacts(&replacement),
+                &changed_preparation,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(NetworkBrokerError::State(NetworkStateError::Equivocation))
+        ));
+
+        let mut changed_sandbox = prepared_execution_case(&fixture);
+        changed_sandbox
+            .coordinator
+            .begin_prepare_effect_once(
+                [7; 16],
+                changed_sandbox.effect_digest,
+                &changed_sandbox.request,
+                changed_sandbox.plan,
+                &mut || Ok(clock_at(180)),
+            )
+            .unwrap();
+        let replacement = request_for(8, 3, &[]);
+        let changed_preparation = authenticated_catalog(
+            &changed_sandbox.coordinator.authority,
+            changed_sandbox.resolution.clone(),
+            &replacement,
+        );
+        assert!(matches!(
+            changed_sandbox.coordinator.admit_apply_intent(
+                &replacement,
+                &fixture.artifacts(&replacement),
+                &changed_preparation,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(NetworkBrokerError::State(NetworkStateError::Equivocation))
+        ));
+    }
+
     fn issue_isolated_worker_dispatch(
         directory: &Path,
         fixture: &Fixture,
@@ -3318,14 +4065,18 @@ pub(crate) mod tests {
         else {
             panic!("worker request did not prepare the effect");
         };
-        let dispatch = crate::preparation_runtime::begin_network_preparation_once(
+        let outcome = crate::preparation_runtime::begin_network_preparation_once(
             &mut coordinator,
             [7; 16],
             effect_digest,
             &request,
             plan.clone(),
+            &mut || Ok(clock()),
         )
         .unwrap();
+        let NetworkPrepareExecutionOutcomeV1::Dispatch(dispatch) = outcome else {
+            panic!("fresh worker request was unexpectedly aborted");
+        };
 
         assert!(
             crate::preparation_runtime::begin_network_preparation_once(
@@ -3334,6 +4085,7 @@ pub(crate) mod tests {
                 effect_digest,
                 &request,
                 plan.clone(),
+                &mut || Ok(clock()),
             )
             .is_err()
         );
@@ -3680,7 +4432,7 @@ pub(crate) mod tests {
             NetworkStateStore::open_for_test(state_directory.path(), &authority, 0).unwrap();
         let mut recovered = NetworkAdmissionCoordinator::new(authority, store);
 
-        let snapshot = recovered.recovery_snapshot();
+        let snapshot = recovered.recovery_snapshot().unwrap();
         assert_eq!(snapshot.entries().len(), 1);
         assert_eq!(
             snapshot.entries()[0].phase(),
@@ -3775,7 +4527,7 @@ pub(crate) mod tests {
             panic!("first admission did not prepare the effect");
         };
         assert_ne!(effect_digest.as_bytes(), &[0; 32]);
-        assert_eq!(coordinator.recovery_snapshot().entries().len(), 1);
+        assert_eq!(coordinator.recovery_snapshot().unwrap().entries().len(), 1);
         assert_eq!(
             coordinator
                 .admit_apply_intent(
@@ -3918,7 +4670,7 @@ pub(crate) mod tests {
                 .unwrap(),
             NetworkAdmissionOutcome::Replay(result)
         );
-        let snapshot = coordinator.recovery_snapshot();
+        let snapshot = coordinator.recovery_snapshot().unwrap();
         let entry = &snapshot.entries()[0];
         assert_eq!(entry.phase(), DurableNetworkPhase::Committed);
         assert_eq!(entry.effect_digest(), effect_digest);
@@ -3933,7 +4685,7 @@ pub(crate) mod tests {
         let authority = fixture.authority();
         let recovered = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         assert_eq!(
-            recovered.phase([7; 16]),
+            recovered.phase([7; 16]).unwrap(),
             Some(DurableNetworkPhase::Committed)
         );
         assert_eq!(
@@ -4260,11 +5012,11 @@ pub(crate) mod tests {
             .rewrite_custody_identity_for_test(&coordinator.authority, [8; 16], [51; 16], 52, 53, 4)
             .unwrap();
         assert_eq!(
-            coordinator.state.phase([7; 16]),
+            coordinator.state.phase([7; 16]).unwrap(),
             Some(DurableNetworkPhase::Ambiguous)
         );
         assert_eq!(
-            coordinator.state.phase([8; 16]),
+            coordinator.state.phase([8; 16]).unwrap(),
             Some(DurableNetworkPhase::Ambiguous)
         );
         drop(coordinator);
@@ -4342,6 +5094,7 @@ pub(crate) mod tests {
                 .state
                 .authority_record(RecordNamespace::DesiredState, &[2; 16])
                 .unwrap()
+                .unwrap()
                 .to_vec();
             assert!(matches!(
                 coordinator
@@ -4361,13 +5114,13 @@ pub(crate) mod tests {
 
         let authority = fixture.authority();
         let recovered = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
-        assert_eq!(recovered.recovery_snapshot().entries().len(), 2);
+        assert_eq!(recovered.recovery_snapshot().unwrap().entries().len(), 2);
         assert_eq!(
-            recovered.phase([7; 16]),
+            recovered.phase([7; 16]).unwrap(),
             Some(DurableNetworkPhase::Committed)
         );
         assert_eq!(
-            recovered.phase([8; 16]),
+            recovered.phase([8; 16]).unwrap(),
             Some(DurableNetworkPhase::Prepared)
         );
         drop(recovered);
@@ -4623,7 +5376,7 @@ pub(crate) mod tests {
                 let recovered =
                     NetworkStateStore::open_for_test(directory.path(), &fixture.authority(), 0)
                         .unwrap();
-                assert_eq!(recovered.recovery_snapshot().entries().len(), 1);
+                assert_eq!(recovered.recovery_snapshot().unwrap().entries().len(), 1);
             }
             let (mut journal, _) = Journal::open(
                 directory.path().join("network-state.journal"),
@@ -4947,7 +5700,7 @@ pub(crate) mod tests {
                 )
                 .unwrap();
         }
-        let snapshot = coordinator.recovery_snapshot();
+        let snapshot = coordinator.recovery_snapshot().unwrap();
         assert_eq!(snapshot.entries().len(), 2);
         assert_eq!(snapshot.entries()[0].request_id(), [7; 16]);
         assert_eq!(snapshot.entries()[1].request_id(), [9; 16]);

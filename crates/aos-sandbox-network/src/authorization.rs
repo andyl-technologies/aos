@@ -6,7 +6,8 @@ use aos_proto::aos::sandbox::local::v1::ApplyNetworkRequest;
 use aos_sandbox::RecordNamespace;
 use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
-    BrokerAuthorizationFenceV1, BrokerDomain, BrokerLocalRecordDomain, VerifiedBrokerAdmission,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectClockDispositionV1, BrokerEffectIntentV1,
+    BrokerLocalRecordDomain, VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, DesiredGeneration,
@@ -311,13 +312,27 @@ impl NetworkAuthorityV1 {
 
     pub(crate) fn check_before_effect<F>(
         &self,
-        effect: &aos_sandbox_broker::BrokerEffectIntentV1,
+        effect: &BrokerEffectIntentV1,
         trusted_clock: &mut F,
     ) -> Result<(), NetworkAdmissionError>
     where
         F: FnMut() -> Result<RawPairedClockSample, NetworkAdmissionError>,
     {
         self.0.check_before_effect(effect, trusted_clock)
+    }
+
+    /// Classifies one already-read protected clock sample for a durable effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkAdmissionError::FenceRejected`] unless the sample has
+    /// valid paired-clock continuity with the authenticated effect.
+    pub(crate) fn classify_effect_clock(
+        &self,
+        effect: &BrokerEffectIntentV1,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<BrokerEffectClockDispositionV1, NetworkAdmissionError> {
+        self.0.classify_effect_clock(effect, current_clock)
     }
 }
 
@@ -391,4 +406,22 @@ pub(crate) fn decode_assignment(body: &[u8]) -> Result<BrokerAssignment, Network
         ),
     )
     .map_err(|_| NetworkAdmissionError::RequestMismatch)
+}
+
+pub(crate) fn decode_request_id(body: &[u8]) -> Result<[u8; 16], NetworkAdmissionError> {
+    let request = ApplyNetworkRequest::decode_from_slice(body)
+        .map_err(|_| NetworkAdmissionError::RequestMismatch)?;
+    let request_id: [u8; 16] = request
+        .header
+        .as_option()
+        .ok_or(NetworkAdmissionError::RequestMismatch)?
+        .request_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| NetworkAdmissionError::RequestMismatch)?;
+    if request_id == [0; 16] {
+        return Err(NetworkAdmissionError::RequestMismatch);
+    }
+
+    Ok(request_id)
 }
