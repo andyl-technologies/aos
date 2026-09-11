@@ -19,7 +19,7 @@ use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as
 use std::path::PathBuf;
 
 use aos_sandbox_broker::VerifiedBrokerAdmission;
-use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV2};
+use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV1};
 use aos_sandbox_core::model::KeyUsage;
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb};
 use aos_sandbox_protocol::ValidatedAssignmentFence;
@@ -184,8 +184,8 @@ impl HostState {
                 ));
             }
             match (effect.status(), request.receipt.as_deref()) {
-                (aos_sandbox_broker::BrokerEffectStatusV2::Pending, None) => {}
-                (aos_sandbox_broker::BrokerEffectStatusV2::Complete, Some(receipt))
+                (aos_sandbox_broker::BrokerEffectStatusV1::Pending, None) => {}
+                (aos_sandbox_broker::BrokerEffectStatusV1::Complete, Some(receipt))
                     if receipt == effect.receipt() => {}
                 _ => {
                     return Err(HostError::State(
@@ -213,7 +213,7 @@ impl HostState {
             })?;
             request.fence.validate_successor(current)?;
 
-            if effect.status() == aos_sandbox_broker::BrokerEffectStatusV2::Pending
+            if effect.status() == aos_sandbox_broker::BrokerEffectStatusV1::Pending
                 && (!pending_sandboxes.insert(request.fence.sandbox_id)
                     || request.fence != *current)
             {
@@ -1184,7 +1184,7 @@ fn action_verb(action: u8) -> Option<aos_sandbox_core::BrokerVerb> {
 }
 
 fn stable_authority_digest(
-    effect: &BrokerEffectIntentV2,
+    effect: &BrokerEffectIntentV1,
     fence: &BrokerAuthorizationFenceV1,
 ) -> Result<[u8; 32]> {
     let assignment = fence.assignment();

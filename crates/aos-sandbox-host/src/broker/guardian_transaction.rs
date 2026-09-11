@@ -10,7 +10,7 @@
 //! Composite Stop uses the same exact binding, invocation, manager-reference,
 //! and cgroup-quiescence evidence.
 
-use aos_sandbox_broker::BrokerEffectIntentV2;
+use aos_sandbox_broker::BrokerEffectIntentV1;
 use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimeRequest};
 use aos_systemd::{ExactUnitRole, GuardianUnitSpec};
@@ -124,7 +124,7 @@ where
         fence: &ValidatedAssignmentFence,
         request_id: [u8; 16],
         request_digest: [u8; 32],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         maximum_response_bytes: u32,
         trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
     ) -> Result<Vec<u8>>
@@ -346,7 +346,7 @@ where
         fence: &ValidatedAssignmentFence,
         request_id: [u8; 16],
         request_digest: [u8; 32],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         spec: GuardianUnitSpec,
         payload: PreparedLaunch,
         maximum_response_bytes: u32,
@@ -754,7 +754,7 @@ where
         &mut self,
         request_id: [u8; 16],
         request_digest: [u8; 32],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         payload: PreparedLaunch,
         maximum_response_bytes: u32,
         identity: HostRuntimeIdentity,
@@ -878,7 +878,7 @@ where
         &mut self,
         request_id: [u8; 16],
         request_digest: [u8; 32],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         maximum_response_bytes: u32,
         identity: HostRuntimeIdentity,
         observation_sequence: u64,
@@ -928,7 +928,7 @@ where
         identity: &HostRuntimeIdentity,
         request_id: [u8; 16],
         request_digest: [u8; 32],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         maximum_response_bytes: u32,
         binding: [u8; 32],
     ) -> Result<Vec<u8>>
@@ -993,7 +993,7 @@ where
         identity: &HostRuntimeIdentity,
         request_id: [u8; 16],
         request_digest: [u8; 32],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         maximum_response_bytes: u32,
         binding: [u8; 32],
     ) -> Result<Vec<u8>>
@@ -1070,7 +1070,7 @@ where
         &mut self,
         request_id: [u8; 16],
         request_digest: [u8; 32],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         maximum_response_bytes: u32,
         identity: HostRuntimeIdentity,
     ) -> Result<Vec<u8>> {

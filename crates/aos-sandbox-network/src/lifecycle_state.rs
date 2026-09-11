@@ -10,7 +10,7 @@ use std::path::Path;
 
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_broker::{
-    BrokerAuthorizationFenceV1, BrokerEffectStatusV2, BrokerLocalRecordDomain,
+    BrokerAuthorizationFenceV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };
 use aos_sandbox_core::{BrokerGrantTarget, BrokerResourceHandle, BrokerVerb, ObjectDigest};
 use sha2::{Digest as _, Sha256};
@@ -763,7 +763,7 @@ fn validate_materialized_view(
             || operation_effect.verb() != record.verb
             || operation_effect.target() != expected_target
             || operation_effect.plan_digest() != operation_fence.plan_digest()
-            || operation_effect.status() != BrokerEffectStatusV2::Pending
+            || operation_effect.status() != BrokerEffectStatusV1::Pending
         {
             return Err(NetworkLifecycleStateError::AuthorityLink);
         }

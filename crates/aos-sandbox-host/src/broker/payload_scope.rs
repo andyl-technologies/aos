@@ -10,7 +10,7 @@
 
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 
-use aos_sandbox_broker::{BrokerAdmissionError, BrokerEffectIntentV2};
+use aos_sandbox_broker::{BrokerAdmissionError, BrokerEffectIntentV1};
 use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_protocol::payload_scope::{
     ValidatedPayloadScopeRequest, encode_payload_scope_response,
@@ -30,7 +30,7 @@ pub(crate) struct PreparedPayloadScopeReply<'a, const N: usize = 2> {
     pub(super) descriptors: [OwnedFd; N],
     pub(super) pins: &'a RetainedRuntimePins,
     pub(super) authority: &'a HostAuthorityV1,
-    pub(super) effect: BrokerEffectIntentV2,
+    pub(super) effect: BrokerEffectIntentV1,
 }
 
 impl<const N: usize> PreparedPayloadScopeReply<'_, N> {

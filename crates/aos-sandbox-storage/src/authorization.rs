@@ -11,7 +11,7 @@ use aos_proto::aos::sandbox::local::v1::ApplyStorageRequest;
 use aos_sandbox::RecordNamespace;
 use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
-    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2, BrokerEffectStatusV2,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV1, BrokerEffectStatusV1,
     BrokerLocalRecordDomain, ProtectedBrokerAuthorityConfiguration, VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
@@ -438,7 +438,7 @@ impl StorageAuthorityV1 {
         )?;
         let transport_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
         if admission.fence.assignment() != assignment
-            || admission.effect.status() != BrokerEffectStatusV2::Pending
+            || admission.effect.status() != BrokerEffectStatusV1::Pending
             || admission.effect.request_id() != decoded.header().request_id()
             || admission.effect.transport_request_digest() != transport_digest
             || admission.effect.request_digest() != decoded.argument_commitment().digest()
@@ -561,7 +561,7 @@ impl StorageAuthorityV1 {
         &self,
         request_id: &[u8; 16],
         bytes: &[u8],
-    ) -> Result<BrokerEffectIntentV2, StorageAdmissionError> {
+    ) -> Result<BrokerEffectIntentV1, StorageAdmissionError> {
         self.0.open_effect(request_id, bytes)
     }
 
@@ -569,7 +569,7 @@ impl StorageAuthorityV1 {
     pub(crate) fn seal_effect_for_test(
         &self,
         request_id: &[u8; 16],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
     ) -> Result<Vec<u8>, StorageAdmissionError> {
         self.0.seal_effect(request_id, effect)
     }
@@ -589,7 +589,7 @@ impl StorageAuthorityV1 {
         intent: &StorageWorkspacePinRepairIntentV1,
         sealed_operation_fence: &[u8],
         live_effect_record: &[u8],
-    ) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV2), StorageAdmissionError> {
+    ) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV1), StorageAdmissionError> {
         let operation_fence =
             self.open_operation_fence(&intent.repair_operation_id(), sealed_operation_fence)?;
         let admitted_effect =
@@ -600,15 +600,15 @@ impl StorageAuthorityV1 {
             .map(BrokerGrantTarget::Resource)
             .map_err(|_| StorageAdmissionError::FenceRejected)?;
         let expected_live_effect = match live_effect.status() {
-            BrokerEffectStatusV2::Pending => admitted_effect.clone(),
-            BrokerEffectStatusV2::Complete => admitted_effect
+            BrokerEffectStatusV1::Pending => admitted_effect.clone(),
+            BrokerEffectStatusV1::Complete => admitted_effect
                 .clone()
                 .complete(live_effect.receipt().to_vec())
                 .map_err(|_| StorageAdmissionError::FenceRejected)?,
         };
         if ObjectDigest::from_bytes(Sha256::digest(sealed_operation_fence).into())
             != intent.operation_fence_digest()
-            || admitted_effect.status() != BrokerEffectStatusV2::Pending
+            || admitted_effect.status() != BrokerEffectStatusV1::Pending
             || admitted_effect.request_id() != &intent.request_id()
             || admitted_effect.transport_request_digest() != intent.request_digest()
             || admitted_effect.request_digest() != intent.semantic_commitment()
@@ -686,7 +686,7 @@ impl StorageAuthorityV1 {
 
     pub(crate) fn check_before_effect<F>(
         &self,
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         trusted_clock: &mut F,
     ) -> Result<(), StorageAdmissionError>
     where
@@ -705,7 +705,7 @@ impl StorageAuthorityV1 {
     pub(crate) fn seal_pin_attempt_receipt(
         &self,
         attempt: &WorkspacePinAttemptV1,
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         operation_fence: &BrokerAuthorizationFenceV1,
         parent_operation_id: [u8; 16],
         parent_request_id: [u8; 16],
@@ -723,7 +723,7 @@ impl StorageAuthorityV1 {
             )
         );
         if !action_is_authorized
-            || effect.status() != BrokerEffectStatusV2::Pending
+            || effect.status() != BrokerEffectStatusV1::Pending
             || effect.plan_digest() != operation_fence.plan_digest()
             || effect.lease_digest() != operation_fence.local_lease_record().lease_digest()
             || attempt.effect_operation_id() != parent_operation_id
@@ -749,10 +749,10 @@ impl StorageAuthorityV1 {
 
     pub(crate) fn seal_workspace_pin_repair_completion(
         &self,
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         attempt: &WorkspacePinAttemptV1,
     ) -> Result<Vec<u8>, StorageAdmissionError> {
-        if effect.status() != BrokerEffectStatusV2::Pending
+        if effect.status() != BrokerEffectStatusV1::Pending
             || effect.verb() != BrokerVerb::StorageRepairWorkspacePin
             || effect.target()
                 != BrokerGrantTarget::Resource(
@@ -788,7 +788,7 @@ impl StorageAuthorityV1 {
     pub(crate) fn verify_pin_attempt_receipt(
         &self,
         attempt: &WorkspacePinAttemptV1,
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         parent_operation_id: [u8; 16],
     ) -> Result<(), StorageAdmissionError> {
         let domain = BrokerLocalRecordDomain::new(PIN_RECEIPT_DOMAIN)
@@ -810,7 +810,7 @@ impl StorageAuthorityV1 {
 
 fn pin_attempt_receipt_payload(
     attempt: &WorkspacePinAttemptV1,
-    effect: &BrokerEffectIntentV2,
+    effect: &BrokerEffectIntentV1,
     parent_operation_id: [u8; 16],
 ) -> Result<Vec<u8>, StorageAdmissionError> {
     let attempt_digest = attempt

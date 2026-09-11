@@ -25,7 +25,7 @@
 use std::collections::BTreeMap;
 
 use aos_sandbox::{Journal, JournalRecord, RecordNamespace};
-use aos_sandbox_broker::{BrokerEffectIntentV2, BrokerEffectStatusV2};
+use aos_sandbox_broker::{BrokerEffectIntentV1, BrokerEffectStatusV1};
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb, ObjectDigest};
 use hmac::{Hmac, Mac as _};
 use sha2::Digest as _;
@@ -120,7 +120,7 @@ impl StorageWorkspacePinRepairIntentV1 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_ambiguous(
         repair_operation_id: [u8; 16],
-        admitted_effect: &BrokerEffectIntentV2,
+        admitted_effect: &BrokerEffectIntentV1,
         admitted_effect_record: Vec<u8>,
         repair_assignment_digest: ObjectDigest,
         operation_fence_digest: ObjectDigest,
@@ -135,7 +135,7 @@ impl StorageWorkspacePinRepairIntentV1 {
         repair_attempt_id: [u8; 16],
         repair_attempt_ordinal: u8,
     ) -> Result<Self, StorageStateError> {
-        if admitted_effect.status() != BrokerEffectStatusV2::Pending
+        if admitted_effect.status() != BrokerEffectStatusV1::Pending
             || admitted_effect.verb() != BrokerVerb::StorageRepairWorkspacePin
             || admitted_effect.target()
                 != BrokerGrantTarget::Resource(

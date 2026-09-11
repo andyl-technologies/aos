@@ -5,7 +5,7 @@ use std::path::Path;
 
 use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
-    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2, BrokerLocalRecordDomain,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV1, BrokerLocalRecordDomain,
     ProtectedBrokerAuthorityConfiguration, ProtectedBrokerPublicCredentialRole,
     ProtectedBrokerPublicCredentialSnapshot, ProtectedBrokerPublicCredentials, RecordNamespace,
     VerifiedBrokerAdmission,
@@ -151,7 +151,7 @@ impl HostAuthorityV1 {
         &self,
         request_id: &[u8; 16],
         bytes: &[u8],
-    ) -> Result<BrokerEffectIntentV2, HostAdmissionError> {
+    ) -> Result<BrokerEffectIntentV1, HostAdmissionError> {
         self.authority.open_effect(request_id, bytes)
     }
 
@@ -261,7 +261,7 @@ impl HostAuthorityV1 {
 
     pub(crate) fn check_before_effect<F>(
         &self,
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         trusted_clock: &mut F,
     ) -> Result<(), HostAdmissionError>
     where
@@ -281,7 +281,7 @@ impl HostAuthorityV1 {
     pub(crate) fn seal_effect(
         &self,
         request_id: &[u8; 16],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
     ) -> Result<Vec<u8>, HostAdmissionError> {
         self.authority.seal_effect(request_id, effect)
     }

@@ -19,7 +19,7 @@
 //! returned only after another current-fence and effect-time check.
 
 use aos_sandbox_broker::{
-    BrokerAuthorizationFenceV1, BrokerEffectIntentV2, BrokerEffectStatusV2, BrokerLocalRecordDomain,
+    BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };
 use aos_sandbox_core::{BrokerGrantTarget, BrokerResourceHandle, BrokerVerb, ObjectDigest};
 use aos_sandbox_protocol::semantics::network::{CanonicalNetworkSemanticsV1, NetworkOperation};
@@ -356,7 +356,7 @@ impl NetworkLifecycleWorkerDispatchV1 {
 pub struct AuthenticatedNetworkLifecycleWorkerDispatchV1 {
     request: NetworkLifecycleWorkerDispatchV1,
     current_fence: BrokerAuthorizationFenceV1,
-    effect: BrokerEffectIntentV2,
+    effect: BrokerEffectIntentV1,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -615,7 +615,7 @@ pub(crate) fn issue_lifecycle_dispatch(
 fn authenticate_association(
     authority: &NetworkAuthorityV1,
     request: &NetworkLifecycleWorkerDispatchV1,
-) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV2), NetworkWorkerProtocolError> {
+) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV1), NetworkWorkerProtocolError> {
     let semantics = decode_admitted_semantics(&request.request_body)?;
     let assignment = request.kernel_plan.assignment();
     let resolution = authority
@@ -698,7 +698,7 @@ fn validate_opened_authority(
     assignment: aos_sandbox_core::BrokerAssignment,
     current_fence: &BrokerAuthorizationFenceV1,
     operation_fence: &BrokerAuthorizationFenceV1,
-    effect: &BrokerEffectIntentV2,
+    effect: &BrokerEffectIntentV1,
 ) -> Result<(), NetworkWorkerProtocolError> {
     let expected_target = BrokerGrantTarget::Resource(
         BrokerResourceHandle::from_bytes(context.authority.identity.network_handle())
@@ -711,7 +711,7 @@ fn validate_opened_authority(
         || effect.request_digest() != context.semantic_digest
         || effect.verb() != context.verb
         || effect.target() != expected_target
-        || effect.status() != BrokerEffectStatusV2::Pending
+        || effect.status() != BrokerEffectStatusV1::Pending
         || effect.plan_digest() != operation_fence.plan_digest()
         || effect.host_boot_id() != &context.authority.identity.kernel_boot_id()
         || effect_digest

@@ -250,7 +250,7 @@ impl NetworkAuthorityV1 {
         request_id: &[u8; 16],
         fence: &[u8],
         effect: &[u8],
-    ) -> Result<aos_sandbox_broker::BrokerEffectIntentV2, NetworkAdmissionError> {
+    ) -> Result<aos_sandbox_broker::BrokerEffectIntentV1, NetworkAdmissionError> {
         let opened_fence = self.0.open_fence(sandbox_id, fence)?;
         let opened_effect = self.0.open_effect(request_id, effect)?;
         let lease = opened_fence.local_lease_record();
@@ -271,7 +271,7 @@ impl NetworkAuthorityV1 {
         request_id: &[u8; 16],
         fence: &[u8],
         effect: &[u8],
-    ) -> Result<aos_sandbox_broker::BrokerEffectIntentV2, NetworkAdmissionError> {
+    ) -> Result<aos_sandbox_broker::BrokerEffectIntentV1, NetworkAdmissionError> {
         let opened_fence = self.0.open_operation_fence(request_id, fence)?;
         let opened_effect = self.0.open_effect(request_id, effect)?;
         let lease = opened_fence.local_lease_record();
@@ -311,7 +311,7 @@ impl NetworkAuthorityV1 {
 
     pub(crate) fn check_before_effect<F>(
         &self,
-        effect: &aos_sandbox_broker::BrokerEffectIntentV2,
+        effect: &aos_sandbox_broker::BrokerEffectIntentV1,
         trusted_clock: &mut F,
     ) -> Result<(), NetworkAdmissionError>
     where

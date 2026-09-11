@@ -23,7 +23,7 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::record::{
-    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2, BrokerLocalRecordDomain,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV1, BrokerLocalRecordDomain,
     NodeJournalMacKey, open_authorization_fence, open_effect_intent, open_local_record,
     seal_authorization_fence, seal_effect_intent, seal_local_record,
 };
@@ -230,7 +230,7 @@ impl BrokerAuthority {
         if effect_deadline <= current_clock.boottime_nanoseconds() {
             return Err(BrokerAdmissionError::FenceRejected);
         }
-        let effect = BrokerEffectIntentV2::pending(
+        let effect = BrokerEffectIntentV1::pending(
             &intersection,
             ObjectDigest::from_bytes(Sha256::digest(request.request_body).into()),
             pending_lease.record,
@@ -251,7 +251,7 @@ impl BrokerAuthority {
         &self,
         request_id: &[u8; 16],
         bytes: &[u8],
-    ) -> Result<BrokerEffectIntentV2, BrokerAdmissionError> {
+    ) -> Result<BrokerEffectIntentV1, BrokerAdmissionError> {
         open_effect_intent(
             &self.journal_mac_key,
             RecordNamespace::Effect,
@@ -312,7 +312,7 @@ impl BrokerAuthority {
     /// fails or any signed/local expiry, boot, provenance, or drift bound fails.
     pub fn check_before_effect<F>(
         &self,
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         trusted_clock: &mut F,
     ) -> Result<(), BrokerAdmissionError>
     where
@@ -353,7 +353,7 @@ impl BrokerAuthority {
     /// provenance substitution, backwards time, or excessive paired-clock drift.
     pub fn validate_effect_clock(
         &self,
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         current_clock: &RawPairedClockSample,
     ) -> Result<(), BrokerAdmissionError> {
         let wall_elapsed = current_clock
@@ -431,7 +431,7 @@ impl BrokerAuthority {
     pub fn seal_effect(
         &self,
         request_id: &[u8; 16],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
     ) -> Result<Vec<u8>, BrokerAdmissionError> {
         if effect.request_id() != request_id {
             return Err(BrokerAdmissionError::FenceRejected);
@@ -503,7 +503,7 @@ pub struct VerifiedBrokerAdmission {
     /// Monotonic assignment/plan/lease fence.
     pub fence: BrokerAuthorizationFenceV1,
     /// Pending non-authorizing effect intent.
-    pub effect: BrokerEffectIntentV2,
+    pub effect: BrokerEffectIntentV1,
 }
 
 const fn artifact_limits(maximum_bytes: usize) -> DecodeLimits {

@@ -1,5 +1,5 @@
 //! Shared durable broker-authorization record aliases for the mount audience.
 
 pub(crate) use aos_sandbox_broker::{
-    BrokerEffectIntentV2 as MountEffectIntentV2, BrokerEffectStatusV2 as MountEffectStatusV2,
+    BrokerEffectIntentV1 as MountEffectIntentV1, BrokerEffectStatusV1 as MountEffectStatusV1,
 };

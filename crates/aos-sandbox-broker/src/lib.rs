@@ -20,6 +20,6 @@ pub use config::{
     ProtectedBrokerPublicCredentials,
 };
 pub use record::{
-    AuthorizationRecordError, BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2,
-    BrokerEffectStatusV2, BrokerLocalRecordDomain,
+    AuthorizationRecordError, BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV1,
+    BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };

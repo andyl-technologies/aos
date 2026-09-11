@@ -22,7 +22,7 @@
 
 use aos_proto::aos::sandbox::local::v1::{ApplyNetworkRequest, Audience};
 use aos_sandbox_broker::{
-    BrokerAuthorizationFenceV1, BrokerEffectIntentV2, BrokerEffectStatusV2, BrokerLocalRecordDomain,
+    BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAssignment, BrokerGrantTarget, BrokerVerb, DesiredGeneration,
@@ -319,7 +319,7 @@ impl NetworkPrepareWorkerDispatchV1 {
             || !endpoint_ids_match
             || current_fence != operation_fence
             || current_fence.assignment() != assignment
-            || effect.status() != BrokerEffectStatusV2::Pending
+            || effect.status() != BrokerEffectStatusV1::Pending
             || effect.request_id() != &self.request_id
             || effect.transport_request_digest() != transport_digest
             || effect.request_digest() != semantics.argument_commitment().digest()
@@ -384,7 +384,7 @@ impl NetworkPrepareWorkerDispatchV1 {
 pub struct AuthenticatedNetworkPrepareWorkerDispatchV1 {
     request: NetworkPrepareWorkerDispatchV1,
     current_fence: BrokerAuthorizationFenceV1,
-    effect: BrokerEffectIntentV2,
+    effect: BrokerEffectIntentV1,
 }
 
 impl AuthenticatedNetworkPrepareWorkerDispatchV1 {
@@ -573,7 +573,7 @@ pub(crate) fn issue_prepare_dispatch(
 pub(crate) fn check_freshness<F>(
     authority: &NetworkAuthorityV1,
     fence: &BrokerAuthorizationFenceV1,
-    effect: &BrokerEffectIntentV2,
+    effect: &BrokerEffectIntentV1,
     trusted_clock: &mut F,
 ) -> Result<(), NetworkWorkerProtocolError>
 where

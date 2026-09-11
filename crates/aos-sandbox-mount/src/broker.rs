@@ -42,7 +42,7 @@ use crate::destination_slot::{
     DestinationSlotStoreV1,
 };
 use crate::host_scope::ObservedMountScope;
-use crate::state::authorization_v1::{MountEffectIntentV2, MountEffectStatusV2};
+use crate::state::authorization_v1::{MountEffectIntentV1, MountEffectStatusV1};
 use crate::state::mount_resource_v1::{
     AssignmentBindingV1, DetachedMountIdentityV1, InstalledMountObservationV1, MountFaultPhaseV1,
     MountHandleV1, MountPolicyV1, MountRecipeV1, MountResourceLimitsV1, MountResourceStateV1,
@@ -294,7 +294,7 @@ impl<W: MountWorker> MountBroker<W> {
             IdempotencyOutcome::Replay(_) => {
                 let effect = self.effect(request.header().request_id())?;
                 validate_effect_matches(&effect, &admission, request_digest)?;
-                if effect.status() == MountEffectStatusV2::Complete {
+                if effect.status() == MountEffectStatusV1::Complete {
                     return Ok(effect.receipt().to_vec());
                 }
                 if effect.plan_digest() != admission.effect.plan_digest()
@@ -552,7 +552,7 @@ impl<W: MountWorker> MountBroker<W> {
             IdempotencyOutcome::Replay(_) => {
                 let effect = self.effect(request.header().request_id())?;
                 validate_effect_matches(&effect, &admission, request_digest)?;
-                if effect.status() == MountEffectStatusV2::Complete {
+                if effect.status() == MountEffectStatusV1::Complete {
                     return Ok(effect.receipt().to_vec());
                 }
                 if effect.plan_digest() != admission.effect.plan_digest()
@@ -575,7 +575,7 @@ impl<W: MountWorker> MountBroker<W> {
 
         let effect = self.effect(request.header().request_id())?;
         validate_effect_matches(&effect, &admission, request_digest)?;
-        if effect.status() == MountEffectStatusV2::Complete {
+        if effect.status() == MountEffectStatusV1::Complete {
             return Ok(effect.receipt().to_vec());
         }
         self.authority
@@ -865,7 +865,7 @@ impl<W: MountWorker> MountBroker<W> {
         current: &MountResourceV1,
         observation: &WorkerObservation,
         response: &[u8],
-        effect: MountEffectIntentV2,
+        effect: MountEffectIntentV1,
     ) -> Result<()> {
         let resource_records = self.plan_completion(request, current, observation)?;
         let mut records = resource_records.clone();
@@ -1085,7 +1085,7 @@ impl<W: MountWorker> MountBroker<W> {
         &mut self,
         request: &ValidatedDestinationSlotRequest,
         response: &[u8],
-        effect: MountEffectIntentV2,
+        effect: MountEffectIntentV1,
     ) -> Result<()> {
         let request_digest = *effect.transport_request_digest().as_bytes();
         let completed = effect.complete(response.to_vec()).map_err(|_| {
@@ -1107,7 +1107,7 @@ impl<W: MountWorker> MountBroker<W> {
         Ok(())
     }
 
-    fn effect(&self, request_id: &[u8; 16]) -> Result<MountEffectIntentV2> {
+    fn effect(&self, request_id: &[u8; 16]) -> Result<MountEffectIntentV1> {
         self.authority
             .open_effect(
                 request_id,
@@ -2404,7 +2404,7 @@ fn authority_refresh_transaction(
 }
 
 fn validate_effect_matches(
-    effect: &MountEffectIntentV2,
+    effect: &MountEffectIntentV1,
     admission: &VerifiedMountAdmissionV1,
     transport_request_digest: [u8; 32],
 ) -> Result<()> {

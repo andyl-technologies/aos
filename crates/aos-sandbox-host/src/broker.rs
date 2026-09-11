@@ -13,7 +13,7 @@ use aos_proto::aos::sandbox::local::v1::{
     RuntimeEffectStatus, RuntimeObservation, RuntimeState,
 };
 use aos_sandbox_broker::{
-    BrokerAuthorizationFenceV1, BrokerEffectIntentV2, BrokerEffectStatusV2,
+    BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1,
     ProtectedBrokerPublicCredentialRole,
 };
 use aos_sandbox_core::{ProtocolVersion, RawClockProvenance, RawPairedClockSample};
@@ -224,7 +224,7 @@ where
             .transpose()?;
         if let Some(effect) = &existing_effect {
             validate_effect_request(effect, request_digest)?;
-            if effect.status() == BrokerEffectStatusV2::Complete {
+            if effect.status() == BrokerEffectStatusV1::Complete {
                 return Ok(effect.receipt().to_vec());
             }
         }
@@ -1088,7 +1088,7 @@ where
     }
 }
 
-fn historical_clock(effect: &BrokerEffectIntentV2) -> Result<RawPairedClockSample> {
+fn historical_clock(effect: &BrokerEffectIntentV1) -> Result<RawPairedClockSample> {
     let provenance = RawClockProvenance::new_untrusted(*effect.clock_provenance())
         .map_err(|_| HostError::State("durable effect clock provenance is invalid".to_owned()))?;
     RawPairedClockSample::new_untrusted(
@@ -1127,7 +1127,7 @@ fn guardian_credential_role(role: ProtectedBrokerPublicCredentialRole) -> Guardi
 
 fn guardian_authority_freshness(
     authority: &HostAuthorityV1,
-    effect: &BrokerEffectIntentV2,
+    effect: &BrokerEffectIntentV1,
     trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
 ) -> AuthorityFreshness {
     if authority
@@ -1299,7 +1299,7 @@ fn ensure_response_bound(bytes: &[u8], maximum_response_bytes: u32) -> Result<()
     Ok(())
 }
 
-fn validate_effect_request(effect: &BrokerEffectIntentV2, request_digest: [u8; 32]) -> Result<()> {
+fn validate_effect_request(effect: &BrokerEffectIntentV1, request_digest: [u8; 32]) -> Result<()> {
     if effect.transport_request_digest().as_bytes() != &request_digest {
         return Err(HostError::Fence(
             "request ID was reused with different transport bytes",
@@ -1309,10 +1309,10 @@ fn validate_effect_request(effect: &BrokerEffectIntentV2, request_digest: [u8; 3
 }
 
 fn validate_effect_refresh(
-    existing: &BrokerEffectIntentV2,
-    refreshed: &BrokerEffectIntentV2,
+    existing: &BrokerEffectIntentV1,
+    refreshed: &BrokerEffectIntentV1,
 ) -> Result<()> {
-    if existing.status() != BrokerEffectStatusV2::Pending
+    if existing.status() != BrokerEffectStatusV1::Pending
         || existing.transport_request_digest() != refreshed.transport_request_digest()
         || existing.request_digest() != refreshed.request_digest()
         || existing.verb() != refreshed.verb()

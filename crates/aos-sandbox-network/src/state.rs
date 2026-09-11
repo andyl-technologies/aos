@@ -21,7 +21,7 @@ use std::path::Path;
 
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_broker::{
-    BrokerAuthorizationFenceV1, BrokerEffectStatusV2, BrokerLocalRecordDomain,
+    BrokerAuthorizationFenceV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb, ObjectDigest};
 use sha2::{Digest as _, Sha256};
@@ -1079,7 +1079,7 @@ fn validate_record_links(
         || effect.verb() != record.verb
         || effect.target() != expected_target
         || effect.plan_digest() != operation_fence.plan_digest()
-        || effect.status() != BrokerEffectStatusV2::Pending
+        || effect.status() != BrokerEffectStatusV1::Pending
         || record.effect_digest
             != effect_digest(record.request_id, record.transport_digest, &record.catalog)
     {

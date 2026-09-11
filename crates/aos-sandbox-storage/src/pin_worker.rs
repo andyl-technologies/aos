@@ -30,7 +30,7 @@ use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::PathBuf;
 
-use aos_sandbox_broker::{BrokerEffectIntentV2, BrokerEffectStatusV2};
+use aos_sandbox_broker::{BrokerEffectIntentV1, BrokerEffectStatusV1};
 use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
 use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
@@ -223,7 +223,7 @@ pub(crate) struct WorkspacePinWorkerRequestV1 {
 pub(crate) struct AuthenticatedWorkspacePinWorkerRequestV1 {
     request: WorkspacePinWorkerRequestV1,
     attempt: WorkspacePinAttemptV1,
-    effect: BrokerEffectIntentV2,
+    effect: BrokerEffectIntentV1,
 }
 
 /// Carries a historical attempt admitted only for read-only recovery.
@@ -444,7 +444,7 @@ fn authenticate_request_for(
         )
     );
     if !action_is_authorized
-        || effect.status() != BrokerEffectStatusV2::Pending
+        || effect.status() != BrokerEffectStatusV1::Pending
         || effect.request_id() != &request.authority.parent_request_id
         || effect.request_digest() != semantic_commitment.digest()
         || effect.verb() != operation.broker_verb()

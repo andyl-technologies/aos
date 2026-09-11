@@ -5,7 +5,7 @@ use std::path::Path;
 use aos_proto::aos::sandbox::local::v1::BrokerDescriptorRole;
 use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
-    BrokerDomain, BrokerEffectIntentV2, VerifiedBrokerAdmission,
+    BrokerDomain, BrokerEffectIntentV1, VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
     BrokerAssignment, BrokerPlanTrustAnchor, DesiredGeneration, IncarnationId, NodeId,
@@ -150,13 +150,13 @@ impl MountAuthorityV1 {
         &self,
         request_id: &[u8; 16],
         bytes: &[u8],
-    ) -> Result<BrokerEffectIntentV2, MountAdmissionError> {
+    ) -> Result<BrokerEffectIntentV1, MountAdmissionError> {
         self.0.open_effect(request_id, bytes)
     }
 
     pub(crate) fn validate_effect_clock(
         &self,
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         current_clock: &RawPairedClockSample,
     ) -> Result<(), MountAdmissionError> {
         self.0.validate_effect_clock(effect, current_clock)
@@ -164,7 +164,7 @@ impl MountAuthorityV1 {
 
     pub(crate) fn check_before_effect<F>(
         &self,
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
         trusted_clock: &mut F,
     ) -> Result<(), MountAdmissionError>
     where
@@ -184,7 +184,7 @@ impl MountAuthorityV1 {
     pub(crate) fn seal_effect(
         &self,
         request_id: &[u8; 16],
-        effect: &BrokerEffectIntentV2,
+        effect: &BrokerEffectIntentV1,
     ) -> Result<Vec<u8>, MountAdmissionError> {
         self.0.seal_effect(request_id, effect)
     }

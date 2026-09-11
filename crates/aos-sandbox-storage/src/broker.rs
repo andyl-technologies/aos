@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::journal::RecordNamespace;
-use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV2, BrokerEffectStatusV2};
+use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1};
 use aos_sandbox_core::model::SandboxSpec;
 use aos_sandbox_core::{
     BrokerAssignment, BrokerGrantTarget, BrokerVerb, CanonicalAssignmentManifestV1, NodeId,
@@ -774,7 +774,7 @@ impl StorageAdmissionCoordinator {
     fn authenticate_workspace_pin_repair(
         &self,
         attempt: &WorkspacePinAttemptV1,
-    ) -> Result<BrokerEffectIntentV2, ZfsHelperError> {
+    ) -> Result<BrokerEffectIntentV1, ZfsHelperError> {
         let operation_id = attempt.effect_operation_id();
         let intent = self
             .transactions
@@ -797,8 +797,8 @@ impl StorageAdmissionCoordinator {
             .open_admission_intent(&intent.request_id(), live_effect)
             .map_err(|_| ZfsHelperError::Authority)?;
         match (attempt.phase(), opened_live_effect.status()) {
-            (WorkspacePinAttemptPhaseV1::Ambiguous, BrokerEffectStatusV2::Pending) => {}
-            (WorkspacePinAttemptPhaseV1::Satisfied, BrokerEffectStatusV2::Complete) => {
+            (WorkspacePinAttemptPhaseV1::Ambiguous, BrokerEffectStatusV1::Pending) => {}
+            (WorkspacePinAttemptPhaseV1::Satisfied, BrokerEffectStatusV1::Complete) => {
                 let expected_completed_effect = self
                     .authority
                     .seal_workspace_pin_repair_completion(&admitted_effect, attempt)
@@ -2227,7 +2227,7 @@ impl StorageAdmissionCoordinator {
             || operation_fence.assignment().digest() != record.assignment_digest()
             || operation_fence.plan_digest() != record.plan_digest()
             || operation_fence.local_lease_record().lease_digest() != record.lease_digest()
-            || effect.status() != BrokerEffectStatusV2::Pending
+            || effect.status() != BrokerEffectStatusV1::Pending
             || effect.request_id() != &record.request_id()
             || effect.request_digest() != record.preparation_digest()
             || effect.verb() != BrokerVerb::StoragePrepareCatalog
@@ -2313,7 +2313,7 @@ impl StorageAdmissionCoordinator {
     fn persisted_effect_context(
         &self,
         entry: crate::StorageRecoveryEntry,
-    ) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV2), ZfsHelperError> {
+    ) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV1), ZfsHelperError> {
         if self
             .transactions
             .current_recovery_entry(entry.operation_id())?
@@ -2377,7 +2377,7 @@ impl StorageAdmissionCoordinator {
             .grant_target()
             .map_err(|_| ZfsHelperError::Authority)?;
         if operation_fence.assignment().sandbox().as_bytes() != &entry.sandbox_id()
-            || effect.status() != aos_sandbox_broker::BrokerEffectStatusV2::Pending
+            || effect.status() != aos_sandbox_broker::BrokerEffectStatusV1::Pending
             || effect.request_id() != &entry.request_id()
             || effect.transport_request_digest() != entry.request_digest()
             || effect.request_digest() != semantic_commitment.digest()
@@ -6094,7 +6094,7 @@ mod tests {
                 .open_admission_intent(repair_semantics.header().request_id(), pending_effect)
                 .unwrap()
                 .status(),
-            BrokerEffectStatusV2::Pending
+            BrokerEffectStatusV1::Pending
         );
         assert_eq!(interrupted_intent.admitted_effect_record(), pending_effect);
         let current_fence = runtime
@@ -6330,7 +6330,7 @@ mod tests {
                 .open_admission_intent(resumed_semantics.header().request_id(), completed_effect)
                 .unwrap()
                 .status(),
-            BrokerEffectStatusV2::Complete
+            BrokerEffectStatusV1::Complete
         );
         assert!(runtime.is_inventory_ready());
 

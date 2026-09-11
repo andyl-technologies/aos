@@ -13,7 +13,7 @@
 //! publication-intent:(length:u32,authenticated-bytes)
 //! ```
 
-use aos_sandbox_broker::BrokerEffectIntentV2;
+use aos_sandbox_broker::BrokerEffectIntentV1;
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
@@ -75,7 +75,7 @@ impl WorkspacePinRepairWorkerRequestV1 {
 pub(crate) struct AuthenticatedWorkspacePinRepairWorkerRequestV1 {
     request: WorkspacePinRepairWorkerRequestV1,
     attempt: WorkspacePinAttemptV1,
-    effect: BrokerEffectIntentV2,
+    effect: BrokerEffectIntentV1,
 }
 
 impl AuthenticatedWorkspacePinRepairWorkerRequestV1 {

@@ -16,7 +16,7 @@
 //!   magic(8) || version(u16) || assignment || node-id || plan-digest ||
 //!   plan-expiry(i64) || ownership-key-reference || local-lease-record(234)
 //!
-//! broker-effect-intent-v2 =
+//! broker-effect-intent-v1 =
 //!   magic(8) || version(u16) || status(u8) || verb(u8) || target(tag + 64) ||
 //!   request-id || transport-digest || semantic-digest || plan-digest ||
 //!   lease-digest || ceilings || expiries || boot-id || boottime-deadline ||
@@ -51,7 +51,7 @@ const FENCE_VERSION: u16 = 1;
 const LOCAL_LEASE_RECORD_BYTES: usize = 234;
 const MAXIMUM_STABLE_KEY_ID_BYTES: usize = 255;
 
-const EFFECT_VERSION: u16 = 2;
+const EFFECT_VERSION: u16 = 1;
 const MAXIMUM_REQUEST_BYTES: u32 = 16 * 1024 * 1024;
 const MAXIMUM_DESCRIPTORS: u16 = 16;
 
@@ -294,7 +294,7 @@ impl BrokerAuthorizationFenceV1 {
 
 /// Identifies whether a durable effect is pending or has a stored receipt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BrokerEffectStatusV2 {
+pub enum BrokerEffectStatusV1 {
     /// The durable intent is committed but completion is not recorded.
     Pending,
     /// The effect has a nonempty bounded durable receipt.
@@ -308,8 +308,8 @@ pub enum BrokerEffectStatusV2 {
 /// recovery and recheck its wall-clock, boot, and BOOTTIME limits immediately
 /// before performing an effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BrokerEffectIntentV2 {
-    status: BrokerEffectStatusV2,
+pub struct BrokerEffectIntentV1 {
+    status: BrokerEffectStatusV1,
     request_id: [u8; 16],
     transport_request_digest: ObjectDigest,
     request_digest: ObjectDigest,
@@ -332,7 +332,7 @@ pub struct BrokerEffectIntentV2 {
     receipt: Vec<u8>,
 }
 
-impl BrokerEffectIntentV2 {
+impl BrokerEffectIntentV1 {
     /// Captures one exact non-authorizing intersection as pending intent.
     ///
     /// # Errors
@@ -349,7 +349,7 @@ impl BrokerEffectIntentV2 {
         effect_deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, AuthorizationRecordError> {
         let intent = Self {
-            status: BrokerEffectStatusV2::Pending,
+            status: BrokerEffectStatusV1::Pending,
             request_id: *intersection.request_id(),
             transport_request_digest,
             request_digest: intersection.request_digest(),
@@ -382,20 +382,20 @@ impl BrokerEffectIntentV2 {
     /// Returns [`AuthorizationRecordError::InvalidPayload`] unless this record
     /// is pending and the receipt is nonempty and at most one MiB.
     pub fn complete(mut self, receipt: Vec<u8>) -> Result<Self, AuthorizationRecordError> {
-        if self.status != BrokerEffectStatusV2::Pending
+        if self.status != BrokerEffectStatusV1::Pending
             || receipt.is_empty()
             || receipt.len() > MAXIMUM_RECEIPT_BYTES
         {
             return Err(AuthorizationRecordError::InvalidPayload);
         }
-        self.status = BrokerEffectStatusV2::Complete;
+        self.status = BrokerEffectStatusV1::Complete;
         self.receipt = receipt;
         Ok(self)
     }
 
     /// Returns the durable effect status.
     #[must_use]
-    pub const fn status(&self) -> BrokerEffectStatusV2 {
+    pub const fn status(&self) -> BrokerEffectStatusV1 {
         self.status
     }
 
@@ -564,8 +564,8 @@ impl BrokerEffectIntentV2 {
             _ => false,
         };
         let receipt_valid = match self.status {
-            BrokerEffectStatusV2::Pending => self.receipt.is_empty(),
-            BrokerEffectStatusV2::Complete => {
+            BrokerEffectStatusV1::Pending => self.receipt.is_empty(),
+            BrokerEffectStatusV1::Complete => {
                 !self.receipt.is_empty() && self.receipt.len() <= MAXIMUM_RECEIPT_BYTES
             }
         };
@@ -670,7 +670,7 @@ pub fn seal_effect_intent(
     mac_key: &NodeJournalMacKey,
     namespace: RecordNamespace,
     journal_key: &[u8],
-    intent: &BrokerEffectIntentV2,
+    intent: &BrokerEffectIntentV1,
 ) -> Result<Vec<u8>, AuthorizationRecordError> {
     intent.validate()?;
     let payload = encode_effect(intent, mac_key.domain)?;
@@ -697,7 +697,7 @@ pub fn open_effect_intent(
     namespace: RecordNamespace,
     journal_key: &[u8],
     bytes: &[u8],
-) -> Result<BrokerEffectIntentV2, AuthorizationRecordError> {
+) -> Result<BrokerEffectIntentV1, AuthorizationRecordError> {
     let payload = open(
         mac_key,
         namespace,
@@ -970,7 +970,7 @@ fn decode_fence(
 }
 
 fn encode_effect(
-    intent: &BrokerEffectIntentV2,
+    intent: &BrokerEffectIntentV1,
     domain: BrokerDomain,
 ) -> Result<Vec<u8>, AuthorizationRecordError> {
     let lease_bytes = encode_local_lease_record(&intent.local_lease_record);
@@ -984,8 +984,8 @@ fn encode_effect(
     bytes.extend_from_slice(domain.effect_magic());
     bytes.extend_from_slice(&EFFECT_VERSION.to_be_bytes());
     bytes.push(match intent.status {
-        BrokerEffectStatusV2::Pending => 0,
-        BrokerEffectStatusV2::Complete => 1,
+        BrokerEffectStatusV1::Pending => 0,
+        BrokerEffectStatusV1::Complete => 1,
     });
     bytes.push(encoded_verb);
     encode_target(&mut bytes, intent.target);
@@ -1014,14 +1014,14 @@ fn encode_effect(
 fn decode_effect(
     bytes: &[u8],
     domain: BrokerDomain,
-) -> Result<BrokerEffectIntentV2, AuthorizationRecordError> {
+) -> Result<BrokerEffectIntentV1, AuthorizationRecordError> {
     let mut decoder = Decoder::new(bytes);
     if decoder.take::<8>()? != *domain.effect_magic() || decoder.u16()? != EFFECT_VERSION {
         return Err(AuthorizationRecordError::InvalidPayload);
     }
     let status = match decoder.u8()? {
-        0 => BrokerEffectStatusV2::Pending,
-        1 => BrokerEffectStatusV2::Complete,
+        0 => BrokerEffectStatusV1::Pending,
+        1 => BrokerEffectStatusV1::Complete,
         _ => return Err(AuthorizationRecordError::InvalidPayload),
     };
     let verb = decode_verb(domain, decoder.u8()?)?;
@@ -1050,7 +1050,7 @@ fn decode_effect(
     }
     let receipt = decoder.bytes(receipt_length)?.to_vec();
     decoder.finish()?;
-    let intent = BrokerEffectIntentV2 {
+    let intent = BrokerEffectIntentV1 {
         status,
         request_id,
         transport_request_digest,
@@ -1481,10 +1481,9 @@ mod tests {
     }
 
     #[test]
-    fn mount_profile_sealed_records_match_fixed_compatibility_goldens() {
-        // These digests were captured from the mount-owned encoder before the
-        // shared extraction. Any framing, domain, payload, or MAC drift changes
-        // them and would strand already-durable broker state.
+    fn mount_profile_sealed_records_match_fixed_goldens() {
+        // These digests pin the sole current framing, domain, payload, and MAC
+        // bytes so any future drift requires an explicit format decision.
         let key = mac_key();
         let fence =
             seal_authorization_fence(&key, RecordNamespace::DesiredState, b"fence-key", &fence())
@@ -1503,7 +1502,7 @@ mod tests {
         );
         assert_eq!(
             hex::encode(Sha256::digest(effect)),
-            "7a46ceb9d8e4a62b314f8c70c145e9163f4cd7db23d2b9bfe0208209bc1c1f87"
+            "cabfa9be36621c2aa15862b7bfd4838d72799f21d48902b32effd99c6a01519c"
         );
     }
 
@@ -1848,10 +1847,26 @@ mod tests {
         );
     }
 
-    fn sample_intent() -> BrokerEffectIntentV2 {
+    #[test]
+    fn effect_decoder_accepts_only_version_one() {
+        let effect = sample_effect();
+        assert_eq!(u16::from_be_bytes([effect[8], effect[9]]), EFFECT_VERSION);
+        assert_eq!(EFFECT_VERSION, 1);
+
+        for rejected in [0_u16, 2, u16::MAX] {
+            let mut non_v1 = effect.clone();
+            non_v1[8..10].copy_from_slice(&rejected.to_be_bytes());
+            assert_eq!(
+                decode_effect(&non_v1, BrokerDomain::Mount),
+                Err(AuthorizationRecordError::InvalidPayload)
+            );
+        }
+    }
+
+    fn sample_intent() -> BrokerEffectIntentV1 {
         let lease = local_lease();
-        BrokerEffectIntentV2 {
-            status: BrokerEffectStatusV2::Pending,
+        BrokerEffectIntentV1 {
+            status: BrokerEffectStatusV1::Pending,
             request_id: [15; 16],
             transport_request_digest: ObjectDigest::from_bytes([11; 32]),
             request_digest: ObjectDigest::from_bytes([12; 32]),
@@ -1884,7 +1899,7 @@ mod tests {
     fn effect_round_trip_retains_intersection_and_receipt_fields() {
         let pending = decode_effect(&sample_effect(), BrokerDomain::Mount)
             .unwrap_or_else(|error| panic!("decode: {error}"));
-        assert_eq!(pending.status(), BrokerEffectStatusV2::Pending);
+        assert_eq!(pending.status(), BrokerEffectStatusV1::Pending);
         assert_eq!(pending.request_id(), &[15; 16]);
         assert_eq!(
             pending.transport_request_digest(),
@@ -1971,8 +1986,8 @@ mod tests {
         let decoded = decode_target(&mut Decoder::new(&equal_pair))
             .unwrap_or_else(|error| panic!("target decode: {error}"));
         let lease = local_lease();
-        let intent = BrokerEffectIntentV2 {
-            status: BrokerEffectStatusV2::Pending,
+        let intent = BrokerEffectIntentV1 {
+            status: BrokerEffectStatusV1::Pending,
             request_id: [1; 16],
             transport_request_digest: ObjectDigest::from_bytes([1; 32]),
             request_digest: ObjectDigest::from_bytes([2; 32]),
