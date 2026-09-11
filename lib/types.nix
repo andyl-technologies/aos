@@ -708,6 +708,15 @@ in rec {
     type
     // {
       check = v: type.check v && check v;
+      # The module engine delegates validation to merge. Retain the extra
+      # predicate there as well, including when this type is nested in a list
+      # or submodule or its value comes from an option default.
+      merge = loc: defs: let
+        value = type.merge loc defs;
+      in
+        if type.check value && check value
+        then value
+        else throw "The option '${showLoc loc}' does not satisfy its type's additional check.";
     };
 
   ## A string that matches a regular expression (POSIX ERE).
