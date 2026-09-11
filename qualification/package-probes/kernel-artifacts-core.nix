@@ -427,9 +427,12 @@ in {
     package = "nvidia-open";
     primaryInput = "The NVIDIA DRM, modeset, peer-memory, UVM, and core kernel modules built for the staged kernel.";
     primaryOperation = "Parse every module as relocatable ELF and validate its module metadata against the installed kernel release.";
-    primaryExpected = "All five expected x86-64 modules carry license and matching vermagic metadata.";
+    primaryExpected = "All five expected modules match the target architecture and carry license and matching vermagic metadata.";
     primaryScript = ''
       ${elfParser}
+      import os
+
+      expected_machine = {"x86_64-linux": 62, "aarch64-linux": 183}[os.environ["AOS_QUALIFICATION_PLATFORM"]]
 
       module_roots = list(pathlib.Path("@out@/lib/modules").iterdir())
       if len(module_roots) != 1 or not module_roots[0].is_dir():
@@ -441,7 +444,7 @@ in {
           raise ValueError("NVIDIA output has an unexpected module set")
       for path in modules.values():
           elf_type, machine, sections = parse_elf(path)
-          if elf_type != 1 or machine != 62 or ".modinfo" not in sections:
+          if elf_type != 1 or machine != expected_machine or ".modinfo" not in sections:
               raise ValueError("NVIDIA module has an invalid ELF identity")
           records = set(read_section(path, sections[".modinfo"]).rstrip(b"\0").split(b"\0"))
           vermagic = [record for record in records if record.startswith(b"vermagic=")]

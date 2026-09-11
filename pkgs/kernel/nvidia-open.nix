@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   patch,
   gnumake,
   bash,
@@ -14,6 +16,21 @@
   kernel ? linux,
 }: let
   version = "610.43.02";
+  # NVIDIA names the ARM target aarch64; Linux kbuild names it arm64.
+  targetArch =
+    if stdenv.hostPlatform.isAarch64
+    then "aarch64"
+    else "x86_64";
+  kernelArch = stdenv.hostPlatform.linuxArch;
+  # Kernel build utilities execute on the build machine, even for ARM modules.
+  buildElfutils =
+    if stdenv.isCross
+    then buildPackages.elfutils
+    else elfutils;
+  buildZlib =
+    if stdenv.isCross
+    then buildPackages.zlib
+    else zlib;
 in
   mkDerivation {
     pname = "nvidia-open-kernel-modules";
@@ -58,23 +75,23 @@ in
       {
         name = "build";
         script = ''
-          export LD_LIBRARY_PATH="${elfutils}/lib:${zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export LD_LIBRARY_PATH="${buildElfutils}/lib:${buildZlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           export KCFLAGS="''${KCFLAGS:-} -ffile-prefix-map=${kernel.dev}=/build/kernel-sdk"
           make -j"$NIX_BUILD_CORES" modules \
             SYSSRC=${kernel.dev}/lib/modules/${kernel.version}/build \
             SYSOUT=${kernel.dev}/lib/modules/${kernel.version}/build \
-            TARGET_ARCH=x86_64 ARCH=x86_64 \
+            TARGET_ARCH=${targetArch} ARCH=${kernelArch} \
             NV_BUILD_USER=aos NV_BUILD_HOST=aos-builder
         '';
       }
       {
         name = "install";
         script = ''
-          export LD_LIBRARY_PATH="${elfutils}/lib:${zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export LD_LIBRARY_PATH="${buildElfutils}/lib:${buildZlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           make -j"$NIX_BUILD_CORES" modules_install \
             SYSSRC=${kernel.dev}/lib/modules/${kernel.version}/build \
             SYSOUT=${kernel.dev}/lib/modules/${kernel.version}/build \
-            TARGET_ARCH=x86_64 ARCH=x86_64 \
+            TARGET_ARCH=${targetArch} ARCH=${kernelArch} \
             INSTALL_MOD_PATH="$out" \
             INSTALL_MOD_STRIP=1 \
             NV_BUILD_USER=aos NV_BUILD_HOST=aos-builder
