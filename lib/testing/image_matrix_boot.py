@@ -140,24 +140,31 @@ def observed_security(machine: Any, expected: dict[str, Any], root_hash: str | N
 
     root_filesystem = guest(machine, "findmnt -n -o FSTYPE /").strip()
     root_options = guest(machine, "findmnt -n -o OPTIONS /").strip().split(",")
+    # Mapper nodes need not be symlinks into /dev/dm-*. Use the mounted kernel
+    # device number, with raw output to exclude findmnt's column padding.
     root_uuid = guest(
         machine,
-        'root=$(findmnt -n -o SOURCE /); block=$(basename "$(readlink -f "$root")"); '
-        'cat "/sys/class/block/$block/dm/uuid" 2>/dev/null || true'
+        'device=$(findmnt -n -r -o MAJ:MIN /); '
+        'cat "/sys/dev/block/$device/dm/uuid" 2>/dev/null || true'
     ).strip()
     observed_hashes = re.findall(
         r"(?:^| )roothash=([0-9a-f]{64})(?= |$)", guest(machine, "cat /proc/cmdline").strip(),
     )
     verity = root_uuid.startswith(("CRYPT-VERITY", "verity-"))
     if expected["verity"]:
-        require(observed_hashes == [root_hash] and verity, "running dm-verity root differs from the exact image UKI")
+        require(
+            observed_hashes == [root_hash] and verity,
+            f"running dm-verity root differs from the exact image UKI: "
+            f"expected hash={root_hash!r}, observed hashes={observed_hashes!r}, "
+            f"root device UUID={root_uuid!r}",
+        )
     else:
         require(not observed_hashes and not verity, "unexpected dm-verity root")
 
     var_uuid = guest(
         machine,
-        'state=$(findmnt -n -o SOURCE /var); block=$(basename "$(readlink -f "$state")"); '
-        'cat "/sys/class/block/$block/dm/uuid" 2>/dev/null || true'
+        'device=$(findmnt -n -r -o MAJ:MIN /var); '
+        'cat "/sys/dev/block/$device/dm/uuid" 2>/dev/null || true'
     ).strip()
     guest(machine, "findmnt -n -o OPTIONS /var | grep -Eq '(^|,)rw(,|$)'")
     lockdown_text = guest(machine, "cat /sys/kernel/security/lockdown 2>/dev/null || true").strip()
@@ -238,8 +245,12 @@ def configuration_checks(machine: Any, system: dict[str, Any]) -> dict[str, Any]
     guest(
         machine,
         f"if {prefix} config apply --eval-root /run/image-matrix/invalid "
-        ">/run/image-matrix/rejection.log 2>&1; then exit 1; fi; "
-        "grep -F 'aos.networking.hostName' /run/image-matrix/rejection.log",
+        ">/run/image-matrix/rejection.log 2>&1; then "
+        "cat /run/image-matrix/rejection.log; "
+        "echo 'invalid configuration was accepted' >&2; exit 1; fi; "
+        "cat /run/image-matrix/rejection.log; "
+        "grep -F 'config eval failed:' /run/image-matrix/rejection.log; "
+        "grep -F 'cannot coerce a list to a string' /run/image-matrix/rejection.log",
         timeout=1800,
     )
     require(read_guest_generation(machine) == configured, "rejected configuration changed the active generation")
@@ -321,7 +332,11 @@ def boot_system(
         if system["expected"]["security"]["secureBoot"]:
             enroll(machine, system)
         observations = [observe(machine, system, "initial", root_hash)]
-        guest(machine, "test -s /var/lib/aos-provisioning/audit.json; test $(hostname) = image-matrix")
+        guest(
+            machine,
+            'test -s /var/lib/aos-provisioning/audit.json; '
+            'test "$(cat /proc/sys/kernel/hostname)" = image-matrix',
+        )
         configured = configuration_checks(machine, system)
         machine.reboot()
         persistent_state(machine, configured)

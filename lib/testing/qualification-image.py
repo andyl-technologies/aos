@@ -965,18 +965,19 @@ class Scenario:
             "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c) -eq 1"
         )
         machine.ssh("findmnt -n -o SOURCE /var | grep -Fx /dev/mapper/var")
+        # Mapper paths can be block nodes rather than symlinks. Resolve the
+        # mounted device through its unpadded kernel major/minor number.
         machine.ssh(
             "set -eu; "
-            "var_device=$(basename $(readlink -f /dev/mapper/var)); "
-            "grep -Eq '^CRYPT-LUKS2-' /sys/class/block/$var_device/dm/uuid"
+            "var_device=$(findmnt -n -r -o MAJ:MIN /var); "
+            "grep -Eq '^CRYPT-LUKS2-' /sys/dev/block/$var_device/dm/uuid"
         )
         machine.ssh("findmnt -n -o FSTYPE,OPTIONS / | grep -E '^erofs .*ro'")
         machine.ssh(
             "set -eu; "
             "grep -Eq '(^| )roothash=[0-9a-f]{64}($| )' /proc/cmdline; "
-            "root=$(findmnt -n -o SOURCE /); "
-            "block=$(basename $(readlink -f $root)); "
-            "grep -Eq '^CRYPT-VERITY|^verity-' /sys/class/block/$block/dm/uuid"
+            "root_device=$(findmnt -n -r -o MAJ:MIN /); "
+            "grep -Eq '^CRYPT-VERITY|^verity-' /sys/dev/block/$root_device/dm/uuid"
         )
         machine.ssh(
             "set -eu; "
@@ -1257,7 +1258,7 @@ http {
         )["current"]
         if not isinstance(generation_one, int) or generation_one < 1:
             raise RuntimeError("first configuration activation lacks a valid generation")
-        machine.ssh("test $(hostname) = qualification-one")
+        machine.ssh('test "$(cat /proc/sys/kernel/hostname)" = qualification-one')
         operator_uid = machine.ssh("id -u", user="qualification").strip()
         if operator_uid != "2000":
             raise RuntimeError("named qualification user could not authenticate over SSH")
@@ -1297,7 +1298,7 @@ http {
         machine.wait_for_ssh(180)
         machine.ssh("grep -Fx two /etc/qualification-generation")
         machine.ssh(
-            f"set -eu; test $(hostname) = qualification-two; "
+            f'set -eu; test "$(cat /proc/sys/kernel/hostname)" = qualification-two; '
             f"ip -4 -o address show dev {shlex.quote(interface)} "
             f"| grep -F ' {address} '; "
             f"ip -4 route show default dev {shlex.quote(interface)} "
@@ -1307,7 +1308,7 @@ http {
         machine.ssh(f"apm rollback --system --generation {generation_one}", timeout=600)
         machine.wait_for_ssh(180)
         machine.ssh("grep -Fx one /etc/qualification-generation")
-        machine.ssh("test $(hostname) = qualification-one")
+        machine.ssh('test "$(cat /proc/sys/kernel/hostname)" = qualification-one')
 
         machine.ssh(
             "set -eu; printf 'packages = []\\n' >/run/desired.toml; "
