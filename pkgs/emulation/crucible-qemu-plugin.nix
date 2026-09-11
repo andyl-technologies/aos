@@ -50,7 +50,7 @@ in
     cargoFlags = "-p crucible-qemu-plugin";
     cargoTestFlags = "-p crucible-qemu-plugin";
     installBins = false;
-    installLibs = true;
+    installLibs = false;
     doCheck = true;
 
     buildDeps = [glib.dev glib.tools pkg-config qemu-crucible];
@@ -134,6 +134,20 @@ in
     '';
 
     postInstall = ''
+      # Dependency artifacts include native procedural macros in cross builds.
+      # Install only the target plugin named by Cargo's artifact record.
+      pluginLibrary=$(jq -er '
+        select(.reason == "compiler-artifact")
+        | select(.target.name == "crucible_qemu_plugin")
+        | select(.target.crate_types | index("cdylib"))
+        | .filenames[]
+        | select(endswith("/libcrucible_qemu_plugin.so"))
+      ' "$NIX_BUILD_TOP/cargo-build-messages.jsonl" | sort -u)
+      test -n "$pluginLibrary"
+      test -f "$pluginLibrary"
+      mkdir -p "$out/lib"
+      install -m 644 "$pluginLibrary" "$out/lib/libcrucible_qemu_plugin.so"
+
       test -f "$out/lib/libcrucible_qemu_plugin.so"
       mkdir -p "$out/lib/qemu/plugins"
       ln -s ../../libcrucible_qemu_plugin.so \
