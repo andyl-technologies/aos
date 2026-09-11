@@ -311,11 +311,15 @@ in {
             stderr.exact = "";
           }
           {
-            argv = ["@python@" "-c" ''
-              data = open("consumer.o", "rb").read(20)
-              assert data[:4] == bytes([0x7f]) + b"ELF" and data[16:18] == bytes([1, 0])
-              print("linux-headers artifact passed")
-            ''];
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                data = open("consumer.o", "rb").read(20)
+                assert data[:4] == bytes([0x7f]) + b"ELF" and data[16:18] == bytes([1, 0])
+                print("linux-headers artifact passed")
+              ''
+            ];
             exit_code = 0;
             stdout.exact = "linux-headers artifact passed\n";
             stderr.exact = "";
