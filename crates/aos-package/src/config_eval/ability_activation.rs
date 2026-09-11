@@ -201,6 +201,7 @@ impl AuthenticatedPolicySetDocument {
         }
         if let Some(resource_map) = &self.native_resource_map {
             resource_map.validate()?;
+            validate_postgresql_credential_maps(resource_map)?;
         }
         if let Some(platform_policy) = &self.platform_policy {
             validate_embedded_document(platform_policy, "authenticated platform policy")?;
@@ -222,6 +223,27 @@ impl AuthenticatedPolicySetDocument {
         }
         Ok(())
     }
+}
+
+fn validate_postgresql_credential_maps(resource_map: &NativeResourceMap) -> Result<()> {
+    for mapping in resource_map.entries.iter().filter(|mapping| {
+        matches!(
+            mapping.qualification,
+            NativeResourceQualification::Postgresql { .. }
+        )
+    }) {
+        ensure!(
+            resource_map.entries.iter().any(|candidate| {
+                candidate.resource.provider == mapping.resource.provider
+                    && matches!(
+                        candidate.qualification,
+                        NativeResourceQualification::CredentialDelivery { .. }
+                    )
+            }),
+            "PostgreSQL native execution requires authenticated credential delivery; trust authentication is unsupported"
+        );
+    }
+    Ok(())
 }
 
 /// Holds live-verified immutable inputs ready for native specialization.
@@ -864,6 +886,24 @@ fn validate_mapping_outputs(
                 generation,
             )?;
         }
+        NativeResourceQualification::Postgresql {
+            control,
+            postgresql,
+            ..
+        } => {
+            ensure!(
+                owner.artifacts().contains(control),
+                "{generation} PostgreSQL control artifact is outside the mapped owner package"
+            );
+            ensure!(
+                owner.artifacts().contains(postgresql),
+                "{generation} PostgreSQL distribution artifact is outside the mapped owner package"
+            );
+        }
+        NativeResourceQualification::CredentialDelivery { .. }
+        | NativeResourceQualification::NetworkEndpoint { .. }
+        | NativeResourceQualification::HostStorage { .. }
+        | NativeResourceQualification::HostNetworkPolicy { .. } => {}
     }
     Ok(())
 }
@@ -1055,6 +1095,34 @@ fn validate_cross_generation_physical_claims(
                 == physical_claim(&current_entry.qualification),
             "retained logical native resource changes its physical class or object without a relocation transition"
         );
+        if let (
+            NativeResourceQualification::Postgresql {
+                cluster: desired_cluster,
+                database: desired_database,
+                postgresql_major: desired_major,
+                role: desired_role,
+                ..
+            },
+            NativeResourceQualification::Postgresql {
+                cluster: current_cluster,
+                database: current_database,
+                postgresql_major: current_major,
+                role: current_role,
+                ..
+            },
+        ) = (&desired_entry.qualification, &current_entry.qualification)
+        {
+            ensure!(
+                desired_cluster == current_cluster
+                    && desired_database == current_database
+                    && desired_role == current_role,
+                "retained PostgreSQL resource changes its stable identity"
+            );
+            ensure!(
+                desired_major == current_major,
+                "retained PostgreSQL resource changes its compatible major version"
+            );
+        }
         if desired_entry.revision == current_entry.revision {
             ensure!(
                 desired_entry.implementation == current_entry.implementation
@@ -1159,6 +1227,11 @@ fn resolved_native_execution_inputs<'a>(
             Some(mapped_candidate(object_json, desired_state)?),
             Some(mapped_reference(resource_reference, desired_state)?),
         )),
+        NativeResourceQualification::CredentialDelivery { .. }
+        | NativeResourceQualification::NetworkEndpoint { .. }
+        | NativeResourceQualification::HostStorage { .. }
+        | NativeResourceQualification::HostNetworkPolicy { .. }
+        | NativeResourceQualification::Postgresql { .. } => Ok((None, None)),
     }
 }
 
@@ -1215,6 +1288,33 @@ fn physical_claim(qualification: &NativeResourceQualification) -> (&'static str,
                 namespace.as_deref().unwrap_or("")
             ),
             false,
+        ),
+        NativeResourceQualification::CredentialDelivery { view } => (
+            "credential-view",
+            format!("/var/lib/aos/ability-runtime/credentials/{view}"),
+            true,
+        ),
+        NativeResourceQualification::NetworkEndpoint {
+            address,
+            port,
+            transport,
+        } => (
+            "network-endpoint",
+            format!("{transport}:{address}:{port}"),
+            false,
+        ),
+        NativeResourceQualification::HostStorage { cluster, purpose } => (
+            "host-storage",
+            format!("/var/lib/aos/ability-runtime/storage/{cluster}-{purpose}"),
+            true,
+        ),
+        NativeResourceQualification::HostNetworkPolicy { policy } => {
+            ("host-network-policy", policy.clone(), false)
+        }
+        NativeResourceQualification::Postgresql { cluster, .. } => (
+            "postgresql-cluster",
+            format!("/var/lib/aos/ability-runtime/postgresql/{cluster}"),
+            true,
         ),
     }
 }
@@ -1297,6 +1397,11 @@ fn is_native_interface(interface: &str) -> bool {
             | "aos.systemd-service-effects"
             | aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME
             | aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME
+            | aos_ability_model::builtin::CREDENTIAL_DELIVERY_EFFECTS_INTERFACE_NAME
+            | aos_ability_model::builtin::NETWORK_ENDPOINT_INTERFACE_NAME
+            | aos_ability_model::builtin::HOST_STORAGE_INTERFACE_NAME
+            | aos_ability_model::builtin::HOST_NETWORK_POLICY_INTERFACE_NAME
+            | aos_ability_model::builtin::POSTGRESQL_EFFECTS_INTERFACE_NAME
             | "aos.nginx-validation"
     )
 }
@@ -1320,6 +1425,21 @@ fn qualification_supports_interface(
         ) | (
             NativeResourceQualification::KubernetesObject { .. },
             aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME
+        ) | (
+            NativeResourceQualification::CredentialDelivery { .. },
+            aos_ability_model::builtin::CREDENTIAL_DELIVERY_EFFECTS_INTERFACE_NAME
+        ) | (
+            NativeResourceQualification::NetworkEndpoint { .. },
+            aos_ability_model::builtin::NETWORK_ENDPOINT_INTERFACE_NAME
+        ) | (
+            NativeResourceQualification::HostStorage { .. },
+            aos_ability_model::builtin::HOST_STORAGE_INTERFACE_NAME
+        ) | (
+            NativeResourceQualification::HostNetworkPolicy { .. },
+            aos_ability_model::builtin::HOST_NETWORK_POLICY_INTERFACE_NAME
+        ) | (
+            NativeResourceQualification::Postgresql { .. },
+            aos_ability_model::builtin::POSTGRESQL_EFFECTS_INTERFACE_NAME
         )
     )
 }
@@ -1338,7 +1458,12 @@ fn mapped_resource_reference<'a>(
         | NativeResourceQualification::KubernetesObject {
             resource_reference, ..
         } => resource_reference,
-        NativeResourceQualification::NginxValidation { .. } => return Ok(None),
+        NativeResourceQualification::NginxValidation { .. }
+        | NativeResourceQualification::CredentialDelivery { .. }
+        | NativeResourceQualification::NetworkEndpoint { .. }
+        | NativeResourceQualification::HostStorage { .. }
+        | NativeResourceQualification::HostNetworkPolicy { .. }
+        | NativeResourceQualification::Postgresql { .. } => return Ok(None),
     };
     let output = locate_aggregate_output(locator, desired_state, "operation")?;
     locate_resource_reference(&output.value, &locator.field_path)
@@ -1689,6 +1814,30 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn postgresql_native_map_rejects_trust_without_credential_delivery() {
+        let mut mapping = test_native_mapping("/etc/unused.conf");
+        let artifact = mapping.implementation.artifact.clone();
+        mapping.qualification = NativeResourceQualification::Postgresql {
+            cluster: "application".to_string(),
+            database: "application".to_string(),
+            role: "application".to_string(),
+            control: artifact.clone(),
+            postgresql: artifact,
+            postgresql_major: 18,
+        };
+        let resource_map = NativeResourceMap::new(digest("desired"), vec![mapping])
+            .expect("PostgreSQL native map has intrinsic shape");
+
+        let error = validate_postgresql_credential_maps(&resource_map)
+            .expect_err("credential-free PostgreSQL must reject trust mode");
+        assert!(
+            error
+                .to_string()
+                .contains("trust authentication is unsupported")
+        );
+    }
 
     #[test]
     fn descriptor_relative_reader_rejects_symlink_escape() {

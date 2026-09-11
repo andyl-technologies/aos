@@ -20,6 +20,7 @@
   ability-package-smoke,
   checkpolicy,
   cmake,
+  coreutils,
   libssh2,
   policycoreutils,
   pkg-config,
@@ -29,9 +30,11 @@
   sbsigntools,
   systemd,
   mtools,
+  nftables,
   qemu-img,
   remove-references-to,
   sqlite,
+  socat,
   tpm2-tools,
   util-linux,
   which,
@@ -309,7 +312,7 @@ in
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
-      ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
+      ++ lib.optionals (!isDarwinCross) (linuxRuntimeDeps ++ [socat]);
 
     # mkDerivation normally constructs one RPATH from every runtimeDep. That
     # is correct for a single-output package, but would make each executable
@@ -629,11 +632,33 @@ in
             1 \
             .aos-package-runtime-unwrapped
 
+          ${lib.optionalString (!isDarwinCross) ''
+        mkdir -p "$packageRuntime/libexec"
+        ln -s ${coreutils}/bin/env "$packageRuntime/libexec/aos-env"
+        ln -s ${nftables}/bin/nft "$packageRuntime/libexec/aos-nft"
+        ln -s ${util-linux}/bin/setpriv "$packageRuntime/libexec/aos-setpriv"
+        ln -s ${socat}/bin/socat "$packageRuntime/libexec/aos-socat"
+        for handler in \
+          aos-credential-delivery-handler-v1 \
+          aos-network-endpoint-handler-v1 \
+          aos-host-storage-handler-v1 \
+          aos-host-network-policy-handler-v1 \
+          aos-postgresql-handler-v1; do
+          ln -s ../bin/.aos-package-runtime-unwrapped "$packageRuntime/libexec/$handler"
+        done
+      ''}
+
           grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/bin/aos-package-runtime"
           grep -Fqx 'export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"' "$packageRuntime/bin/aos-package-runtime"
           test "$(readlink "$apm/bin/.apm-unwrapped")" = .aos-package-runtime-unwrapped
           test "$(readlink "$packageRuntime/bin/.aos-package-runtime-unwrapped")" = \
             "$apm/bin/.aos-package-runtime-unwrapped"
+          ${lib.optionalString (!isDarwinCross) ''
+        test "$(readlink "$packageRuntime/libexec/aos-env")" = "${coreutils}/bin/env"
+        test "$(readlink "$packageRuntime/libexec/aos-nft")" = "${nftables}/bin/nft"
+        test "$(readlink "$packageRuntime/libexec/aos-setpriv")" = "${util-linux}/bin/setpriv"
+        test "$(readlink "$packageRuntime/libexec/aos-socat")" = "${socat}/bin/socat"
+      ''}
           ${lib.optionalString (!isDarwinCross) ''
         grep -Fqx 'export AOS_PRLIMIT="${util-linux}/bin/prlimit"' "$packageRuntime/bin/aos-package-runtime"
       ''}

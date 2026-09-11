@@ -239,7 +239,10 @@ pub(super) fn provision_authority(arguments: &[String]) -> Result<()> {
         .context("provisioning protected operator policy authority")
 }
 
-fn write_operator_authority(output: &Path, policy_set: &PinnedAbilitySidecar) -> Result<()> {
+pub(super) fn write_operator_authority(
+    output: &Path,
+    policy_set: &PinnedAbilitySidecar,
+) -> Result<()> {
     let document_digest = Sha256Digest::parse(&policy_set.document_sha256)
         .context("decoding operator-authorized policy-set document digest")?;
     let digest_hex = document_digest.hex();
@@ -1080,7 +1083,7 @@ fn output_locator(
     })
 }
 
-fn retain_sidecar(
+pub(super) fn retain_sidecar(
     output: &Path,
     name: &str,
     document_name: &str,

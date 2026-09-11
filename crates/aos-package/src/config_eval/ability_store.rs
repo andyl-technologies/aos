@@ -49,6 +49,7 @@ pub(crate) mod inventory;
 mod verification;
 
 pub(crate) use inventory::NativeResourceReservation;
+pub(crate) use inventory::require_machine_global_host_collision_domain;
 #[cfg(test)]
 use inventory::save_native_resource_ledger;
 use inventory::{

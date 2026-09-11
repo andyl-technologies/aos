@@ -15,8 +15,9 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use aos_ability_model::{
-    AggregateOutput, Binding, DesiredStateDocument, IncarnationId, MethodReference, Operation,
-    ProviderAssignment, ResourceId, TransactionId, ValueExpression,
+    AggregateOutput, Binding, DependencyKind, DesiredStateDocument, IncarnationId, MethodReference,
+    Operation, PlanNodeKey, ProviderAssignment, ResourceId, ResultProducerKey, ScopedOperationKey,
+    TransactionId, ValueExpression,
 };
 use aos_ability_plan::{
     RuntimeResourceHealth, RuntimeResourceObservation, RuntimeResourceState,
@@ -56,6 +57,11 @@ use super::managed_configuration_ability::{
 use super::native_consumer_observation::{
     classify_native_http_consumer, observe_native_http_consumer,
 };
+use super::native_host_resources::{
+    HostResourceAllocations, NativeDependencyBinding, NativeHostResourceAdapter,
+    NativeHostResourceCatalog, NativeHostResourceKind, NativeHostResourceSpec,
+    StorageAllocationRequest, native_host_method_supported, preflight_native_host_resource,
+};
 use super::native_provider_capability::{
     KubernetesClusterReadinessOutput, NativeProviderReadinessOutput, SystemdManagerCapabilities,
     reacquire_kubernetes_assignment,
@@ -87,6 +93,8 @@ pub(crate) enum NativeAdapterKind {
     NginxValidation,
     /// Uses either supported exact systemd terminal contract.
     Systemd,
+    /// Uses one exact production host-resource contract.
+    HostResource(NativeHostResourceKind),
 }
 
 /// Borrows the exact package and mapping selected for one checked operation.
@@ -115,6 +123,7 @@ pub(crate) struct NativeAdapterRegistry<'a> {
     current_planning: Option<aos_contract::Sha256Digest>,
     reconciliation: Option<&'a TransitionReconciliation>,
     packages: &'a VerifiedAbilityPackageSet,
+    host_allocations: HostResourceAllocations,
 }
 
 /// Supplies independently authenticated evidence for an effect-free transition.
@@ -294,7 +303,7 @@ impl<'a> NativeAdapterRegistry<'a> {
         activation: &'a SpecializedAbilityActivation,
         packages: &'a VerifiedAbilityPackageSet,
     ) -> Result<Self> {
-        let registry = Self {
+        let mut registry = Self {
             plan: activation.plan(),
             desired: activation.desired_native_resources(),
             current: activation.current_native_resources(),
@@ -303,6 +312,7 @@ impl<'a> NativeAdapterRegistry<'a> {
             current_planning: activation.bundle().current_planning_digest(),
             reconciliation: activation.bundle().reconciliation(),
             packages,
+            host_allocations: HostResourceAllocations::default(),
         };
 
         for mapping in registry
@@ -313,6 +323,7 @@ impl<'a> NativeAdapterRegistry<'a> {
         {
             registry.preflight_mapping(mapping)?;
         }
+        registry.host_allocations = registry.build_host_allocations()?;
         // Preflight the complete graph before any operation can be admitted.
         // A later branch selection must never expose an unsupported route.
         for operation in registry.plan.operations() {
@@ -605,6 +616,248 @@ impl<'a> NativeAdapterRegistry<'a> {
         })
     }
 
+    /// Builds the exact static host-resource catalog input for one route.
+    fn host_resource_spec(&self, route: &NativeAdapterRoute<'_>) -> Result<NativeHostResourceSpec> {
+        ensure!(
+            NativeHostResourceKind::from_qualification(&route.mapping.qualification).is_some(),
+            "native dispatcher route is not a production host resource"
+        );
+        Ok(NativeHostResourceSpec {
+            resource: route.mapping.resource.clone(),
+            revision: route.mapping.revision,
+            qualification: route.mapping.qualification.clone(),
+            retained_qualification: self
+                .current_mapping(&route.mapping.resource)
+                .map(|mapping| mapping.qualification.clone()),
+            dependencies: self.host_resource_dependencies(route.mapping)?,
+            storage_binding: match NativeHostResourceKind::from_qualification(
+                &route.mapping.qualification,
+            ) {
+                Some(NativeHostResourceKind::Storage) => {
+                    self.host_allocations.storage(&route.mapping.resource)
+                }
+                Some(NativeHostResourceKind::Endpoint) => {
+                    self.host_allocations.endpoint(&route.mapping.resource)
+                }
+                Some(NativeHostResourceKind::Postgresql) => {
+                    self.host_allocations.postgresql(&route.mapping.resource)
+                }
+                _ => None,
+            },
+        })
+    }
+
+    fn build_host_allocations(&self) -> Result<HostResourceAllocations> {
+        let mut storage = std::collections::BTreeMap::new();
+        for mapping in self
+            .desired
+            .entries
+            .iter()
+            .chain(self.current.into_iter().flat_map(|map| &map.entries))
+        {
+            let NativeResourceQualification::HostStorage { cluster, purpose } =
+                &mapping.qualification
+            else {
+                continue;
+            };
+            let request = StorageAllocationRequest {
+                resource: mapping.resource.clone(),
+                cluster: cluster.clone(),
+                purpose: purpose.clone(),
+            };
+            if let Some(previous) = storage.insert(mapping.resource.clone(), request) {
+                ensure!(
+                    previous.cluster == *cluster && previous.purpose == *purpose,
+                    "retained storage resource changed its stable identity"
+                );
+            }
+        }
+
+        let mut postgresql_storage = std::collections::BTreeMap::new();
+        let mut postgresql_endpoint = std::collections::BTreeMap::new();
+        for mapping in &self.desired.entries {
+            if !matches!(
+                mapping.qualification,
+                NativeResourceQualification::Postgresql { .. }
+            ) {
+                continue;
+            }
+            let dependencies = self.host_resource_dependencies(mapping)?;
+            let storage_bindings = dependencies
+                .values()
+                .flatten()
+                .filter(|binding| binding.input == "storage_path")
+                .collect::<Vec<_>>();
+            let Some(binding) = storage_bindings.first() else {
+                continue;
+            };
+            ensure!(
+                storage_bindings.iter().all(|candidate| {
+                    candidate.resource == binding.resource
+                        && candidate.revision == binding.revision
+                        && candidate.qualification == binding.qualification
+                        && candidate.interface == binding.interface
+                        && candidate.output == binding.output
+                }),
+                "PostgreSQL consumers disagree about their storage producer"
+            );
+            ensure!(
+                postgresql_storage
+                    .insert(mapping.resource.clone(), binding.resource.clone())
+                    .is_none(),
+                "PostgreSQL resource has duplicate storage bindings"
+            );
+            let endpoint_bindings = dependencies
+                .values()
+                .flatten()
+                .filter(|binding| binding.input == "endpoint")
+                .collect::<Vec<_>>();
+            if let Some(endpoint) = endpoint_bindings.first() {
+                ensure!(
+                    endpoint_bindings.iter().all(|candidate| {
+                        candidate.resource == endpoint.resource
+                            && candidate.revision == endpoint.revision
+                            && candidate.qualification == endpoint.qualification
+                            && candidate.interface == endpoint.interface
+                            && candidate.output == endpoint.output
+                    }),
+                    "PostgreSQL consumers disagree about their endpoint producer"
+                );
+                ensure!(
+                    postgresql_endpoint
+                        .insert(mapping.resource.clone(), endpoint.resource.clone())
+                        .is_none(),
+                    "PostgreSQL resource has duplicate endpoint bindings"
+                );
+            }
+        }
+        HostResourceAllocations::build(
+            storage.into_values().collect(),
+            postgresql_storage,
+            postgresql_endpoint,
+        )
+        .context("allocating persistent host-resource slots")
+    }
+
+    fn host_resource_dependencies(
+        &self,
+        mapping: &NativeResourceMapping,
+    ) -> Result<std::collections::BTreeMap<ScopedOperationKey, Vec<NativeDependencyBinding>>> {
+        let kind = NativeHostResourceKind::from_qualification(&mapping.qualification)
+            .context("native mapping is not a host resource")?;
+        let expected_inputs: &[(&str, &[&str], &str)] = match kind {
+            NativeHostResourceKind::Postgresql => &[
+                (
+                    "credential_view",
+                    &["deliver", "acquire"],
+                    aos_ability_model::builtin::CREDENTIAL_VIEW_OUTPUT,
+                ),
+                (
+                    "endpoint",
+                    &["materialize", "observe"],
+                    aos_ability_model::builtin::NETWORK_ENDPOINT_OUTPUT,
+                ),
+                (
+                    "storage_path",
+                    &["ensure", "observe"],
+                    aos_ability_model::builtin::HOST_STORAGE_PATH_OUTPUT,
+                ),
+            ],
+            NativeHostResourceKind::NetworkPolicy => &[(
+                "endpoint",
+                &["materialize", "observe"],
+                aos_ability_model::builtin::NETWORK_ENDPOINT_OUTPUT,
+            )],
+            _ => return Ok(std::collections::BTreeMap::new()),
+        };
+        let target_methods: &[&str] = match kind {
+            NativeHostResourceKind::Postgresql => &["materialize", "observe"],
+            NativeHostResourceKind::NetworkPolicy => &["apply", "observe"],
+            _ => unreachable!(),
+        };
+        let operations = self.plan.operations().iter().filter(|operation| {
+            operation.target.resource == mapping.resource
+                && target_methods.contains(&operation.method.as_str())
+        });
+        let mut by_consumer = std::collections::BTreeMap::new();
+        for operation in operations {
+            let ValueExpression::Object { fields } = &operation.inputs else {
+                return Err(anyhow!("host-resource inputs are not a closed object"));
+            };
+            let mut dependencies = Vec::new();
+            for (input, expected_methods, expected_output) in expected_inputs {
+                let expression = fields
+                    .get(*input)
+                    .context("host-resource input is absent from its checked request")?;
+                let ValueExpression::OperationResult { reference } = expression else {
+                    return Err(anyhow!(
+                        "host-resource dependency is not a direct operation result"
+                    ));
+                };
+                let ResultProducerKey::Operation { key } = &reference.producer else {
+                    return Err(anyhow!(
+                        "host-resource dependency does not have unambiguous operation lineage"
+                    ));
+                };
+                let producer = self
+                    .plan
+                    .operation(key)
+                    .context("host-resource dependency producer is absent")?;
+                ensure!(
+                    expected_methods.contains(&producer.method.as_str())
+                        && reference.output.as_str() == *expected_output,
+                    "host-resource dependency uses the wrong producer method or output"
+                );
+                let from = PlanNodeKey::Operation { key: key.clone() };
+                let to = PlanNodeKey::Operation {
+                    key: operation.key.clone(),
+                };
+                ensure!(
+                    self.plan.edges().iter().any(|edge| {
+                        edge.from == from && edge.to == to && edge.kind == DependencyKind::Data
+                    }),
+                    "host-resource dependency has no exact checked data edge"
+                );
+                let producer_mapping = self
+                    .desired
+                    .entries
+                    .iter()
+                    .find(|candidate| candidate.resource == producer.target.resource)
+                    .context("host-resource dependency has no native producer mapping")?;
+                let producer_route = self.preflight_mapping(producer_mapping)?;
+                let expected_kind = match *input {
+                    "credential_view" => NativeHostResourceKind::Credential,
+                    "endpoint" => NativeHostResourceKind::Endpoint,
+                    "storage_path" => NativeHostResourceKind::Storage,
+                    _ => return Err(anyhow!("unknown host-resource dependency input")),
+                };
+                ensure!(
+                    producer_route.kind == NativeAdapterKind::HostResource(expected_kind)
+                        && producer_route.assignment_interface == producer.interface,
+                    "host-resource dependency selects another provider contract"
+                );
+                dependencies.push(NativeDependencyBinding {
+                    input: (*input).to_string(),
+                    producer: key.clone(),
+                    resource: producer.target.resource.clone(),
+                    revision: producer_mapping.revision,
+                    qualification: producer_mapping.qualification.clone(),
+                    interface: producer.interface.clone(),
+                    method: producer.method.clone(),
+                    output: reference.output.clone(),
+                });
+            }
+            dependencies.sort_by(|left, right| left.input.cmp(&right.input));
+            ensure!(
+                by_consumer
+                    .insert(operation.key.clone(), dependencies)
+                    .is_none(),
+                "host-resource dependency map contains a duplicate consumer"
+            );
+        }
+        Ok(by_consumer)
+    }
+
     fn current_mapping(&self, resource: &ResourceId) -> Option<&'a NativeResourceMapping> {
         self.current?
             .entries
@@ -853,6 +1106,13 @@ impl<'a> NativeAdapterRegistry<'a> {
                 preflight_native_kubernetes(package, &assignment)
                     .context("preflighting Kubernetes object adapter")?;
                 NativeAdapterKind::KubernetesObject
+            }
+            qualification => {
+                let kind = NativeHostResourceKind::from_qualification(qualification)
+                    .context("native mapping has no built-in adapter qualification")?;
+                preflight_native_host_resource(package, &assignment, qualification, kind)
+                    .context("preflighting native host-resource adapter")?;
+                NativeAdapterKind::HostResource(kind)
             }
         };
 
@@ -1146,6 +1406,16 @@ impl<'a> NativeDispatcher<'a> {
                             }
                         }
                     }
+                }
+                NativeAdapterKind::HostResource(kind) => {
+                    let spec = self.registry.host_resource_spec(&route)?;
+                    let catalog =
+                        NativeHostResourceCatalog::new(assignment, inventory, kind, [spec])
+                            .context("constructing host-resource drift catalog")?;
+                    catalog
+                        .classify_runtime_state(&mapping.resource)
+                        .context("classifying current host resource")?
+                        .1
                 }
             };
             let authority_state = current_authority_state(state);
@@ -1605,6 +1875,20 @@ impl<'a> NativeDispatcher<'a> {
                     }
                     (qualified, mapping.revision, requires_consumer)
                 }
+                NativeAdapterKind::HostResource(kind) => {
+                    let spec = self.registry.host_resource_spec(&route)?;
+                    let catalog =
+                        NativeHostResourceCatalog::new(assignment, inventory, kind, [spec])
+                            .context("constructing host-resource no-op catalog")?;
+                    let (qualified, observed) = catalog
+                        .observe_no_op(&mapping.resource)
+                        .context("observing host-resource no-op state")?;
+                    ensure!(
+                        observed == ResourceRevisionObservation::Present(mapping.revision),
+                        "host resource drifted during no-op verification"
+                    );
+                    (qualified, mapping.revision, false)
+                }
             };
             observations.push(NativeNoOpResourceObservation {
                 qualified,
@@ -1770,6 +2054,15 @@ impl<'a> NativeDispatcher<'a> {
                         }
                     }
                 }
+            }
+            NativeAdapterKind::HostResource(kind) => {
+                let spec = self.registry.host_resource_spec(route)?;
+                let catalog = NativeHostResourceCatalog::new(assignment, inventory, kind, [spec])
+                    .context("constructing host-resource observation catalog")?;
+                catalog
+                    .classify_runtime_state(&route.mapping.resource)
+                    .context("observing current host-resource state")?
+                    .1
             }
         };
         self.current_state_for_execution(
@@ -1951,6 +2244,30 @@ impl<'a> NativeDispatcher<'a> {
                         observer,
                     )
                 }
+            }
+            NativeAdapterKind::HostResource(kind) => {
+                let spec = self.registry.host_resource_spec(&route)?;
+                let inventory = session.resource_inventory();
+                let mut catalog =
+                    NativeHostResourceCatalog::new(assignment.clone(), inventory, kind, [spec])
+                        .context("constructing host-resource catalog")?;
+                let mut adapter = NativeHostResourceAdapter::new(
+                    route.package,
+                    assignment,
+                    &route.mapping.qualification,
+                    kind,
+                )
+                .context("constructing host-resource adapter")?;
+                drive_with_adapter(
+                    session,
+                    operation,
+                    &mut adapter,
+                    &mut catalog,
+                    policy,
+                    clock,
+                    cancellation,
+                    observer,
+                )
             }
         }
     }
@@ -2306,6 +2623,10 @@ fn native_method_is_supported(
             "aos.systemd-service-effects",
             InvocationPurpose::Reconcile | InvocationPurpose::Cancel,
         ) => method == "observe",
+        (NativeAdapterKind::HostResource(host_kind), interface, purpose) => {
+            interface == host_kind.interface_name()
+                && native_host_method_supported(host_kind, method, purpose)
+        }
         _ => false,
     }
 }
