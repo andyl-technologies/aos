@@ -18,6 +18,7 @@
   lib,
 }: let
   aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
+  frozenPackageChecks = import ./frozen-pkgs.nix {inherit lib;};
 
   opKey = "ops:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIJiuCf/fX/rsn5ODyT5ebEVtabAmZceKi2aD+cBWjWKL";
 
@@ -155,6 +156,7 @@ in
         script = ''
           set -eu
           : ${builtins.toString evalAssertions}
+          : ${builtins.toString frozenPackageChecks}
           mkdir -p "$out"
           eval_state="$TMPDIR/aos-root"
           profile_root="$TMPDIR/profiles"

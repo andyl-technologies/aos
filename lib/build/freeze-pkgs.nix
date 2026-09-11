@@ -7,8 +7,8 @@
 ##! selected by host configuration are therefore computed at image-build time
 ##! without retaining packages that the evaluated image does not select.
 ##!
-##! `freezePkgs` turns a live `pkgs` set into a *frozen* one: every derivation is
-##! replaced by a plain attrset whose `outPath` (and per-output paths) are
+##! Freezing replaces each target-compatible derivation in a live `pkgs` set
+##! with a plain attrset whose `outPath` (and per-output paths) are
 ##! reversibly encoded store-path strings, with `__toString` so `${pkgs.foo}` and
 ##! `${pkgs.foo.lib}` interpolate the path exactly as before — but with no
 ##! derivation behind them, so the eval never touches the build graph. Literal
@@ -78,8 +78,24 @@
   };
 in {
   ## Stage-1: serialise the frozen form of `pkgs` (top-level derivations only).
-  ## Forces the store paths; run inside the base-lib builder.
-  freezeToJSON = pkgs:
+  ## Forces supported store paths; run inside the base-lib builder.
+  freezeToJSON = pkgs: let
+    platform = pkgs.stdenv.hostPlatform or null;
+    inventory = pkgs.platformSupport.packageInventory or {};
+
+    # Consult structural policy before forcing a derivation. Cross images must
+    # not evaluate packages for another CPU or OS merely to freeze their paths.
+    # Build-only fixtures remain available when they support the image target.
+    supportsImage = name: _:
+      platform
+      == null
+      || !(builtins.hasAttr name inventory)
+      || (
+        builtins.elem platform.constraints.cpu inventory.${name}.architectures
+        && pkgs.platformSupport.supportsTarget platform.system name
+      );
+    candidates = lib.filterAttrs supportsImage pkgs;
+  in
     builtins.toJSON (lib.filterAttrs (_: v: v != null) (
       builtins.mapAttrs (
         name: v:
@@ -87,7 +103,7 @@ in {
           then freezeDrv name v
           else null
       )
-      pkgs
+      candidates
     ));
 
   ## Stage-2: rebuild the string-coercible frozen `pkgs` from the JSON. The
