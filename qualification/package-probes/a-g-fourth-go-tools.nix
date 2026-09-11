@@ -34,14 +34,26 @@
       bad_input = {
         input = "A Go source file with an incomplete short variable declaration.";
         operation = "Analyze the malformed source with gopls check.";
-        expected = "Gopls emits a syntax diagnostic and returns status 1.";
+        expected = "Gopls reports the exact source location and syntax diagnostic on standard output.";
         files."go.mod" = "module example.test/qualification\n\ngo 1.22\n";
         files."invalid.go" = "package qualification\n\nfunc broken() { value := ; _ = value }\n";
         steps = [
           {
-            argv = ["@out@/bin/gopls" "check" "invalid.go"];
-            exit_code = 1;
-            stdout.exact = "";
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import pathlib, subprocess
+                result = subprocess.run(["@out@/bin/gopls", "check", "invalid.go"], capture_output=True, text=True)
+                location = pathlib.Path("invalid.go").resolve()
+                assert result.returncode == 0 and result.stderr == ""
+                assert result.stdout == f"{location}:3:26: expected operand, found ';'\n"
+                print("gopls syntax diagnostic passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "gopls syntax diagnostic passed\n";
+            stderr.exact = "";
             observes_rejection = true;
             timeout_seconds = 120;
           }
