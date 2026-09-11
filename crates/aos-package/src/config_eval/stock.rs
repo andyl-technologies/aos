@@ -230,7 +230,7 @@ impl NixEvaluator for StockNixEvaluator {
         let expression = std::fs::read_to_string(&staged_entry)
             .with_context(|| format!("reading {}", staged_entry.display()))?;
 
-        let mut cmd = pure_eval_command()?;
+        let mut cmd = pure_eval_command(&self.root)?;
 
         // Standard input is not a mutable filesystem input. Every imported
         // path is independently admitted by its fixed NAR hash in the source.
@@ -294,31 +294,47 @@ fn command_from_path(name: &str) -> Result<Command> {
 ///
 /// The executable is resolved before the environment is cleared. Callers add
 /// only exact authenticated inputs and the expression/attribute they need.
-pub(super) fn pure_eval_command() -> Result<Command> {
+/// Without a configured service cache, Nix keeps client state under `eval_root`.
+///
+/// # Errors
+///
+/// Returns an error when the executable cannot be resolved or the fallback
+/// cache path cannot be made absolute.
+pub(super) fn pure_eval_command(eval_root: &Path) -> Result<Command> {
     let mut command = command_from_path("nix-instantiate")?;
     let nix_cache_home = std::env::var_os("XDG_CACHE_HOME");
-    configure_pure_eval_command(&mut command, nix_cache_home.as_deref());
+    configure_pure_eval_command(&mut command, eval_root, nix_cache_home.as_deref())?;
     Ok(command)
 }
 
-fn configure_pure_eval_command(command: &mut Command, nix_cache_home: Option<&OsStr>) {
+fn configure_pure_eval_command(
+    command: &mut Command,
+    eval_root: &Path,
+    nix_cache_home: Option<&OsStr>,
+) -> Result<()> {
+    let nix_cache_home = match nix_cache_home.filter(|path| !path.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => std::path::absolute(eval_root.join("nix-cache"))
+            .context("resolving the evaluator's Nix cache directory")?,
+    };
     let store = std::env::var_os("AOS_NIX_EVAL_STORE");
+
     command.env_clear();
     if let Some(store) = store {
         command.arg("--store").arg(store);
     }
-    // Nix creates client cache state even for pure evaluation. Preserve only
-    // the service-owned cache directory across the environment scrub so the
-    // hardened read-only home does not make evaluation fail before it starts.
-    if let Some(nix_cache_home) = nix_cache_home {
-        command.env("XDG_CACHE_HOME", nix_cache_home);
-    }
+    // Nix creates client cache state even for pure evaluation. The service
+    // supplies a persistent cache; interactive evaluation instead uses its
+    // writable staging root and never falls back to the image's read-only home.
+    command.env("XDG_CACHE_HOME", nix_cache_home);
     command
         .args(["--extra-experimental-features", "nix-command flakes"])
         .args(["--eval", "--strict", "--json", "--pure-eval"])
         .args(["--option", "restrict-eval", "true"])
         .args(["--option", "allow-import-from-derivation", "false"])
         .args(["--option", "allowed-uris", "path:/nix/store/"]);
+
+    Ok(())
 }
 
 /// Infer a [`KillReason`] when the subprocess was terminated by a signal.
@@ -1178,7 +1194,11 @@ mod tests {
             return;
         };
         let cache = tempfile::tempdir().unwrap();
-        configure_pure_eval_command(&mut command, Some(cache.path().as_os_str()));
+        configure_pure_eval_command(&mut command, cache.path(), None).unwrap();
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "XDG_CACHE_HOME"
+                && value.is_some_and(|value| value == cache.path().join("nix-cache").as_os_str())
+        }));
         let mut web = member("web", Some("/nix/store/hash-web-config"));
         web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
         let runtime =
@@ -1311,7 +1331,12 @@ mod tests {
     fn evaluator_command_is_pure_restricted_and_environment_scrubbed() {
         let mut command = Command::new("nix-instantiate");
         command.env("AOS_AMBIENT_SENTINEL", "must-not-survive");
-        configure_pure_eval_command(&mut command, Some(OsStr::new("/var/cache/aos/nix-eval")));
+        configure_pure_eval_command(
+            &mut command,
+            Path::new("/run/aos-eval"),
+            Some(OsStr::new("/var/cache/aos/nix-eval")),
+        )
+        .unwrap();
 
         let args = command
             .get_args()
