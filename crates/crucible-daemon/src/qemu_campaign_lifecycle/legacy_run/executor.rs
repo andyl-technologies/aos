@@ -245,14 +245,6 @@ impl<M> SynchronousCampaignExecutor<M> {
         }
     }
 
-    pub(super) fn with_execution_cancellation(
-        mut self,
-        cancellation: ExecutionCancellation,
-    ) -> Self {
-        self.cancellation = cancellation;
-        self
-    }
-
     pub(super) fn with_checkpoint_capture(
         mut self,
         checkpoints: Arc<ExactCheckpointStore>,
@@ -295,9 +287,20 @@ pub(super) enum SynchronousCampaignExecutorError<E> {
     CaptureCheckpoint(ExactCheckpointStoreError),
     CaptureUnexpectedSemanticResult,
     CaptureAbort(Box<CheckpointResultAbortError<LocalExecutorError<Infallible>>>),
-    CaptureNativeRetirement(crucible_api::ProductionExactCheckpointRetirementError),
+    CaptureNativeRetirement {
+        source: crucible_api::ProductionExactCheckpointRetirementError,
+        _retirement: crucible_api::ProductionExactCheckpointRetirement,
+    },
+    CaptureNativeCleanupRetained {
+        terminal: Vec<(
+            crucible_api::ProductionExactCheckpointRetirementError,
+            crucible_api::ProductionExactCheckpointRetirement,
+        )>,
+        quarantined: Vec<crucible_api::ProductionExactCheckpointRetirement>,
+    },
     CaptureNotPaused,
     UnexpectedCheckpoint,
+    UnexpectedFindingExactRetention,
     ReconciliationLimit,
 }
 
@@ -338,17 +341,29 @@ impl<E: fmt::Display> fmt::Display for SynchronousCampaignExecutorError<E> {
                 formatter.write_str("executor exact capture returned a semantic observation")
             }
             Self::CaptureAbort(error) => write!(formatter, "executor exact capture abort: {error}"),
-            Self::CaptureNativeRetirement(error) => {
+            Self::CaptureNativeRetirement { source, .. } => {
                 write!(
                     formatter,
-                    "executor exact capture source retirement: {error}"
+                    "executor exact capture source retirement: {source}"
                 )
             }
+            Self::CaptureNativeCleanupRetained {
+                terminal,
+                quarantined,
+            } => write!(
+                formatter,
+                "executor retained {} terminal and {} quarantined native checkpoint catalogs",
+                terminal.len(),
+                quarantined.len()
+            ),
             Self::CaptureNotPaused => {
                 formatter.write_str("executor exact capture did not reach durable paused state")
             }
             Self::UnexpectedCheckpoint => formatter
                 .write_str("standalone default run unexpectedly produced an exact checkpoint"),
+            Self::UnexpectedFindingExactRetention => formatter.write_str(
+                "standalone default run unexpectedly produced policy-bound finding retention",
+            ),
             Self::ReconciliationLimit => formatter
                 .write_str("execution owner reconciliation exceeded its bounded step count"),
         }
@@ -371,13 +386,17 @@ where
             Self::CaptureCandidate(error) => Some(error),
             Self::CaptureCheckpoint(error) => Some(error),
             Self::CaptureAbort(error) => Some(error),
-            Self::CaptureNativeRetirement(error) => Some(error),
+            Self::CaptureNativeRetirement { source, .. } => Some(source),
+            Self::CaptureNativeCleanupRetained { terminal, .. } => terminal
+                .first()
+                .map(|(source, _)| source as &(dyn Error + 'static)),
             Self::Completion(_)
             | Self::CaptureUnavailable
             | Self::CaptureSupervisorPoisoned
             | Self::CaptureUnexpectedSemanticResult
             | Self::CaptureNotPaused
             | Self::UnexpectedCheckpoint
+            | Self::UnexpectedFindingExactRetention
             | Self::ReconciliationLimit => None,
         }
     }
@@ -396,6 +415,15 @@ where
     ) -> Result<SubmitAttemptResponse, Self::Error> {
         if request.execution_scope() != AttemptExecutionScope::Semantic {
             return self.submit_checkpoint_capture(request);
+        }
+        if request.retention_policy_basis().is_some() {
+            return SubmitAttemptResponse::new(
+                request,
+                SubmitAttemptDisposition::Rejected {
+                    reason: ExecutorRejection::Incompatible,
+                },
+            )
+            .map_err(SynchronousCampaignExecutorError::Protocol);
         }
         if request.daemon_epoch() != self.daemon_epoch {
             return SubmitAttemptResponse::new(
@@ -472,13 +500,23 @@ where
             self.cancellation.clone(),
             ExecutionCheckpointRequest::default(),
         );
-        let product = match self.worker.model_mut().execute(&input, &context) {
+        let execution = self.worker.model_mut().execute(&input, &context);
+        complete_checkpoint_cleanup(self.worker.model_mut().take_abandoned_native_checkpoint())?;
+        let product = match execution {
             Ok(product) => product,
             Err(failure) => {
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 return Err(SynchronousCampaignExecutorError::Execution(failure));
             }
         };
+        if matches!(
+            &product,
+            AttemptExecutionProduct::PreparedSemanticWithExactRetention { .. }
+        ) {
+            retire_checkpoint_source(product.into_abandoned_retirement())?;
+            reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
+            return Err(SynchronousCampaignExecutorError::UnexpectedFindingExactRetention);
+        }
         let result = match product {
             AttemptExecutionProduct::Observation(candidate) => {
                 PreparedSemanticAttemptResult::new(*candidate, None)
@@ -488,7 +526,11 @@ where
                 finding,
             } => PreparedSemanticAttemptResult::new(*observation, Some(*finding)),
             AttemptExecutionProduct::PreparedSemantic(result) => Ok(*result),
-            AttemptExecutionProduct::ExactCheckpoint(_) => {
+            AttemptExecutionProduct::PreparedSemanticWithExactRetention { .. } => {
+                unreachable!("policy-bound retention was rejected above")
+            }
+            AttemptExecutionProduct::ExactCheckpoint(checkpoint) => {
+                retire_checkpoint_source(checkpoint_result_retirement(*checkpoint))?;
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 return Err(SynchronousCampaignExecutorError::UnexpectedCheckpoint);
             }
@@ -583,14 +625,26 @@ where
                 cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
                 return Err(SynchronousCampaignExecutorError::CaptureUnexpectedSemanticResult);
             }
-            Err(AttemptResultPreparationError::Worker { queued, failure }) => {
+            Err(AttemptResultPreparationError::Worker {
+                queued,
+                failure,
+                retirement,
+            }) => {
                 let cleanup = stop_capture_after_worker_failure(&supervisor, &queued, &failure);
+                let retirement = complete_checkpoint_cleanup(retirement);
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
+                retirement?;
                 return Err(SynchronousCampaignExecutorError::CaptureExecution(failure));
             }
             Err(AttemptResultPreparationError::Candidate { pending, source }) => {
-                let (queued, _) = pending.into_parts();
+                let (queued, _candidate, retention) = pending.into_parts();
+                if let Some(checkpoint) = retention
+                    .as_ref()
+                    .and_then(crate::PreparedFindingExactRetention::checkpoint)
+                {
+                    retire_checkpoint_source(checkpoint.native_retirement())?;
+                }
                 let cleanup = stop_capture_terminally(&supervisor, &queued);
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
@@ -796,9 +850,86 @@ fn retire_checkpoint_source<E>(
     let Some(retirement) = retirement else {
         return Ok(());
     };
-    crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
-        .map(|_| ())
-        .map_err(SynchronousCampaignExecutorError::CaptureNativeRetirement)
+    loop {
+        match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.is_retryable() => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => {
+                return Err(SynchronousCampaignExecutorError::CaptureNativeRetirement {
+                    source: error,
+                    _retirement: retirement,
+                });
+            }
+        }
+    }
+}
+
+fn complete_checkpoint_cleanup<E>(
+    cleanup: Option<crate::NativeCheckpointCleanup>,
+) -> Result<(), SynchronousCampaignExecutorError<E>> {
+    let Some(cleanup) = cleanup else {
+        return Ok(());
+    };
+    let (retirements, quarantined) = partition_checkpoint_cleanup(cleanup);
+    let mut terminal = Vec::new();
+    for retirement in retirements {
+        if let Err(retained) = retire_checkpoint_until_terminal(retirement) {
+            terminal.push(retained);
+        }
+    }
+    if terminal.is_empty() && quarantined.is_empty() {
+        Ok(())
+    } else {
+        Err(
+            SynchronousCampaignExecutorError::CaptureNativeCleanupRetained {
+                terminal,
+                quarantined,
+            },
+        )
+    }
+}
+
+fn partition_checkpoint_cleanup(
+    cleanup: crate::NativeCheckpointCleanup,
+) -> (
+    Vec<crucible_api::ProductionExactCheckpointRetirement>,
+    Vec<crucible_api::ProductionExactCheckpointRetirement>,
+) {
+    let mut retirements = Vec::new();
+    let mut quarantined = Vec::new();
+    let mut pending = vec![cleanup];
+    while let Some(cleanup) = pending.pop() {
+        match cleanup {
+            crate::NativeCheckpointCleanup::Retire(retirement) => retirements.push(retirement),
+            crate::NativeCheckpointCleanup::Quarantine(retirement) => {
+                quarantined.push(retirement);
+            }
+            crate::NativeCheckpointCleanup::Batch(cleanups) => pending.extend(cleanups),
+        }
+    }
+    (retirements, quarantined)
+}
+
+fn retire_checkpoint_until_terminal(
+    retirement: crucible_api::ProductionExactCheckpointRetirement,
+) -> Result<
+    (),
+    (
+        crucible_api::ProductionExactCheckpointRetirementError,
+        crucible_api::ProductionExactCheckpointRetirement,
+    ),
+> {
+    loop {
+        match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.is_retryable() => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => return Err((error, retirement)),
+        }
+    }
 }
 
 fn reconcile_model<M: AttemptExecutionModel>(
@@ -809,7 +940,9 @@ where
     M::Error: Error + 'static,
 {
     for _ in 0..DEFAULT_RUN_RECONCILIATION_STEPS {
-        match model.reconcile_execution(disposition) {
+        let reconciliation = model.reconcile_execution(disposition);
+        complete_checkpoint_cleanup(model.take_abandoned_native_checkpoint())?;
+        match reconciliation {
             Ok(AttemptExecutionReconciliationStep::Complete) => return Ok(()),
             Ok(AttemptExecutionReconciliationStep::Progressed) => {}
             Err(error) => {
@@ -915,6 +1048,58 @@ mod lock_tests {
         AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, ExecutionRetentionIntent,
     };
     use crucible_cas::content_store::{ContentId, ObjectKind};
+
+    #[test]
+    fn standalone_mixed_cleanup_retires_safe_catalog_before_retaining_quarantines() {
+        let retired_state = tempfile::tempdir().expect("standalone retired state");
+        let retired_fixture =
+            crucible_api::build_authenticated_production_checkpoint_codec_fixture(
+                retired_state.path(),
+            )
+            .expect("standalone retired fixture");
+        let retired = retired_fixture.closure().native_retirement();
+        let first_state = tempfile::tempdir().expect("first standalone quarantine state");
+        let first_fixture = crucible_api::build_authenticated_production_checkpoint_codec_fixture(
+            first_state.path(),
+        )
+        .expect("first standalone quarantine fixture");
+        let first = first_fixture.closure().native_retirement();
+        let second_state = tempfile::tempdir().expect("second standalone quarantine state");
+        let second_fixture = crucible_api::build_authenticated_production_checkpoint_codec_fixture(
+            second_state.path(),
+        )
+        .expect("second standalone quarantine fixture");
+        let second = second_fixture.closure().native_retirement();
+        let cleanup = crate::NativeCheckpointCleanup::Batch(vec![
+            crate::NativeCheckpointCleanup::Quarantine(first.clone()),
+            crate::NativeCheckpointCleanup::Retire(retired.clone()),
+            crate::NativeCheckpointCleanup::Quarantine(second.clone()),
+        ]);
+
+        let error = complete_checkpoint_cleanup::<Infallible>(Some(cleanup))
+            .expect_err("standalone cleanup must surface quarantined catalogs");
+
+        assert!(matches!(
+            error,
+            SynchronousCampaignExecutorError::CaptureNativeCleanupRetained {
+                terminal,
+                quarantined,
+            } if terminal.is_empty() && quarantined.len() == 2
+        ));
+        let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&retired)
+            .expect("repeat standalone safe retirement");
+        assert!(!repeated.retired());
+        assert!(
+            crucible_api::retire_production_exact_checkpoint_catalog(&first)
+                .expect("release first standalone quarantine")
+                .retired()
+        );
+        assert!(
+            crucible_api::retire_production_exact_checkpoint_catalog(&second)
+                .expect("release second standalone quarantine")
+                .retired()
+        );
+    }
 
     #[test]
     fn poisoned_capture_owner_rejects_new_work_but_allows_controlled_cleanup() {

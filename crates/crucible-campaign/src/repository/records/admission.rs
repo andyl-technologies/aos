@@ -185,10 +185,9 @@ impl CampaignRepository {
                 | BranchRequestCause::ScenarioDefault(cause_policy),
             ..
         } = admission.role()
+            && cause_policy != retention_policy
         {
-            if cause_policy != retention_policy {
-                return Err(integrity("attempt-admission-retention-policy-mismatch"));
-            }
+            return Err(integrity("attempt-admission-retention-policy-mismatch"));
         }
         Ok(())
     }

@@ -334,13 +334,17 @@ where
     fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
         let execution = queued.execution();
         let lease = self.lifecycles.begin(execution);
-        let (queued, result) = self.inner.execute(queued).into_parts();
+        let (queued, result, checkpoint) = self.inner.execute(queued).into_parts();
         if let Err(failure) = &result {
             let diagnostic = packaged_attempt_failure_diagnostic(execution, failure);
             let _ = writeln!(std::io::stderr().lock(), "{diagnostic}");
         }
         lease.finish();
-        AttemptWorkResult::new(queued, result)
+        AttemptWorkResult::new(queued, result).with_abandoned_checkpoint(checkpoint)
+    }
+
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        self.inner.take_abandoned_native_checkpoint()
     }
 
     fn reconcile_execution(

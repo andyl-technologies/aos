@@ -379,8 +379,8 @@ pub use exact_pin_retention::{
     ExactPinReplayPromotion, ExactPinReplayTarget, ExactPinReplayValidator, ExactPinRetentionAdmin,
     ExactPinRetentionError, ExactPinRetentionFence, ExactPinSelectionClearDisposition,
     ExactPinSelectionDisposition, FindingExactPinBoundaries,
-    MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS, MAX_FINDING_EXACT_PIN_CANDIDATES,
-    select_finding_exact_pins,
+    MAX_FINDING_EXACT_PIN_CANDIDATE_ROOT_BYTES, MAX_FINDING_EXACT_PIN_CANDIDATES,
+    select_finding_exact_pins, select_finding_exact_pins_for_scenario,
 };
 pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{
@@ -417,19 +417,21 @@ pub use executor_supervisor::{
     LocalExecutorSupervisor, ObservationPublicationOutcome, PausedCheckpointPromotionRecovery,
     QueuedAttempt, TerminalFailureOutcome,
 };
+pub(crate) use executor_worker::stage_prepared_attempt_result_journal;
 pub use executor_worker::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionInput,
     AttemptExecutionModel, AttemptExecutionProduct, AttemptExecutionReconciliationStep,
-    AttemptExecutionRuntimeBasis, AttemptResultAbortError, AttemptResultAbortOutcome,
-    AttemptResultJournalError, AttemptResultPreparationError, AttemptResultPreparationFailure,
-    AttemptResultPublicationError, AttemptResultPublicationFailure, AttemptResultRecoveryError,
-    AttemptResultRecoveryFailure, AttemptResultStageOutcome, AttemptResultStagingError,
-    AttemptWorkResult, AttemptWorkerFailure, AttemptWorkerReconcileError,
-    AttemptWorkerReconcileOutcome, CheckpointResultAbortError, CheckpointResultAbortToken,
-    CheckpointResultPublicationError, CheckpointResultReconcileError, CheckpointResultStageOutcome,
-    CheckpointResultStagingError, LocalAttemptWorker, PendingAttemptResult,
-    PendingCheckpointResult, PreparedAttemptRecoveryOutcome, PreparedAttemptResult,
-    PreparedAttemptWorkResult, PreparedCheckpointResult, PublishedAttemptResult,
+    AttemptExecutionRuntimeBasis, AttemptFindingRetentionPolicy, AttemptResultAbortError,
+    AttemptResultAbortOutcome, AttemptResultJournalError, AttemptResultPreparationError,
+    AttemptResultPreparationFailure, AttemptResultPublicationError,
+    AttemptResultPublicationFailure, AttemptResultRecoveryError, AttemptResultRecoveryFailure,
+    AttemptResultStageOutcome, AttemptResultStagingError, AttemptWorkResult, AttemptWorkerFailure,
+    AttemptWorkerReconcileError, AttemptWorkerReconcileOutcome, CheckpointResultAbortError,
+    CheckpointResultAbortToken, CheckpointResultPublicationError, CheckpointResultReconcileError,
+    CheckpointResultStageOutcome, CheckpointResultStagingError, LocalAttemptWorker,
+    NativeCheckpointCleanup, PendingAttemptResult, PendingCheckpointResult,
+    PreparedAttemptRecoveryOutcome, PreparedAttemptResult, PreparedAttemptWorkResult,
+    PreparedCheckpointResult, PreparedFindingExactRetention, PublishedAttemptResult,
     PublishedAttemptResultAbortError, PublishedCheckpointResult, RepositoryAttemptWorker,
     RepositoryAttemptWorkerError, ResolvedAttemptStart, StagedAttemptResult,
     StagedCheckpointResult, abort_checkpoint_result, abort_prepared_attempt_result,

@@ -35,7 +35,9 @@ use crucible_campaign::{
 use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v13\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v15\0";
+const ATTEMPT_STATE_MAGIC_V14: &[u8] = b"crucible.executor.attempt-state-record.v14\0";
+const ATTEMPT_STATE_MAGIC_V13: &[u8] = b"crucible.executor.attempt-state-record.v13\0";
 const ATTEMPT_STATE_MAGIC_V12: &[u8] = b"crucible.executor.attempt-state-record.v12\0";
 const ATTEMPT_STATE_MAGIC_V11: &[u8] = b"crucible.executor.attempt-state-record.v11\0";
 const ATTEMPT_STATE_MAGIC_V10: &[u8] = b"crucible.executor.attempt-state-record.v10\0";
@@ -49,7 +51,9 @@ const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v
 const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v13";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v15";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V14: &str = "crucible.executor.attempt-state-record.v14";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V13: &str = "crucible.executor.attempt-state-record.v13";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V12: &str = "crucible.executor.attempt-state-record.v12";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V11: &str = "crucible.executor.attempt-state-record.v11";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V10: &str = "crucible.executor.attempt-state-record.v10";
@@ -69,6 +73,7 @@ const ABSENT_RETENTION_GENERATION_DOMAIN: &str =
     "crucible.executor.absent-assignment-retention-generation.v1";
 const RETENTION_STATE_FILE: &str = "retention-state-v1";
 const MAX_LEDGER_RECORD_BYTES: u64 = 16 * 1024;
+const MAX_PUBLISHING_FINDING_EXACT_ROOTS: usize = 3;
 const MAX_RETENTION_STATE_BYTES: u64 = 256;
 const MAX_TYPED_ID_BYTES: usize = 256;
 
@@ -506,6 +511,11 @@ pub enum AttemptRuntimeState {
         finding_candidate: Option<FindingCandidateBundleId>,
         /// Portable capture manifests retained before candidate publication.
         finding_replay_captures: Option<FindingReplayCaptureSet>,
+        /// Exact checkpoints retained until the finding candidate is published.
+        finding_exact_retention_roots:
+            [Option<ExactCheckpointId>; MAX_PUBLISHING_FINDING_EXACT_ROOTS],
+        /// Digest of the complete prepared-result payload staged for recovery.
+        prepared_result_digest: Option<CampaignHash>,
     },
     /// One execution published an immutable observation.
     Completed {
@@ -521,6 +531,8 @@ pub enum AttemptRuntimeState {
         observation: ObservationId,
         /// Candidate identity and operational-retention disposition.
         finding_candidate: CompletedFindingCandidate,
+        /// Digest of the complete prepared-result payload authenticated at publication.
+        prepared_result_digest: Option<CampaignHash>,
     },
     /// The daemon accepted cancellation before canonical completion.
     Canceled {
@@ -646,6 +658,22 @@ impl AttemptRuntimeState {
         }
     }
 
+    /// Returns the full prepared-result digest retained for publication recovery.
+    #[must_use]
+    pub const fn prepared_result_digest(self) -> Option<CampaignHash> {
+        match self {
+            Self::Publishing {
+                prepared_result_digest,
+                ..
+            }
+            | Self::Completed {
+                prepared_result_digest,
+                ..
+            } => prepared_result_digest,
+            _ => None,
+        }
+    }
+
     /// Returns the finding candidate reported with completion, when present.
     #[must_use]
     pub const fn finding_candidate(self) -> Option<FindingCandidateBundleId> {
@@ -697,6 +725,20 @@ impl AttemptRuntimeState {
                 ..
             } => finding_replay_captures,
             _ => None,
+        }
+    }
+
+    /// Returns exact roots retained while finding publication is incomplete.
+    #[must_use]
+    pub const fn pending_finding_exact_retention_roots(
+        self,
+    ) -> [Option<ExactCheckpointId>; MAX_PUBLISHING_FINDING_EXACT_ROOTS] {
+        match self {
+            Self::Publishing {
+                finding_exact_retention_roots,
+                ..
+            } => finding_exact_retention_roots,
+            _ => [None; MAX_PUBLISHING_FINDING_EXACT_ROOTS],
         }
     }
 
@@ -754,7 +796,7 @@ impl AttemptRuntimeState {
         }
     }
 
-    pub(crate) fn retained_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 4] {
+    pub(crate) fn retained_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 7] {
         let current = self.checkpoint();
         let promotion_source = self
             .promotion_source_checkpoint()
@@ -770,11 +812,20 @@ impl AttemptRuntimeState {
                         && Some(*checkpoint) != promotion_source
                         && Some(*checkpoint) != resume_input
                 });
-        [current, promotion_source, resume_input, certificate_source]
+        let finding_exact = self.pending_finding_exact_retention_roots();
+        [
+            current,
+            promotion_source,
+            resume_input,
+            certificate_source,
+            finding_exact[0],
+            finding_exact[1],
+            finding_exact[2],
+        ]
     }
 
     /// Returns complete checkpoint roots known to be materialized in this state.
-    pub(crate) fn materialized_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 4] {
+    pub(crate) fn materialized_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 7] {
         let current = match self {
             Self::Paused { checkpoint, .. } => Some(checkpoint),
             Self::Running { .. }
@@ -798,10 +849,23 @@ impl AttemptRuntimeState {
                         && Some(*checkpoint) != promotion_source
                         && Some(*checkpoint) != resume_input
                 });
-        [current, promotion_source, resume_input, certificate_source]
+        let finding_exact = self.pending_finding_exact_retention_roots();
+        [
+            current,
+            promotion_source,
+            resume_input,
+            certificate_source,
+            finding_exact[0],
+            finding_exact[1],
+            finding_exact[2],
+        ]
     }
 
     fn validates_for_key(self, key: AttemptExecutionKey) -> bool {
+        if !self.validates_finding_exact_retention_roots() {
+            return false;
+        }
+
         let scoped_capture = matches!(key.scope(), AttemptExecutionScope::SavepointCapture { .. });
         if scoped_capture
             && (self.origin() != AttemptExecutionOrigin::Initial
@@ -829,6 +893,34 @@ impl AttemptRuntimeState {
             return false;
         }
         promotion_basis.is_none_or(|basis| basis.start_mode().execution_scope() == key.scope())
+    }
+
+    fn validates_finding_exact_retention_roots(self) -> bool {
+        let Self::Publishing {
+            finding_candidate,
+            finding_exact_retention_roots,
+            ..
+        } = self
+        else {
+            return true;
+        };
+
+        let mut previous = None;
+        let mut found_empty = false;
+        for root in finding_exact_retention_roots {
+            let Some(root) = root else {
+                found_empty = true;
+                continue;
+            };
+            if finding_candidate.is_none()
+                || found_empty
+                || previous.is_some_and(|previous| previous >= root)
+            {
+                return false;
+            }
+            previous = Some(root);
+        }
+        true
     }
 }
 
@@ -2092,6 +2184,7 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             execution,
             observation,
             finding_candidate,
+            prepared_result_digest,
             ..
         } => {
             payload.push(1);
@@ -2100,6 +2193,7 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             push_bytes(&mut payload, observation.to_text().as_bytes());
             encode_optional_finding_candidate(&mut payload, finding_candidate.candidate());
             payload.push(u8::from(finding_candidate.is_acknowledged()));
+            encode_optional_campaign_hash(&mut payload, prepared_result_digest);
         }
         AttemptRuntimeState::Publishing {
             daemon_epoch,
@@ -2107,6 +2201,8 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             observation,
             finding_candidate,
             finding_replay_captures,
+            finding_exact_retention_roots,
+            prepared_result_digest,
             ..
         } => {
             payload.push(3);
@@ -2115,6 +2211,8 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             push_bytes(&mut payload, observation.to_text().as_bytes());
             encode_optional_finding_candidate(&mut payload, finding_candidate);
             encode_optional_finding_replay_captures(&mut payload, finding_replay_captures);
+            encode_finding_exact_retention_roots(&mut payload, finding_exact_retention_roots);
+            encode_optional_campaign_hash(&mut payload, prepared_result_digest);
         }
         AttemptRuntimeState::Canceled {
             daemon_epoch,
@@ -2143,6 +2241,10 @@ fn decode_attempt_state(
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
     let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
         (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V14) {
+        (payload, ATTEMPT_STATE_MAGIC_V14)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V13) {
+        (payload, ATTEMPT_STATE_MAGIC_V13)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V12) {
         (payload, ATTEMPT_STATE_MAGIC_V12)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11) {
@@ -2175,7 +2277,9 @@ fn decode_attempt_state(
     cursor.require(magic)?;
     let lineage = parse_typed(cursor.bytes()?, CampaignLineageId::parse)?;
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
-    let scope = if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+    let scope = if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+        || magic == ATTEMPT_STATE_MAGIC_V13)
+        || magic == ATTEMPT_STATE_MAGIC_V12
         || magic == ATTEMPT_STATE_MAGIC_V11
     {
         AttemptExecutionScope::from_canonical_bytes(cursor.bytes()?)?
@@ -2183,7 +2287,9 @@ fn decode_attempt_state(
         AttemptExecutionScope::Semantic
     };
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
-    let origin = if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+    let origin = if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+        || magic == ATTEMPT_STATE_MAGIC_V13)
+        || magic == ATTEMPT_STATE_MAGIC_V12
         || magic == ATTEMPT_STATE_MAGIC_V11
         || magic == ATTEMPT_STATE_MAGIC_V10
         || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2195,7 +2301,9 @@ fn decode_attempt_state(
     {
         decode_attempt_origin(
             &mut cursor,
-            magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12,
+            ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+                || magic == ATTEMPT_STATE_MAGIC_V13)
+                || magic == ATTEMPT_STATE_MAGIC_V12,
         )?
     } else {
         AttemptExecutionOrigin::Initial
@@ -2213,8 +2321,10 @@ fn decode_attempt_state(
         1 => {
             let observation = parse_typed(cursor.bytes()?, ObservationId::parse)?;
             let finding_candidate = decode_optional_finding_candidate(&mut cursor, magic)?;
-            let finding_candidate_acknowledged = if (magic == ATTEMPT_STATE_MAGIC
-                || magic == ATTEMPT_STATE_MAGIC_V12)
+            let finding_candidate_acknowledged = if ((magic == ATTEMPT_STATE_MAGIC
+                || magic == ATTEMPT_STATE_MAGIC_V14)
+                || magic == ATTEMPT_STATE_MAGIC_V13)
+                || magic == ATTEMPT_STATE_MAGIC_V12
                 || magic == ATTEMPT_STATE_MAGIC_V11
                 || magic == ATTEMPT_STATE_MAGIC_V10
                 || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2244,6 +2354,11 @@ fn decode_attempt_state(
                 execution,
                 observation,
                 finding_candidate,
+                prepared_result_digest: if magic == ATTEMPT_STATE_MAGIC {
+                    decode_optional_campaign_hash(&mut cursor)?
+                } else {
+                    None
+                },
             }
         }
         2 => AttemptRuntimeState::Canceled {
@@ -2252,7 +2367,9 @@ fn decode_attempt_state(
             daemon_epoch,
             execution,
         },
-        8 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+        8 if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+            || magic == ATTEMPT_STATE_MAGIC_V13)
+            || magic == ATTEMPT_STATE_MAGIC_V12
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2266,7 +2383,9 @@ fn decode_attempt_state(
                 execution,
             }
         }
-        3 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+        3 if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+            || magic == ATTEMPT_STATE_MAGIC_V13)
+            || magic == ATTEMPT_STATE_MAGIC_V12
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2285,14 +2404,33 @@ fn decode_attempt_state(
                 execution,
                 observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
                 finding_candidate: decode_optional_finding_candidate(&mut cursor, magic)?,
-                finding_replay_captures: if magic == ATTEMPT_STATE_MAGIC {
+                finding_replay_captures: if (magic == ATTEMPT_STATE_MAGIC
+                    || magic == ATTEMPT_STATE_MAGIC_V14)
+                    || magic == ATTEMPT_STATE_MAGIC_V13
+                {
                     decode_optional_finding_replay_captures(&mut cursor)?
+                } else {
+                    None
+                },
+                finding_exact_retention_roots: if magic == ATTEMPT_STATE_MAGIC
+                    || magic == ATTEMPT_STATE_MAGIC_V14
+                {
+                    decode_finding_exact_retention_roots(&mut cursor)?
+                } else {
+                    [None; MAX_PUBLISHING_FINDING_EXACT_ROOTS]
+                },
+                prepared_result_digest: if magic == ATTEMPT_STATE_MAGIC
+                    || magic == ATTEMPT_STATE_MAGIC_V14
+                {
+                    decode_optional_campaign_hash(&mut cursor)?
                 } else {
                     None
                 },
             }
         }
-        4 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+        4 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+            || magic == ATTEMPT_STATE_MAGIC_V13)
+            || magic == ATTEMPT_STATE_MAGIC_V12)
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2310,7 +2448,9 @@ fn decode_attempt_state(
                 execution,
             }
         }
-        5 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+        5 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+            || magic == ATTEMPT_STATE_MAGIC_V13)
+            || magic == ATTEMPT_STATE_MAGIC_V12)
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2329,7 +2469,9 @@ fn decode_attempt_state(
                 checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
             }
         }
-        6 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+        6 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+            || magic == ATTEMPT_STATE_MAGIC_V13)
+            || magic == ATTEMPT_STATE_MAGIC_V12)
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2349,6 +2491,8 @@ fn decode_attempt_state(
                 promotion_basis: if matches!(
                     magic,
                     ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V14
+                        | ATTEMPT_STATE_MAGIC_V13
                         | ATTEMPT_STATE_MAGIC_V12
                         | ATTEMPT_STATE_MAGIC_V11
                         | ATTEMPT_STATE_MAGIC_V10
@@ -2359,19 +2503,27 @@ fn decode_attempt_state(
                 ) {
                     decode_checkpoint_promotion_basis(
                         &mut cursor,
-                        (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+                            || magic == ATTEMPT_STATE_MAGIC_V13)
+                            || magic == ATTEMPT_STATE_MAGIC_V12)
                             || magic == ATTEMPT_STATE_MAGIC_V11
                             || magic == ATTEMPT_STATE_MAGIC_V10,
-                        (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+                            || magic == ATTEMPT_STATE_MAGIC_V13)
+                            || magic == ATTEMPT_STATE_MAGIC_V12)
                             || magic == ATTEMPT_STATE_MAGIC_V11,
-                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12,
+                        ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+                            || magic == ATTEMPT_STATE_MAGIC_V13)
+                            || magic == ATTEMPT_STATE_MAGIC_V12,
                     )?
                 } else {
                     None
                 },
             }
         }
-        7 if (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+        7 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+            || magic == ATTEMPT_STATE_MAGIC_V13)
+            || magic == ATTEMPT_STATE_MAGIC_V12)
             || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
@@ -2390,6 +2542,8 @@ fn decode_attempt_state(
                 promotion_basis: if matches!(
                     magic,
                     ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V14
+                        | ATTEMPT_STATE_MAGIC_V13
                         | ATTEMPT_STATE_MAGIC_V12
                         | ATTEMPT_STATE_MAGIC_V11
                         | ATTEMPT_STATE_MAGIC_V10
@@ -2400,12 +2554,18 @@ fn decode_attempt_state(
                 ) {
                     decode_checkpoint_promotion_basis(
                         &mut cursor,
-                        (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+                            || magic == ATTEMPT_STATE_MAGIC_V13)
+                            || magic == ATTEMPT_STATE_MAGIC_V12)
                             || magic == ATTEMPT_STATE_MAGIC_V11
                             || magic == ATTEMPT_STATE_MAGIC_V10,
-                        (magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12)
+                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+                            || magic == ATTEMPT_STATE_MAGIC_V13)
+                            || magic == ATTEMPT_STATE_MAGIC_V12)
                             || magic == ATTEMPT_STATE_MAGIC_V11,
-                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V12,
+                        ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
+                            || magic == ATTEMPT_STATE_MAGIC_V13)
+                            || magic == ATTEMPT_STATE_MAGIC_V12,
                     )?
                 } else {
                     None
@@ -2486,11 +2646,66 @@ fn decode_optional_finding_replay_captures(
     }
 }
 
+fn encode_finding_exact_retention_roots(
+    payload: &mut Vec<u8>,
+    roots: [Option<ExactCheckpointId>; MAX_PUBLISHING_FINDING_EXACT_ROOTS],
+) {
+    for root in roots {
+        match root {
+            Some(root) => {
+                payload.push(1);
+                push_bytes(payload, root.to_text().as_bytes());
+            }
+            None => payload.push(0),
+        }
+    }
+}
+
+fn encode_optional_campaign_hash(payload: &mut Vec<u8>, digest: Option<CampaignHash>) {
+    match digest {
+        Some(digest) => {
+            payload.push(1);
+            payload.extend_from_slice(&digest.as_bytes());
+        }
+        None => payload.push(0),
+    }
+}
+
+fn decode_optional_campaign_hash(
+    cursor: &mut RecordCursor<'_>,
+) -> Result<Option<CampaignHash>, AssignmentLedgerError> {
+    match cursor.byte()? {
+        0 => Ok(None),
+        1 => {
+            let bytes = cursor.fixed::<32>()?;
+            Ok(Some(CampaignHash::from_bytes(bytes)))
+        }
+        _ => Err(corrupt("attempt-state-campaign-hash-option-tag")),
+    }
+}
+
+fn decode_finding_exact_retention_roots(
+    cursor: &mut RecordCursor<'_>,
+) -> Result<[Option<ExactCheckpointId>; MAX_PUBLISHING_FINDING_EXACT_ROOTS], AssignmentLedgerError>
+{
+    let mut roots = [None; MAX_PUBLISHING_FINDING_EXACT_ROOTS];
+    for root in &mut roots {
+        *root = match cursor.byte()? {
+            0 => None,
+            1 => Some(parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?),
+            _ => return Err(corrupt("attempt-state-finding-exact-root-option-tag")),
+        };
+    }
+    Ok(roots)
+}
+
 fn decode_optional_finding_candidate(
     cursor: &mut RecordCursor<'_>,
     magic: &[u8],
 ) -> Result<Option<FindingCandidateBundleId>, AssignmentLedgerError> {
     if magic != ATTEMPT_STATE_MAGIC
+        && magic != ATTEMPT_STATE_MAGIC_V14
+        && magic != ATTEMPT_STATE_MAGIC_V13
         && magic != ATTEMPT_STATE_MAGIC_V12
         && magic != ATTEMPT_STATE_MAGIC_V11
         && magic != ATTEMPT_STATE_MAGIC_V10

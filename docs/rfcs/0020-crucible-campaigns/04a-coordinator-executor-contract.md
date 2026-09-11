@@ -1700,6 +1700,14 @@ SubmitAttemptRequestV4 = version | assignment_id | daemon_epoch | lineage_id |
                          attempt_id | resource_limits | retention_intent |
                          scoped_start_mode
 
+SubmitAttemptRequestV5 = version | assignment_id | daemon_epoch | lineage_id |
+                         attempt_id | resource_limits | retention_intent |
+                         selected_savepoint_start_mode
+
+SubmitAttemptRequestV6 = version | assignment_id | daemon_epoch | lineage_id |
+                         attempt_id | resource_limits | retention_intent |
+                         start_mode | finding_retention_policy_basis
+
 resource_limits = maximum_vcpus | maximum_resident_bytes |
                   maximum_disk_bytes | maximum_execution_quanta
 
@@ -1733,6 +1741,24 @@ ResumeAttemptExecutionRequestV3 = version | assignment_id | daemon_epoch |
                                   lineage_id | attempt_id | prior_execution_id |
                                   exact_checkpoint_id | resource_limits |
                                   retention_intent | prior_start_mode
+
+ResumeAttemptExecutionRequestV4 = version | assignment_id | daemon_epoch |
+                                  lineage_id | attempt_id | prior_execution_id |
+                                  exact_checkpoint_id | resource_limits |
+                                  retention_intent | selected_start_mode
+
+ResumeAttemptExecutionRequestV5 = version | assignment_id | daemon_epoch |
+                                  lineage_id | attempt_id | prior_execution_id |
+                                  exact_checkpoint_id | resource_limits |
+                                  retention_intent | prior_start_mode |
+                                  finding_retention_policy_basis
+
+ResumeAttemptExecutionRequestV6 = version | assignment_id | daemon_epoch |
+                                  lineage_id | attempt_id | prior_execution_id |
+                                  exact_checkpoint_id | resource_limits |
+                                  retention_intent | prior_start_mode |
+                                  finding_retention_policy_basis |
+                                  prior_finding_retention_policy_basis
 
 ResumeAttemptExecutionResponseV2/V3 = version | assignment_id | daemon_epoch |
                                       attempt_id | prior_execution_id |
@@ -1808,6 +1834,16 @@ scope for direct lookup and never scans or infers a scope from a lineage and
 attempt ID. Attempt-state record v11 persists the scope and uses a separate
 version 2 storage-key domain for nonsemantic state while preserving the exact
 semantic version 1 path digest.
+
+Version 6 of `SubmitAttemptRequest` binds an authenticated finding-retention
+policy basis to semantic execute and selected-savepoint assignments. Capture
+modes reject that field, and semantic assignment fails closed when the
+canonical basis is unavailable or does not match the admitted attempt. Version
+5 of `ResumeAttemptExecutionRequest` carries the same basis for both the prior
+and new ordinary or selected-savepoint execution. Version 6 represents the
+materialized-capture transition: the fresh execution has a basis and the prior
+capture has none, so the fresh policy basis cannot relabel the capture's
+execution-basis digest.
 
 The canonical `AttemptId` names the immutable `Attempt` record and is itself
 the execution specification; the protocol deliberately does not create a
@@ -2194,17 +2230,40 @@ Result handoff is an ordered operational transaction. Guest execution consumes
 one non-cloneable dispatch token and receives semantic input separately from an
 operational context containing only resource ceilings, retention intent, and a
 cancellation signal. Candidate preflight runs without borrowing the supervisor
-actor. A short actor CAS changes `running` to
-`publishing(observation_id)` before the first immutable bundle write. Immutable
-publication runs outside the actor, followed by a short
-`publishing -> completed` CAS. Publishing and completed observation IDs are
-streamed by the ledger as authenticated GC roots without materializing history.
+actor. Under repository GC exclusion, the executor first publishes replay
+capture and exact-checkpoint children and binds the full prepared payload. For
+a Complete v5 finding it authenticates the bounded full candidate inventory,
+copies only selected checkpoint closures into the campaign CAS, and publishes
+the semantic candidate and observation while that same guard still protects
+the unselected inventory. It then fsyncs the payload and digest into a hidden
+prepared-result journal. A short actor CAS changes `running` to
+`publishing(observation_id, candidate_id, exact_roots,
+prepared_result_digest)`, and the journal is promoted into its visible recovery
+namespace before the guard is released. Later publication outside the actor is
+idempotent; a prepublished Complete v5 candidate is cold-validated through its
+selected closure without reopening unselected roots. A short `publishing ->
+completed` CAS carries the same full digest forward. Publishing and completed
+observation/candidate IDs are streamed by the ledger as authenticated GC roots
+without materializing history.
 
 After restart, a complete publishing observation is reauthenticated and
-promoted without guest execution. If its closure is incomplete, a fresh daemon
-may recover publication under a new execution identity, but the committed
-observation ID remains fixed. Version 2 readers accept legacy version 1
-running/completed/canceled records; new writes use version 2.
+promoted without guest execution. A completed candidate remains an operational
+root until coordinator incorporation. Before mutating any campaign ref,
+recovery reopens attempt-state v15 and the prepared-result journal together and
+compares execution basis, execution, observation, candidate, exact roots, and
+full payload digest, then authenticates the candidate's bounded complete closure,
+including replay-capture manifests and chunks and selected exact-checkpoint
+descendants. After canonical observation incorporation determines the exact
+post-observation snapshot, the daemon binds that snapshot and campaign to the
+authenticated tuple and seals it using a process-ephemeral key. The repository
+verifies the seal and creates a single-use authority bound to that exact
+campaign incorporation operation. This seal rejects cross-restart and stale-key
+reuse in the packaged trusted-daemon path; its public constructors and key
+installer do not make it an in-process unforgeability boundary against arbitrary
+linked code. If a
+closure is incomplete, a fresh daemon may recover publication under a new
+execution identity, but the committed observation ID remains fixed. Readers
+retain every registered prior attempt-state version; new writes use v15.
 
 The local Crucible execution adapter owns nested payload schemas. Scenario
 payload versions 1, 2, and 3 are respectively the strict `ScenarioDefForm`

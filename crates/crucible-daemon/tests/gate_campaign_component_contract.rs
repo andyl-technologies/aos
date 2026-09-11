@@ -41,12 +41,12 @@ use crucible_campaign::{
 use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
 
 use crucible_daemon::{
+    AssignmentLedgerError, AttemptExecutionKey, CrucibleCampaignArtifactStore,
+    DirectoryAssignmentLedger, ExecutorCapacity, LocalExecutorCapabilityService,
+    LocalExecutorError, LocalExecutorSupervisor, LoopbackCampaignService, LoopbackExecutorService,
+    LoopbackExecutorTimeouts, MemoryAssignmentLedger, RepositoryAttemptAdmission,
     encode_crucible_configuration_artifact, serve_loopback_campaign_once,
-    serve_loopback_executor_component_connection_with_limits, AssignmentLedgerError,
-    AttemptExecutionKey, CrucibleCampaignArtifactStore, DirectoryAssignmentLedger,
-    ExecutorCapacity, LocalExecutorCapabilityService, LocalExecutorError, LocalExecutorSupervisor,
-    LoopbackCampaignService, LoopbackExecutorService, LoopbackExecutorTimeouts,
-    MemoryAssignmentLedger, RepositoryAttemptAdmission,
+    serve_loopback_executor_component_connection_with_limits,
 };
 
 const CAMPAIGN_NAME: &str = "component-contract-flight";
@@ -238,11 +238,13 @@ fn same_campaign_survives_direct_rpc_and_independent_component_restarts() {
             .expect("published observation"),
         fixture.candidate.observation().clone()
     );
-    assert!(campaign_repository
-        .project_claimable_attempts(CAMPAIGN_NAME, None, 10_000)
-        .expect("post-incorporation attempts")
-        .attempts()
-        .is_empty());
+    assert!(
+        campaign_repository
+            .project_claimable_attempts(CAMPAIGN_NAME, None, 10_000)
+            .expect("post-incorporation attempts")
+            .attempts()
+            .is_empty()
+    );
     let visits = campaign_repository
         .project_branch_edge_visits(incorporated_head.snapshot_id(), fixture.branch_point)
         .expect("branch edge visits");
@@ -358,15 +360,17 @@ fn executor_process_helper() {
     remove_stale_socket(&paths.executor_socket);
     let listener = UnixListener::bind(&paths.executor_socket).expect("bind executor socket");
     let rpc_service = service.clone();
-    thread::spawn(move || loop {
-        let (mut stream, _) = listener.accept().expect("accept executor connection");
-        if let Err(error) = serve_loopback_executor_component_connection_with_limits(
-            &mut stream,
-            &mut rpc_service.clone(),
-            LoopbackExecutorTimeouts::default(),
-            64,
-        ) {
-            panic!("executor connection failed: {error:?}");
+    thread::spawn(move || {
+        loop {
+            let (mut stream, _) = listener.accept().expect("accept executor connection");
+            if let Err(error) = serve_loopback_executor_component_connection_with_limits(
+                &mut stream,
+                &mut rpc_service.clone(),
+                LoopbackExecutorTimeouts::default(),
+                64,
+            ) {
+                panic!("executor connection failed: {error:?}");
+            }
         }
     });
 

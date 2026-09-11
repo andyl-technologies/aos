@@ -15,6 +15,9 @@
 //! SubmitAttemptRequestV5 = version | assignment | daemon-epoch | lineage |
 //!                          attempt | resource-limits | retention-intent |
 //!                          selected-savepoint-start-mode
+//! SubmitAttemptRequestV6 = version | assignment | daemon-epoch | lineage |
+//!                          attempt | resource-limits | retention-intent |
+//!                          start-mode | finding-retention-policy-basis
 //! SubmitAttemptResponseV2/V3 = version | assignment | daemon-epoch | attempt |
 //!                              request-digest | disposition
 //! SubmitAttemptResponseV4 = version | assignment | daemon-epoch | attempt |
@@ -41,6 +44,17 @@
 //!                                    lineage | attempt | prior-execution |
 //!                                    checkpoint | resource-limits |
 //!                                    retention-intent | selected-start-mode
+//! ResumeAttemptExecutionRequestV5 = version | assignment | daemon-epoch |
+//!                                    lineage | attempt | prior-execution |
+//!                                    checkpoint | resource-limits |
+//!                                    retention-intent | prior-start-mode |
+//!                                    finding-retention-policy-basis
+//! ResumeAttemptExecutionRequestV6 = version | assignment | daemon-epoch |
+//!                                    lineage | attempt | prior-execution |
+//!                                    checkpoint | resource-limits |
+//!                                    retention-intent | prior-start-mode |
+//!                                    finding-retention-policy-basis |
+//!                                    prior-finding-retention-policy-basis
 //! ResumeAttemptExecutionResponseV2/V3 = version | assignment | daemon-epoch |
 //!                                        attempt | prior-execution | checkpoint |
 //!                                        request-digest | disposition
@@ -83,18 +97,21 @@ use std::collections::BTreeMap;
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::validate_identifier;
 use crate::{
-    AttemptId, CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineage,
-    CampaignLineageId, CampaignSnapshotId, ConfigurationArtifactId, ExactCheckpointId,
-    FindingCandidateBundleId, ObservationId,
+    AttemptAdmissionId, AttemptId, CampaignCodecError, CampaignFactId, CampaignHash,
+    CampaignLineage, CampaignLineageId, CampaignPolicyId, CampaignSnapshotId,
+    ConfigurationArtifactId, ExactCheckpointId, FindingCandidateBundleId, ObservationId,
 };
 
 const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 2;
 const MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION: u32 = 3;
 const SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION: u32 = 4;
 const SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION: u32 = 5;
+const RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION: u32 = 6;
 const SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION: u32 = 3;
 const RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 3;
 const SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 4;
+const RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 5;
+const MATERIALIZED_RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 6;
 const SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 3;
 const GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
 const RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
@@ -151,6 +168,33 @@ pub fn attempt_execution_basis_digest_for_start_mode(
     start_mode.encode(&mut encoder);
     CampaignHash::derive(
         "crucible.campaign.submit-attempt-execution-basis.v2",
+        &encoder.finish(),
+    )
+}
+
+fn attempt_execution_basis_digest_with_retention_policy(
+    lineage: CampaignLineageId,
+    attempt: AttemptId,
+    resources: AttemptResourceLimits,
+    retention: ExecutionRetentionIntent,
+    start_mode: AttemptStartMode,
+    policy_basis: Option<AttemptRetentionPolicyBasis>,
+) -> CampaignHash {
+    let Some(policy_basis) = policy_basis else {
+        return attempt_execution_basis_digest_for_start_mode(
+            lineage, attempt, resources, retention, start_mode,
+        );
+    };
+
+    let mut encoder = Encoder::new();
+    lineage.encode(&mut encoder);
+    attempt.encode(&mut encoder);
+    resources.encode(&mut encoder);
+    retention.encode(&mut encoder);
+    start_mode.encode(&mut encoder);
+    policy_basis.encode(&mut encoder);
+    CampaignHash::derive(
+        "crucible.campaign.submit-attempt-execution-basis.v3",
         &encoder.finish(),
     )
 }
@@ -464,6 +508,72 @@ impl Canonical for ExecutionRetentionIntent {
     }
 }
 
+/// Compact admission-bound policy basis for automatic finding retention.
+///
+/// `snapshot` authenticates the accounting root that selected `admission` as
+/// this attempt's execution basis. Executors recheck that exact membership;
+/// loading another stored admission for the same attempt is insufficient.
+///
+/// `policy` is absent only when a legacy admission does not canonically bind a
+/// policy. That absence prevents automatic exact retention and produces a
+/// localized finding diagnostic instead of accepting an unauthenticated policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttemptRetentionPolicyBasis {
+    snapshot: CampaignSnapshotId,
+    admission: AttemptAdmissionId,
+    policy: Option<CampaignPolicyId>,
+}
+
+impl AttemptRetentionPolicyBasis {
+    /// Builds one exact execution-basis admission and its derivable policy.
+    #[must_use]
+    pub const fn new(
+        snapshot: CampaignSnapshotId,
+        admission: AttemptAdmissionId,
+        policy: Option<CampaignPolicyId>,
+    ) -> Self {
+        Self {
+            snapshot,
+            admission,
+            policy,
+        }
+    }
+
+    /// Returns the immutable source snapshot that selected the admission.
+    #[must_use]
+    pub const fn snapshot(self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact execution-basis admission.
+    #[must_use]
+    pub const fn admission(self) -> AttemptAdmissionId {
+        self.admission
+    }
+
+    /// Returns the policy authenticated by the admission closure, when available.
+    #[must_use]
+    pub const fn policy(self) -> Option<CampaignPolicyId> {
+        self.policy
+    }
+}
+
+impl Canonical for AttemptRetentionPolicyBasis {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.snapshot.encode(encoder);
+        self.admission.encode(encoder);
+        self.policy.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self::new(
+            CampaignSnapshotId::decode(decoder)?,
+            AttemptAdmissionId::decode(decoder)?,
+            Option::<CampaignPolicyId>::decode(decoder)?,
+        ))
+    }
+}
+
 /// Durable namespace for one operational execution record.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AttemptExecutionScope {
@@ -675,6 +785,7 @@ const fn require_submit_attempt_request_version(version: u32) -> Result<(), Camp
         || version == MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION
         || version == SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION
         || version == SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION
+        || version == RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION
     {
         Ok(())
     } else {
@@ -690,6 +801,8 @@ const fn require_resume_attempt_execution_request_version(
     if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
         || version == RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
         || version == SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+        || version == RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+        || version == MATERIALIZED_RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
     {
         Ok(())
     } else {

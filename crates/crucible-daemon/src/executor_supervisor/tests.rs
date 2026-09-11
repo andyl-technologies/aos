@@ -9,11 +9,13 @@ use std::thread;
 use std::time::Duration;
 
 use crucible_campaign::{
-    AssignmentId, AttemptId, AttemptResourceLimits, CampaignFactId, CampaignLineageId,
+    AssignmentId, AttemptAdmissionId, AttemptId, AttemptResourceLimits,
+    AttemptRetentionPolicyBasis, CampaignFactId, CampaignLineageId, CampaignPolicyId,
     CampaignSnapshotId, ConfigurationArtifactId, ExecutionRetentionIntent, ExecutorClient,
     FindingCandidateBundleId, FindingReplayCaptureEvidenceId, FindingReplayCaptureIncomplete,
     FindingReplayCaptureReference, FindingReplayCaptureSet, SubmitAttemptDisposition,
 };
+use crucible_cas::content_store::{ContentId, ObjectKind};
 
 use super::*;
 use crate::{
@@ -464,7 +466,38 @@ fn materialized_start_capture_is_durable_and_prelatched_before_dispatch() {
         CheckpointCompletionOutcome::Paused
     );
 
-    let resumed_assignment = request(0x64, 0x71, second_epoch, resources(1, 2048, 4096));
+    let policy_basis = AttemptRetentionPolicyBasis::new(
+        CampaignSnapshotId::parse(&format!(
+            "crucible.campaign.snapshot@{}",
+            ContentId::for_bytes(
+                ObjectKind::CampaignSnapshot,
+                3,
+                b"materialized-resume-snapshot"
+            )
+            .encode()
+        ))
+        .expect("materialized resume snapshot"),
+        AttemptAdmissionId::parse(&format!(
+            "crucible.campaign.attempt-admission@{}",
+            ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                3,
+                b"materialized-resume-admission"
+            )
+            .encode()
+        ))
+        .expect("materialized resume admission"),
+        Some(
+            CampaignPolicyId::parse(&format!(
+                "crucible.campaign.policy@{}",
+                ContentId::for_bytes(ObjectKind::Policy, 1, b"materialized-resume-policy").encode()
+            ))
+            .expect("materialized resume policy"),
+        ),
+    );
+    let resumed_assignment = request(0x64, 0x71, second_epoch, resources(1, 2048, 4096))
+        .with_retention_policy_basis(policy_basis)
+        .expect("policy-bound resumed assignment");
     let legacy_resume =
         ResumeAttemptExecutionRequest::new(&resumed_assignment, recovery_execution, root)
             .expect("legacy resume request");
@@ -483,6 +516,8 @@ fn materialized_start_capture_is_durable_and_prelatched_before_dispatch() {
         start_configuration,
     )
     .expect("capture-aware resume request");
+    assert_eq!(resume.retention_policy_basis(), Some(policy_basis));
+    assert_eq!(resume.prior_retention_policy_basis(), None);
     let resumed_execution = match second
         .resume_attempt_execution(&resume)
         .expect("resume captured start")

@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crucible_cas::content_store::{
     BlobHandle, BlobStoreAdmin, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
 };
+use ed25519_dalek::{Signer as _, SigningKey};
 
 use crate::{
     AlternativeId, AssignmentId, AttemptResourceLimits, BooleanDomain, BranchBudget, BudgetGrant,
@@ -284,6 +285,286 @@ fn authorized_fixture() -> (
         Some((planner.clone(), debugger.clone())),
     );
     (repository, lineage, policy, blobs, planner, debugger)
+}
+
+fn finding_recovery_context(marker: u8) -> FindingCandidateRecoveryContext {
+    let object_id = |kind, schema, label: &[u8]| {
+        let mut bytes = label.to_vec();
+        bytes.push(marker);
+        ContentId::for_bytes(kind, schema, &bytes)
+    };
+    let lineage = CampaignLineageId::from_content_id(object_id(
+        ObjectKind::CampaignFact,
+        1,
+        b"recovery lineage",
+    ))
+    .expect("recovery lineage");
+    let attempt =
+        AttemptId::from_content_id(object_id(ObjectKind::CampaignFact, 8, b"recovery attempt"))
+            .expect("recovery attempt");
+    let observation = ObservationId::from_content_id(object_id(
+        ObjectKind::Observation,
+        12,
+        b"recovery observation",
+    ))
+    .expect("recovery observation");
+    let bundle = FindingCandidateBundleId::from_content_id(object_id(
+        ObjectKind::Finding,
+        5,
+        b"recovery candidate",
+    ))
+    .expect("recovery candidate");
+    let expected_snapshot = CampaignSnapshotId::from_content_id(object_id(
+        ObjectKind::CampaignSnapshot,
+        3,
+        b"recovery expected snapshot",
+    ))
+    .expect("recovery expected snapshot");
+
+    FindingCandidateRecoveryContext::new(
+        CampaignName::new(format!("recovery-{marker:02x}")).expect("recovery campaign"),
+        expected_snapshot,
+        lineage,
+        attempt,
+        CampaignHash::derive("test.recovery.execution-basis", &[marker]),
+        ExecutionId::from_bytes([marker; 16]).expect("recovery execution"),
+        observation,
+        bundle,
+        CampaignHash::derive("test.recovery.prepared-result", &[marker]),
+    )
+}
+
+fn recovery_seal(
+    signing_key: &SigningKey,
+    context: &FindingCandidateRecoveryContext,
+) -> FindingCandidateRecoverySeal {
+    FindingCandidateRecoverySeal::from_bytes(signing_key.sign(&context.seal_message()).to_bytes())
+}
+
+fn recovery_executor_store(
+    signing_key: &SigningKey,
+) -> Result<CampaignExecutorStore, CampaignRepositoryError> {
+    let (repository, _, _) = fixture();
+    CampaignExecutorStore::new(Arc::new(repository))
+        .with_finding_candidate_recovery_verifying_key(signing_key.verifying_key().to_bytes())
+}
+
+#[test]
+fn recovery_incorporation_requires_an_installed_process_verifier() {
+    let signing_key = SigningKey::from_bytes(&[0x31; 32]);
+    let context = finding_recovery_context(0x41);
+    let seal = recovery_seal(&signing_key, &context);
+    let (repository, _, _) = fixture();
+    let store = CampaignExecutorStore::new(Arc::new(repository));
+
+    assert!(
+        store
+            .authenticate_recovered_finding_candidate_incorporation(context, seal)
+            .is_err()
+    );
+}
+
+#[test]
+fn recovery_incorporation_rejects_a_forged_seal() {
+    let signing_key = SigningKey::from_bytes(&[0x32; 32]);
+    let context = finding_recovery_context(0x42);
+    let store = recovery_executor_store(&signing_key).expect("recovery store");
+    let forged = FindingCandidateRecoverySeal::from_bytes([0x7f; 64]);
+
+    assert!(
+        store
+            .authenticate_recovered_finding_candidate_incorporation(context, forged)
+            .is_err()
+    );
+}
+
+#[test]
+fn recovery_incorporation_rejects_a_seal_from_a_rotated_key() {
+    let prior_key = SigningKey::from_bytes(&[0x33; 32]);
+    let current_key = SigningKey::from_bytes(&[0x34; 32]);
+    let context = finding_recovery_context(0x43);
+    let stale_seal = recovery_seal(&prior_key, &context);
+    let store = recovery_executor_store(&current_key).expect("recovery store");
+
+    assert!(
+        store
+            .authenticate_recovered_finding_candidate_incorporation(context, stale_seal)
+            .is_err()
+    );
+}
+
+#[test]
+fn recovery_incorporation_rejects_rebound_full_context() {
+    let signing_key = SigningKey::from_bytes(&[0x35; 32]);
+    let signed_context = finding_recovery_context(0x44);
+    let alternate = finding_recovery_context(0x45);
+    let seal = recovery_seal(&signing_key, &signed_context);
+    let store = recovery_executor_store(&signing_key).expect("recovery store");
+
+    let rebound_contexts = [
+        FindingCandidateRecoveryContext::new(
+            alternate.campaign().clone(),
+            signed_context.expected_snapshot(),
+            signed_context.lineage(),
+            signed_context.attempt(),
+            signed_context.execution_basis(),
+            signed_context.execution(),
+            signed_context.observation(),
+            signed_context.bundle(),
+            signed_context.prepared_result_digest(),
+        ),
+        FindingCandidateRecoveryContext::new(
+            signed_context.campaign().clone(),
+            alternate.expected_snapshot(),
+            signed_context.lineage(),
+            signed_context.attempt(),
+            signed_context.execution_basis(),
+            signed_context.execution(),
+            signed_context.observation(),
+            signed_context.bundle(),
+            signed_context.prepared_result_digest(),
+        ),
+        FindingCandidateRecoveryContext::new(
+            signed_context.campaign().clone(),
+            signed_context.expected_snapshot(),
+            alternate.lineage(),
+            signed_context.attempt(),
+            signed_context.execution_basis(),
+            signed_context.execution(),
+            signed_context.observation(),
+            signed_context.bundle(),
+            signed_context.prepared_result_digest(),
+        ),
+        FindingCandidateRecoveryContext::new(
+            signed_context.campaign().clone(),
+            signed_context.expected_snapshot(),
+            signed_context.lineage(),
+            alternate.attempt(),
+            signed_context.execution_basis(),
+            signed_context.execution(),
+            signed_context.observation(),
+            signed_context.bundle(),
+            signed_context.prepared_result_digest(),
+        ),
+        FindingCandidateRecoveryContext::new(
+            signed_context.campaign().clone(),
+            signed_context.expected_snapshot(),
+            signed_context.lineage(),
+            signed_context.attempt(),
+            alternate.execution_basis(),
+            signed_context.execution(),
+            signed_context.observation(),
+            signed_context.bundle(),
+            signed_context.prepared_result_digest(),
+        ),
+        FindingCandidateRecoveryContext::new(
+            signed_context.campaign().clone(),
+            signed_context.expected_snapshot(),
+            signed_context.lineage(),
+            signed_context.attempt(),
+            signed_context.execution_basis(),
+            alternate.execution(),
+            signed_context.observation(),
+            signed_context.bundle(),
+            signed_context.prepared_result_digest(),
+        ),
+        FindingCandidateRecoveryContext::new(
+            signed_context.campaign().clone(),
+            signed_context.expected_snapshot(),
+            signed_context.lineage(),
+            signed_context.attempt(),
+            signed_context.execution_basis(),
+            signed_context.execution(),
+            alternate.observation(),
+            signed_context.bundle(),
+            signed_context.prepared_result_digest(),
+        ),
+        FindingCandidateRecoveryContext::new(
+            signed_context.campaign().clone(),
+            signed_context.expected_snapshot(),
+            signed_context.lineage(),
+            signed_context.attempt(),
+            signed_context.execution_basis(),
+            signed_context.execution(),
+            signed_context.observation(),
+            alternate.bundle(),
+            signed_context.prepared_result_digest(),
+        ),
+        FindingCandidateRecoveryContext::new(
+            signed_context.campaign().clone(),
+            signed_context.expected_snapshot(),
+            signed_context.lineage(),
+            signed_context.attempt(),
+            signed_context.execution_basis(),
+            signed_context.execution(),
+            signed_context.observation(),
+            signed_context.bundle(),
+            alternate.prepared_result_digest(),
+        ),
+    ];
+    for rebound_context in rebound_contexts {
+        assert!(
+            store
+                .authenticate_recovered_finding_candidate_incorporation(rebound_context, seal)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn recovery_authorization_rejects_campaign_and_head_substitution() {
+    let signing_key = SigningKey::from_bytes(&[0x37; 32]);
+    let context = finding_recovery_context(0x47);
+    let alternate = finding_recovery_context(0x48);
+    let store = recovery_executor_store(&signing_key).expect("recovery store");
+
+    let campaign_authorization = store
+        .authenticate_recovered_finding_candidate_incorporation(
+            context.clone(),
+            recovery_seal(&signing_key, &context),
+        )
+        .expect("exact recovery seal");
+    assert!(
+        campaign_authorization
+            .bind(
+                alternate.campaign().as_str(),
+                context.expected_snapshot(),
+                context.bundle(),
+                context.observation(),
+            )
+            .is_none()
+    );
+
+    let head_authorization = store
+        .authenticate_recovered_finding_candidate_incorporation(
+            context.clone(),
+            recovery_seal(&signing_key, &context),
+        )
+        .expect("exact recovery seal");
+    assert!(
+        head_authorization
+            .bind(
+                context.campaign().as_str(),
+                alternate.expected_snapshot(),
+                context.bundle(),
+                context.observation(),
+            )
+            .is_none()
+    );
+}
+
+#[test]
+fn recovery_incorporation_accepts_the_current_key_and_exact_context() {
+    let signing_key = SigningKey::from_bytes(&[0x36; 32]);
+    let context = finding_recovery_context(0x46);
+    let seal = recovery_seal(&signing_key, &context);
+    let store = recovery_executor_store(&signing_key).expect("recovery store");
+
+    let authorization = store
+        .authenticate_recovered_finding_candidate_incorporation(context.clone(), seal)
+        .expect("valid restart seal");
+    assert_eq!(authorization.bundle(), context.bundle());
+    assert_eq!(authorization.observation(), context.observation());
 }
 
 fn fixture_with_quota_and_authorities(

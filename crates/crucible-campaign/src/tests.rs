@@ -276,8 +276,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             .unwrap_or_else(|| panic!("missing executor component schema {schema}"));
         let expected_version = match schema {
             "crucible.campaign.attempt-execution-scope" => "1",
-            "crucible.campaign.submit-attempt-request" => "5",
-            "crucible.campaign.resume-attempt-execution-request" => "4",
+            "crucible.campaign.submit-attempt-request" => "6",
+            "crucible.campaign.resume-attempt-execution-request" => "6",
             "crucible.campaign.get-attempt-execution-request"
             | "crucible.campaign.cancel-attempt-execution-request"
             | "crucible.campaign.checkpoint-attempt-execution-request" => "3",
@@ -374,7 +374,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.attempt-state-record",
-            "13",
+            "15",
             "operational-record",
         ),
         (

@@ -379,6 +379,8 @@ where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
 {
     /// Installs this complete assembly as one production lifecycle transaction.
+    // crucible-lint: allow rust-allow -- installation binds every semantic basis and owned runtime resource in one transaction.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn install_production_lifecycle(
         self,
         scenario: &crucible::ScenarioDef,

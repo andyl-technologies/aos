@@ -16,19 +16,23 @@
 //! a second cooperating daemon, while [`ExactPinRetentionFence`] excludes
 //! mutation in the owning process during GC plan/apply inventory.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 
-use crucible::{Configuration, World};
+use crucible::{Configuration, ScenarioDefForm, World};
 use crucible_api::authenticate_portable_exact_checkpoint_resume_basis;
 use crucible_api::lifecycle::LifecycleApiError;
 use crucible_campaign::{
-    CampaignCodecError, CampaignFactId, CampaignHash, CampaignName, CampaignRepository,
-    CampaignRepositoryError, CampaignSnapshotId, ConfigurationId, ExactCheckpointId,
-    FindingExactPins, PinRetention,
+    AuthenticatedFindingExactCheckpoint, CampaignCodecError, CampaignFactId, CampaignHash,
+    CampaignName, CampaignRepository, CampaignRepositoryError, CampaignSnapshotId, ConfigurationId,
+    ExactCheckpointId, FindingExactCheckpointAuthenticationError,
+    FindingExactCheckpointAuthenticator, FindingExactPins, PinRetention, ScenarioArtifactId,
+    ScenarioDefId,
 };
 use crucible_qemu::{
     QemuExactSnapshotPolicy, QemuFailedLaunchChildSource, QemuGuardedNodeRealizationLauncher,
@@ -55,6 +59,8 @@ pub const EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION: u32 = 1;
 pub const MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS: u64 = 64_000_000;
 /// Maximum authenticated exact checkpoints considered for one finding.
 pub const MAX_FINDING_EXACT_PIN_CANDIDATES: usize = 4_096;
+/// Maximum aggregate exact-root envelope bytes examined for one finding.
+pub const MAX_FINDING_EXACT_PIN_CANDIDATE_ROOT_BYTES: u64 = 64 * 1024 * 1024;
 /// Canonical sibling directory of the packaged assignment ledger.
 pub const EXACT_PIN_MATERIALIZATION_DIRECTORY: &str = "exact-pin-materializations";
 
@@ -66,6 +72,84 @@ const RECORDS_DIRECTORY: &str = "records";
 const WRITER_LOCK: &str = "writer.lock";
 
 static STAGING_ORDINAL: AtomicU64 = AtomicU64::new(1);
+
+/// Daemon-owned typed authentication authority for complete finding retention.
+pub(crate) struct FindingExactCheckpointAuthority {
+    repository: Weak<CampaignRepository>,
+    checkpoints: Arc<ExactCheckpointStore>,
+}
+
+impl FindingExactCheckpointAuthority {
+    /// Binds the authority to one repository and its production checkpoint store.
+    pub(crate) const fn new(
+        repository: Weak<CampaignRepository>,
+        checkpoints: Arc<ExactCheckpointStore>,
+    ) -> Self {
+        Self {
+            repository,
+            checkpoints,
+        }
+    }
+}
+
+impl FindingExactCheckpointAuthenticator for FindingExactCheckpointAuthority {
+    fn authenticate_finding_exact_checkpoint(
+        &self,
+        checkpoint: ExactCheckpointId,
+        scenario: ScenarioDefId,
+        scenario_artifact: ScenarioArtifactId,
+        configuration: ConfigurationId,
+        maximum_metadata_bytes: u64,
+    ) -> Result<AuthenticatedFindingExactCheckpoint, FindingExactCheckpointAuthenticationError>
+    {
+        let metadata_bytes = self
+            .checkpoints
+            .finding_authentication_metadata_bytes(checkpoint, maximum_metadata_bytes)
+            .map_err(|error| match error {
+                ExactCheckpointStoreError::ArtifactLimit { .. } => {
+                    FindingExactCheckpointAuthenticationError::LimitExceeded
+                }
+                _ => FindingExactCheckpointAuthenticationError::AuthenticationFailed,
+            })?;
+
+        let repository = self
+            .repository
+            .upgrade()
+            .ok_or(FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        let artifact = repository
+            .load_scenario_artifact(scenario_artifact)
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        if artifact.scenario() != scenario {
+            return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
+        }
+        let decoded = decode_crucible_scenario_artifact(&artifact)
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        let event_count = authenticate_finding_exact_checkpoint(
+            &self.checkpoints,
+            &decoded,
+            configuration,
+            checkpoint,
+        )
+        .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+
+        Ok(AuthenticatedFindingExactCheckpoint::new(
+            scenario,
+            configuration,
+            event_count,
+            metadata_bytes,
+        ))
+    }
+
+    fn read_finding_exact_checkpoint_object(
+        &self,
+        object: crucible_cas::content_store::ContentId,
+    ) -> Result<crucible_cas::content_store::BlobHandle, FindingExactCheckpointAuthenticationError>
+    {
+        self.checkpoints
+            .read_finding_exact_checkpoint_object(object)
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)
+    }
+}
 
 /// One authenticated operational materialization selected for a semantic pin.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -379,6 +463,111 @@ pub fn select_finding_exact_pins(
         BTreeSet::new(),
     )
     .map_err(Into::into)
+}
+
+/// Selects the nearest authenticated exact checkpoints for one finding scenario.
+///
+/// This production-capable form applies the complete portable resume validator
+/// before reading a version-four checkpoint's scheduler boundary. Compatibility
+/// roots are also required to name the supplied scenario.
+///
+/// # Errors
+///
+/// Returns [`ExactPinRetentionError`] when candidate count exceeds 4,096, a
+/// candidate is missing, corrupt, belongs to another scenario or configuration,
+/// lacks an authenticated scheduler continuation, or the result cannot fit the
+/// campaign finding bound.
+pub fn select_finding_exact_pins_for_scenario(
+    checkpoints: &ExactCheckpointStore,
+    scenario: &ScenarioDefForm,
+    configuration: ConfigurationId,
+    boundaries: FindingExactPinBoundaries,
+    candidates: &BTreeSet<ExactCheckpointId>,
+) -> Result<FindingExactPins, ExactPinRetentionError> {
+    if candidates.len() > MAX_FINDING_EXACT_PIN_CANDIDATES {
+        return Err(ExactPinRetentionError::FindingCandidateLimit);
+    }
+
+    let mut authenticated = BTreeMap::new();
+    for candidate in candidates {
+        let events = authenticate_finding_exact_checkpoint(
+            checkpoints,
+            scenario,
+            configuration,
+            *candidate,
+        )?;
+        authenticated.insert(*candidate, events);
+    }
+    select_finding_exact_pins_from_event_counts(boundaries, &authenticated)
+}
+
+pub(crate) fn select_finding_exact_pins_from_event_counts(
+    boundaries: FindingExactPinBoundaries,
+    candidates: &BTreeMap<ExactCheckpointId, u64>,
+) -> Result<FindingExactPins, ExactPinRetentionError> {
+    if candidates.len() > MAX_FINDING_EXACT_PIN_CANDIDATES {
+        return Err(ExactPinRetentionError::FindingCandidateLimit);
+    }
+    let mut pre_failure = None;
+    let mut measurement_boundary = None;
+    let mut post_failure = None;
+    for (candidate, events) in candidates {
+        if *events < boundaries.failure_events {
+            select_greatest(&mut pre_failure, *events, *candidate);
+        }
+        if let Some(boundary) = boundaries.measurement_boundary_events
+            && *events <= boundary
+        {
+            select_greatest(&mut measurement_boundary, *events, *candidate);
+        }
+        if *events >= boundaries.failure_events {
+            select_least(&mut post_failure, *events, *candidate);
+        }
+    }
+
+    FindingExactPins::new(
+        pre_failure
+            .map(|(_, checkpoint)| BTreeSet::from([checkpoint]))
+            .unwrap_or_default(),
+        measurement_boundary
+            .map(|(_, checkpoint)| BTreeSet::from([checkpoint]))
+            .unwrap_or_default(),
+        post_failure
+            .map(|(_, checkpoint)| BTreeSet::from([checkpoint]))
+            .unwrap_or_default(),
+        BTreeSet::new(),
+    )
+    .map_err(Into::into)
+}
+
+pub(crate) fn authenticate_finding_exact_checkpoint(
+    checkpoints: &ExactCheckpointStore,
+    scenario: &ScenarioDefForm,
+    configuration: ConfigurationId,
+    checkpoint: ExactCheckpointId,
+) -> Result<u64, ExactPinRetentionError> {
+    let loaded = load_checkpoint_for_configuration(checkpoints, checkpoint, configuration)?;
+    if loaded.scenario() != scenario.scenario_def().id() {
+        return Err(ExactPinRetentionError::CheckpointScenarioMismatch { checkpoint });
+    }
+    checkpoint_event_count(scenario, &loaded, checkpoint)
+}
+
+fn checkpoint_event_count(
+    scenario: &ScenarioDefForm,
+    loaded: &LoadedAttemptCheckpoint,
+    checkpoint: ExactCheckpointId,
+) -> Result<u64, ExactPinRetentionError> {
+    let scheduler = match loaded {
+        LoadedAttemptCheckpoint::SingleNode(loaded) => loaded
+            .scheduler()
+            .ok_or(ExactPinRetentionError::CheckpointHasNoScheduler { checkpoint })?,
+        LoadedAttemptCheckpoint::Production(loaded) => {
+            let basis = authenticate_portable_exact_checkpoint_resume_basis(scenario, &**loaded)?;
+            return Ok(basis.scheduler().event_log_offset().events);
+        }
+    };
+    Ok(scheduler.event_log_offset().events)
 }
 
 fn select_greatest(

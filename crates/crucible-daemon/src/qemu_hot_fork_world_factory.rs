@@ -1128,6 +1128,8 @@ where
     }
 }
 
+// crucible-lint: allow clippy-disallowed-method -- monotonic deadlines bound operational child cleanup and never enter campaign state.
+#[allow(clippy::disallowed_methods)]
 fn rollback_hot_fork_children<C>(
     mut children: BTreeMap<crucible::NodeId, C>,
     shutdown_policy: QemuShutdownPolicy,
@@ -1304,6 +1306,8 @@ where
     factory: F,
     driver: D,
     pending: Option<F::Lifecycle>,
+    abandoned_native_checkpoint: Option<crate::NativeCheckpointCleanup>,
+    in_flight_native_checkpoint: Option<crucible_api::ProductionExactCheckpointRetirement>,
 }
 
 impl<F, D> QemuHotForkWorldExecutionRunner<F, D>
@@ -1317,6 +1321,8 @@ where
             factory,
             driver,
             pending: None,
+            abandoned_native_checkpoint: None,
+            in_flight_native_checkpoint: None,
         }
     }
 
@@ -1330,6 +1336,54 @@ where
     pub(crate) fn quarantine_pending_execution(&mut self) {
         if let Some(lifecycle) = self.pending.take() {
             self.factory.quarantine(lifecycle);
+        }
+    }
+
+    pub(crate) fn take_abandoned_native_checkpoint(
+        &mut self,
+    ) -> Option<crate::NativeCheckpointCleanup> {
+        if let Some(retirement) = self.in_flight_native_checkpoint.take() {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
+                retirement,
+            ));
+        }
+        self.abandoned_native_checkpoint.take()
+    }
+
+    fn retain_native_checkpoint_cleanup(&mut self, cleanup: crate::NativeCheckpointCleanup) {
+        crate::NativeCheckpointCleanup::retain(&mut self.abandoned_native_checkpoint, cleanup);
+    }
+
+    fn register_native_checkpoint_capture(
+        &mut self,
+        checkpoint: &crate::CapturedAttemptCheckpoint,
+    ) {
+        let Some(retirement) = checkpoint.native_retirement() else {
+            return;
+        };
+        if let Some(prior) = self.in_flight_native_checkpoint.replace(retirement) {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
+                prior,
+            ));
+        }
+    }
+
+    fn resolve_native_checkpoint_capture(
+        &mut self,
+        shutdown_succeeded: bool,
+        result_succeeded: bool,
+    ) {
+        let Some(retirement) = self.in_flight_native_checkpoint.take() else {
+            return;
+        };
+        if !shutdown_succeeded {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
+                retirement,
+            ));
+        } else if !result_succeeded {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Retire(
+                retirement,
+            ));
         }
     }
 }
@@ -1566,8 +1620,9 @@ where
                                         ),
                                     )
                                 })?;
+                        self.register_native_checkpoint_capture(&capture);
                         context
-                            .prepare_and_stage_checkpoint(capture)
+                            .prepare_and_stage_checkpoint(&capture)
                             .map(HotForkRunnerResult::Checkpoint)
                             .map_err(map_hot_fork_checkpoint_handoff_failure)
                     }
@@ -1580,6 +1635,7 @@ where
                 .map_err(map_hot_fork_terminal_fingerprint_capture_failure)
         });
         let cleanup = lifecycle.shutdown();
+        self.resolve_native_checkpoint_capture(cleanup.is_ok(), driven.is_ok());
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
             (Err(failure), Ok(_)) => {
@@ -1693,6 +1749,12 @@ where
 {
     fn drop(&mut self) {
         self.quarantine_pending_execution();
+        if let Some(retirement) = self.in_flight_native_checkpoint.take() {
+            crate::NativeCheckpointCleanup::Quarantine(retirement).retain_for_process_lifetime();
+        }
+        if let Some(cleanup) = self.abandoned_native_checkpoint.take() {
+            cleanup.retain_for_process_lifetime();
+        }
     }
 }
 

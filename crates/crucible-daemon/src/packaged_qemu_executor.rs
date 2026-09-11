@@ -44,6 +44,9 @@ use crate::executor_pool::{
 #[cfg(test)]
 use crate::executor_supervisor::LocalExecutionActivity;
 use crate::guest_selectable::GuestSelectableBoundaryDiagnosticRecorder;
+use crate::pending_finding::{
+    PendingFindingRecoveryOwner, reconcile_authenticated_pending_finding_candidates,
+};
 use crate::qemu_campaign_lifecycle::{
     QemuAttemptExecutionEvidence, QemuObservedFreshAttemptLifecycleFactory,
     QemuTerminalEvidenceExecutionRunner,
@@ -85,7 +88,6 @@ use crate::{
     SharedQemuHotForkSourceWorldProvider, SharedQemuHotForkSourceWorldProviderConstructionError,
     SharedQemuHotForkSourceWorldProviderError, UnixPeerExecutorIdentity,
     capture_production_baked_genesis, decode_crucible_scenario_artifact,
-    reconcile_pending_finding_candidates,
 };
 
 mod exact_pin_materializer;
@@ -1140,21 +1142,40 @@ where
     reconcile_packaged_native_catalogs(config.lifecycle.run_state_root())?;
     let prepared_result_root =
         prepare_packaged_prepared_result_namespace(config.lifecycle.run_state_root())?;
-    let prepared_results =
-        PreparedResultJournalConfig::new(prepared_result_root, MAX_PREPARED_SEMANTIC_RESULT_BYTES);
-    reconcile_stable_prepared_result_journals(
-        &ledger,
-        &admission,
-        &prepared_results,
-        &gc_exclusion,
-    )?;
-    drop(gc_exclusion);
+    let prepared_results = PreparedResultJournalConfig::new(
+        prepared_result_root.clone(),
+        MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+    );
+    let checkpoints = Arc::new(ExactCheckpointStore::new(
+        checkpoint_backend,
+        config.maximum_checkpoint_bytes,
+    )?);
+    let finding_checkpoint_authenticator = Arc::new(
+        crate::exact_pin_retention::FindingExactCheckpointAuthority::new(
+            Arc::downgrade(&repository),
+            Arc::clone(&checkpoints),
+        ),
+    );
+    let recovery_owner = PendingFindingRecoveryOwner::new()
+        .map_err(PackagedQemuExecutorError::FindingRecoveryAuthority)?;
+    let store = CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
+        Arc::clone(&repository),
+        finding_checkpoint_authenticator,
+    )
+    .with_finding_candidate_recovery_verifying_key(recovery_owner.verifying_key_bytes())?;
 
     for campaign in &config.campaigns {
         loop {
-            let summary =
-                reconcile_pending_finding_candidates(repository.as_ref(), &mut ledger, campaign)
-                    .map_err(PackagedQemuExecutorError::FindingRestart)?;
+            let summary = reconcile_authenticated_pending_finding_candidates(
+                repository.as_ref(),
+                &store,
+                &recovery_owner,
+                &prepared_result_root,
+                MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+                &mut ledger,
+                campaign,
+            )
+            .map_err(PackagedQemuExecutorError::FindingRestart)?;
             if summary.remaining() == 0 {
                 break;
             }
@@ -1166,10 +1187,14 @@ where
             }
         }
     }
-    let checkpoints = Arc::new(ExactCheckpointStore::new(
-        checkpoint_backend,
-        config.maximum_checkpoint_bytes,
-    )?);
+    reconcile_stable_prepared_result_journals(
+        &ledger,
+        &admission,
+        &prepared_results,
+        &gc_exclusion,
+    )?;
+    drop(gc_exclusion);
+
     let exact_pin_root = config.exact_pin_materialization_root();
     let (prepared_exact_pins, checkpoint_observer) = prepare_packaged_exact_pin_materializer(
         Arc::clone(&repository),
@@ -1179,7 +1204,6 @@ where
         &exact_pin_root,
     )?;
     let resource_ceiling = packaged_resource_ceiling(&config)?;
-    let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let worker_state_root = config.lifecycle.run_state_root().join("campaign-workers");
     let finding_replay_state_root = config
         .lifecycle
@@ -1318,6 +1342,7 @@ where
             promotion_workers,
             checkpoint_observer,
             Some(prepared_results.clone()),
+            hot_fork_retention.as_ref().map(Arc::clone),
         )?
     } else {
         LocalExecutorWorkerPool::start_with_checkpoint_observer(
@@ -1327,6 +1352,7 @@ where
             workers,
             checkpoint_observer,
             Some(prepared_results),
+            hot_fork_retention.as_ref().map(Arc::clone),
         )?
     };
     let pool_status = pool.service();
@@ -1364,10 +1390,11 @@ where
     })
 }
 
-const PACKAGED_NATIVE_NAMESPACES: [&str; 3] = [
+const PACKAGED_NATIVE_NAMESPACES: [&str; 4] = [
     "campaign-workers",
     "campaign-finding-replays",
     "campaign-checkpoint-promotions",
+    "campaign-baked-genesis",
 ];
 const PACKAGED_PREPARED_RESULT_NAMESPACE: &str = "campaign-prepared-results";
 
@@ -1508,6 +1535,28 @@ impl PackagedAttemptAdmission {
         self.validate_lineage_scenario(request.lineage())
     }
 
+    fn validate_retention_policy_basis(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<(), ExecutorRejection> {
+        if request.execution_scope() != crucible_campaign::AttemptExecutionScope::Semantic
+            || matches!(
+                request.start_mode(),
+                crucible_campaign::AttemptStartMode::CaptureMaterializedStart { .. }
+                    | crucible_campaign::AttemptStartMode::SavepointCapture { .. }
+            )
+        {
+            return Ok(());
+        }
+        let basis = request
+            .retention_policy_basis()
+            .ok_or(ExecutorRejection::Incompatible)?;
+        CampaignExecutorStore::new(Arc::clone(&self.repository))
+            .validate_attempt_retention_policy_basis(request.lineage(), request.attempt(), basis)
+            .map(drop)
+            .map_err(|error| error.executor_rejection())
+    }
+
     fn validate_lineage_scenario(
         &self,
         lineage: CampaignLineageId,
@@ -1528,6 +1577,7 @@ impl AttemptAdmissionValidator for PackagedAttemptAdmission {
         self.repository
             .validate_executor_request_with_profile(request, &self.profile)
             .map_err(|error| error.executor_rejection())?;
+        self.validate_retention_policy_basis(request)?;
         self.validate_scenario(request)
     }
 
@@ -1739,6 +1789,9 @@ pub enum PackagedQemuExecutorError {
     /// Durable assignment-ledger acquisition failed.
     #[error(transparent)]
     Ledger(#[from] AssignmentLedgerError),
+    /// Process-ephemeral finding recovery authority could not be created.
+    #[error(transparent)]
+    FindingRecoveryAuthority(#[from] crate::pending_finding::PendingFindingRecoveryOwnerError),
     /// Pending finding incorporation could not be resumed safely.
     #[error("reconcile pending finding candidates after packaged executor restart")]
     FindingRestart(#[source] crate::FindingCandidateRestartError<AssignmentLedgerError>),

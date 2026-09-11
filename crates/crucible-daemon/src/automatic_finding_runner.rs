@@ -24,8 +24,9 @@ use crate::crucible_artifact::decode_crucible_configuration_artifact_with_owned_
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionProduct,
     AttemptExecutionReconciliationStep, AttemptWorkerFailure, AutomaticFindingPreparationError,
-    AutomaticFindingReplayOutcome, CrucibleArtifactError, CrucibleAttemptExecution,
-    CrucibleExecutionOutcome, CrucibleExecutionRunner, FindingReplayIncompatibility,
+    AutomaticFindingReplayOutcome, CapturedAttemptCheckpoint, CrucibleArtifactError,
+    CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
+    FindingReplayIncompatibility, PreparedFindingExactRetention, PreparedSemanticAttemptResult,
     QemuFreshExecutionRunner, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact,
     prepare_automatic_signature_preserving_finding_with_outcomes,
@@ -171,8 +172,9 @@ impl QemuFindingReplayCaptureProducer {
 /// Implementations return only after all attempt-scoped process and resource
 /// authority has been shut down or quarantined. The production implementation
 /// is deliberately limited to [`QemuFreshExecutionRunner`] with
-/// [`QemuFreshModeledDriver`]; hot-fork, exact-resume, and routing runners can
-/// retain authority after success and therefore cannot satisfy this contract.
+/// [`crate::QemuFreshModeledDriver`]. Hot-fork, exact-resume, and routing
+/// runners can retain authority after success and therefore cannot satisfy
+/// this contract.
 pub trait PrivateFindingReplayRunner: CrucibleExecutionRunner + private::Sealed {
     /// Executes one explicitly requested paired determinism probe.
     ///
@@ -216,6 +218,87 @@ pub trait PrivateFindingReplayRunner: CrucibleExecutionRunner + private::Sealed 
         target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>>;
+
+    /// Reconstructs one candidate and captures its canonical safe-stop checkpoint.
+    ///
+    /// Implementations without exact capture support return the semantic replay
+    /// with no checkpoint. Automatic retention then records a localized
+    /// incomplete disposition while preserving thin finding publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same operational failures as
+    /// [`Self::replay_finding_candidate_boundary`].
+    fn replay_and_capture_finding_candidate_boundary(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        candidate: &ConfigurationArtifact,
+        finding: &FindingReproductionArtifact,
+        replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+        target_signature: &FindingSignature,
+        context: &AttemptExecutionContext,
+    ) -> Result<AutomaticFindingExactCheckpointReplay, AttemptWorkerFailure<Self::Error>> {
+        self.replay_finding_candidate_boundary(
+            input,
+            candidate,
+            finding,
+            replay_closure,
+            target_signature,
+            context,
+        )
+        .map(|outcome| AutomaticFindingExactCheckpointReplay::new(outcome, None))
+    }
+
+    /// Transfers an unusable checkpoint to the runner's outer cleanup owner.
+    ///
+    /// The default accepts compatibility captures that own no native catalog.
+    /// Production runners must override this method and preserve the native
+    /// retirement authority for their worker pool.
+    fn retain_abandoned_exact_checkpoint(&mut self, checkpoint: CapturedAttemptCheckpoint) {
+        let _quarantine = crate::executor_worker::NativeCheckpointUnwindGuard::new(&checkpoint);
+    }
+}
+
+/// One authenticated semantic replay paired with its unpublished exact capture.
+#[derive(Debug)]
+pub struct AutomaticFindingExactCheckpointReplay {
+    outcome: AutomaticFindingReplayOutcome,
+    checkpoint: Option<crate::CapturedAttemptCheckpoint>,
+    native_guard: crate::executor_worker::NativeCheckpointUnwindGuard,
+}
+
+impl AutomaticFindingExactCheckpointReplay {
+    fn new(
+        outcome: AutomaticFindingReplayOutcome,
+        checkpoint: Option<crate::CapturedAttemptCheckpoint>,
+    ) -> Self {
+        let native_guard = checkpoint.as_ref().map_or_else(
+            crate::executor_worker::NativeCheckpointUnwindGuard::new_empty,
+            crate::executor_worker::NativeCheckpointUnwindGuard::new,
+        );
+        Self {
+            outcome,
+            checkpoint,
+            native_guard,
+        }
+    }
+
+    /// Consumes the replay into semantic evidence and linear capture ownership.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        AutomaticFindingReplayOutcome,
+        Option<crate::CapturedAttemptCheckpoint>,
+    ) {
+        let Self {
+            outcome,
+            checkpoint,
+            mut native_guard,
+        } = self;
+        native_guard.disarm();
+        (outcome, checkpoint)
+    }
 }
 
 /// Result of one explicitly enabled paired determinism verification.
@@ -435,6 +518,105 @@ where
                 },
             }),
         }
+    }
+
+    fn replay_and_capture_finding_candidate_boundary(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        candidate: &ConfigurationArtifact,
+        finding: &FindingReproductionArtifact,
+        _replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+        target_signature: &FindingSignature,
+        context: &AttemptExecutionContext,
+    ) -> Result<AutomaticFindingExactCheckpointReplay, AttemptWorkerFailure<Self::Error>> {
+        let (raw, mut checkpoint) = if target_signature.kind() == FindingKind::Divergence {
+            let first = QemuFreshExecutionRunner::replay_finding_candidate_boundary(
+                self, input, candidate, None, context,
+            )?;
+            let first = match first {
+                crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(
+                    first,
+                ) => first,
+                crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(reason) => {
+                    let reason = match reason {
+                        crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::PrefixDiverged => FindingReplayIncompatibility::PrefixDiverged,
+                        crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::PrefixTerminated => FindingReplayIncompatibility::PrefixTerminated,
+                        crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::SelectionMismatch => FindingReplayIncompatibility::SelectionMismatch,
+                    };
+                    return Ok(AutomaticFindingExactCheckpointReplay::new(
+                        AutomaticFindingReplayOutcome::DeterministicallyIncompatible {
+                            configuration: candidate.clone(),
+                            reason,
+                        },
+                        None,
+                    ));
+                }
+            };
+            if first.has_higher_priority_failure_source()
+                || !context.has_remaining_execution_quanta()
+            {
+                let outcome =
+                    finish_qemu_finding_replay(*first, candidate, finding, target_signature, None)
+                        .map_err(|failure| *failure)?;
+                return Ok(AutomaticFindingExactCheckpointReplay::new(outcome, None));
+            }
+
+            QemuFreshExecutionRunner::replay_and_capture_finding_candidate_boundary(
+                self,
+                input,
+                candidate,
+                Some(&first),
+                context,
+            )?
+            .into_parts()
+        } else {
+            QemuFreshExecutionRunner::replay_and_capture_finding_candidate_boundary(
+                self, input, candidate, None, context,
+            )?
+            .into_parts()
+        };
+        let mut native_guard = checkpoint.as_ref().map_or_else(
+            crate::executor_worker::NativeCheckpointUnwindGuard::new_empty,
+            crate::executor_worker::NativeCheckpointUnwindGuard::new,
+        );
+
+        let outcome = match raw {
+            crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(
+                evidence,
+            ) => match finish_qemu_finding_replay(
+                *evidence,
+                candidate,
+                finding,
+                target_signature,
+                None,
+            ) {
+                Ok(outcome) => outcome,
+                Err(failure) => {
+                    if let Some(checkpoint) = checkpoint.take() {
+                        self.retain_abandoned_checkpoint(checkpoint, false);
+                        native_guard.disarm();
+                    }
+                    return Err(*failure);
+                }
+            },
+            crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
+                reason,
+            ) => AutomaticFindingReplayOutcome::DeterministicallyIncompatible {
+                configuration: candidate.clone(),
+                reason: match reason {
+                    crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::PrefixDiverged => FindingReplayIncompatibility::PrefixDiverged,
+                    crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::PrefixTerminated => FindingReplayIncompatibility::PrefixTerminated,
+                    crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::SelectionMismatch => FindingReplayIncompatibility::SelectionMismatch,
+                },
+            },
+        };
+        let replay = AutomaticFindingExactCheckpointReplay::new(outcome, checkpoint);
+        native_guard.disarm();
+        Ok(replay)
+    }
+
+    fn retain_abandoned_exact_checkpoint(&mut self, checkpoint: CapturedAttemptCheckpoint) {
+        self.retain_abandoned_checkpoint(checkpoint, false);
     }
 }
 
@@ -761,6 +943,17 @@ where
 {
     type Error = AutomaticFindingExecutionRunnerError<M::Error, R::Error>;
 
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        let mut cleanup = None;
+        if let Some(replay) = self.replay.take_abandoned_native_checkpoint() {
+            crate::NativeCheckpointCleanup::retain(&mut cleanup, replay);
+        }
+        if let Some(main) = self.main.take_abandoned_native_checkpoint() {
+            crate::NativeCheckpointCleanup::retain(&mut cleanup, main);
+        }
+        cleanup
+    }
+
     fn execute(
         &mut self,
         input: &CrucibleAttemptExecution,
@@ -772,17 +965,45 @@ where
             .execute(input, context)
             .map_err(map_main_failure)?;
         let (product, materialization) = main.into_parts();
-        let AttemptExecutionProduct::PreparedSemantic(result) = product else {
-            return Ok(CrucibleExecutionOutcome::new(product, materialization));
+        let result = match product {
+            AttemptExecutionProduct::PreparedSemantic(result) => result,
+            AttemptExecutionProduct::ObservationWithFinding {
+                observation,
+                finding,
+            } => match PreparedSemanticAttemptResult::new(*observation, Some(*finding)) {
+                Ok(result) => Box::new(result),
+                Err(error) => {
+                    self.main.quarantine_pending_execution();
+                    return Err(AttemptWorkerFailure::Terminal(
+                        AutomaticFindingExecutionRunnerError::Preparation(
+                            AutomaticFindingPreparationError::PreparedResult(error),
+                        ),
+                    ));
+                }
+            },
+            product => return Ok(CrucibleExecutionOutcome::new(product, materialization)),
         };
-        if result.finding().is_some() {
-            return Ok(CrucibleExecutionOutcome::new(
-                AttemptExecutionProduct::PreparedSemantic(result),
-                materialization,
-            ));
+        if let Some(finding) = result.finding() {
+            if finding.bundle().exact_retention().is_some() {
+                self.main.quarantine_pending_execution();
+                return Err(AttemptWorkerFailure::Terminal(
+                    AutomaticFindingExecutionRunnerError::Inconsistent {
+                        reason: "producer finding already carries automatic exact-retention evidence",
+                    },
+                ));
+            }
+            let retention = prepare_existing_finding_exact_retention(context);
+            let product = match retention {
+                Some(retention) => AttemptExecutionProduct::prepared_semantic_with_exact_retention(
+                    *result, retention,
+                ),
+                None => AttemptExecutionProduct::PreparedSemantic(result),
+            };
+            return Ok(CrucibleExecutionOutcome::new(product, materialization));
         }
 
         let result = *result;
+        let mut finding_exact_retention = None;
         let preparation = (|| {
             let mut probe_originated_divergence = false;
             let signature = automatic_finding_signature(input, result.observation())
@@ -897,7 +1118,7 @@ where
                 }
                 return Err(map_candidate_failure(failure));
             }
-            match (prepared, preserved_result) {
+            let prepared = match (prepared, preserved_result) {
                 (Ok(prepared), _) => Ok(prepared),
                 (
                     Err(AutomaticFindingPreparationError::Artifact(
@@ -912,7 +1133,19 @@ where
                 (Err(error), _) => Err(error),
             }
             .map_err(AutomaticFindingExecutionRunnerError::Preparation)
-            .map_err(AttemptWorkerFailure::Terminal)
+            .map_err(AttemptWorkerFailure::Terminal)?;
+            if prepared.finding().is_some() {
+                finding_exact_retention = prepare_finding_exact_retention(
+                    &self.store,
+                    &mut self.replay,
+                    input,
+                    &finding,
+                    &owned_choices,
+                    &target_signature,
+                    context,
+                );
+            }
+            Ok(prepared)
         })();
         let prepared = match preparation {
             Ok(prepared) => prepared,
@@ -922,10 +1155,13 @@ where
             }
         };
 
-        Ok(CrucibleExecutionOutcome::new(
-            AttemptExecutionProduct::prepared_semantic(prepared),
-            materialization,
-        ))
+        let product = match finding_exact_retention {
+            Some(retention) => {
+                AttemptExecutionProduct::prepared_semantic_with_exact_retention(prepared, retention)
+            }
+            None => AttemptExecutionProduct::prepared_semantic(prepared),
+        };
+        Ok(CrucibleExecutionOutcome::new(product, materialization))
     }
 
     fn reconcile_execution(
@@ -940,6 +1176,30 @@ where
     fn quarantine_pending_execution(&mut self) {
         self.main.quarantine_pending_execution();
         self.replay.quarantine_pending_execution();
+    }
+}
+
+fn prepare_existing_finding_exact_retention(
+    context: &AttemptExecutionContext,
+) -> Option<PreparedFindingExactRetention> {
+    let policy = context.finding_retention_policy()?;
+    let basis = policy.basis();
+    match policy.retention() {
+        None => Some(PreparedFindingExactRetention::Incomplete {
+            basis,
+            reason:
+                crucible_campaign::FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis,
+            discarded_checkpoint: None,
+        }),
+        Some(retention) if retention.exact_findings() => {
+            Some(PreparedFindingExactRetention::Incomplete {
+                basis,
+                reason:
+                    crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+                discarded_checkpoint: None,
+            })
+        }
+        Some(_) => Some(PreparedFindingExactRetention::Disabled { basis }),
     }
 }
 
@@ -1312,6 +1572,78 @@ fn original_finding(
     })
 }
 
+fn prepare_finding_exact_retention<R>(
+    store: &CampaignExecutorStore,
+    replay: &mut R,
+    input: &CrucibleAttemptExecution,
+    finding: &crucible::FindingReproductionArtifact,
+    owned_choices: &ObservationCandidate,
+    target_signature: &FindingSignature,
+    context: &AttemptExecutionContext,
+) -> Option<PreparedFindingExactRetention>
+where
+    R: PrivateFindingReplayRunner,
+    R::Error: std::error::Error + 'static,
+{
+    let policy = context.finding_retention_policy()?;
+    let basis = policy.basis();
+    let Some(retention) = policy.retention() else {
+        return Some(PreparedFindingExactRetention::Incomplete {
+            basis,
+            reason:
+                crucible_campaign::FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis,
+            discarded_checkpoint: None,
+        });
+    };
+    if !retention.exact_findings() {
+        return Some(PreparedFindingExactRetention::Disabled { basis });
+    }
+
+    let replayed = match replay_candidate_with_exact_capture(
+        store,
+        replay,
+        input,
+        finding,
+        owned_choices,
+        target_signature,
+        context,
+    ) {
+        Ok(replayed) => replayed,
+        Err(_) => {
+            return Some(PreparedFindingExactRetention::Incomplete {
+                basis,
+                reason:
+                    crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+                discarded_checkpoint: None,
+            });
+        }
+    };
+    let (outcome, checkpoint) = replayed.into_parts();
+    let Some(checkpoint) = checkpoint else {
+        return Some(PreparedFindingExactRetention::Incomplete {
+            basis,
+            reason: crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+            discarded_checkpoint: None,
+        });
+    };
+    let mut native_guard = crate::executor_worker::NativeCheckpointUnwindGuard::new(&checkpoint);
+
+    let capture_matches = outcome.signature() == Some(target_signature)
+        && checkpoint.scenario() == finding.artifact.scenario_def().id()
+        && checkpoint.configuration() == finding.configuration;
+    if !capture_matches {
+        native_guard.disarm();
+        return Some(PreparedFindingExactRetention::Incomplete {
+            basis,
+            reason:
+                crucible_campaign::FindingExactRetentionIncomplete::CandidateAuthenticationFailed,
+            discarded_checkpoint: Some(checkpoint),
+        });
+    }
+    native_guard.disarm();
+    Some(PreparedFindingExactRetention::Captured { basis, checkpoint })
+}
+
 pub(crate) fn replay_candidate<R>(
     store: &CampaignExecutorStore,
     replay: &mut R,
@@ -1321,6 +1653,60 @@ pub(crate) fn replay_candidate<R>(
     target_signature: &FindingSignature,
     context: &AttemptExecutionContext,
 ) -> Result<AutomaticFindingReplayOutcome, CandidateReplayFailure<R::Error>>
+where
+    R: PrivateFindingReplayRunner,
+    R::Error: std::error::Error + 'static,
+{
+    replay_candidate_inner(
+        store,
+        replay,
+        original_input,
+        candidate,
+        owned_choices,
+        target_signature,
+        context,
+        false,
+    )
+    .map(|replay| replay.into_parts().0)
+}
+
+fn replay_candidate_with_exact_capture<R>(
+    store: &CampaignExecutorStore,
+    replay: &mut R,
+    original_input: &CrucibleAttemptExecution,
+    candidate: &crucible::FindingReproductionArtifact,
+    owned_choices: &ObservationCandidate,
+    target_signature: &FindingSignature,
+    context: &AttemptExecutionContext,
+) -> Result<AutomaticFindingExactCheckpointReplay, CandidateReplayFailure<R::Error>>
+where
+    R: PrivateFindingReplayRunner,
+    R::Error: std::error::Error + 'static,
+{
+    replay_candidate_inner(
+        store,
+        replay,
+        original_input,
+        candidate,
+        owned_choices,
+        target_signature,
+        context,
+        true,
+    )
+}
+
+// crucible-lint: allow rust-allow -- the shared replay path keeps capture and ordinary authentication identical.
+#[allow(clippy::too_many_arguments)]
+fn replay_candidate_inner<R>(
+    store: &CampaignExecutorStore,
+    replay: &mut R,
+    original_input: &CrucibleAttemptExecution,
+    candidate: &crucible::FindingReproductionArtifact,
+    owned_choices: &ObservationCandidate,
+    target_signature: &FindingSignature,
+    context: &AttemptExecutionContext,
+    capture_exact_checkpoint: bool,
+) -> Result<AutomaticFindingExactCheckpointReplay, CandidateReplayFailure<R::Error>>
 where
     R: PrivateFindingReplayRunner,
     R::Error: std::error::Error + 'static,
@@ -1375,8 +1761,8 @@ where
         )
         .map_err(CandidateReplayFailure::ReplayClosure)?;
     let replay_context = context.for_origin_replay();
-    let outcome = replay
-        .replay_finding_candidate_boundary(
+    let replayed = if capture_exact_checkpoint {
+        replay.replay_and_capture_finding_candidate_boundary(
             &replay_input,
             &configuration,
             candidate,
@@ -1384,8 +1770,25 @@ where
             target_signature,
             &replay_context,
         )
-        .map_err(CandidateReplayFailure::Operational)?;
-    match outcome {
+    } else {
+        replay
+            .replay_finding_candidate_boundary(
+                &replay_input,
+                &configuration,
+                candidate,
+                &replay_closure,
+                target_signature,
+                &replay_context,
+            )
+            .map(|outcome| AutomaticFindingExactCheckpointReplay::new(outcome, None))
+    }
+    .map_err(CandidateReplayFailure::Operational)?;
+    let (outcome, mut checkpoint) = replayed.into_parts();
+    let mut native_guard = checkpoint.as_ref().map_or_else(
+        crate::executor_worker::NativeCheckpointUnwindGuard::new_empty,
+        crate::executor_worker::NativeCheckpointUnwindGuard::new,
+    );
+    let transformed = (|| match outcome {
         AutomaticFindingReplayOutcome::Observed {
             evidence,
             measurement_replay_evidence,
@@ -1421,13 +1824,28 @@ where
                     measurement_replay_evidence,
                 )),
             }?;
-            Ok(match production_replay {
+            let outcome = match production_replay {
                 Some(production_replay) => outcome.with_production_replay(production_replay),
                 None => outcome,
-            })
+            };
+            Ok(outcome)
         }
         incompatible @ AutomaticFindingReplayOutcome::DeterministicallyIncompatible { .. } => {
             Ok(incompatible)
+        }
+    })();
+    match transformed {
+        Ok(outcome) => {
+            let replay = AutomaticFindingExactCheckpointReplay::new(outcome, checkpoint);
+            native_guard.disarm();
+            Ok(replay)
+        }
+        Err(failure) => {
+            if let Some(checkpoint) = checkpoint.take() {
+                replay.retain_abandoned_exact_checkpoint(checkpoint);
+                native_guard.disarm();
+            }
+            Err(failure)
         }
     }
 }
@@ -1545,46 +1963,55 @@ mod tests {
     #[cfg(target_os = "linux")]
     use std::os::unix::net::UnixStream;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex, mpsc};
+    use std::thread;
+    use std::time::Duration;
 
     #[cfg(target_os = "linux")]
     use crucible::NodeId;
     use crucible::{
-        Configuration, Decision, DeliveryOrderDecision, EventLogTime, Icount, Schedule,
-        SchedulerEventLogEntry, VirtualTime,
+        Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, EventLogTime,
+        Icount, Schedule, SchedulerEventLogEntry, VirtualTime,
     };
     #[cfg(target_os = "linux")]
     use crucible_api::ProductionVmNodeGeneration;
     #[cfg(target_os = "linux")]
     use crucible_campaign::FindingReplaySignature;
     use crucible_campaign::{
-        AssertionViolationWitness, AssignmentId, Attempt, AttemptContinuationInput,
-        AttemptResourceLimits, AttemptStart, BooleanDomain, BranchEdgeId, BranchPath,
-        BranchPathSegment, BranchPointId, BudgetGrant, CampaignCommandId, CampaignControlAction,
-        CampaignFact, CampaignLineage, CampaignMode, CampaignPolicy, CampaignRepository,
-        CampaignSeed, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain,
-        ChoiceSource, ChoiceValue, ConfigurationId, ControlRequest, CoverageProjection,
-        DaemonEpoch, DiscoveryRequest, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
-        ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-        GetAttemptExecutionResponse, MeasurementSet, Observation, ObservationCondition,
-        ObservationEventLogProof, ObservationId, ObservationQuantumBoundary, ObservationStopProof,
-        ProgressiveWideningPolicy, PropertyEvidence, PropertyVerdictSet, PuctPolicy,
-        RetentionPolicy, SavepointCaptureOutcome, SavepointCaptureRequest,
-        SavepointCaptureResolution, SavepointContinuationSelection, ScenarioDefId,
-        SelectableDeclaration, Selection, StopCondition, SubmitAttemptRequest,
+        AssertionViolationWitness, AssignmentId, Attempt, AttemptAdmissionId,
+        AttemptContinuationInput, AttemptResourceLimits, AttemptRetentionPolicyBasis, AttemptStart,
+        BooleanDomain, BranchEdgeId, BranchPath, BranchPathSegment, BranchPointId, BudgetGrant,
+        CampaignCommandId, CampaignControlAction, CampaignFact, CampaignLineage, CampaignMode,
+        CampaignPolicy, CampaignPolicyId, CampaignRepository, CampaignSeed, CampaignSnapshotId,
+        ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain, ChoiceSource,
+        ChoiceValue, ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch,
+        DiscoveryRequest, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent, ExplorerPolicy,
+        FairnessPolicy, FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition,
+        GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+        MeasurementSet, Observation, ObservationCondition, ObservationEventLogProof, ObservationId,
+        ObservationQuantumBoundary, ObservationStopProof, ProgressiveWideningPolicy,
+        PropertyEvidence, PropertyVerdictSet, PuctPolicy, RetentionPolicy, SavepointCaptureOutcome,
+        SavepointCaptureRequest, SavepointCaptureResolution, SavepointContinuationSelection,
+        ScenarioDefId, SelectableDeclaration, Selection, StopCondition, SubmitAttemptRequest,
     };
-    use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
+    use crucible_cas::content_store::{
+        BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend,
+        MemoryBlobBackend, MemoryRefBackend, MutableRefBackend, ObjectKind, PlacementReceipt,
+        PutReceipt, RefStoreAdmin, StoreError,
+    };
     #[cfg(target_os = "linux")]
     use crucible_qemu::{
         QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
-        QemuPreparedRunDirectory, QemuVmRealizationError,
+        QemuPreparedRunDirectory, QemuReplayOracleValidation, QemuVmRealizationError,
+        QemuVmSnapshot,
     };
 
     use super::*;
     use crate::crucible_execution::{CrucibleAttemptOrigin, CrucibleAttemptOrigins};
     use crate::{
-        CrucibleMaterializationTier, CrucibleResolvedAttemptStart, ExecutionCancellation,
-        ExecutionCheckpointRequest, PreparedSemanticAttemptResult,
+        AttemptFindingRetentionPolicy, CapturedAttemptCheckpoint, CrucibleMaterializationTier,
+        CrucibleResolvedAttemptStart, ExecutionCancellation, ExecutionCheckpointRequest,
+        PreparedSemanticAttemptResult, StagedAttemptResult,
     };
     #[cfg(target_os = "linux")]
     use crate::{
@@ -1598,6 +2025,99 @@ mod tests {
         result: PreparedSemanticAttemptResult,
         calls: Arc<AtomicUsize>,
         quarantines: Arc<AtomicUsize>,
+    }
+
+    struct CleanupOnlyRunner {
+        cleanup: Option<crate::NativeCheckpointCleanup>,
+    }
+
+    impl private::Sealed for CleanupOnlyRunner {}
+
+    impl PrivateFindingReplayRunner for CleanupOnlyRunner {
+        fn replay_finding_candidate_boundary(
+            &mut self,
+            _input: &CrucibleAttemptExecution,
+            _candidate: &ConfigurationArtifact,
+            _finding: &FindingReproductionArtifact,
+            _replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+            _target_signature: &FindingSignature,
+            _context: &AttemptExecutionContext,
+        ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
+            unreachable!("cleanup-only runner does not execute")
+        }
+    }
+
+    impl CrucibleExecutionRunner for CleanupOnlyRunner {
+        type Error = io::Error;
+
+        fn execute(
+            &mut self,
+            _input: &CrucibleAttemptExecution,
+            _context: &AttemptExecutionContext,
+        ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+            unreachable!("cleanup-only runner does not execute")
+        }
+
+        fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+            self.cleanup.take()
+        }
+    }
+
+    struct BlockingDurableBackend {
+        memory: MemoryBlobBackend,
+        first_put: Mutex<Option<mpsc::Sender<()>>>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl ImmutableBlobBackend for BlockingDurableBackend {
+        fn name(&self) -> &str {
+            self.memory.name()
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            BackendCapabilities {
+                durable: true,
+                deferred_write: false,
+                range_read: true,
+                streaming_read: true,
+                conditional_create: true,
+                streaming_put: true,
+                repair_inventory: false,
+                planned_delete: false,
+            }
+        }
+
+        fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+            self.memory.contains(id)
+        }
+
+        fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+            self.memory.read(id, range)
+        }
+
+        fn put_if_absent(
+            &self,
+            id: ContentId,
+            source: &BlobHandle,
+        ) -> Result<PutReceipt, StoreError> {
+            if let Some(entered) = self.first_put.lock().expect("first put signal").take() {
+                entered.send(()).expect("publication observer");
+                let (released, changed) = self.release.as_ref();
+                let mut released = released.lock().expect("publication release");
+                while !*released {
+                    released = changed.wait(released).expect("publication release wake");
+                }
+            }
+            self.memory.put_if_absent(id, source)?;
+            Ok(PutReceipt {
+                id,
+                placements: vec![PlacementReceipt {
+                    backend: String::from(self.name()),
+                    durable: true,
+                    logical_length: source.logical_length(),
+                }],
+            })
+        }
     }
 
     impl CrucibleExecutionRunner for MainRunner {
@@ -1705,6 +2225,190 @@ mod tests {
             Ok(CrucibleExecutionOutcome::new(
                 AttemptExecutionProduct::prepared_semantic(result),
                 CrucibleMaterializationTier::ThinReplay,
+            ))
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct ExactCaptureReplayRunner {
+        inner: ReplayRunner,
+        captures: Arc<Mutex<Vec<(ConfigurationId, usize)>>>,
+    }
+
+    #[cfg(target_os = "linux")]
+    struct FailingTransformCaptureReplayRunner {
+        inner: ReplayRunner,
+        checkpoint: Option<CapturedAttemptCheckpoint>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl private::Sealed for ExactCaptureReplayRunner {}
+
+    #[cfg(target_os = "linux")]
+    impl CrucibleExecutionRunner for ExactCaptureReplayRunner {
+        type Error = io::Error;
+
+        fn execute(
+            &mut self,
+            input: &CrucibleAttemptExecution,
+            context: &AttemptExecutionContext,
+        ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+            self.inner.execute(input, context)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl PrivateFindingReplayRunner for ExactCaptureReplayRunner {
+        fn replay_finding_candidate_boundary(
+            &mut self,
+            input: &CrucibleAttemptExecution,
+            candidate: &ConfigurationArtifact,
+            finding: &FindingReproductionArtifact,
+            replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+            target_signature: &FindingSignature,
+            context: &AttemptExecutionContext,
+        ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
+            self.inner.replay_finding_candidate_boundary(
+                input,
+                candidate,
+                finding,
+                replay_closure,
+                target_signature,
+                context,
+            )
+        }
+
+        fn replay_and_capture_finding_candidate_boundary(
+            &mut self,
+            input: &CrucibleAttemptExecution,
+            candidate: &ConfigurationArtifact,
+            finding: &FindingReproductionArtifact,
+            replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+            target_signature: &FindingSignature,
+            context: &AttemptExecutionContext,
+        ) -> Result<AutomaticFindingExactCheckpointReplay, AttemptWorkerFailure<Self::Error>>
+        {
+            let outcome = self.inner.replay_finding_candidate_boundary(
+                input,
+                candidate,
+                finding,
+                replay_closure,
+                target_signature,
+                context,
+            )?;
+            self.captures
+                .lock()
+                .expect("exact capture observations")
+                .push((
+                    candidate.configuration(),
+                    finding.artifact.schedule().decisions().len(),
+                ));
+
+            let configuration = Configuration {
+                def: finding.artifact.scenario_def().clone(),
+                schedule: finding.artifact.schedule().clone(),
+            };
+            let parent = Configuration::genesis(configuration.def.clone());
+            let checkpoint = Checkpoint::from_recorded_configuration(
+                &configuration,
+                Some(&parent),
+                VirtualTime::default(),
+                BTreeMap::new(),
+                CheckpointKind::Fat,
+                BTreeMap::new(),
+            )
+            .expect("exact finding test checkpoint");
+            let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+                .expect("exact finding test snapshot");
+            let checkpoint = crate::CapturedExactCheckpoint::new(
+                snapshot,
+                BlobHandle::from_bytes(vec![0x5a; 512]),
+            );
+
+            Ok(AutomaticFindingExactCheckpointReplay::new(
+                outcome,
+                Some(checkpoint.into()),
+            ))
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl private::Sealed for FailingTransformCaptureReplayRunner {}
+
+    #[cfg(target_os = "linux")]
+    impl CrucibleExecutionRunner for FailingTransformCaptureReplayRunner {
+        type Error = io::Error;
+
+        fn execute(
+            &mut self,
+            input: &CrucibleAttemptExecution,
+            context: &AttemptExecutionContext,
+        ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+            self.inner.execute(input, context)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl PrivateFindingReplayRunner for FailingTransformCaptureReplayRunner {
+        fn replay_finding_candidate_boundary(
+            &mut self,
+            input: &CrucibleAttemptExecution,
+            candidate: &ConfigurationArtifact,
+            finding: &FindingReproductionArtifact,
+            replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+            target_signature: &FindingSignature,
+            context: &AttemptExecutionContext,
+        ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
+            self.inner.replay_finding_candidate_boundary(
+                input,
+                candidate,
+                finding,
+                replay_closure,
+                target_signature,
+                context,
+            )
+        }
+
+        fn replay_and_capture_finding_candidate_boundary(
+            &mut self,
+            input: &CrucibleAttemptExecution,
+            candidate: &ConfigurationArtifact,
+            finding: &FindingReproductionArtifact,
+            replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+            target_signature: &FindingSignature,
+            context: &AttemptExecutionContext,
+        ) -> Result<AutomaticFindingExactCheckpointReplay, AttemptWorkerFailure<Self::Error>>
+        {
+            let outcome = self.inner.replay_finding_candidate_boundary(
+                input,
+                candidate,
+                finding,
+                replay_closure,
+                target_signature,
+                context,
+            )?;
+            let AutomaticFindingReplayOutcome::Observed {
+                evidence,
+                measurement_replay_evidence,
+                ..
+            } = outcome
+            else {
+                return Err(AttemptWorkerFailure::Terminal(io::Error::other(
+                    "test capture replay was unexpectedly incompatible",
+                )));
+            };
+            let evidence = evidence
+                .with_signature(target_signature.clone())
+                .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))?;
+            let checkpoint = self.checkpoint.take().ok_or_else(|| {
+                AttemptWorkerFailure::Terminal(io::Error::other(
+                    "test capture checkpoint was already consumed",
+                ))
+            })?;
+
+            Ok(AutomaticFindingExactCheckpointReplay::new(
+                AutomaticFindingReplayOutcome::observed(evidence, measurement_replay_evidence),
+                Some(checkpoint),
             ))
         }
     }
@@ -2568,6 +3272,29 @@ mod tests {
         CampaignExecutorStore::new(repository)
     }
 
+    fn exact_finding_retention_policy() -> AttemptFindingRetentionPolicy {
+        let snapshot = CampaignSnapshotId::parse(&format!(
+            "crucible.campaign.snapshot@{}",
+            ContentId::for_bytes(ObjectKind::CampaignSnapshot, 3, b"exact-finding-snapshot")
+                .encode()
+        ))
+        .expect("campaign snapshot ID");
+        let admission = AttemptAdmissionId::parse(&format!(
+            "crucible.campaign.attempt-admission@{}",
+            ContentId::for_bytes(ObjectKind::CampaignFact, 3, b"exact-finding-admission").encode()
+        ))
+        .expect("attempt admission ID");
+        let policy = CampaignPolicyId::parse(&format!(
+            "crucible.campaign.policy@{}",
+            ContentId::for_bytes(ObjectKind::Policy, 1, b"exact-finding-policy").encode()
+        ))
+        .expect("campaign policy ID");
+        AttemptFindingRetentionPolicy::new(
+            AttemptRetentionPolicyBasis::new(snapshot, admission, Some(policy)),
+            Some(RetentionPolicy::new(true, 1, true, false)),
+        )
+    }
+
     fn campaign_command(label: &str) -> CampaignCommandId {
         CampaignCommandId::from_hash(CampaignHash::derive(
             "automatic-finding-runner-test.command",
@@ -2719,6 +3446,19 @@ mod tests {
     }
 
     fn descendant_input_fixture() -> DescendantInputFixture {
+        descendant_input_fixture_with_storage(
+            Arc::new(MemoryBlobBackend::new(
+                "automatic-finding-descendant-test",
+                u64::MAX,
+            )),
+            Arc::new(MemoryRefBackend::new()),
+        )
+    }
+
+    fn descendant_input_fixture_with_storage(
+        blobs: Arc<dyn ImmutableBlobBackend>,
+        refs: Arc<dyn MutableRefBackend>,
+    ) -> DescendantInputFixture {
         const CAMPAIGN: &str = "automatic-finding-descendant";
 
         let scenario = crucible::happy_path_scenario()
@@ -2750,13 +3490,7 @@ mod tests {
             1,
         )
         .expect("campaign lineage");
-        let repository = Arc::new(CampaignRepository::new(
-            Arc::new(MemoryBlobBackend::new(
-                "automatic-finding-descendant-test",
-                u64::MAX,
-            )),
-            Arc::new(MemoryRefBackend::new()),
-        ));
+        let repository = Arc::new(CampaignRepository::new(blobs, refs));
         repository
             .publish_scenario_artifact(
                 scenario_record.scenario(),
@@ -3089,6 +3823,390 @@ mod tests {
             [1, 0, 1, 0]
         );
         assert!(observed.iter().all(|(path, _)| path == input.path()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn automatic_exact_retention_captures_the_original_after_minimization() {
+        let (input, property) = input_fixture();
+        let replay_calls = Arc::new(AtomicUsize::new(0));
+        let capture_observations = Arc::new(Mutex::new(Vec::new()));
+        let main = MainRunner {
+            result: failed_result(&input, &property),
+            calls: Arc::new(AtomicUsize::new(0)),
+            quarantines: Arc::new(AtomicUsize::new(0)),
+        };
+        let replay = ExactCaptureReplayRunner {
+            inner: ReplayRunner {
+                calls: Arc::clone(&replay_calls),
+                observed: Arc::new(Mutex::new(Vec::new())),
+                property,
+                expected_controls: None,
+                controlled_calls: None,
+            },
+            captures: Arc::clone(&capture_observations),
+        };
+        let mut runner = AutomaticFindingExecutionRunner::new(executor_store(), main, replay);
+        let finding_retention = exact_finding_retention_policy();
+        let context = AttemptExecutionContext::new(
+            AttemptResourceLimits::new(1, 1, 0, 6).expect("attempt limits"),
+            ExecutionRetentionIntent::Discard,
+            ExecutionCancellation::default(),
+            ExecutionCheckpointRequest::default(),
+        )
+        .with_finding_retention_policy(Some(finding_retention));
+
+        let outcome = runner
+            .execute(&input, &context)
+            .expect("automatic finding exact capture");
+        let AttemptExecutionProduct::PreparedSemanticWithExactRetention { result, retention } =
+            outcome.product()
+        else {
+            panic!("automatic finding exact capture returned no retention handoff")
+        };
+        let finding = result.finding().expect("automatic finding");
+        let original = finding.original_configuration().configuration();
+        let minimized = finding.minimized_configuration().configuration();
+        assert_ne!(original, minimized);
+
+        let PreparedFindingExactRetention::Captured { basis, checkpoint } = retention.as_ref()
+        else {
+            panic!(
+                "automatic finding exact capture was not retained: {retention:?}; captures={:?}; quanta={}",
+                capture_observations
+                    .lock()
+                    .expect("exact capture observations"),
+                context.consumed_execution_quanta(),
+            )
+        };
+        assert_eq!(*basis, finding_retention.basis());
+        assert_eq!(
+            checkpoint.configuration().bytes,
+            original.as_hash().as_bytes()
+        );
+        assert_eq!(
+            capture_observations
+                .lock()
+                .expect("exact capture observations")
+                .as_slice(),
+            &[(original, 1)]
+        );
+        assert_eq!(replay_calls.load(Ordering::SeqCst), 5);
+        assert_eq!(context.consumed_execution_quanta(), 6);
+    }
+
+    #[test]
+    fn producer_supplied_finding_cannot_bypass_exact_retention_policy() {
+        let (input, property) = input_fixture();
+        let replay_calls = Arc::new(AtomicUsize::new(0));
+        let replay = || ReplayRunner {
+            calls: Arc::clone(&replay_calls),
+            observed: Arc::new(Mutex::new(Vec::new())),
+            property: property.clone(),
+            expected_controls: None,
+            controlled_calls: None,
+        };
+        let main = MainRunner {
+            result: failed_result(&input, &property),
+            calls: Arc::new(AtomicUsize::new(0)),
+            quarantines: Arc::new(AtomicUsize::new(0)),
+        };
+        let mut first = AutomaticFindingExecutionRunner::new(executor_store(), main, replay());
+        let legacy_context = AttemptExecutionContext::new(
+            AttemptResourceLimits::new(1, 1, 0, 5).expect("attempt limits"),
+            ExecutionRetentionIntent::Discard,
+            ExecutionCancellation::default(),
+            ExecutionCheckpointRequest::default(),
+        );
+        let first_outcome = first
+            .execute(&input, &legacy_context)
+            .expect("prepare producer finding");
+        let (first_product, _materialization) = first_outcome.into_parts();
+        let AttemptExecutionProduct::PreparedSemantic(producer_result) = first_product else {
+            panic!("producer fixture did not create a prepared finding")
+        };
+
+        replay_calls.store(0, Ordering::SeqCst);
+        let main = MainRunner {
+            result: *producer_result,
+            calls: Arc::new(AtomicUsize::new(0)),
+            quarantines: Arc::new(AtomicUsize::new(0)),
+        };
+        let mut runner = AutomaticFindingExecutionRunner::new(executor_store(), main, replay());
+        let policy = exact_finding_retention_policy();
+        let context = AttemptExecutionContext::new(
+            AttemptResourceLimits::new(1, 1, 0, 1).expect("attempt limits"),
+            ExecutionRetentionIntent::Discard,
+            ExecutionCancellation::default(),
+            ExecutionCheckpointRequest::default(),
+        )
+        .with_finding_retention_policy(Some(policy));
+
+        let outcome = runner
+            .execute(&input, &context)
+            .expect("policy-bound producer finding");
+        let AttemptExecutionProduct::PreparedSemanticWithExactRetention { result, retention } =
+            outcome.product()
+        else {
+            panic!("producer finding escaped without retention handoff")
+        };
+        assert!(result.finding().is_some());
+        assert!(matches!(
+            retention.as_ref(),
+            PreparedFindingExactRetention::Incomplete {
+                basis,
+                reason:
+                    crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+                discarded_checkpoint: None,
+            } if *basis == policy.basis()
+        ));
+        assert_eq!(replay_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn automatic_runner_drains_main_and_replay_native_cleanup_together() {
+        let main_state = tempfile::tempdir().expect("main cleanup run state");
+        let main_fixture = crucible_api::build_authenticated_production_checkpoint_codec_fixture(
+            main_state.path(),
+        )
+        .expect("main cleanup fixture");
+        let main_retirement = main_fixture.closure().native_retirement();
+        let replay_state = tempfile::tempdir().expect("replay cleanup run state");
+        let replay_fixture = crucible_api::build_authenticated_production_checkpoint_codec_fixture(
+            replay_state.path(),
+        )
+        .expect("replay cleanup fixture");
+        let replay_retirement = replay_fixture.closure().native_retirement();
+        let mut runner = AutomaticFindingExecutionRunner::new(
+            executor_store(),
+            CleanupOnlyRunner {
+                cleanup: Some(crate::NativeCheckpointCleanup::Retire(
+                    main_retirement.clone(),
+                )),
+            },
+            CleanupOnlyRunner {
+                cleanup: Some(crate::NativeCheckpointCleanup::Retire(
+                    replay_retirement.clone(),
+                )),
+            },
+        );
+
+        let Some(crate::NativeCheckpointCleanup::Batch(cleanups)) =
+            runner.take_abandoned_native_checkpoint()
+        else {
+            panic!("both runner cleanups must be returned in one batch")
+        };
+
+        assert_eq!(cleanups.len(), 2);
+        for cleanup in cleanups {
+            let crate::NativeCheckpointCleanup::Retire(retirement) = cleanup else {
+                panic!("safe cleanup fixture must remain retireable")
+            };
+            crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+                .expect("retire aggregated checkpoint catalog");
+        }
+        let repeated_main =
+            crucible_api::retire_production_exact_checkpoint_catalog(&main_retirement)
+                .expect("repeat main retirement");
+        let repeated_replay =
+            crucible_api::retire_production_exact_checkpoint_catalog(&replay_retirement)
+                .expect("repeat replay retirement");
+        assert!(!repeated_main.retired());
+        assert!(!repeated_replay.retired());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_post_capture_transformation_quarantines_the_native_checkpoint() {
+        let run_state = tempfile::tempdir().expect("production checkpoint run state");
+        let fixture =
+            crucible_api::build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+                .expect("authenticated production checkpoint fixture");
+        let retirement = fixture.closure().native_retirement();
+        let checkpoint = CapturedAttemptCheckpoint::from(fixture.closure().clone());
+        let quarantine_before =
+            crate::executor_worker::native_checkpoint_process_quarantine_len_for_test();
+
+        let (input, property) = input_fixture();
+        let main = MainRunner {
+            result: failed_result(&input, &property),
+            calls: Arc::new(AtomicUsize::new(0)),
+            quarantines: Arc::new(AtomicUsize::new(0)),
+        };
+        let replay = FailingTransformCaptureReplayRunner {
+            inner: ReplayRunner {
+                calls: Arc::new(AtomicUsize::new(0)),
+                observed: Arc::new(Mutex::new(Vec::new())),
+                property,
+                expected_controls: None,
+                controlled_calls: None,
+            },
+            checkpoint: Some(checkpoint),
+        };
+        let mut runner = AutomaticFindingExecutionRunner::new(executor_store(), main, replay);
+        let context = AttemptExecutionContext::new(
+            AttemptResourceLimits::new(1, 1, 0, 6).expect("attempt limits"),
+            ExecutionRetentionIntent::Discard,
+            ExecutionCancellation::default(),
+            ExecutionCheckpointRequest::default(),
+        )
+        .with_finding_retention_policy(Some(exact_finding_retention_policy()));
+
+        let outcome = runner
+            .execute(&input, &context)
+            .expect("automatic finding preserves thin evidence");
+        let AttemptExecutionProduct::PreparedSemanticWithExactRetention { retention, .. } =
+            outcome.product()
+        else {
+            panic!("automatic finding lost exact-retention diagnostic")
+        };
+        assert!(matches!(
+            retention.as_ref(),
+            PreparedFindingExactRetention::Incomplete {
+                reason:
+                    crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+                discarded_checkpoint: None,
+                ..
+            }
+        ));
+
+        let quarantine_after =
+            crate::executor_worker::native_checkpoint_process_quarantine_len_for_test();
+        assert!(quarantine_after > quarantine_before);
+
+        let active = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+            .expect("test owner releases transformation quarantine");
+        assert!(active.retired());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exact_only_finding_publication_excludes_destructive_gc_until_root_publication() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let blobs = Arc::new(BlockingDurableBackend {
+            memory: MemoryBlobBackend::new("exact-only-publication-guard", u64::MAX),
+            first_put: Mutex::new(None),
+            release: Arc::clone(&release),
+        });
+        let refs = Arc::new(MemoryRefBackend::new());
+        let fixture = descendant_input_fixture_with_storage(blobs.clone(), refs.clone());
+        let DescendantInputFixture {
+            repository,
+            store,
+            input,
+            property,
+            ..
+        } = fixture;
+        let main = MainRunner {
+            result: failed_result(&input, &property),
+            calls: Arc::new(AtomicUsize::new(0)),
+            quarantines: Arc::new(AtomicUsize::new(0)),
+        };
+        let replay = ReplayRunner {
+            calls: Arc::new(AtomicUsize::new(0)),
+            observed: Arc::new(Mutex::new(Vec::new())),
+            property,
+            expected_controls: None,
+            controlled_calls: None,
+        };
+        let mut runner = AutomaticFindingExecutionRunner::new(store.clone(), main, replay);
+        let context = AttemptExecutionContext::new(
+            AttemptResourceLimits::new(1, 1, 0, 5).expect("attempt limits"),
+            ExecutionRetentionIntent::Discard,
+            ExecutionCancellation::default(),
+            ExecutionCheckpointRequest::default(),
+        );
+        let outcome = runner
+            .execute(&input, &context)
+            .expect("automatic finding execution");
+        let AttemptExecutionProduct::PreparedSemantic(result) = outcome.product() else {
+            panic!("automatic finding returned a nonsemantic result")
+        };
+        let mut result = result.as_ref().clone();
+
+        let source_snapshot = repository
+            .head("automatic-finding-descendant")
+            .expect("source campaign head")
+            .snapshot_id();
+        let retention_basis = repository
+            .attempt_retention_policy_basis_at(
+                source_snapshot,
+                input.attempt().id().expect("attempt ID"),
+            )
+            .expect("source retention basis");
+        let exact_retention = FindingExactRetention::new(
+            retention_basis.snapshot(),
+            retention_basis.policy(),
+            retention_basis.admission(),
+            0,
+            FindingExactRetentionDisposition::Incomplete(
+                crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+            ),
+        )
+        .expect("finding exact retention");
+        let finding = result
+            .prepare_bound_finding_exact_retention(
+                FindingExactPins::default(),
+                exact_retention,
+                None,
+            )
+            .expect("bind exact-only finding");
+        result.commit_bound_production_replay_finding(finding);
+        assert!(
+            result
+                .finding()
+                .expect("bound finding")
+                .bundle()
+                .replay_captures()
+                .is_none()
+        );
+
+        let epoch = DaemonEpoch::from_bytes([0xd1; 16]).expect("daemon epoch");
+        let request = SubmitAttemptRequest::new(
+            AssignmentId::from_bytes([0xd2; 16]).expect("assignment"),
+            epoch,
+            input.lineage().id().expect("lineage ID"),
+            input.attempt().id().expect("attempt ID"),
+            AttemptResourceLimits::new(1, 1, 0, 1).expect("attempt limits"),
+            ExecutionRetentionIntent::Discard,
+        )
+        .expect("submit request");
+        let queued = crate::QueuedAttempt::from_test_parts(
+            ExecutionId::from_bytes([0xd3; 16]).expect("execution ID"),
+            request,
+        );
+        let staged = StagedAttemptResult::from_test_parts(queued, result);
+
+        *blobs.first_put.lock().expect("arm first put") = Some(entered_tx);
+        let publication = thread::spawn(move || {
+            crate::publish_prepared_attempt_result(&store, Box::new(staged))
+                .expect("publish exact-only finding")
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("finding publication reached immutable storage");
+
+        let (inventory_tx, inventory_rx) = mpsc::channel();
+        let inventory = thread::spawn(move || {
+            let _fence = refs
+                .acquire_ref_inventory_fence()
+                .expect("acquire destructive GC inventory fence");
+            inventory_tx.send(()).expect("inventory completion");
+        });
+        assert!(matches!(
+            inventory_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        let (released, changed) = release.as_ref();
+        *released.lock().expect("publication release") = true;
+        changed.notify_all();
+        publication.join().expect("finding publication thread");
+        inventory_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("GC inventory proceeds after finding publication");
+        inventory.join().expect("GC inventory thread");
     }
 
     #[test]

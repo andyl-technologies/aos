@@ -12,11 +12,16 @@
 //! decision separate from the coordinator-owned repository transaction.
 
 use crucible_campaign::{
-    AuthenticatedFindingCandidateIncorporation, CampaignName, CampaignRepository,
-    CampaignRepositoryError, CampaignSnapshotId, ExecutionId, FindingCandidateBundleId, FindingId,
+    AuthenticatedFindingCandidateIncorporation, CampaignExecutorStore, CampaignName,
+    CampaignRepository, CampaignRepositoryError, CampaignSnapshotId, ExecutionId,
+    FindingCandidateBundleId, FindingCandidateIncorporationAuthorization,
+    FindingCandidateRecoveryContext, FindingCandidateRecoverySeal, FindingId,
     FindingPublicationResult, ObservationDisposition, ObservationId,
 };
+use ed25519_dalek::{Signer as _, SigningKey};
+use rand::TryRngCore as _;
 
+use crate::prepared_result_journal::DirectoryPreparedResultJournal;
 use crate::{
     AssignmentLedger, AssignmentRetentionAdmin, AttemptExecutionKey, AttemptRuntimeState,
     AttemptStateCas, CompletedFindingCandidate,
@@ -24,6 +29,53 @@ use crate::{
 
 /// Maximum pending candidates reconciled for one campaign in a restart pass.
 pub const MAX_PENDING_FINDING_HANDOFFS_PER_PASS: usize = 4_096;
+
+/// Process-local owner of restart finding authentication authority.
+///
+/// A fresh owner is created for each packaged daemon construction. Its private
+/// key never enters [`CampaignExecutorStore`]; only the matching public key is
+/// installed there.
+pub(crate) struct PendingFindingRecoveryOwner {
+    signing_key: SigningKey,
+}
+
+impl PendingFindingRecoveryOwner {
+    /// Creates one process-ephemeral authority from operating-system entropy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operating system cannot provide key entropy.
+    pub(crate) fn new() -> Result<Self, PendingFindingRecoveryOwnerError> {
+        let mut seed = [0_u8; 32];
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut seed)
+            .map_err(PendingFindingRecoveryOwnerError::Entropy)?;
+
+        Ok(Self {
+            signing_key: SigningKey::from_bytes(&seed),
+        })
+    }
+
+    /// Returns the public key installed in the paired executor store.
+    #[must_use]
+    pub(crate) fn verifying_key_bytes(&self) -> [u8; 32] {
+        self.signing_key.verifying_key().to_bytes()
+    }
+
+    fn seal(&self, context: &FindingCandidateRecoveryContext) -> FindingCandidateRecoverySeal {
+        FindingCandidateRecoverySeal::from_bytes(
+            self.signing_key.sign(&context.seal_message()).to_bytes(),
+        )
+    }
+}
+
+/// Failure to create a process-ephemeral recovery authority.
+#[derive(Debug, thiserror::Error)]
+pub enum PendingFindingRecoveryOwnerError {
+    /// The operating system did not provide cryptographic key entropy.
+    #[error("operating system entropy unavailable for finding recovery authority")]
+    Entropy(#[source] rand::rand_core::OsError),
+}
 
 /// One candidate bundle that remains an executor-owned operational GC root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,9 +250,41 @@ impl FindingCandidateRestartSummary {
 #[derive(Clone, Copy)]
 struct PendingFindingRestartWork {
     key: AttemptExecutionKey,
+    execution_basis: crucible_campaign::CampaignHash,
     execution: ExecutionId,
     observation: ObservationId,
     candidate: FindingCandidateBundleId,
+    prepared_result_digest: Option<crucible_campaign::CampaignHash>,
+}
+
+struct AuthenticatedPendingFindingRecovery {
+    lineage: crucible_campaign::CampaignLineageId,
+    attempt: crucible_campaign::AttemptId,
+    execution_basis: crucible_campaign::CampaignHash,
+    execution: ExecutionId,
+    observation: ObservationId,
+    candidate: FindingCandidateBundleId,
+    prepared_result_digest: crucible_campaign::CampaignHash,
+}
+
+impl AuthenticatedPendingFindingRecovery {
+    fn context(
+        &self,
+        campaign: CampaignName,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> FindingCandidateRecoveryContext {
+        FindingCandidateRecoveryContext::new(
+            campaign,
+            expected_snapshot,
+            self.lineage,
+            self.attempt,
+            self.execution_basis,
+            self.execution,
+            self.observation,
+            self.candidate,
+            self.prepared_result_digest,
+        )
+    }
 }
 
 #[derive(Default)]
@@ -267,6 +351,51 @@ struct FindingCandidateRestartInventoryError;
 /// acknowledgement cannot be completed.
 pub fn reconcile_pending_finding_candidates<A>(
     repository: &CampaignRepository,
+    executor_store: Option<&CampaignExecutorStore>,
+    ledger: &mut A,
+    campaign: &CampaignName,
+) -> Result<
+    FindingCandidateRestartSummary,
+    FindingCandidateRestartError<<A as AssignmentLedger>::Error>,
+>
+where
+    A: AssignmentLedger + AssignmentRetentionAdmin<Error = <A as AssignmentLedger>::Error>,
+{
+    reconcile_pending_finding_candidates_inner(repository, executor_store, None, ledger, campaign)
+}
+
+pub(crate) fn reconcile_authenticated_pending_finding_candidates<A>(
+    repository: &CampaignRepository,
+    executor_store: &CampaignExecutorStore,
+    recovery_owner: &PendingFindingRecoveryOwner,
+    prepared_result_namespace: &std::path::Path,
+    maximum_prepared_result_bytes: usize,
+    ledger: &mut A,
+    campaign: &CampaignName,
+) -> Result<
+    FindingCandidateRestartSummary,
+    FindingCandidateRestartError<<A as AssignmentLedger>::Error>,
+>
+where
+    A: AssignmentLedger + AssignmentRetentionAdmin<Error = <A as AssignmentLedger>::Error>,
+{
+    reconcile_pending_finding_candidates_inner(
+        repository,
+        Some(executor_store),
+        Some((
+            recovery_owner,
+            prepared_result_namespace,
+            maximum_prepared_result_bytes,
+        )),
+        ledger,
+        campaign,
+    )
+}
+
+fn reconcile_pending_finding_candidates_inner<A>(
+    repository: &CampaignRepository,
+    executor_store: Option<&CampaignExecutorStore>,
+    prepared_results: Option<(&PendingFindingRecoveryOwner, &std::path::Path, usize)>,
     ledger: &mut A,
     campaign: &CampaignName,
 ) -> Result<
@@ -285,9 +414,11 @@ where
     ledger
         .visit_attempt_states(&mut |key, state| {
             let AttemptRuntimeState::Completed {
+                execution_basis,
                 execution,
                 observation,
                 finding_candidate: CompletedFindingCandidate::Pending(candidate),
+                prepared_result_digest,
                 ..
             } = state
             else {
@@ -299,9 +430,11 @@ where
 
             inventory.retain(PendingFindingRestartWork {
                 key,
+                execution_basis,
                 execution,
                 observation,
                 candidate,
+                prepared_result_digest,
             });
         })
         .map_err(FindingCandidateRestartError::Ledger)?;
@@ -324,6 +457,30 @@ where
             return Err(FindingCandidateRestartError::CompletionMismatch);
         }
 
+        let requires_authenticated_recovery = matches!(
+            bundle
+                .exact_retention()
+                .map(|retention| retention.disposition()),
+            Some(crucible_campaign::FindingExactRetentionDisposition::Complete)
+        );
+        let authenticated_recovery = match (requires_authenticated_recovery, prepared_results) {
+            (
+                true,
+                Some((recovery_owner, prepared_result_namespace, maximum_prepared_result_bytes)),
+            ) => {
+                let authenticator = PendingFindingRecoveryAuthority {
+                    repository,
+                    ledger,
+                    prepared_result_namespace,
+                    maximum_prepared_result_bytes,
+                    key: pending.key,
+                };
+                Some((recovery_owner, authenticator.authenticate(pending)?))
+            }
+            (false, _) => None,
+            _ => return Err(FindingCandidateRestartError::RecoveryAuthentication),
+        };
+
         let expected = repository
             .head(campaign.as_str())
             .map_err(FindingCandidateRestartError::Repository)?
@@ -344,8 +501,21 @@ where
             .head(campaign.as_str())
             .map_err(FindingCandidateRestartError::Repository)?
             .snapshot_id();
+        let (handoff_store, authorization) = match (authenticated_recovery, executor_store) {
+            (Some((recovery_owner, authenticated)), Some(executor_store)) => {
+                let context = authenticated.context(campaign.clone(), expected);
+                let seal = recovery_owner.seal(&context);
+                let authorization = executor_store
+                    .authenticate_recovered_finding_candidate_incorporation(context, seal)
+                    .map_err(FindingCandidateRestartError::Repository)?;
+                (Some(executor_store), Some(authorization))
+            }
+            (None, _) => (None, None),
+            _ => return Err(FindingCandidateRestartError::RecoveryAuthentication),
+        };
         let handoff = incorporate_and_acknowledge_finding_candidate(
             repository,
+            handoff_store,
             ledger,
             campaign,
             expected,
@@ -353,6 +523,7 @@ where
             pending.execution,
             pending.observation,
             pending.candidate,
+            authorization,
         )
         .map_err(FindingCandidateRestartError::Handoff)?;
         if handoff.publication().replayed {
@@ -383,6 +554,9 @@ pub enum FindingCandidateRestartError<E> {
     /// The pending candidate, observation, and attempt do not form one completion.
     #[error("pending finding candidate does not match its completed observation and attempt")]
     CompletionMismatch,
+    /// Completed V15 state and its prepared journal did not authenticate together.
+    #[error("pending finding recovery authentication failed")]
+    RecoveryAuthentication,
     /// Another observation already won canonical completion for this attempt.
     #[error("pending finding observation `{observation}` is not the canonical completion")]
     NonCanonicalObservation {
@@ -417,6 +591,7 @@ pub enum FindingCandidateRestartError<E> {
 #[allow(clippy::too_many_arguments)]
 pub fn incorporate_and_acknowledge_finding_candidate<A>(
     repository: &CampaignRepository,
+    executor_store: Option<&CampaignExecutorStore>,
     ledger: &mut A,
     campaign: &CampaignName,
     expected_snapshot: CampaignSnapshotId,
@@ -424,13 +599,30 @@ pub fn incorporate_and_acknowledge_finding_candidate<A>(
     execution: ExecutionId,
     observation: ObservationId,
     candidate: FindingCandidateBundleId,
+    authorization: Option<FindingCandidateIncorporationAuthorization>,
 ) -> Result<FindingCandidateHandoffResult, FindingCandidateHandoffError<A::Error>>
 where
     A: AssignmentRetentionAdmin,
 {
-    let publication = repository
-        .incorporate_finding_candidate_bundle(campaign.as_str(), expected_snapshot, candidate)
-        .map_err(FindingCandidateHandoffError::Repository)?;
+    let publication = match executor_store {
+        Some(executor_store) => match authorization {
+            Some(authorization) => executor_store.incorporate_executor_finding_candidate(
+                campaign.as_str(),
+                expected_snapshot,
+                candidate,
+                authorization,
+            ),
+            None => Err(CampaignRepositoryError::Integrity {
+                reason: "executor finding incorporation lacks operation authority",
+            }),
+        },
+        None => repository.incorporate_finding_candidate_bundle(
+            campaign.as_str(),
+            expected_snapshot,
+            candidate,
+        ),
+    }
+    .map_err(FindingCandidateHandoffError::Repository)?;
     let acknowledgement = acknowledge_incorporated_finding_candidate(
         repository,
         ledger,
@@ -446,6 +638,107 @@ where
         publication,
         acknowledgement,
     })
+}
+
+struct PendingFindingRecoveryAuthority<'a, A> {
+    repository: &'a CampaignRepository,
+    ledger: &'a A,
+    prepared_result_namespace: &'a std::path::Path,
+    maximum_prepared_result_bytes: usize,
+    key: AttemptExecutionKey,
+}
+
+impl<A> PendingFindingRecoveryAuthority<'_, A>
+where
+    A: AssignmentLedger,
+{
+    fn authenticate(
+        &self,
+        pending: PendingFindingRestartWork,
+    ) -> Result<AuthenticatedPendingFindingRecovery, FindingCandidateRestartError<A::Error>> {
+        let expected_prepared_result_digest = pending
+            .prepared_result_digest
+            .ok_or(FindingCandidateRestartError::RecoveryAuthentication)?;
+        let state = self
+            .ledger
+            .load_attempt(self.key)
+            .map_err(FindingCandidateRestartError::Ledger)?;
+        let Some(AttemptRuntimeState::Completed {
+            execution_basis,
+            execution,
+            observation,
+            finding_candidate: CompletedFindingCandidate::Pending(candidate),
+            prepared_result_digest: Some(prepared_result_digest),
+            ..
+        }) = state
+        else {
+            return Err(FindingCandidateRestartError::RecoveryAuthentication);
+        };
+        if self.key != pending.key
+            || execution_basis != pending.execution_basis
+            || execution != pending.execution
+            || observation != pending.observation
+            || candidate != pending.candidate
+            || prepared_result_digest != expected_prepared_result_digest
+        {
+            return Err(FindingCandidateRestartError::RecoveryAuthentication);
+        }
+
+        let journal = DirectoryPreparedResultJournal::open_for_recovery(
+            self.prepared_result_namespace,
+            self.key,
+            self.maximum_prepared_result_bytes,
+        )
+        .map_err(|_| FindingCandidateRestartError::RecoveryAuthentication)?
+        .ok_or(FindingCandidateRestartError::RecoveryAuthentication)?;
+        let journal_observation = journal
+            .result()
+            .observation()
+            .observation()
+            .id()
+            .map_err(|_| FindingCandidateRestartError::RecoveryAuthentication)?;
+        let journal_candidate = journal
+            .result()
+            .finding()
+            .map(crate::PreparedCrucibleFindingCandidate::id)
+            .transpose()
+            .map_err(|_| FindingCandidateRestartError::RecoveryAuthentication)?;
+        if journal.execution() != execution
+            || journal.prepared_result_digest() != prepared_result_digest
+            || journal_observation != observation
+            || journal_candidate != Some(candidate)
+        {
+            return Err(FindingCandidateRestartError::RecoveryAuthentication);
+        }
+        let bundle = self
+            .repository
+            .load_finding_candidate_bundle(candidate)
+            .map_err(|_| FindingCandidateRestartError::RecoveryAuthentication)?;
+        let prepared_bundle = journal
+            .result()
+            .finding()
+            .ok_or(FindingCandidateRestartError::RecoveryAuthentication)?
+            .bundle();
+        if prepared_bundle != &bundle
+            || prepared_bundle.observation() != observation
+            || prepared_bundle.exact_pins() != bundle.exact_pins()
+        {
+            return Err(FindingCandidateRestartError::RecoveryAuthentication);
+        }
+        self.repository
+            .authenticated_closure_ids([candidate.content_id()])
+            .map_err(|_| FindingCandidateRestartError::RecoveryAuthentication)?;
+
+        Ok(AuthenticatedPendingFindingRecovery {
+            lineage: self.key.lineage(),
+            attempt: self.key.attempt(),
+            execution_basis,
+            execution,
+            observation,
+            candidate,
+            prepared_result_digest,
+        })
+    }
 }
 
 /// Reauthenticates one incorporated candidate and releases its exact root.
@@ -487,6 +780,7 @@ where
             execution: current_execution,
             observation: current_observation,
             finding_candidate,
+            prepared_result_digest,
         },
     ) = current
     else {
@@ -518,6 +812,7 @@ where
         execution,
         observation,
         finding_candidate: CompletedFindingCandidate::Acknowledged(candidate),
+        prepared_result_digest,
     };
     match fence
         .compare_exchange_attempt(key, Some(completed), Some(released))
@@ -548,7 +843,7 @@ pub enum FindingCandidateHandoffError<E> {
 // crucible-lint: allow panic-shortcut -- exact fixture failures should stop these bound tests.
 #[allow(clippy::expect_used)]
 mod tests {
-    use crucible_campaign::{AttemptId, CampaignLineageId};
+    use crucible_campaign::{AttemptId, CampaignHash, CampaignLineageId};
     use crucible_cas::content_store::{ContentId, ObjectKind};
 
     use super::*;
@@ -579,9 +874,11 @@ mod tests {
 
         PendingFindingRestartWork {
             key: AttemptExecutionKey::new(lineage, attempt),
+            execution_basis: CampaignHash::derive("test", b"pending recovery basis"),
             execution: ExecutionId::from_bytes([0x73; 16]).expect("execution"),
             observation,
             candidate,
+            prepared_result_digest: None,
         }
     }
 

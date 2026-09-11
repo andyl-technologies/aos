@@ -110,6 +110,19 @@ where
         R::Error,
     >;
 
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        let hot_fork = self.hot_fork.take_abandoned_native_checkpoint();
+        let fallback = self.fallback.take_abandoned_native_checkpoint();
+        let mut cleanup = None;
+        if let Some(hot_fork) = hot_fork {
+            crate::NativeCheckpointCleanup::retain(&mut cleanup, hot_fork);
+        }
+        if let Some(fallback) = fallback {
+            crate::NativeCheckpointCleanup::retain(&mut cleanup, fallback);
+        }
+        cleanup
+    }
+
     fn execute(
         &mut self,
         input: &CrucibleAttemptExecution,

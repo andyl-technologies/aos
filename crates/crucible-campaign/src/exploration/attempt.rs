@@ -884,7 +884,9 @@ impl AttemptAdmission {
         children
     }
 
-    pub(crate) const fn schema_version(&self) -> u32 {
+    /// Returns the immutable record schema version.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
         self.schema_version
     }
 }

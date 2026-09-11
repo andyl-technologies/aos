@@ -714,6 +714,8 @@ pub struct QemuFreshExecutionRunner<F, D> {
     driver: D,
     finding_replay_capture:
         Option<crate::automatic_finding_runner::QemuFindingReplayCaptureProducer>,
+    abandoned_native_checkpoint: Option<crate::NativeCheckpointCleanup>,
+    in_flight_native_checkpoint: Option<crucible_api::ProductionExactCheckpointRetirement>,
 }
 
 /// Stable reasons an exact finding candidate cannot be reconstructed.
@@ -735,6 +737,28 @@ pub(crate) enum QemuFindingCandidateReplayOutcome {
     DeterministicallyIncompatible(QemuFindingCandidateIncompatibility),
 }
 
+/// Private replay result with an optional exact checkpoint captured at its safe stop.
+///
+/// The checkpoint remains linear and unpublished. Its caller must either hand
+/// it to the guarded exact-retention publication phase or explicitly abandon
+/// its native source authority.
+pub(crate) struct QemuFindingCandidateCheckpointReplay {
+    outcome: QemuFindingCandidateReplayOutcome,
+    checkpoint: Option<CapturedAttemptCheckpoint>,
+}
+
+impl QemuFindingCandidateCheckpointReplay {
+    /// Consumes the replay into its semantic evidence and raw exact capture.
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        QemuFindingCandidateReplayOutcome,
+        Option<CapturedAttemptCheckpoint>,
+    ) {
+        (self.outcome, self.checkpoint)
+    }
+}
+
 impl<F, D> QemuFreshExecutionRunner<F, D> {
     /// Creates a genesis-start runner from its guarded lifecycle factory and modeled driver.
     #[must_use]
@@ -743,6 +767,8 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             lifecycles,
             driver,
             finding_replay_capture: None,
+            abandoned_native_checkpoint: None,
+            in_flight_native_checkpoint: None,
         }
     }
 
@@ -786,10 +812,74 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
         &mut self.driver
     }
 
-    /// Consumes the runner into its lifecycle factory and driver.
-    #[must_use]
-    pub fn into_parts(self) -> (F, D) {
-        (self.lifecycles, self.driver)
+    pub(crate) fn retain_abandoned_checkpoint(
+        &mut self,
+        checkpoint: CapturedAttemptCheckpoint,
+        quarantine: bool,
+    ) {
+        let Some(retirement) = checkpoint.native_retirement() else {
+            return;
+        };
+        let cleanup = if quarantine {
+            crate::NativeCheckpointCleanup::Quarantine(retirement)
+        } else {
+            crate::NativeCheckpointCleanup::Retire(retirement)
+        };
+        self.retain_native_checkpoint_cleanup(cleanup);
+    }
+
+    fn retain_native_checkpoint_cleanup(&mut self, cleanup: crate::NativeCheckpointCleanup) {
+        crate::NativeCheckpointCleanup::retain(&mut self.abandoned_native_checkpoint, cleanup);
+    }
+
+    fn register_native_checkpoint_capture(&mut self, checkpoint: &CapturedAttemptCheckpoint) {
+        let Some(retirement) = checkpoint.native_retirement() else {
+            return;
+        };
+        if let Some(prior) = self.in_flight_native_checkpoint.replace(retirement) {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
+                prior,
+            ));
+        }
+    }
+
+    fn resolve_native_checkpoint_capture(
+        &mut self,
+        shutdown_succeeded: bool,
+        result_succeeded: bool,
+    ) {
+        let Some(retirement) = self.in_flight_native_checkpoint.take() else {
+            return;
+        };
+        if !shutdown_succeeded {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
+                retirement,
+            ));
+        } else if !result_succeeded {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Retire(
+                retirement,
+            ));
+        }
+    }
+
+    pub(crate) fn take_abandoned_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        if let Some(retirement) = self.in_flight_native_checkpoint.take() {
+            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
+                retirement,
+            ));
+        }
+        self.abandoned_native_checkpoint.take()
+    }
+}
+
+impl<F, D> Drop for QemuFreshExecutionRunner<F, D> {
+    fn drop(&mut self) {
+        if let Some(retirement) = self.in_flight_native_checkpoint.take() {
+            crate::NativeCheckpointCleanup::Quarantine(retirement).retain_for_process_lifetime();
+        }
+        if let Some(cleanup) = self.abandoned_native_checkpoint.take() {
+            cleanup.retain_for_process_lifetime();
+        }
     }
 }
 
@@ -813,6 +903,59 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<
         QemuFindingCandidateReplayOutcome,
+        AttemptWorkerFailure<
+            QemuFreshExecutionRunnerError<F::Error, crate::QemuFreshModeledDriverError>,
+        >,
+    > {
+        self.replay_finding_candidate_boundary_inner(
+            input,
+            candidate,
+            expected_replay,
+            context,
+            false,
+        )
+        .map(|replay| replay.outcome)
+    }
+
+    /// Reconstructs one exact candidate and captures its canonical safe stop.
+    ///
+    /// A missing checkpoint means the replay completed but the boundary was not
+    /// safely capturable. The semantic replay remains usable for thin finding
+    /// publication in that case.
+    // crucible-lint: allow rust-allow -- the existing runner error preserves phase and cleanup diagnostics.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn replay_and_capture_finding_candidate_boundary(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        candidate: &ConfigurationArtifact,
+        expected_replay: Option<&crate::qemu_campaign_driver::QemuFindingCandidateBoundaryEvidence>,
+        context: &AttemptExecutionContext,
+    ) -> Result<
+        QemuFindingCandidateCheckpointReplay,
+        AttemptWorkerFailure<
+            QemuFreshExecutionRunnerError<F::Error, crate::QemuFreshModeledDriverError>,
+        >,
+    > {
+        self.replay_finding_candidate_boundary_inner(
+            input,
+            candidate,
+            expected_replay,
+            context,
+            true,
+        )
+    }
+
+    // crucible-lint: allow rust-allow -- the existing runner error preserves phase and cleanup diagnostics.
+    #[allow(clippy::result_large_err)]
+    fn replay_finding_candidate_boundary_inner(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        candidate: &ConfigurationArtifact,
+        expected_replay: Option<&crate::qemu_campaign_driver::QemuFindingCandidateBoundaryEvidence>,
+        context: &AttemptExecutionContext,
+        capture_checkpoint: bool,
+    ) -> Result<
+        QemuFindingCandidateCheckpointReplay,
         AttemptWorkerFailure<
             QemuFreshExecutionRunnerError<F::Error, crate::QemuFreshModeledDriverError>,
         >,
@@ -903,24 +1046,38 @@ where
                 .map(|()| pending)
                 .map_err(map_terminal_fingerprint_capture_failure)
         });
+        let checkpoint = if capture_checkpoint && pending.is_ok() {
+            capture_finding_candidate_checkpoint(&mut lifecycle, context)
+        } else {
+            None
+        };
+        if let Some(checkpoint) = checkpoint.as_ref() {
+            self.register_native_checkpoint_capture(checkpoint);
+        }
         let cleanup = lifecycle.shutdown();
 
         let (pending, final_events) = match (pending, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
             (Err(failure), Ok(_)) => {
+                self.resolve_native_checkpoint_capture(true, false);
                 if let Some(reason) = finding_candidate_incompatibility(&failure) {
-                    return Ok(
-                        QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(reason),
-                    );
+                    return Ok(QemuFindingCandidateCheckpointReplay {
+                        outcome: QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
+                            reason,
+                        ),
+                        checkpoint: None,
+                    });
                 }
                 return Err(failure);
             }
             (Ok(_), Err(cleanup)) => {
+                self.resolve_native_checkpoint_capture(false, false);
                 return Err(AttemptWorkerFailure::Terminal(
                     QemuFreshExecutionRunnerError::Cleanup(cleanup),
                 ));
             }
             (Err(failure), Err(cleanup)) => {
+                self.resolve_native_checkpoint_capture(false, false);
                 return Err(AttemptWorkerFailure::Terminal(
                     cleanup_after_fresh_runner_failure(failure, cleanup),
                 ));
@@ -930,15 +1087,46 @@ where
             .driver
             .build_finding_candidate_boundary_evidence(pending, candidate, final_events)
             .map_err(AttemptWorkerFailure::Terminal)
-            .map_err(map_fresh_driver_failure)?;
+            .map_err(map_fresh_driver_failure);
+        let evidence = match evidence {
+            Ok(evidence) => evidence,
+            Err(failure) => {
+                self.resolve_native_checkpoint_capture(true, false);
+                return Err(failure);
+            }
+        };
         let evidence = match expected_replay {
             Some(expected) => evidence.compare_against_expected_replay(expected),
             None => evidence,
         };
-        Ok(QemuFindingCandidateReplayOutcome::Observed(Box::new(
-            evidence,
-        )))
+        self.resolve_native_checkpoint_capture(true, true);
+        Ok(QemuFindingCandidateCheckpointReplay {
+            outcome: QemuFindingCandidateReplayOutcome::Observed(Box::new(evidence)),
+            checkpoint,
+        })
     }
+}
+
+fn capture_finding_candidate_checkpoint<L>(
+    lifecycle: &mut L,
+    context: &AttemptExecutionContext,
+) -> Option<CapturedAttemptCheckpoint>
+where
+    L: QemuFreshAttemptLifecycleOwner,
+{
+    if let Some(verdict) = lifecycle.terminal_verdict_for_stop() {
+        let cause = match verdict {
+            QuantumTerminalVerdict::Passed => CheckpointTerminalCause::Passed,
+            QuantumTerminalVerdict::Failed(violations) => {
+                CheckpointTerminalCause::Failed(violations)
+            }
+        };
+        lifecycle.prepare_terminal_checkpoint(cause).ok()?;
+    }
+    if !lifecycle.exact_checkpoint_ready().ok()? {
+        return None;
+    }
+    lifecycle.capture_attempt_checkpoint(context).ok()
 }
 
 // crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
@@ -1389,6 +1577,16 @@ pub struct QemuFreshGenesisCheckpointCandidate {
 }
 
 impl QemuFreshGenesisCheckpointCandidate {
+    pub(crate) fn new(
+        capture: CapturedAttemptCheckpoint,
+        launch_profiles: Vec<ProductionVmNodeReplayLaunchProfile>,
+    ) -> Self {
+        Self {
+            capture,
+            launch_profiles,
+        }
+    }
+
     /// Returns the exact captured scenario identity.
     #[must_use]
     pub fn scenario(&self) -> ContentHash {
@@ -1436,6 +1634,19 @@ pub enum QemuFreshGenesisCheckpointError<E> {
         /// Mandatory lifecycle teardown failure.
         #[source]
         cleanup: SchedulerError,
+        /// Native catalog authority quarantined until process exit can be attested.
+        retirement: Option<crucible_api::ProductionExactCheckpointRetirement>,
+    },
+    /// Safe teardown completed, but native catalog retirement failed terminally.
+    #[error("retire rejected fresh genesis checkpoint catalog: {source}")]
+    NativeRetirement {
+        /// Earlier capture failure whose abandoned catalog required retirement.
+        prior: Box<QemuFreshGenesisCheckpointCaptureFailure>,
+        /// Terminal native retirement failure.
+        #[source]
+        source: crucible_api::ProductionExactCheckpointRetirementError,
+        /// Sole authority retained for operator repair.
+        retirement: crucible_api::ProductionExactCheckpointRetirement,
     },
 }
 
@@ -1470,21 +1681,25 @@ where
         .start_fresh_lifecycle(&scenario, source, &genesis, &signal_fault_replay, context)
         .map_err(QemuFreshGenesisCheckpointError::Start)?;
 
+    let mut native_guard = None;
     let captured = match lifecycle.exact_checkpoint_ready() {
         Ok(true) => lifecycle
             .capture_attempt_checkpoint(context)
             .map_err(QemuFreshGenesisCheckpointCaptureFailure::Capture)
             .and_then(|capture| {
+                native_guard = Some(crate::executor_worker::NativeCheckpointUnwindGuard::new(
+                    &capture,
+                ));
                 if capture.scenario() != scenario.id() || capture.configuration() != genesis.id() {
                     return Err(QemuFreshGenesisCheckpointCaptureFailure::BasisMismatch);
                 }
                 let launch_profiles = lifecycle
                     .replay_launch_profiles()
                     .map_err(QemuFreshGenesisCheckpointCaptureFailure::LaunchProfiles)?;
-                Ok(QemuFreshGenesisCheckpointCandidate {
+                Ok(QemuFreshGenesisCheckpointCandidate::new(
                     capture,
                     launch_profiles,
-                })
+                ))
             }),
         Ok(false) => Err(QemuFreshGenesisCheckpointCaptureFailure::NotCheckpointReady),
         Err(error) => Err(QemuFreshGenesisCheckpointCaptureFailure::Capture(error)),
@@ -1492,16 +1707,57 @@ where
     let cleanup = lifecycle.shutdown();
 
     match (captured, cleanup) {
-        (Ok(capture), Ok(_final_events)) => Ok(capture),
-        (Err(error), Ok(_final_events)) => Err(error.into()),
+        (Ok(capture), Ok(_final_events)) => {
+            if let Some(guard) = native_guard.as_mut() {
+                guard.disarm();
+            }
+            Ok(capture)
+        }
+        (Err(error), Ok(_final_events)) => {
+            if let Some(retirement) = native_guard
+                .as_mut()
+                .and_then(crate::executor_worker::NativeCheckpointUnwindGuard::take)
+            {
+                retire_rejected_fresh_genesis_checkpoint(retirement, error)
+            } else {
+                Err(error.into())
+            }
+        }
         (Ok(_capture), Err(cleanup)) => Err(QemuFreshGenesisCheckpointError::Cleanup {
             prior: None,
             cleanup,
+            retirement: native_guard
+                .as_mut()
+                .and_then(crate::executor_worker::NativeCheckpointUnwindGuard::take),
         }),
         (Err(prior), Err(cleanup)) => Err(QemuFreshGenesisCheckpointError::Cleanup {
             prior: Some(Box::new(prior)),
             cleanup,
+            retirement: native_guard
+                .as_mut()
+                .and_then(crate::executor_worker::NativeCheckpointUnwindGuard::take),
         }),
+    }
+}
+
+fn retire_rejected_fresh_genesis_checkpoint<E>(
+    retirement: crucible_api::ProductionExactCheckpointRetirement,
+    prior: QemuFreshGenesisCheckpointCaptureFailure,
+) -> Result<QemuFreshGenesisCheckpointCandidate, QemuFreshGenesisCheckpointError<E>> {
+    loop {
+        match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
+            Ok(_) => return Err(prior.into()),
+            Err(source) if source.is_retryable() => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(source) => {
+                return Err(QemuFreshGenesisCheckpointError::NativeRetirement {
+                    prior: Box::new(prior),
+                    source,
+                    retirement,
+                });
+            }
+        }
     }
 }
 
@@ -1960,6 +2216,10 @@ where
 {
     type Error = QemuFreshExecutionRunnerError<F::Error, D::Error>;
 
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        self.take_abandoned_checkpoint()
+    }
+
     fn execute(
         &mut self,
         input: &CrucibleAttemptExecution,
@@ -2070,8 +2330,9 @@ where
                 let capture = lifecycle
                     .capture_attempt_checkpoint(context)
                     .map_err(map_checkpoint_capture_failure)?;
+                self.register_native_checkpoint_capture(&capture);
                 return context
-                    .prepare_and_stage_checkpoint(capture)
+                    .prepare_and_stage_checkpoint(&capture)
                     .map(QemuFreshRunnerResult::Checkpoint)
                     .map_err(map_checkpoint_handoff_failure);
             }
@@ -2111,8 +2372,9 @@ where
                     let capture = lifecycle
                         .capture_attempt_checkpoint(context)
                         .map_err(map_checkpoint_capture_failure)?;
+                    self.register_native_checkpoint_capture(&capture);
                     context
-                        .prepare_and_stage_checkpoint(capture)
+                        .prepare_and_stage_checkpoint(&capture)
                         .map(QemuFreshRunnerResult::Checkpoint)
                         .map_err(map_checkpoint_handoff_failure)
                 }
@@ -2125,6 +2387,7 @@ where
                 .map_err(map_terminal_fingerprint_capture_failure)
         });
         let cleanup = lifecycle.shutdown();
+        self.resolve_native_checkpoint_capture(cleanup.is_ok(), driven.is_ok());
 
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
@@ -2682,6 +2945,8 @@ pub(crate) fn materialize_start_from<F, D>(
     }
 }
 
+// crucible-lint: allow rust-allow -- replay validation keeps each authenticated source and mutable materialization target explicit.
+#[allow(clippy::too_many_arguments)]
 fn apply_replayed_guest_selectables<F, D>(
     lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
     context: &AttemptExecutionContext,

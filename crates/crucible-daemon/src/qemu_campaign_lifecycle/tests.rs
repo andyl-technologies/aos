@@ -29,7 +29,7 @@ use crucible::{
 use crucible_api::vm_lifecycle::production_permanently_failed_loop_for_test;
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
-    ProductionVmNodeLauncher,
+    ProductionVmNodeLauncher, build_authenticated_production_checkpoint_codec_fixture,
 };
 use crucible_campaign::{
     AssignmentId, Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart,
@@ -1461,6 +1461,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeGenesisCheckpointLifecycle {
 
 struct FakeGenesisCheckpointLifecycleFactory {
     order: Arc<Mutex<Vec<&'static str>>>,
+    capture: Option<CapturedAttemptCheckpoint>,
     foreign_capture: bool,
     checkpoint_ready: bool,
     cleanup_error: bool,
@@ -1507,9 +1508,13 @@ impl QemuFreshAttemptLifecycleFactory for FakeGenesisCheckpointLifecycleFactory 
                 )
             })
             .collect();
+        let capture = self
+            .capture
+            .take()
+            .unwrap_or_else(|| test_checkpoint_capture_for_configuration(&configuration).into());
         Ok(FakeGenesisCheckpointLifecycle {
             order: Arc::clone(&self.order),
-            capture: Some(test_checkpoint_capture_for_configuration(&configuration).into()),
+            capture: Some(capture),
             launch_profiles,
             checkpoint_ready: self.checkpoint_ready,
             cleanup_error: self.cleanup_error,
@@ -1532,6 +1537,23 @@ struct UnsolicitedCheckpointDriver;
 struct OrderingCheckpointHandoff {
     order: Arc<Mutex<Vec<&'static str>>>,
     checkpoints: ExactCheckpointStore,
+}
+
+struct PanickingCheckpointHandoff;
+
+impl std::fmt::Debug for PanickingCheckpointHandoff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PanickingCheckpointHandoff")
+    }
+}
+
+impl AttemptCheckpointHandoff for PanickingCheckpointHandoff {
+    fn prepare_and_stage(
+        &self,
+        _capture: &CapturedAttemptCheckpoint,
+    ) -> Result<PreparedAttemptCheckpoint, CheckpointHandoffFailure> {
+        panic!("injected panic after production capture")
+    }
 }
 
 impl std::fmt::Debug for OrderingCheckpointHandoff {
@@ -2413,6 +2435,7 @@ fn fresh_genesis_checkpoint_capture_uses_no_modeled_quantum_and_tears_down() {
     let input = fresh_runner_input();
     let mut factory = FakeGenesisCheckpointLifecycleFactory {
         order: Arc::clone(&order),
+        capture: None,
         foreign_capture: false,
         checkpoint_ready: true,
         cleanup_error: false,
@@ -2441,6 +2464,7 @@ fn fresh_genesis_checkpoint_capture_rejects_foreign_basis_after_teardown() {
     let input = fresh_runner_input();
     let mut factory = FakeGenesisCheckpointLifecycleFactory {
         order: Arc::clone(&order),
+        capture: None,
         foreign_capture: true,
         checkpoint_ready: true,
         cleanup_error: false,
@@ -2471,6 +2495,7 @@ fn fresh_genesis_checkpoint_capture_preserves_cleanup_precedence() {
     let input = fresh_runner_input();
     let mut factory = FakeGenesisCheckpointLifecycleFactory {
         order: Arc::clone(&order),
+        capture: None,
         foreign_capture: true,
         checkpoint_ready: true,
         cleanup_error: true,
@@ -2500,11 +2525,189 @@ fn fresh_genesis_checkpoint_capture_preserves_cleanup_precedence() {
 }
 
 #[test]
+fn production_genesis_capture_quarantines_native_catalog_after_shutdown_error() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let run_state = tempfile::tempdir().expect("production genesis run state");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+        .expect("production genesis fixture");
+    let retirement = fixture.closure().native_retirement();
+    let mut factory = FakeGenesisCheckpointLifecycleFactory {
+        order: Arc::clone(&order),
+        capture: Some(CapturedAttemptCheckpoint::from(fixture.closure().clone())),
+        foreign_capture: false,
+        checkpoint_ready: true,
+        cleanup_error: true,
+    };
+
+    let error = capture_fresh_genesis_checkpoint_candidate(
+        &mut factory,
+        fixture.source(),
+        &fresh_runner_context(),
+    )
+    .expect_err("shutdown failure must quarantine the native catalog");
+
+    assert!(matches!(
+        error,
+        QemuFreshGenesisCheckpointError::Cleanup {
+            retirement: Some(_),
+            ..
+        }
+    ));
+    let report = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("catalog remains available to its quarantine owner");
+    assert!(report.retired());
+    assert_eq!(
+        order.lock().expect("genesis capture order").as_slice(),
+        ["begin", "ready", "capture", "profiles", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_runner_quarantines_failed_production_handoff_after_shutdown_error() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let run_state = tempfile::tempdir().expect("production fresh run state");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+        .expect("production fresh fixture");
+    let retirement = fixture.closure().native_retirement();
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeGenesisCheckpointLifecycleFactory {
+            order: Arc::clone(&order),
+            capture: Some(CapturedAttemptCheckpoint::from(fixture.closure().clone())),
+            foreign_capture: false,
+            checkpoint_ready: true,
+            cleanup_error: true,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let input = fresh_runner_input();
+    let checkpoint_request = ExecutionCheckpointRequest::default();
+    checkpoint_request.request_for_test();
+    let context = AttemptExecutionContext::new(
+        resources(4),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        checkpoint_request,
+    )
+    .with_checkpoint_handoff(input.scenario().scenario_def().id(), None);
+
+    let failure = runner
+        .execute(&input, &context)
+        .expect_err("foreign production capture and failed shutdown must fail closed");
+
+    assert!(matches!(
+        failure,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CleanupAfterRunner { .. })
+    ));
+    let Some(crate::NativeCheckpointCleanup::Quarantine(cleanup)) =
+        runner.take_abandoned_native_checkpoint()
+    else {
+        panic!("failed shutdown must quarantine the captured native catalog")
+    };
+    let report = crucible_api::retire_production_exact_checkpoint_catalog(&cleanup)
+        .expect("test owner releases quarantined production capture");
+    assert!(report.retired());
+    let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("repeat shutdown quarantine retirement");
+    assert!(!repeated.retired());
+    assert_eq!(
+        order.lock().expect("genesis capture order").as_slice(),
+        ["begin", "drive", "ready", "capture", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_runner_retains_production_quarantine_when_handoff_panics_after_capture() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let run_state = tempfile::tempdir().expect("production panic run state");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+        .expect("production panic fixture");
+    let retirement = fixture.closure().native_retirement();
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeGenesisCheckpointLifecycleFactory {
+            order: Arc::clone(&order),
+            capture: Some(CapturedAttemptCheckpoint::from(fixture.closure().clone())),
+            foreign_capture: false,
+            checkpoint_ready: true,
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order,
+            failure: None,
+        },
+    );
+    let input = fresh_runner_input();
+    let checkpoint_request = ExecutionCheckpointRequest::default();
+    checkpoint_request.request_for_test();
+    let context = AttemptExecutionContext::new(
+        resources(4),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        checkpoint_request,
+    )
+    .with_checkpoint_handoff(
+        fixture.closure().scenario(),
+        Some(ExecutionCheckpointHandoff::new(Arc::new(
+            PanickingCheckpointHandoff,
+        ))),
+    );
+
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _outcome = runner.execute(&input, &context);
+    }));
+
+    assert!(panicked.is_err());
+    let Some(crate::NativeCheckpointCleanup::Quarantine(cleanup)) =
+        runner.take_abandoned_native_checkpoint()
+    else {
+        panic!("unwinding capture must remain in the runner quarantine slot")
+    };
+    let report = crucible_api::retire_production_exact_checkpoint_catalog(&cleanup)
+        .expect("test owner releases panic quarantine");
+    assert!(report.retired());
+    let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("repeat panic quarantine retirement");
+    assert!(!repeated.retired());
+}
+
+#[test]
+fn dropping_fresh_runner_moves_in_flight_capture_to_process_quarantine() {
+    let run_state = tempfile::tempdir().expect("production drop run state");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+        .expect("production drop fixture");
+    let capture = CapturedAttemptCheckpoint::from(fixture.closure().clone());
+    let before = crate::executor_worker::native_checkpoint_process_quarantine_len_for_test();
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeGenesisCheckpointLifecycleFactory {
+            order: Arc::clone(&order),
+            capture: None,
+            foreign_capture: false,
+            checkpoint_ready: true,
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order,
+            failure: None,
+        },
+    );
+    runner.register_native_checkpoint_capture(&capture);
+
+    drop(runner);
+
+    let after = crate::executor_worker::native_checkpoint_process_quarantine_len_for_test();
+    assert!(after > before);
+}
+
+#[test]
 fn production_baked_genesis_rejects_legacy_capture_after_guarded_teardown() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let input = fresh_runner_input();
     let mut factory = FakeGenesisCheckpointLifecycleFactory {
         order: Arc::clone(&order),
+        capture: None,
         foreign_capture: false,
         checkpoint_ready: true,
         cleanup_error: false,
@@ -3002,6 +3205,8 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                     observation: expected_observation,
                     finding_candidate: Some(expected_finding),
                     finding_replay_captures: Some(capture_references),
+                    finding_exact_retention_roots: [None; 3],
+                    prepared_result_digest: None,
                 }),
             )
             .expect("stage production replay capture roots before journaling"),

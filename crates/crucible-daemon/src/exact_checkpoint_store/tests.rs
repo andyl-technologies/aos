@@ -40,6 +40,25 @@ use crate::{
 
 const STORE_LIMIT: u64 = 1024 * 1024;
 
+#[test]
+fn abandoned_production_capture_retires_its_native_catalog() {
+    let run_state = tempfile::tempdir().expect("production capture run state");
+    let fixture =
+        crucible_api::build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+            .expect("authenticated production checkpoint fixture");
+    let capture = CapturedAttemptCheckpoint::from(fixture.closure().clone());
+    let retirement = capture
+        .native_retirement()
+        .expect("production retirement authority");
+
+    crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("retire abandoned production checkpoint");
+
+    let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("repeat native retirement");
+    assert!(!repeated.retired());
+}
+
 #[cfg(feature = "destructive-recovery-faults")]
 const ENOSPC_CHILD_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_ENOSPC_CHILD";
 #[cfg(feature = "destructive-recovery-faults")]

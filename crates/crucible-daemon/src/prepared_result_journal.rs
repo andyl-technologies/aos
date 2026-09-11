@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
-use crucible_campaign::{AttemptExecutionScope, ExecutionId};
+use crucible_campaign::{AttemptExecutionScope, CampaignHash, ExecutionId};
 
 use crate::crucible_artifact::PreparedSemanticResultVersion;
 use crate::owned_advisory_lock::OwnedAdvisoryLock;
@@ -58,6 +58,8 @@ const JOURNAL_STATE_HASH_DOMAIN_V1: &str = "crucible.executor.prepared-result-jo
 const JOURNAL_STATE_HASH_DOMAIN_V2: &str = "crucible.executor.prepared-result-journal-state.v2";
 const JOURNAL_MEASUREMENT_EVIDENCE_HASH_DOMAIN: &str =
     "crucible.executor.prepared-result-journal-measurement-evidence.v1";
+const PREPARED_RESULT_LEDGER_BINDING_DOMAIN: &str =
+    "crucible.executor.prepared-result-ledger-binding.v1";
 const MAX_JOURNAL_STATE_BYTES: usize = 16 * 1024;
 const MAX_ORPHAN_DIRECTORY_ENTRIES: usize = 4;
 
@@ -85,9 +87,11 @@ pub struct PreparedResultJournalCleanupDisposition {
 #[derive(Debug)]
 pub struct DirectoryPreparedResultJournal {
     root: PathBuf,
+    staged: bool,
     key: AttemptExecutionKey,
     execution: ExecutionId,
     maximum_payload_bytes: usize,
+    prepared_result_digest: CampaignHash,
     result: PreparedSemanticAttemptResult,
     namespace_lock: OwnedAdvisoryLock,
 }
@@ -110,6 +114,28 @@ impl DirectoryPreparedResultJournal {
         maximum_payload_bytes: usize,
         result: PreparedSemanticAttemptResult,
     ) -> Result<(Self, PreparedResultJournalCreateDisposition), PreparedResultJournalError> {
+        let (mut journal, disposition) =
+            Self::prepare_staged(namespace, key, execution, maximum_payload_bytes, result)?;
+        journal.commit_staged()?;
+        Ok((journal, disposition))
+    }
+
+    /// Durably prepares a hidden journal without making it a recovery root.
+    ///
+    /// The caller must retain repository GC exclusion until [`Self::commit_staged`]
+    /// succeeds after the matching operational publication-root transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedResultJournalError`] when encoding, filesystem
+    /// durability, locking, authentication, or exact replay validation fails.
+    pub(crate) fn prepare_staged(
+        namespace: impl AsRef<Path>,
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+        maximum_payload_bytes: usize,
+        result: PreparedSemanticAttemptResult,
+    ) -> Result<(Self, PreparedResultJournalCreateDisposition), PreparedResultJournalError> {
         let namespace = namespace.as_ref();
         validate_namespace(namespace)?;
         validate_semantic_key(key)?;
@@ -124,6 +150,22 @@ impl DirectoryPreparedResultJournal {
                 Some(execution),
                 maximum_payload_bytes,
                 namespace_lock,
+                false,
+            )?;
+            if journal.result != result {
+                return Err(PreparedResultJournalError::ResultMismatch);
+            }
+            return Ok((journal, PreparedResultJournalCreateDisposition::Existing));
+        }
+        let staging = staged_path(namespace, key);
+        if path_presence(&staging, "inspect-staged-journal-before-create")? {
+            let journal = Self::open_locked(
+                staging,
+                key,
+                Some(execution),
+                maximum_payload_bytes,
+                namespace_lock,
+                true,
             )?;
             if journal.result != result {
                 return Err(PreparedResultJournalError::ResultMismatch);
@@ -131,9 +173,6 @@ impl DirectoryPreparedResultJournal {
             return Ok((journal, PreparedResultJournalCreateDisposition::Existing));
         }
         if path_presence(
-            &staged_path(namespace, key),
-            "inspect-staged-journal-before-create",
-        )? || path_presence(
             &retired_path(namespace, key),
             "inspect-retired-journal-before-create",
         )? {
@@ -141,6 +180,8 @@ impl DirectoryPreparedResultJournal {
         }
 
         let payload = result.canonical_bytes_with_limit(maximum_payload_bytes)?;
+        let prepared_result_digest =
+            CampaignHash::derive(PREPARED_RESULT_LEDGER_BINDING_DOMAIN, &payload);
         let state = encode_state(
             key,
             execution,
@@ -151,26 +192,65 @@ impl DirectoryPreparedResultJournal {
         )?;
         let staging = create_staging_directory(namespace, key)?;
         initialize_new(&staging, &payload, &state)?;
-        match rename_noreplace(&staging, &root) {
-            Ok(()) => {
-                sync_parent(&root, "sync-journal-parent-after-create")?;
-                Ok((
-                    Self {
-                        root,
-                        key,
-                        execution,
-                        maximum_payload_bytes,
-                        result,
-                        namespace_lock,
-                    },
-                    PreparedResultJournalCreateDisposition::Created,
-                ))
-            }
-            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-                Err(PreparedResultJournalError::RecoveryRequired)
-            }
-            Err(source) => Err(io_error("publish-journal-directory", &root, source)),
+        sync_parent(&staging, "sync-journal-parent-after-stage")?;
+        Ok((
+            Self {
+                root: staging,
+                staged: true,
+                key,
+                execution,
+                maximum_payload_bytes,
+                prepared_result_digest,
+                result,
+                namespace_lock,
+            },
+            PreparedResultJournalCreateDisposition::Created,
+        ))
+    }
+
+    /// Atomically promotes a durable staged journal into the recovery namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedResultJournalError`] when rename or parent-directory
+    /// durability fails.
+    pub(crate) fn commit_staged(&mut self) -> Result<(), PreparedResultJournalError> {
+        if !self.staged {
+            return sync_parent(&self.root, "sync-journal-parent-after-create");
         }
+        let namespace = self
+            .root
+            .parent()
+            .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+        let visible = journal_path(namespace, self.key);
+        rename_noreplace(&self.root, &visible)
+            .map_err(|source| io_error("publish-journal-directory", &visible, source))?;
+        self.root = visible;
+        self.staged = false;
+        sync_parent(&self.root, "sync-journal-parent-after-create")
+    }
+
+    /// Opens an authenticated hidden journal after the ledger proves Publishing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedResultJournalError`] for invalid namespace, locking,
+    /// authentication, or staged journal bytes.
+    pub(crate) fn open_staged_for_recovery(
+        namespace: impl AsRef<Path>,
+        key: AttemptExecutionKey,
+        maximum_payload_bytes: usize,
+    ) -> Result<Option<Self>, PreparedResultJournalError> {
+        let namespace = namespace.as_ref();
+        validate_namespace(namespace)?;
+        validate_semantic_key(key)?;
+        let maximum_payload_bytes = validate_payload_limit(maximum_payload_bytes)?;
+        let namespace_lock = acquire_namespace_lock(namespace, key)?;
+        let root = staged_path(namespace, key);
+        if !path_presence(&root, "inspect-staged-journal-for-recovery")? {
+            return Ok(None);
+        }
+        Self::open_locked(root, key, None, maximum_payload_bytes, namespace_lock, true).map(Some)
     }
 
     /// Opens and authenticates the complete journal for `key`.
@@ -198,6 +278,7 @@ impl DirectoryPreparedResultJournal {
             Some(execution),
             maximum_payload_bytes,
             namespace_lock,
+            false,
         )
     }
 
@@ -236,7 +317,15 @@ impl DirectoryPreparedResultJournal {
             }
             return Ok(None);
         }
-        Self::open_locked(root, key, None, maximum_payload_bytes, namespace_lock).map(Some)
+        Self::open_locked(
+            root,
+            key,
+            None,
+            maximum_payload_bytes,
+            namespace_lock,
+            false,
+        )
+        .map(Some)
     }
 
     /// Reports whether this key has a visible journal or interrupted transition.
@@ -275,6 +364,7 @@ impl DirectoryPreparedResultJournal {
         expected_execution: Option<ExecutionId>,
         maximum_payload_bytes: usize,
         namespace_lock: OwnedAdvisoryLock,
+        staged: bool,
     ) -> Result<Self, PreparedResultJournalError> {
         validate_journal_directory(&root)?;
         sync_directory(&root, "sync-journal-directory-on-open")?;
@@ -313,9 +403,14 @@ impl DirectoryPreparedResultJournal {
 
         Ok(Self {
             root,
+            staged,
             key,
             execution: envelope.execution,
             maximum_payload_bytes,
+            prepared_result_digest: CampaignHash::derive(
+                PREPARED_RESULT_LEDGER_BINDING_DOMAIN,
+                &payload,
+            ),
             result,
             namespace_lock,
         })
@@ -343,6 +438,12 @@ impl DirectoryPreparedResultJournal {
     #[must_use]
     pub const fn maximum_payload_bytes(&self) -> usize {
         self.maximum_payload_bytes
+    }
+
+    /// Returns the authenticated full-payload digest bound into the ledger.
+    #[must_use]
+    pub const fn prepared_result_digest(&self) -> CampaignHash {
+        self.prepared_result_digest
     }
 
     /// Returns the complete prepared publication value.
@@ -375,6 +476,10 @@ impl DirectoryPreparedResultJournal {
             .root
             .parent()
             .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+        if self.staged {
+            remove_orphan_directory(&self.root)?;
+            return sync_directory(namespace, "sync-journal-parent-after-staged-remove");
+        }
         let tombstone = retired_path(namespace, self.key);
         let root_present = path_presence(&self.root, "inspect-journal-before-retire")?;
         let tombstone_present = path_presence(&tombstone, "inspect-retired-journal")?;
@@ -1131,6 +1236,76 @@ mod tests {
     const TEST_PAYLOAD_LIMIT: usize = 1024 * 1024;
 
     #[test]
+    fn staged_journal_is_durable_hidden_and_promotes_exactly() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let key = semantic_key(b"staged");
+        let execution = ExecutionId::from_bytes([0x4f; 16]).expect("execution");
+        let result = observation_result(0x5f, key.attempt());
+
+        let (staged, disposition) = DirectoryPreparedResultJournal::prepare_staged(
+            namespace.path(),
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            result.clone(),
+        )
+        .expect("prepare hidden journal");
+        assert_eq!(disposition, PreparedResultJournalCreateDisposition::Created);
+        assert_eq!(staged.root(), staged_path(namespace.path(), key));
+        assert!(!journal_path(namespace.path(), key).exists());
+        drop(staged);
+        assert!(matches!(
+            DirectoryPreparedResultJournal::open_for_recovery(
+                namespace.path(),
+                key,
+                TEST_PAYLOAD_LIMIT,
+            ),
+            Err(PreparedResultJournalError::RecoveryRequired)
+        ));
+
+        let mut recovered = DirectoryPreparedResultJournal::open_staged_for_recovery(
+            namespace.path(),
+            key,
+            TEST_PAYLOAD_LIMIT,
+        )
+        .expect("authenticate staged journal")
+        .expect("staged journal exists");
+        assert_eq!(recovered.result(), &result);
+        recovered.commit_staged().expect("promote staged journal");
+        assert_eq!(recovered.root(), journal_path(namespace.path(), key));
+        assert!(!staged_path(namespace.path(), key).exists());
+        assert!(journal_path(namespace.path(), key).is_dir());
+    }
+
+    #[test]
+    fn staged_journal_rejects_result_substitution() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let key = semantic_key(b"staged-substitution");
+        let execution = ExecutionId::from_bytes([0x4e; 16]).expect("execution");
+        let result = observation_result(0x5e, key.attempt());
+        let (staged, _) = DirectoryPreparedResultJournal::prepare_staged(
+            namespace.path(),
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            result,
+        )
+        .expect("prepare hidden journal");
+        drop(staged);
+
+        assert!(matches!(
+            DirectoryPreparedResultJournal::prepare_staged(
+                namespace.path(),
+                key,
+                execution,
+                TEST_PAYLOAD_LIMIT,
+                observation_result(0x5d, key.attempt()),
+            ),
+            Err(PreparedResultJournalError::ResultMismatch)
+        ));
+    }
+
+    #[test]
     fn journal_create_reopen_authenticate_and_remove_are_exact() {
         let namespace = TempDir::new().expect("journal namespace");
         let key = semantic_key(b"main");
@@ -1185,6 +1360,7 @@ mod tests {
                 Some(ExecutionId::from_bytes([0x52; 16]).expect("other execution")),
                 TEST_PAYLOAD_LIMIT,
                 failed_open_lock,
+                false,
             ),
             Err(PreparedResultJournalError::InvalidState)
         ));

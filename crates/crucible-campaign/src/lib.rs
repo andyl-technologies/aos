@@ -105,8 +105,8 @@ pub use choice::{
 };
 pub use codec::CampaignCodecError;
 pub use execution::{
-    AssignmentId, AttemptExecutionScope, AttemptResourceLimits, AttemptStartMode,
-    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    AssignmentId, AttemptExecutionScope, AttemptResourceLimits, AttemptRetentionPolicyBasis,
+    AttemptStartMode, CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DaemonEpoch,
     ExecutionId, ExecutionRetentionIntent, ExecutorClient, ExecutorClientError,
@@ -154,9 +154,12 @@ pub use finding::{
     MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES, ReproductionArtifact,
 };
 pub use finding_candidate::{
-    FindingCandidateBundle, FindingReplayCaptureIncomplete, FindingReplayCaptureReference,
+    FindingCandidateBundle, FindingExactRetention, FindingExactRetentionCandidate,
+    FindingExactRetentionDisposition, FindingExactRetentionEvidence,
+    FindingExactRetentionIncomplete, FindingReplayCaptureIncomplete, FindingReplayCaptureReference,
     FindingReplayCaptureSet, FindingReplaySignature, FindingReplayTargetKind,
     FindingSignatureMinimizationEvidence, FindingTriageEvidenceSet,
+    MAX_FINDING_EXACT_RETENTION_CANDIDATES,
 };
 pub use finding_triage_evidence::{
     FindingTriageReplayEvidence, FindingTriageReplayStorageDescription,
@@ -255,18 +258,22 @@ pub use policy::{
 pub use repository::CampaignValidationCheckpointMetrics;
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
-    AttemptReservation, AuthenticatedFindingCandidateIncorporation, BranchRequestResult,
-    CampaignBudgetProjection, CampaignCommandResult, CampaignCompletionResult,
-    CampaignDerivationResult, CampaignDiscoveryResult, CampaignExecutorCancelOutcome,
-    CampaignExecutorCheckpointOutcome, CampaignExecutorDriver, CampaignExecutorDriverConfigError,
-    CampaignExecutorDriverError, CampaignExecutorPublicationGuard, CampaignExecutorStepOutcome,
-    CampaignExecutorStore, CampaignHead, CampaignHeadPage, CampaignLifecycle,
-    CampaignPinRetentionRecord, CampaignPinRetentionSummary, CampaignPlannerDriver,
-    CampaignPlannerDriverConfigError, CampaignPlannerDriverError, CampaignPlannerStepOutcome,
-    CampaignRepository, CampaignRepositoryError, CampaignRepositoryGcExclusionGuard,
-    CampaignSupervisor, CampaignSupervisorConfigError, CampaignSupervisorError,
-    CampaignSupervisorStepOutcome, ChoiceDiscovery, ChoiceDiscoveryResult, ClaimableAttemptPage,
-    FindingPublicationResult, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_CLOSURE_OBJECTS,
+    AttemptReservation, AuthenticatedFindingCandidateIncorporation,
+    AuthenticatedFindingExactCheckpoint, BranchRequestResult, CampaignBudgetProjection,
+    CampaignCommandResult, CampaignCompletionResult, CampaignDerivationResult,
+    CampaignDiscoveryResult, CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome,
+    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
+    CampaignExecutorPublicationGuard, CampaignExecutorStepOutcome, CampaignExecutorStore,
+    CampaignHead, CampaignHeadPage, CampaignLifecycle, CampaignPinRetentionRecord,
+    CampaignPinRetentionSummary, CampaignPlannerDriver, CampaignPlannerDriverConfigError,
+    CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRepository,
+    CampaignRepositoryError, CampaignRepositoryGcExclusionGuard, CampaignSupervisor,
+    CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
+    ChoiceDiscovery, ChoiceDiscoveryResult, ClaimableAttemptPage,
+    FindingCandidateIncorporationAuthorization, FindingCandidateRecoveryContext,
+    FindingCandidateRecoverySeal, FindingExactCheckpointAuthenticationError,
+    FindingExactCheckpointAuthenticator, FindingPublicationResult,
+    MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_CLOSURE_OBJECTS,
     MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS, MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS,
     MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
     MAX_PLANNER_SCAN_PAGE_ITEMS, MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, NonModeledAttemptResult,

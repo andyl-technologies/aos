@@ -10,6 +10,18 @@ use std::{collections::BTreeSet, sync::Arc};
 #[cfg(feature = "destructive-recovery-faults")]
 use super::fault_injection::{DestructiveRecoveryFault, terminate_if_requested};
 use super::*;
+
+fn checked_executor_completion_digest(request: &[u8], response: &[u8]) -> CampaignHash {
+    let mut material = Vec::with_capacity(request.len().saturating_add(response.len() + 16));
+    material.extend_from_slice(&(request.len() as u64).to_be_bytes());
+    material.extend_from_slice(request);
+    material.extend_from_slice(&(response.len() as u64).to_be_bytes());
+    material.extend_from_slice(response);
+    CampaignHash::derive(
+        "crucible.campaign.checked-executor-completion-authorization.v1",
+        &material,
+    )
+}
 use crate::{
     AssignmentId, AttemptResourceLimits, CampaignCommandId, CancelAttemptExecutionDisposition,
     CancelAttemptExecutionRequest, CheckpointAttemptExecutionDisposition,
@@ -114,6 +126,7 @@ impl<S> CampaignExecutorDriver<S> {
         campaign: &str,
         observation: ObservationId,
         finding_candidate: Option<FindingCandidateBundleId>,
+        completion_context_digest: CampaignHash,
     ) -> Result<CampaignCompletionResult, CampaignRepositoryError> {
         self.repository
             .validate_executor_finding_candidate(observation, finding_candidate)?;
@@ -129,7 +142,13 @@ impl<S> CampaignExecutorDriver<S> {
             let expected = self.repository.head(campaign)?.snapshot_id();
             Some(
                 self.repository
-                    .incorporate_finding_candidate_bundle(campaign, expected, candidate)?,
+                    .incorporate_checked_executor_finding_candidate_bundle(
+                        campaign,
+                        expected,
+                        candidate,
+                        observation.observation,
+                        completion_context_digest,
+                    )?,
             )
         } else {
             None
@@ -380,6 +399,10 @@ impl<S> CampaignExecutorDriver<S> {
                     campaign,
                     observation,
                     response.finding_candidate(),
+                    checked_executor_completion_digest(
+                        &request.canonical_bytes(),
+                        &response.canonical_bytes(),
+                    ),
                 )?;
                 self.queue.release(reservation)?;
                 self.active_executions.remove(&worker_slot);
@@ -879,6 +902,10 @@ impl<S> CampaignExecutorDriver<S> {
                     campaign,
                     observation,
                     response.finding_candidate(),
+                    checked_executor_completion_digest(
+                        &request.canonical_bytes(),
+                        &response.canonical_bytes(),
+                    ),
                 )?;
                 self.queue.release(active.reservation)?;
                 self.active_executions.remove(&worker_slot);
@@ -996,6 +1023,10 @@ impl<S> CampaignExecutorDriver<S> {
                     campaign,
                     observation,
                     response.finding_candidate(),
+                    checked_executor_completion_digest(
+                        &request.canonical_bytes(),
+                        &response.canonical_bytes(),
+                    ),
                 )?;
                 self.queue.release(active.reservation)?;
                 self.active_executions.remove(&worker_slot);
@@ -1032,10 +1063,13 @@ impl<S> CampaignExecutorDriver<S> {
     ) -> Result<SubmitAttemptRequest, CampaignRepositoryError> {
         let assignment =
             assignment_for_reservation(reservation, lineage, self.resources, self.retention)?;
+        let retention_policy_basis = self
+            .repository
+            .attempt_retention_policy_basis_at(snapshot, reservation.attempt())?;
         let source = self
             .repository
             .savepoint_continuation_source_at(snapshot, reservation.attempt())?;
-        match source {
+        let request = match source {
             Some(source) => SubmitAttemptRequest::new_selected_savepoint(
                 assignment,
                 reservation.daemon_epoch(),
@@ -1047,7 +1081,7 @@ impl<S> CampaignExecutorDriver<S> {
                 source.selection(),
                 source.provenance().request,
             )
-            .map_err(Into::into),
+            .map_err(CampaignRepositoryError::from),
             None => SubmitAttemptRequest::new(
                 assignment,
                 reservation.daemon_epoch(),
@@ -1056,15 +1090,18 @@ impl<S> CampaignExecutorDriver<S> {
                 self.resources,
                 self.retention,
             )
-            .map_err(Into::into),
-        }
+            .map_err(CampaignRepositoryError::from),
+        }?;
+        request
+            .with_retention_policy_basis(retention_policy_basis)
+            .map_err(Into::into)
     }
 
     fn capture_request_for(
         &self,
         reservation: &SavepointCaptureReservation,
         lineage: CampaignLineageId,
-    ) -> Result<SubmitAttemptRequest, CampaignCodecError> {
+    ) -> Result<SubmitAttemptRequest, CampaignRepositoryError> {
         let retention = ExecutionRetentionIntent::RetainAlways;
         let assignment =
             assignment_for_savepoint_capture(reservation, lineage, self.resources, retention)?;
@@ -1078,6 +1115,7 @@ impl<S> CampaignExecutorDriver<S> {
             reservation.request,
             reservation.capture.configuration,
         )
+        .map_err(Into::into)
     }
 
     fn reset_scan(&mut self) {
@@ -1213,6 +1251,10 @@ impl<S> CampaignExecutorDriver<S> {
                     campaign,
                     observation,
                     response.finding_candidate(),
+                    checked_executor_completion_digest(
+                        &query.canonical_bytes(),
+                        &response.canonical_bytes(),
+                    ),
                 )?;
                 self.queue.release(active.reservation)?;
                 self.active_executions.remove(&worker_slot);
@@ -1272,6 +1314,10 @@ impl<S> CampaignExecutorDriver<S> {
             self.resources,
             self.retention,
         )?;
+        let resumed_assignment = match prior_request.retention_policy_basis() {
+            Some(basis) => resumed_assignment.with_retention_policy_basis(basis)?,
+            None => resumed_assignment,
+        };
         let request =
             ResumeAttemptExecutionRequest::new(&resumed_assignment, prior_execution, checkpoint)?;
         let response = self
@@ -1304,6 +1350,10 @@ impl<S> CampaignExecutorDriver<S> {
                     campaign,
                     observation,
                     response.finding_candidate(),
+                    checked_executor_completion_digest(
+                        &request.canonical_bytes(),
+                        &response.canonical_bytes(),
+                    ),
                 )?;
                 self.queue.release(reservation)?;
                 self.active_executions.remove(&worker_slot);

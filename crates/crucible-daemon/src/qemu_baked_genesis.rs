@@ -14,8 +14,8 @@ use std::sync::Arc;
 use crucible::{Configuration, ContentHash, NodeId, ScenarioDef, ScenarioDefForm, World};
 use crucible_api::{
     LifecycleApiError, ProductionExactCheckpointClosure, ProductionExactCheckpointReplayCatalog,
-    ProductionExactCheckpointReplayTargets, ProductionVmLifecycleConfig,
-    ProductionVmNodeReplayLaunchProfile,
+    ProductionExactCheckpointReplayTargets, ProductionExactCheckpointRetirement,
+    ProductionVmLifecycleConfig, ProductionVmNodeReplayLaunchProfile,
 };
 use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId, ExecutionRetentionIntent};
 use crucible_qemu::{
@@ -29,10 +29,11 @@ use thiserror::Error;
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CapturedAttemptCheckpoint, CrucibleAttemptExecution, CrucibleExecutionRunner,
-    ExecutionCancellation, ExecutionCheckpointRequest, ProductionPausedCheckpointReplayFactory,
-    ProductionPausedCheckpointReplaySession, QemuAttemptOperationalBoundary,
-    QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleFactory,
-    QemuAttemptResourceGuardFactory, QemuFreshAttemptLifecycleFactory, QemuFreshExecutionRunner,
+    ExecutionCancellation, ExecutionCheckpointRequest, NativeCheckpointCleanup,
+    ProductionPausedCheckpointReplayFactory, ProductionPausedCheckpointReplaySession,
+    QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
+    QemuAttemptProductionVmLifecycleFactory, QemuAttemptResourceGuardFactory,
+    QemuFreshAttemptLifecycleFactory, QemuFreshExecutionRunner,
     QemuFreshGenesisCheckpointCandidate, QemuFreshGenesisCheckpointError, QemuSavepointReplayProbe,
     QemuSavepointReplayProof, capture_fresh_genesis_checkpoint_candidate,
 };
@@ -87,6 +88,7 @@ pub struct ProductionBakedGenesisReplayCatalogFactory<R> {
     baked_by_basis: BTreeMap<(ContentHash, ContentHash), ProductionBakedGenesisCheckpoint>,
     resources: R,
     savepoint_replay_config: Option<ProductionVmLifecycleConfig>,
+    retained_checkpoint_cleanup: Vec<ProductionExactCheckpointRetirement>,
 }
 
 /// Concrete exact/thin launcher pair produced for one replay target.
@@ -133,6 +135,15 @@ pub enum ProductionBakedGenesisCheckpointError {
     /// The fresh closure omitted one World VM or named a foreign/duplicate VM.
     #[error("baked-genesis closure live-node set does not equal the scenario World")]
     NodeSetMismatch,
+    /// Safe admission rejection could not retire its native catalog.
+    #[error("retire rejected baked-genesis checkpoint catalog: {source}")]
+    NativeRetirement {
+        /// Terminal native retirement failure.
+        #[source]
+        source: crucible_api::ProductionExactCheckpointRetirementError,
+        /// Sole authority retained for operator repair.
+        retirement: ProductionExactCheckpointRetirement,
+    },
 }
 
 /// Failure while capturing and admitting one production baked genesis.
@@ -163,10 +174,30 @@ impl ProductionBakedGenesisCheckpoint {
         candidate: QemuFreshGenesisCheckpointCandidate,
     ) -> Result<Self, ProductionBakedGenesisCheckpointError> {
         let (capture, launch_profiles) = candidate.into_parts();
+        let mut native_guard = crate::executor_worker::NativeCheckpointUnwindGuard::new(&capture);
         let CapturedAttemptCheckpoint::Production(closure) = capture else {
             return Err(ProductionBakedGenesisCheckpointError::CompatibilityCapture);
         };
         let closure = Arc::new(*closure);
+        match Self::admit_production(source, closure, launch_profiles) {
+            Ok(checkpoint) => {
+                native_guard.disarm();
+                Ok(checkpoint)
+            }
+            Err(error) => {
+                if let Some(retirement) = native_guard.take() {
+                    retire_rejected_baked_genesis_checkpoint(retirement)?;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn admit_production(
+        source: &ScenarioDefForm,
+        closure: Arc<ProductionExactCheckpointClosure>,
+        launch_profiles: Vec<ProductionVmNodeReplayLaunchProfile>,
+    ) -> Result<Self, ProductionBakedGenesisCheckpointError> {
         let scenario = source.scenario_def();
         let genesis = Configuration::genesis(scenario.clone());
         if closure.scenario() != scenario.id() || closure.configuration() != genesis.id() {
@@ -278,6 +309,25 @@ impl ProductionBakedGenesisCheckpoint {
     }
 }
 
+fn retire_rejected_baked_genesis_checkpoint(
+    retirement: ProductionExactCheckpointRetirement,
+) -> Result<(), ProductionBakedGenesisCheckpointError> {
+    loop {
+        match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
+            Ok(_) => return Ok(()),
+            Err(source) if source.is_retryable() => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(source) => {
+                return Err(ProductionBakedGenesisCheckpointError::NativeRetirement {
+                    source,
+                    retirement,
+                });
+            }
+        }
+    }
+}
+
 impl ProductionBakedGenesisReplayStore {
     fn new(world: ContentHash, scenario: ContentHash, baked: QemuBakedGenesisSnapshot) -> Self {
         Self {
@@ -370,6 +420,7 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
             baked_by_basis,
             resources,
             savepoint_replay_config: None,
+            retained_checkpoint_cleanup: Vec::new(),
         })
     }
 
@@ -498,6 +549,14 @@ where
     }
 }
 
+impl<R> Drop for ProductionBakedGenesisReplayCatalogFactory<R> {
+    fn drop(&mut self) {
+        for retirement in self.retained_checkpoint_cleanup.drain(..) {
+            NativeCheckpointCleanup::Quarantine(retirement).retain_for_process_lifetime();
+        }
+    }
+}
+
 impl<R> ProductionPausedCheckpointReplayFactory for ProductionBakedGenesisReplayCatalogFactory<R>
 where
     R: QemuAttemptResourceGuardFactory + Clone,
@@ -559,18 +618,34 @@ where
             cancellation.clone(),
             ExecutionCheckpointRequest::default(),
         );
-        let outcome = runner
-            .execute(attempt, &context)
-            .map_err(map_savepoint_replay_failure)?;
-        match outcome.product() {
+        let outcome = match runner.execute(attempt, &context) {
+            Ok(outcome) => outcome,
+            Err(failure) => {
+                let primary = map_savepoint_replay_failure(failure);
+                complete_savepoint_replay_checkpoint_cleanup(
+                    &mut self.retained_checkpoint_cleanup,
+                    runner.take_abandoned_checkpoint(),
+                )?;
+                return Err(primary);
+            }
+        };
+        let (product, _materialization) = outcome.into_parts();
+        match product {
             AttemptExecutionProduct::Observation(_)
             | AttemptExecutionProduct::ObservationWithFinding { .. }
             | AttemptExecutionProduct::PreparedSemantic(_) => {}
-            AttemptExecutionProduct::ExactCheckpoint(_) => {
+            product @ (AttemptExecutionProduct::PreparedSemanticWithExactRetention { .. }
+            | AttemptExecutionProduct::ExactCheckpoint(_)) => {
+                complete_savepoint_replay_checkpoint_cleanup(
+                    &mut self.retained_checkpoint_cleanup,
+                    product
+                        .into_abandoned_retirement()
+                        .map(NativeCheckpointCleanup::Retire),
+                )?;
                 return Err(QemuVmRealizationError::InvalidCheckpoint {
                     role: "savepoint capture replay",
                     message: String::from(
-                        "independent attempt replay did not produce an observation",
+                        "independent attempt replay produced an unsupported retained result",
                     ),
                 });
             }
@@ -582,6 +657,61 @@ where
                 message: error.to_string(),
             })
     }
+}
+
+fn complete_savepoint_replay_checkpoint_cleanup(
+    retained: &mut Vec<ProductionExactCheckpointRetirement>,
+    cleanup: Option<NativeCheckpointCleanup>,
+) -> Result<(), QemuVmRealizationError> {
+    let Some(cleanup) = cleanup else {
+        return Ok(());
+    };
+    let (retirements, quarantines) = partition_savepoint_replay_checkpoint_cleanup(cleanup);
+    retained.extend(quarantines);
+    let mut terminal_message = None;
+    for retirement in retirements {
+        loop {
+            match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
+                Ok(_) => break,
+                Err(error) if error.is_retryable() => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => {
+                    if terminal_message.is_none() {
+                        terminal_message = Some(error.to_string());
+                    }
+                    retained.push(retirement);
+                    break;
+                }
+            }
+        }
+    }
+    match terminal_message {
+        Some(message) => Err(QemuVmRealizationError::Store {
+            operation: "retire savepoint replay checkpoint",
+            message,
+        }),
+        None => Ok(()),
+    }
+}
+
+fn partition_savepoint_replay_checkpoint_cleanup(
+    cleanup: NativeCheckpointCleanup,
+) -> (
+    Vec<ProductionExactCheckpointRetirement>,
+    Vec<ProductionExactCheckpointRetirement>,
+) {
+    let mut retirements = Vec::new();
+    let mut quarantines = Vec::new();
+    let mut pending = vec![cleanup];
+    while let Some(cleanup) = pending.pop() {
+        match cleanup {
+            NativeCheckpointCleanup::Retire(retirement) => retirements.push(retirement),
+            NativeCheckpointCleanup::Quarantine(retirement) => quarantines.push(retirement),
+            NativeCheckpointCleanup::Batch(cleanups) => pending.extend(cleanups),
+        }
+    }
+    (retirements, quarantines)
 }
 
 fn map_savepoint_replay_failure<E: std::fmt::Display>(
@@ -811,5 +941,113 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn production_baked_genesis_admission_rejection_retires_native_catalog() {
+        let run_state = tempfile::tempdir().expect("production baked genesis run state");
+        let fixture =
+            crucible_api::build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+                .expect("production baked genesis fixture");
+        let retirement = fixture.closure().native_retirement();
+        let candidate = QemuFreshGenesisCheckpointCandidate::new(
+            CapturedAttemptCheckpoint::from(fixture.closure().clone()),
+            Vec::new(),
+        );
+
+        let error = ProductionBakedGenesisCheckpoint::admit(fixture.source(), candidate)
+            .expect_err("missing launch profiles must reject production baked genesis");
+
+        assert!(matches!(
+            error,
+            ProductionBakedGenesisCheckpointError::NodeSetMismatch
+        ));
+        let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+            .expect("repeat rejected baked-genesis retirement");
+        assert!(!repeated.retired());
+    }
+
+    #[test]
+    fn savepoint_cleanup_completes_safe_retirement_before_retaining_mixed_failures() {
+        let conflict_state = tempfile::tempdir().expect("conflicting savepoint state");
+        let conflict_fixture =
+            crucible_api::build_authenticated_production_checkpoint_codec_fixture(
+                conflict_state.path(),
+            )
+            .expect("conflicting savepoint fixture");
+        let conflict = conflict_fixture.closure().native_retirement();
+        let scenario_name = conflict_fixture.closure().scenario().to_hex();
+        let conflicting_generation = conflict_state
+            .path()
+            .join(format!(".retired-checkpoint-catalog-{scenario_name}"));
+        std::fs::create_dir(&conflicting_generation).expect("conflicting retired generation");
+
+        let safe_state = tempfile::tempdir().expect("safe savepoint state");
+        let safe_fixture = crucible_api::build_authenticated_production_checkpoint_codec_fixture(
+            safe_state.path(),
+        )
+        .expect("safe savepoint fixture");
+        let safe = safe_fixture.closure().native_retirement();
+        let quarantine_state = tempfile::tempdir().expect("quarantined savepoint state");
+        let quarantine_fixture =
+            crucible_api::build_authenticated_production_checkpoint_codec_fixture(
+                quarantine_state.path(),
+            )
+            .expect("quarantined savepoint fixture");
+        let quarantine = quarantine_fixture.closure().native_retirement();
+        let cleanup = NativeCheckpointCleanup::Batch(vec![
+            NativeCheckpointCleanup::Retire(conflict.clone()),
+            NativeCheckpointCleanup::Retire(safe.clone()),
+            NativeCheckpointCleanup::Quarantine(quarantine.clone()),
+        ]);
+        let mut retained = Vec::new();
+
+        let error = complete_savepoint_replay_checkpoint_cleanup(&mut retained, Some(cleanup))
+            .expect_err("terminal retirement conflict must surface");
+
+        assert!(matches!(error, QemuVmRealizationError::Store { .. }));
+        assert_eq!(retained.len(), 2);
+        let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&safe)
+            .expect("repeat safe savepoint retirement");
+        assert!(!repeated.retired());
+        assert!(
+            crucible_api::retire_production_exact_checkpoint_catalog(&quarantine)
+                .expect("release savepoint quarantine")
+                .retired()
+        );
+        std::fs::remove_dir(&conflicting_generation).expect("repair conflicting generation");
+        assert!(
+            crucible_api::retire_production_exact_checkpoint_catalog(&conflict)
+                .expect("release repaired savepoint conflict")
+                .retired()
+        );
+    }
+
+    #[test]
+    fn dropping_baked_catalog_moves_retained_cleanup_to_process_quarantine() {
+        let run_state = tempfile::tempdir().expect("dropped baked catalog state");
+        let fixture =
+            crucible_api::build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+                .expect("dropped baked catalog fixture");
+        let retirement = fixture.closure().native_retirement();
+        let quarantine_before =
+            crate::executor_worker::native_checkpoint_process_quarantine_len_for_test();
+        let factory = ProductionBakedGenesisReplayCatalogFactory {
+            baked_by_basis: BTreeMap::new(),
+            resources: (),
+            savepoint_replay_config: None,
+            retained_checkpoint_cleanup: vec![retirement.clone()],
+        };
+
+        drop(factory);
+
+        let quarantine_after =
+            crate::executor_worker::native_checkpoint_process_quarantine_len_for_test();
+        assert!(quarantine_after > quarantine_before);
+        assert!(
+            crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+                .expect("same-process retry releases dropped factory cleanup")
+                .retired()
+        );
     }
 }

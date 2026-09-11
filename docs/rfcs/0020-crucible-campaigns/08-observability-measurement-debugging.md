@@ -400,8 +400,9 @@ evaluation or valid new policy input. `PropertyVerdictSet` and
 child-bearing envelopes. Model-owned sample production is implemented by
 T-CAM-3.3. Payload schema 2 provides the codec and replay foundation for
 complete raw measurement-event retention. Live QEMU results flow through the
-prepared-result journal and child-first publication. Automatic finding-pin
-policy remains T-CAM-3.5 work.
+prepared-result journal and child-first publication. Automatic finding
+retention applies the admission-bound policy to production checkpoint
+inventories and publishes exact semantic pins with the finding transaction.
 
 The daemon's local prepared-publication formats use this closed registry:
 
@@ -409,28 +410,52 @@ The daemon's local prepared-publication formats use this closed registry:
 |---|---:|---|
 | `crucible.executor.prepared-semantic-attempt-result` | 6 | Contains the observation, content-ordered raw measurement replay leaves, optional finding closure, and manifest-rooted production replay outcomes. |
 | `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, hash, and an admitted version-2 through version-6 payload. |
-| `crucible.executor.attempt-state-record` | 13 | Retains the operational publication root; a Publishing state includes the optional finding candidate and four production replay manifest outcomes. |
+| `crucible.executor.attempt-state-record` | 15 | Retains publication roots and the full prepared-result digest through Publishing and Completed; Publishing also carries bounded exact-checkpoint roots. |
 | `crucible.executor.finding-replay-capture-manifest` | 1 | Commits one capture hash, logical length, and ordered set of at-most-64-MiB trace chunks. |
 
 Prepared-result readers retain versions 1 through 5 for local recovery.
 Version 6 makes the version-5 native triage records optional alongside a
-version-3 finding candidate whose four production replay slots contain only
-manifest IDs or explicit incomplete reasons; raw capture bytes never enter the
-bounded result journal.
+finding candidate at schema version 3, 4, or 5. Version 3 carries four
+production replay slots containing only manifest IDs or explicit incomplete
+reasons; versions 4 and 5 add policy-bound exact-retention outcome and typed
+inventory evidence. Raw capture bytes never enter the bounded result journal.
 Journal-state version 1 admits only a version-1 result and omits the raw-leaf
 count and set hash. Journal-state version 2 admits result versions 2 through 6
 and authenticates the exact payload version, bytes, length, and hash. Other
 state/payload combinations fail closed and are never rewritten in place.
 
-Attempt-state version 13 adds the same four capture outcomes to `Publishing`.
-Readers retain versions 1 through 12; a version-12 or older `Publishing` record
-decodes with no capture set. Writers publish capture chunks and manifests under
-repository GC exclusion, commit the version-13 operational roots, release the
-exclusion, and only then write the version-6 prepared result. Thus restart from
-either side of the journal boundary retains the immutable closure. Recovery
-authenticates every manifest and chunk, decodes every complete production
-capture, and verifies its original/minimized reproduction and finding signature
-before candidate publication.
+Attempt-state version 13 adds the four capture outcomes to `Publishing`.
+Version 14 adds at most three sorted complete exact-checkpoint roots and the
+full prepared-result digest. Version 15 carries that digest into `Completed`,
+so finding handoff recovery cannot authorize an ID-only candidate. Readers
+retain versions 1 through 14 with absent newer fields.
+
+Under GC exclusion, writers publish replay-capture and exact-checkpoint
+children and bind the complete prepared payload. For Complete v5 retention they
+authenticate the full bounded candidate inventory, stream only selected
+checkpoint closures from the checkpoint store into campaign CAS, and publish
+the semantic candidate and observation while the original guard still excludes
+GC. They then fsync the payload into a hidden staging directory, commit the
+matching version-14-or-later Publishing roots and digest, and promote the
+journal name into the visible recovery namespace before releasing that guard.
+Later publication is idempotent and cold-validates the already-published
+candidate through selected roots only. The Completed v15 CAS preserves the same
+digest until candidate incorporation is acknowledged; stable journal cleanup
+runs only after pending candidates have been reconciled. Before any recovery
+ref mutation, the daemon authenticates the visible journal, every retained
+capture object, selected production checkpoint closure, original/minimized
+reproduction, and finding signature against Completed v15.
+
+Complete finding-retention bundle v5 is an immutable executor inventory
+attestation. The daemon admits at most 4,096 candidates and at most 64 MiB in
+aggregate across every candidate root envelope, production manifest, and child
+index examined during typed authentication. It checks scenario artifact,
+configuration, scheduler event count, policy basis, deterministic selection,
+and every listed candidate before publication. Cold loads trust that immutable
+inventory attestation, recompute its selected pins from declared event counts,
+and reopen only the selected retained roots; unselected roots remain eligible
+for ordinary GC. Generic ID-only publication or first incorporation cannot
+claim Complete retention.
 
 The prepared-result codec validates raw-leaf closure ownership without claiming
 measurement semantics. It checks each singleton edge and its trace ID, scenario,

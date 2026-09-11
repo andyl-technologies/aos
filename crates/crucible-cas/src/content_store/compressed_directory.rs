@@ -23,9 +23,7 @@ use std::sync::Arc;
 
 use rustix::fs::{Mode, OFlags, open};
 
-use super::admin::{
-    InventoryCounter, persistent_inventory_generation, physical_storage_identity,
-};
+use super::admin::{InventoryCounter, persistent_inventory_generation, physical_storage_identity};
 use super::directory::{
     DirectoryBlobBackend, DirectoryInventoryState, create_dir_all_durable, directory_receipt,
     inventory_directory_entry, is_lower_hex, path_name, read_directory_entries, require_directory,
@@ -599,10 +597,8 @@ impl BlobInventoryFence for CompressedDirectoryInventoryFence<'_> {
             self.state.instance,
             self.state.generation,
         )?;
-        let mut inventory = InventoryCounter::new(
-            physical_storage_identity(self.state.instance),
-            generation,
-        );
+        let mut inventory =
+            InventoryCounter::new(physical_storage_identity(self.state.instance), generation);
         visit_compressed_inventory(self.backend, visitor, &mut inventory)?;
         Ok(inventory.finish(self.backend.name().to_owned()))
     }

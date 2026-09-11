@@ -4,10 +4,13 @@
 //! current wire shapes are:
 //!
 //! ```text
-//! ResumeAttemptExecutionRequestV4 = version | assignment | daemon-epoch |
+//! ResumeAttemptExecutionRequestV6 = version | assignment | daemon-epoch |
 //!                                    lineage | attempt | prior-execution |
 //!                                    checkpoint | resource-limits |
-//!                                    retention-intent | selected-start-mode
+//!                                    retention-intent | prior-start-mode |
+//!                                    finding-retention-policy-basis |
+//!                                    prior-finding-retention-policy-basis
+//! FindingRetentionPolicyBasis = source-snapshot | admission | policy
 //! ResumeAttemptExecutionResponseV4 = version | assignment | daemon-epoch |
 //!                                     attempt | prior-execution | checkpoint |
 //!                                     request-digest | completed-disposition |
@@ -31,6 +34,8 @@ pub struct ResumeAttemptExecutionRequest {
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     prior_start_mode: AttemptStartMode,
+    retention_policy_basis: Option<AttemptRetentionPolicyBasis>,
+    prior_retention_policy_basis: Option<AttemptRetentionPolicyBasis>,
 }
 
 impl ResumeAttemptExecutionRequest {
@@ -52,13 +57,20 @@ impl ResumeAttemptExecutionRequest {
     ) -> Result<Self, CampaignCodecError> {
         require_semantic_resume_assignment(assignment)?;
         let prior_start_mode = assignment.start_mode();
-        let schema_version = match prior_start_mode {
-            AttemptStartMode::Execute => EXECUTOR_MESSAGE_SCHEMA_VERSION,
-            AttemptStartMode::SelectedSavepoint { .. } => {
-                SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+        let retention_policy_basis = assignment.retention_policy_basis();
+        let schema_version = if retention_policy_basis.is_some() {
+            RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+        } else {
+            match prior_start_mode {
+                AttemptStartMode::Execute => EXECUTOR_MESSAGE_SCHEMA_VERSION,
+                AttemptStartMode::SelectedSavepoint { .. } => {
+                    SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+                }
+                AttemptStartMode::CaptureMaterializedStart { .. }
+                | AttemptStartMode::SavepointCapture { .. } => {
+                    unreachable!("validated semantic mode")
+                }
             }
-            AttemptStartMode::CaptureMaterializedStart { .. }
-            | AttemptStartMode::SavepointCapture { .. } => unreachable!("validated semantic mode"),
         };
         let request = Self {
             schema_version,
@@ -71,6 +83,8 @@ impl ResumeAttemptExecutionRequest {
             resources: assignment.resources(),
             retention: assignment.retention(),
             prior_start_mode,
+            retention_policy_basis,
+            prior_retention_policy_basis: retention_policy_basis,
         };
         codec::ensure_encoded_size(
             &request,
@@ -97,8 +111,13 @@ impl ResumeAttemptExecutionRequest {
         configuration: ConfigurationArtifactId,
     ) -> Result<Self, CampaignCodecError> {
         require_execute_resume_assignment(assignment)?;
+        let retention_policy_basis = assignment.retention_policy_basis();
         let request = Self {
-            schema_version: RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION,
+            schema_version: if retention_policy_basis.is_some() {
+                MATERIALIZED_RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+            } else {
+                RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+            },
             assignment: assignment.assignment(),
             daemon_epoch: assignment.daemon_epoch(),
             lineage: assignment.lineage(),
@@ -108,6 +127,8 @@ impl ResumeAttemptExecutionRequest {
             resources: assignment.resources(),
             retention: assignment.retention(),
             prior_start_mode: AttemptStartMode::CaptureMaterializedStart { configuration },
+            retention_policy_basis,
+            prior_retention_policy_basis: None,
         };
         codec::ensure_encoded_size(
             &request,
@@ -171,6 +192,18 @@ impl ResumeAttemptExecutionRequest {
         self.prior_start_mode
     }
 
+    /// Returns the admission-bound finding-retention policy basis, when supplied.
+    #[must_use]
+    pub const fn retention_policy_basis(&self) -> Option<AttemptRetentionPolicyBasis> {
+        self.retention_policy_basis
+    }
+
+    /// Returns the policy basis that owned the paused execution, when present.
+    #[must_use]
+    pub const fn prior_retention_policy_basis(&self) -> Option<AttemptRetentionPolicyBasis> {
+        self.prior_retention_policy_basis
+    }
+
     /// Reconstructs the exact new-incarnation assignment basis.
     ///
     /// # Errors
@@ -178,7 +211,7 @@ impl ResumeAttemptExecutionRequest {
     /// Returns an error only if the fields of this already-valid request no
     /// longer satisfy the bounded submit-message contract.
     pub fn assignment_request(&self) -> Result<SubmitAttemptRequest, CampaignCodecError> {
-        match self.prior_start_mode {
+        let request = match self.prior_start_mode {
             AttemptStartMode::SelectedSavepoint {
                 snapshot,
                 selection,
@@ -204,6 +237,10 @@ impl ResumeAttemptExecutionRequest {
                 self.resources,
                 self.retention,
             ),
+        }?;
+        match self.retention_policy_basis {
+            Some(basis) => request.with_retention_policy_basis(basis),
+            None => Ok(request),
         }
     }
 
@@ -216,24 +253,26 @@ impl ResumeAttemptExecutionRequest {
             | AttemptStartMode::CaptureMaterializedStart { .. }
             | AttemptStartMode::SavepointCapture { .. } => AttemptStartMode::Execute,
         };
-        attempt_execution_basis_digest_for_start_mode(
+        attempt_execution_basis_digest_with_retention_policy(
             self.lineage,
             self.attempt,
             self.resources,
             self.retention,
             start_mode,
+            self.retention_policy_basis,
         )
     }
 
     /// Returns the execution basis that must own the paused checkpoint.
     #[must_use]
     pub fn prior_execution_basis_digest(&self) -> CampaignHash {
-        attempt_execution_basis_digest_for_start_mode(
+        attempt_execution_basis_digest_with_retention_policy(
             self.lineage,
             self.attempt,
             self.resources,
             self.retention,
             self.prior_start_mode,
+            self.prior_retention_policy_basis,
         )
     }
 
@@ -249,6 +288,12 @@ impl ResumeAttemptExecutionRequest {
             }
             SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION => {
                 "crucible.campaign.resume-attempt-execution-request.v4"
+            }
+            RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION => {
+                "crucible.campaign.resume-attempt-execution-request.v5"
+            }
+            MATERIALIZED_RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION => {
+                "crucible.campaign.resume-attempt-execution-request.v6"
             }
             _ => unreachable!("validated resume request schema"),
         };
@@ -285,8 +330,21 @@ impl Canonical for ResumeAttemptExecutionRequest {
         self.retention.encode(encoder);
         if self.schema_version == RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
             || self.schema_version == SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+            || self.schema_version
+                == RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+            || self.schema_version
+                == MATERIALIZED_RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
         {
             self.prior_start_mode.encode(encoder);
+        }
+        if self.schema_version == RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION {
+            self.retention_policy_basis.encode(encoder);
+        }
+        if self.schema_version
+            == MATERIALIZED_RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+        {
+            self.retention_policy_basis.encode(encoder);
+            self.prior_retention_policy_basis.encode(encoder);
         }
     }
 
@@ -314,6 +372,73 @@ impl Canonical for ResumeAttemptExecutionRequest {
         }
 
         let prior_start_mode = AttemptStartMode::decode(decoder)?;
+        if schema_version
+            == MATERIALIZED_RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+        {
+            let basis = Option::<AttemptRetentionPolicyBasis>::decode(decoder)?.ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "resume attempt request version 6 requires retention policy basis",
+                },
+            )?;
+            let prior_basis = Option::<AttemptRetentionPolicyBasis>::decode(decoder)?;
+            let AttemptStartMode::CaptureMaterializedStart { configuration } = prior_start_mode
+            else {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "resume attempt request version 6 requires materialized-start capture",
+                });
+            };
+            if prior_basis.is_some() {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "resume attempt request version 6 has a capture policy basis",
+                });
+            }
+            let assignment = assignment.with_retention_policy_basis(basis)?;
+            return Self::new_from_materialized_start(
+                &assignment,
+                prior_execution,
+                checkpoint,
+                configuration,
+            );
+        }
+        if schema_version == RETENTION_POLICY_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION {
+            let basis = Option::<AttemptRetentionPolicyBasis>::decode(decoder)?.ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "resume attempt request version 5 requires retention policy basis",
+                },
+            )?;
+            let assignment = assignment.with_retention_policy_basis(basis)?;
+            return match prior_start_mode {
+                AttemptStartMode::Execute | AttemptStartMode::SelectedSavepoint { .. } => {
+                    let assignment = match prior_start_mode {
+                        AttemptStartMode::SelectedSavepoint {
+                            snapshot,
+                            selection,
+                            request,
+                        } => SubmitAttemptRequest::new_selected_savepoint(
+                            assignment.assignment(),
+                            assignment.daemon_epoch(),
+                            assignment.lineage(),
+                            assignment.attempt(),
+                            assignment.resources(),
+                            assignment.retention(),
+                            snapshot,
+                            selection,
+                            request,
+                        )?
+                        .with_retention_policy_basis(basis)?,
+                        AttemptStartMode::Execute => assignment,
+                        _ => unreachable!("matched semantic start mode"),
+                    };
+                    Self::new(&assignment, prior_execution, checkpoint)
+                }
+                AttemptStartMode::CaptureMaterializedStart { .. }
+                | AttemptStartMode::SavepointCapture { .. } => {
+                    Err(CampaignCodecError::InvalidValue {
+                        reason: "resume attempt request version 5 has invalid prior start mode",
+                    })
+                }
+            };
+        }
         if schema_version == RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION {
             let AttemptStartMode::CaptureMaterializedStart { configuration } = prior_start_mode
             else {

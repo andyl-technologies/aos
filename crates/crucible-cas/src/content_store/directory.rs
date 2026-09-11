@@ -37,9 +37,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fs::{FlockOperation, flock};
 
-use super::admin::{
-    InventoryCounter, persistent_inventory_generation, physical_storage_identity,
-};
+use super::admin::{InventoryCounter, persistent_inventory_generation, physical_storage_identity};
 use super::*;
 
 mod ref_admin;
@@ -489,10 +487,8 @@ impl BlobInventoryFence for DirectoryBlobInventoryFence<'_> {
             self.state.instance,
             self.state.generation,
         )?;
-        let mut inventory = InventoryCounter::new(
-            physical_storage_identity(self.state.instance),
-            generation,
-        );
+        let mut inventory =
+            InventoryCounter::new(physical_storage_identity(self.state.instance), generation);
         visit_directory_inventory(&self.backend.root, visitor, &mut inventory)?;
         Ok(inventory.finish(self.backend.name.clone()))
     }
