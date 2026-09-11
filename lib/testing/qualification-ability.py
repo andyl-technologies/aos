@@ -1,10 +1,10 @@
-"""Runs one native ability contract inside an exact published AOS image.
+"""Runs one native ability contract or adapter cohort in a published AOS image.
 
 The release coordinator has already authenticated and downloaded the complete
 case object set. This runner binds the server/x86_64 image cell, its unsigned
 assembly, and the published AOS command outputs before it imports an
-executor-owned reference-provider fixture. The existing fleet test body then
-drives the published guest through SSH and writes the canonical scenario report.
+executor-owned reference-provider fixture. The fleet body drives the published
+guest through SSH and retains either contract checks or exact matrix probes.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ ROOT = pathlib.Path.cwd()
 REQUEST = ROOT / "request.json"
 OBJECTS = ROOT / "objects.json"
 REPORT = ROOT / "scenario-report.json"
+SCENARIO_REGISTRY = ROOT / "scenario-registry.json"
 
 PLATFORM = os.environ["AOS_QUALIFICATION_PLATFORM"]
 SCENARIO_ID = os.environ["AOS_QUALIFICATION_SCENARIO_ID"]
@@ -37,6 +38,17 @@ RUNTIME_COMPANIONS = json.loads(
 )
 FIXTURE_SCRIPT = pathlib.Path(os.environ["AOS_QUALIFICATION_FIXTURE_SCRIPT"])
 SETUP_MODULE = pathlib.Path(os.environ["AOS_QUALIFICATION_SETUP_MODULE"])
+MATRIX_SPEC_NAME = os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC"]
+MATRIX_SPEC_PATH = pathlib.Path(MATRIX_SPEC_NAME) if MATRIX_SPEC_NAME else None
+MATRIX_QUALIFIED_CELLS = json.loads(
+    os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_QUALIFIED_CELLS"]
+)
+MATRIX_COHORT_SUPPORT_NAME = os.environ[
+    "AOS_QUALIFICATION_NATIVE_ADAPTER_COHORT_SUPPORT"
+]
+MATRIX_COHORT_SUPPORT = (
+    pathlib.Path(MATRIX_COHORT_SUPPORT_NAME) if MATRIX_COHORT_SUPPORT_NAME else None
+)
 IMAGE_SUPPORT = pathlib.Path(os.environ["AOS_QUALIFICATION_IMAGE_SUPPORT"])
 NAR_SUPPORT = pathlib.Path(os.environ["AOS_QUALIFICATION_NAR_SUPPORT"])
 
@@ -67,6 +79,11 @@ def load_support(name: str, path: pathlib.Path) -> Any:
 
 IMAGE = load_support("aos_qualification_image_support", IMAGE_SUPPORT)
 NAR = load_support("aos_qualification_nar_support", NAR_SUPPORT)
+MATRIX_COHORT = (
+    load_support("aos_qualification_native_adapter_cohort", MATRIX_COHORT_SUPPORT)
+    if MATRIX_COHORT_SUPPORT is not None
+    else None
+)
 
 
 def canonical(value: Any) -> bytes:
@@ -85,6 +102,12 @@ def digest(domain: str, value: Any) -> str:
     hashed.update(b"\0")
     hashed.update(canonical(value))
     return "sha256:" + hashed.hexdigest()
+
+
+def raw_digest(value: Any) -> str:
+    """Computes raw SHA-256 over one canonical value."""
+
+    return "sha256:" + hashlib.sha256(canonical(value)).hexdigest()
 
 
 def read_json(path: pathlib.Path) -> Any:
@@ -347,6 +370,10 @@ class Scenario:
         self.candidate_closure: Any | None = None
         self.candidate_companions: dict[str, str] = {}
         self.guest_initially_absent: list[str] = []
+        self.fixture_namespace: dict[str, Any] = {}
+        self.matrix_spec = (
+            read_json(MATRIX_SPEC_PATH) if MATRIX_SPEC_PATH is not None else None
+        )
 
         self.work = ROOT / "ability-work"
         self.work.mkdir()
@@ -372,6 +399,7 @@ class Scenario:
 '''
 
     def validate_inputs(self) -> None:
+        matrix_case = SCENARIO_ID == "ability-native-adapter-matrix"
         if PLATFORM != "x86_64-linux" or self.request["platform"] != PLATFORM:
             raise RuntimeError("native ability qualification requires x86_64 Linux")
         if (
@@ -383,9 +411,21 @@ class Scenario:
             or self.case.get("target") is not None
             or self.case.get("claim") is not None
             or self.case["checks"] != EXPECTED_CHECKS
-            or self.case.get("predecessor") is not None
         ):
             raise RuntimeError("ability case differs from the implemented native scenario")
+        if matrix_case != (self.matrix_spec is not None):
+            raise RuntimeError("matrix specification is inapplicable to this native scenario")
+        if matrix_case:
+            if (
+                not self.case.get("predecessor")
+                or len(EXPECTED_CHECKS) != 1
+                or EXPECTED_CHECKS[0]
+                != "native-adapter-matrix-v1-sha256-"
+                + raw_digest(self.matrix_spec).removeprefix("sha256:")
+            ):
+                raise RuntimeError("matrix specification differs from the exact case")
+        elif self.case.get("predecessor") is not None:
+            raise RuntimeError("ordinary ability scenario unexpectedly names a predecessor")
 
         manifest = read_json(pathlib.Path(self.objects[MANIFEST_OBJECT]))
         payload = manifest["payload"]
@@ -1156,6 +1196,116 @@ class Scenario:
         source = FIXTURE_SCRIPT.read_text(encoding="utf-8")
         namespace = {"__name__": "__main__", "runtime": machine}
         exec(compile(source, str(FIXTURE_SCRIPT), "exec"), namespace)
+        self.fixture_namespace = namespace
+
+    def build_matrix_report(self, guest_kernel_release: str) -> bytes:
+        """Builds partial matrix evidence from the executed cohort probes."""
+
+        if self.matrix_spec is None or MATRIX_COHORT is None:
+            raise RuntimeError("matrix report lacks its immutable specification")
+        submissions = self.fixture_namespace.get("NATIVE_ADAPTER_MATRIX_PROBES")
+        if not isinstance(submissions, dict):
+            raise RuntimeError("matrix cohort did not retain its production probes")
+        cohort_subject = self.fixture_namespace.get(
+            "NATIVE_ADAPTER_MATRIX_COHORT_SUBJECT"
+        )
+        if not isinstance(cohort_subject, dict):
+            raise RuntimeError("matrix cohort did not retain its exact operation subject")
+        cohort_plan_bundle = self.fixture_namespace.get(
+            "NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLE"
+        )
+        if not isinstance(cohort_plan_bundle, bytes):
+            raise RuntimeError("matrix cohort did not retain its exact plan bundle")
+
+        qemu_output = IMAGE.run([IMAGE.QEMU, "--version"]).stdout.splitlines()[0]
+        qemu_match = re.search(r"version ([0-9][A-Za-z0-9.+_-]*)", qemu_output)
+        if qemu_match is None:
+            raise RuntimeError("QEMU returned an unsupported version identity")
+        spec_digest = raw_digest(self.matrix_spec)
+        scenario_registry_digest = raw_digest(read_json(SCENARIO_REGISTRY))
+        environment = {
+            "schema_version": "aos.release.native-adapter-matrix-environment/v1",
+            "status": "production",
+            "platform": PLATFORM,
+            "spec_digest": spec_digest,
+            "scenario_registry_digest": scenario_registry_digest,
+            "candidate_subjects_digest": self.case["subjects_digest"],
+            "predecessor_manifest_digest": self.case["predecessor"][
+                "manifest_digest"
+            ],
+            "cohort": "host-resource-managed-configuration-publish-v1",
+            "qemu": {
+                "name": "qemu",
+                "version": "qemu-" + qemu_match.group(1),
+                "digest": sha256_file(pathlib.Path(IMAGE.QEMU)),
+            },
+            "firmware": {
+                "name": "ovmf",
+                "version": "edk2-ovmf",
+                "digest": raw_digest(
+                    {
+                        "code": sha256_file(pathlib.Path(IMAGE.FIRMWARE_CODE)),
+                        "variables": sha256_file(
+                            pathlib.Path(IMAGE.FIRMWARE_VARS)
+                        ),
+                    }
+                ),
+            },
+            "guest_kernel": {
+                "name": "guest-kernel",
+                "version": guest_kernel_release,
+                "digest": self.uki_artifact["sha256"],
+            },
+            "fault_injection_tool": {
+                "name": "ability-boundary-observer",
+                "version": "observer-v1",
+                "digest": sha256_file(FIXTURE_ARCHIVE),
+            },
+            "harness": {
+                "name": "native-adapter-host-resource-cohort",
+                "version": "cohort-v1",
+                "digest": sha256_file(FIXTURE_SCRIPT),
+            },
+        }
+        environment_digest = raw_digest(environment)
+        cells, postcondition_count = MATRIX_COHORT.build_cells(
+            self.matrix_spec,
+            submissions,
+            MATRIX_QUALIFIED_CELLS,
+            cohort_subject,
+            cohort_plan_bundle,
+            self.case["subjects_digest"],
+            environment_digest,
+        )
+
+        finished = time.time()
+        report = {
+            "schema_version": "aos.release.qualification-scenario-report/v1",
+            "registry": self.request["registry"],
+            "release_id": self.request["release_id"],
+            "staging_receipt_digest": self.request["staging_receipt_digest"],
+            "manifest_digest": self.request["manifest_digest"],
+            "case_digest": digest("aos.release.qualification-case/v2", self.case),
+            "started_at": self.started_at,
+            "finished_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(finished)
+            ),
+            "observed_seconds": int(finished - self.started),
+            "checks": {},
+            "operations": {
+                "matrix_cells_reported": len(cells),
+                "matrix_postconditions_reported": postcondition_count,
+            },
+            "environment": environment,
+            "native_adapter_matrix": {
+                "schema_version": "aos.release.native-adapter-matrix-observation/v1",
+                "spec": self.matrix_spec,
+                "spec_digest": spec_digest,
+                "environment": environment,
+                "cells": cells,
+            },
+        }
+        return canonical(report)
 
     def build_report(self, guest_kernel_release: str) -> bytes:
         if self.machine is None or self.candidate_closure is None:
@@ -1171,6 +1321,9 @@ class Scenario:
             or len(self.boot_ids) != expected_boots
         ):
             raise RuntimeError("unique boot and initrd handoff coverage is incomplete")
+
+        if self.matrix_spec is not None:
+            return self.build_matrix_report(guest_kernel_release)
 
         details = {
             check: {"passed": True, "detail": CHECK_DETAILS[check]}
@@ -1274,7 +1427,7 @@ class Scenario:
 
 
 CHECK_DETAILS = {
-    "native-adapter-matrix-v1-sha256-17ea1abb4ab4c2e76981ba77d8959cfc8167be9f520f8c05672ad01ed4870c16": (
+    "native-adapter-matrix-v1-sha256-e14d9a93689128fe502a5099abb8159c3984b9190ce815e817be22725812f03e": (
         "The closed native-adapter matrix bound every durability and authority "
         "cell to the exact adapter interface name, ABI, and descriptor."
     ),

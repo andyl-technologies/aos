@@ -939,6 +939,7 @@ mod tests {
                     id: cell.id.clone(),
                     cell_digest: Sha256Digest::of_bytes(canonical::to_vec(cell)?),
                     environment_digest,
+                    cohort_subject: None,
                     postconditions: cell
                         .postconditions
                         .iter()
@@ -952,6 +953,7 @@ mod tests {
                             )
                         })
                         .collect(),
+                    probes: BTreeMap::new(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;

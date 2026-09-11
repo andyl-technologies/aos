@@ -13,16 +13,26 @@ use crate::qualification_evidence::{
     NativeAdapterInterfaceIdentity, NativeAdapterMatrixComponentIdentity,
     NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
     NativeAdapterMatrixObservation, NativeAdapterMatrixSpec, NativeAdapterMatrixSubject,
-    NativeAdapterRecoverySpec, NativeAdapterSurfaceAdapter, NativeAdapterSurfaceLimits,
-    NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario, NativeAdapterSurfaceSpec,
-    QualificationCase, QualificationObservation, QualificationPredecessor,
-    native_adapter_matrix_check, validate_matrix_for_case,
+    NativeAdapterPostconditionProbe, NativeAdapterRecoverySpec, NativeAdapterSurfaceAdapter,
+    NativeAdapterSurfaceLimits, NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario,
+    NativeAdapterSurfaceSpec, QualificationCase, QualificationObservation,
+    QualificationPredecessor, native_adapter_matrix_check, validate_matrix_for_case,
     validate_native_adapter_matrix_observation, validate_native_adapter_matrix_spec,
 };
 use crate::verify::tests::{observations, qualification_fixture};
 
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::of_bytes(label)
+}
+
+fn probe_kind(postcondition: &str) -> &'static str {
+    match postcondition {
+        "durable-attempt-state-classified" => "journal-timeline",
+        "at-most-one-resource-owner" => "ownership-inventory",
+        "foreign-resources-unchanged" => "foreign-resource-snapshot",
+        "dependent-effects-not-executed" => "dependency-barrier",
+        _ => panic!("fixture postcondition has no probe kind"),
+    }
 }
 
 fn fixture() -> Result<(
@@ -170,10 +180,41 @@ fn fixture() -> Result<(
         .cells
         .iter()
         .map(|cell| {
+            let cohort_subject = serde_json::json!({
+                "schema": "aos.test.native-adapter-cohort-subject/v1",
+                "cell": cell.id,
+            });
+            let cohort_subject_digest =
+                Sha256Digest::of_bytes(crate::canonical::to_vec(&cohort_subject)?);
+            let probes = cell
+                .postconditions
+                .iter()
+                .map(|name| {
+                    let observations = BTreeMap::from([(
+                        "fixture-observation".into(),
+                        serde_json::json!(format!("{}:{name}", cell.id)),
+                    )]);
+                    let observation_digest =
+                        Sha256Digest::of_bytes(crate::canonical::to_vec(&observations)?);
+                    Ok((
+                        name.clone(),
+                        NativeAdapterPostconditionProbe {
+                            schema_version: "aos.release.native-adapter-postcondition-probe/v1"
+                                .into(),
+                            kind: probe_kind(name).into(),
+                            subject_digest: digest("subjects"),
+                            cohort_subject_digest,
+                            observation_digest,
+                            observations,
+                        },
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>>>()?;
             Ok(NativeAdapterCellObservation {
                 id: cell.id.clone(),
                 cell_digest: Sha256Digest::of_bytes(crate::canonical::to_vec(cell)?),
                 environment_digest,
+                cohort_subject: Some(cohort_subject),
                 postconditions: cell
                     .postconditions
                     .iter()
@@ -187,6 +228,7 @@ fn fixture() -> Result<(
                         )
                     })
                     .collect(),
+                probes,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -310,6 +352,9 @@ fn exact_cells_derive_the_matrix_result() -> Result<()> {
         .get_mut("at-most-one-resource-owner")
         .unwrap()
         .passed = false;
+    observation.cells[0]
+        .probes
+        .remove("at-most-one-resource-owner");
     assert!(!validate_native_adapter_matrix_observation(
         &case,
         environment,
@@ -385,6 +430,95 @@ fn committed_identities_and_postconditions_are_exact() -> Result<()> {
         .detail
         .clear();
     mutations.push(blank_detail);
+
+    for mutation in mutations {
+        assert!(
+            validate_native_adapter_matrix_observation(
+                &case,
+                environment,
+                digest("executor"),
+                &mutation,
+            )
+            .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn passing_postconditions_require_independent_subject_bound_probes() -> Result<()> {
+    let (case, environment, observation) = fixture()?;
+    let first_name = observation.cells[0]
+        .postconditions
+        .keys()
+        .next()
+        .expect("fixture cell has a postcondition")
+        .clone();
+    let second_name = observation.cells[0]
+        .postconditions
+        .keys()
+        .nth(1)
+        .expect("fixture cell has a second postcondition")
+        .clone();
+    let mut mutations = Vec::new();
+
+    let mut missing = observation.clone();
+    missing.cells[0].probes.remove(&first_name);
+    mutations.push(missing);
+
+    let mut foreign_subject = observation.clone();
+    foreign_subject.cells[0]
+        .probes
+        .get_mut(&first_name)
+        .expect("fixture cell retains its probe")
+        .subject_digest = digest("foreign subject");
+    mutations.push(foreign_subject);
+
+    let mut missing_cohort_subject = observation.clone();
+    missing_cohort_subject.cells[0].cohort_subject = None;
+    mutations.push(missing_cohort_subject);
+
+    let mut foreign_cohort_subject = observation.clone();
+    foreign_cohort_subject.cells[0].cohort_subject = Some(serde_json::json!({
+        "schema": "aos.test.native-adapter-cohort-subject/v1",
+        "cell": "foreign-cell",
+    }));
+    mutations.push(foreign_cohort_subject);
+
+    let mut foreign_cohort_digest = observation.clone();
+    foreign_cohort_digest.cells[0]
+        .probes
+        .get_mut(&first_name)
+        .expect("fixture cell retains its probe")
+        .cohort_subject_digest = digest("foreign cohort subject");
+    mutations.push(foreign_cohort_digest);
+
+    let mut false_digest = observation.clone();
+    false_digest.cells[0]
+        .probes
+        .get_mut(&first_name)
+        .expect("fixture cell retains its probe")
+        .observation_digest = digest("invented probe");
+    mutations.push(false_digest);
+
+    let mut wrong_kind = observation.clone();
+    wrong_kind.cells[0]
+        .probes
+        .get_mut(&first_name)
+        .expect("fixture cell retains its probe")
+        .kind = "dependency-barrier".into();
+    mutations.push(wrong_kind);
+
+    let mut duplicate = observation;
+    let first_observations = duplicate.cells[0].probes[&first_name].observations.clone();
+    let second_probe = duplicate.cells[0]
+        .probes
+        .get_mut(&second_name)
+        .expect("fixture cell retains its second probe");
+    second_probe.observation_digest =
+        Sha256Digest::of_bytes(crate::canonical::to_vec(&first_observations)?);
+    second_probe.observations = first_observations;
+    mutations.push(duplicate);
 
     for mutation in mutations {
         assert!(
@@ -486,11 +620,12 @@ fn unqualified_environment_can_only_retain_a_failed_matrix() -> Result<()> {
         .is_err()
     );
 
-    observation.cells[0]
-        .postconditions
-        .get_mut("at-most-one-resource-owner")
-        .expect("fixture cell has the postcondition")
-        .passed = false;
+    for cell in &mut observation.cells {
+        for postcondition in cell.postconditions.values_mut() {
+            postcondition.passed = false;
+        }
+        cell.probes.clear();
+    }
     assert!(!validate_native_adapter_matrix_observation(
         &case,
         environment,
@@ -513,6 +648,13 @@ fn unknown_status_and_regression_fields_are_rejected() -> Result<()> {
         serde_json::json!(["checks.fleet.ability-native-postgresql"]),
     );
 
+    assert!(serde_json::from_value::<NativeAdapterMatrixObservation>(value).is_err());
+
+    let mut value = serde_json::to_value(&observation)?;
+    value["cells"][0]["probes"]["at-most-one-resource-owner"]
+        .as_object_mut()
+        .expect("fixture probe must be an object")
+        .insert("claimed_by_adapter".into(), serde_json::json!(true));
     assert!(serde_json::from_value::<NativeAdapterMatrixObservation>(value).is_err());
 
     let mut value = serde_json::to_value(&observation)?;
@@ -701,12 +843,18 @@ fn central_phase_rejects_failed_cells_and_prepared_environment_mutation() -> Res
         .native_adapter_matrix
         .as_mut()
         .expect("matrix record has cell evidence");
-    failed_matrix.cells[0]
+    let failed_name = failed_matrix.cells[0]
         .postconditions
-        .values_mut()
+        .keys()
         .next()
         .expect("matrix cell has a postcondition")
+        .clone();
+    failed_matrix.cells[0]
+        .postconditions
+        .get_mut(&failed_name)
+        .expect("matrix cell retains the selected postcondition")
         .passed = false;
+    failed_matrix.cells[0].probes.remove(&failed_name);
     let check_name = failed_observation
         .checks
         .keys()

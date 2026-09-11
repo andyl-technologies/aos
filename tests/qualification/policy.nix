@@ -454,6 +454,7 @@ in
   assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
   == [
     "ability-native-activation"
+    "ability-native-adapter-matrix"
     "ability-native-kubernetes"
     "ability-native-postgresql"
     "ability-native-recovery"
@@ -468,16 +469,12 @@ in
     "rollout-observation"
     "staging-delivery"
   ];
-  assert !builtins.hasAttr "ability-native-adapter-matrix" releaseExecutor.passthru.qualification.scenarios;
   assert !builtins.hasAttr "ability-native-image-rollout" releaseExecutor.passthru.qualification.scenarios;
   assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
   assert builtins.all (id:
     builtins.match ".*/aos-qualification-${id}" releaseExecutor.passthru.qualification.scenarios.${id}
     != null) (builtins.filter (id:
-    !(builtins.elem id [
-      "ability-native-adapter-matrix"
-      "ability-native-image-rollout"
-    ]))
+    id != "ability-native-image-rollout")
   (builtins.attrNames abilityRequirements));
   assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;

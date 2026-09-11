@@ -137,6 +137,8 @@ pub const NATIVE_ADAPTER_MATRIX_OBSERVATION_V1: &str =
 const NATIVE_ADAPTER_MATRIX_SCHEMA_V1: &str = "aos.qualification.native-adapter-matrix/v1";
 const NATIVE_ADAPTER_MATRIX_SUBJECT_V1: &str = "aos.qualification.native-adapter-subject/v1";
 const NATIVE_ADAPTER_SURFACE_V1: &str = "aos.qualification.native-adapter-surface/v1";
+const NATIVE_ADAPTER_POSTCONDITION_PROBE_V1: &str =
+    "aos.release.native-adapter-postcondition-probe/v1";
 /// Canonical schema for a typed native adapter matrix execution environment.
 pub const NATIVE_ADAPTER_MATRIX_ENVIRONMENT_V1: &str =
     "aos.release.native-adapter-matrix-environment/v1";
@@ -146,6 +148,8 @@ const NATIVE_ADAPTER_MATRIX_MAX_METHODS: usize = 47;
 const NATIVE_ADAPTER_MATRIX_MAX_SCENARIOS: usize = 28;
 const NATIVE_ADAPTER_MATRIX_MAX_CELLS: usize =
     NATIVE_ADAPTER_MATRIX_MAX_METHODS * NATIVE_ADAPTER_MATRIX_MAX_SCENARIOS;
+const NATIVE_ADAPTER_MAX_PROBE_FACTS: usize = 32;
+const NATIVE_ADAPTER_MAX_PROBE_BYTES: usize = 64 * 1024;
 
 /// One exact interface identity in the native adapter matrix subject.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -388,8 +392,32 @@ pub struct NativeAdapterCellObservation {
     pub cell_digest: Sha256Digest,
     /// Digest of the actual production execution environment.
     pub environment_digest: Sha256Digest,
+    /// Canonical dynamic plan and author identity exercised by this cell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cohort_subject: Option<serde_json::Value>,
     /// Exact postcondition results; their conjunction determines cell success.
     pub postconditions: BTreeMap<String, CheckObservation>,
+    /// Exact production probes for every passing postcondition.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub probes: BTreeMap<String, NativeAdapterPostconditionProbe>,
+}
+
+/// Retained production observation supporting one passing matrix postcondition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterPostconditionProbe {
+    /// Exact postcondition probe schema.
+    pub schema_version: String,
+    /// Probe class required by the named postcondition.
+    pub kind: String,
+    /// Candidate artifact population exercised by the probe.
+    pub subject_digest: Sha256Digest,
+    /// Canonical identity of the cell's retained dynamic cohort subject.
+    pub cohort_subject_digest: Sha256Digest,
+    /// Canonical identity of the retained observation preimage.
+    pub observation_digest: Sha256Digest,
+    /// Bounded structured facts observed independently of the adapter result.
+    pub observations: BTreeMap<String, serde_json::Value>,
 }
 
 /// Complete observed results for an immutable native adapter matrix.
@@ -1073,7 +1101,8 @@ pub fn assess_observations(
 /// policy token or specification is malformed, the frozen predecessor is
 /// absent, the typed environment differs from the case or executor, a cell is
 /// missing, duplicated, reordered, or changed, or postconditions are not exact
-/// and documented.
+/// and documented. Every passing postcondition must retain a distinct,
+/// subject-bound production probe with a valid canonical observation digest.
 pub fn validate_native_adapter_matrix_observation(
     case: &QualificationCase,
     environment_digest: Sha256Digest,
@@ -1133,10 +1162,52 @@ pub fn validate_native_adapter_matrix_observation(
         {
             bail!("native adapter matrix cell postconditions are not exact and documented");
         }
-        passed &= result
+        let passing_postconditions = result
             .postconditions
-            .values()
-            .all(|postcondition| postcondition.passed);
+            .iter()
+            .filter_map(|(name, result)| result.passed.then_some(name.as_str()))
+            .collect::<BTreeSet<_>>();
+        let probe_names = result
+            .probes
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if probe_names != passing_postconditions {
+            bail!("native adapter matrix passing postconditions lack exact production probes");
+        }
+        let cohort_subject_digest = match &result.cohort_subject {
+            Some(subject) if !passing_postconditions.is_empty() && subject.is_object() => {
+                let subject_bytes = crate::canonical::to_vec(subject)?;
+                if subject_bytes.len() > NATIVE_ADAPTER_MAX_PROBE_BYTES {
+                    bail!("native adapter matrix cohort subject exceeds its size bound");
+                }
+                Some(Sha256Digest::of_bytes(subject_bytes))
+            }
+            None if passing_postconditions.is_empty() => None,
+            _ => bail!("native adapter matrix cohort subject differs from cell success"),
+        };
+        if observation.environment.status == NativeAdapterMatrixEnvironmentStatus::Unqualified
+            && !passing_postconditions.is_empty()
+        {
+            bail!("unqualified native adapter matrix cells cannot carry passing postconditions");
+        }
+
+        let mut probe_digests = BTreeSet::new();
+        for (postcondition, probe) in &result.probes {
+            let cohort_subject_digest = cohort_subject_digest.ok_or_else(|| {
+                anyhow::anyhow!("native adapter matrix probe lacks its cohort subject")
+            })?;
+            validate_native_adapter_postcondition_probe(
+                case,
+                postcondition,
+                cohort_subject_digest,
+                probe,
+            )?;
+            if !probe_digests.insert(probe.observation_digest) {
+                bail!("native adapter matrix postconditions do not have independent probes");
+            }
+        }
+        passed &= passing_postconditions.len() == result.postconditions.len();
     }
 
     if passed && observation.environment.status == NativeAdapterMatrixEnvironmentStatus::Unqualified
@@ -1145,6 +1216,56 @@ pub fn validate_native_adapter_matrix_observation(
     }
 
     Ok(passed)
+}
+
+fn validate_native_adapter_postcondition_probe(
+    case: &QualificationCase,
+    postcondition: &str,
+    cohort_subject_digest: Sha256Digest,
+    probe: &NativeAdapterPostconditionProbe,
+) -> Result<()> {
+    let expected_kind = native_adapter_postcondition_probe_kind(postcondition)
+        .ok_or_else(|| anyhow::anyhow!("native adapter matrix postcondition has no probe class"))?;
+    if probe.schema_version != NATIVE_ADAPTER_POSTCONDITION_PROBE_V1
+        || probe.kind != expected_kind
+        || probe.subject_digest != case.subjects_digest
+        || probe.cohort_subject_digest != cohort_subject_digest
+        || probe.observations.is_empty()
+        || probe.observations.len() > NATIVE_ADAPTER_MAX_PROBE_FACTS
+        || probe
+            .observations
+            .iter()
+            .any(|(name, value)| !matrix_token(name) || value.is_null())
+    {
+        bail!("native adapter matrix postcondition probe is malformed or misbound");
+    }
+
+    let observation_bytes = crate::canonical::to_vec(&probe.observations)?;
+    if observation_bytes.len() > NATIVE_ADAPTER_MAX_PROBE_BYTES
+        || Sha256Digest::of_bytes(observation_bytes) != probe.observation_digest
+    {
+        bail!("native adapter matrix postcondition probe digest is invalid");
+    }
+    Ok(())
+}
+
+fn native_adapter_postcondition_probe_kind(postcondition: &str) -> Option<&'static str> {
+    match postcondition {
+        "durable-attempt-state-classified" => Some("journal-timeline"),
+        "at-most-one-resource-owner" => Some("ownership-inventory"),
+        "foreign-resources-unchanged" => Some("foreign-resource-snapshot"),
+        "dependent-effects-not-executed" => Some("dependency-barrier"),
+        "fresh-receiving-authority" => Some("authority-incarnation"),
+        "compatible-state-adopted" => Some("state-adoption"),
+        "exactly-one-resource-owner" => Some("exact-ownership-inventory"),
+        "transfer-rejected-before-candidate-effect" => Some("transfer-rejection"),
+        "predecessor-remains-sole-owner" => Some("predecessor-ownership"),
+        "current-grants-reauthorized" => Some("authority-grants"),
+        "retained-target-identity-preserved" => Some("target-identity"),
+        "prerequisite-failure-recorded" => Some("prerequisite-failure"),
+        "foreign-attempt-rejected-before-mutation" => Some("foreign-attempt-rejection"),
+        _ => None,
+    }
 }
 
 /// Constructs the deterministic aggregate check derived from exact matrix cells.

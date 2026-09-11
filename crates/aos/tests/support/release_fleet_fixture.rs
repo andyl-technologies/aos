@@ -928,8 +928,9 @@ fn fixture_evidence(
         CheckObservation, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
         NativeAdapterCellObservation, NativeAdapterMatrixComponentIdentity,
         NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
-        NativeAdapterMatrixObservation, NativeAdapterMatrixSpec, QualificationObservation,
-        native_adapter_matrix_check, validate_native_adapter_matrix_observation,
+        NativeAdapterMatrixObservation, NativeAdapterMatrixSpec, NativeAdapterPostconditionProbe,
+        QualificationObservation, native_adapter_matrix_check,
+        validate_native_adapter_matrix_observation,
     };
     let seconds = if case.phase == aos_release::qualification::QualificationPhase::Complete {
         14 * 24 * 60 * 60
@@ -1002,14 +1003,63 @@ fn fixture_evidence(
             )),
         };
         environment_digest = Sha256Digest::of_bytes(canonical::to_vec(&matrix_environment)?);
+        let probe_kind = |postcondition: &str| -> Result<&'static str> {
+            Ok(match postcondition {
+                "durable-attempt-state-classified" => "journal-timeline",
+                "at-most-one-resource-owner" => "ownership-inventory",
+                "foreign-resources-unchanged" => "foreign-resource-snapshot",
+                "dependent-effects-not-executed" => "dependency-barrier",
+                "fresh-receiving-authority" => "authority-incarnation",
+                "compatible-state-adopted" => "state-adoption",
+                "exactly-one-resource-owner" => "exact-ownership-inventory",
+                "transfer-rejected-before-candidate-effect" => "transfer-rejection",
+                "predecessor-remains-sole-owner" => "predecessor-ownership",
+                "current-grants-reauthorized" => "authority-grants",
+                "retained-target-identity-preserved" => "target-identity",
+                "prerequisite-failure-recorded" => "prerequisite-failure",
+                "foreign-attempt-rejected-before-mutation" => "foreign-attempt-rejection",
+                _ => anyhow::bail!("synthetic matrix fixture has an unknown postcondition"),
+            })
+        };
         let cells = spec
             .cells
             .iter()
             .map(|cell| {
+                let cohort_subject = serde_json::json!({
+                    "schema": "aos.test.native-adapter-cohort-subject/v1",
+                    "cell": cell.id,
+                });
+                let cohort_subject_digest =
+                    Sha256Digest::of_bytes(canonical::to_vec(&cohort_subject)?);
+                let probes = cell
+                    .postconditions
+                    .iter()
+                    .map(|postcondition| {
+                        let observations = std::collections::BTreeMap::from([(
+                            "synthetic-protocol-observation".into(),
+                            serde_json::json!(format!("{}:{postcondition}", cell.id)),
+                        )]);
+                        let observation_digest =
+                            Sha256Digest::of_bytes(canonical::to_vec(&observations)?);
+                        Ok((
+                            postcondition.clone(),
+                            NativeAdapterPostconditionProbe {
+                                schema_version: "aos.release.native-adapter-postcondition-probe/v1"
+                                    .into(),
+                                kind: probe_kind(postcondition)?.into(),
+                                subject_digest: case.subjects_digest,
+                                cohort_subject_digest,
+                                observation_digest,
+                                observations,
+                            },
+                        ))
+                    })
+                    .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
                 Ok(NativeAdapterCellObservation {
                     id: cell.id.clone(),
                     cell_digest: Sha256Digest::of_bytes(canonical::to_vec(cell)?),
                     environment_digest,
+                    cohort_subject: Some(cohort_subject),
                     postconditions: cell
                         .postconditions
                         .iter()
@@ -1024,6 +1074,7 @@ fn fixture_evidence(
                             )
                         })
                         .collect(),
+                    probes,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
