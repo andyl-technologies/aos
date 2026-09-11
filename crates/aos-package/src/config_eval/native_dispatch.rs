@@ -28,8 +28,8 @@ use aos_ability_runtime::adapter::{
     ResourceRevisionObservation, SystemMonotonicClock, TrustedAdapter, TrustedResourceCatalog,
 };
 use aos_ability_runtime::execution::{
-    AdmittedOperation, CheckedExecutionJournalSnapshot, ExecutionBoundaryObserver, RecoveryAction,
-    TerminalResult, TrustedAdmissionPolicy,
+    AdmittedOperation, CheckedExecutionJournalSnapshot, ExecutionBoundaryObserver, ExecutionError,
+    ExecutionStep, RecoveryAction, TerminalResult, TrustedAdmissionPolicy,
 };
 use aos_ability_runtime::journal::JournalLimits;
 use aos_ability_validate::{BindingAuthorityKind, CheckedEffectPlan};
@@ -81,6 +81,13 @@ use crate::ability_package::{VerifiedAbilityPackage, VerifiedAbilityPackageSet};
 const MANAGED_CONFIGURATION_STATE_ROOT: &str = "/var/lib/aos/ability-runtime/managed-configuration";
 const NGINX_STATE_ROOT: &str = "/var/lib/aos/ability-runtime/nginx";
 const RETRY_CANCELLATION_POLL: Duration = Duration::from_millis(50);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeCancellationAction {
+    Continue,
+    Dispatch,
+    Unsupported,
+}
 
 /// Selects the built-in adapter family authenticated for one native mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -789,6 +796,11 @@ impl<'a> NativeAdapterRegistry<'a> {
                 let expression = fields
                     .get(*input)
                     .context("host-resource input is absent from its checked request")?;
+                if matches!(kind, NativeHostResourceKind::Postgresql)
+                    && matches!(expression, ValueExpression::Literal { value } if value.as_json().is_null())
+                {
+                    continue;
+                }
                 let ValueExpression::OperationResult { reference } = expression else {
                     return Err(anyhow!(
                         "host-resource dependency is not a direct operation result"
@@ -1529,6 +1541,10 @@ impl<'a> NativeDispatcher<'a> {
                 }
                 return Ok(terminal);
             }
+            ensure!(
+                !cancellation.is_cancelled(),
+                "native activation was cancelled before another operation could be admitted"
+            );
             let ready = session
                 .schedule_ready(NonZeroUsize::MIN)
                 .map_err(anyhow::Error::new)?;
@@ -2438,13 +2454,15 @@ where
             .transaction()
             .next_action(&admitted.operation().key)
             .map_err(anyhow::Error::new)?;
-        match action {
-            RecoveryAction::Execute { .. }
-            | RecoveryAction::ReconcileBeforeRetry { .. }
-            | RecoveryAction::ExecuteCompensation
-            | RecoveryAction::ReconcileCompensation => {
-                session
-                    .drive_admitted_with_observer(
+        let cancellation_action = if cancellation.is_cancelled() {
+            native_cancellation_action(&action, admitted.operation().recovery.cancel.is_some())
+        } else {
+            NativeCancellationAction::Continue
+        };
+        match cancellation_action {
+            NativeCancellationAction::Dispatch => {
+                let step = session
+                    .cancel_admitted_with_observer(
                         &admitted,
                         adapter,
                         policy,
@@ -2454,6 +2472,61 @@ where
                     )
                     .map_err(anyhow::Error::new)?
                     .map_err(anyhow::Error::new)?;
+                match step {
+                    ExecutionStep::Completed | ExecutionStep::RejectedBeforeEffect => continue,
+                    ExecutionStep::Indeterminate => {
+                        return Err(anyhow!(
+                            "native cancellation of operation {:?} remained indeterminate",
+                            admitted.operation().key
+                        ));
+                    }
+                    ExecutionStep::SafeToRetry | ExecutionStep::InterventionRequired => {
+                        return Err(anyhow!(
+                            "native cancellation of operation {:?} returned an invalid step {step:?}",
+                            admitted.operation().key
+                        ));
+                    }
+                }
+            }
+            NativeCancellationAction::Unsupported => {
+                return Err(anyhow!(
+                    "native operation {:?} was cancelled but its checked contract has no cancellation method",
+                    admitted.operation().key
+                ));
+            }
+            NativeCancellationAction::Continue => {}
+        }
+        match action {
+            RecoveryAction::Execute { .. }
+            | RecoveryAction::ReconcileBeforeRetry { .. }
+            | RecoveryAction::ExecuteCompensation
+            | RecoveryAction::ReconcileCompensation => {
+                let result = session
+                    .drive_admitted_with_observer(
+                        &admitted,
+                        adapter,
+                        policy,
+                        clock,
+                        cancellation,
+                        observer,
+                    )
+                    .map_err(anyhow::Error::new)?;
+                match result {
+                    Ok(_) => {}
+                    Err(ExecutionError::CancelledBeforeIntent)
+                        if cancellation.is_cancelled()
+                            && admitted.operation().recovery.cancel.is_some() =>
+                    {
+                        continue;
+                    }
+                    Err(ExecutionError::CancelledBeforeIntent) if cancellation.is_cancelled() => {
+                        return Err(anyhow!(
+                            "native operation {:?} was cancelled but its checked contract has no cancellation method",
+                            admitted.operation().key
+                        ));
+                    }
+                    Err(error) => return Err(anyhow::Error::new(error)),
+                }
             }
             RecoveryAction::ReleaseResources | RecoveryAction::ReleaseCompensationResources => {
                 let release = session
@@ -2486,6 +2559,23 @@ where
                 ));
             }
         }
+    }
+}
+
+const fn native_cancellation_action(
+    action: &RecoveryAction,
+    cancellation_supported: bool,
+) -> NativeCancellationAction {
+    if !matches!(
+        action,
+        RecoveryAction::Execute { .. } | RecoveryAction::ReconcileBeforeRetry { .. }
+    ) {
+        return NativeCancellationAction::Continue;
+    }
+    if cancellation_supported {
+        NativeCancellationAction::Dispatch
+    } else {
+        NativeCancellationAction::Unsupported
     }
 }
 
@@ -2789,6 +2879,43 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "retry wait exceeded its bounded cancellation poll"
         );
+    }
+
+    #[test]
+    fn native_cancellation_routes_only_unsettled_effect_attempts() {
+        let attempt = std::num::NonZeroU32::MIN;
+        for action in [
+            RecoveryAction::Execute { attempt },
+            RecoveryAction::ReconcileBeforeRetry { attempt },
+        ] {
+            assert_eq!(
+                native_cancellation_action(&action, true),
+                NativeCancellationAction::Dispatch
+            );
+            assert_eq!(
+                native_cancellation_action(&action, false),
+                NativeCancellationAction::Unsupported
+            );
+        }
+
+        for action in [
+            RecoveryAction::ReleaseResources,
+            RecoveryAction::ExecuteCompensation,
+            RecoveryAction::ReconcileCompensation,
+            RecoveryAction::ReleaseCompensationResources,
+            RecoveryAction::InterventionRequired,
+            RecoveryAction::CompensationInterventionRequired,
+            RecoveryAction::None,
+        ] {
+            assert_eq!(
+                native_cancellation_action(&action, true),
+                NativeCancellationAction::Continue
+            );
+            assert_eq!(
+                native_cancellation_action(&action, false),
+                NativeCancellationAction::Continue
+            );
+        }
     }
 
     #[test]

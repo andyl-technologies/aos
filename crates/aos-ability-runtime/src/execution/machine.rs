@@ -158,9 +158,9 @@ pub trait ExecutionBoundaryObserver {
 /// Observes execution boundaries and may halt deterministic fault-injection runs.
 ///
 /// Returning `false` models process loss immediately after the named boundary.
-/// Production callers normally use [`NoopBoundaryHook`]. The hook supplies the
-/// generic seam used by modeled clocks and fault campaigns without importing a
-/// particular test platform into the runtime.
+/// The hook supplies the generic seam used by production observers, modeled
+/// clocks, and fault campaigns without importing a particular platform into
+/// the runtime.
 pub(crate) trait BoundaryHook {
     /// Returns whether execution should continue beyond this boundary.
     fn observe(
@@ -168,20 +168,6 @@ pub(crate) trait BoundaryHook {
         boundary: Boundary,
         control: &dyn RuntimeControl,
     ) -> anyhow::Result<ExecutionBoundaryControl>;
-}
-
-/// Continues through every execution boundary.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct NoopBoundaryHook;
-
-impl BoundaryHook for NoopBoundaryHook {
-    fn observe(
-        &mut self,
-        _boundary: Boundary,
-        _control: &dyn RuntimeControl,
-    ) -> anyhow::Result<ExecutionBoundaryControl> {
-        Ok(ExecutionBoundaryControl::Continue)
-    }
 }
 
 /// Reports the newly durable result of one live state-machine step.

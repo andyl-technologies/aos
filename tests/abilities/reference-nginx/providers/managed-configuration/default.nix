@@ -254,7 +254,12 @@ in {
           interface = terminal.interface;
           inherit method;
         };
-        cancel = null;
+        # The native adapter resolves cancellation through the same exact
+        # postcondition check as reconciliation for this filesystem action.
+        cancel = {
+          interface = terminal.interface;
+          inherit method;
+        };
         compensate = null;
       };
     };

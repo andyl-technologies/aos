@@ -11,7 +11,7 @@ use crate::adapter::{
 use crate::execution::admission::check_invocation;
 use crate::execution::machine::{
     AttemptContext, Boundary, BoundaryHook, ExecutionBoundaryControl, ExecutionBoundaryObservation,
-    ExecutionBoundaryObserver, NoopBoundaryHook, OperationExecutor,
+    ExecutionBoundaryObserver, OperationExecutor,
 };
 use crate::execution::{
     AdmittedOperation, CompensationInterventionReason, ExecutionError, ExecutionStep,
@@ -198,13 +198,49 @@ impl<'plan> ExecutionTransaction<'plan> {
         Policy: TrustedAdmissionPolicy,
         Clock: MonotonicClock,
     {
+        let mut observer = ContinueBoundaryObserver;
+        self.cancel_admitted_with_observer(
+            admitted,
+            adapter,
+            policy,
+            clock,
+            cancellation,
+            &mut observer,
+        )
+    }
+
+    /// Requests checked cancellation while reporting exact boundaries.
+    ///
+    /// This performs the same fresh admission and policy checks as
+    /// [`Self::cancel_admitted`]. The observer receives cancellation boundaries
+    /// with [`InvocationPurpose::Cancel`] and cannot select an execution result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same conditions as [`Self::cancel_admitted`],
+    /// or when the explicitly configured observer fails or halts execution.
+    pub fn cancel_admitted_with_observer<Adapter, Policy, Clock, Observer>(
+        &mut self,
+        admitted: &AdmittedOperation<'plan, Adapter::Request, Adapter::Handle>,
+        adapter: &mut Adapter,
+        policy: &mut Policy,
+        clock: &Clock,
+        cancellation: &CancellationToken,
+        observer: &mut Observer,
+    ) -> Result<ExecutionStep, ExecutionError>
+    where
+        Adapter: TrustedAdapter,
+        Policy: TrustedAdmissionPolicy,
+        Clock: MonotonicClock,
+        Observer: ExecutionBoundaryObserver,
+    {
         if !matches!(
             admitted.invocation_purpose(),
             InvocationPurpose::Effect | InvocationPurpose::Reconcile
         ) {
             return Err(ExecutionError::StaleAdmission);
         }
-        let (_, mut context) = self.dispatch_context::<Adapter, Clock>(admitted, clock)?;
+        let context = self.cancellation_context::<Adapter, Clock>(admitted, clock)?;
         let method = admitted
             .operation()
             .recovery
@@ -218,16 +254,70 @@ impl<'plan> ExecutionTransaction<'plan> {
             &method,
             InvocationPurpose::Cancel,
         )?;
-        let persisted_elapsed = self
-            .history(&admitted.operation().key)
-            .map_err(ExecutionError::Transaction)?
-            .elapsed_millis();
-        context.elapsed_millis = observed_operation_elapsed(admitted, clock).max(persisted_elapsed);
-        ensure_dispatch_budget(self, admitted, persisted_elapsed, context.elapsed_millis)?;
-
-        let mut hook = NoopBoundaryHook;
+        let mut hook = AdmittedBoundaryHook {
+            observer,
+            transaction: admitted.transaction(),
+            operation: admitted.operation_id(),
+            attempt: admitted.attempt(),
+            purpose: InvocationPurpose::Cancel,
+        };
         let mut executor = OperationExecutor::new(adapter, clock, cancellation, &mut hook);
         executor.cancel(self, context, admitted.prepared_request().request())
+    }
+
+    fn cancellation_context<'token, Adapter, Clock>(
+        &self,
+        admitted: &'token AdmittedOperation<'plan, Adapter::Request, Adapter::Handle>,
+        clock: &Clock,
+    ) -> Result<AttemptContext<'token>, ExecutionError>
+    where
+        Adapter: TrustedAdapter,
+        Clock: MonotonicClock,
+    {
+        if !admitted.belongs_to_session(self.session())
+            || admitted.plan().id() != self.plan().id()
+            || admitted.transaction() != self.transaction()
+            || admitted.operation_id().operation != admitted.operation().key
+        {
+            return Err(ExecutionError::StaleAdmission);
+        }
+        let history = self
+            .history(&admitted.operation().key)
+            .map_err(ExecutionError::Transaction)?;
+        let action = self
+            .next_action(&admitted.operation().key)
+            .map_err(ExecutionError::Transaction)?;
+        let expected_attempt = match action {
+            RecoveryAction::Execute { attempt }
+            | RecoveryAction::ReconcileBeforeRetry { attempt } => attempt,
+            _ => return Err(ExecutionError::StaleAdmission),
+        };
+        let resources_match = admitted.resources().eq(history.admitted_resources().iter());
+        let released_nonempty_resources =
+            !history.admitted_resources().is_empty() && history.resources_released();
+        if expected_attempt != admitted.attempt()
+            || admitted.operation_sequence() > history.last_sequence()
+            || !resources_match
+            || released_nonempty_resources
+        {
+            return Err(ExecutionError::StaleAdmission);
+        }
+
+        let elapsed_millis =
+            observed_operation_elapsed(admitted, clock).max(history.elapsed_millis());
+        ensure_dispatch_budget(self, admitted, history.elapsed_millis(), elapsed_millis)?;
+        let idempotency_key = history
+            .idempotency_key()
+            .map_or_else(|| logical_idempotency_key(admitted), Ok)?;
+        Ok(AttemptContext {
+            transaction: admitted.transaction(),
+            operation: admitted.operation_id(),
+            attempt: admitted.attempt(),
+            idempotency_key,
+            elapsed_millis,
+            attempt_timeout_millis: admitted.operation().deadline.attempt_timeout_millis.get(),
+            total_recovery_millis: admitted.operation().deadline.total_recovery_millis.get(),
+        })
     }
 
     fn dispatch_context<'token, Adapter, Clock>(

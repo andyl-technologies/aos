@@ -830,6 +830,39 @@ impl<'plan> NativeAbilitySession<'plan> {
         Ok(result)
     }
 
+    /// Requests checked cancellation while reporting exact execution boundaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an outer error when terminal-marker publication fails. Checked
+    /// cancellation or observer failures remain in the inner result.
+    pub fn cancel_admitted_with_observer<Adapter, Policy, Clock, Observer>(
+        &mut self,
+        admitted: &AdmittedOperation<'plan, Adapter::Request, Adapter::Handle>,
+        adapter: &mut Adapter,
+        policy: &mut Policy,
+        clock: &Clock,
+        cancellation: &CancellationToken,
+        observer: &mut Observer,
+    ) -> Result<Result<ExecutionStep, ExecutionError>, GenerationAbilityStoreError>
+    where
+        Adapter: TrustedAdapter,
+        Policy: TrustedAdmissionPolicy,
+        Clock: MonotonicClock,
+        Observer: ExecutionBoundaryObserver,
+    {
+        let result = self.transaction.cancel_admitted_with_observer(
+            admitted,
+            adapter,
+            policy,
+            clock,
+            cancellation,
+            observer,
+        );
+        self.persist_terminal_marker()?;
+        Ok(result)
+    }
+
     /// Records a terminal failure when no effect may remain unresolved.
     ///
     /// # Errors
