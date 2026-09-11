@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   meson,
   ninja,
   pkg-config,
@@ -57,17 +59,24 @@ in
       }
       {
         name = "configure";
-        script = ''
-          export PKG_CONFIG_PATH="${gsettings-desktop-schemas}/share/pkgconfig:$PKG_CONFIG_PATH"
-          meson setup build \
-            $mesonFlags \
-            --prefix="$out" \
-            --buildtype=release \
-            -Drelease=true \
-            -Ddocs=false \
-            -Dintrospection=false \
-            -Dvapi=false
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # GLib build tools are native; the backend needs target metadata
+            # and the unversioned linker names in GLib's development output.
+            export PKG_CONFIG_PATH=${glib.dev}/lib/pkgconfig:$PKG_CONFIG_PATH
+            export LDFLAGS="-L${glib.dev}/lib $NIX_LDFLAGS ''${LDFLAGS:-}"
+          ''
+          + ''
+            export PKG_CONFIG_PATH="${gsettings-desktop-schemas}/share/pkgconfig:$PKG_CONFIG_PATH"
+            meson setup build \
+              $mesonFlags \
+              --prefix="$out" \
+              --buildtype=release \
+              -Drelease=true \
+              -Ddocs=false \
+              -Dintrospection=false \
+              -Dvapi=false
+          '';
       }
       {
         name = "build";
