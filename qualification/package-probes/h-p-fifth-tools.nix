@@ -51,13 +51,15 @@ in {
           "-c"
           ''
             set -eu
-            "@out@/bin/ncat" -l -U channel.sock > received.txt &
+            # The listener's inherited stdin is already at EOF. Keep it
+            # receiving until the sender closes the socket after its payload.
+            "@out@/bin/ncat" --recv-only -l -U channel.sock > received.txt &
             listener=$!
             for attempt in 1 2 3 4 5 6 7 8 9 10; do
               test -S channel.sock && break
               read -r -t 0.05 ignored || true
             done
-            printf 'answer=42\n' | "@out@/bin/ncat" -U channel.sock
+            printf 'answer=42\n' | "@out@/bin/ncat" --send-only -U channel.sock
             wait "$listener"
           ''
         ];
