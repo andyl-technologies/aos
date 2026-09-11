@@ -285,9 +285,7 @@ fn validate_session_contract(
 ) -> Result<(), OwnershipResumeError> {
     let request_bound = usize::try_from(session.maximum_request_bytes())
         .map_err(|_| OwnershipResumeError::SessionContract)?;
-    if (session.version() != ProtocolVersion::new(1, 0)
-        && session.version() != ProtocolVersion::new(1, 1))
-        || session.version().minor() < claim.action().minimum_protocol_version().minor()
+    if session.version() != ProtocolVersion::new(1, 0)
         || session.authority() != expected_authority
         || session.methods() != REQUIRED_METHODS
         || session.maximum_request_bytes() != MAXIMUM_OWNERSHIP_REQUEST_BYTES

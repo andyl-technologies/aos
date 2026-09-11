@@ -433,9 +433,9 @@ impl ProtocolVersion {
 
 /// Negotiates one protocol independently from every other compatibility domain.
 ///
-/// Host, Mount, Storage, and Network have single exact baselines. Other domains
-/// retain their existing same-major compatibility policy until their
-/// independent cutovers.
+/// Host, Mount, Storage, Network, and Ownership have single exact baselines.
+/// Other domains retain their existing same-major compatibility policy until
+/// their independent cutovers.
 ///
 /// # Errors
 ///
@@ -452,6 +452,7 @@ pub fn negotiate_protocol(
             | ProtocolId::MountBroker
             | ProtocolId::StorageBroker
             | ProtocolId::NetworkBroker
+            | ProtocolId::OwnershipAuthority
     ) {
         offered == local
     } else {
@@ -476,7 +477,7 @@ const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
         ProtocolId::MountBroker => ProtocolVersion::new(1, 0),
         ProtocolId::StorageBroker => ProtocolVersion::new(1, 0),
         ProtocolId::NetworkBroker => ProtocolVersion::new(1, 0),
-        ProtocolId::OwnershipAuthority => ProtocolVersion::new(1, 1),
+        ProtocolId::OwnershipAuthority => ProtocolVersion::new(1, 0),
         ProtocolId::PublicApi
         | ProtocolId::PublisherAuthority
         | ProtocolId::CoordinatorNode
@@ -638,10 +639,12 @@ mod tests {
             negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 0)),
             Ok(ProtocolVersion::new(1, 0))
         );
-        assert_eq!(
-            negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 1)),
-            Ok(ProtocolVersion::new(1, 1))
-        );
+        for version in [ProtocolVersion::new(1, 1), ProtocolVersion::new(2, 0)] {
+            assert!(matches!(
+                negotiate_protocol(ProtocolId::OwnershipAuthority, version),
+                Err(RegistryError::IncompatibleProtocol { .. })
+            ));
+        }
         assert_eq!(
             negotiate_protocol(ProtocolId::StorageBroker, ProtocolVersion::new(1, 0)),
             Ok(ProtocolVersion::new(1, 0))
@@ -668,10 +671,6 @@ mod tests {
         ));
         assert!(matches!(
             negotiate_protocol(ProtocolId::CoordinatorNode, ProtocolVersion::new(1, 1)),
-            Err(RegistryError::IncompatibleProtocol { .. })
-        ));
-        assert!(matches!(
-            negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 2)),
             Err(RegistryError::IncompatibleProtocol { .. })
         ));
     }

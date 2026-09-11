@@ -254,8 +254,8 @@ reassignment. Multi-node enablement requires the ownership authority and
 endpoint fencing tests; the exact consensus implementation is replaceable,
 not optional semantics.
 
-The transport-neutral ownership-authority protocol is independently versioned
-as 1.1, retaining 1.0 sessions for acquire and renew. `Begin` durably admits one
+The transport-neutral ownership-authority protocol has the exact 1.0 baseline.
+`Begin` durably admits one
 exact canonical acquire, renew, or same-owner advance claim;
 `CompleteOrResume` explicitly drives or resumes the admitted operation; and
 `Query` observes the exact request-ID/claim-digest binding. Query reports
@@ -264,7 +264,7 @@ exact canonical acquire, renew, or same-owner advance claim;
 transaction receipt, and receipt signature. Replays and recovered completions
 are authenticated historical artifacts, not present effect authority.
 
-Protocol 1.1 adds the distinct `Advance` action. It compare-and-swaps the exact
+The distinct `Advance` action compare-and-swaps the exact
 prior lease generation and digest while keeping node, sandbox, incarnation,
 and assignment epoch unchanged. Desired generation must strictly increase and
 assignment digest must change. The resulting signed receipt binds the new
@@ -281,13 +281,9 @@ claiming the new generation is observed. Node, incarnation, or epoch changes
 require a separate fenced ownership transition; `Advance` cannot authorize
 migration or satisfy its endpoint-fencing obligations.
 
-The fixed claim retains its V1 framing with action code `3` for advancement;
-old readers reject that unknown action. Advance receipts bind protocol 1.1;
-acquire and renew receipts retain their exact 1.0 encoding, even in a 1.1
-session. A 1.0 session rejects advance Begin requests and cannot query or
-complete retained advance transactions. Existing V2 ownership journals retain
-their encoding; older programs fail closed on entries containing the new
-action rather than reinterpret or discard them.
+The fixed V1 claim uses action code `3` for advancement. Every receipt action
+binds the exact protocol 1.0 baseline, and every 1.0 session admits all three
+actions.
 
 Negotiation pins the exact ownership-authority key generation, canonical
 method set, request/response bounds, and maximum lease duration. Each client
@@ -310,11 +306,10 @@ CompleteOrResume, and Query. A caller-supplied clock sample can authenticate
 artifacts but is not a protected clock capability; privileged effect admission
 must independently verify current time and all broker fences.
 
-The first implementation that retains transaction receipts uses the V2
-ownership journal. It does not reinterpret the previously committed V1 bytes.
-Finding any V1 ownership entry or current pointer fails with
-`MigrationRequired`; an explicit authenticated migration must move that state
-before V2 reads or writes proceed.
+The ownership journal uses one V1 authority-state schema for transaction
+receipts, pending intents, completed responses, and current pointers. Unknown
+namespaces, key shapes, magic, versions, and malformed cross-links are corrupt
+state rather than alternate formats.
 
 Controller publication uses an independently versioned V3 format in its own
 `AuthorityPublication` journal namespace. V3 retains a permanent prepared

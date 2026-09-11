@@ -1,8 +1,6 @@
-//! Signed same-owner transition, crash recovery, and version-downgrade regressions.
+//! Signed same-owner transition and crash-recovery regressions.
 
 use super::*;
-use aos_sandbox_ownership_protocol::protocol::OwnershipProtocolErrorCodeV1;
-
 fn advance_claim(request: u8, prior: &RecoveredOwnershipLease) -> OwnershipClaimV1 {
     let previous = prior.assignment();
     OwnershipClaimV1::advance(
@@ -55,10 +53,6 @@ fn advance_has_a_distinct_claim_and_receipt_without_reinterpreting_renewal() {
         OwnershipClaimV1::from_canonical_bytes(claim.canonical_bytes()).unwrap(),
         claim
     );
-    assert_eq!(
-        claim.action().minimum_protocol_version(),
-        ProtocolVersion::new(1, 1)
-    );
     store.begin(&claim).unwrap();
     let response = store
         .complete(*claim.request_id(), &mut issuer, &mut || {
@@ -67,7 +61,7 @@ fn advance_has_a_distinct_claim_and_receipt_without_reinterpreting_renewal() {
         .unwrap();
     let receipt = OwnershipTransactionReceiptV1::from_canonical_bytes(response.receipt()).unwrap();
     assert_eq!(receipt.action(), OwnershipClaimAction::Advance);
-    assert_eq!(&receipt.canonical_bytes()[14..17], &[0, 1, 3]);
+    assert_eq!(&receipt.canonical_bytes()[14..17], &[0, 0, 3]);
     let verified = fixture(42)
         .verifier
         .verify_response(&claim, response.clone(), &test_clock(150))
@@ -76,9 +70,9 @@ fn advance_has_a_distinct_claim_and_receipt_without_reinterpreting_renewal() {
     assert_eq!(verified.assignment(), claim.assignment());
     assert!(verified.generation() > prior.generation());
 
-    let mut downgraded = receipt.canonical_bytes().to_vec();
-    downgraded[15] = 0;
-    assert!(OwnershipTransactionReceiptV1::from_canonical_bytes(&downgraded).is_err());
+    let mut wrong_protocol = receipt.canonical_bytes().to_vec();
+    wrong_protocol[15] = 1;
+    assert!(OwnershipTransactionReceiptV1::from_canonical_bytes(&wrong_protocol).is_err());
     let mut unknown = claim.canonical_bytes().to_vec();
     unknown[10] = 4;
     assert!(OwnershipClaimV1::from_canonical_bytes(&unknown).is_err());
@@ -403,7 +397,7 @@ fn signed_but_invalid_historical_advances_cannot_become_a_recovered_head() {
     }
 }
 
-pub(super) fn session(authority: &KeyReference, minor: u16) -> NegotiatedOwnershipSessionV1 {
+pub(super) fn session(authority: &KeyReference) -> NegotiatedOwnershipSessionV1 {
     let methods = vec![
         OwnershipMethodV1::Begin,
         OwnershipMethodV1::CompleteOrResume,
@@ -411,7 +405,7 @@ pub(super) fn session(authority: &KeyReference, minor: u16) -> NegotiatedOwnersh
     ];
     let hello = OwnershipClientHelloV1::new(
         [71; 32],
-        ProtocolVersion::new(1, minor),
+        ProtocolVersion::new(1, 0),
         authority.clone(),
         methods.clone(),
         MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
@@ -421,32 +415,20 @@ pub(super) fn session(authority: &KeyReference, minor: u16) -> NegotiatedOwnersh
 }
 
 #[test]
-fn version_one_zero_cannot_submit_observe_or_resume_advance_transactions() {
+fn baseline_session_submits_observes_and_resumes_advance_transactions() {
     let directory = TestDirectory::new("advance-session");
     let (mut store, mut issuer, prior) = acquired_store(&directory.journal());
-    let old_session = session(&issuer.authority, 0);
-    let new_session = session(&issuer.authority, 1);
+    let session = session(&issuer.authority);
     let claim = advance_claim(7, &prior);
     let reference = OwnershipTransactionReferenceV1::from_claim(&claim);
     let body = OwnershipRequestBodyV1::Begin(Box::new(claim.clone()));
-    assert_eq!(
-        old_session.request(body.clone()),
-        Err(OwnershipProtocolValidationError::IncompatibleProtocol)
-    );
-    assert_eq!(
-        old_session.validate_request_parts(
-            *old_session.binding(),
-            OwnershipMethodV1::Begin,
-            body.clone()
-        ),
-        Err(OwnershipProtocolValidationError::IncompatibleProtocol)
-    );
-    let begin = new_session.request(body).unwrap();
+    let begin = session.request(body).unwrap();
     let mut clock = || Ok(test_clock(150));
     let calls = issuer.calls.clone();
+    let calls_before_transaction = calls.get();
     {
         let mut service = crate::DurableOwnershipProtocolService::new(
-            new_session.clone(),
+            session.clone(),
             &mut store,
             &mut issuer,
             &mut clock,
@@ -457,43 +439,36 @@ fn version_one_zero_cannot_submit_observe_or_resume_advance_transactions() {
             &OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Pending)
         );
     }
-    for completed in [false, true] {
-        if completed {
-            let mut service = crate::DurableOwnershipProtocolService::new(
-                new_session.clone(),
-                &mut store,
-                &mut issuer,
-                &mut clock,
-            )
-            .unwrap();
-            let request = new_session
-                .request(OwnershipRequestBodyV1::CompleteOrResume(reference))
-                .unwrap();
-            assert!(matches!(
-                service.handle(&request).unwrap().outcome(),
-                OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Completed(_))
-            ));
-        }
-        let before = calls.get();
-        let mut service = crate::DurableOwnershipProtocolService::new(
-            old_session.clone(),
-            &mut store,
-            &mut issuer,
-            &mut clock,
-        )
+    let mut service = crate::DurableOwnershipProtocolService::new(
+        session.clone(),
+        &mut store,
+        &mut issuer,
+        &mut clock,
+    )
+    .unwrap();
+    let query = session
+        .request(OwnershipRequestBodyV1::Query(reference))
         .unwrap();
-        for body in [
-            OwnershipRequestBodyV1::Query(reference),
-            OwnershipRequestBodyV1::CompleteOrResume(reference),
-        ] {
-            let request = old_session.request(body).unwrap();
-            assert_eq!(
-                service.handle(&request).unwrap().outcome(),
-                &OwnershipResponseOutcomeV1::Error(
-                    OwnershipProtocolErrorCodeV1::RequiredCapabilityUnavailable
-                )
-            );
-            assert_eq!(calls.get(), before);
-        }
-    }
+    assert_eq!(
+        service.handle(&query).unwrap().outcome(),
+        &OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Pending)
+    );
+    assert_eq!(calls.get(), calls_before_transaction);
+    let complete = session
+        .request(OwnershipRequestBodyV1::CompleteOrResume(reference))
+        .unwrap();
+    assert!(matches!(
+        service.handle(&complete).unwrap().outcome(),
+        OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Completed(_))
+    ));
+    assert_eq!(calls.get(), calls_before_transaction + 1);
+
+    let replay = session
+        .request(OwnershipRequestBodyV1::Query(reference))
+        .unwrap();
+    assert!(matches!(
+        service.handle(&replay).unwrap().outcome(),
+        OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Completed(_))
+    ));
+    assert_eq!(calls.get(), calls_before_transaction + 1);
 }

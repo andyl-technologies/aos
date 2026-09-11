@@ -27,9 +27,6 @@
 //!
 //! [`protocol`] defines the bounded transport-neutral V1 transaction
 //! semantics. It intentionally defines no socket framing or remote carrier.
-//! Protocol 1.1 adds same-owner assignment advancement as action 3. Existing
-//! acquire/renew encodings remain byte-exact; advance receipts alone require
-//! protocol minor 1, and 1.0 sessions cannot admit the new action.
 
 pub mod protocol;
 
@@ -61,6 +58,7 @@ const RECEIPT_MAGIC: &[u8; 8] = b"AOSOTR1\0";
 const RECEIPT_VERSION: u16 = 1;
 const RECEIPT_PROTOCOL_CODE: u16 = 1;
 const RECEIPT_PROTOCOL_MAJOR: u16 = 1;
+const RECEIPT_PROTOCOL_MINOR: u16 = 0;
 const RECEIPT_FIXED_BYTES: usize = 154;
 
 /// Selects acquisition, exact renewal, or a same-owner assignment advance.
@@ -72,7 +70,7 @@ pub enum OwnershipClaimAction {
     Renew,
     /// Advances desired assignment semantics on the same node, incarnation, and epoch.
     ///
-    /// Protocol 1.1 requires an exact prior lease fence, a strictly greater
+    /// Advancement requires an exact prior lease fence, a strictly greater
     /// desired generation, and a different assignment digest. This is not
     /// ownership transfer and does not admit another node or incarnation.
     Advance,
@@ -94,18 +92,6 @@ impl OwnershipClaimAction {
             3 => Ok(Self::Advance),
             _ => Err(OwnershipClaimError::InvalidEncoding),
         }
-    }
-
-    /// Returns the earliest protocol version that admits this action.
-    #[must_use]
-    pub const fn minimum_protocol_version(self) -> aos_sandbox_core::ProtocolVersion {
-        aos_sandbox_core::ProtocolVersion::new(
-            1,
-            match self {
-                Self::Acquire | Self::Renew => 0,
-                Self::Advance => 1,
-            },
-        )
     }
 }
 
@@ -214,7 +200,8 @@ impl OwnershipClaimV1 {
     /// transaction: node, sandbox, incarnation, and epoch remain equal;
     /// desired generation strictly increases and assignment digest changes.
     /// The claim alone does not prove those preconditions or grant authority.
-    /// A protocol 1.0 session cannot submit or resume this action.
+    /// Protocol 1.0 admits the claim through `Begin` and supports exact
+    /// observation and resumption through `Query` and `CompleteOrResume`.
     ///
     /// # Errors
     ///
@@ -499,12 +486,12 @@ impl OwnershipTransactionReceiptV1 {
         {
             return Err(OwnershipReceiptError::InvalidEncoding);
         }
-        let protocol_minor = u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?);
+        if u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?) != RECEIPT_PROTOCOL_MINOR {
+            return Err(OwnershipReceiptError::InvalidEncoding);
+        }
         let action = OwnershipClaimAction::from_code(receipt_take::<1>(bytes, &mut cursor)?[0])
             .map_err(|_| OwnershipReceiptError::InvalidEncoding)?;
-        if protocol_minor != action.minimum_protocol_version().minor()
-            || receipt_take::<7>(bytes, &mut cursor)? != [0; 7]
-        {
+        if receipt_take::<7>(bytes, &mut cursor)? != [0; 7] {
             return Err(OwnershipReceiptError::InvalidEncoding);
         }
         let key_id_length = usize::from(u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?));
@@ -740,7 +727,7 @@ pub trait OwnershipAuthority {
     /// and assignment digest must change. The issued lease generation must
     /// advance. This method cannot implement migration or reuse renewal to
     /// bypass its unchanged-semantics contract. Exact replay returns the
-    /// original four artifacts, including the protocol 1.1 receipt.
+    /// original four artifacts, including the signed receipt.
     ///
     /// # Errors
     ///
@@ -1405,7 +1392,7 @@ fn encode_receipt(
     bytes.extend_from_slice(&RECEIPT_VERSION.to_be_bytes());
     bytes.extend_from_slice(&RECEIPT_PROTOCOL_CODE.to_be_bytes());
     bytes.extend_from_slice(&RECEIPT_PROTOCOL_MAJOR.to_be_bytes());
-    bytes.extend_from_slice(&action.minimum_protocol_version().minor().to_be_bytes());
+    bytes.extend_from_slice(&RECEIPT_PROTOCOL_MINOR.to_be_bytes());
     bytes.push(action.code());
     bytes.extend_from_slice(&[0; 7]);
     bytes.extend_from_slice(&(key_id.len() as u16).to_be_bytes());

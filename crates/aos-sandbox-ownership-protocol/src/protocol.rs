@@ -7,9 +7,8 @@
 //! it therefore carries no evidence that issuance has not occurred. A
 //! completed result returns exact canonical artifacts but does not establish
 //! present lease liveness.
-//! Protocol minor 1 adds same-owner advance claims; minor 0 admits only acquire
-//! and renewal. Reference-only follow-ups require the service to check the
-//! retained action against the negotiated version before observation or issuance.
+//! The exact protocol 1.0 baseline admits acquire, renewal, and same-owner
+//! advance claims.
 //!
 //! This module deliberately does not choose a byte carrier. A local
 //! `SOCK_SEQPACKET` adapter and a future authenticated remote adapter must both
@@ -579,9 +578,7 @@ impl NegotiatedOwnershipSessionV1 {
     /// # Errors
     ///
     /// Returns [`OwnershipProtocolValidationError::MethodUnavailable`] when
-    /// the body selects a method outside the negotiated set, or
-    /// [`OwnershipProtocolValidationError::IncompatibleProtocol`] when its
-    /// claim requires a newer protocol minor.
+    /// the body selects a method outside the negotiated set.
     pub fn request(
         &self,
         body: OwnershipRequestBodyV1,
@@ -590,7 +587,6 @@ impl NegotiatedOwnershipSessionV1 {
         if !self.methods.contains(&method) {
             return Err(OwnershipProtocolValidationError::MethodUnavailable);
         }
-        self.validate_body_version(&body)?;
         OwnershipRequestEnvelopeV1::from_parts(self.binding, method, body)
     }
 
@@ -598,8 +594,7 @@ impl NegotiatedOwnershipSessionV1 {
     ///
     /// # Errors
     ///
-    /// Rejects a wrong transcript, unnegotiated method, method/body mismatch,
-    /// or a claim action requiring a newer protocol minor.
+    /// Rejects a wrong transcript, unnegotiated method, or method/body mismatch.
     pub fn validate_request_parts(
         &self,
         binding: [u8; 32],
@@ -612,20 +607,7 @@ impl NegotiatedOwnershipSessionV1 {
         if !self.methods.contains(&method) {
             return Err(OwnershipProtocolValidationError::MethodUnavailable);
         }
-        self.validate_body_version(&body)?;
         OwnershipRequestEnvelopeV1::from_parts(binding, method, body)
-    }
-
-    fn validate_body_version(
-        &self,
-        body: &OwnershipRequestBodyV1,
-    ) -> Result<(), OwnershipProtocolValidationError> {
-        if let OwnershipRequestBodyV1::Begin(claim) = body
-            && claim.action().minimum_protocol_version().minor() > self.version.minor()
-        {
-            return Err(OwnershipProtocolValidationError::IncompatibleProtocol);
-        }
-        Ok(())
     }
 
     /// Constructs a trusted server-side response bound to this negotiated session.
@@ -1248,17 +1230,19 @@ mod tests {
     }
 
     #[test]
-    fn negotiation_rejects_newer_version_and_missing_method() {
-        assert_eq!(
-            OwnershipClientHelloV1::new(
-                [11; 32],
-                ProtocolVersion::new(1, 2),
-                authority(1, 1),
-                methods(),
-                MINIMUM_OWNERSHIP_RESPONSE_BYTES,
-            ),
-            Err(OwnershipProtocolValidationError::IncompatibleProtocol)
-        );
+    fn negotiation_rejects_non_baseline_versions_and_missing_method() {
+        for version in [ProtocolVersion::new(1, 1), ProtocolVersion::new(2, 0)] {
+            assert_eq!(
+                OwnershipClientHelloV1::new(
+                    [11; 32],
+                    version,
+                    authority(1, 1),
+                    methods(),
+                    MINIMUM_OWNERSHIP_RESPONSE_BYTES,
+                ),
+                Err(OwnershipProtocolValidationError::IncompatibleProtocol)
+            );
+        }
         let pinned = authority(2, 1);
         let hello = OwnershipClientHelloV1::new(
             [11; 32],

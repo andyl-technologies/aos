@@ -721,8 +721,8 @@ completes. The Git history remains authoritative for code details.
   binds that claim and exact lease so four-artifact replay cannot substitute a
   lease, signature, receipt, or authority epoch. Hostile carrier decoders have
   an explicit validation boundary, recovered and caller-clock-checked artifacts
-  remain non-authorizing, and the durable authority plus controller publication
-  use distinct V2 formats that reject legacy V1 state with `MigrationRequired`.
+  remain non-authorizing, the durable authority uses its sole V1 schema, and
+  controller publication uses a distinct fail-closed format.
   The normative fixed-binary profile and executable golden vectors agree. The
   focused suites pass 230 unit tests plus doctests, strict all-target Clippy,
   warning-denied rustdoc, formatting, and adversarial review.
@@ -2502,7 +2502,7 @@ and the full workspace test phase passed on retry without code changes.
 
 ### Same-owner signed assignment advancement
 
-Ownership protocol 1.1 adds a distinct `Advance` action for changing the
+Ownership protocol 1.0 includes a distinct `Advance` action for changing the
 assignment digest and increasing desired generation without changing node,
 sandbox, incarnation, or assignment epoch. It requires the exact prior lease
 generation/digest and a newer issued lease. Renewal still preserves assignment
@@ -2511,18 +2511,16 @@ generation. Admission, post-issuance validation, and historical chain recovery
 share the same transition rules; pending advancement excludes competing renewals
 and updates for that sandbox.
 
-Acquire/renew claim and receipt bytes remain unchanged. Advance claims use
-the previously unknown action code 3, and advance receipts require protocol
-minor 1. A 1.0 session cannot submit, query, or resume an advance transaction.
-Older journal readers reject the new action rather than reinterpret it.
+Advance claims use action code 3, and acquire, renew, and advance receipts all
+bind protocol minor 0. A 1.0 session can submit, query, and resume every action.
 Completed replay returns the original four artifacts without consulting an
 issuer or manufacturing current authority.
 
 Regression coverage includes exact claim/receipt version binding, malformed
 prior fences, owner and generation substitutions, signed but invalid historical
 chains, pending-operation conflicts, the external-issued/local-uncommitted
-crash window, renewal after advancement, compaction/reopen, and old-session
-rejection before issuance. The controller/in-process-service composition test
+crash window, renewal after advancement, compaction/reopen, and baseline-session
+transaction lifecycle. The controller/in-process-service composition test
 publishes a signed namespace target change from 8 to 9 at desired generation 8,
 reopens both journals, verifies the recovered current manifest and advance
 receipt, and replays both operations without contacting the issuer again.
@@ -2623,7 +2621,7 @@ authorized Host RootMount query.
 
 The Host query reuses the exact current publication plan and ownership lease,
 but only after controller verification finds its distinct RootMount grant.
-Signed authority stays at protocol 1.1 while the Host payload and RootMount
+Signed authority uses protocol 1.0 while the Host payload and RootMount
 carriers require 1.2 and 1.3 respectively; the controller and Host now agree on
 that split. The Mount client authenticates the actual response writer against a
 trusted service cgroup and accepts no descriptors or outer authorization.

@@ -783,7 +783,7 @@ where
     /// Verifies and binds the separately signed Mount plan for a prepared catalog.
     ///
     /// The plan must use the pinned controller trust anchor, current assignment
-    /// and ownership authority, Mount audience, authority protocol 1.1, and the
+    /// and ownership authority, Mount audience, authority protocol 1.0, and the
     /// exact catalog-dependent semantics returned by preparation. Success still
     /// performs no broker effect and writes no durable operation.
     ///

@@ -38,15 +38,11 @@ use crate::journal::{
 
 const MAXIMUM_LEASE_BYTES: usize = 64 * 1024;
 const MAXIMUM_SIGNATURE_BYTES: usize = 64 * 1024;
-const DURABLE_ENTRY_MAGIC: &[u8; 8] = b"AOSOWNE2";
-const DURABLE_CURRENT_MAGIC: &[u8; 8] = b"AOSOWNC2";
-const LEGACY_DURABLE_ENTRY_MAGIC: &[u8; 8] = b"AOSOWNE1";
-const LEGACY_DURABLE_CURRENT_MAGIC: &[u8; 8] = b"AOSOWNC1";
-const DURABLE_FORMAT_VERSION: u16 = 2;
-const DURABLE_ENTRY_PREFIX: &[u8] = b"ownership-entry-v2:";
-const DURABLE_CURRENT_PREFIX: &[u8] = b"ownership-current-v2:";
-const LEGACY_DURABLE_ENTRY_PREFIX: &[u8] = b"ownership-entry-v1:";
-const LEGACY_DURABLE_CURRENT_PREFIX: &[u8] = b"ownership-current-v1:";
+const DURABLE_ENTRY_MAGIC: &[u8; 8] = b"AOSOWNE1";
+const DURABLE_CURRENT_MAGIC: &[u8; 8] = b"AOSOWNC1";
+const DURABLE_FORMAT_VERSION: u16 = 1;
+const DURABLE_ENTRY_PREFIX: &[u8] = b"ownership-entry-v1:";
+const DURABLE_CURRENT_PREFIX: &[u8] = b"ownership-current-v1:";
 const MAXIMUM_DURABLE_ENTRY_BYTES: usize = 196 * 1024;
 const MAXIMUM_DURABLE_ENTRIES: usize = 256;
 const MAXIMUM_DURABLE_CURRENT_POINTERS: usize = MAXIMUM_DURABLE_ENTRIES;
@@ -73,8 +69,8 @@ const MAXIMUM_DURABLE_JOURNAL_BYTES: u64 = 72
             + MAXIMUM_DURABLE_KEY_BYTES as u64
             + 657);
 const MAXIMUM_DURABLE_TRANSACTIONS: usize = MAXIMUM_DURABLE_ENTRIES * 2;
-const BEGIN_TRANSACTION_DOMAIN: &[u8] = b"aos-sandbox-ownership-intent-transaction-v2\0";
-const COMPLETION_TRANSACTION_DOMAIN: &[u8] = b"aos-sandbox-ownership-completion-transaction-v2\0";
+const BEGIN_TRANSACTION_DOMAIN: &[u8] = b"aos-sandbox-ownership-intent-transaction-v1\0";
+const COMPLETION_TRANSACTION_DOMAIN: &[u8] = b"aos-sandbox-ownership-completion-transaction-v1\0";
 
 /// Reports durable ownership-authority state or recovery failure.
 #[derive(Debug, thiserror::Error)]
@@ -85,9 +81,6 @@ pub enum DurableOwnershipAuthorityError {
     /// Durable records do not form one authenticated linear ownership chain.
     #[error("durable ownership authority state is malformed or inconsistent")]
     CorruptState,
-    /// Durable V1 state exists and requires an explicit authenticated migration.
-    #[error("durable ownership authority V1 state requires migration")]
-    MigrationRequired,
     /// The request identity is already bound to another claim.
     #[error("durable ownership request identity is bound to another claim")]
     IdempotencyConflict,
@@ -172,10 +165,9 @@ struct DurableOwnershipEntry {
 /// transfer remain separate, unsupported operations. A completed assignment
 /// therefore remains owned for CAS purposes even after expiry.
 /// One journal is also pinned to exactly one authority key generation. Key
-/// rotation requires an explicit authenticated migration into a new journal;
-/// opening old mixed-generation history with a new verifier fails closed.
-/// Durable encoding and namespaces are V2; any V1 namespace or magic requires
-/// an explicit migration and is never treated as absent state.
+/// rotation requires an explicit authenticated transfer into a new journal;
+/// opening mixed-generation history with a new verifier fails closed.
+/// Durable encoding and namespaces use the sole V1 authority-state schema.
 pub struct DurableOwnershipAuthority {
     journal: Journal,
     verifier: OwnershipAuthorityVerifier,
@@ -254,20 +246,6 @@ impl DurableOwnershipAuthority {
                 DurableOwnershipQueryOutcome::Completed(Box::new(lease.exact_response()))
             }
         })
-    }
-
-    /// Checks the exact transaction binding before session-version admission.
-    pub(crate) fn transaction_action(
-        &self,
-        reference: OwnershipTransactionReferenceV1,
-    ) -> Result<Option<OwnershipClaimAction>, DurableOwnershipAuthorityError> {
-        let Some(entry) = self.entries.get(reference.request_id()) else {
-            return Ok(None);
-        };
-        if entry.claim.digest() != reference.claim_digest() {
-            return Err(DurableOwnershipAuthorityError::IdempotencyConflict);
-        }
-        Ok(Some(entry.claim.action()))
     }
 
     /// Durably records one unsigned ownership transaction intent.
@@ -549,9 +527,6 @@ fn decode_durable_entry(
     bytes: &[u8],
     verifier: &OwnershipAuthorityVerifier,
 ) -> Result<DurableOwnershipEntry, DurableOwnershipAuthorityError> {
-    if bytes.starts_with(LEGACY_DURABLE_ENTRY_MAGIC) {
-        return Err(DurableOwnershipAuthorityError::MigrationRequired);
-    }
     if key.len() != DURABLE_ENTRY_PREFIX.len() + 16
         || !key.starts_with(DURABLE_ENTRY_PREFIX)
         || bytes.len() > MAXIMUM_DURABLE_ENTRY_BYTES
@@ -681,9 +656,6 @@ fn decode_current_pointer(
     key: &[u8],
     bytes: &[u8],
 ) -> Result<(SandboxId, [u8; 16], u64, ObjectDigest), DurableOwnershipAuthorityError> {
-    if bytes.starts_with(LEGACY_DURABLE_CURRENT_MAGIC) {
-        return Err(DurableOwnershipAuthorityError::MigrationRequired);
-    }
     if key.len() != DURABLE_CURRENT_PREFIX.len() + 16
         || !key.starts_with(DURABLE_CURRENT_PREFIX)
         || bytes.len() != 66
@@ -729,9 +701,6 @@ fn recover_durable_ownership(
         if entries.len() >= MAXIMUM_DURABLE_ENTRIES {
             return Err(DurableOwnershipAuthorityError::CorruptState);
         }
-        if key.starts_with(LEGACY_DURABLE_ENTRY_PREFIX) {
-            return Err(DurableOwnershipAuthorityError::MigrationRequired);
-        }
         if !key.starts_with(DURABLE_ENTRY_PREFIX) {
             return Err(DurableOwnershipAuthorityError::CorruptState);
         }
@@ -744,9 +713,6 @@ fn recover_durable_ownership(
     for (key, value) in journal.records(RecordNamespace::DesiredState) {
         if pointers.len() >= MAXIMUM_DURABLE_CURRENT_POINTERS {
             return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-        if key.starts_with(LEGACY_DURABLE_CURRENT_PREFIX) {
-            return Err(DurableOwnershipAuthorityError::MigrationRequired);
         }
         if !key.starts_with(DURABLE_CURRENT_PREFIX) {
             return Err(DurableOwnershipAuthorityError::CorruptState);
@@ -2401,62 +2367,6 @@ mod tests {
     }
 
     #[test]
-    fn v1_durable_namespaces_require_migration_before_open_or_write() {
-        for (case, namespace, prefix, value) in [
-            (
-                1_u8,
-                RecordNamespace::Operation,
-                LEGACY_DURABLE_ENTRY_PREFIX,
-                vec![1],
-            ),
-            (
-                2_u8,
-                RecordNamespace::DesiredState,
-                LEGACY_DURABLE_CURRENT_PREFIX,
-                vec![2],
-            ),
-            (
-                3_u8,
-                RecordNamespace::Operation,
-                DURABLE_ENTRY_PREFIX,
-                LEGACY_DURABLE_ENTRY_MAGIC.to_vec(),
-            ),
-            (
-                4_u8,
-                RecordNamespace::DesiredState,
-                DURABLE_CURRENT_PREFIX,
-                LEGACY_DURABLE_CURRENT_MAGIC.to_vec(),
-            ),
-        ] {
-            let directory = TestDirectory::new(&format!("legacy-v1-{case}"));
-            let path = directory.journal();
-            let mut key = prefix.to_vec();
-            key.extend_from_slice(&[case; 16]);
-            let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-            journal
-                .commit(
-                    &JournalTransaction::new(
-                        [case; 16],
-                        vec![JournalRecord::put(namespace, key, value)],
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-            drop(journal);
-
-            assert!(matches!(
-                open_test_store(&path, 44),
-                Err(DurableOwnershipAuthorityError::MigrationRequired)
-            ));
-            let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-            assert!(matches!(
-                DurableOwnershipAuthority::from_journal(journal, fixture(44).verifier),
-                Err(DurableOwnershipAuthorityError::MigrationRequired)
-            ));
-        }
-    }
-
-    #[test]
     fn malformed_signature_response_is_rejected_before_verification() {
         assert_eq!(
             UnverifiedOwnershipLeaseResponse::from_transport(
@@ -2905,26 +2815,7 @@ mod tests {
             CompositionCompiler,
             reconciler,
         );
-        {
-            let mut old_client = crate::InProcessOwnershipSessionClient::new(
-                session.clone(),
-                &mut authority_store,
-                &mut issuer,
-                &mut protected_clock,
-            )
-            .unwrap();
-            assert!(matches!(
-                controller.resume_ownership(
-                    advance_operation,
-                    &mut old_client,
-                    &controller_verifier,
-                    &mut || panic!("version rejection sampled time"),
-                ),
-                Err(crate::OwnershipResumeError::SessionContract)
-            ));
-        }
-        assert_eq!(issuer_calls.get(), 1);
-        let advanced_session = advance::session(&issuer.authority, 1);
+        let advanced_session = session.clone();
         {
             let mut client = crate::InProcessOwnershipSessionClient::new(
                 advanced_session.clone(),
