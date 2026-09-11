@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   buildPackages,
   gnumake,
   pkg-config,
@@ -61,7 +63,13 @@ in
       }
       {
         name = "configure";
-        script = ''./configure $configureFlags --prefix="$out"'';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # The test executables run on the target, so their Check library
+            # must not come from the native build dependency splice.
+            export PKG_CONFIG_PATH=${check}/lib/pkgconfig:$PKG_CONFIG_PATH
+          ''
+          + ''./configure $configureFlags --prefix="$out"'';
       }
       {
         name = "build";
