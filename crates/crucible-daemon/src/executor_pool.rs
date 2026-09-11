@@ -2375,11 +2375,27 @@ where
 
     let candidates = collect_finding_exact_candidates(shared, &scenario, configuration, captured)?;
 
+    select_finding_exact_retention_from_candidates(prepared.result(), captured, &candidates)
+}
+
+/// Selects policy-bound exact pins from an authenticated candidate inventory.
+pub(crate) fn select_finding_exact_retention_from_candidates(
+    result: &crate::PreparedSemanticAttemptResult,
+    captured: ExactCheckpointId,
+    candidates: &BTreeMap<ExactCheckpointId, u64>,
+) -> Result<
+    (
+        FindingExactPins,
+        u32,
+        crucible_campaign::FindingExactRetentionEvidence,
+    ),
+    FindingExactRetentionIncomplete,
+> {
     let failure_events = candidates
         .get(&captured)
         .copied()
         .ok_or(FindingExactRetentionIncomplete::CandidateAuthenticationFailed)?;
-    let measurement_events = match prepared.result().observation().observation().stop() {
+    let measurement_events = match result.observation().observation().stop() {
         crucible_campaign::StopOutcome::ObservationReached(proof) => {
             Some(proof.boundary().start_events())
         }
@@ -2388,8 +2404,7 @@ where
     let boundaries = crate::FindingExactPinBoundaries::new(failure_events, measurement_events)
         .map_err(|_| FindingExactRetentionIncomplete::SelectionFailed)?;
     let pins = crate::exact_pin_retention::select_finding_exact_pins_from_event_counts(
-        boundaries,
-        &candidates,
+        boundaries, candidates,
     )
     .map_err(|_| FindingExactRetentionIncomplete::SelectionFailed)?;
     let authenticated_candidates = u32::try_from(candidates.len())
@@ -2460,7 +2475,8 @@ where
     candidates.finish()
 }
 
-struct FindingExactCandidateAccumulator<'a> {
+/// Authenticates and bounds exact checkpoints considered for finding retention.
+pub(crate) struct FindingExactCandidateAccumulator<'a> {
     checkpoints: &'a ExactCheckpointStore,
     scenario: &'a crucible::ScenarioDefForm,
     configuration: crucible_campaign::ConfigurationId,
@@ -2472,7 +2488,8 @@ struct FindingExactCandidateAccumulator<'a> {
 }
 
 impl<'a> FindingExactCandidateAccumulator<'a> {
-    fn new(
+    /// Creates an empty candidate inventory bound to one finding configuration.
+    pub(crate) fn new(
         checkpoints: &'a ExactCheckpointStore,
         scenario: &'a crucible::ScenarioDefForm,
         configuration: crucible_campaign::ConfigurationId,
@@ -2489,7 +2506,8 @@ impl<'a> FindingExactCandidateAccumulator<'a> {
         }
     }
 
-    fn consider(&mut self, checkpoint: ExactCheckpointId) {
+    /// Authenticates one checkpoint and retains it when it belongs to this finding.
+    pub(crate) fn consider(&mut self, checkpoint: ExactCheckpointId) {
         // New finding evidence is independently verifiable only for the
         // manifest/index production representation.
         if checkpoint.content_id().schema_version() != crate::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION {
@@ -2549,7 +2567,10 @@ impl<'a> FindingExactCandidateAccumulator<'a> {
         self.candidates.insert(checkpoint, events);
     }
 
-    fn finish(self) -> Result<BTreeMap<ExactCheckpointId, u64>, FindingExactRetentionIncomplete> {
+    /// Returns the bounded authenticated inventory or its stable incomplete reason.
+    pub(crate) fn finish(
+        self,
+    ) -> Result<BTreeMap<ExactCheckpointId, u64>, FindingExactRetentionIncomplete> {
         if self.candidate_limit {
             return Err(FindingExactRetentionIncomplete::CandidateLimitExceeded);
         }
@@ -2982,4 +3003,4 @@ mod reconciliation;
 use reconciliation::*;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

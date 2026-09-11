@@ -218,6 +218,7 @@ pub(crate) struct PreparedFindingRecoveryFixture {
     pub(crate) lineage: CampaignLineage,
     pub(crate) attempt: crucible_campaign::AttemptId,
     pub(crate) observation: ObservationCandidate,
+    pub(crate) unbound_result: PreparedSemanticAttemptResult,
     pub(crate) result: PreparedSemanticAttemptResult,
     pub(crate) replay_capture_child: ContentId,
 }
@@ -445,6 +446,7 @@ pub(crate) fn prepared_finding_recovery_fixture(
     let mut result =
         PreparedSemanticAttemptResult::new(observation_candidate.clone(), Some(finding))
             .expect("prepare recovery semantic result");
+    let unbound_result = result.clone();
     let exact_pins = FindingExactPins::new(
         BTreeSet::new(),
         BTreeSet::new(),
@@ -484,6 +486,7 @@ pub(crate) fn prepared_finding_recovery_fixture(
         lineage,
         attempt,
         observation: observation_candidate,
+        unbound_result,
         result,
         replay_capture_child,
     }

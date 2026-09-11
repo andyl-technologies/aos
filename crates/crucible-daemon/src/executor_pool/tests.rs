@@ -111,10 +111,16 @@ fn repository_worker_drains_native_cleanup_after_successful_model_execution() {
         epoch,
         lineage.id().expect("lineage ID"),
         admitted.attempt,
-        AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000).expect("resources"),
+        AttemptResourceLimits::new(1, 4096, 8192, 64).expect("resources"),
         ExecutionRetentionIntent::Discard,
     )
-    .expect("submit request");
+    .expect("submit request")
+    .with_retention_policy_basis(
+        repository
+            .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
+            .expect("retention policy basis"),
+    )
+    .expect("policy-bound submit request");
     let mut supervisor = LocalExecutorSupervisor::new(
         MemoryAssignmentLedger::default(),
         AllowAllAttemptAdmission,
@@ -208,21 +214,35 @@ fn assert_pool_drains_reconciliation_cleanup(failure: ReconciliationCleanupFailu
         resources,
         ExecutionRetentionIntent::Discard,
     )
-    .expect("submit request");
+    .expect("submit request")
+    .with_retention_policy_basis(
+        repository
+            .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
+            .expect("retention policy basis"),
+    )
+    .expect("policy-bound submit request");
     let profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
+    let executor_capacity = capacity();
     let supervisor = LocalExecutorSupervisor::new(
         MemoryAssignmentLedger::default(),
         RepositoryAttemptAdmission::new(Arc::clone(&repository), profile.clone()),
         epoch,
-        capacity(),
+        executor_capacity,
     );
+    let resource_ceiling = AttemptResourceLimits::new(
+        executor_capacity.maximum_vcpus(),
+        executor_capacity.maximum_resident_bytes(),
+        executor_capacity.maximum_disk_bytes(),
+        executor_capacity.maximum_execution_quanta(),
+    )
+    .expect("executor resource ceiling");
     let capabilities = ExecutorCapabilitySet::new(
         profile,
         "x86_64",
         BTreeSet::from([String::from("deterministic-tcg-v1")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         1,
-        resources,
+        resource_ceiling,
         BTreeSet::from([CampaignHash::derive(
             "crucible.test.reconciliation-cleanup-namespace.v1",
             &[identity],
@@ -2318,7 +2338,13 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
         AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
         ExecutionRetentionIntent::Discard,
     )
-    .expect("submit request");
+    .expect("submit request")
+    .with_retention_policy_basis(
+        repository
+            .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
+            .expect("retention policy basis"),
+    )
+    .expect("policy-bound submit request");
     let journals = TempDir::new().expect("prepared-result journals");
     let (journal, _) = crate::DirectoryPreparedResultJournal::create(
         journals.path(),
@@ -2357,25 +2383,22 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
     .expect("prepared-result recovery pool");
     let mut service = pool.service();
     let accepted = service.submit_attempt(&request).expect("submit recovery");
-    let SubmitAttemptDisposition::Accepted { execution } = accepted.disposition() else {
+    let SubmitAttemptDisposition::Accepted { .. } = accepted.disposition() else {
         panic!("recovery should receive a fresh supervisor execution")
     };
-    let status_request = GetAttemptExecutionRequest::new(&request, execution).expect("status");
     wait_until(Duration::from_secs(2), || {
-        service
-            .get_attempt_execution(&status_request)
-            .is_ok_and(|status| {
-                status.disposition() == GetAttemptExecutionDisposition::TerminalFailure
-            })
+        pool.service.shared.state.load(Ordering::Acquire) == POOL_POISONED
     });
     assert!(staged_root.exists());
 
     let report = service.report().expect("recovery report");
     assert_eq!(report.executions(), 0);
-    assert_eq!(report.terminal_stops(), 1);
-    assert_eq!(report.worker_panics(), 0);
-    pool.request_shutdown();
-    assert_eq!(pool.shutdown_and_join().expect("clean shutdown"), report);
+    assert_eq!(report.terminal_stops(), 0);
+    assert_eq!(report.worker_panics(), 1);
+    assert!(matches!(
+        pool.shutdown_and_join(),
+        Err(LocalExecutorPoolShutdownError::WorkerPanicked)
+    ));
 }
 
 #[test]
@@ -2398,7 +2421,13 @@ fn stable_journal_creation_failure_is_terminal_not_canceled() {
         AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
         ExecutionRetentionIntent::Discard,
     )
-    .expect("submit request");
+    .expect("submit request")
+    .with_retention_policy_basis(
+        repository
+            .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
+            .expect("retention policy basis"),
+    )
+    .expect("policy-bound submit request");
     let profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
     let supervisor = LocalExecutorSupervisor::new(
         MemoryAssignmentLedger::default(),
@@ -3238,7 +3267,7 @@ fn raw_pause_recovery_for_request(
     *recovery
 }
 
-fn campaign_attempt_fixture(
+pub(crate) fn campaign_attempt_fixture(
     repository: &CampaignRepository,
     name: &str,
 ) -> (
