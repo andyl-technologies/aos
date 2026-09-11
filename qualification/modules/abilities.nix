@@ -28,6 +28,7 @@
       "power-loss-after-external-effect-reconciles-after-boot"
       "fresh-receiving-authority-and-resource-incarnations"
       "retained-plan-journal-and-independent-service-observation"
+      "gc-after-crashed-unlocked-partial-activation-retains-recovery-set"
     ];
   };
   requiredRegressions = {
