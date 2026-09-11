@@ -61,7 +61,9 @@
         include = root / "include"
         library = root / "lib"
         if include.is_dir():
-            command.append("-I" + str(include))
+            # Runtime closures can contain build-tool headers. Keep the
+            # compiler's target libc ahead of these dependency search paths.
+            command.extend(["-idirafter", str(include)])
         if library.is_dir():
             command.extend(["-L" + str(library), "-Wl,-rpath," + str(library)])
     command.extend(${builtins.toJSON libraries} + ["-o", ${builtins.toJSON output}])
