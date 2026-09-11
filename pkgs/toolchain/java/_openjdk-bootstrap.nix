@@ -36,6 +36,7 @@
   extraPatches ? [],
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxArmCross = stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
   buildTools =
     if isDarwinCross
     then buildPackages
@@ -56,13 +57,20 @@
 
   # Boot Java executes build-time generators; target compilers still build the JVM.
   bootJdk =
-    if isDarwinCross || (stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64)
+    if isDarwinCross || isLinuxArmCross
     then builtins.getAttr "openjdk-${toString (major - 1)}" buildPackages
     else prevJdk;
+
+  # A matching native JDK assembles images without an auxiliary host JVM build.
   buildJdk =
-    if isDarwinCross
+    if isDarwinCross || isLinuxArmCross
     then builtins.getAttr "openjdk-${toString major}" buildPackages
     else null;
+  linuxBuildJdkFlag =
+    if isLinuxArmCross
+    then " --with-build-jdk=${buildJdk}"
+    else "";
+
   nativeMig =
     if isDarwinCross
     then
@@ -1162,7 +1170,7 @@ in
             # with pre-C23 native code whose empty parameter lists retain
             # their historical unspecified-argument meaning under C17.
             $CONFIG_SHELL configure \
-              --with-boot-jdk=${bootJdk} \
+              --with-boot-jdk=${bootJdk}${linuxBuildJdkFlag} \
               --enable-headless-only \
               --with-native-debug-symbols=none \
               --disable-warnings-as-errors \

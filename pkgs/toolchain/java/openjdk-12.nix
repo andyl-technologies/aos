@@ -59,4 +59,9 @@ in
     srcHash = "sha256-hJT6Om/+9ZDIa0AzeUIvMlEBvIZgdVfLJ8Z3TVlxC4Q=";
     prevJdk = openjdk-11;
     extraDarwinFrameworks = [java-native-foundation];
+    # GCC rejects the duplicated using declaration in the AArch64 interpreter.
+    extraPatches =
+      if stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64
+      then [./openjdk-patches/remove-duplicate-aarch64-using-jdk10.patch]
+      else [];
   }
