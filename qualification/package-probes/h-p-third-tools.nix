@@ -184,13 +184,68 @@ in {
 
   postgresql = mkCommandProbe {
     package = "postgresql";
-    primaryInput = "An empty directory for a UTF-8 PostgreSQL cluster using trust authentication.";
-    primaryOperation = "Initialize the cluster locally through initdb without locale discovery.";
-    primaryExpected = "PostgreSQL creates a version 18 data directory.";
+    primaryInput = "A local UTF-8 cluster with embedded Perl, Python, Tcl, and LLVM query execution.";
+    primaryOperation = "Start PostgreSQL on a private Unix socket, execute language functions and a JIT query, then stop it.";
+    primaryExpected = "All three language functions return 42, fuzzy matching succeeds, and the JIT query returns 5050.";
+    primaryFiles."runtime.py" = ''
+      import os
+      import pathlib
+      import subprocess
+      import shlex
+
+      root = pathlib.Path.cwd()
+      database = root / "database"
+      socket = root / "socket"
+      socket.mkdir()
+      environment = os.environ.copy()
+      environment.update({"HOME": str(root), "LC_ALL": "C", "PGHOST": str(socket), "PGDATABASE": "postgres"})
+
+      def run(program, *arguments):
+          result = subprocess.run(
+              ["@out@/bin/" + program, *arguments], env=environment,
+              text=True, capture_output=True, timeout=300,
+          )
+          assert result.returncode == 0, result.stdout + result.stderr
+          return result.stdout
+
+      run("initdb", "--no-locale", "--encoding=UTF8", "--auth=trust", "-D", str(database))
+      run("pg_ctl", "-D", str(database), "-l", str(root / "server.log"),
+          "-o", "-k " + str(socket) + " -c listen_addresses=" + shlex.quote(""), "-w", "start")
+      try:
+          result = run("psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-f", "runtime.sql")
+          assert result.splitlines() == ["42", "42", "42", "t", "t", "5050"], result
+      finally:
+          run("pg_ctl", "-D", str(database), "-m", "fast", "-w", "stop")
+      print("PostgreSQL language and JIT execution passed")
+    '';
+    primaryFiles."runtime.sql" = ''
+      CREATE EXTENSION plperl;
+      CREATE FUNCTION perl_add(integer, integer) RETURNS integer
+        AS $$return $_[0] + $_[1];$$ LANGUAGE plperl;
+      SELECT perl_add(20, 22);
+      CREATE EXTENSION plpython3u;
+      CREATE FUNCTION python_add(a integer, b integer) RETURNS integer
+        AS $$return a + b$$ LANGUAGE plpython3u;
+      SELECT python_add(20, 22);
+      CREATE EXTENSION pltcl;
+      CREATE FUNCTION tcl_add(integer, integer) RETURNS integer
+        AS $$return [expr {$1 + $2}]$$ LANGUAGE pltcl;
+      SELECT tcl_add(20, 22);
+      CREATE EXTENSION fuzzystrmatch;
+      SELECT soundex('Robert') = soundex('Rupert');
+      SELECT pg_jit_available();
+      SET jit = on;
+      SET jit_above_cost = 0;
+      SET jit_inline_above_cost = 0;
+      SET jit_optimize_above_cost = 0;
+      SELECT sum(value) FROM generate_series(1, 100) AS value;
+    '';
     primarySteps = [
       {
-        argv = ["@out@/bin/initdb" "--no-locale" "--encoding=UTF8" "--auth=trust" "-D" "@work@/primary/database"];
+        argv = ["@python@" "runtime.py"];
         exit_code = 0;
+        stdout.exact = "PostgreSQL language and JIT execution passed\n";
+        stderr.exact = "";
       }
     ];
     primaryArtifacts = [
