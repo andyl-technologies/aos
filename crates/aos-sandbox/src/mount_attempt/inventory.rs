@@ -782,10 +782,7 @@ mod tests {
         query_with_id_for_version(request_id, CARRIER_VERSION)
     }
 
-    fn query_with_id_for_version(
-        request_id: [u8; 16],
-        version: ProtocolVersion,
-    ) -> Vec<u8> {
+    fn query_with_id_for_version(request_id: [u8; 16], version: ProtocolVersion) -> Vec<u8> {
         InventoryMountsRequest {
             header: Some(RequestHeader {
                 protocol_major: version.major().into(),
