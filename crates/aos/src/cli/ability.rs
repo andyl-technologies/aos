@@ -84,7 +84,7 @@ pub struct AbilityDiagnosticArgs {
 
 #[derive(Args)]
 pub struct AbilityInspectArgs {
-    /// Read the canonical inspection bundle from this file
+    /// Read a canonical checked-plan bundle or public-reference input from this file
     pub bundle: PathBuf,
 
     /// Match an independently obtained digest; this does not assert current policy
@@ -95,7 +95,7 @@ pub struct AbilityInspectArgs {
     #[arg(long, value_enum)]
     pub format: Option<AbilityRenderFormat>,
 
-    /// Restrict output to one semantic graph projection
+    /// Restrict a checked-plan input to one semantic graph projection
     #[arg(long, value_enum)]
     pub projection: Option<AbilityProjection>,
 

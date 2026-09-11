@@ -37,6 +37,19 @@ effects out of portable model/validation/inspection code.
 | VM/fleet and release qualification | Existing test harnesses and qualification catalog | Production path is exercised with independent probes; fresh evidence binds exact subjects and required coverage; cached regression output is not release admission |
 | Optional Crucible instrumentation | AOS guest adapter and existing generic interfaces | Ordinary runtime needs no Crucible; enabled assertions/choices use the same execution; advanced campaign gates track PR #194 explicitly |
 
+The documentation and operator-tools row has concrete shared-inspector evidence
+in the current tree. One canonical public-reference input and bounded query
+produce byte-identical `aos.ability.reference-inspection-slice/v1` output in
+the CLI, release-scoped Hub renderer, and documentation language server. The
+slice preserves typed package and interface node identities, export and
+requirement relation meanings, query bounds, a public-only disclosure class,
+and stable limitation diagnostics. It contains no deployment configuration,
+provider assignment, grant, resource observation, or live authority claim.
+The Hub binds the source reference back to its indexed commit locator before
+inspection; the editor uses references already authenticated by its local or
+Hub loader. A prose-only regression preserves the checked graph and emits no
+reload or restart decision.
+
 The test chapters define the evidence needed for these rows. A schema fixture
 does not substitute for an enforcement test; an opaque legacy adapter does not
 establish typed guarantees; one supported provider does not establish semantic

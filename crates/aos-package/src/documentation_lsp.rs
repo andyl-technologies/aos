@@ -3,8 +3,9 @@
 //! The server uses standard JSON-RPC stdio framing and deliberately implements
 //! only documentation-owned semantics: full-text synchronization, option-path
 //! completion, hover, pull/push diagnostics, workspace symbols, and read-only
-//! extension requests for closed schemas, option hints, and ability references. It
-//! does not evaluate Nix and therefore never executes an editor buffer.
+//! extension requests for closed schemas, option hints, ability references, and
+//! bounded checked ability graphs. It does not evaluate Nix and therefore never
+//! executes an editor buffer.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
@@ -83,6 +84,7 @@ impl Server {
                             "packageDocumentationOptions": "aos/packageDocumentation/options",
                             "packageAbilityReferences": "aos/packageDocumentation/abilities",
                             "packageAbilityReferenceDocuments": "aos/packageDocumentation/abilityReferences",
+                            "packageAbilityGraph": "aos/packageDocumentation/abilityGraph",
                             "resolvePackageAbility": "aos/packageDocumentation/resolveAbility",
                             "packageAbilityDocumentProvider": {
                                 "scheme": "aos-ability",
@@ -210,6 +212,12 @@ impl Server {
                     id,
                     AbilityCatalog::new(&self.documents).references(&params),
                 )?;
+            }
+            "aos/packageDocumentation/abilityGraph" => {
+                match AbilityCatalog::new(&self.documents).graph(&params) {
+                    Ok(graph) => respond(output, id, graph)?,
+                    Err(error) => respond_error(output, id, -32602, &error.to_string())?,
+                }
             }
             "aos/packageDocumentation/resolveAbility" => {
                 let result = AbilityCatalog::new(&self.documents)
@@ -873,6 +881,13 @@ mod tests {
                 .iter()
                 .any(|limit| limit == "authorization-not-evaluated")
         }));
+        assert!(
+            hints[0]["inspectionDiagnostics"]
+                .as_array()
+                .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| {
+                    diagnostic["code"] == "deployment-authorization-not-evaluated"
+                }))
+        );
     }
 
     #[test]
@@ -1048,7 +1063,32 @@ mod tests {
     }
 
     #[test]
-    fn prose_changes_preserve_semantic_and_authenticated_ability_identity() {
+    fn editor_uses_the_cross_frontend_golden_graph_slice() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let input = aos_ability_inspect::ReferenceInspectionInput::decode(include_bytes!(
+            "../../../tests/abilities/fixtures/reference-inspection-input.json"
+        ))?;
+        let query = aos_ability_inspect::GraphQuery::decode(include_bytes!(
+            "../../../tests/abilities/fixtures/reference-inspection-query.json"
+        ))?;
+        let expected =
+            include_bytes!("../../../tests/abilities/fixtures/reference-inspection-slice.json");
+        let mut loaded = loaded_document();
+        loaded.document.package.name = input.reference().package.as_str().to_string();
+        loaded.document.package.version = input.reference().version.clone();
+        loaded.ability_reference = Some(input.reference().clone());
+        let documents = vec![loaded];
+        let catalog = AbilityCatalog::new(&documents);
+
+        let slice = catalog.graph_slice("golden-service", "1.2.3", &query)?;
+
+        assert_eq!(slice.canonical_bytes()?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn prose_changes_preserve_semantic_ability_graph_without_reload_signal()
+    -> Result<(), Box<dyn std::error::Error>> {
         let before = loaded_document();
         let mut after = before.clone();
         after.document.sections.push(Section {
@@ -1070,10 +1110,34 @@ mod tests {
             after.document.computed_semantic_schema_sha256().unwrap()
         );
         assert_eq!(before.ability_reference, after.ability_reference);
+        let reference = before
+            .ability_reference
+            .as_ref()
+            .ok_or("test ability reference is absent")?;
+        let query = aos_ability_inspect::GraphQuery::new(
+            [aos_ability_inspect::NodeKey::Package(
+                reference.manifest_sha256,
+            )],
+            1,
+            2,
+        );
+        let before_documents = vec![before.clone()];
+        let after_documents = vec![after.clone()];
+        let before_graph = AbilityCatalog::new(&before_documents)
+            .graph_slice("nginx", "1", &query)?
+            .canonical_bytes()?;
+        let after_graph = AbilityCatalog::new(&after_documents)
+            .graph_slice("nginx", "1", &query)?
+            .canonical_bytes()?;
+        assert_eq!(before_graph, after_graph);
+        let graph_text = String::from_utf8(after_graph)?;
+        assert!(!graph_text.contains("reload_required"));
+        assert!(!graph_text.contains("restart_required"));
         assert_eq!(
             AbilityCatalog::new(&[before]).references(&json!({})),
             AbilityCatalog::new(&[after]).references(&json!({}))
         );
+        Ok(())
     }
 
     #[test]

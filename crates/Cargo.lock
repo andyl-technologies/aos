@@ -243,6 +243,7 @@ dependencies = [
  "aos-ability-plan",
  "aos-ability-validate",
  "aos-contract",
+ "aos-doc-model",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -484,6 +485,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "aos-ability-inspect",
  "aos-ability-model",
  "aos-contract",
  "aos-doc-model",
@@ -670,6 +672,7 @@ name = "aos-package"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-ability-inspect",
  "aos-ability-model",
  "aos-ability-plan",
  "aos-ability-runtime",

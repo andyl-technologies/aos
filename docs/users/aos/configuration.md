@@ -119,6 +119,11 @@ definition, links, symbols, diagnostics, and quick fixes are advisory because
 the language server never evaluates an editor buffer. Review the authoritative
 result with `apm config diff` before applying it. `apm options complete` exposes
 the same bounded option-path completion to shells and other editor clients.
+The read-only `aos/packageDocumentation/abilityGraph` extension accepts one
+exact loaded package/version plus the canonical shared graph query object. Its
+public-only slice uses the same node identities, relationship meanings, query
+bounds, and limitation diagnostics as `aos ability inspect` and the Hub. It
+does not report deployment authorization or live provider availability.
 
 ## Understand runtime `host.nix`
 

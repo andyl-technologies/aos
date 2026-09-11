@@ -10,6 +10,7 @@ aos-ability-model.workspace = true
 aos-ability-plan.workspace = true
 aos-ability-validate.workspace = true
 aos-contract.workspace = true
+aos-doc-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

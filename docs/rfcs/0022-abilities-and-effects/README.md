@@ -1,7 +1,11 @@
 # RFC-0022: Package abilities, typed consumption, and structured effects
 
-- **Status:** Proposed; design only. No runtime, CLI, registry, or Nix API in
-  this proposal is implemented by adding this RFC.
+- **Status:** Proposed; implementation in progress. The current tree implements
+  the versioned model, checked planning and execution, native activation and
+  selected host-resource paths, and shared inspection surfaces. Proposal text
+  still describes the complete target; the
+  [completion checklist](implementation-completeness.md) defines remaining
+  qualification rather than treating this document alone as implementation.
 - **Date:** 2026-09-08.
 - **Audience:** package authors; maintainers of APM, AOS, APR, the Nix module
   system, systemd integration, boot and image construction, sandbox runtimes,
@@ -170,9 +174,9 @@ having to understand the entire graph.
 
 ## Status discipline
 
-Normative words describe requirements of the proposed implementation. They do
-not claim that the baseline enforces them. Nix examples and proposed operation
-names are illustrative until the corresponding versioned contracts are
-implemented. Existing commands are identified separately from proposed command
-extensions. This RFC records a coherent target architecture; implementation
-must proceed through explicit compatibility and qualification gates.
+Normative words describe requirements of the complete proposal. A requirement
+is implemented only where current code and the completion checklist name its
+enforcement and evidence. Nix examples and operation names outside those
+implemented surfaces remain illustrative. This RFC records the target
+architecture; implementation proceeds through explicit compatibility and
+qualification gates.
