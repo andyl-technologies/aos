@@ -104,16 +104,17 @@ pub(super) fn metadata(id: u8, resource: u8) -> IssuanceDecisionMetadataV1 {
 }
 
 #[test]
-fn version_two_issuance_survives_revocation_compaction_and_restart() {
+fn issuance_survives_revocation_compaction_and_restart() {
     let directory = TestDirectory::new();
     let mut journal = directory.open();
     let record = capability(20, 3);
     let evidence = metadata(20, 3);
     let digest = evidence.validate_for(&record).unwrap();
-    let encoded = encode_record_with_issuance(
+    let encoded = encode_record(
         DurableCapabilityStateV1::Active,
         &record,
         Some(&(evidence.clone(), digest)),
+        None,
         MAXIMUM_RECORD_BYTES,
     )
     .unwrap();
@@ -158,34 +159,55 @@ fn version_two_issuance_survives_revocation_compaction_and_restart() {
 }
 
 #[test]
-fn version_two_rejects_crosslink_substitution_unknown_fields_and_size_excess() {
+fn issuance_record_rejects_crosslink_substitution_unknown_fields_and_size_excess() {
     let record = capability(21, 3);
     let evidence = metadata(21, 3);
     let digest = evidence.validate_for(&record).unwrap();
-    let canonical = encode_record_with_issuance(
+    let canonical = encode_record(
         DurableCapabilityStateV1::Active,
         &record,
         Some(&(evidence.clone(), digest)),
+        None,
         MAXIMUM_RECORD_BYTES,
     )
     .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+    assert_eq!(value.get("runtime"), Some(&serde_json::Value::Null));
     assert!(matches!(
-        encode_record_with_issuance(
+        encode_record(
             DurableCapabilityStateV1::Active,
             &record,
             Some(&(evidence.clone(), digest)),
+            None,
             canonical.len() - 1,
         ),
         Err(PublisherAuthorityError::LimitExceeded("record bytes"))
     ));
 
+    for field in ["issuance", "claims_digest"] {
+        let mut incomplete = value.clone();
+        incomplete
+            .as_object_mut()
+            .unwrap()
+            .insert(field.to_owned(), serde_json::Value::Null);
+        assert!(matches!(
+            decode_record(
+                &capability_key(record.id()),
+                &serde_json::to_vec(&incomplete).unwrap(),
+                MAXIMUM_RECORD_BYTES,
+            ),
+            Err(PublisherAuthorityError::IssuanceCrosslinkMismatch)
+        ));
+    }
+
     let wrong_resource = metadata(21, 22);
-    let wire = DurableCapabilityRecordRefV2 {
-        version: RECORD_VERSION_V2,
+    let wire = DurableCapabilityRecordRefV1 {
+        version: RECORD_VERSION,
         state: 0,
         capability: &record,
-        issuance: &wrong_resource,
-        claims_digest: digest,
+        issuance: Some(&wrong_resource),
+        claims_digest: Some(digest),
+        runtime: None,
     };
     let substituted = serde_json::to_vec(&wire).unwrap();
     assert!(matches!(

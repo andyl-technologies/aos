@@ -1517,8 +1517,8 @@ where
     ///
     /// The complete Host and payload proof moves into the live session. Scope
     /// identities derive from its protected holder decision, while current
-    /// publication policy determines the cache grant. Version-three issuance
-    /// evidence commits before the endpoint escapes. Current authority and the
+    /// publication policy determines the cache grant. Runtime issuance evidence
+    /// commits before the endpoint escapes. Current authority and the
     /// original observation deadline are rechecked before and after commit.
     ///
     /// The clock must be the same protected adapter used at acquisition. The

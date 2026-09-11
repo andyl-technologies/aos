@@ -1516,7 +1516,7 @@ through an exclusive borrow of its sole journal writer.
 This is trusted administration and durable lookup, not authenticated admission.
 The facade must be the controller's sole writer for this namespace; generic
 journal writes are trusted low-level operations, not a validated capability
-transition protocol. Internal versioned JSON is not a portable network format.
+transition protocol. Internal canonical V1 JSON is not a portable network format.
 Individual handle revocation does not replace policy/scope-generation checks or
 cancel a retained completion permit. Durable append headroom for maintenance
 still needs reservation before production admissions are enabled.
@@ -1688,10 +1688,11 @@ Issuance resolves the current protected policy, exact project-cache resource,
 controller head, and revocation head under the sole journal writer. The
 derived capability contains exactly one nondelegable cache-publish grant,
 with validity bounded by policy and trusted paired-clock observations. A
-versioned capability envelope atomically retains the full claims and explicit
+canonical V1 capability envelope atomically retains the full claims and explicit
 issuance evidence, including the live session identity, boot/clock provenance,
-policy/controller generations, and resource isolation commitment. Existing
-version-one records retain their byte encoding; revocation retains audit data.
+policy/controller generations, and resource isolation commitment. Nullable
+issuance, claims-digest, and runtime fields give administrative and issued
+capabilities one wire shape; revocation retains all audit data.
 
 Only a successful durable commit followed by fresh clock and cgroup checks
 activates the reserved slot and exposes its endpoint. Failures close pending
@@ -1837,7 +1838,7 @@ protected journal access. A request copied onto another holder channel fails
 even when both channels name the same principal. Readable publisher packets
 remain queued; liveness checks do not consume a second challenge.
 
-Joining resolves the active capability and V2 issuance evidence and checks
+Joining resolves the active capability and its V1 issuance evidence and checks
 the exact holder/channel/session/resource/runtime snapshot, current policy and
 controller heads, revocation scope and generation, individual tombstones,
 resource/domain/isolation mapping, boot, clock provenance, and fixed challenge
@@ -2001,14 +2002,15 @@ the durable commit; final capability and observation time bounds are checked
 before activation. A post-commit failure drops the undisclosed endpoints and
 can leave only an audited capability without a live channel.
 
-Capability record version three adds immutable observation provenance and
-references the exact historical holder decision, publication, assignment, and
-lease. Replay validates complete protected runtime history before resolving
-those references. It accepts legitimate later renewal or tombstones without
-pretending that the old issuance decision is current authority. Capability
-revocation preserves all provenance with no increase in record size. Versions
-one and two retain their exact encodings and remain distinguishable from this
-runtime-backed path.
+The sole capability record V1 optionally carries immutable observation provenance
+that references the exact historical holder decision, publication, assignment,
+and lease. Runtime evidence requires paired issuance metadata and its exact
+claims digest. Replay validates complete protected runtime history before
+resolving those references. It accepts legitimate later renewal or tombstones
+without pretending that the old issuance decision is current authority.
+Administrative, local-session, and runtime-backed records share one ordered
+explicit-null JSON shape, and capability revocation preserves all provenance
+with no increase in record size. Other versions are rejected.
 
 Incoming runtime-issued holder records reobserve the original Host and payload
 pins as well as the actual record subject. Publisher request joining compares
@@ -2016,7 +2018,7 @@ the complete retained runtime-origin evidence against the durable issuance
 record, rejecting missing, substituted, or cross-profile provenance. This
 still establishes origin consistency, not current publication permission.
 
-New audit regressions cover a fixed version-three golden, closed and bounded
+New audit regressions cover a fixed V1 runtime-evidence golden, closed and bounded
 encoding, timing and identity substitution, historical-link substitution,
 missing runtime history, renewal, revocation, compaction, and protected reopen.
 They deliberately use audit fixtures rather than fabricated live runtime

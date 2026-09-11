@@ -8,7 +8,7 @@
 //!
 //! Current-runtime issuance instead consumes a sealed observation, derives its
 //! holder/assignment scope, and retains the whole proof in the live session.
-//! Its version-three audit evidence is distinct from administrative issuance.
+//! Its runtime audit evidence is distinct from administrative issuance.
 //! A capability may outlive its issuance observation: use requires fresh
 //! runtime admission, not continued reliance on the historical audit record.
 

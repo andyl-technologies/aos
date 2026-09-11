@@ -1,4 +1,4 @@
-//! Historical runtime provenance for version-three capability issuance records.
+//! Historical runtime provenance for capability issuance records.
 //!
 //! The record references the immutable holder decision and publication, not a
 //! mutable current head. Kernel handles and clock fields are diagnostic audit
@@ -12,13 +12,10 @@
 //!             expires_wall_seconds, deadline_boottime_nanoseconds }
 //! ```
 
-use aos_sandbox_core::{CapabilityId, CapabilityRecord, ObjectDigest};
+use aos_sandbox_core::{CapabilityRecord, ObjectDigest};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    BoundedWriter, DecodedCapabilityRecordV1, DurableCapabilityStateV1, IssuanceDecisionMetadataV1,
-    PublisherAuthorityError, RECORD_VERSION_V3,
-};
+use super::{IssuanceDecisionMetadataV1, PublisherAuthorityError};
 use crate::Journal;
 use crate::runtime_authority::{
     RuntimeAuthorityBindingV1, RuntimeAuthorityStateV1, binding_in_validated_namespace,
@@ -56,94 +53,6 @@ pub struct RuntimeIssuanceEvidenceV1 {
     observed_boottime_nanoseconds: u64,
     expires_wall_seconds: i64,
     deadline_boottime_nanoseconds: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RuntimeCapabilityWireV3 {
-    version: u16,
-    state: u8,
-    capability: CapabilityRecord,
-    issuance: IssuanceDecisionMetadataV1,
-    claims_digest: ObjectDigest,
-    runtime: RuntimeIssuanceEvidenceV1,
-}
-
-#[derive(Serialize)]
-struct RuntimeCapabilityRefV3<'a> {
-    version: u16,
-    state: u8,
-    capability: &'a CapabilityRecord,
-    issuance: &'a IssuanceDecisionMetadataV1,
-    claims_digest: ObjectDigest,
-    runtime: &'a RuntimeIssuanceEvidenceV1,
-}
-
-pub(super) fn decode_record_v3(
-    key: CapabilityId,
-    bytes: &[u8],
-    maximum: usize,
-) -> Result<DecodedCapabilityRecordV1, PublisherAuthorityError> {
-    let decoded: RuntimeCapabilityWireV3 =
-        serde_json::from_slice(bytes).map_err(|_| PublisherAuthorityError::MalformedRecord)?;
-    let state = match decoded.state {
-        0 => DurableCapabilityStateV1::Active,
-        1 => DurableCapabilityStateV1::Revoked,
-        _ => return Err(PublisherAuthorityError::MalformedRecord),
-    };
-    if decoded.version != RECORD_VERSION_V3 {
-        return Err(PublisherAuthorityError::UnsupportedVersion(decoded.version));
-    }
-    if decoded.capability.id() != key {
-        return Err(PublisherAuthorityError::CapabilityKeyMismatch);
-    }
-    if decoded.issuance.validate_for(&decoded.capability)? != decoded.claims_digest {
-        return Err(PublisherAuthorityError::IssuanceCrosslinkMismatch);
-    }
-    decoded.runtime.validate_for(&decoded.issuance)?;
-    let issuance = (decoded.issuance, decoded.claims_digest);
-    if encode_record_v3(
-        state,
-        &decoded.capability,
-        &issuance,
-        &decoded.runtime,
-        maximum,
-    )? != bytes
-    {
-        return Err(PublisherAuthorityError::MalformedRecord);
-    }
-    Ok(DecodedCapabilityRecordV1 {
-        state,
-        capability: decoded.capability,
-        issuance: Some(issuance),
-        runtime: Some(decoded.runtime),
-    })
-}
-
-pub(super) fn encode_record_v3(
-    state: DurableCapabilityStateV1,
-    capability: &CapabilityRecord,
-    issuance: &(IssuanceDecisionMetadataV1, ObjectDigest),
-    runtime: &RuntimeIssuanceEvidenceV1,
-    maximum: usize,
-) -> Result<Vec<u8>, PublisherAuthorityError> {
-    let record = RuntimeCapabilityRefV3 {
-        version: RECORD_VERSION_V3,
-        state: state.wire_value(),
-        capability,
-        issuance: &issuance.0,
-        claims_digest: issuance.1,
-        runtime,
-    };
-    let mut writer = BoundedWriter::new(maximum);
-    if serde_json::to_writer(&mut writer, &record).is_err() {
-        return if writer.exceeded {
-            Err(PublisherAuthorityError::LimitExceeded("record bytes"))
-        } else {
-            Err(PublisherAuthorityError::MalformedRecord)
-        };
-    }
-    Ok(writer.bytes)
 }
 
 impl RuntimeIssuanceEvidenceV1 {

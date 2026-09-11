@@ -1,4 +1,4 @@
-//! Version-three codec and protected historical-provenance regressions.
+//! Runtime issuance codec and protected historical-provenance regressions.
 //!
 //! Synthetic observation fields here are audit-format fixtures, never live
 //! `CurrentRuntimeScope` values. Only the kernel/Host path can qualify issuance.
@@ -14,8 +14,8 @@ use aos_sandbox_core::{OperationId, PrincipalId};
 use sha2::{Digest as _, Sha256};
 
 use super::super::{
-    MAXIMUM_RECORD_BYTES, PublisherAuthorityLimits, PublisherCapabilityRegistry, RECORD_KEY_BYTES,
-    capability_key, decode_record, encode_record_complete,
+    DurableCapabilityStateV1, MAXIMUM_RECORD_BYTES, PublisherAuthorityLimits,
+    PublisherCapabilityRegistry, RECORD_KEY_BYTES, capability_key, decode_record, encode_record,
 };
 use super::*;
 use crate::publication::{
@@ -227,11 +227,11 @@ fn encoded(
     metadata: &IssuanceDecisionMetadataV1,
     runtime: &RuntimeIssuanceEvidenceV1,
 ) -> Vec<u8> {
-    encode_record_v3(
+    encode_record(
         DurableCapabilityStateV1::Active,
         capability,
-        &(metadata.clone(), metadata.validate_for(capability).unwrap()),
-        runtime,
+        Some(&(metadata.clone(), metadata.validate_for(capability).unwrap())),
+        Some(runtime),
         MAXIMUM_RECORD_BYTES,
     )
     .unwrap()
@@ -254,7 +254,7 @@ fn install_audit_fixture(journal: &mut Journal, capability: &CapabilityRecord, b
 }
 
 #[test]
-fn version_three_retains_historical_origin_after_renewal_revocation_and_reopen() {
+fn runtime_issuance_retains_historical_origin_after_renewal_revocation_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
     let binding = activate(&mut reconciler, 1, false);
@@ -327,7 +327,7 @@ fn version_three_retains_historical_origin_after_renewal_revocation_and_reopen()
 }
 
 #[test]
-fn canonical_version_three_has_a_fixed_golden_and_closed_bounded_shape() {
+fn canonical_v1_runtime_issuance_has_a_fixed_golden_and_closed_bounded_shape() {
     let directory = tempfile::tempdir().unwrap();
     let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
     let binding = activate(&mut reconciler, 1, false);
@@ -336,24 +336,34 @@ fn canonical_version_three_has_a_fixed_golden_and_closed_bounded_shape() {
     // Pins field order and complete audit facts; update only with an intentional format change.
     assert_eq!(
         format!("{:x}", Sha256::digest(&bytes)),
-        "b38b7635603b4ffa032bedf1f0a7371866493c7065a8a17ea481d26bc6f6e9a3"
+        "8d33ea8cc0e1b9be4ceae2dd1014e162dc490f0927cb07f448572e113ab41579"
     );
     let decoded = decode_record(&capability_key(capability.id()), &bytes, bytes.len()).unwrap();
     assert_eq!(decoded.runtime, Some(runtime.clone()));
     assert!(decode_record(&capability_key(capability.id()), &bytes, bytes.len() - 1).is_err());
     assert!(
-        encode_record_v3(
+        encode_record(
             DurableCapabilityStateV1::Active,
             &capability,
-            &(
+            Some(&(
                 metadata.clone(),
                 metadata.validate_for(&capability).unwrap()
-            ),
-            &runtime,
+            )),
+            Some(&runtime),
             bytes.len() - 1
         )
         .is_err()
     );
+    assert!(matches!(
+        encode_record(
+            DurableCapabilityStateV1::Active,
+            &capability,
+            None,
+            Some(&runtime),
+            MAXIMUM_RECORD_BYTES,
+        ),
+        Err(PublisherAuthorityError::IssuanceCrosslinkMismatch)
+    ));
     for field in ["issuance", "claims_digest", "runtime"] {
         let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         value.as_object_mut().unwrap().remove(field);
@@ -366,6 +376,18 @@ fn canonical_version_three_has_a_fixed_golden_and_closed_bounded_shape() {
             .is_err()
         );
     }
+    let mut runtime_without_issuance: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let object = runtime_without_issuance.as_object_mut().unwrap();
+    object.insert("issuance".to_owned(), serde_json::Value::Null);
+    object.insert("claims_digest".to_owned(), serde_json::Value::Null);
+    assert!(matches!(
+        decode_record(
+            &capability_key(capability.id()),
+            &serde_json::to_vec(&runtime_without_issuance).unwrap(),
+            MAXIMUM_RECORD_BYTES,
+        ),
+        Err(PublisherAuthorityError::IssuanceCrosslinkMismatch)
+    ));
     let mut unknown = bytes.clone();
     unknown.pop();
     unknown.extend_from_slice(b",\"extra\":0}");
@@ -377,17 +399,17 @@ fn canonical_version_three_has_a_fixed_golden_and_closed_bounded_shape() {
         )
         .is_err()
     );
-    let mut downgraded = bytes.clone();
-    downgraded[b"{\"version\":".len()] = b'2';
+    let mut unsupported_version = bytes.clone();
+    unsupported_version[b"{\"version\":".len()] = b'2';
     assert!(
         decode_record(
             &capability_key(capability.id()),
-            &downgraded,
+            &unsupported_version,
             MAXIMUM_RECORD_BYTES
         )
         .is_err()
     );
-    let old = encode_record_complete(
+    let without_runtime = encode_record(
         DurableCapabilityStateV1::Active,
         &capability,
         Some(&(
@@ -399,10 +421,14 @@ fn canonical_version_three_has_a_fixed_golden_and_closed_bounded_shape() {
     )
     .unwrap();
     assert!(
-        decode_record(&capability_key(capability.id()), &old, MAXIMUM_RECORD_BYTES)
-            .unwrap()
-            .runtime
-            .is_none()
+        decode_record(
+            &capability_key(capability.id()),
+            &without_runtime,
+            MAXIMUM_RECORD_BYTES
+        )
+        .unwrap()
+        .runtime
+        .is_none()
     );
 }
 

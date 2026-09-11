@@ -13,29 +13,23 @@
 //! establish revocation currentness, or create a publication completion permit.
 //!
 //! Namespace records use the binary key `"capability/" || capability_id` and
-//! one strict canonical JSON value:
+//! one strict canonical V1 JSON value:
 //!
 //! ```text
-//! {"version":1,"state":0,"capability":{...complete CapabilityRecord...}}
-//! {"version":2,"state":0,"capability":{...complete CapabilityRecord...},
-//!  "issuance":{...immutable local issuance metadata...},"claims_digest":[...]}
-//! {"version":3,"state":0,"capability":{...complete CapabilityRecord...},
-//!  "issuance":{...},"claims_digest":[...],"runtime":{...historical provenance...}}
+//! {"version":1,"state":0,"capability":{...complete CapabilityRecord...},
+//!  "issuance":null|{...immutable local issuance metadata...},
+//!  "claims_digest":null|[...],"runtime":null|{...historical provenance...}}
 //! ```
 //!
-//! Version one remains the exact administrative record format. Version two
-//! adds controller-observed issuance metadata and a domain-separated digest of
-//! the canonical complete capability. Replay revalidates the digest, identity
-//! and decision cross-links, trusted local-session runtime scope, fixed
-//! nondelegable publication grant, validity observation, and nonzero
-//! identities, generations, and commitments.
-//! Version three additionally references an immutable protected holder decision
-//! and the original Host observation's bounded lifetime. Full runtime-authority
-//! replay validates historical cross-links; none of these bytes restore live
-//! execution pins or prove that the historical holder remains current.
+//! Issuance metadata and its domain-separated claims digest are either both
+//! present or both absent. Runtime evidence requires that pair and additionally
+//! references an immutable protected holder decision and the original Host
+//! observation's bounded lifetime. Replay revalidates all identity, decision,
+//! claim, timing, and historical runtime cross-links. None of these bytes restore
+//! live execution pins or prove that the historical holder remains current.
 //!
 //! State `0` is active and state `1` is revoked. Both state encodings have
-//! equal length in either version, so a tombstone consumes no additional
+//! equal length in every legal record form, so a tombstone consumes no additional
 //! materialized-value allowance. Journal append capacity for administrative
 //! maintenance remains an external provisioning requirement; a revocation is
 //! never reported before its commit.
@@ -56,9 +50,7 @@ pub use issuance::{
 };
 pub use runtime_issuance::RuntimeIssuanceEvidenceV1;
 
-const RECORD_VERSION_V1: u16 = 1;
-const RECORD_VERSION_V2: u16 = 2;
-const RECORD_VERSION_V3: u16 = 3;
+const RECORD_VERSION: u16 = 1;
 const RECORD_FAMILY: &[u8] = b"capability/";
 const RECORD_KEY_BYTES: usize = RECORD_FAMILY.len() + 16;
 const MAXIMUM_ENTRIES: usize = 65_536;
@@ -109,8 +101,8 @@ impl PublisherAuthorityLimits {
 
     /// Sets independent replay bounds for runtime-issued capabilities' historical provenance.
     ///
-    /// Administrative records need no runtime namespace. Version-three records
-    /// additionally require its complete validation within these bounds.
+    /// Administrative records need no runtime namespace. Records with runtime
+    /// evidence additionally require its complete validation within these bounds.
     #[must_use]
     pub const fn with_runtime_limits(
         mut self,
@@ -322,7 +314,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         if self.entries >= self.limits.maximum_entries {
             return Err(PublisherAuthorityError::LimitExceeded("entry count"));
         }
-        let value = encode_record_complete(
+        let value = encode_record(
             DurableCapabilityStateV1::Active,
             &capability,
             issuance.as_ref(),
@@ -353,9 +345,9 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
 
     /// Resolves immutable issuance audit evidence by capability ID.
     ///
-    /// Administrative version-one records return `Ok(None)`. Version-two and
-    /// version-three records return evidence even after capability revocation. This is
-    /// audit data, not authority to exercise the capability.
+    /// Administrative records return `Ok(None)`. Records with issuance evidence
+    /// return it even after capability revocation. This is audit data, not
+    /// authority to exercise the capability.
     ///
     /// # Errors
     ///
@@ -410,7 +402,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         if record.state == DurableCapabilityStateV1::Revoked {
             return Err(PublisherAuthorityError::Revoked);
         }
-        let value = encode_record_complete(
+        let value = encode_record(
             DurableCapabilityStateV1::Revoked,
             &record.capability,
             record.issuance.as_ref(),
@@ -495,16 +487,9 @@ struct DurableCapabilityRecordWireV1 {
     version: u16,
     state: u8,
     capability: CapabilityRecord,
-}
-
-#[derive(Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct DurableCapabilityRecordWireV2 {
-    version: u16,
-    state: u8,
-    capability: CapabilityRecord,
-    issuance: IssuanceDecisionMetadataV1,
-    claims_digest: aos_sandbox_core::ObjectDigest,
+    issuance: Option<IssuanceDecisionMetadataV1>,
+    claims_digest: Option<aos_sandbox_core::ObjectDigest>,
+    runtime: Option<RuntimeIssuanceEvidenceV1>,
 }
 
 struct DecodedCapabilityRecordV1 {
@@ -520,16 +505,9 @@ struct DurableCapabilityRecordRefV1<'a> {
     version: u16,
     state: u8,
     capability: &'a CapabilityRecord,
-}
-
-#[derive(Serialize)]
-#[serde(deny_unknown_fields)]
-struct DurableCapabilityRecordRefV2<'a> {
-    version: u16,
-    state: u8,
-    capability: &'a CapabilityRecord,
-    issuance: &'a IssuanceDecisionMetadataV1,
-    claims_digest: aos_sandbox_core::ObjectDigest,
+    issuance: Option<&'a IssuanceDecisionMetadataV1>,
+    claims_digest: Option<aos_sandbox_core::ObjectDigest>,
+    runtime: Option<&'a RuntimeIssuanceEvidenceV1>,
 }
 
 fn capability_key(id: CapabilityId) -> [u8; RECORD_KEY_BYTES] {
@@ -560,21 +538,11 @@ fn decode_record(
     if bytes.len() > maximum_bytes {
         return Err(PublisherAuthorityError::LimitExceeded("record bytes"));
     }
-    match record_version(bytes)? {
-        RECORD_VERSION_V1 => decode_record_v1(key_id, bytes, maximum_bytes),
-        RECORD_VERSION_V2 => decode_record_v2(key_id, bytes, maximum_bytes),
-        RECORD_VERSION_V3 => runtime_issuance::decode_record_v3(key_id, bytes, maximum_bytes),
-        version => Err(PublisherAuthorityError::UnsupportedVersion(version)),
-    }
-}
-
-fn decode_record_v1(
-    key_id: CapabilityId,
-    bytes: &[u8],
-    maximum_bytes: usize,
-) -> Result<DecodedCapabilityRecordV1, PublisherAuthorityError> {
     let decoded: DurableCapabilityRecordWireV1 =
         serde_json::from_slice(bytes).map_err(|_| PublisherAuthorityError::MalformedRecord)?;
+    if decoded.version != RECORD_VERSION {
+        return Err(PublisherAuthorityError::UnsupportedVersion(decoded.version));
+    }
     let state = match decoded.state {
         0 => DurableCapabilityStateV1::Active,
         1 => DurableCapabilityStateV1::Revoked,
@@ -583,134 +551,70 @@ fn decode_record_v1(
     if decoded.capability.id() != key_id {
         return Err(PublisherAuthorityError::CapabilityKeyMismatch);
     }
-    let canonical = encode_record(state, &decoded.capability, maximum_bytes)?;
-    if canonical != bytes {
-        return Err(PublisherAuthorityError::MalformedRecord);
-    }
-    Ok(DecodedCapabilityRecordV1 {
-        state,
-        capability: decoded.capability,
-        issuance: None,
-        runtime: None,
-    })
-}
-
-fn decode_record_v2(
-    key_id: CapabilityId,
-    bytes: &[u8],
-    maximum_bytes: usize,
-) -> Result<DecodedCapabilityRecordV1, PublisherAuthorityError> {
-    let decoded: DurableCapabilityRecordWireV2 =
-        serde_json::from_slice(bytes).map_err(|_| PublisherAuthorityError::MalformedRecord)?;
-    let state = match decoded.state {
-        0 => DurableCapabilityStateV1::Active,
-        1 => DurableCapabilityStateV1::Revoked,
-        _ => return Err(PublisherAuthorityError::MalformedRecord),
+    let issuance = match (decoded.issuance, decoded.claims_digest) {
+        (None, None) => None,
+        (Some(metadata), Some(claims_digest)) => {
+            if metadata.validate_for(&decoded.capability)? != claims_digest {
+                return Err(PublisherAuthorityError::IssuanceCrosslinkMismatch);
+            }
+            Some((metadata, claims_digest))
+        }
+        _ => return Err(PublisherAuthorityError::IssuanceCrosslinkMismatch),
     };
-    if decoded.capability.id() != key_id {
-        return Err(PublisherAuthorityError::CapabilityKeyMismatch);
+    if let Some(runtime) = decoded.runtime.as_ref() {
+        let (metadata, _) = issuance
+            .as_ref()
+            .ok_or(PublisherAuthorityError::IssuanceCrosslinkMismatch)?;
+        runtime.validate_for(metadata)?;
     }
-    let expected_digest = decoded.issuance.validate_for(&decoded.capability)?;
-    if decoded.claims_digest != expected_digest {
-        return Err(PublisherAuthorityError::IssuanceCrosslinkMismatch);
-    }
-    let issuance = (decoded.issuance.clone(), decoded.claims_digest);
-    let canonical =
-        encode_record_with_issuance(state, &decoded.capability, Some(&issuance), maximum_bytes)?;
+    let canonical = encode_record(
+        state,
+        &decoded.capability,
+        issuance.as_ref(),
+        decoded.runtime.as_ref(),
+        maximum_bytes,
+    )?;
     if canonical != bytes {
         return Err(PublisherAuthorityError::MalformedRecord);
     }
     Ok(DecodedCapabilityRecordV1 {
         state,
         capability: decoded.capability,
-        issuance: Some((decoded.issuance, decoded.claims_digest)),
-        runtime: None,
+        issuance,
+        runtime: decoded.runtime,
     })
-}
-
-fn record_version(bytes: &[u8]) -> Result<u16, PublisherAuthorityError> {
-    let rest = bytes
-        .strip_prefix(b"{\"version\":")
-        .ok_or(PublisherAuthorityError::MalformedRecord)?;
-    let comma = rest
-        .iter()
-        .position(|byte| *byte == b',')
-        .ok_or(PublisherAuthorityError::MalformedRecord)?;
-    let digits = std::str::from_utf8(&rest[..comma])
-        .map_err(|_| PublisherAuthorityError::MalformedRecord)?;
-    if digits.is_empty() || (digits.len() > 1 && digits.starts_with('0')) {
-        return Err(PublisherAuthorityError::MalformedRecord);
-    }
-    digits
-        .parse()
-        .map_err(|_| PublisherAuthorityError::MalformedRecord)
 }
 
 fn encode_record(
-    state: DurableCapabilityStateV1,
-    capability: &CapabilityRecord,
-    maximum_bytes: usize,
-) -> Result<Vec<u8>, PublisherAuthorityError> {
-    let record = DurableCapabilityRecordRefV1 {
-        version: RECORD_VERSION_V1,
-        state: state.wire_value(),
-        capability,
-    };
-    let mut writer = BoundedWriter::new(maximum_bytes);
-    if serde_json::to_writer(&mut writer, &record).is_err() {
-        return if writer.exceeded {
-            Err(PublisherAuthorityError::LimitExceeded("record bytes"))
-        } else {
-            Err(PublisherAuthorityError::MalformedRecord)
-        };
-    }
-    Ok(writer.bytes)
-}
-
-fn encode_record_with_issuance(
-    state: DurableCapabilityStateV1,
-    capability: &CapabilityRecord,
-    issuance: Option<&(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
-    maximum_bytes: usize,
-) -> Result<Vec<u8>, PublisherAuthorityError> {
-    let Some((metadata, claims_digest)) = issuance else {
-        return encode_record(state, capability, maximum_bytes);
-    };
-    let record = DurableCapabilityRecordRefV2 {
-        version: RECORD_VERSION_V2,
-        state: state.wire_value(),
-        capability,
-        issuance: metadata,
-        claims_digest: *claims_digest,
-    };
-    let mut writer = BoundedWriter::new(maximum_bytes);
-    if serde_json::to_writer(&mut writer, &record).is_err() {
-        return if writer.exceeded {
-            Err(PublisherAuthorityError::LimitExceeded("record bytes"))
-        } else {
-            Err(PublisherAuthorityError::MalformedRecord)
-        };
-    }
-    Ok(writer.bytes)
-}
-
-fn encode_record_complete(
     state: DurableCapabilityStateV1,
     capability: &CapabilityRecord,
     issuance: Option<&(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
     runtime: Option<&RuntimeIssuanceEvidenceV1>,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, PublisherAuthorityError> {
-    match runtime {
-        Some(runtime) => runtime_issuance::encode_record_v3(
-            state,
-            capability,
-            issuance.ok_or(PublisherAuthorityError::IssuanceCrosslinkMismatch)?,
-            runtime,
-            maximum_bytes,
-        ),
-        None => encode_record_with_issuance(state, capability, issuance, maximum_bytes),
+    if runtime.is_some() && issuance.is_none() {
+        return Err(PublisherAuthorityError::IssuanceCrosslinkMismatch);
     }
+    let (metadata, claims_digest) = issuance
+        .map(|(metadata, claims_digest)| (Some(metadata), Some(*claims_digest)))
+        .unwrap_or((None, None));
+    let record = DurableCapabilityRecordRefV1 {
+        version: RECORD_VERSION,
+        state: state.wire_value(),
+        capability,
+        issuance: metadata,
+        claims_digest,
+        runtime,
+    };
+    let mut writer = BoundedWriter::new(maximum_bytes);
+    if serde_json::to_writer(&mut writer, &record).is_err() {
+        return if writer.exceeded {
+            Err(PublisherAuthorityError::LimitExceeded("record bytes"))
+        } else {
+            Err(PublisherAuthorityError::MalformedRecord)
+        };
+    }
+    Ok(writer.bytes)
 }
 
 impl DurableCapabilityStateV1 {
@@ -938,6 +842,8 @@ pub(crate) mod tests {
         let encoded = encode_record(
             DurableCapabilityStateV1::Active,
             &original,
+            None,
+            None,
             MAXIMUM_RECORD_BYTES,
         )
         .unwrap_or_else(|error| panic!("encode exact-limit record: {error}"));
@@ -988,14 +894,19 @@ pub(crate) mod tests {
         let canonical = encode_record(
             DurableCapabilityStateV1::Active,
             &record,
+            None,
+            None,
             MAXIMUM_RECORD_BYTES,
         )
         .unwrap_or_else(|error| panic!("encode test record: {error}"));
         assert!(canonical.starts_with(b"{\"version\":1,\"state\":0,\"capability\":"));
-        assert_eq!(canonical.len(), 1_068);
+        assert!(
+            canonical.ends_with(b",\"issuance\":null,\"claims_digest\":null,\"runtime\":null}")
+        );
+        assert_eq!(canonical.len(), 1_120);
         assert_eq!(
             format!("{:x}", Sha256::digest(&canonical)),
-            "a7eb0f1c0e6306a04252c17046788aa1680081b4405fea31f8791c629982e331"
+            "81c2c669dab2371aaf0ad5fad639de97bd5cd9dbce01d66ea7a578bf902e8919"
         );
 
         let mut duplicate = b"{\"version\":1,".to_vec();
@@ -1016,16 +927,19 @@ pub(crate) mod tests {
             Err(PublisherAuthorityError::MalformedRecord)
         ));
 
-        let mut unknown_version = canonical.clone();
-        let position = unknown_version
-            .windows(b"\"version\":1".len())
-            .position(|window| window == b"\"version\":1")
-            .unwrap_or_else(|| panic!("version field absent"));
-        unknown_version[position + b"\"version\":".len()] = b'4';
-        assert!(matches!(
-            decode_record(&capability_key(id), &unknown_version, MAXIMUM_RECORD_BYTES),
-            Err(PublisherAuthorityError::UnsupportedVersion(4))
-        ));
+        for version in [b'0', b'2', b'3', b'4'] {
+            let mut unknown_version = canonical.clone();
+            let position = unknown_version
+                .windows(b"\"version\":1".len())
+                .position(|window| window == b"\"version\":1")
+                .unwrap_or_else(|| panic!("version field absent"));
+            unknown_version[position + b"\"version\":".len()] = version;
+            assert!(matches!(
+                decode_record(&capability_key(id), &unknown_version, MAXIMUM_RECORD_BYTES),
+                Err(PublisherAuthorityError::UnsupportedVersion(candidate))
+                    if candidate == u16::from(version - b'0')
+            ));
+        }
 
         let mut unknown_state = canonical.clone();
         let position = unknown_state
@@ -1043,6 +957,20 @@ pub(crate) mod tests {
         for malformed in [unknown_field, [canonical.clone(), b"\n".to_vec()].concat()] {
             assert!(matches!(
                 decode_record(&capability_key(id), &malformed, MAXIMUM_RECORD_BYTES),
+                Err(PublisherAuthorityError::MalformedRecord)
+            ));
+        }
+        for field in ["issuance", "claims_digest", "runtime"] {
+            let mut missing: serde_json::Value = serde_json::from_slice(&canonical)
+                .unwrap_or_else(|error| panic!("decode canonical record: {error}"));
+            missing
+                .as_object_mut()
+                .unwrap_or_else(|| panic!("canonical record is not an object"))
+                .remove(field);
+            let missing = serde_json::to_vec(&missing)
+                .unwrap_or_else(|error| panic!("encode missing-field record: {error}"));
+            assert!(matches!(
+                decode_record(&capability_key(id), &missing, MAXIMUM_RECORD_BYTES),
                 Err(PublisherAuthorityError::MalformedRecord)
             ));
         }
@@ -1097,6 +1025,8 @@ pub(crate) mod tests {
         let value = encode_record(
             DurableCapabilityStateV1::Active,
             &zero,
+            None,
+            None,
             MAXIMUM_RECORD_BYTES,
         )
         .unwrap_or_else(|error| panic!("encode zero-ID record: {error}"));
@@ -1124,6 +1054,8 @@ pub(crate) mod tests {
         let encoded = encode_record(
             DurableCapabilityStateV1::Active,
             &record,
+            None,
+            None,
             MAXIMUM_RECORD_BYTES,
         )
         .unwrap_or_else(|error| panic!("encode test record: {error}"));
@@ -1166,6 +1098,8 @@ pub(crate) mod tests {
         let second_value = encode_record(
             DurableCapabilityStateV1::Active,
             &second,
+            None,
+            None,
             MAXIMUM_RECORD_BYTES,
         )
         .unwrap_or_else(|error| panic!("encode second test record: {error}"));

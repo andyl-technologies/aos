@@ -240,9 +240,9 @@ impl ValidatedCapabilityIssuanceV1 {
         &self.metadata
     }
 
-    /// Borrows runtime-origin evidence only for version-three issuance records.
+    /// Borrows runtime-origin evidence when the issuance originated from a runtime scope.
     ///
-    /// Older trusted-administration records return `None`. Historical evidence
+    /// Other issuance records return `None`. Historical evidence
     /// does not establish a current holder mapping or restore a live channel.
     #[must_use]
     pub const fn runtime(&self) -> Option<&super::RuntimeIssuanceEvidenceV1> {
