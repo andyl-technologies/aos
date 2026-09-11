@@ -55,6 +55,13 @@
     then " --with-build-jdk=${buildPackages.openjdk}"
     else "";
 
+  # jpackage embeds native launchers in the module image, beyond ELF scrubbing.
+  # Remap header diagnostics at compilation while preserving C++ assertions.
+  linuxJpackageCxxFlag =
+    if isLinuxArmCross
+    then " -ffile-prefix-map=/nix/store=/aos-build-inputs"
+    else "";
+
   nativeMig =
     if isDarwinCross
     then
@@ -439,7 +446,7 @@ in
               --with-version-opt=aos \
               --with-version-pre= \
               --with-extra-cflags="-Wno-error -fcommon" \
-              --with-extra-cxxflags="-Wno-error" \
+              --with-extra-cxxflags="-Wno-error${linuxJpackageCxxFlag}" \
               --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
               --with-jobs=$NIX_BUILD_CORES
           '';
