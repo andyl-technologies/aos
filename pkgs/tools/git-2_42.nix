@@ -17,6 +17,7 @@
   bash,
   stdenv,
   buildPackages,
+  lib,
 }: let
   version = "2.42.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -133,7 +134,13 @@ in
               export ac_cv_iconv_omits_bom=no
             ''
             else ""
-          }
+          }${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+
+            # Git's libc probes accept directory fopen and C99 truncation
+            # results on the target; configure cannot execute them itself.
+            export ac_cv_fread_reads_directories=yes
+            export ac_cv_snprintf_returns_bogus=no
+          ''}
           ./configure \
             $configureFlags \
             --prefix=$out \
