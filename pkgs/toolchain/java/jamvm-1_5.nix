@@ -2,7 +2,9 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
   gnumake,
+  patch,
   stdenv,
   buildPackages,
   classpath-0_93,
@@ -30,7 +32,7 @@ in
     };
 
     buildDeps =
-      [gnumake]
+      [gnumake patch]
       ++ (
         if isDarwinCross
         then [
@@ -92,6 +94,10 @@ in
           else ''
             # Add _GNU_SOURCE for pthread_getattr_np (GNU extension)
             sed -i '1i #define _GNU_SOURCE' src/os/linux/os.c
+
+            # The x86_64 JNI bridge must extend narrow native return values;
+            # unused register bits otherwise turn false booleans into true.
+            patch -p1 < ${./jamvm-1_5-jni-returns.patch}
           '';
       }
       {
@@ -129,6 +135,37 @@ in
         '';
       }
     ];
+
+    checks = {
+      self,
+      pkgs,
+      ...
+    }:
+      lib.optionalAttrs (stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isx86_64) {
+        jni-returns = pkgs.mkDerivation {
+          pname = "jamvm-jni-narrow-returns";
+          version = "1";
+          src = null;
+          buildDeps = [self pkgs.jikes];
+          phases = [
+            {
+              name = "check";
+              script = ''
+                cp ${./tests/JniReturns.java} JniReturns.java
+                ${pkgs.jikes}/bin/jikes \
+                  -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
+                  JniReturns.java
+                "$CC" -shared -fPIC ${./tests/jni-returns.S} -o libjni-returns.so
+
+                mkdir -p "$out"
+                ${self}/bin/jamvm -cp "$PWD" JniReturns "$PWD/libjni-returns.so" \
+                  > "$out/result"
+                grep -Fxq 'JNI narrow returns passed' "$out/result"
+              '';
+            }
+          ];
+        };
+      };
 
     meta = {
       description = "JamVM 1.5.1 — compact pure-C Java Virtual Machine";
