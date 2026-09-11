@@ -20,7 +20,9 @@ use aos_release::evidence::{
 };
 use aos_release::manifest::ManifestEnvelopeV1;
 use aos_release::platform::{MatrixCell, Platform};
-use aos_release::qualification_evidence::QualificationPredecessor;
+use aos_release::qualification_evidence::{
+    NATIVE_ADAPTER_MATRIX_REQUIREMENT, QualificationPredecessor, validate_matrix_for_case,
+};
 use aos_release::receipt::{
     HubEnvironment, PublicationReceiptV1, QualificationReceiptV1, RECEIPT_SIGNATURE_DOMAIN,
     SIGNED_RECEIPT_V1, SignedReceiptEnvelopeV1, verify_signed_receipt_with_key,
@@ -667,16 +669,35 @@ pub(super) fn verify_executor_response(
             bail!("qualification response lacks its exact case observation");
         }
     }
+    let matrix_passed = request
+        .qualification_case
+        .as_ref()
+        .zip(response.evidence.qualification.as_ref())
+        .map(|(case, observation)| validate_matrix_for_case(case, observation))
+        .transpose()?
+        .flatten();
+    let matrix_result_mismatch = matrix_passed.is_some_and(|passed| {
+        response.evidence.result
+            != if passed {
+                GateResult::Passed
+            } else {
+                GateResult::Failed
+            }
+    });
+    // Preserve exact failed matrix observations for cell-level diagnostics.
+    // Central phase validation still rejects them before receipt signing.
+    let rejected_blocking_result = response.evidence.result != GateResult::Passed
+        && request.qualification_case.as_ref().is_none_or(|case| {
+            case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT
+                && case.claim.as_ref().is_none_or(|claim| claim.blocks_release)
+        });
     if response.evidence.id != expected_id
         || response.evidence.policy_id != request.policy_id
         || response.evidence.policy_digest != request.policy_digest
         || response.evidence.platform != expected_platform
         || response.evidence.subjects != request.subjects
-        || (response.evidence.result != GateResult::Passed
-            && request
-                .qualification_case
-                .as_ref()
-                .is_none_or(|case| case.claim.as_ref().is_none_or(|claim| claim.blocks_release)))
+        || matrix_result_mismatch
+        || rejected_blocking_result
         || response.evidence.authority_id != identity
         || response.evidence.nonce.as_deref() != Some(request.nonce.as_str())
         || response.evidence.report_digest

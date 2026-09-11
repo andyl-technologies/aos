@@ -27,6 +27,7 @@
   checks = import ./checks.nix;
 in {
   mkQualificationAbilityScenario = import ./qualification-ability.nix {inherit pkgs lib;};
+  mkQualificationNativeAdapterMatrixScenario = import ./qualification-native-adapter-matrix.nix {inherit pkgs;};
   mkQualificationContainerScenario = import ./qualification-container.nix {inherit pkgs lib;};
   mkQualificationImageScenario = import ./qualification-image.nix {inherit pkgs lib;};
   mkQualificationPackageProbe = import ./qualification-package-probe.nix {inherit pkgs lib;};

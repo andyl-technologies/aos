@@ -273,6 +273,7 @@ fn verify_file_closure(envelope: &ManifestEnvelopeV1, files: &[CapturedFile]) ->
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use anyhow::Context as _;
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
     use std::collections::BTreeMap;
@@ -780,7 +781,7 @@ pub(crate) mod tests {
                     crate::qualification_fixture::environment(&case)?
                 };
                 let capabilities = crate::qualification_fixture::capabilities(&case)?;
-                let environment_digest = environment
+                let mut environment_digest = environment
                     .as_ref()
                     .map(|environment| environment.digest())
                     .transpose()?
@@ -797,6 +798,130 @@ pub(crate) mod tests {
                 if assessment_only {
                     operations.clear();
                 }
+                let mut checks = case
+                    .checks
+                    .iter()
+                    .map(|check| {
+                        (
+                            check.clone(),
+                            crate::qualification_evidence::CheckObservation {
+                                passed: true,
+                                detail: "fixture observation".into(),
+                            },
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let native_adapter_matrix = if case.requirement_id
+                    == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT
+                {
+                    let spec = canonical::from_slice::<
+                        crate::qualification_evidence::NativeAdapterMatrixSpec,
+                    >(
+                        include_bytes!("../tests/fixtures/native-adapter-matrix-spec.json"),
+                        "native adapter matrix fixture",
+                    )?;
+                    let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&spec)?);
+                    let component = |name: &str, component_digest: Sha256Digest| {
+                        crate::qualification_evidence::NativeAdapterMatrixComponentIdentity {
+                            name: name.into(),
+                            version: "fixture-v1".into(),
+                            digest: component_digest,
+                        }
+                    };
+                    let executor_digest = digest("executor");
+                    let matrix_environment =
+                        crate::qualification_evidence::NativeAdapterMatrixEnvironment {
+                            schema_version:
+                                "aos.release.native-adapter-matrix-environment/v1".into(),
+                            status:
+                                crate::qualification_evidence::NativeAdapterMatrixEnvironmentStatus::Production,
+                            platform: Platform::X86_64Linux,
+                            spec_digest,
+                            scenario_registry_digest: executor_digest,
+                            candidate_subjects_digest: case.subjects_digest,
+                            predecessor_manifest_digest: case
+                                .predecessor
+                                .as_ref()
+                                .context("matrix fixture case lacks its predecessor")?
+                                .manifest_digest,
+                            unqualified_reason: None,
+                            cohort: Some("fixture-cohort".into()),
+                            qemu: Some(component("qemu", digest("qemu"))),
+                            firmware: Some(component("firmware", digest("firmware"))),
+                            guest_kernel: Some(component("guest-kernel", digest("guest kernel"))),
+                            fault_injection_tool: Some(component(
+                                "fault-injection-tool",
+                                digest("fault tool"),
+                            )),
+                            harness: Some(component("matrix-harness", digest("harness closure"))),
+                        };
+                    environment_digest =
+                        Sha256Digest::of_bytes(canonical::to_vec(&matrix_environment)?);
+                    let cells = spec
+                        .cells
+                        .iter()
+                        .map(|cell| {
+                            Ok(crate::qualification_evidence::NativeAdapterCellObservation {
+                                id: cell.id.clone(),
+                                cell_digest: Sha256Digest::of_bytes(canonical::to_vec(cell)?),
+                                environment_digest,
+                                postconditions: cell
+                                    .postconditions
+                                    .iter()
+                                    .map(|postcondition| {
+                                        (
+                                            postcondition.clone(),
+                                            crate::qualification_evidence::CheckObservation {
+                                                passed: true,
+                                                detail: "fixture postcondition".into(),
+                                            },
+                                        )
+                                    })
+                                    .collect(),
+                            })
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    let matrix =
+                        crate::qualification_evidence::NativeAdapterMatrixObservation {
+                            schema_version:
+                                crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_OBSERVATION_V1
+                                    .into(),
+                            spec,
+                            spec_digest,
+                            environment: matrix_environment,
+                            cells,
+                        };
+                    let passed =
+                        crate::qualification_evidence::validate_native_adapter_matrix_observation(
+                            &case,
+                            environment_digest,
+                            executor_digest,
+                            &matrix,
+                        )?;
+                    checks = BTreeMap::from([(
+                        case.checks[0].clone(),
+                        crate::qualification_evidence::native_adapter_matrix_check(
+                            &matrix, passed,
+                        )?,
+                    )]);
+                    operations = BTreeMap::from([
+                        (
+                            "matrix_cells_reported".into(),
+                            u64::try_from(matrix.cells.len())?,
+                        ),
+                        (
+                            "matrix_postconditions_reported".into(),
+                            matrix.cells.iter().try_fold(0_u64, |count, cell| {
+                                Ok::<_, std::num::TryFromIntError>(
+                                    count + u64::try_from(cell.postconditions.len())?,
+                                )
+                            })?,
+                        ),
+                    ]);
+                    Some(matrix)
+                } else {
+                    None
+                };
                 Ok(EvidenceRecord {
                     id: format!("qualification/{}", case.id),
                     policy_id: case.requirement_id.clone(),
@@ -813,22 +938,11 @@ pub(crate) mod tests {
                         environment,
                         capabilities,
                         assessment,
+                        native_adapter_matrix,
                         case_digest: case.digest()?,
                         executor_digest: digest("executor"),
                         environment_digest,
-                        checks: case
-                            .checks
-                            .iter()
-                            .map(|check| {
-                                (
-                                    check.clone(),
-                                    crate::qualification_evidence::CheckObservation {
-                                        passed: true,
-                                        detail: "fixture observation".into(),
-                                    },
-                                )
-                            })
-                            .collect(),
+                        checks,
                         observed_seconds: if assessment_only { 0 } else { 1 },
                         operations,
                         predecessor: case.predecessor,

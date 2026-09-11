@@ -924,7 +924,13 @@ fn fixture_evidence(
     nonce: Option<String>,
     finish: &str,
 ) -> Result<EvidenceRecord> {
-    use aos_release::qualification_evidence::{CheckObservation, QualificationObservation};
+    use aos_release::qualification_evidence::{
+        CheckObservation, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
+        NativeAdapterCellObservation, NativeAdapterMatrixComponentIdentity,
+        NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
+        NativeAdapterMatrixObservation, NativeAdapterMatrixSpec, QualificationObservation,
+        native_adapter_matrix_check, validate_native_adapter_matrix_observation,
+    };
     let seconds = if case.phase == aos_release::qualification::QualificationPhase::Complete {
         14 * 24 * 60 * 60
     } else {
@@ -933,38 +939,144 @@ fn fixture_evidence(
     let finished = humantime::parse_rfc3339(finish)?;
     let environment = qualification_fixture::environment(case)?;
     let capabilities = qualification_fixture::capabilities(case)?;
-    let environment_digest = environment
+    let mut environment_digest = environment
         .as_ref()
         .map(|environment| environment.digest())
         .transpose()?
         .unwrap_or(digest("synthetic-protocol-environment"));
+    let mut checks = case
+        .checks
+        .iter()
+        .map(|id| {
+            (
+                id.clone(),
+                CheckObservation {
+                    passed: true,
+                    detail: "Synthetic protocol fixture; no OS qualification claim".into(),
+                },
+            )
+        })
+        .collect();
+    let mut operations = if case.target.is_some() {
+        qualification_fixture::measurements()
+    } else {
+        std::collections::BTreeMap::from([("synthetic-requests".into(), 1)])
+    };
+    let native_adapter_matrix = if case.requirement_id == NATIVE_ADAPTER_MATRIX_REQUIREMENT {
+        let spec = canonical::from_slice::<NativeAdapterMatrixSpec>(
+            include_bytes!("../../../aos-release/tests/fixtures/native-adapter-matrix-spec.json"),
+            "native adapter matrix fixture",
+        )?;
+        let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&spec)?);
+        let component =
+            |name: &str, component_digest: Sha256Digest| NativeAdapterMatrixComponentIdentity {
+                name: name.into(),
+                version: "synthetic-protocol-v1".into(),
+                digest: component_digest,
+            };
+        let executor_digest = digest("synthetic-protocol-executor");
+        let matrix_environment = NativeAdapterMatrixEnvironment {
+            schema_version: "aos.release.native-adapter-matrix-environment/v1".into(),
+            status: NativeAdapterMatrixEnvironmentStatus::Production,
+            platform: Platform::X86_64Linux,
+            spec_digest,
+            scenario_registry_digest: executor_digest,
+            candidate_subjects_digest: case.subjects_digest,
+            predecessor_manifest_digest: case
+                .predecessor
+                .as_ref()
+                .context("matrix fixture case lacks its predecessor")?
+                .manifest_digest,
+            unqualified_reason: None,
+            cohort: Some("synthetic-protocol-cohort".into()),
+            qemu: Some(component("qemu", digest("synthetic-qemu"))),
+            firmware: Some(component("firmware", digest("synthetic-firmware"))),
+            guest_kernel: Some(component("guest-kernel", digest("synthetic-kernel"))),
+            fault_injection_tool: Some(component(
+                "fault-injection-tool",
+                digest("synthetic-fault-tool"),
+            )),
+            harness: Some(component(
+                "matrix-harness",
+                digest("synthetic-harness-closure"),
+            )),
+        };
+        environment_digest = Sha256Digest::of_bytes(canonical::to_vec(&matrix_environment)?);
+        let cells = spec
+            .cells
+            .iter()
+            .map(|cell| {
+                Ok(NativeAdapterCellObservation {
+                    id: cell.id.clone(),
+                    cell_digest: Sha256Digest::of_bytes(canonical::to_vec(cell)?),
+                    environment_digest,
+                    postconditions: cell
+                        .postconditions
+                        .iter()
+                        .map(|postcondition| {
+                            (
+                                postcondition.clone(),
+                                CheckObservation {
+                                    passed: true,
+                                    detail: "Synthetic protocol fixture; no OS qualification claim"
+                                        .into(),
+                                },
+                            )
+                        })
+                        .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let matrix = NativeAdapterMatrixObservation {
+            schema_version: NATIVE_ADAPTER_MATRIX_OBSERVATION_V1.into(),
+            spec,
+            spec_digest,
+            environment: matrix_environment,
+            cells,
+        };
+        let passed = validate_native_adapter_matrix_observation(
+            case,
+            environment_digest,
+            executor_digest,
+            &matrix,
+        )?;
+        checks = std::collections::BTreeMap::from([(
+            case.checks[0].clone(),
+            native_adapter_matrix_check(&matrix, passed)?,
+        )]);
+        operations = case
+            .measurements
+            .iter()
+            .map(|(name, bound)| (name.clone(), bound.minimum.max(1)))
+            .collect();
+        operations.insert(
+            "matrix_cells_reported".into(),
+            u64::try_from(matrix.cells.len())?,
+        );
+        operations.insert(
+            "matrix_postconditions_reported".into(),
+            matrix.cells.iter().try_fold(0_u64, |count, cell| {
+                Ok::<_, std::num::TryFromIntError>(
+                    count + u64::try_from(cell.postconditions.len())?,
+                )
+            })?,
+        );
+        Some(matrix)
+    } else {
+        None
+    };
     Ok(EvidenceRecord {
         qualification: Some(QualificationObservation {
             environment,
             capabilities,
             assessment: qualification_fixture::assessment(case)?,
+            native_adapter_matrix,
             case_digest: case.digest()?,
             executor_digest: digest("synthetic-protocol-executor"),
             environment_digest,
-            checks: case
-                .checks
-                .iter()
-                .map(|id| {
-                    (
-                        id.clone(),
-                        CheckObservation {
-                            passed: true,
-                            detail: "Synthetic protocol fixture; no OS qualification claim".into(),
-                        },
-                    )
-                })
-                .collect(),
+            checks,
             observed_seconds: seconds,
-            operations: if case.target.is_some() {
-                qualification_fixture::measurements()
-            } else {
-                std::collections::BTreeMap::from([("synthetic-requests".into(), 1)])
-            },
+            operations,
             predecessor: case.predecessor.clone(),
         }),
         id: format!("qualification/{}", case.id),

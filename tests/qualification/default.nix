@@ -42,8 +42,8 @@
   nativeAdapterMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   nativeAdapterMatrixArtifact = pkgs.writeTextFile {
     name = "aos-qualification-native-adapter-matrix";
-    destination = "/matrix.json";
-    text = builtins.toJSON nativeAdapterMatrix;
+    destination = "/matrix-spec.json";
+    text = builtins.toJSON nativeAdapterMatrix.spec;
   };
 in
   assert builtins.elem "checks.fleet.measured-boot" imageRecovery.regressions;
