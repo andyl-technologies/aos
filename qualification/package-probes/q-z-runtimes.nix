@@ -95,15 +95,16 @@ in
         schema_version = "aos.release.package-probe/v1";
         package = "tcl";
         primary = {
-          input = "A Tcl program that adds two integers.";
-          operation = "Evaluate the arithmetic expression with tclsh.";
-          expected = "Tcl prints the exact integer result 42.";
-          files."answer.tcl" = "puts [expr {19 + 23}]\n";
+          input = "A Tcl program loading standard-library modules and adding two integers.";
+          operation = "Load the installed HTTP and message-catalog modules, then evaluate arithmetic.";
+          expected = "Tcl initializes its libraries without errors and prints the exact result 42.";
+          files."answer.tcl" = "package require http\npackage require msgcat\nputs [expr {19 + 23}]\n";
           steps = [
             {
               argv = ["@out@/bin/tclsh9.0" "answer.tcl"];
               exit_code = 0;
               stdout.exact = "42\n";
+              stderr.exact = "";
             }
           ];
           artifacts = [];
