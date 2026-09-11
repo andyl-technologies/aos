@@ -337,7 +337,10 @@ class VirtualMachine:
         if PLATFORM == "x86_64-linux":
             shutil.copyfile(FIRMWARE_VARS, self.vars)
         else:
-            self.vars.write_text("{}", encoding="ascii")
+            self.vars.write_text(
+                json.dumps({"version": 2, "variables": []}) + "\n",
+                encoding="ascii",
+            )
 
     def _start_swtpm(self) -> None:
         if self.tpm_socket.exists():
@@ -508,27 +511,37 @@ class VirtualMachine:
 
     def reboot(self) -> None:
         before = self.ssh("cat /proc/sys/kernel/random/boot_id").strip()
-        self.ssh("systemctl reboot", timeout=30, check=False)
+        response = self.ssh("systemctl reboot", timeout=30, check=False)
         deadline = time.monotonic() + 720
         while time.monotonic() < deadline:
             try:
                 after = self.ssh(
                     "cat /proc/sys/kernel/random/boot_id",
                     timeout=15,
-                    check=False,
                 ).strip()
-                if after and after != before:
-                    self.wait_for_ssh(420)
-                    self.counts.reboot_cycles += 1
-                    return
-            except (subprocess.TimeoutExpired, OSError):
-                pass
+            except (subprocess.TimeoutExpired, OSError, RuntimeError):
+                # SSH commonly disconnects during a reboot. Its diagnostic
+                # output must never be accepted as a new guest boot identity.
+                time.sleep(2)
+                continue
+
+            if after and after != before:
+                self.wait_for_ssh(420)
+                self.counts.reboot_cycles += 1
+                return
+
             time.sleep(2)
-        raise RuntimeError(f"timed out rebooting {self.name}")
+        raise RuntimeError(
+            f"timed out rebooting {self.name}\nreboot request output:\n{response}"
+        )
 
     def power_cycle(self) -> None:
-        self.ssh("systemctl poweroff", timeout=30, check=False)
-        self._wait_exit(180)
+        response = self.ssh("systemctl poweroff", timeout=30, check=False)
+        try:
+            self._wait_exit(180)
+        except RuntimeError as error:
+            raise RuntimeError(f"{error}\npoweroff request output:\n{response}") from error
+
         self.stop_processes()
         self.start()
         self.counts.cold_boot_cycles += 1

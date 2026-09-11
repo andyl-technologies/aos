@@ -126,8 +126,10 @@
           cp ${./image_matrix.py} "$TMPDIR/image-matrix/image_matrix.py"
           cp ${./image_matrix_boot.py} "$TMPDIR/image-matrix/image_matrix_boot.py"
           cp ${./test_image_matrix.py} "$TMPDIR/image-matrix/test_image_matrix.py"
+          cp ${./qualification-image.py} "$TMPDIR/image-matrix/qualification-image.py"
+          cp ${./test_qualification_image.py} "$TMPDIR/image-matrix/test_qualification_image.py"
           cd "$TMPDIR/image-matrix"
-          PYTHONDONTWRITEBYTECODE=1 ${buildPackages.python3}/bin/python3 -m unittest -v test_image_matrix
+          PYTHONDONTWRITEBYTECODE=1 ${buildPackages.python3}/bin/python3 -m unittest -v test_image_matrix test_qualification_image
           printf '%s\n' PASS > "$out/result"
         '';
       }
