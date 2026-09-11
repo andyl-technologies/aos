@@ -229,6 +229,10 @@
           cp ${system.config.aos.apm.drainScript} rootfs/usr/lib/aos/drain
           chmod 0555 rootfs/usr/lib/aos/drain
         ''}
+        ${lib.optionalString (system.config.aos.apm.healthScript != null) ''
+          cp ${system.config.aos.apm.healthScript} rootfs/usr/lib/aos/health
+          chmod 0555 rootfs/usr/lib/aos/health
+        ''}
       '';
       shrinkToFit = true;
       headroomMiB = 64;

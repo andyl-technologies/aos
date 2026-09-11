@@ -53,6 +53,35 @@
     };
   });
   desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf secretRefType);
+  rolloutDrain = pkgs.writeShellScriptBin "aos-rollout-drain" ''
+    set -eu
+
+    hook=/run/current-system/drain
+    if [ ! -x "$hook" ]; then
+      echo "aos-rollout-drain: the current system has no configured drain hook" >&2
+      exit 1
+    fi
+    exec "$hook"
+  '';
+  rolloutHealth = pkgs.writeShellScriptBin "aos-rollout-health" ''
+    set -eu
+
+    hook=/run/current-system/health
+    if [ ! -x "$hook" ]; then
+      echo "aos-rollout-health: the current system has no configured health hook" >&2
+      exit 2
+    fi
+    if "$hook"; then
+      exit 0
+    else
+      status=$?
+    fi
+    if [ "$status" -eq 1 ]; then
+      exit 1
+    fi
+    echo "aos-rollout-health: health hook failed without a conclusive result" >&2
+    exit 2
+  '';
   desiredSystemCredentialsType = lib.types.attrsOf (lib.types.attrsOf credentialNameType);
 
   desiredSystemCredentialValues =
@@ -147,6 +176,16 @@ in {
       Executable hook invoked before an A/B system transition requested with
       `--drain --reboot`. The hook is linked into the immutable system
       toplevel and must return successfully before the reboot is queued.
+    '';
+  };
+
+  options.aos.apm.healthScript = lib.mkOption {
+    type = lib.types.nullOr lib.types.path;
+    default = null;
+    description = ''
+      Executable hook used by an ability-qualified A/B rollout after the
+      candidate configuration activates. Exit status zero admits the candidate,
+      status one requests fallback, and any other status is indeterminate.
     '';
   };
 
@@ -299,7 +338,7 @@ in {
     # The consumer CLI is the only AOS command surface on the system PATH.
     # Repository construction (`aos`) and registry authoring (`apr`) remain
     # host tools; private activation helpers are referenced by absolute path.
-    environment.systemPackages = [pkgs.aos.apm];
+    environment.systemPackages = [pkgs.aos.apm rolloutDrain rolloutHealth];
 
     # install-at-boot's baked /etc (desired.toml + registry config) plus the
     # tmpfiles config. `apm registry add` writes

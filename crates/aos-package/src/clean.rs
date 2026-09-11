@@ -382,7 +382,7 @@ fn reconcile_config_baselib_roots(
         return Ok(());
     }
     let images = crate::sysroot::load_image_generation_state_pub(image_profile)?;
-    crate::store::reconcile_baselib_gc_roots(image_profile, &images, state)
+    crate::store::reconcile_image_gc_roots(image_profile, &images, state)
 }
 
 /// Finishes an interrupted configuration prune before activation reads state.

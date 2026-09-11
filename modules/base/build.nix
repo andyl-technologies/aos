@@ -507,6 +507,16 @@ in {
                 ${lib.optionalString (config.aos.apm.drainScript != null) ''
                   ln -sfn ${config.aos.apm.drainScript} $out/drain
                 ''}
+                ${lib.optionalString (config.aos.apm.healthScript != null) ''
+                  ln -sfn ${config.aos.apm.healthScript} $out/health
+                ''}
+
+                # Resolve trusted booted-image commands through the immutable
+                # rootfs command farm. The absolute target deliberately adds no
+                # package closure to the toplevel; early boot authenticates the
+                # target and every rollout command before publishing
+                # `/run/current-system`.
+                ln -s /usr $out/sw
 
                 # `aos-seed-profiles.service` reads these on first boot
                 # to populate `state.json`. Plain text — `read_meta`

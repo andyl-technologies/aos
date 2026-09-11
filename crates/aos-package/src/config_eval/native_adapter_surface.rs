@@ -45,12 +45,15 @@ pub(crate) struct NativeMethodContract {
 
 include!(concat!(env!("OUT_DIR"), "/native_adapter_surface.rs"));
 
-const _: [(); 11] = [(); NATIVE_ADAPTER_COUNT];
-const _: [(); 38] = [(); NATIVE_METHOD_COUNT];
+const _: [(); 12] = [(); NATIVE_ADAPTER_COUNT];
+const _: [(); 47] = [(); NATIVE_METHOD_COUNT];
 
 /// Resolves the generated adapter ID for one exact runtime route.
 pub(crate) fn adapter_id(kind: NativeAdapterKind, interface_name: &str) -> Option<NativeAdapterId> {
     match kind {
+        NativeAdapterKind::ImageRollout => (interface_name
+            == aos_ability_model::builtin::AB_IMAGE_ROLLOUT_INTERFACE_NAME)
+            .then_some(NativeAdapterId::ImageRollout),
         NativeAdapterKind::KubernetesObject => (interface_name == "aos.kubernetes-object-effects")
             .then_some(NativeAdapterId::KubernetesObject),
         NativeAdapterKind::ManagedConfiguration => (interface_name
@@ -164,6 +167,7 @@ const fn runtime_adapter_is_implemented(adapter: NativeAdapterId) -> bool {
         NativeAdapterId::CredentialDelivery
         | NativeAdapterId::HostNetworkPolicy
         | NativeAdapterId::HostStorage
+        | NativeAdapterId::ImageRollout
         | NativeAdapterId::KubernetesObject
         | NativeAdapterId::ManagedConfiguration
         | NativeAdapterId::NetworkEndpoint
@@ -185,8 +189,8 @@ mod tests {
 
     #[test]
     fn generated_surface_is_exact_and_bounded() {
-        assert_eq!(NATIVE_ADAPTER_COUNT, 11);
-        assert_eq!(NATIVE_METHOD_COUNT, 38);
+        assert_eq!(NATIVE_ADAPTER_COUNT, 12);
+        assert_eq!(NATIVE_METHOD_COUNT, 47);
         assert_eq!(NATIVE_METHODS.len(), NATIVE_METHOD_COUNT);
 
         let adapters = NATIVE_METHODS
@@ -317,6 +321,11 @@ mod tests {
             NativeAdapterId::HostStorage => {
                 aos_ability_model::builtin::host_storage_interface_key()
                     .expect("built-in storage interface")
+                    .descriptor
+            }
+            NativeAdapterId::ImageRollout => {
+                aos_ability_model::builtin::ab_image_rollout_interface_key()
+                    .expect("built-in image rollout interface")
                     .descriptor
             }
             NativeAdapterId::KubernetesObject => {

@@ -937,12 +937,18 @@ in {
         fi
         manifest="/var/lib/profiles/system/gen-$current/manifest.json"
         if [ "$qualified" = true ] \
-          && ${pkgs.jq}/bin/jq -e '.inputs.ability_activation != null' "$manifest" >/dev/null \
-          && ! ${pkgs.jq}/bin/jq -e \
-            '(.native_ability_transaction | type == "string" and length > 0)' \
-            "$proof" >/dev/null; then
-          echo "aos-image-boot-commit: native ability health evidence is missing" >&2
-          exit 1
+          && ${pkgs.jq}/bin/jq -e '.inputs.ability_activation != null' "$manifest" >/dev/null; then
+          native_transaction=$(${pkgs.jq}/bin/jq -er \
+            '.native_ability_transaction | select(type == "string" and length > 0)' \
+            "$proof") || {
+              echo "aos-image-boot-commit: native ability health evidence is missing" >&2
+              exit 1
+            }
+          ${pkgs.aos.packageRuntime}/bin/aos-package-runtime \
+            attest __verify-rollout-boot-commit \
+            --generation "$current" \
+            --transaction "$native_transaction" \
+            --running "$running"
         fi
         if ! ${pkgs.jq}/bin/jq -e \
           --arg hash "$manifest_hash" \
@@ -1116,6 +1122,14 @@ in {
         state=/var/lib/profiles/image/state.json
         [ -s "$state" ] || exit 0
         if ! ${pkgs.jq}/bin/jq -e '.active_rollout != null' "$state" >/dev/null; then
+          exit 0
+        fi
+        current=$(${pkgs.jq}/bin/jq -er '.current' /var/lib/profiles/system/state.json)
+        manifest="/var/lib/profiles/system/gen-$current/manifest.json"
+        if [ -s "$manifest" ] \
+          && ${pkgs.jq}/bin/jq -e '.inputs.ability_activation != null' "$manifest" >/dev/null; then
+          # The checked rollout graph owns health classification and fallback.
+          # A generic service failure cannot manufacture provider evidence.
           exit 0
         fi
         if ! ${pkgs.jq}/bin/jq -e \

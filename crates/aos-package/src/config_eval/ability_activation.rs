@@ -1098,7 +1098,8 @@ fn validate_mapping_outputs(
                 "{generation} PostgreSQL distribution artifact is outside the mapped owner package"
             );
         }
-        NativeResourceQualification::CredentialDelivery { .. }
+        NativeResourceQualification::AbImageRollout { .. }
+        | NativeResourceQualification::CredentialDelivery { .. }
         | NativeResourceQualification::NetworkEndpoint { .. }
         | NativeResourceQualification::HostStorage { .. }
         | NativeResourceQualification::HostNetworkPolicy { .. } => {}
@@ -1425,7 +1426,8 @@ fn resolved_native_execution_inputs<'a>(
             Some(mapped_candidate(object_json, desired_state)?),
             Some(mapped_reference(resource_reference, desired_state)?),
         )),
-        NativeResourceQualification::CredentialDelivery { .. }
+        NativeResourceQualification::AbImageRollout { .. }
+        | NativeResourceQualification::CredentialDelivery { .. }
         | NativeResourceQualification::NetworkEndpoint { .. }
         | NativeResourceQualification::HostStorage { .. }
         | NativeResourceQualification::HostNetworkPolicy { .. }
@@ -1464,6 +1466,9 @@ fn path_claims_overlap(left: &str, right: &str) -> bool {
 
 fn physical_claim(qualification: &NativeResourceQualification) -> (&'static str, String, bool) {
     match qualification {
+        NativeResourceQualification::AbImageRollout { .. } => {
+            ("ab-image-rollout", "machine".to_string(), false)
+        }
         NativeResourceQualification::ManagedConfiguration { destination, .. } => {
             ("managed-configuration", destination.clone(), true)
         }
@@ -1600,6 +1605,7 @@ fn is_native_interface(interface: &str) -> bool {
             | aos_ability_model::builtin::HOST_STORAGE_INTERFACE_NAME
             | aos_ability_model::builtin::HOST_NETWORK_POLICY_INTERFACE_NAME
             | aos_ability_model::builtin::POSTGRESQL_EFFECTS_INTERFACE_NAME
+            | aos_ability_model::builtin::AB_IMAGE_ROLLOUT_INTERFACE_NAME
             | "aos.nginx-validation"
     )
 }
@@ -1611,6 +1617,9 @@ fn qualification_supports_interface(
     matches!(
         (qualification, interface),
         (
+            NativeResourceQualification::AbImageRollout { .. },
+            aos_ability_model::builtin::AB_IMAGE_ROLLOUT_INTERFACE_NAME
+        ) | (
             NativeResourceQualification::ManagedConfiguration { .. },
             "aos.managed-configuration-effects"
         ) | (
@@ -1656,7 +1665,8 @@ fn mapped_resource_reference<'a>(
         | NativeResourceQualification::KubernetesObject {
             resource_reference, ..
         } => resource_reference,
-        NativeResourceQualification::NginxValidation { .. }
+        NativeResourceQualification::AbImageRollout { .. }
+        | NativeResourceQualification::NginxValidation { .. }
         | NativeResourceQualification::CredentialDelivery { .. }
         | NativeResourceQualification::NetworkEndpoint { .. }
         | NativeResourceQualification::HostStorage { .. }

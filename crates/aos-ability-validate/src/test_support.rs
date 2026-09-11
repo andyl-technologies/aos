@@ -36,13 +36,30 @@ impl PlanFixture {
     ///
     /// Panics when the fixture does not contain exactly one valid interface.
     pub fn refresh_interface(&mut self) {
+        self.refresh_interface_with_features(BTreeSet::new());
+    }
+
+    /// Rebuilds the interface catalog with an explicit format-feature set.
+    ///
+    /// This variant supports fixtures that replace the baseline interface with
+    /// a versioned built-in contract while retaining the same cross-document
+    /// identity rewrite as [`Self::refresh_interface`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture does not contain exactly one interface valid
+    /// under `supported_features`.
+    pub fn refresh_interface_with_features(
+        &mut self,
+        supported_features: BTreeSet<RequiredFeature>,
+    ) {
         let [interface] = self.interfaces.as_slice() else {
             panic!("the minimal test fixture must contain exactly one interface");
         };
         let interface_key = interface
             .interface_key()
             .expect("test interface must have a canonical key");
-        self.context = ValidationContext::new(BTreeSet::new(), self.interfaces.clone())
+        self.context = ValidationContext::new(supported_features, self.interfaces.clone())
             .expect("mutated test interface must validate");
         for provider in &mut self.binding_inputs.environment.providers {
             provider.interface = interface_key.clone();

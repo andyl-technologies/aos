@@ -18,8 +18,10 @@ use crate::{
 };
 
 mod resource;
+mod rollout;
 
 pub use resource::*;
+pub use rollout::*;
 
 /// Names the native systemd manager interface.
 pub const SYSTEMD_MANAGER_INTERFACE_NAME: &str = "aos.systemd-manager";

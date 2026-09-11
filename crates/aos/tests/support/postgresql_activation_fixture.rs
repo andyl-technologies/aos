@@ -1747,6 +1747,7 @@ fn apply_negative_fault(
 
 fn qualification_kind(qualification: &NativeResourceQualification) -> &'static str {
     match qualification {
+        NativeResourceQualification::AbImageRollout { .. } => "ab-image-rollout",
         NativeResourceQualification::ManagedConfiguration { .. } => "managed-configuration",
         NativeResourceQualification::SystemdService { .. } => "systemd-service",
         NativeResourceQualification::NginxValidation { .. } => "nginx-validation",

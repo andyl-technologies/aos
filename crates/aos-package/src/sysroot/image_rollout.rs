@@ -17,6 +17,20 @@ use super::{
     read_immutable_os_release, read_toplevel_meta, running_image_generation, write_atomic_durable,
 };
 
+mod ability;
+mod adapter;
+mod process;
+
+pub(super) use ability::retained_uki_entry_ids;
+pub(crate) use ability::{
+    AbilityRolloutOutcome, AbilityRolloutPhase, AbilityRolloutState, NativeAbRolloutBackend,
+    PhysicalRolloutObservation,
+};
+pub(crate) use adapter::{
+    NativeAbRolloutAdapter, NativeAbRolloutCatalog, SystemAbRolloutPlatform,
+    preflight_native_ab_rollout,
+};
+
 const IMAGE_ROLLOUT_SCHEMA: &str = "aos.image-rollout/v1";
 
 pub(super) const fn is_qualified_image_rollout(mode: SystemTransitionMode, drain: bool) -> bool {

@@ -16,6 +16,15 @@
       "post-publication-reload-failure-retains-new-configuration-and-old-or-unknown-consumer-state"
       "rollback-revalidates-and-retains-transaction-evidence"
     ];
+    ability-native-image-rollout = [
+      "advisory-exact-candidate-staging-without-selection-or-reboot"
+      "authenticated-rollout-plan-and-exact-native-request"
+      "booted-candidate-health-hook-before-config-generation-commit"
+      "healthy-provider-and-journal-evidence-before-physical-commit"
+      "failed-health-mark-reboot-and-predecessor-retention"
+      "exact-generation-roots-and-uki-retention"
+      "post-expiry-rollout-root-retirement"
+    ];
     ability-native-kubernetes = [
       "authenticated-k3s-bootstrap-and-provider-authority"
       "exact-service-and-kubernetes-object-resource-mapping"
@@ -44,6 +53,7 @@
   };
   requiredRegressions = {
     ability-native-activation = ["checks.fleet.ability-native-activation"];
+    ability-native-image-rollout = ["checks.fleet.ability-native-image-rollout"];
     ability-native-kubernetes = ["checks.fleet.ability-native-kubernetes"];
     ability-native-postgresql = ["checks.fleet.ability-native-postgresql"];
     ability-native-recovery = ["checks.fleet.ability-native-power-loss"];
@@ -51,6 +61,7 @@
   };
   requiredProductionOnly = {
     ability-native-activation = false;
+    ability-native-image-rollout = true;
     ability-native-kubernetes = false;
     ability-native-postgresql = false;
     ability-native-recovery = false;
@@ -80,6 +91,15 @@ in {
         production_only = false;
         checks = requiredChecks.ability-native-activation;
         regressions = requiredRegressions.ability-native-activation;
+        invalidated_by = requiredInvalidation;
+      };
+      ability-native-image-rollout = {
+        phase = "staging";
+        scope = "release";
+        method = "automated";
+        production_only = true;
+        checks = requiredChecks.ability-native-image-rollout;
+        regressions = requiredRegressions.ability-native-image-rollout;
         invalidated_by = requiredInvalidation;
       };
       ability-native-kubernetes = {
@@ -119,7 +139,7 @@ in {
       {
         assertion =
           nativeAdapterMatrix.cell_count
-          == 1064
+          == 1316
           && nativeAdapterMatrix.missing_production_vm_cells == nativeAdapterMatrix.cell_count;
         message = "Every native adapter method and failure boundary must retain a mandatory production-VM qualification cell.";
       }

@@ -43,7 +43,7 @@ pub(super) fn revisioned_observation_schema<const N: usize>(
     })
 }
 
-pub(super) fn resource_method(
+pub(crate) fn resource_method(
     interface: &InterfaceName,
     name: &str,
     operation_family: OperationFamily,
@@ -71,7 +71,7 @@ pub(super) fn resource_method(
     ))
 }
 
-pub(super) fn interface_document(
+pub(crate) fn interface_document(
     name: InterfaceName,
     request: ValueSchema,
     methods: BTreeMap<LocalKey, MethodDescriptor>,
@@ -93,7 +93,7 @@ pub(super) fn interface_document(
     })
 }
 
-pub(super) fn terminal_provider(
+pub(crate) fn terminal_provider(
     interface: InterfaceKey,
     handler: LocalKey,
     artifact: ArtifactReference,
@@ -108,7 +108,7 @@ pub(super) fn terminal_provider(
     })
 }
 
-pub(super) const fn bounded_string(max_length: u64) -> ValueSchema {
+pub(crate) const fn bounded_string(max_length: u64) -> ValueSchema {
     ValueSchema::String {
         max_length,
         syntax: None,

@@ -173,8 +173,25 @@
           f"image-gen-{running_image['number']}/baselib/"
           f"{running_image['module_abi']}"
       )
+      image_root = (
+          "/var/lib/profiles/image/"
+          f"image-gen-{running_image['number']}"
+      )
+      target.succeed(
+          "${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles"
+      )
+      target.succeed(
+          "test \"$(${pkgs.coreutils}/bin/stat -c %d:%i /var/lib/profiles)\" = "
+          "\"$(${pkgs.coreutils}/bin/stat -c %d:%i /nix/var/nix/gcroots/aos-profiles)\""
+      )
       target.succeed(f"test -L {baselib_root}")
       target.succeed(f"test -e $(readlink -f {baselib_root})")
+      target.succeed(f"test -L {image_root}/toplevel")
+      target.succeed(f"test -e $(readlink -f {image_root}/toplevel)")
+      target.succeed(f"test -L {image_root}/executor")
+      target.succeed(f"test -e $(readlink -f {image_root}/executor)")
+      assert target.succeed(f"readlink {image_root}/toplevel").strip() == running_image["toplevel"]
+      assert target.succeed(f"readlink {image_root}/executor").strip() == running_image["native_executor_ref"]
 
       # A retained config generation remains a complete rollback artifact
       # after GC: direct activation materializes its exact /etc lower.

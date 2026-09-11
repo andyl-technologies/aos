@@ -284,6 +284,30 @@ pub enum NetworkPolicyAction {
     Remove,
 }
 
+/// Selects one step of the built-in single-host A/B image rollout strategy.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageRolloutAction {
+    /// Installs durable roots for the exact predecessor and candidate identities.
+    Retain,
+    /// Materializes the authenticated candidate in the inactive A/B slot.
+    Prepare,
+    /// Drains workload traffic before changing the boot selection.
+    Drain,
+    /// Selects exactly one boot image as the next single-host admission.
+    Select,
+    /// Observes which authenticated image actually booted.
+    ObserveBoot,
+    /// Observes the selected image's bounded boot-health result.
+    ObserveHealth,
+    /// Withdraws a failed candidate and reselects the retained predecessor.
+    Withdraw,
+    /// Installs a bounded retention lease after the rollout reaches a terminal result.
+    Hold,
+    /// Removes an expired retention lease under fresh current authority.
+    Retire,
+}
+
 /// Identifies the initial semantic operation families.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
@@ -316,6 +340,11 @@ pub enum OperationFamily {
     HostNetworkPolicy {
         /// Selects policy mutation or observation semantics.
         action: NetworkPolicyAction,
+    },
+    /// Advances or observes one admitted single-host A/B image rollout.
+    ImageRollout {
+        /// Selects the exact rollout lifecycle action.
+        action: ImageRolloutAction,
     },
     /// Validates a candidate in its intended identity and resource views.
     ValidateCandidate,

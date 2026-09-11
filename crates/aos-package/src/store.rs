@@ -422,6 +422,32 @@ pub fn create_baselib_gc_root(
     })
 }
 
+/// Creates every ordinary GC root needed to keep one image generation usable.
+///
+/// The toplevel and native executor roots complement the evaluator root. They
+/// keep both the booted system and the exact ability runtime that owns its
+/// checked transitions alive while the generation remains in the image
+/// retention floor.
+///
+/// # Errors
+///
+/// Returns an error if an image identity is incomplete or a root cannot be
+/// created or replaced atomically.
+pub fn create_image_gc_roots(
+    image_gen_dir: &Path,
+    image: &crate::types::ImageGeneration,
+) -> Result<()> {
+    create_baselib_gc_root(image_gen_dir, image.module_abi, &image.evaluator_ref)?;
+    atomic_symlink(&image.toplevel, &image_gen_dir.join("toplevel"))?;
+
+    let executor = image
+        .native_executor_ref
+        .as_deref()
+        .context("image generation has no native executor identity")?;
+    atomic_symlink(executor, &image_gen_dir.join("executor"))?;
+    Ok(())
+}
+
 /// Computes the exact image generations whose base-library roots survive.
 ///
 /// Retention is generation-scoped, not merely ABI-scoped: two releases may
@@ -492,19 +518,19 @@ fn retained_baselib_image_generations(
     keep
 }
 
-/// Reconciles production image-scoped base-library roots with the retention
-/// floor.
+/// Reconciles production image-scoped roots with the retention floor.
 ///
 /// Roots are retained for the exact A/B-resident generations, exact retained
-/// configuration parents, and one prior-distinct-ABI recovery generation;
-/// every other image-scoped root is removed. The operation never downloads a
-/// missing base library.
+/// configuration parents, and one prior-distinct-ABI recovery generation.
+/// Each retained generation pins its evaluator, toplevel, and exact native
+/// executor; every obsolete image-scoped root is removed. The operation never
+/// downloads a missing store path.
 ///
 /// # Errors
 ///
 /// Returns an error when a required retained store path is absent or a root
 /// cannot be created or removed.
-pub fn reconcile_baselib_gc_roots(
+pub fn reconcile_image_gc_roots(
     image_profile: &Path,
     images: &crate::types::ImageGenerationState,
     configs: &crate::types::ConfigGenerationState,
@@ -515,23 +541,43 @@ pub fn reconcile_baselib_gc_roots(
     let keep = retained_baselib_image_generations(images, configs);
     for image in &images.generations {
         let dir = image_profile.join(format!("image-gen-{}", image.number));
-        let link = dir.join("baselib").join(image.module_abi.to_string());
+        let baselib = dir.join("baselib").join(image.module_abi.to_string());
+        let toplevel = dir.join("toplevel");
+        let executor = dir.join("executor");
         if keep.contains(&image.number) {
-            if !Path::new(&image.evaluator_ref).exists() {
+            let native_executor = image
+                .native_executor_ref
+                .as_deref()
+                .context("retained image generation has no native executor identity")?;
+            for (label, store_path) in [
+                ("base library", image.evaluator_ref.as_str()),
+                ("toplevel", image.toplevel.as_str()),
+                ("native executor", native_executor),
+            ] {
+                if Path::new(store_path).exists() {
+                    continue;
+                }
                 bail!(
-                    "retained image generation {} base library is unavailable: {}",
+                    "retained image generation {} {label} is unavailable: {store_path}",
                     image.number,
-                    image.evaluator_ref
                 );
             }
-            create_baselib_gc_root(&dir, image.module_abi, &image.evaluator_ref)?;
-        } else if link.exists() || link.symlink_metadata().is_ok() {
-            std::fs::remove_file(&link)
-                .with_context(|| format!("removing obsolete base-lib root {}", link.display()))?;
-            sync_directory(
-                link.parent()
-                    .context("base-library root has no parent directory")?,
-            )?;
+            create_image_gc_roots(&dir, image)?;
+        } else {
+            for root in [baselib, toplevel, executor] {
+                if root
+                    .symlink_metadata()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                {
+                    continue;
+                }
+                std::fs::remove_file(&root)
+                    .with_context(|| format!("removing obsolete image root {}", root.display()))?;
+                sync_directory(
+                    root.parent()
+                        .context("image root has no parent directory")?,
+                )?;
+            }
         }
     }
     Ok(())
@@ -1226,7 +1272,7 @@ mod tests {
             package_name: "aos-system".to_string(),
             version: number.to_string(),
             state_version: None,
-            native_executor_ref: None,
+            native_executor_ref: Some(format!("/nix/store/executor-{number}")),
             registry: "core".to_string(),
             kernel_path: None,
             evaluator_ref: format!("/nix/store/base-lib-{number}"),
@@ -1285,12 +1331,17 @@ mod tests {
         ];
         for image in &mut generations {
             let evaluator = temp.path().join(format!("base-lib-{}", image.number));
+            let toplevel = temp.path().join(format!("toplevel-{}", image.number));
+            let executor = temp.path().join(format!("executor-{}", image.number));
             std::fs::create_dir(&evaluator).unwrap();
+            std::fs::create_dir(&toplevel).unwrap();
+            std::fs::create_dir(&executor).unwrap();
             image.evaluator_ref = evaluator.to_string_lossy().into_owned();
-            create_baselib_gc_root(
+            image.toplevel = toplevel.to_string_lossy().into_owned();
+            image.native_executor_ref = Some(executor.to_string_lossy().into_owned());
+            create_image_gc_roots(
                 &image_profile.join(format!("image-gen-{}", image.number)),
-                image.module_abi,
-                &image.evaluator_ref,
+                image,
             )
             .unwrap();
         }
@@ -1310,7 +1361,7 @@ mod tests {
             generations: Vec::new(),
         };
 
-        reconcile_baselib_gc_roots(&image_profile, &images, &configs).unwrap();
+        reconcile_image_gc_roots(&image_profile, &images, &configs).unwrap();
 
         assert!(
             image_profile
@@ -1320,6 +1371,30 @@ mod tests {
         );
         assert!(image_profile.join("image-gen-2/baselib/7").is_symlink());
         assert!(image_profile.join("image-gen-3/baselib/7").is_symlink());
+        assert!(
+            image_profile
+                .join("image-gen-1/toplevel")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(
+            image_profile
+                .join("image-gen-1/executor")
+                .symlink_metadata()
+                .is_err()
+        );
+        for number in [2, 3] {
+            assert!(
+                image_profile
+                    .join(format!("image-gen-{number}/toplevel"))
+                    .is_symlink()
+            );
+            assert!(
+                image_profile
+                    .join(format!("image-gen-{number}/executor"))
+                    .is_symlink()
+            );
+        }
     }
 
     #[test]

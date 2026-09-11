@@ -229,6 +229,7 @@ fn diagnostic(args: &AbilityDiagnosticArgs, printer: &Printer) -> Result<()> {
         LocalKey::new(args.transaction.clone()).context("parsing ability transaction identity")?,
     );
     let supported_features = [
+        aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
         "abilities-v1",
         aos_ability_model::PROVIDER_STATE_FORMAT_V1,
         aos_ability_model::PROVIDER_STATE_ADOPTION_V1,

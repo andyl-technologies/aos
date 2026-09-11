@@ -82,6 +82,69 @@
       "scope": "host-resource"
     },
     {
+      "adapter": "image-rollout",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:5776469b1b825c017ced9db370a84d693631dad739b91961dee4ef14d8816c7c",
+      "interface_name": "aos.ab-image-rollout-effects",
+      "methods": [
+        {
+          "cancel": "drain",
+          "effect_class": "mutation",
+          "method": "drain",
+          "reconcile": "drain"
+        },
+        {
+          "cancel": "hold",
+          "effect_class": "mutation",
+          "method": "hold",
+          "reconcile": "hold"
+        },
+        {
+          "cancel": "observe-boot",
+          "effect_class": "observation",
+          "method": "observe-boot",
+          "reconcile": "observe-boot"
+        },
+        {
+          "cancel": "observe-health",
+          "effect_class": "observation",
+          "method": "observe-health",
+          "reconcile": "observe-health"
+        },
+        {
+          "cancel": "prepare",
+          "effect_class": "mutation",
+          "method": "prepare",
+          "reconcile": "prepare"
+        },
+        {
+          "cancel": "retain",
+          "effect_class": "mutation",
+          "method": "retain",
+          "reconcile": "retain"
+        },
+        {
+          "cancel": "retire",
+          "effect_class": "mutation",
+          "method": "retire",
+          "reconcile": "retire"
+        },
+        {
+          "cancel": "select",
+          "effect_class": "mutation",
+          "method": "select",
+          "reconcile": "select"
+        },
+        {
+          "cancel": "withdraw",
+          "effect_class": "mutation",
+          "method": "withdraw",
+          "reconcile": "withdraw"
+        }
+      ],
+      "scope": "host-machine"
+    },
+    {
       "adapter": "kubernetes-object",
       "interface_abi": 1,
       "interface_descriptor": "sha256:bbced9c501c3c41ab4b5f2a70a2945bde2128ef0a37ad900f6d9f1e2f110963e",
@@ -329,8 +392,8 @@
     }
   ],
   "limits": {
-    "max_adapters": 11,
-    "max_methods": 38,
+    "max_adapters": 12,
+    "max_methods": 47,
     "max_scenarios": 28
   },
   "matrix_schema": "aos.qualification.native-adapter-matrix/v1",

@@ -11,6 +11,7 @@
   mkSystem,
   pkgs,
   systems,
+  extraFixtureModules ? [],
 }: let
   testPackages = [
     pkgs.diffutils
@@ -75,6 +76,36 @@
     ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/drained-boot-id
   '';
   drainScript = "${drainScriptPackage}/bin/aos-fleet-drain-hook";
+  candidateHealthScriptPackage = pkgs.writeShellScriptBin "aos-fleet-candidate-health-hook" ''
+    set -eu
+    ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
+    IFS= read -r boot_id < /proc/sys/kernel/random/boot_id
+    printf '%s\n' "$boot_id" >> /var/lib/aos-test/health-boot-ids
+    booted=$(${pkgs.coreutils}/bin/readlink /run/current-system)
+    configured=$(${pkgs.coreutils}/bin/readlink -f /var/lib/profiles/system/current/toplevel)
+    printf 'candidate\t%s\t%s\t%s\n' "$boot_id" "$booted" "$configured" \
+      >> /var/lib/aos-test/health-observations
+    ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/health-boot-ids
+    ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/health-observations
+    if [ -e /var/lib/aos-test/rollout-health-fail ]; then
+      exit 1
+    fi
+  '';
+  healthScript = "${candidateHealthScriptPackage}/bin/aos-fleet-candidate-health-hook";
+  predecessorHealthScriptPackage = pkgs.writeShellScriptBin "aos-fleet-predecessor-health-hook" ''
+    set -eu
+    ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
+    IFS= read -r boot_id < /proc/sys/kernel/random/boot_id
+    booted=$(${pkgs.coreutils}/bin/readlink /run/current-system)
+    configured=$(${pkgs.coreutils}/bin/readlink -f /var/lib/profiles/system/current/toplevel)
+    printf 'predecessor\t%s\t%s\t%s\n' "$boot_id" "$booted" "$configured" \
+      >> /var/lib/aos-test/health-observations
+    ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/health-observations
+    if [ ! -e /var/lib/aos-test/rollout-health-fail ]; then
+      exit 1
+    fi
+  '';
+  predecessorHealthScript = "${predecessorHealthScriptPackage}/bin/aos-fleet-predecessor-health-hook";
   initrdControlFallback = {
     aos.boot.initrd.extraPackages = [pkgs.aos-test-agent];
     boot.initrd.systemd.services.aos-test-agent-initrd-fallback = {
@@ -102,57 +133,60 @@
   # executor ownership handoff from cross-ABI state migration.
   candidate = mkSystem {
     specialArgs.pkgs = candidatePkgs;
-    modules = [
-      ../../systems/server-verity.nix
-      initrdControlFallback
-      {
-        aos.system.version = "9999.0.0-image-rollback";
-        # The fleet machine module bakes deterministic interface naming into the
-        # initial UKI. Preserve that test-machine ABI in the independently built
-        # candidate and seed its fleet address so first-boot evaluation can run
-        # before the retained host configuration is rebound.
-        aos.boot.kernelParams = ["net.ifnames=0"];
-        aos.apm.drainScript = drainScript;
-        aos.packages.aos-test-agent.bundle = true;
-        environment.systemPackages = testPackages;
-        environment.etc."systemd/network/10-fleet-eth0.network".text = ''
-          [Match]
-          MACAddress=52:54:00:12:00:02
+    modules =
+      [
+        ../../systems/server-verity.nix
+        initrdControlFallback
+        {
+          aos.system.version = "9999.0.0-image-rollback";
+          # The fleet machine module bakes deterministic interface naming into the
+          # initial UKI. Preserve that test-machine ABI in the independently built
+          # candidate and seed its fleet address so first-boot evaluation can run
+          # before the retained host configuration is rebound.
+          aos.boot.kernelParams = ["net.ifnames=0"];
+          aos.apm.drainScript = drainScript;
+          aos.apm.healthScript = healthScript;
+          aos.packages.aos-test-agent.bundle = true;
+          environment.systemPackages = testPackages;
+          environment.etc."systemd/network/10-fleet-eth0.network".text = ''
+            [Match]
+            MACAddress=52:54:00:12:00:02
 
-          [Network]
-          Address=192.168.50.11/24
-        '';
-        systemd.services.aos-test-agent = {
-          description = "AOS VM Test Guest Agent";
-          wantedBy = ["multi-user.target"];
-          restartIfChanged = false;
-          stopIfChanged = false;
-          unitConfig.RefuseManualStop = true;
-          serviceConfig = {
-            Type = "simple";
-            ExecStart = "${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent";
-            Restart = "on-failure";
-            RestartSec = 1;
-            Environment = "PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
-          };
-        };
-        systemd.services.aos-test-agent-bootstrap = {
-          description = "Install the AOS VM test control channel";
-          wantedBy = ["multi-user.target"];
-          before = ["aos-eval.service"];
-          stopOnRemoval = false;
-          unitConfig.RefuseManualStop = true;
-          serviceConfig.Type = "oneshot";
-          script = ''
-            ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
-            ${pkgs.coreutils}/bin/ln -sfn ${candidateAgentUnit}/aos-test-agent.service \
-              /run/systemd/system/aos-test-agent.service
-            ${pkgs.systemd}/bin/systemctl daemon-reload
-            ${pkgs.systemd}/bin/systemctl start aos-test-agent.service
+            [Network]
+            Address=192.168.50.11/24
           '';
-        };
-      }
-    ];
+          systemd.services.aos-test-agent = {
+            description = "AOS VM Test Guest Agent";
+            wantedBy = ["multi-user.target"];
+            restartIfChanged = false;
+            stopIfChanged = false;
+            unitConfig.RefuseManualStop = true;
+            serviceConfig = {
+              Type = "simple";
+              ExecStart = "${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent";
+              Restart = "on-failure";
+              RestartSec = 1;
+              Environment = "PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
+            };
+          };
+          systemd.services.aos-test-agent-bootstrap = {
+            description = "Install the AOS VM test control channel";
+            wantedBy = ["multi-user.target"];
+            before = ["aos-eval.service"];
+            stopOnRemoval = false;
+            unitConfig.RefuseManualStop = true;
+            serviceConfig.Type = "oneshot";
+            script = ''
+              ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
+              ${pkgs.coreutils}/bin/ln -sfn ${candidateAgentUnit}/aos-test-agent.service \
+                /run/systemd/system/aos-test-agent.service
+              ${pkgs.systemd}/bin/systemctl daemon-reload
+              ${pkgs.systemd}/bin/systemctl start aos-test-agent.service
+            '';
+          };
+        }
+      ]
+      ++ extraFixtureModules;
   };
   candidateTop = candidate.config.system.build.toplevel;
   candidateImage = candidate.config.system.build.image.raw;
@@ -163,14 +197,18 @@
   # Image-mode machines boot the system image directly. Keep only the exact
   # byte-comparison tool needed by the slot assertions in that image; APM's
   # production libgit2 path performs the target-side registry clone.
-  targetSystem = mkSystem [
-    ../../systems/server-verity.nix
-    initrdControlFallback
-    {
-      environment.systemPackages = testPackages;
-      aos.apm.drainScript = drainScript;
-    }
-  ];
+  targetSystem = mkSystem (
+    [
+      ../../systems/server-verity.nix
+      initrdControlFallback
+      {
+        environment.systemPackages = testPackages;
+        aos.apm.drainScript = drainScript;
+        aos.apm.healthScript = predecessorHealthScript;
+      }
+    ]
+    ++ extraFixtureModules
+  );
 
   registrySystem = mkSystem [
     ../../systems/server-test.nix
@@ -185,6 +223,23 @@ in {
   name = "system-image-rollback";
   timeout = 5400;
   bootTimeout = 600;
+
+  # Reuse the exact measured candidate and image-mode machines in the
+  # structured-ability rollout acceptance test. Keeping one construction avoids
+  # qualifying two independently evaluated image identities.
+  abilityRolloutFixture = {
+    inherit
+      candidateImage
+      candidateImageDisk
+      candidateImageInfo
+      candidatePackageRuntime
+      candidateTop
+      candidateUki
+      drainScript
+      healthScript
+      predecessorHealthScript
+      ;
+  };
 
   machines = {
     registry = {

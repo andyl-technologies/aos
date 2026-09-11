@@ -172,6 +172,7 @@
     }) [
       "ability-native-activation"
       "ability-native-adapter-matrix"
+      "ability-native-image-rollout"
       "ability-native-kubernetes"
       "ability-native-postgresql"
       "ability-native-recovery"
@@ -274,6 +275,19 @@ in
   ];
   assert abilityRequirements.ability-native-activation.regressions
   == ["checks.fleet.ability-native-activation"];
+  assert abilityRequirements.ability-native-image-rollout.regressions
+  == ["checks.fleet.ability-native-image-rollout"];
+  assert abilityRequirements.ability-native-image-rollout.checks
+  == [
+    "advisory-exact-candidate-staging-without-selection-or-reboot"
+    "authenticated-rollout-plan-and-exact-native-request"
+    "booted-candidate-health-hook-before-config-generation-commit"
+    "healthy-provider-and-journal-evidence-before-physical-commit"
+    "failed-health-mark-reboot-and-predecessor-retention"
+    "exact-generation-roots-and-uki-retention"
+    "post-expiry-rollout-root-retirement"
+  ];
+  assert abilityRequirements.ability-native-image-rollout.production_only;
   assert abilityRequirements.ability-native-kubernetes.regressions
   == ["checks.fleet.ability-native-kubernetes"];
   assert abilityRequirements.ability-native-kubernetes.checks
@@ -310,13 +324,14 @@ in
   assert abilityRequirements.ability-native-adapter-matrix.regressions
   == [
     "checks.fleet.ability-native-activation"
+    "checks.fleet.ability-native-image-rollout"
     "checks.fleet.ability-native-kubernetes"
     "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
-  assert nativeAdapterMatrix.cell_count == 1064;
-  assert nativeAdapterMatrix.missing_production_vm_cells == 1064;
+  assert nativeAdapterMatrix.cell_count == 1316;
+  assert nativeAdapterMatrix.missing_production_vm_cells == 1316;
   assert abilityRequirements.ability-native-adapter-matrix.checks == [nativeAdapterMatrix.check];
   assert rejectsNativeMatrix {cells = remainingNativeCells;};
   assert rejectsNativeMatrix {cells = [firstNativeCell] ++ nativeCells;};
@@ -386,6 +401,9 @@ in
   assert rejects {
     qualification.requirements.ability-native-adapter-matrix.production_only = lib.mkForce false;
   };
+  assert rejects {
+    qualification.requirements.ability-native-image-rollout.production_only = lib.mkForce false;
+  };
   assert packageCoverage.schema_version == "aos.release.package-probe-coverage/v1";
   assert packageCoverage.total == builtins.length packageNames;
   assert packageCoverage.total
@@ -450,10 +468,16 @@ in
     "staging-delivery"
   ];
   assert !builtins.hasAttr "ability-native-adapter-matrix" releaseExecutor.passthru.qualification.scenarios;
+  assert !builtins.hasAttr "ability-native-image-rollout" releaseExecutor.passthru.qualification.scenarios;
   assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
   assert builtins.all (id:
     builtins.match ".*/aos-qualification-${id}" releaseExecutor.passthru.qualification.scenarios.${id}
-    != null) (builtins.filter (id: id != "ability-native-adapter-matrix") (builtins.attrNames abilityRequirements));
+    != null) (builtins.filter (id:
+    !(builtins.elem id [
+      "ability-native-adapter-matrix"
+      "ability-native-image-rollout"
+    ]))
+  (builtins.attrNames abilityRequirements));
   assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
   assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios == ["package-function/aos-recovery/x86_64-linux"];

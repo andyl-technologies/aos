@@ -161,7 +161,7 @@
     },
     {
       "checks": [
-        "native-adapter-matrix-v1-sha256-5dc483f564ecbded54fcfad5c1db7e070ea2ac09cf50280e781e88f48bb57244"
+        "native-adapter-matrix-v1-sha256-17ea1abb4ab4c2e76981ba77d8959cfc8167be9f520f8c05672ad01ed4870c16"
       ],
       "id": "ability-native-adapter-matrix",
       "invalidated_by": [
@@ -176,9 +176,36 @@
       "production_only": true,
       "regressions": [
         "checks.fleet.ability-native-activation",
+        "checks.fleet.ability-native-image-rollout",
         "checks.fleet.ability-native-kubernetes",
         "checks.fleet.ability-native-postgresql",
         "checks.fleet.ability-native-power-loss"
+      ],
+      "scope": "release"
+    },
+    {
+      "checks": [
+        "advisory-exact-candidate-staging-without-selection-or-reboot",
+        "authenticated-rollout-plan-and-exact-native-request",
+        "booted-candidate-health-hook-before-config-generation-commit",
+        "healthy-provider-and-journal-evidence-before-physical-commit",
+        "failed-health-mark-reboot-and-predecessor-retention",
+        "exact-generation-roots-and-uki-retention",
+        "post-expiry-rollout-root-retirement"
+      ],
+      "id": "ability-native-image-rollout",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {},
+      "method": "automated",
+      "phase": "staging",
+      "production_only": true,
+      "regressions": [
+        "checks.fleet.ability-native-image-rollout"
       ],
       "scope": "release"
     },

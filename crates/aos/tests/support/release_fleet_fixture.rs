@@ -8,6 +8,7 @@ mod artifact_consumption_fixture;
 mod initrd_contract_fixture;
 mod kubernetes_activation_fixture;
 mod postgresql_activation_fixture;
+mod rollout_activation_fixture;
 
 use std::env;
 use std::fs::{self, File};
@@ -95,6 +96,7 @@ async fn main() -> Result<()> {
         Some("postgresql-terminal-activation") => {
             postgresql_activation_fixture::generate_terminal(&arguments[1..])
         }
+        Some("rollout-activation") => rollout_activation_fixture::generate(&arguments[1..]),
         Some("ability-authority-provision") => {
             ability_activation_fixture::provision_authority(&arguments[1..])
         }

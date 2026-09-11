@@ -40,7 +40,7 @@ use super::materialize::ConfigManifest;
 use super::native_boundary_observer::NativeExecutionBoundaryObserver;
 use super::native_dispatch::{
     NativeDispatcher, NativeNoOpEvidence, OperatorAuthorizedPolicy, RetainedNativeNoOpVerifier,
-    TrustedNativeNoOpVerifier,
+    TrustedNativeNoOpVerifier, authenticate_single_image_rollout_fragment,
 };
 use crate::config::ApmConfig;
 use crate::types::ProfileScope;
@@ -917,6 +917,7 @@ fn production_evaluator() -> Result<RestrictedAbilityEvaluator> {
 
 fn supported_features() -> Result<std::collections::BTreeSet<RequiredFeature>> {
     [
+        aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
         crate::types::FEATURE_ABILITIES_V1,
         crate::types::FEATURE_ABILITY_EFFECTS_V1,
         "native-platform-policy-v1",
@@ -979,6 +980,34 @@ fn new_transaction_id() -> Result<TransactionId> {
     let key = LocalKey::new(format!("activation-{random:032x}"))
         .context("constructing native activation transaction identity")?;
     Ok(TransactionId(key))
+}
+
+/// Verifies the exact successful native rollout transaction before boot commit.
+///
+/// # Errors
+///
+/// Returns an error when the retained plan or journal is invalid, the
+/// transaction did not settle successfully, its rollout requests differ, or
+/// provider-owned health evidence does not authorize the running image.
+pub(crate) fn verify_rollout_boot_commit(
+    generation: u32,
+    transaction: &TransactionId,
+    running: u32,
+) -> Result<()> {
+    let generation = ProfileScope::System
+        .profile_path()
+        .join(format!("gen-{generation}"));
+    let source =
+        RetainedAbilityDiagnosticSource::load(generation, transaction, supported_features()?)
+            .context("authenticating retained rollout transaction")?;
+    let request = authenticate_single_image_rollout_fragment(source.plan().document())?;
+    ensure!(
+        source.terminal_result(JournalLimits::default())? == Some(TerminalResult::Succeeded),
+        "native rollout transaction did not settle successfully"
+    );
+    crate::sysroot::image_rollout::NativeAbRolloutBackend::new("/var/lib/profiles/image", "/boot")
+        .verify_boot_commit(&request, running)
+        .context("verifying provider-owned rollout health evidence")
 }
 
 struct ProductionNoOpVerifier {
