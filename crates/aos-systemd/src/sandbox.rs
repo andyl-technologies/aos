@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 use zbus::proxy::CacheProperties;
-use zbus::zvariant::{Fd, OwnedValue, Str, Value};
+use zbus::zvariant::{OwnedValue, Str, Value};
 
 use crate::client::{JobOutcome, SystemdClient};
 use crate::error::{Error, Result, is_no_such_unit};
@@ -24,6 +24,7 @@ use crate::manager_proxy::{AuxiliaryUnit, ServiceProxy, TransientProperty, UnitP
 mod discovery;
 mod exact_unit;
 mod guardian;
+mod payload_root_continuity;
 pub use discovery::{
     DiscoveredSandboxUnit, SandboxDiscoveryComparison, SandboxDiscoveryConflict,
     SandboxDiscoveryIndeterminate, SandboxDiscoveryOutcome, SandboxQuarantineEvidence,
@@ -41,7 +42,6 @@ pub use guardian::{
 const UNIT_PREFIX: &str = "aos-sandbox-";
 const UNIT_SUFFIX: &str = ".service";
 const GUARD_PREFIX: &str = "aos-lease-guard-";
-const SANDBOX_SLICE: &str = "aos-sandboxes.slice";
 // Hyphens encode slice ancestry: systemd nests this slice beneath aos.slice.
 const SANDBOX_SLICE_CGROUP: &str = "/aos.slice/aos-sandboxes.slice";
 const GUARDIAN_SLICE_CGROUP: &str =
@@ -52,52 +52,6 @@ const MAX_DEVICES: usize = 64;
 const MIN_CPU_WEIGHT: u64 = 1;
 const MAX_CPU_WEIGHT: u64 = 10_000;
 const USEC_PER_SECOND: u64 = 1_000_000;
-// This is the phase-0 candidate ceiling for the outer nspawn supervisor, not
-// the payload capability set. The VM probe must pin it against the packaged
-// nspawn build before the backend is enabled on a node.
-const NSPAWN_SUPERVISOR_CAPABILITIES: u64 = 1
-    | (1 << 1)
-    | (1 << 3)
-    | (1 << 4)
-    | (1 << 5)
-    | (1 << 6)
-    | (1 << 7)
-    | (1 << 8)
-    | (1 << 10)
-    | (1 << 12)
-    | (1 << 18)
-    | (1 << 21)
-    | (1 << 27)
-    | (1 << 29)
-    | (1 << 31);
-const NSPAWN_ADDRESS_FAMILIES: &[&str] = &["AF_UNIX", "AF_NETLINK", "AF_INET", "AF_INET6"];
-const NSPAWN_ALLOWED_SYSCALLS: &[&str] = &[
-    "@system-service",
-    "chroot",
-    "clone",
-    "clone3",
-    "fsconfig",
-    "fsmount",
-    "fsopen",
-    "mount",
-    "mount_setattr",
-    "move_mount",
-    "open_tree",
-    "pivot_root",
-    "setdomainname",
-    "sethostname",
-    "setns",
-    "umount2",
-    "unshare",
-];
-const NSPAWN_ENVIRONMENT: &[&str] = &["LANG=C.UTF-8", "PATH=", "SYSTEMD_LOG_TARGET=journal"];
-const NSPAWN_ROOT_DESCRIPTOR_ROLE: &str = "aos-sandbox-root-mount-v1";
-const NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE: &str = "aos-sandbox-attachment-anchor-v1";
-const NSPAWN_SUPERVISOR_SELINUX_CONTEXT: &str = "system_u:system_r:aos_nspawn_t:s0";
-const PAYLOAD_SELINUX_CONTEXT: &str = "system_u:system_r:aos_sandbox_payload_t:s0";
-const PAYLOAD_DROPPED_CAPABILITIES: &str = "CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM";
-const PAYLOAD_SYSTEM_CALL_FILTER: &str =
-    "~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare";
 
 /// A node-local systemd service name derived from one sandbox incarnation.
 ///
@@ -371,6 +325,18 @@ pub struct PayloadRootContinuityPolicyV1 {
     _sealed: (),
 }
 
+impl PayloadRootContinuityPolicyV1 {
+    /// Returns the domain-separated canonical digest of the fixed v1 policy.
+    ///
+    /// The digest covers the ordered nspawn argument and transient-unit
+    /// property programs, including descriptor-role vocabulary. Per-launch
+    /// values remain covered by [`SandboxUnitSpec::semantic_digest_v1`].
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        payload_root_continuity::digest_v1()
+    }
+}
+
 /// Carries the root and network pins resolved atomically for one launch assignment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxResolvedPaths {
@@ -467,34 +433,7 @@ impl SandboxNspawnCommand {
     }
 
     fn arguments(&self, has_attachment_anchor: bool) -> Vec<String> {
-        let machine = encode_hex(self.incarnation);
-        let mut arguments = vec![
-            "--boot".to_owned(),
-            "--quiet".to_owned(),
-            "--keep-unit".to_owned(),
-            "--register=no".to_owned(),
-            "--settings=no".to_owned(),
-            format!("--machine=aos-{machine}"),
-            format!("--aos-root-mount-fd={NSPAWN_ROOT_DESCRIPTOR_ROLE}"),
-            format!(
-                "--private-users={}:{}",
-                self.uid_range_start, self.uid_range_size
-            ),
-            "--private-users-ownership=map".to_owned(),
-            "--notify-ready=yes".to_owned(),
-            format!("--selinux-context={PAYLOAD_SELINUX_CONTEXT}"),
-            "--no-new-privileges=yes".to_owned(),
-            format!("--drop-capability={PAYLOAD_DROPPED_CAPABILITIES}"),
-            format!("--system-call-filter={PAYLOAD_SYSTEM_CALL_FILTER}"),
-            "--aos-payload-seccomp-profile=aos-sandbox-payload-v1".to_owned(),
-            "--aos-lifecycle-profile=aos-sandbox-lifecycle-v1".to_owned(),
-        ];
-        if has_attachment_anchor {
-            arguments.push(format!(
-                "--aos-attachment-anchor-fd={NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE}"
-            ));
-        }
-        arguments
+        payload_root_continuity::arguments(self, has_attachment_anchor)
     }
 }
 
@@ -536,16 +475,6 @@ impl SandboxResolvedPaths {
     #[must_use]
     pub fn network_namespace_path(&self) -> &str {
         &self.network_namespace_path
-    }
-}
-
-impl SandboxDevice {
-    fn property(self) -> (&'static str, &'static str) {
-        match self {
-            Self::Kvm => ("/dev/kvm", "rw"),
-            Self::Tun => ("/dev/net/tun", "rw"),
-            Self::Fuse => ("/dev/fuse", "rw"),
-        }
     }
 }
 
@@ -777,159 +706,7 @@ impl SandboxUnitSpec {
     }
 
     fn properties(&self) -> Result<Vec<TransientProperty>> {
-        let mut argv = Vec::with_capacity(self.arguments.len() + 1);
-        argv.push(self.command.executable.clone());
-        argv.extend(self.arguments.iter().cloned());
-
-        // The restricted supervisor cannot dereference the broker's procfs
-        // aliases: Linux's ptrace access check compares their capability sets.
-        // Pass the root object over D-Bus instead. Nspawn consumes this named
-        // setup descriptor without canonicalizing or forwarding it to PID 1.
-        let root_fd = self.paths.root_pin.pin.try_clone().map_err(|error| {
-            invalid(format!("cannot duplicate nspawn root descriptor: {error}"))
-        })?;
-        let mut setup_descriptors =
-            vec![(Fd::from(root_fd), NSPAWN_ROOT_DESCRIPTOR_ROLE.to_owned())];
-        if let Some(anchor) = &self.paths.attachment_anchor_pin {
-            let anchor_fd = anchor.pin.try_clone().map_err(|error| {
-                invalid(format!(
-                    "cannot duplicate nspawn attachment-anchor descriptor: {error}"
-                ))
-            })?;
-            setup_descriptors.push((
-                Fd::from(anchor_fd),
-                NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE.to_owned(),
-            ));
-        }
-
-        let mut environment = NSPAWN_ENVIRONMENT
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect::<Vec<_>>();
-        if let Some(binding) = self.launch_binding {
-            environment.push(format!(
-                "AOS_SANDBOX_LAUNCH_BINDING={}",
-                encode_hex32(binding)
-            ));
-        }
-
-        let mut properties = vec![
-            string_property("Description", format!("AOS sandbox {}", self.name)),
-            string_property("Type", "notify"),
-            string_property("NotifyAccess", "main"),
-            bool_property("Delegate", true),
-            string_property("DelegateSubgroup", "supervisor"),
-            string_property("Slice", SANDBOX_SLICE),
-            // Procfs descriptor aliases are valid only while the launching
-            // specification owns its pins. An automatic restart could resolve
-            // a recycled descriptor number after those pins are released.
-            string_property("Restart", "no"),
-            string_property("CollectMode", "inactive-or-failed"),
-            string_property("KillMode", "mixed"),
-            string_property("OOMPolicy", "kill"),
-            u64_property("CapabilityBoundingSet", NSPAWN_SUPERVISOR_CAPABILITIES),
-            complex_property(
-                "RestrictAddressFamilies",
-                (
-                    true,
-                    NSPAWN_ADDRESS_FAMILIES
-                        .iter()
-                        .map(|value| (*value).to_owned())
-                        .collect::<Vec<_>>(),
-                ),
-            )?,
-            complex_property(
-                "SystemCallFilter",
-                (
-                    true,
-                    NSPAWN_ALLOWED_SYSCALLS
-                        .iter()
-                        .map(|value| (*value).to_owned())
-                        .collect::<Vec<_>>(),
-                ),
-            )?,
-            // systemd applies repeated filter properties in order. Keep the
-            // closed allowlist, then give known startup probes nonfatal denials.
-            // Allowing bpf here would grant a SYS_ADMIN-bearing supervisor an
-            // unnecessary operation; these errno rules keep it forbidden.
-            complex_property(
-                "SystemCallFilter",
-                (
-                    false,
-                    vec!["bpf:EPERM".to_owned(), "reboot:EPERM".to_owned()],
-                ),
-            )?,
-            string_array_property("SystemCallArchitectures", vec!["native".to_owned()])?,
-            string_property("ProtectSystem", "strict"),
-            string_property("SELinuxContext", NSPAWN_SUPERVISOR_SELINUX_CONTEXT),
-            bool_property("LockPersonality", true),
-            bool_property("RestrictRealtime", true),
-            string_property("KeyringMode", "private"),
-            u32_property("UMask", 0o077),
-            complex_property("ExtraFileDescriptors", setup_descriptors)?,
-            bool_property("PrivateTmp", true),
-            // Nspawn's transient propagation/export state is private to this
-            // supervisor. The root is mounted from its received descriptor;
-            // no writable host pathname is reopened to make it accessible.
-            complex_property(
-                "TemporaryFileSystem",
-                vec![(
-                    "/run/systemd/nspawn".to_owned(),
-                    "rw,mode=0700,nosuid,nodev,noexec,size=16M".to_owned(),
-                )],
-            )?,
-            string_array_property("Environment", environment)?,
-            bool_property("SetLoginEnvironment", false),
-            string_array_property("BindsTo", vec![self.name.guardian.to_string()])?,
-            string_array_property("After", vec![self.name.guardian.to_string()])?,
-            u64_property("TasksMax", self.resources.tasks_max),
-            u64_property("MemoryHigh", self.resources.memory_high_bytes),
-            u64_property("MemoryMax", self.resources.memory_max_bytes),
-            u64_property("MemorySwapMax", 0),
-            u64_property("CPUWeight", self.resources.cpu_weight.get()),
-            bool_property("CPUAccounting", true),
-            bool_property("MemoryAccounting", true),
-            bool_property("IOAccounting", true),
-            bool_property("TasksAccounting", true),
-            string_property("DevicePolicy", "closed"),
-            string_property("NetworkNamespacePath", &self.paths.network_namespace_path),
-            u64_property(
-                "TimeoutStartUSec",
-                duration_micros(self.timeout_start, "start timeout")?,
-            ),
-            u64_property(
-                "TimeoutStopUSec",
-                duration_micros(self.timeout_stop, "stop timeout")?,
-            ),
-            exec_property(&self.command.executable, argv)?,
-        ];
-
-        if let Some(quota) = self.resources.cpu_quota_per_second {
-            properties.push(u64_property(
-                "CPUQuotaPerSecUSec",
-                duration_micros(quota, "CPU quota")?,
-            ));
-        }
-        if let Some(weight) = self.resources.io_weight {
-            properties.push(u64_property("IOWeight", weight));
-        }
-        if let Some(limit) = self.resources.open_files {
-            properties.push(u64_property("LimitNOFILE", limit));
-            properties.push(u64_property("LimitNOFILESoft", limit));
-        }
-        if !self.devices.is_empty() {
-            let allow = self
-                .devices
-                .iter()
-                .map(|device| {
-                    let (path, permissions) = device.property();
-                    (path.to_string(), permissions.to_string())
-                })
-                .collect::<Vec<_>>();
-            properties.push(complex_property("DeviceAllow", allow)?);
-        }
-
-        Ok(properties)
+        payload_root_continuity::properties(self)
     }
 }
 
@@ -1274,8 +1051,17 @@ fn string_array_property(name: &str, value: Vec<String>) -> Result<TransientProp
     complex_property(name, value)
 }
 
+fn named_exec_property(
+    name: &str,
+    executable: &str,
+    argv: Vec<String>,
+    ignore_failure: bool,
+) -> Result<TransientProperty> {
+    complex_property(name, vec![(executable.to_string(), argv, ignore_failure)])
+}
+
 fn exec_property(executable: &str, argv: Vec<String>) -> Result<TransientProperty> {
-    complex_property("ExecStart", vec![(executable.to_string(), argv, false)])
+    named_exec_property("ExecStart", executable, argv, false)
 }
 
 fn complex_property<T>(name: &str, value: T) -> Result<TransientProperty>
@@ -1322,6 +1108,8 @@ fn parse_exact_cgroup(
 mod tests {
     use std::os::fd::AsFd as _;
 
+    use zbus::zvariant::Fd;
+
     use super::*;
 
     fn descriptor_path(path: &str) -> SandboxDescriptorPath {
@@ -1362,6 +1150,65 @@ mod tests {
         )
         .and_then(|value| value.with_devices(vec![SandboxDevice::Tun]))
         .unwrap()
+    }
+
+    #[test]
+    fn root_continuity_projection_emits_exact_nspawn_arguments() {
+        let spec = fixture();
+        assert_eq!(
+            spec.arguments(),
+            &[
+                "--boot",
+                "--quiet",
+                "--keep-unit",
+                "--register=no",
+                "--settings=no",
+                "--machine=aos-abababababababababababababababab",
+                "--aos-root-mount-fd=aos-sandbox-root-mount-v1",
+                "--private-users=65536:65536",
+                "--private-users-ownership=map",
+                "--notify-ready=yes",
+                "--selinux-context=system_u:system_r:aos_sandbox_payload_t:s0",
+                "--no-new-privileges=yes",
+                concat!(
+                    "--drop-capability=",
+                    "CAP_AUDIT_CONTROL,CAP_AUDIT_READ,CAP_AUDIT_WRITE,CAP_BLOCK_SUSPEND,",
+                    "CAP_BPF,CAP_CHECKPOINT_RESTORE,CAP_DAC_READ_SEARCH,CAP_IPC_LOCK,",
+                    "CAP_IPC_OWNER,CAP_LEASE,CAP_LINUX_IMMUTABLE,CAP_MAC_ADMIN,",
+                    "CAP_MAC_OVERRIDE,CAP_MKNOD,CAP_NET_ADMIN,CAP_NET_BROADCAST,CAP_NET_RAW,",
+                    "CAP_PERFMON,CAP_SYSLOG,CAP_SYS_ADMIN,CAP_SYS_BOOT,CAP_SYS_CHROOT,",
+                    "CAP_SYS_MODULE,CAP_SYS_NICE,CAP_SYS_PACCT,CAP_SYS_PTRACE,CAP_SYS_RAWIO,",
+                    "CAP_SYS_RESOURCE,CAP_SYS_TIME,CAP_SYS_TTY_CONFIG,CAP_WAKE_ALARM"
+                ),
+                "--system-call-filter=~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare",
+                "--aos-payload-seccomp-profile=aos-sandbox-payload-v1",
+                "--aos-lifecycle-profile=aos-sandbox-lifecycle-v1",
+            ]
+        );
+
+        let with_attachment = SandboxUnitSpec::new_nspawn(
+            spec.name.clone(),
+            spec.command.clone(),
+            spec.paths
+                .clone()
+                .with_attachment_anchor(descriptor_path("/")),
+            spec.resources,
+            spec.timeout_start,
+            spec.timeout_stop,
+        )
+        .unwrap();
+        assert_eq!(
+            &with_attachment.arguments()[..spec.arguments().len()],
+            spec.arguments()
+        );
+        assert_eq!(
+            with_attachment.arguments().last().map(String::as_str),
+            Some("--aos-attachment-anchor-fd=aos-sandbox-attachment-anchor-v1")
+        );
+        assert_eq!(
+            spec.payload_root_continuity_policy().digest(),
+            with_attachment.payload_root_continuity_policy().digest()
+        );
     }
 
     #[test]
@@ -1774,11 +1621,14 @@ mod tests {
 
     #[test]
     fn property_set_is_closed_and_has_exact_dbus_shapes() {
-        let properties = fixture().properties().unwrap();
+        let spec = fixture();
+        let properties = spec.properties().unwrap();
         let names = properties
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>();
+        let projected_names = payload_root_continuity::property_names();
+        assert_eq!(names, projected_names);
         assert_eq!(
             names,
             vec![
@@ -1874,12 +1724,11 @@ mod tests {
         assert!(syscalls.iter().any(|syscall| syscall == "mount_setattr"));
         assert!(!syscalls.iter().any(|syscall| syscall == "reboot"));
         assert!(!syscalls.iter().any(|syscall| syscall == "bpf"));
-        assert!(
-            PAYLOAD_SYSTEM_CALL_FILTER
-                .split_whitespace()
-                .any(|group| group == "@reboot")
-        );
-        assert_eq!(NSPAWN_SUPERVISOR_CAPABILITIES & (1 << 22), 0);
+        assert!(spec.arguments().iter().any(|argument| {
+            argument
+                == "--system-call-filter=~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare"
+        }));
+        assert_eq!(2_820_937_211_u64 & (1 << 22), 0);
         assert!(!syscalls.iter().any(|syscall| syscall == "open_tree_attr"));
         assert!(!syscalls.iter().any(|syscall| syscall == "@mount"));
         let filters = properties
@@ -1894,6 +1743,217 @@ mod tests {
                 vec!["bpf:EPERM".to_owned(), "reboot:EPERM".to_owned()]
             )
         );
+    }
+
+    #[test]
+    fn root_continuity_projection_preserves_every_property_value() {
+        fn unique<'a>(properties: &'a [TransientProperty], target: &str) -> &'a OwnedValue {
+            let matches = properties
+                .iter()
+                .filter(|(name, _)| name == target)
+                .collect::<Vec<_>>();
+            assert_eq!(matches.len(), 1, "{target}");
+            &matches[0].1
+        }
+
+        let spec = fixture();
+        let properties = spec.properties().unwrap();
+
+        for (name, expected) in [
+            (
+                "Description",
+                "AOS sandbox aos-sandbox-abababababababababababababababab.service",
+            ),
+            ("Type", "notify"),
+            ("NotifyAccess", "main"),
+            ("DelegateSubgroup", "supervisor"),
+            ("Slice", "aos-sandboxes.slice"),
+            ("Restart", "no"),
+            ("CollectMode", "inactive-or-failed"),
+            ("KillMode", "mixed"),
+            ("OOMPolicy", "kill"),
+            ("ProtectSystem", "strict"),
+            ("SELinuxContext", "system_u:system_r:aos_nspawn_t:s0"),
+            ("KeyringMode", "private"),
+            ("DevicePolicy", "closed"),
+        ] {
+            assert_eq!(
+                <&str>::try_from(unique(&properties, name)).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            <&str>::try_from(unique(&properties, "NetworkNamespacePath")).unwrap(),
+            spec.network_namespace_path()
+        );
+
+        for (name, expected) in [
+            ("Delegate", true),
+            ("LockPersonality", true),
+            ("RestrictRealtime", true),
+            ("PrivateTmp", true),
+            ("SetLoginEnvironment", false),
+            ("CPUAccounting", true),
+            ("MemoryAccounting", true),
+            ("IOAccounting", true),
+            ("TasksAccounting", true),
+        ] {
+            assert_eq!(
+                bool::try_from(unique(&properties, name).try_clone().unwrap()).unwrap(),
+                expected,
+                "{name}"
+            );
+        }
+
+        for (name, expected) in [
+            ("CapabilityBoundingSet", 2_820_937_211),
+            ("TasksMax", 128),
+            ("MemoryHigh", 512),
+            ("MemoryMax", 1024),
+            ("MemorySwapMax", 0),
+            ("CPUWeight", 100),
+            ("TimeoutStartUSec", 30_000_000),
+            ("TimeoutStopUSec", 10_000_000),
+            ("CPUQuotaPerSecUSec", 500_000),
+            ("IOWeight", 200),
+            ("LimitNOFILE", 1024),
+            ("LimitNOFILESoft", 1024),
+        ] {
+            assert_eq!(
+                u64::try_from(unique(&properties, name).try_clone().unwrap()).unwrap(),
+                expected,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            u32::try_from(unique(&properties, "UMask").try_clone().unwrap()).unwrap(),
+            0o077
+        );
+
+        assert_eq!(
+            <(bool, Vec<String>)>::try_from(
+                unique(&properties, "RestrictAddressFamilies")
+                    .try_clone()
+                    .unwrap()
+            )
+            .unwrap(),
+            (
+                true,
+                vec![
+                    "AF_UNIX".to_owned(),
+                    "AF_NETLINK".to_owned(),
+                    "AF_INET".to_owned(),
+                    "AF_INET6".to_owned(),
+                ]
+            )
+        );
+        let syscall_filters = properties
+            .iter()
+            .filter(|(name, _)| name == "SystemCallFilter")
+            .map(|(_, value)| <(bool, Vec<String>)>::try_from(value.try_clone().unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            syscall_filters,
+            vec![
+                (
+                    true,
+                    vec![
+                        "@system-service",
+                        "chroot",
+                        "clone",
+                        "clone3",
+                        "fsconfig",
+                        "fsmount",
+                        "fsopen",
+                        "mount",
+                        "mount_setattr",
+                        "move_mount",
+                        "open_tree",
+                        "pivot_root",
+                        "setdomainname",
+                        "sethostname",
+                        "setns",
+                        "umount2",
+                        "unshare",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                ),
+                (
+                    false,
+                    vec!["bpf:EPERM".to_owned(), "reboot:EPERM".to_owned()],
+                ),
+            ]
+        );
+        assert_eq!(
+            Vec::<String>::try_from(
+                unique(&properties, "SystemCallArchitectures")
+                    .try_clone()
+                    .unwrap()
+            )
+            .unwrap(),
+            vec!["native".to_owned()]
+        );
+        assert_eq!(
+            Vec::<(String, String)>::try_from(
+                unique(&properties, "TemporaryFileSystem")
+                    .try_clone()
+                    .unwrap()
+            )
+            .unwrap(),
+            vec![(
+                "/run/systemd/nspawn".to_owned(),
+                "rw,mode=0700,nosuid,nodev,noexec,size=16M".to_owned()
+            )]
+        );
+        assert_eq!(
+            Vec::<String>::try_from(unique(&properties, "Environment").try_clone().unwrap())
+                .unwrap(),
+            vec![
+                "LANG=C.UTF-8".to_owned(),
+                "PATH=".to_owned(),
+                "SYSTEMD_LOG_TARGET=journal".to_owned(),
+            ]
+        );
+        for name in ["BindsTo", "After"] {
+            assert_eq!(
+                Vec::<String>::try_from(unique(&properties, name).try_clone().unwrap()).unwrap(),
+                vec![spec.name.guardian().to_owned()],
+                "{name}"
+            );
+        }
+
+        let descriptors = Vec::<(Fd<'static>, String)>::try_from(
+            unique(&properties, "ExtraFileDescriptors")
+                .try_clone()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            descriptors
+                .iter()
+                .map(|(_, role)| role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["aos-sandbox-root-mount-v1"]
+        );
+        assert_eq!(
+            Vec::<(String, String)>::try_from(
+                unique(&properties, "DeviceAllow").try_clone().unwrap()
+            )
+            .unwrap(),
+            vec![("/dev/net/tun".to_owned(), "rw".to_owned())]
+        );
+
+        let exec_start = Vec::<(String, Vec<String>, bool)>::try_from(
+            unique(&properties, "ExecStart").try_clone().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(exec_start.len(), 1);
+        assert_eq!(exec_start[0].0, spec.executable());
+        assert_eq!(exec_start[0].1[0], spec.executable());
+        assert_eq!(&exec_start[0].1[1..], spec.arguments());
+        assert!(!exec_start[0].2);
     }
 
     #[test]
