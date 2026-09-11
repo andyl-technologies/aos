@@ -22,11 +22,11 @@
   aos.roles.server.enable = true;
 
   # Signed normal and A/B recovery UKIs must coexist with the inactive-copy
-  # publication transaction. Keep this test fixture's larger storage and
-  # direct-download contracts scoped away from the production server image.
+  # publication transaction have required up to 528 MiB. Earlier complete
+  # compressed fixtures reached 787 MiB; keep both allowances local to this test.
   aos.image.budgets = {
-    maxEspMiB = 512;
-    maxDownloadMiB = 768;
+    maxEspMiB = 544;
+    maxDownloadMiB = 800;
   };
   aos.image.allowTestArtifacts = true;
 
