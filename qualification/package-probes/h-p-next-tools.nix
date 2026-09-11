@@ -160,7 +160,7 @@ in {
   meson = mkCommandProbe {
     package = "meson";
     primaryInput = "A Meson project that configures one text file without a compiler.";
-    primaryOperation = "Configure the project through meson setup.";
+    primaryOperation = "Configure the project through meson setup with its configuration-only backend.";
     primaryExpected = "Meson creates a build directory containing answer=42.";
     primaryFiles."meson.build" = ''
       project('qualification')
@@ -169,7 +169,7 @@ in {
     primaryFiles."answer.in" = "answer=42\n";
     primarySteps = [
       {
-        argv = ["@out@/bin/meson" "setup" "build"];
+        argv = ["@out@/bin/meson" "setup" "--backend=none" "build"];
         exit_code = 0;
       }
     ];

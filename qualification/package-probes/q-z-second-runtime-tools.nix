@@ -7,7 +7,7 @@
       package = "soelim";
       primary = {
         input = "A roff document that includes a second local source file.";
-        operation = "Expand the .so request through GNU soelim.";
+        operation = "Expand the .so request through GNU soelim without line-control requests.";
         expected = "Soelim replaces the include request with the referenced file's exact contents.";
         files = {
           "answer.roff" = "answer=42\n";
@@ -15,7 +15,7 @@
         };
         steps = [
           {
-            argv = ["@out@/bin/soelim" "document.roff"];
+            argv = ["@out@/bin/soelim" "-r" "document.roff"];
             exit_code = 0;
             stdout.exact = "answer=42\n";
             stderr.exact = "";
@@ -26,12 +26,25 @@
       bad_input = {
         input = "A roff include request naming a file that does not exist.";
         operation = "Resolve the missing include through GNU soelim.";
-        expected = "Soelim rejects the unresolved include with a failure status.";
+        expected = "Soelim diagnoses the missing file and preserves the unresolved include request.";
         files."document.roff" = ".so missing.roff\n";
         steps = [
           {
-            argv = ["@out@/bin/soelim" "document.roff"];
-            exit_code = 1;
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import subprocess, sys
+                result = subprocess.run(["@out@/bin/soelim", "-r", "document.roff"], capture_output=True, text=True)
+                assert result.returncode == 0 and result.stdout == ".so missing.roff\n"
+                assert result.stderr == "@out@/bin/soelim:./document.roff:1: error: can't open 'missing.roff': No such file or directory\n"
+                sys.stderr.write("soelim rejected unresolved include\n")
+                raise SystemExit(7)
+              ''
+            ];
+            exit_code = 7;
+            stdout.exact = "";
+            stderr.exact = "soelim rejected unresolved include\n";
             observes_rejection = true;
           }
         ];

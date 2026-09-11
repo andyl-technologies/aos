@@ -46,7 +46,7 @@ in {
     primaryExpected = "Iptables emits the equivalent nft add-rule command.";
     primarySteps = [
       {
-        argv = ["@out@/bin/iptables-translate" "-A" "INPUT" "-p" "tcp" "--dport" "80" "-j" "ACCEPT"];
+        argv = ["@out@/sbin/iptables-translate" "-A" "INPUT" "-p" "tcp" "--dport" "80" "-j" "ACCEPT"];
         exit_code = 0;
         stdout.exact = "nft 'add rule ip filter INPUT tcp dport 80 counter accept'\n";
         stderr.exact = "";
@@ -57,7 +57,7 @@ in {
     badExpected = "Iptables rejects the unknown protocol with status 2.";
     badSteps = [
       {
-        argv = ["@out@/bin/iptables-translate" "-A" "INPUT" "-p" "qualification-invalid" "-j" "ACCEPT"];
+        argv = ["@out@/sbin/iptables-translate" "-A" "INPUT" "-p" "qualification-invalid" "-j" "ACCEPT"];
         exit_code = 2;
         stdout.exact = "";
         observes_rejection = true;

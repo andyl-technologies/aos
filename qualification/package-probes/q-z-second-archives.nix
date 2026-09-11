@@ -45,7 +45,8 @@
           {
             argv = ["@out@/bin/zip" "-q" "missing.zip" "missing.txt"];
             exit_code = 12;
-            stdout.exact = "";
+            stdout.exact = "\nzip error: Nothing to do! (missing.zip)\n";
+            stderr.exact = "";
             observes_rejection = true;
           }
         ];
@@ -95,7 +96,16 @@
           {
             argv = ["@out@/bin/unzip" "-tqq" "invalid.zip"];
             exit_code = 9;
-            stdout.exact = "";
+            stdout.exact = ''
+              [invalid.zip]
+                End-of-central-directory signature not found.  Either this file is not
+                a zipfile, or it constitutes one disk of a multi-part archive.  In the
+                latter case the central directory and zipfile comment will be found on
+                the last disk(s) of this archive.
+              unzip:  cannot find zipfile directory in one of invalid.zip or
+                      invalid.zip.zip, and cannot find invalid.zip.ZIP, period.
+            '';
+            stderr.exact = "";
             observes_rejection = true;
           }
         ];

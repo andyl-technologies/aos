@@ -97,7 +97,7 @@ in {
   hdparm = mkHelpProbe {
     package = "hdparm";
     directory = "sbin";
-    helpArgument = "--help";
+    helpArgument = "-h";
     helpNeedle = "usage";
   };
 
