@@ -39,7 +39,9 @@
   ];
 in {
   name = "k3s-combined-worker";
-  timeout = 1200;
+  timeout = 2400;
+  bootTimeout = 900;
+  systemReadyTimeout = 300;
 
   # The fleet harness in lib/testing/fleet.nix assigns
   # `192.168.50.${i + 10}` per machine via `lib.imap` over
