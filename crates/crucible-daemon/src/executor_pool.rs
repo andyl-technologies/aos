@@ -126,6 +126,7 @@ struct PreparedResultJournalTestBarrier {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 impl PreparedResultJournalTestBarrier {
     fn wait(&self) {
         let Some(entered) = self.entered.lock().expect("journal barrier signal").take() else {

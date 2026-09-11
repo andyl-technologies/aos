@@ -529,20 +529,17 @@ fn drive_to_pending_boundary(
             }
             EquivalenceTopology::SingleNode => true,
         };
-        if topology_ready && observed_measurement_begin && pending.is_some() {
+        if topology_ready && observed_measurement_begin {
+            let Some(pending) = pending else {
+                continue;
+            };
             assert!(
                 lifecycle
                     .exact_checkpoint_ready()
                     .expect("inspect exact boundary"),
                 "pending choice boundary must be checkpoint ready"
             );
-            return capture_boundary_evidence(
-                lifecycle,
-                source,
-                configuration,
-                pending.expect("pending choice observed"),
-                topology,
-            );
+            return capture_boundary_evidence(lifecycle, source, configuration, pending, topology);
         }
     }
     panic!("equivalence fixture did not reach the complete pending boundary");

@@ -74,7 +74,7 @@ pub(super) fn build(
         &world,
         &plan,
         &properties,
-        Seed::from_u64(0xa70_1c),
+        Seed::from_u64(0x000a_701c),
         0,
     )?;
 
@@ -133,7 +133,7 @@ pub(super) fn build_equivalence(
         &plan,
         &properties,
         &measurements,
-        Seed::from_u64(0xa70_1c),
+        Seed::from_u64(0x000a_701c),
         0,
     )?
     .with_selectables(selectables)?;
@@ -177,7 +177,7 @@ pub(super) fn build_single_node_equivalence(
         &plan,
         &properties,
         &measurements,
-        Seed::from_u64(0xa70_1d),
+        Seed::from_u64(0x000a_701d),
         0,
     )?
     .with_selectables(selectables)?;
