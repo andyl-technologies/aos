@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   meson,
   ninja,
   pkg-config,
@@ -35,21 +37,23 @@ in
       hash = "sha256-kg0aP87ercMqz/lcLiA7MZA53UtKCN0aLf0oPRnAua4=";
     };
 
-    buildDeps = [
-      meson
-      ninja
-      pkg-config
-      flex
-      bison
-      python3
-      setuptools
-      python3-mako
-      python3-markdown
-      gtk-doc
-      glib.dev
-      glib.tools
-      util-linux
-    ];
+    buildDeps =
+      [
+        meson
+        ninja
+        pkg-config
+        flex
+        bison
+        python3
+        setuptools
+        python3-mako
+        python3-markdown
+        gtk-doc
+        glib.dev
+        glib.tools
+        util-linux
+      ]
+      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [buildPackages.gobject-introspection];
     runtimeDeps = [bash coreutils python3 setuptools python3-mako python3-markdown cairo glib libffi];
     propagatedDeps = [cairo glib.dev libffi python3-mako];
 
@@ -103,22 +107,45 @@ in
       }
       {
         name = "configure";
-        script = ''
-          mkdir -p .aos-build-tools
-          cat > .aos-build-tools/python3 <<'EOF'
-          #!${bash}/bin/bash
-          export PYTHONPATH=${pythonPath}''${PYTHONPATH:+:$PYTHONPATH}
-          exec ${python3}/bin/python3 "$@"
-          EOF
-          chmod 0755 .aos-build-tools/python3
-          export PATH="$PWD/.aos-build-tools:$PATH"
-          meson setup build \
-            $mesonFlags \
-            --prefix="$out" \
-            --buildtype=release \
-            -Dcairo=enabled \
-            -Dgtk_doc=true
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # Cross builds execute the native scanner and link target GLib's
+            # development symlinks when producing introspection dumpers.
+            export LDFLAGS="-L${glib.dev}/lib $NIX_LDFLAGS ''${LDFLAGS:-}"
+            export PKG_CONFIG_PATH=${glib.dev}/lib/pkgconfig:$PKG_CONFIG_PATH
+
+            # LD_TRACE_LOADED_OBJECTS on a binfmt executable traces QEMU,
+            # not the target. Ask the target dynamic loader directly instead.
+            sed -i \
+              "s|args.extend(\['${coreutils}/bin/env', 'LD_TRACE_LOADED_OBJECTS=1', binary.args\[0\]\])|args.extend(['${stdenv.glibc}/lib/${stdenv.hostPlatform.dynamicLinker}', '--list', binary.args[0]])|" \
+              giscanner/shlibs.py
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/ldd-target <<'EOF'
+            #!${buildPackages.bash}/bin/bash
+            exec ${stdenv.glibc}/lib/${stdenv.hostPlatform.dynamicLinker} --list "$@"
+            EOF
+            cat > .aos-build-tools/g-ir-scanner <<EOF
+            #!${buildPackages.bash}/bin/bash
+            exec ${buildPackages.gobject-introspection}/bin/g-ir-scanner --use-ldd-wrapper="$PWD/.aos-build-tools/ldd-target" "\$@"
+            EOF
+            chmod 0755 .aos-build-tools/ldd-target .aos-build-tools/g-ir-scanner
+          ''
+          + ''
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/python3 <<'EOF'
+            #!${bash}/bin/bash
+            export PYTHONPATH=${pythonPath}''${PYTHONPATH:+:$PYTHONPATH}
+            exec ${python3}/bin/python3 "$@"
+            EOF
+            chmod 0755 .aos-build-tools/python3
+            export PATH="$PWD/.aos-build-tools:$PATH"
+            meson setup build \
+              $mesonFlags \
+              --prefix="$out" \
+              --buildtype=release \
+              -Dcairo=enabled \
+              -Dgtk_doc=true
+          '';
       }
       {
         name = "build";
