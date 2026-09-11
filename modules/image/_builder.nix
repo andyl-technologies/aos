@@ -637,6 +637,7 @@
   };
 
   imageDrv = buildPackages.mkDerivation ({
+      inherit targetPlatform;
       name = "aos-image-${name}";
       src = null;
 
@@ -655,7 +656,10 @@
           runtimeClosureAudit
         ]
         ++ lib.optional localSecureBootSigning buildPackages.sbsigntools
-        ++ lib.optionals recoveryEnabled [buildPackages.binutils buildPackages.openssl]; # recovery audit + bundle signature
+        ++ lib.optionals recoveryEnabled [
+          pkgs.stdenv.binutils # Native executable with target PE support.
+          buildPackages.openssl
+        ];
 
       ROOT_IMG = "${rootfs}/root.img";
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
@@ -787,14 +791,14 @@
               cp "$RECOVERY_A_PATH" esp/EFI/AOS/recovery-a.efi
               cp "$RECOVERY_B_PATH" esp/EFI/AOS/recovery-b.efi
               for recovery_uki in "$RECOVERY_A_PATH" "$RECOVERY_B_PATH"; do
-                objcopy -O binary --only-section=.cmdline "$recovery_uki" recovery.cmdline
+                ${pkgs.stdenv.binutils}/bin/objcopy -O binary --only-section=.cmdline "$recovery_uki" recovery.cmdline
                 recovery_cmdline=$(tr -d '\000' < recovery.cmdline)
                 if [ "$recovery_cmdline" != "$RECOVERY_CMDLINE" ]; then
                   echo "recovery UKI carries a noncanonical command line" >&2
                   exit 1
                 fi
                 rm -f recovery.pcrsig
-                objcopy -O binary --only-section=.pcrsig "$recovery_uki" recovery.pcrsig 2>/dev/null || true
+                ${pkgs.stdenv.binutils}/bin/objcopy -O binary --only-section=.pcrsig "$recovery_uki" recovery.pcrsig 2>/dev/null || true
                 if [ -s recovery.pcrsig ]; then
                   echo "recovery UKI must not carry normal PCR authorization" >&2
                   exit 1

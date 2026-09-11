@@ -21,7 +21,7 @@
 ##!                toplevel's /etc/os-release)
 ##!   name       — slug used in the output filename
 ##!   version    — version string used in the output filename
-##!   stub       — optional stub PE path; defaults to x86_64 stub
+##!   stub       — optional stub PE path; defaults to the target architecture stub
 ##!                from the systemd package
 ##!   secureBootKey  — optional db private key (PEM) to sign the UKI
 ##!   secureBootCert — optional db certificate (PEM); required with key
@@ -47,8 +47,7 @@
   mkDerivation,
   stdenv,
   systemd,
-  sbsigntools,
-  openssl,
+  buildPackages,
 }: {
   kernel,
   initrd,
@@ -63,10 +62,25 @@
   pcrPublicKey ? null,
   rootHashFile ? null,
 }: let
+  efiArchitectures = {
+    x86_64 = "x64";
+    aarch64 = "aa64";
+  };
+  efiArchitecture = efiArchitectures.${stdenv.hostPlatform.constraints.cpu}
+    or (throw "aos-uki: unsupported EFI target ${stdenv.hostPlatform.system}");
+
+  # Assembly and signing run on the build platform; only the stub and kernel
+  # are target executables. This also keeps cross builds independent of binfmt.
+  inherit (buildPackages) sbsigntools openssl;
+
+  # Cross binutils executes natively while understanding the target PE format.
+  inherit (stdenv) binutils;
+  buildSystemd = buildPackages.systemd;
+
   effectiveStub =
     if stub != null
     then stub
-    else "${systemd}/lib/systemd/boot/efi/linuxx64.efi.stub";
+    else "${systemd}/lib/systemd/boot/efi/linux${efiArchitecture}.efi.stub";
   signing = secureBootKey != null;
   signArgs =
     if signing
@@ -85,15 +99,13 @@ in
     inherit version;
     src = null;
 
-    # systemd carries `ukify` (and pefile/pyelftools via the wrapper) in
-    # its `tools` output. The main systemd output is still needed for
-    # the linuxx64.efi.stub (consumed via ${effectiveStub} below).
-    # sbsigntools (sbsign) is only needed when signing.
+    # The native ukify wrapper supplies Python and its PE parsing libraries.
+    # The target systemd output contributes the architecture-specific stub.
     buildDeps =
-      [systemd.tools systemd]
+      [buildSystemd.tools buildSystemd]
       ++ (
         if measuring
-        then [openssl]
+        then [binutils openssl]
         else []
       )
       ++ (
@@ -113,7 +125,7 @@ in
           # lib/systemd (not bin), so put that on PATH — otherwise ukify
           # falls back to /usr/lib/systemd/systemd-measure (absent in the
           # sandbox) and fails.
-          export PATH="${systemd}/lib/systemd''${PATH:+:$PATH}"
+          export PATH="${buildSystemd}/lib/systemd''${PATH:+:$PATH}"
           # cmdline arrives as a Nix string; materialize to a file so
           # ukify's @path read path handles special characters and
           # trailing-newline rules consistently. When a
@@ -145,7 +157,8 @@ in
           # which case ukify measures the assembled sections and writes a
           # signed PCR policy (.pcrsig/.pcrpkey) for TPM-sealed unlock.
           uki="$out/aos-${name}-${version}.efi"
-          ${systemd.tools}/bin/ukify build \
+          ${buildSystemd.tools}/bin/ukify build \
+            --efi-arch=${efiArchitecture} \
             --stub=${effectiveStub} \
             --linux="$vmlinuz" \
             --initrd=${initrd}/initrd.img \
@@ -178,13 +191,13 @@ in
               mkdir -p pcr11-sections
               measure_args=""
               for section in linux osrel cmdline initrd ucode splash dtb uname sbat pcrpkey; do
-                ${stdenv.binutils}/bin/objcopy -O binary --only-section=.$section \
+                ${binutils}/bin/objcopy -O binary --only-section=.$section \
                   "$uki" "pcr11-sections/$section" 2>/dev/null || true
                 if [ -s "pcr11-sections/$section" ]; then
                   measure_args="$measure_args --$section=pcr11-sections/$section"
                 fi
               done
-              ${systemd}/lib/systemd/systemd-measure calculate \
+              ${buildSystemd}/lib/systemd/systemd-measure calculate \
                 --bank=sha256 $measure_args > pcr11-calculated
               expected_pcr11=""
               while IFS= read -r line; do

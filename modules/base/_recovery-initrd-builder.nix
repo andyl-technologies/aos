@@ -22,7 +22,6 @@
     (pkgs)
     aos-recovery
     bash
-    binutils
     coreutils
     cpio
     cryptsetup
@@ -30,6 +29,7 @@
     jq
     kmod
     openssl
+    pe-tools
     sbsigntools
     systemd
     util-linux
@@ -39,12 +39,12 @@
   recoveryPackages = [
     aos-recovery
     bash
-    binutils
     coreutils
     cryptsetup
     jq
     kmod
     openssl
+    pe-tools
     sbsigntools
     systemd
     util-linux
@@ -134,7 +134,7 @@ in
           ln -s ${systemd}/bin/bootctl root/bin/bootctl
           ln -s ${systemd}/bin/systemd-ask-password root/bin/systemd-ask-password
           ln -s ${systemd}/bin/udevadm root/bin/udevadm
-          ln -s ${binutils}/bin/objcopy root/bin/objcopy
+          ln -s ${pe-tools}/bin/objcopy root/bin/objcopy
           ln -s ${coreutils}/bin/cp root/bin/cp
           ln -s ${coreutils}/bin/mkdir root/bin/mkdir
           ln -s ${coreutils}/bin/sync root/bin/sync
