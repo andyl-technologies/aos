@@ -12,10 +12,13 @@
   ...
 }: let
   cfg = config.aos.containers;
+  buildPackages = pkgs.buildPackages;
   containerSchema = import ../../lib/containers/schema.nix;
+  # Archive and inventory builders execute on the build machine, even when
+  # their payload contains binaries for a different architecture.
   oci = import ../../lib/build/oci {
     inherit lib;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+    inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
   };
   retainedSource = name: source:
     pkgs.writeTextFile {
