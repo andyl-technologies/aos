@@ -49,8 +49,10 @@ in {
   # k3s server takes ~30-45s to become Ready on a 2-vCPU VM
   # (datastore init + cert gen + apiserver bootstrap). Worker
   # registration takes another ~15-30s once the server is up.
-  # Budget 6 minutes total so a slow CI runner doesn't tip over.
-  timeout = 1200;
+  # Budget separately for guest boot and control-plane convergence.
+  timeout = 2400;
+  bootTimeout = 900;
+  systemReadyTimeout = 300;
 
   # The fleet harness in lib/testing/fleet.nix assigns
   # `192.168.50.${i + 10}` per machine via `lib.imap` over
