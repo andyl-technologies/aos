@@ -103,6 +103,9 @@
 in {
   name = "container-runtime";
   timeout = 1200;
+  # Host configuration evaluation precedes agent startup and has taken 185s
+  # while the native package builds run concurrently.
+  bootTimeout = 300;
 
   machines.runtime = {
     system = runtimeSystem;
@@ -223,9 +226,20 @@ in {
     )
     assert literal_output.strip() == literal, literal_output
 
-    runtime.succeed("${nerdctl} run --rm --net none aos:latest /usr/bin/aos --version")
-    runtime.succeed("${nerdctl} run --rm --net none aos:latest /usr/bin/apm --help")
-    runtime.succeed("${nerdctl} run --rm --net none aos:latest /usr/bin/apr --help")
+    # Each invocation first copies the native snapshot, just like the workload
+    # launches above; the short default command timeout only suits exec calls.
+    runtime.succeed(
+        "${nerdctl} run --rm --net none aos:latest /usr/bin/aos --version",
+        timeout=120,
+    )
+    runtime.succeed(
+        "${nerdctl} run --rm --net none aos:latest /usr/bin/apm --help",
+        timeout=120,
+    )
+    runtime.succeed(
+        "${nerdctl} run --rm --net none aos:latest /usr/bin/apr --help",
+        timeout=120,
+    )
 
     mounts = " --volume /var/lib/aos-container-fixtures/registry:/fixtures/registry:ro"
     runtime.succeed(
@@ -304,7 +318,8 @@ in {
     # A read-only root advertises the init-derived marker. Mutation is rejected
     # by APM before config or Nix state access, while help remains executable.
     runtime.succeed(
-        "${nerdctl} run --rm --read-only --net none aos:latest /usr/bin/apm --help"
+        "${nerdctl} run --rm --read-only --net none aos:latest /usr/bin/apm --help",
+        timeout=120,
     )
     runtime.succeed(
         "set -eu; "
@@ -312,7 +327,8 @@ in {
         "/usr/bin/apm install container-runtime-tool --yes "
         ">/tmp/aos-container-read-only.out 2>&1; then exit 1; fi; "
         "grep -F 'this AOS container is read-only; user-scope package mutations are unavailable' "
-        "/tmp/aos-container-read-only.out"
+        "/tmp/aos-container-read-only.out",
+        timeout=120,
     )
     runtime.succeed(
         "${nerdctl} run --detach --name aos-runtime-read-only "
