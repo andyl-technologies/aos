@@ -30,6 +30,7 @@ rustix = { workspace = true, features = ["fs", "net", "process", "time"] }
 tokio.workspace = true
 
 [dev-dependencies]
+aos-sandbox-guardian.workspace = true
 ed25519-dalek.workspace = true
 tempfile = "3"
 

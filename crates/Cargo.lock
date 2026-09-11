@@ -854,6 +854,7 @@ dependencies = [
  "aos-proto",
  "aos-sandbox-broker",
  "aos-sandbox-core",
+ "aos-sandbox-guardian",
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
  "aos-systemd",

@@ -8,6 +8,21 @@
   incarnation = "61616161616161616161616161616161";
   runtimeUnit = "aos-sandbox-${incarnation}.service";
   guardian = "aos-lease-guard-${incarnation}";
+  isolationFirstIncarnation = "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d";
+  isolationSecondIncarnation = "81818181818181818181818181818181";
+  expiringFirstIncarnation = "85858585858585858585858585858585";
+  expiringSecondIncarnation = "89898989898989898989898989898989";
+  expiringThirdIncarnation = "8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d";
+  isolationFirstRuntimeUnit = "aos-sandbox-${isolationFirstIncarnation}.service";
+  isolationFirstGuardianUnit = "aos-lease-guard-${isolationFirstIncarnation}.service";
+  isolationSecondRuntimeUnit = "aos-sandbox-${isolationSecondIncarnation}.service";
+  isolationSecondGuardianUnit = "aos-lease-guard-${isolationSecondIncarnation}.service";
+  expiringFirstRuntimeUnit = "aos-sandbox-${expiringFirstIncarnation}.service";
+  expiringFirstGuardianUnit = "aos-lease-guard-${expiringFirstIncarnation}.service";
+  expiringSecondRuntimeUnit = "aos-sandbox-${expiringSecondIncarnation}.service";
+  expiringSecondGuardianUnit = "aos-lease-guard-${expiringSecondIncarnation}.service";
+  expiringThirdRuntimeUnit = "aos-sandbox-${expiringThirdIncarnation}.service";
+  expiringThirdGuardianUnit = "aos-lease-guard-${expiringThirdIncarnation}.service";
   workspace = "/run/aos/sandbox-pins/workspaces/qualification";
   network = "/run/aos/sandbox-pins/netns/qualification";
   testName = "plan::kernel_tests::production_compiler_worker_launch_refresh_and_stop";
@@ -21,6 +36,7 @@
   guardianReducerTestPrefix = "broker::tests::guardian::guardian_reducer_";
   stopProofWrongCgroupTestName = "worker::tests::stop_proof_rejects_recycled_leader_from_a_different_cgroup";
   guardianSystemdTestName = "broker::tests::guardian_systemd::production_worker_enforces_guardian_before_payload_across_restart_and_death";
+  guardianSystemdIsolationTestName = "broker::tests::guardian_systemd::production_guardian_runtime_isolation_and_expiry_are_enforced";
 
   fixture = pkgs.mkCargoPackage {
     pname = "aos-sandbox-host-worker-tests";
@@ -173,12 +189,15 @@
       systemd.services.aos-host-worker-qualification = {
         serviceConfig = {
           Type = "oneshot";
-          TimeoutStartSec = 180;
+          TimeoutStartSec = 240;
           Environment = [
             "AOS_SANDBOX_WORKER_QUALIFICATION=1"
             "AOS_SANDBOX_QUALIFICATION_NSPAWN=${pkgs.systemd}/bin/systemd-nspawn"
             "AOS_SANDBOX_QUALIFICATION_GUARDIAN=${pkgs.aos-sandbox-guardian}/bin/aos-sandbox-guardian"
             "AOS_SANDBOX_QUALIFICATION_SYSTEMCTL=${pkgs.systemd}/bin/systemctl"
+            "AOS_SANDBOX_QUALIFICATION_SYSTEMD_VERSION=259.8"
+            "AOS_SANDBOX_QUALIFICATION_NSENTER=${pkgs.util-linux}/bin/nsenter"
+            "AOS_SANDBOX_QUALIFICATION_SETPRIV=${pkgs.util-linux}/bin/setpriv"
           ];
         };
         script = ''
@@ -266,6 +285,14 @@
           fi
           ${pkgs.coreutils}/bin/cat "$guardian_systemd_log"
           ${pkgs.grep}/bin/grep -Fq 'AOS_GUARDIAN_SYSTEMD_COMBINED_OK' "$guardian_systemd_log"
+          guardian_systemd_isolation_log=/run/aos-guardian-systemd-isolation-root-test
+          if ! ${fixture}/bin/aos-sandbox-host-worker-tests --ignored --exact '${guardianSystemdIsolationTestName}' \
+            --test-threads=1 --nocapture > "$guardian_systemd_isolation_log" 2>&1; then
+            ${pkgs.coreutils}/bin/cat "$guardian_systemd_isolation_log"
+            exit 1
+          fi
+          ${pkgs.coreutils}/bin/cat "$guardian_systemd_isolation_log"
+          ${pkgs.grep}/bin/grep -Fq 'AOS_GUARDIAN_SYSTEMD_ISOLATION_EXPIRY_OK' "$guardian_systemd_isolation_log"
           ${pkgs.coreutils}/bin/rm -f ${workspace}/var/qualification-generation ${workspace}/var/qualification-reboot
           ${fixture}/bin/aos-sandbox-host-worker-tests --ignored --exact '${testName}' --list \
             > /run/aos-host-worker-selected-tests
@@ -278,17 +305,17 @@
   ];
 in {
   name = "sandbox-host-worker";
-  timeout = 300;
+  timeout = 360;
   machines.vm = {inherit system;};
   testScript = ''
     vm.wait_for_unit("multi-user.target", timeout=120)
     try:
-        vm.succeed("systemctl start aos-host-worker-qualification.service", timeout=200)
+        vm.succeed("systemctl start aos-host-worker-qualification.service", timeout=280)
         vm.fail("systemctl is-active --quiet ${runtimeUnit}")
     finally:
         print(vm.execute("journalctl -u aos-host-worker-qualification.service -u ${runtimeUnit} --no-pager")[1].decode("utf-8", errors="replace"))
         print(vm.execute("journalctl -k -n 100 --no-pager")[1].decode("utf-8", errors="replace"))
         print(vm.execute("${pkgs.grep}/bin/grep 'type=SECCOMP' /var/log/audit/audit.log")[1].decode("utf-8", errors="replace"))
-        vm.execute("systemctl stop ${runtimeUnit} ${guardian}.service aos-sandbox-71717171717171717171717171717171.service aos-lease-guard-71717171717171717171717171717171.service aos-sandbox-75757575757575757575757575757575.service aos-lease-guard-75757575757575757575757575757575.service")
+        vm.execute("systemctl stop ${runtimeUnit} ${guardian}.service aos-sandbox-71717171717171717171717171717171.service aos-lease-guard-71717171717171717171717171717171.service aos-sandbox-75757575757575757575757575757575.service aos-lease-guard-75757575757575757575757575757575.service ${isolationFirstRuntimeUnit} ${isolationFirstGuardianUnit} ${isolationSecondRuntimeUnit} ${isolationSecondGuardianUnit} ${expiringFirstRuntimeUnit} ${expiringFirstGuardianUnit} ${expiringSecondRuntimeUnit} ${expiringSecondGuardianUnit} ${expiringThirdRuntimeUnit} ${expiringThirdGuardianUnit}")
   '';
 }
