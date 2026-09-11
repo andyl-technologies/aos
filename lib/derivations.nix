@@ -47,6 +47,14 @@
     ;
   hardening = import ./hardening.nix;
 
+  unique = values:
+    builtins.foldl' (
+      accumulated: value:
+        if builtins.elem value accumulated
+        then accumulated
+        else accumulated ++ [value]
+    ) [] values;
+
   # Attach evaluation-only fixed-output identity without changing the
   # derivation's builder environment or store identity.
   annotateFixedOutput = drv: contract:
@@ -722,6 +730,46 @@
     ...
   }: let
     useStructuredAttrs = outputChecks != null;
+    mergeAllowed = inherited: perOutput:
+      if inherited == null
+      then perOutput
+      else if perOutput == null
+      then inherited
+      else builtins.filter (value: builtins.elem value perOutput) inherited;
+    mergeOutputCheck = output: let
+      packageCheck = outputChecks.${output} or {};
+      mergedAllowedRequisites = mergeAllowed allowedRequisites (packageCheck.allowedRequisites or null);
+      mergedAllowedReferences = mergeAllowed allowedReferences (packageCheck.allowedReferences or null);
+    in
+      packageCheck
+      // {
+        disallowedRequisites = unique (
+          disallowedRequisites ++ (packageCheck.disallowedRequisites or [])
+        );
+        disallowedReferences = unique (
+          disallowedReferences ++ (packageCheck.disallowedReferences or [])
+        );
+      }
+      // (
+        if mergedAllowedRequisites == null
+        then {}
+        else {allowedRequisites = mergedAllowedRequisites;}
+      )
+      // (
+        if mergedAllowedReferences == null
+        then {}
+        else {allowedReferences = mergedAllowedReferences;}
+      );
+    effectiveOutputChecks =
+      if !useStructuredAttrs
+      then null
+      else
+        builtins.listToAttrs (
+          builtins.map (output: {
+            name = output;
+            value = mergeOutputCheck output;
+          }) (unique (outputs ++ builtins.attrNames outputChecks))
+        );
     # Accept either `name` (direct) or `pname` (computed as pname-version).
     name =
       args.name
@@ -1043,7 +1091,7 @@
             if useStructuredAttrs
             then {
               __structuredAttrs = true;
-              inherit outputChecks;
+              outputChecks = effectiveOutputChecks;
             }
             else {}
           )
