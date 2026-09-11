@@ -3,6 +3,10 @@
   mkGoPackage,
   fetchGoModules,
   fetchurl,
+  buildPackages,
+  bash,
+  go,
+  stdenv,
 }: let
   version = "0.23.0";
   src = fetchurl {
@@ -23,6 +27,24 @@ in
     goOutput = "gopls";
     ldflags = "-s -w -X main.version=v${version}";
     doCheck = false;
+    runtimeDeps = [bash go];
+    # Retain the target Go toolchain, while cross builds still reject native Go.
+    disallowedReferences =
+      if stdenv.isCross
+      then [buildPackages.go]
+      else [];
+    postInstall = ''
+      # Workspace loading runs Go commands even when no compilation is requested.
+      mkdir -p "$out/libexec"
+      mv "$out/bin/gopls" "$out/libexec/gopls"
+      cat > "$out/bin/gopls" <<EOF
+      #!${bash}/bin/bash
+      export PATH="${go}/bin\''${PATH:+:}\$PATH"
+      exec "$out/libexec/gopls" "\$@"
+      EOF
+      chmod +x "$out/bin/gopls"
+    '';
+
     checks = {
       testing,
       self,
