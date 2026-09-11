@@ -160,17 +160,44 @@ in {
   # generation delta over the L2; then a full UEFI reboot. Budgeted
   # like apm-registry-upgrade plus the reboot.
   timeout = 3000;
+  # Hardened guest-memory initialization can take several minutes before the
+  # image's agent starts; first-boot services continue after that handshake.
+  bootTimeout = 900;
+  systemReadyTimeout = 300;
 
   machines = {
     registry = {
       system = serverWithRegistry;
       # Kernel boot with baked /var matches apm-registry-upgrade.
       packages = ["aos-registry-server" "test-static-cache-server"];
+      # Runtime package config is projected from the trusted host input.
+      # Bundling the registry only supplies its payload and configuration module.
+      metadata."host.nix" = ''
+        {
+          aos.networking.hostName = "registry";
+          aos.apm.desiredPackages = ["aos-registry-server" "test-static-cache-server"];
+          "aos-registry-server".enable = true;
+        }
+      '';
+      extraModules = [
+        {
+          # The read-only cache bind must exist before socket activation; the
+          # publication step fills it later without granting the server writes.
+          environment.etc."tmpfiles.d/fleet-registry-cache.conf".text = ''
+            d /var/lib/sysreg-cache 0755 root root - -
+          '';
+        }
+      ];
       extraClosures = [
         server2Top
         server2Image
+        server2ImageDisk
+        server2ImageInfo
         server2Uki
         pkgs.bc
+        pkgs.aos.apr
+        pkgs.gawk
+        pkgs.secure-boot-test-keys
         pkgs.sbsigntools
         pkgs.binutils
         pkgs.systemd
@@ -323,8 +350,26 @@ in {
           printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
 
-          ${pkgs.aos.apr}/bin/apr create sysreg
+          # Privileged sysroot provenance must name a registry-roster signer.
+          ${pkgs.aos.apr}/bin/apr keys generate release --registry sysreg \\
+            > /tmp/sysreg-keygen.out 2>&1
+          PUBLIC_KEY=$(${pkgs.gawk}/bin/awk '/Public key:/ {print $NF; exit}' /tmp/sysreg-keygen.out)
+          SIGNING_KEY=$HOME/.config/apm/keys/sysreg-release.key
+          ${pkgs.aos.apr}/bin/apr create sysreg \\
+            --trust-key "$PUBLIC_KEY" --trust-key-id release --key "$SIGNING_KEY"
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/sysreg.toml" <<EOF
+          [registry]
+          name = "sysreg"
+          url = "file://$HOME/.local/share/apm/registries/sysreg"
+
+          [registry.signing_keys]
+          release = "$SIGNING_KEY"
+          EOF
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
+          # Recovery-bundle verification uses the same db certificate as the UKIs.
+          mkdir -p "$REG_DIR/sb-certs"
+          cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/sysreg
           git init --bare --object-format=sha256 "$ORIGIN"
@@ -338,12 +383,13 @@ in {
             --license BSD-3-Clause \\
             --maintainer test \\
             --registry sysreg \\
+            --key-id release \\
             --no-commit
 
           set -- '${server2Uki}'/*.efi
           test "$#" -eq 1
           CANDIDATE_UKI="$1"
-          ${pkgs.aos.apr}/bin/apr --json publish '${server2Top}' \\
+          if ! ${pkgs.aos.apr}/bin/apr --json publish '${server2Top}' \\
             --name aos \\
             --version test-2 \\
             --description 'install-from-image system fixture' \\
@@ -356,7 +402,11 @@ in {
             --image-uki "$CANDIDATE_UKI" \\
             --no-ca \\
             --registry sysreg \\
-            --no-commit > /tmp/publish-system.json
+            --key-id release \\
+            --no-commit > /tmp/publish-system.json; then
+            cat /tmp/publish-system.json >&2
+            exit 1
+          fi
           index=0
           ${pkgs.jq}/bin/jq -r \\
             '.images[].ukis[].sb_signer_cert_sha256' \\
@@ -379,7 +429,13 @@ in {
           git -C "$REG_DIR" commit -m 'release: install fixtures'
           git -C "$REG_DIR" tag v1.0.0
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
-          chown -R aos-gitd:aos-gitd "$ORIGIN"
+          # StateDirectory may use an idmapped mount. Set ownership in the
+          # daemon's view so Git sees its own UID rather than the host mapping.
+          git_pid=$(systemctl show -p MainPID --value aos-registry-server-gitd.service)
+          test "$git_pid" -gt 0
+          git_owner=$(id -u aos-gitd):$(id -g aos-gitd)
+          ${pkgs.util-linux}/bin/nsenter --target "$git_pid" --mount --root --wd=/ \\
+            ${pkgs.coreutils}/bin/chown -R "$git_owner" "$ORIGIN"
           echo "$DEFAULT_BRANCH" > /tmp/sysreg-branch
       """), timeout=1200)
 
@@ -401,7 +457,7 @@ in {
           timeout=120,
       )
       target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm update 2>&1", timeout=120
+          "HOME=/tmp USER=root PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm update --registry sysreg 2>&1", timeout=120
       )
       out = target.succeed(
           "HOME=/tmp USER=root PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm search bc 2>&1",
@@ -428,28 +484,19 @@ in {
       )
 
       # ════ 5. UPGRADE the system, then reboot into it ══════════════════
-      # System scope: durable registry config + git clone into
-      # /var/lib/apm/registries (`apm update` has no --system flag; this
-      # is the documented system-scope sync, same as
-      # tests/vm/apm/e2e.nix's e2e-system-lifecycle).
-      target.succeed(textwrap.dedent("""
-          set -eu
-          mkdir -p /var/lib/apm/config/registries.d /var/lib/apm/registries \\
-            /var/lib/apm/remote /var/lib/apm/cache
-          cat > /var/lib/apm/config/registries.d/sysreg.toml <<'EOF'
-          [registry]
-          name = "sysreg"
-          url = "git://registry:9418/sysreg"
-          priority = 500
-          enabled = true
-
-          [registry.signing]
-          required = false
-          EOF
-          ${pkgs.git-minimal}/bin/git clone git://registry:9418/sysreg \\
-            /var/lib/apm/registries/sysreg
-          ln -sfn /var/lib/apm/registries/sysreg /var/lib/apm/remote/sysreg
-      """), timeout=120)
+      # Register and sync the durable system catalog through the packaged CLI
+      # before the offline upgrade resolver selects a candidate.
+      target.succeed(
+          "HOME=/tmp USER=root PATH=${pkgs.nix}/bin:$PATH "
+          "${pkgs.aos.apm}/bin/apm registry --system add --no-verify "
+          f"git://registry:9418/sysreg --name sysreg --priority 500 --branch {branch}",
+          timeout=120,
+      )
+      target.succeed(
+          "HOME=/tmp USER=root PATH=${pkgs.nix}/bin:$PATH "
+          "${pkgs.aos.apm}/bin/apm update --system --registry sysreg 2>&1",
+          timeout=120,
+      )
 
       out = target.succeed(
           "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
