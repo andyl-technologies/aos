@@ -16,15 +16,16 @@ use aos_ability_model::document::{
 };
 use aos_ability_model::identity::compare_instance_ids;
 use aos_ability_model::{
-    AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
+    ABILITY_LIMITS_V1, AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
     ContributionPermission, DesiredStateDocument, EnvironmentDocument, EnvironmentId,
     ExecutionStage, ImplementationKind, InstanceId, InterfaceDocument, InterfaceKey, LocalKey,
-    PackageDocument, ProviderImplementation, ProviderImplementationReference, RequiredFeature,
-    ResourceId, ResourceLifetime, ResourcePermission, RevisionId, ScopePath, VersionedDocument,
+    PackageDocument, ProviderImplementation, ProviderImplementationReference, RequestId,
+    RequiredFeature, ResourceId, ResourceLifetime, ResourcePermission, RevisionId, ScopePath,
+    VersionedDocument,
 };
 use aos_ability_plan::{
     BindingCandidate, CandidateSelection, CompositionError, EnabledProviderSelection,
-    RecursiveComposer, ResolutionPolicyDocument,
+    RecursiveComposer, ResolutionDecision, ResolutionPolicyDocument, Resolver,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -59,6 +60,112 @@ const PACKAGE_NAMES: [&str; 5] = [
 const K3S_INTERFACE: &str = "aos.k3s-cluster";
 const KUBERNETES_INTERFACE: &str = "aos.kubernetes-object-effects";
 const SYSTEMD_BOOTSTRAP_INTERFACE: &str = "aos.systemd-provider-bootstrap";
+const PLANNING_REJECTION_SCHEMA: &str = "aos.test.kubernetes-planning-rejection/v1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlanningFault {
+    MissingSystemdBootstrap,
+    CyclicK3sBootstrap,
+}
+
+impl PlanningFault {
+    fn parse(value: Option<&str>) -> Option<Self> {
+        match value {
+            Some("missing-systemd-bootstrap") => Some(Self::MissingSystemdBootstrap),
+            Some("cyclic-k3s-bootstrap") => Some(Self::CyclicK3sBootstrap),
+            _ => None,
+        }
+    }
+
+    const fn code(self) -> &'static str {
+        match self {
+            Self::MissingSystemdBootstrap => "missing-available-systemd-bootstrap-root",
+            Self::CyclicK3sBootstrap => "cyclic-k3s-bootstrap-lineage",
+        }
+    }
+
+    const fn expected_diagnostic(self) -> &'static str {
+        match self {
+            Self::MissingSystemdBootstrap => {
+                "binding has no exact usable environment inventory or desired-package provider evidence"
+            }
+            Self::CyclicK3sBootstrap => "provider dependency lineage contains a cycle",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PlanningTraceInput {
+    desired_state: DesiredStateDocument,
+    policy: ResolutionPolicyDocument,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct KubernetesPlanningRejection {
+    schema: &'static str,
+    fault: &'static str,
+    disposition: &'static str,
+    diagnostic: String,
+    environment: EnvironmentDocument,
+    environment_digest: Sha256Digest,
+    seed: DesiredStateDocument,
+    seed_digest: Sha256Digest,
+    bounds: PlanningTraceBounds,
+    cycle: Option<PlanningCycleEvidence>,
+    trace: Vec<PlanningTraceEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct PlanningTraceBounds {
+    maximum_rounds: u32,
+    maximum_entries: u32,
+    maximum_bytes: u64,
+    retained_rounds: u32,
+    retained_entries: u32,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct PlanningCycleEvidence {
+    nodes: Vec<InstanceId>,
+    edges: Vec<ProviderLineageEdge>,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct PlanningTraceEntry {
+    round: u32,
+    desired_state: DesiredStateDocument,
+    desired_state_digest: Sha256Digest,
+    policy: ResolutionPolicyDocument,
+    policy_digest: Sha256Digest,
+    attempted_selections: Vec<CandidateSelection>,
+    result: PlanningResolutionResult,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+enum PlanningResolutionResult {
+    Resolved {
+        decisions: Vec<ResolutionDecision>,
+        bindings: Vec<Binding>,
+        recursive_lineage: Vec<ProviderLineageEdge>,
+    },
+    Rejected {
+        diagnostic: String,
+    },
+}
+
+#[derive(Clone, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderLineageEdge {
+    request: RequestId,
+    interface: InterfaceKey,
+    consumer: InstanceId,
+    provider: InstanceId,
+}
 
 struct KubernetesFixture {
     context: ValidationContext,
@@ -125,8 +232,39 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     fs::create_dir_all(output)
         .with_context(|| format!("creating Kubernetes fixture output {}", output.display()))?;
     let (_runtime, verified) = load_verified_packages()?;
-    let fixture = KubernetesFixture::new(&verified)?;
-    let mut composed = fixture.compose(cilium_replicas, include_longhorn, fault)?;
+    let mut fixture = KubernetesFixture::new(&verified)?;
+    let planning_fault = PlanningFault::parse(fault);
+    if let Some(planning_fault) = planning_fault {
+        fixture.apply_planning_fault(planning_fault)?;
+    }
+    let mut planning_trace = Vec::new();
+    let composition = fixture.compose(
+        cilium_replicas,
+        include_longhorn,
+        fault,
+        &mut planning_trace,
+    );
+    if let Some(planning_fault) = planning_fault {
+        let diagnostic = composition
+            .err()
+            .context("negative Kubernetes planning fixture unexpectedly composed")?;
+        ensure!(
+            diagnostic.contains(planning_fault.expected_diagnostic()),
+            "negative Kubernetes planning fixture rejected for an unexpected reason: {diagnostic}"
+        );
+        write_planning_rejection(
+            output,
+            planning_fault,
+            &diagnostic,
+            &fixture,
+            &planning_trace,
+        )?;
+        bail!(
+            "Kubernetes planning rejected before effect plan ({}): {diagnostic}",
+            planning_fault.code()
+        );
+    }
+    let mut composed = composition.map_err(anyhow::Error::msg)?;
 
     let mut native_resource_map = kubernetes_native_resource_map(&composed)?;
     apply_negative_fault(fault, &mut native_resource_map, &mut composed.policies)?;
@@ -167,6 +305,149 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     )
     .with_context(|| format!("writing {}/activation.json", output.display()))?;
     Ok(())
+}
+
+fn write_planning_rejection(
+    output: &Path,
+    fault: PlanningFault,
+    diagnostic: &str,
+    fixture: &KubernetesFixture,
+    inputs: &[PlanningTraceInput],
+) -> Result<()> {
+    ensure!(
+        inputs.len() <= ABILITY_LIMITS_V1.max_resolver_rounds as usize,
+        "Kubernetes planning rejection trace exceeds the node bound"
+    );
+
+    // Replay the public resolver over the exact authenticated pass inputs. This
+    // retains real binding decisions even though the composer returns no pass on error.
+    let resolver = Resolver::new(&fixture.context);
+    let mut trace_entries = 0_u32;
+    let trace = inputs
+        .iter()
+        .enumerate()
+        .map(|(round, input)| {
+            let result = match resolver.resolve(
+                &input.policy,
+                input.desired_state.clone(),
+                fixture.environment.clone(),
+                fixture.packages.clone(),
+            ) {
+                Ok(outcome) => {
+                    let recursive_lineage = outcome
+                        .checked
+                        .bindings()
+                        .iter()
+                        .filter(|binding| binding.implementation.handler.is_none())
+                        .map(|binding| ProviderLineageEdge {
+                            request: binding.request.clone(),
+                            interface: binding.interface.clone(),
+                            consumer: binding.request.consumer.clone(),
+                            provider: binding.provider.clone(),
+                        })
+                        .collect::<Vec<_>>();
+                    trace_entries = trace_entries
+                        .saturating_add(input.policy.explicit_bindings.len() as u32)
+                        .saturating_add(outcome.decisions.len() as u32)
+                        .saturating_add(outcome.checked.bindings().len() as u32)
+                        .saturating_add(recursive_lineage.len() as u32);
+                    PlanningResolutionResult::Resolved {
+                        decisions: outcome.decisions,
+                        bindings: outcome.checked.bindings().to_vec(),
+                        recursive_lineage,
+                    }
+                }
+                Err(error) => {
+                    trace_entries =
+                        trace_entries.saturating_add(input.policy.explicit_bindings.len() as u32);
+                    PlanningResolutionResult::Rejected {
+                        diagnostic: error.to_string(),
+                    }
+                }
+            };
+            Ok(PlanningTraceEntry {
+                round: u32::try_from(round).context("Kubernetes planning trace round overflow")?,
+                desired_state: input.desired_state.clone(),
+                desired_state_digest: input.desired_state.content_digest()?,
+                policy: input.policy.clone(),
+                policy_digest: input.policy.content_digest()?,
+                attempted_selections: input.policy.explicit_bindings.clone(),
+                result,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        trace_entries <= ABILITY_LIMITS_V1.max_graph_edges,
+        "Kubernetes planning rejection trace exceeds the edge bound"
+    );
+
+    let cycle = planning_cycle_evidence(&trace);
+    ensure!(
+        (fault == PlanningFault::CyclicK3sBootstrap) == cycle.is_some(),
+        "Kubernetes planning rejection cycle evidence does not match the injected fault"
+    );
+    let seed = inputs
+        .first()
+        .context("Kubernetes planning rejection has no traced seed")?
+        .desired_state
+        .clone();
+    let evidence = KubernetesPlanningRejection {
+        schema: PLANNING_REJECTION_SCHEMA,
+        fault: fault.code(),
+        disposition: "rejected-before-effect-plan",
+        diagnostic: diagnostic.to_string(),
+        environment: fixture.environment.clone(),
+        environment_digest: fixture.environment.content_digest()?,
+        seed_digest: seed.content_digest()?,
+        seed,
+        bounds: PlanningTraceBounds {
+            maximum_rounds: ABILITY_LIMITS_V1.max_resolver_rounds,
+            maximum_entries: ABILITY_LIMITS_V1.max_graph_edges,
+            maximum_bytes: ABILITY_LIMITS_V1.max_document_bytes,
+            retained_rounds: u32::try_from(trace.len())
+                .context("Kubernetes planning trace round count overflow")?,
+            retained_entries: trace_entries,
+        },
+        cycle,
+        trace,
+    };
+    let bytes = aos_contract::canonical::to_vec(&evidence)?;
+    ensure!(
+        bytes.len() as u64 <= ABILITY_LIMITS_V1.max_document_bytes,
+        "Kubernetes planning rejection trace exceeds the byte bound"
+    );
+    fs::write(output.join("planning-rejection.json"), bytes).with_context(|| {
+        format!(
+            "writing Kubernetes planning rejection evidence under {}",
+            output.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn planning_cycle_evidence(trace: &[PlanningTraceEntry]) -> Option<PlanningCycleEvidence> {
+    let edges = trace
+        .iter()
+        .flat_map(|entry| match &entry.result {
+            PlanningResolutionResult::Resolved {
+                recursive_lineage, ..
+            } => recursive_lineage.as_slice(),
+            PlanningResolutionResult::Rejected { .. } => &[],
+        })
+        .filter(|edge| edge.consumer == edge.provider)
+        .cloned()
+        .collect::<Vec<_>>();
+    if edges.is_empty() {
+        return None;
+    }
+
+    let nodes = edges
+        .iter()
+        .flat_map(|edge| [edge.consumer.clone(), edge.provider.clone()])
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    Some(PlanningCycleEvidence { nodes, edges })
 }
 
 fn apply_negative_fault(
@@ -371,13 +652,40 @@ impl KubernetesFixture {
         })
     }
 
+    fn apply_planning_fault(&mut self, fault: PlanningFault) -> Result<()> {
+        if fault != PlanningFault::MissingSystemdBootstrap {
+            return Ok(());
+        }
+
+        let before = self.environment.providers.len();
+        self.environment
+            .providers
+            .retain(|provider| provider.interface.name.as_str() != SYSTEMD_BOOTSTRAP_INTERFACE);
+        ensure!(
+            before == self.environment.providers.len().saturating_add(1),
+            "Kubernetes fixture did not remove exactly one systemd bootstrap root"
+        );
+        ensure!(
+            !self
+                .environment
+                .providers
+                .iter()
+                .any(|provider| { provider.state == ProviderState::Available }),
+            "Kubernetes missing-bootstrap fixture retained an Available provider root"
+        );
+        Ok(())
+    }
+
     fn compose(
-        mut self,
+        &mut self,
         cilium_replicas: u16,
         include_longhorn: bool,
         fault: Option<&str>,
-    ) -> Result<ComposedKubernetes> {
-        let seed = self.seed(cilium_replicas, include_longhorn, fault)?;
+        planning_trace: &mut Vec<PlanningTraceInput>,
+    ) -> std::result::Result<ComposedKubernetes, String> {
+        let seed = self
+            .seed(cilium_replicas, include_longhorn, fault)
+            .map_err(|error| error.to_string())?;
         let mut policies = Vec::new();
         loop {
             match RecursiveComposer::new(&self.context).compose(
@@ -390,16 +698,25 @@ impl KubernetesFixture {
                 Ok(outcome) => {
                     return Ok(ComposedKubernetes {
                         seed,
-                        environment: self.environment,
+                        environment: self.environment.clone(),
                         desired_state: outcome.desired_state,
                         policies,
                         bindings: outcome.resolution.checked.bindings().to_vec(),
                     });
                 }
                 Err(CompositionError::PolicyRequired { desired_state, .. }) => {
-                    policies.push(self.policy_for(&desired_state)?);
+                    let policy = self
+                        .policy_for(&desired_state)
+                        .map_err(|error| error.to_string())?;
+                    planning_trace.push(PlanningTraceInput {
+                        desired_state: (*desired_state).clone(),
+                        policy: policy.clone(),
+                    });
+                    policies.push(policy);
                 }
-                Err(error) => bail!("composing Kubernetes ability deployment: {error:#?}"),
+                Err(error) => {
+                    return Err(format!("composing Kubernetes ability deployment: {error}"));
+                }
             }
         }
     }
@@ -450,6 +767,19 @@ impl KubernetesFixture {
                     "version": "1.8.1"
                 }),
             ));
+        }
+        if fault == Some("cyclic-k3s-bootstrap") {
+            child_requests.push(BindingRequest {
+                id: RequestId {
+                    consumer: k3s.clone(),
+                    scope: ScopePath::root(),
+                    key: key("bootstrap-lineage-cycle")?,
+                },
+                accepted_interfaces: vec![self.interface(K3S_INTERFACE)?],
+                methods: Vec::new(),
+                guarantees: Vec::new(),
+                lifetime: ResourceLifetime::Instance,
+            });
         }
         for (name, package_name, value) in addons {
             let consumer = instance(&self.environment.environment, name)?;

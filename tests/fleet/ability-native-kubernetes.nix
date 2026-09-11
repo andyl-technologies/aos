@@ -111,6 +111,96 @@ in {
           ), observed
 
 
+      def assert_kubernetes_runtime_pristine(expected_generation):
+          generation = int(runtime.succeed(
+              f"{JQ} -er '.current' /var/lib/profiles/system/state.json"
+          ).strip())
+          assert generation == expected_generation, (generation, expected_generation)
+          for unit in ("k3s.service", "containerd.service"):
+              properties = runtime.succeed(
+                  "systemctl show "
+                  "-p LoadState -p ActiveState -p SubState "
+                  "-p ExecMainStartTimestampMonotonic "
+                  + shlex.quote(unit)
+              )
+              observed = dict(
+                  line.split("=", 1)
+                  for line in properties.splitlines()
+                  if "=" in line
+              )
+              assert observed["ActiveState"] == "inactive", (unit, observed)
+              assert observed["SubState"] == "dead", (unit, observed)
+              assert observed["ExecMainStartTimestampMonotonic"] == "0", (
+                  unit,
+                  observed,
+              )
+              journal = runtime.succeed(
+                  f"journalctl --quiet --output=cat --unit {shlex.quote(unit)}"
+              )
+              assert journal == "", (unit, journal)
+          runtime.fail("test -e /etc/rancher/k3s/k3s.yaml")
+          runtime.fail("test -e /var/lib/rancher/k3s")
+
+
+      def assert_planning_rejection(label, fault, expected_code, expected_reason):
+          output = f"/run/kubernetes-activation-{label}"
+          authority = f"/run/kubernetes-authority-{label}"
+          reset_kubernetes_activation_paths(output, authority)
+          status, stdout, stderr = runtime.execute(
+              kubernetes_activation_command(
+                  output, 1, True, authority, fault
+              ),
+              timeout=1200,
+          )
+          assert status != 0, (status, stdout, stderr)
+          evidence_path = f"{output}/planning-rejection.json"
+          evidence = json.loads(runtime.succeed(
+              f"{COREUTILS}/cat {shlex.quote(evidence_path)}"
+          ))
+          assert evidence["schema"] == (
+              "aos.test.kubernetes-planning-rejection/v1"
+          ), evidence
+          assert evidence["fault"] == expected_code, evidence
+          assert evidence["disposition"] == "rejected-before-effect-plan", evidence
+          assert expected_reason in evidence["diagnostic"], evidence
+          expected_stderr = (
+              "Kubernetes planning rejected before effect plan "
+              f"({expected_code}): {evidence['diagnostic']}"
+          )
+          assert expected_stderr in stderr, (expected_stderr, stderr)
+          assert evidence["bounds"]["maximum_rounds"] == 64, evidence
+          assert evidence["bounds"]["maximum_entries"] == 1_000_000, evidence
+          assert evidence["bounds"]["maximum_bytes"] == 32 * 1024 * 1024, evidence
+          assert evidence["bounds"]["retained_rounds"] == len(evidence["trace"])
+          assert 0 < len(evidence["trace"]) <= 64, evidence
+          assert evidence["seed"] == evidence["trace"][0]["desired_state"], evidence
+          assert evidence["seed_digest"] == (
+              evidence["trace"][0]["desired_state_digest"]
+          ), evidence
+          retained_entries = 0
+          for entry in evidence["trace"]:
+              assert entry["desired_state"]["environment"] == (
+                  evidence["environment_digest"]
+              ), entry
+              assert entry["policy"]["desired_state"] == (
+                  entry["desired_state_digest"]
+              ), entry
+              assert entry["policy"]["environment"] == (
+                  evidence["environment_digest"]
+              ), entry
+              retained_entries += len(entry["attempted_selections"])
+              if entry["result"]["status"] == "resolved":
+                  retained_entries += len(entry["result"]["decisions"])
+                  retained_entries += len(entry["result"]["bindings"])
+                  retained_entries += len(entry["result"]["recursive_lineage"])
+          assert evidence["bounds"]["retained_entries"] == retained_entries, evidence
+          assert retained_entries <= evidence["bounds"]["maximum_entries"], evidence
+          runtime.fail(f"test -e {shlex.quote(output + '/activation.json')}")
+          runtime.fail(f"test -e {shlex.quote(output + '/desired.json')}")
+          runtime.fail(f"test -e {shlex.quote(output + '/policy.json')}")
+          return evidence
+
+
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-config.target", timeout=300
       )
@@ -129,6 +219,56 @@ in {
       runtime.fail("test -e /etc/rancher/k3s/k3s.yaml")
 
       publish_kubernetes_packages()
+
+      pristine_generation = int(runtime.succeed(
+          f"{JQ} -er '.current' /var/lib/profiles/system/state.json"
+      ).strip())
+      missing_bootstrap = assert_planning_rejection(
+          "missing-bootstrap",
+          "missing-systemd-bootstrap",
+          "missing-available-systemd-bootstrap-root",
+          "binding has no exact usable environment inventory or desired-package "
+          "provider evidence",
+      )
+      assert missing_bootstrap["cycle"] is None, missing_bootstrap
+      assert missing_bootstrap["trace"][-1]["result"]["status"] == "rejected", (
+          missing_bootstrap
+      )
+      assert not any(
+          provider["interface"]["name"] == "aos.systemd-provider-bootstrap"
+          for provider in missing_bootstrap["environment"]["providers"]
+      ), missing_bootstrap
+      assert not any(
+          provider["state"] == "Available"
+          for provider in missing_bootstrap["environment"]["providers"]
+      ), missing_bootstrap
+      assert_kubernetes_runtime_pristine(pristine_generation)
+
+      cyclic_bootstrap = assert_planning_rejection(
+          "cyclic-bootstrap",
+          "cyclic-k3s-bootstrap",
+          "cyclic-k3s-bootstrap-lineage",
+          "provider dependency lineage contains a cycle",
+      )
+      cycle = cyclic_bootstrap["cycle"]
+      assert cycle is not None, cyclic_bootstrap
+      assert len(cycle["nodes"]) == 1, cycle
+      assert len(cycle["edges"]) == 1, cycle
+      cycle_edge = cycle["edges"][0]
+      assert cycle_edge["consumer"] == cycle_edge["provider"], cycle_edge
+      assert cycle_edge["request"]["key"] == "bootstrap-lineage-cycle", cycle_edge
+      assert cycle_edge["interface"]["name"] == "aos.k3s-cluster", cycle_edge
+      cycle_provider_states = {
+          (provider["interface"]["name"], provider["state"])
+          for provider in cyclic_bootstrap["environment"]["providers"]
+      }
+      assert (
+          "aos.systemd-provider-bootstrap", "Available"
+      ) in cycle_provider_states, cycle_provider_states
+      assert (
+          "aos.kubernetes-object-effects", "Planned"
+      ) in cycle_provider_states, cycle_provider_states
+      assert_kubernetes_runtime_pristine(pristine_generation)
 
       activation_v1, host_v1 = prepare_activation("v1", 1, True)
       mapping_v1 = native_resource_map(activation_v1)

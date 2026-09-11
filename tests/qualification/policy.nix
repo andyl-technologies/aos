@@ -267,6 +267,15 @@ in
   == ["checks.fleet.ability-native-activation"];
   assert abilityRequirements.ability-native-kubernetes.regressions
   == ["checks.fleet.ability-native-kubernetes"];
+  assert abilityRequirements.ability-native-kubernetes.checks
+  == [
+    "authenticated-k3s-bootstrap-and-provider-authority"
+    "exact-service-and-kubernetes-object-resource-mapping"
+    "consumer-observed-kubernetes-readiness"
+    "forged-mapping-grant-and-namespace-rejected-without-mutation"
+    "object-update-removal-and-retained-owner-evidence"
+    "bounded-bootstrap-planning-rejections-before-effect-construction"
+  ];
   assert abilityRequirements.ability-native-postgresql.regressions
   == ["checks.fleet.ability-native-postgresql"];
   assert abilityRequirements.ability-native-postgresql.checks

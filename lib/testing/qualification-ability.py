@@ -1314,6 +1314,10 @@ CHECK_DETAILS = {
     "object-update-removal-and-retained-owner-evidence": (
         "Object updates and removals converged while retaining exact owner evidence."
     ),
+    "bounded-bootstrap-planning-rejections-before-effect-construction": (
+        "Missing Available bootstrap authority and cyclic K3s provider lineage were "
+        "rejected with bounded exact planning traces before effect construction."
+    ),
     "authenticated-provider-bindings-and-exact-handler-artifacts": (
         "The published guest admitted only authenticated PostgreSQL provider "
         "bindings and release-bound handler artifacts."

@@ -21,6 +21,7 @@
       "consumer-observed-kubernetes-readiness"
       "forged-mapping-grant-and-namespace-rejected-without-mutation"
       "object-update-removal-and-retained-owner-evidence"
+      "bounded-bootstrap-planning-rejections-before-effect-construction"
     ];
     ability-native-postgresql = [
       "authenticated-provider-bindings-and-exact-handler-artifacts"

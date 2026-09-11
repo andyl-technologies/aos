@@ -235,25 +235,46 @@ in {
           """), timeout=1200)
 
 
-      def generate_kubernetes_activation(
+      def kubernetes_activation_command(
           output, replicas, include_longhorn, authority, fault=None
       ):
-          fault_argument = (shlex.quote(fault) + " ") if fault else ""
+          arguments = [
+              FIXTURE,
+              "kubernetes-activation",
+              output,
+              str(replicas),
+              "true" if include_longhorn else "false",
+          ]
+          if fault:
+              arguments.append(fault)
+          arguments.extend(["--operator-authority-output", authority])
+          command = " ".join(shlex.quote(argument) for argument in arguments)
+          return (
+              f"PATH={NIX_BIN}:{COREUTILS} "
+              f"AOS_NIX_INSTANTIATE={NIX_INSTANTIATE} "
+              f"AOS_PRLIMIT={PRLIMIT} "
+              f"AOS_TEST_ABILITY_CACHE=/var/cache/aos-ability-evaluator-fixture "
+              f"{command}"
+          )
+
+
+      def reset_kubernetes_activation_paths(output, authority):
           runtime.succeed(
               f"{COREUTILS}/rm -rf {shlex.quote(output)} {shlex.quote(authority)}"
           )
           runtime.succeed(
               f"{COREUTILS}/mkdir -p {shlex.quote(output)} {shlex.quote(authority)}"
           )
+
+
+      def generate_kubernetes_activation(
+          output, replicas, include_longhorn, authority, fault=None
+      ):
+          reset_kubernetes_activation_paths(output, authority)
           runtime.succeed(
-              f"PATH={NIX_BIN}:{COREUTILS} "
-              f"AOS_NIX_INSTANTIATE={NIX_INSTANTIATE} "
-              f"AOS_PRLIMIT={PRLIMIT} "
-              f"AOS_TEST_ABILITY_CACHE=/var/cache/aos-ability-evaluator-fixture "
-              f"{FIXTURE} kubernetes-activation {shlex.quote(output)} "
-              f"{replicas} {'true' if include_longhorn else 'false'} "
-              f"{fault_argument}"
-              f"--operator-authority-output {shlex.quote(authority)}",
+              kubernetes_activation_command(
+                  output, replicas, include_longhorn, authority, fault
+              ),
               timeout=1200,
           )
           return json.loads(runtime.succeed(
