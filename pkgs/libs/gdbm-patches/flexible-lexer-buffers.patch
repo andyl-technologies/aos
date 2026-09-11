@@ -1,0 +1,76 @@
+--- a/tools/lex.l
++++ b/tools/lex.l
+@@ -72,7 +72,7 @@
+ struct file_name
+ {
+   struct file_name *next;
+-  char str[1];
++  char str[];
+ };
+ 
+ static struct file_name *file_head;
+@@ -91,7 +91,7 @@
+ char *
+ file_name_alloc (char const *s)
+ {
+-  struct file_name *f = emalloc (sizeof (*f) + strlen (s));
++  struct file_name *f = emalloc (sizeof (*f) + strlen (s) + 1);
+   strcpy (f->str, s);
+   f->next = file_head;
+   if (!file_head)
+@@ -458,7 +458,7 @@
+ {
+   struct strseg *next;
+   int len;
+-  char ptr[1];
++  char ptr[];
+ };
+ 
+ static struct strseg *strseg_head, *strseg_tail;
+@@ -492,7 +492,7 @@
+ void
+ string_addc (int c)
+ {
+-  struct strseg *seg = emalloc (sizeof (*seg));
++  struct strseg *seg = emalloc (sizeof (*seg) + 1);
+   seg->ptr[0] = c;
+   seg->len = 1;
+   strseg_attach (seg);
+--- a/tools/lex.c
++++ b/tools/lex.c
+@@ -683,7 +683,7 @@
+ struct file_name
+ {
+   struct file_name *next;
+-  char str[1];
++  char str[];
+ };
+ 
+ static struct file_name *file_head;
+@@ -702,7 +702,7 @@
+ char *
+ file_name_alloc (char const *s)
+ {
+-  struct file_name *f = emalloc (sizeof (*f) + strlen (s));
++  struct file_name *f = emalloc (sizeof (*f) + strlen (s) + 1);
+   strcpy (f->str, s);
+   f->next = file_head;
+   if (!file_head)
+@@ -2496,7 +2496,7 @@
+ {
+   struct strseg *next;
+   int len;
+-  char ptr[1];
++  char ptr[];
+ };
+ 
+ static struct strseg *strseg_head, *strseg_tail;
+@@ -2530,7 +2530,7 @@
+ void
+ string_addc (int c)
+ {
+-  struct strseg *seg = emalloc (sizeof (*seg));
++  struct strseg *seg = emalloc (sizeof (*seg) + 1);
+   seg->ptr[0] = c;
+   seg->len = 1;
+   strseg_attach (seg);
