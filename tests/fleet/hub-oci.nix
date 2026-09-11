@@ -278,6 +278,14 @@
         pkgs.nerdctl
       ];
       aos.security.pki.certificateFiles = ["${tlsCa}/ca.crt"];
+      # The transfer service must unpack into the snapshotter selected by
+      # nerdctl; its default unpack configuration only covers overlayfs.
+      environment.etc."aos-container-runtime-test.toml".text = ''
+        version = 3
+        [[plugins."io.containerd.transfer.v1.local".unpack_config]]
+        platform = "linux"
+        snapshotter = "native"
+      '';
       systemd.services.aos-container-runtime-test = {
         description = "AOS OCI qualification container runtime";
         wantedBy = ["multi-user.target"];
@@ -286,6 +294,7 @@
           Type = "notify";
           ExecStart =
             "${pkgs.containerd}/bin/containerd"
+            + " --config /etc/aos-container-runtime-test.toml"
             + " --address /run/aos-containerd/containerd.sock"
             + " --root /var/lib/aos-containerd"
             + " --state /run/aos-containerd";
@@ -381,6 +390,8 @@
 in {
   name = "hub-oci";
   timeout = 5400;
+  bootTimeout = 900;
+  systemReadyTimeout = 300;
 
   machines = {
     hub = {
@@ -533,27 +544,31 @@ in {
     """), timeout=180)
     hub.wait_until_succeeds(f"{CURL} -fsS {HUB}/healthz", timeout=120)
 
-    token = hub.succeed(textwrap.dedent(f"""
-        set -eu
-        headers=/tmp/hub-oci-login.headers
-        page=/tmp/hub-oci-console.html
-        {CURL} -sS -D "$headers" -o /dev/null -X POST \
-          --data-urlencode 'email=fleet-root@example.test' \
-          --data-urlencode 'password=fleet-root-password' \
-          {HUB}/login/password
-        cookie=$(sed -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' "$headers" | head -n1)
-        test -n "$cookie"
-        {CURL} -sS -H "Cookie: $cookie" {HUB}/-/instance > "$page"
-        csrf=$(sed -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' "$page" | head -n1)
-        test -n "$csrf"
-        {CURL} -fsS -X POST \
-          -H "Cookie: $cookie" \
-          -H 'Origin: {HUB}' \
-          -H "x-aos-csrf: $csrf" \
-          -H 'x-aos-console-route: /-/instance' \
-          {HUB}/-/auth/session-token | {JQ} -er .accessToken
-    """), timeout=120).strip()
-    assert token.startswith("ey"), "browser session did not mint a JWT"
+    def browser_session_token():
+        token = hub.succeed(textwrap.dedent(f"""
+            set -eu
+            headers=/tmp/hub-oci-login.headers
+            page=/tmp/hub-oci-console.html
+            {CURL} -sS -D "$headers" -o /dev/null -X POST \
+              --data-urlencode 'email=fleet-root@example.test' \
+              --data-urlencode 'password=fleet-root-password' \
+              {HUB}/login/password
+            cookie=$(sed -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' "$headers" | head -n1)
+            test -n "$cookie"
+            {CURL} -sS -H "Cookie: $cookie" {HUB}/-/instance > "$page"
+            csrf=$(sed -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' "$page" | head -n1)
+            test -n "$csrf"
+            {CURL} -fsS -X POST \
+              -H "Cookie: $cookie" \
+              -H 'Origin: {HUB}' \
+              -H "x-aos-csrf: $csrf" \
+              -H 'x-aos-console-route: /-/instance' \
+              {HUB}/-/auth/session-token | {JQ} -er .accessToken
+        """), timeout=120).strip()
+        assert token.startswith("ey"), "browser session did not mint a JWT"
+        return token
+
+    token = browser_session_token()
 
     # The publisher alone sees the host-built production artifact. Consumers
     # can acquire it only through the Hub Distribution route.
@@ -1066,7 +1081,7 @@ in {
     # and consume the same exact public OCI graph. These requests carry no Hub
     # session cookie, bearer, or registry credential.
     public_containers = consumer.succeed(
-        f"{CURL} -fsS {HUB}/acme/containers/-/containers"
+        f"{CURL} -fsS {HUB}/acme/containers/-/containers/repositories"
     )
     assert 'aria-current="page">Containers' in public_containers, public_containers
     assert 'repository=aos' in public_containers, public_containers
@@ -1416,6 +1431,7 @@ in {
         f"${nerdctl} login --username qualification --password-stdin "
         "192.168.50.11:8443"
     )
+    print("Pulling public and authenticated OCI references", flush=True)
     consumer.succeed(
         "${nerdctl} pull --platform linux/amd64 hub:8443/aos:latest",
         timeout=900,
@@ -1505,11 +1521,14 @@ in {
     # Without the operator-provided AOS PKI bundle the private qualification
     # CA is rejected. Mounting that normal input makes the same AOS CLI call
     # succeed from inside the scratch image.
+    print("Checking rejection without the operator PKI bundle", flush=True)
     consumer.fail(
         "${nerdctl} run --rm --net host --add-host hub:192.168.50.11 "
         "hub:8443/aos:stable /usr/bin/aos --json container inspect "
-        "hub:8443/aos:stable --hub https://hub:8443"
+        "hub:8443/aos:stable --hub https://hub:8443",
+        timeout=180,
     )
+    print("Checking the initialized container and package lifecycle", flush=True)
     mounts = (
         " --volume /var/lib/hub-oci-container-fixtures/registry:/fixtures/registry:ro"
         " --volume /etc/ssl/certs/ca-certificates.crt:"
@@ -1594,6 +1613,9 @@ in {
     )
     consumer.succeed("${nerdctl} rm --force aos-hub-runtime")
 
+    # Pulls and container initialization can outlive the short-lived session
+    # JWT. Authenticate again before reviewing later administrative mutations.
+    token = browser_session_token()
     publisher.succeed(hub_command(
         "registry container retention show acme/containers", token
     ))
