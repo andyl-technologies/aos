@@ -1,6 +1,7 @@
 ##! Nix — The purely functional package manager
 {
   mkDerivation,
+  lib,
   fetchurl,
   gnumake,
   cmake,
@@ -31,6 +32,23 @@
 }: let
   version = "2.24.12";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  linuxRuntimeLibraryPath = lib.makeLibraryPath [
+    curl
+    openssl
+    sqlite
+    boost
+    editline
+    libsodium
+    libgit2
+    brotli
+    libarchive
+    gc
+    lowdown
+    bzip2
+    zlib
+    libseccomp
+  ];
   buildMeson =
     if stdenv.isCross
     then buildPackages.meson
@@ -172,32 +190,41 @@ in
       }
       {
         name = "install";
-        script = ''
-          ninja install
+        script =
+          ''
+            ninja install
 
-          # Create legacy command symlinks (multi-call binary)
-          for cmd in nix-store nix-build nix-instantiate nix-env \
-                     nix-collect-garbage nix-copy-closure nix-daemon \
-                     nix-hash nix-prefetch-url nix-channel; do
-            if [ ! -e "$out/bin/$cmd" ]; then
-              ln -s nix "$out/bin/$cmd"
+            # Create legacy command symlinks (multi-call binary)
+            for cmd in nix-store nix-build nix-instantiate nix-env \
+                       nix-collect-garbage nix-copy-closure nix-daemon \
+                       nix-hash nix-prefetch-url nix-channel; do
+              if [ ! -e "$out/bin/$cmd" ]; then
+                ln -s nix "$out/bin/$cmd"
+              fi
+            done
+
+            # Move build-against artifacts into $dev so the runtime $out (CLI +
+            # libs) carries no headers and no pkg-config. The pkg-config files
+            # reference boost's header output; leaving them in $out would pull
+            # boost.dev back into the runtime closure. Nothing on the appliance
+            # compiles against libnix, so $out needs neither.
+            mkdir -p "$dev"
+            if [ -d "$out/include" ]; then
+              mv "$out/include" "$dev/include"
             fi
-          done
-
-          # Move build-against artifacts into $dev so the runtime $out (CLI +
-          # libs) carries no headers and no pkg-config. The pkg-config files
-          # reference boost's header output; leaving them in $out would pull
-          # boost.dev back into the runtime closure. Nothing on the appliance
-          # compiles against libnix, so $out needs neither.
-          mkdir -p "$dev"
-          if [ -d "$out/include" ]; then
-            mv "$out/include" "$dev/include"
-          fi
-          if [ -d "$out/lib/pkgconfig" ]; then
-            mkdir -p "$dev/lib"
-            mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
-          fi
-        '';
+            if [ -d "$out/lib/pkgconfig" ]; then
+              mkdir -p "$dev/lib"
+              mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
+            fi
+          ''
+          + lib.optionalString isLinuxCross ''
+            # Meson's install step replaces linker-injected cross RPATHs with
+            # Nix's own library directory. Each ELF needs its direct dependency
+            # paths restored; DT_RUNPATH is not inherited through libnix*.so.
+            for binary in "$out/bin/nix" "$out"/lib/libnix*.so; do
+              patchelf --add-rpath "$out/lib:${linuxRuntimeLibraryPath}" "$binary"
+            done
+          '';
       }
     ];
 
