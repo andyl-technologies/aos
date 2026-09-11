@@ -1498,6 +1498,36 @@
       nvidiaOpenForKernel = kernel:
         callPackage ./kernel/nvidia-open.nix {inherit kernel;};
 
+      qemu = let
+        package = callPackage ./emulation/qemu.nix {};
+      in
+        if stdenv.isCross && stdenv.hostPlatform.isLinux
+        then
+          package.overrideAttrs (previous: {
+            # Meson enables compressed disk-image support when bzip2 is found.
+            # Retain its target library through runtime-reference scrubbing.
+            runtimeDeps = previous.runtimeDeps ++ [self.bzip2];
+
+            # Linux-user emulation needs UAPI families such as sound/, beyond
+            # the linux/ and asm/ headers exported by the target glibc output.
+            # An explicit include preserves the target header identity instead
+            # of treating these non-executable inputs as native build tools.
+            phases = map (phase:
+              if phase.name == "configure"
+              then
+                phase
+                // {
+                  script =
+                    ''
+                      export C_INCLUDE_PATH="${stdenv.linuxHeaders}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+                    ''
+                    + phase.script;
+                }
+              else phase)
+            previous.phases;
+          })
+        else package;
+
       qemu-crucible = callPackage ./emulation/qemu.nix {
         pname = "qemu-crucible";
         enablePlugins = true;
