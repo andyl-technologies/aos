@@ -430,12 +430,23 @@
       inherit (spec) testScript;
       inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
+  nativeAdapterMatrixCohort = import ./tests/fleet/ability-native-power-loss.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeAdapterQualifiedCells = [
+    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result"
+  ];
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
-    ability-native-adapter-matrix = testing.mkQualificationNativeAdapterMatrixScenario {
+    ability-native-adapter-matrix = testing.mkQualificationAbilityScenario {
       name = "aos-qualification-ability-native-adapter-matrix";
       identity = qualificationExecutorIdentity;
+      scenarioId = "ability-native-adapter-matrix";
+      checks = qualificationRequirementChecks "ability-native-adapter-matrix";
       matrixSpec = nativeAdapterMatrix.spec;
-      matrixCheck = nativeAdapterMatrix.check;
+      matrixQualifiedCells = nativeAdapterQualifiedCells;
+      inherit (nativeAdapterMatrixCohort) testScript;
+      inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
     ability-native-activation =
       mkNativeAbilityScenario

@@ -1,4 +1,4 @@
-##! Executes one native ability contract against an exact published server image.
+##! Executes one native ability contract or adapter cohort against an exact published server image.
 {
   pkgs,
   lib,
@@ -11,6 +11,8 @@
   setupBody,
   extraClosures,
   candidateRuntimeCompanions,
+  matrixSpec ? null,
+  matrixQualifiedCells ? [],
 }: let
   platform = pkgs.stdenv.hostPlatform.system;
   fixtureScriptRoot = pkgs.writeTextFile {
@@ -19,6 +21,19 @@
     text = testScript;
   };
   fixtureScript = "${fixtureScriptRoot}/script.py";
+  matrixSpecRoot =
+    if matrixSpec == null
+    then null
+    else
+      pkgs.writeTextFile {
+        name = "${name}-native-adapter-matrix";
+        destination = "/matrix-spec.json";
+        text = builtins.toJSON matrixSpec;
+      };
+  matrixSpecPath =
+    if matrixSpecRoot == null
+    then ""
+    else "${matrixSpecRoot}/matrix-spec.json";
   setupModuleRoot = pkgs.writeTextFile {
     name = "${name}-setup";
     destination = "/module.nix";
@@ -30,7 +45,11 @@
   };
   setupModule = "${setupModuleRoot}/module.nix";
   fixtureRoots = lib.unique (
-    map builtins.toString ([fixtureScriptRoot setupModuleRoot] ++ extraClosures)
+    map builtins.toString (
+      [fixtureScriptRoot setupModuleRoot]
+      ++ lib.optional (matrixSpecRoot != null) matrixSpecRoot
+      ++ extraClosures
+    )
   );
   fixtureGraph =
     import ../build/reference-graph.nix {
@@ -76,11 +95,16 @@
     ];
   };
   fixtureArchive = "${fixtureArchiveRoot}/fixture.export";
-  fixtureContractDigest = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
-    inherit candidateRuntimeCompanions scenarioId checks setupBody;
-    roots = fixtureRoots;
-    script = testScript;
-  })}";
+  fixtureContractDigest = "sha256:${builtins.hashString "sha256" (builtins.toJSON (
+    {
+      inherit candidateRuntimeCompanions scenarioId checks setupBody;
+      roots = fixtureRoots;
+      script = testScript;
+    }
+    // lib.optionalAttrs (matrixSpec != null) {
+      inherit matrixQualifiedCells matrixSpec;
+    }
+  ))}";
   narSelfReference = pkgs.mkDerivation {
     pname = "qualification-nar-self-reference";
     version = "1";
@@ -164,6 +188,25 @@
       fi
     '';
   };
+  matrixCohortSupport = pkgs.writeTextFile {
+    name = "${name}-native-adapter-cohort-support";
+    destination = "/share/aos-release/qualification-native-adapter-cohort.py";
+    text = builtins.readFile ./qualification-native-adapter-cohort.py;
+    checkPhase = ''
+      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cohort-pycache \
+        ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
+        $out/share/aos-release/qualification-native-adapter-cohort.py
+
+      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cohort-test-pycache \
+        ${pkgs.buildPackages.python3}/bin/python3 \
+        ${./qualification-native-adapter-cohort-self-test.py} \
+        $out/share/aos-release/qualification-native-adapter-cohort.py
+    '';
+  };
+  matrixCohortSupportPath =
+    if matrixSpec == null
+    then ""
+    else "${matrixCohortSupport}/share/aos-release/qualification-native-adapter-cohort.py";
   executable = pkgs.writeShellScriptBin name ''
     set -euo pipefail
 
@@ -179,6 +222,9 @@
     export AOS_QUALIFICATION_FIXTURE_ARCHIVE=${lib.escapeShellArg fixtureArchive}
     export AOS_QUALIFICATION_CANDIDATE_RUNTIME_COMPANIONS=${lib.escapeShellArg (builtins.toJSON candidateRuntimeCompanions)}
     export AOS_QUALIFICATION_FIXTURE_SCRIPT=${lib.escapeShellArg fixtureScript}
+    export AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC=${lib.escapeShellArg matrixSpecPath}
+    export AOS_QUALIFICATION_NATIVE_ADAPTER_QUALIFIED_CELLS=${lib.escapeShellArg (builtins.toJSON matrixQualifiedCells)}
+    export AOS_QUALIFICATION_NATIVE_ADAPTER_COHORT_SUPPORT=${lib.escapeShellArg matrixCohortSupportPath}
     export AOS_QUALIFICATION_SETUP_MODULE=${lib.escapeShellArg setupModule}
     export AOS_QUALIFICATION_IMAGE_SUPPORT=${lib.escapeShellArg "${support}/share/aos-release/qualification-image.py"}
     export AOS_QUALIFICATION_NAR_SUPPORT=${lib.escapeShellArg "${narSupport}/share/aos-release/qualification-nar.py"}
@@ -239,10 +285,13 @@ in
   assert identity != "";
   assert builtins.elem scenarioId [
     "ability-native-activation"
+    "ability-native-adapter-matrix"
     "ability-native-kubernetes"
     "ability-native-postgresql"
     "ability-native-recovery"
   ];
+  assert (matrixSpec != null) == (scenarioId == "ability-native-adapter-matrix");
+  assert (matrixQualifiedCells != []) == (matrixSpec != null);
   assert checks != [];
     executable
     // {
@@ -256,6 +305,8 @@ in
               fixtureContractDigest
               fixtureRoots
               fixtureScript
+              matrixQualifiedCells
+              matrixSpecPath
               narSupport
               scenarioId
               setupModule
