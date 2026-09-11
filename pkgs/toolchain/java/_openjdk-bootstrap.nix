@@ -71,6 +71,13 @@
     then " --with-build-jdk=${buildJdk}"
     else "";
 
+  # jpackage embeds native launchers in the module image, beyond ELF scrubbing.
+  # Remap header diagnostics at compilation while preserving C++ assertions.
+  linuxJpackageCxxFlag =
+    if isLinuxArmCross && major >= 14
+    then " -ffile-prefix-map=/nix/store=/aos-build-inputs"
+    else "";
+
   nativeMig =
     if isDarwinCross
     then
@@ -1189,7 +1196,7 @@ in
               --with-version-opt=aos \
               --with-version-pre= \
               --with-extra-cflags="-std=gnu17 -Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks" \
-              --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks" \
+              --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks${linuxJpackageCxxFlag}" \
               --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
               --with-jobs=$NIX_BUILD_CORES \
               ${extraCfgStr}
