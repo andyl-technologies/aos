@@ -29,6 +29,8 @@
 }: let
   version = "2.55.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  nativeCargoTarget = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
   buildBash =
     if isDarwinCross
     then buildPackages.bash
@@ -59,6 +61,8 @@
         src = rustSource;
         inherit (currentRust) version changeId configFileName;
       }
+    else if isLinuxCross
+    then rust.passthru.buildTool
     else rust;
   gettextRuntime =
     if isDarwinCross
@@ -88,7 +92,7 @@
   # Darwin's precompose support calls iconv directly; its SDK provides the
   # canonical header and system-library stub.
   iconvConfigureFlag = lib.optionalString (!isDarwinCross) "--without-iconv";
-  cargoTargetFlags = lib.optionalString isDarwinCross ''
+  cargoTargetFlags = lib.optionalString stdenv.isCross ''
     CARGO_ARGS="--release --target ${stdenv.hostPlatform.config}" \
     RUST_TARGET_DIR=target/${stdenv.hostPlatform.config}/release'';
 in
@@ -173,7 +177,23 @@ in
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES \
+          ${lib.optionalString isLinuxCross ''
+            # Cargo's build script runs on the builder, while libgitcore is
+            # linked into target Git. Keep target headers and linker flags
+            # out of the build script's native compiler invocation.
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc-for-build <<'EOF'
+            #!${buildPackages.bash}/bin/bash
+            unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset AOS_OBJECT_FORMAT AOS_RUST_TARGET AOS_GOARCH AOS_GOOS
+            unset AOS_HARDENING_DISABLE AOS_HARDENING_ENABLE
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH
+            unset LIBRARY_PATH NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
+            exec ${buildPackages.cc}/bin/cc "$@"
+            EOF
+            chmod +x .aos-build-tools/cc-for-build
+            export CARGO_TARGET_${nativeCargoTarget}_LINKER="$PWD/.aos-build-tools/cc-for-build"
+          ''}make -j$NIX_BUILD_CORES \
             NO_INSTALL_HARDLINKS=1${targetPlatformFlags} \
             ${buildShellFlag} \
             ${curlLinkFlag} \
