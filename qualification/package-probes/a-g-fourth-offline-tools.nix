@@ -86,10 +86,10 @@ in {
         artifacts = [];
       };
       bad_input = {
-        input = "A Cython function declaration with a missing parameter name.";
+        input = "A Cython function declaration with an unterminated parameter list.";
         operation = "Translate the malformed module to C.";
         expected = "Cython rejects the syntax error with status 1.";
-        files."invalid.pyx" = "cpdef int broken(int):\n    return 42\n";
+        files."invalid.pyx" = "cpdef int broken(int value:\n    return 42\n";
         steps = [
           {
             argv = ["@out@/bin/cython" "--3str" "--output-file" "invalid.c" "invalid.pyx"];
@@ -192,7 +192,7 @@ in {
       package = "fakeroot";
       primary = {
         input = "A child process creating a file and assigning simulated root ownership.";
-        operation = "Run the process under fakeroot and inspect the intercepted metadata.";
+        operation = "Run the process under fakeroot with real ownership changes disabled and inspect the intercepted metadata.";
         expected = "The child observes UID and GID zero without privileged filesystem operations.";
         files = {};
         steps = [
@@ -201,7 +201,15 @@ in {
               "@out@/bin/fakeroot"
               "@python@"
               "-c"
-              "import os; open('owned', 'w').close(); os.chown('owned', 0, 0); info = os.stat('owned'); print(f'{info.st_uid}:{info.st_gid}')"
+              ''
+                import os
+                # Root IDs may be unmapped in the sandbox's user namespace.
+                os.environ["FAKEROOTDONTTRYCHOWN"] = "1"
+                open("owned", "w").close()
+                os.chown("owned", 0, 0)
+                info = os.stat("owned")
+                print(f"{info.st_uid}:{info.st_gid}")
+              ''
             ];
             exit_code = 0;
             stdout.exact = "0:0\n";

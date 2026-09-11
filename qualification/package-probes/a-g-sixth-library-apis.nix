@@ -61,61 +61,78 @@
       };
     };
 in {
-  cups = mkCProbe {
-    package = "cups";
-    libraries = ["-lcups"];
-    primaryInput = "An IPP printer URI containing a scheme, host, port, and resource.";
-    primaryOperation = "Separate the URI into its components with libcups.";
-    primarySource = ''
-      #include <stdio.h>
-      #include <string.h>
-      #include <cups/http.h>
+  # This package intentionally exports compilation headers for consumers such
+  # as OpenJDK. Qualify that surface without requiring an unshipped libcups.
+  cups = testing.mkQualificationPackageProbe {
+    name = "cups";
+    spec = {
+      schema_version = "aos.release.package-probe/v1";
+      package = "cups";
+      primary = {
+        input = "A C translation unit using the declared CUPS HTTP URI interface.";
+        operation = "Compile the typed API consumer against the installed headers.";
+        expected = "The public declarations compile into a nonempty native object.";
+        files."consumer.c" = ''
+          #include <cups/http.h>
 
-      int main(void) {
-          char scheme[16], username[16], host[64], resource[64];
-          int port = 0;
-          http_uri_status_t status = httpSeparateURI(
-              HTTP_URI_CODING_ALL,
-              "ipp://printer.example:631/ipp/print",
-              scheme, sizeof(scheme),
-              username, sizeof(username),
-              host, sizeof(host),
-              &port,
-              resource, sizeof(resource));
-          if (status != HTTP_URI_STATUS_OK
-              || strcmp(scheme, "ipp") != 0
-              || strcmp(host, "printer.example") != 0
-              || port != 631
-              || strcmp(resource, "/ipp/print") != 0) {
-              return 2;
+          http_uri_status_t qualification_uri(const char *uri) {
+              char scheme[16], username[16], host[64], resource[64];
+              int port = 0;
+              return httpSeparateURI(HTTP_URI_CODING_ALL, uri,
+                  scheme, sizeof(scheme), username, sizeof(username),
+                  host, sizeof(host), &port, resource, sizeof(resource));
           }
-          return puts("cups api passed") == EOF;
-      }
-    '';
-    badInput = "A valid IPP URI and a destination buffer too small for its host.";
-    badOperation = "Separate the URI into the undersized component buffers with libcups.";
-    badSource = ''
-      #include <stdio.h>
-      #include <cups/http.h>
+        '';
+        steps = [
+          {
+            argv = ["@cc@" "-I@out@/include" "-c" "consumer.c" "-o" "consumer.o"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = ["@python@" "-c" "from pathlib import Path; data = Path('consumer.o').read_bytes(); assert len(data) > 64 and data[:4] in (bytes([127, 69, 76, 70]), bytes([207, 250, 237, 254]))"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+        ];
+        artifacts = [];
+      };
+      bad_input = {
+        input = "A C consumer omitting required arguments from httpSeparateURI.";
+        operation = "Compile the invalid API call against the installed declaration.";
+        expected = "The compiler diagnoses the argument mismatch for the CUPS interface.";
+        files."invalid.c" = ''
+          #include <cups/http.h>
 
-      int main(void) {
-          char scheme[16], username[16], host[2], resource[64];
-          int port = 0;
-          http_uri_status_t status = httpSeparateURI(
-              HTTP_URI_CODING_ALL,
-              "ipp://printer.example/ipp/print",
-              scheme, sizeof(scheme),
-              username, sizeof(username),
-              host, sizeof(host),
-              &port,
-              resource, sizeof(resource));
-          if (status == HTTP_URI_STATUS_OK) {
-              return 2;
+          int main(void) {
+              return httpSeparateURI(HTTP_URI_CODING_ALL);
           }
-          fputs("cups rejected invalid input\n", stderr);
-          return 7;
-      }
-    '';
+        '';
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import subprocess, sys
+                result = subprocess.run(["@cc@", "-I@out@/include", "-c", "invalid.c", "-o", "invalid.o"], capture_output=True, text=True)
+                assert result.returncode != 0 and result.stdout == ""
+                assert "httpSeparateURI" in result.stderr and "too few arguments" in result.stderr
+                sys.stderr.write("cups headers rejected invalid call\n")
+                raise SystemExit(7)
+              ''
+            ];
+            exit_code = 7;
+            stdout.exact = "";
+            stderr.exact = "cups headers rejected invalid call\n";
+            observes_rejection = true;
+          }
+        ];
+        artifacts = [];
+      };
+    };
   };
 
   editline = mkCProbe {

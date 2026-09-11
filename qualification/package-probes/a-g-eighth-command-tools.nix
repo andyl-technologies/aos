@@ -232,6 +232,7 @@ in {
     badOperation = "Parse the unsupported command without attaching to a process.";
     badExpected = "Delve rejects the unsupported command.";
     badCommand = ''["@out@/bin/dlv", "aos-invalid-command"]'';
+    badCheck = ''result.returncode == 0 and result.stdout == "" and result.stderr == 'Error: unknown command "aos-invalid-command" for "dlv"\nRun \'dlv --help\' for usage.\n' '';
   };
 
   firecracker = mkCliProbe {
