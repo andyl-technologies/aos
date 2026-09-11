@@ -1232,6 +1232,7 @@ fn node_environment(node: &InspectionNode) -> Option<EnvironmentId> {
         InspectionNode::Resource { id, .. } => Some(id.provider.environment.clone()),
         InspectionNode::Obligation { request, .. } => Some(request.consumer.environment.clone()),
         InspectionNode::Interface { .. }
+        | InspectionNode::InterfaceReference { .. }
         | InspectionNode::Package { .. }
         | InspectionNode::Operation { .. }
         | InspectionNode::Decision { .. }
@@ -1243,6 +1244,7 @@ fn node_environment(node: &InspectionNode) -> Option<EnvironmentId> {
 fn plan_state(node: &InspectionNode) -> OperatorNodeState {
     match node {
         InspectionNode::Interface { .. }
+        | InspectionNode::InterfaceReference { .. }
         | InspectionNode::Package { .. }
         | InspectionNode::Request { .. } => OperatorNodeState::Declared,
         InspectionNode::Provider { availability, .. } => match availability {

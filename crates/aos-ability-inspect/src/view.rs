@@ -160,6 +160,12 @@ pub enum InspectionNode {
         /// Retains the public interface contract.
         descriptor: InterfaceDescriptor,
     },
+    /// Identifies a public interface accepted by a package requirement when
+    /// the reference does not carry that interface's complete descriptor.
+    InterfaceReference {
+        /// Identifies the exact accepted interface contract.
+        key: InterfaceKey,
+    },
     /// Describes one exact package subject without embedding its payload.
     Package {
         /// Identifies the exact package document.
@@ -303,6 +309,7 @@ impl InspectionNode {
     pub fn key(&self) -> NodeKey {
         match self {
             Self::Interface { key, .. } => NodeKey::Interface(key.clone()),
+            Self::InterfaceReference { key } => NodeKey::Interface(key.clone()),
             Self::Package { digest, .. } => NodeKey::Package(*digest),
             Self::Request { id, .. } => NodeKey::Request(id.clone()),
             Self::Binding { id, .. } => NodeKey::Binding(id.clone()),

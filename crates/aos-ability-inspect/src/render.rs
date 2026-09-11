@@ -9,7 +9,8 @@ use thiserror::Error;
 
 use crate::{
     GraphSlice, InspectionEdge, InspectionNode, InspectionProjection, InspectionRelation,
-    InspectionView, NodeKey, ProjectionKind, ViewAnchor,
+    InspectionView, NodeKey, ProjectionKind, ReferenceGraphSlice, ReferenceInspectionAnchor,
+    ReferenceInspectionDiagnostic, ReferenceInspectionView, ViewAnchor,
 };
 
 /// Selects one stable inspection output representation.
@@ -116,6 +117,56 @@ pub fn render_slice(slice: &GraphSlice, format: RenderFormat) -> Result<String, 
     )
 }
 
+/// Renders a complete checked public-reference view in the selected format.
+///
+/// # Errors
+///
+/// Returns an error if canonical serialization fails or the view contains an
+/// edge whose endpoint is absent.
+pub fn render_reference(
+    view: &ReferenceInspectionView,
+    format: RenderFormat,
+) -> Result<String, RenderError> {
+    if format == RenderFormat::Json {
+        return canonical_json(view);
+    }
+    render_reference_parts(
+        ReferenceGraphParts {
+            anchor: view.anchor(),
+            diagnostics: view.diagnostics(),
+            truncated: None,
+            nodes: view.nodes(),
+            edges: view.edges(),
+        },
+        format,
+    )
+}
+
+/// Renders a bounded checked public-reference graph slice.
+///
+/// # Errors
+///
+/// Returns an error if canonical serialization fails or the slice contains an
+/// edge whose endpoint is absent.
+pub fn render_reference_slice(
+    slice: &ReferenceGraphSlice,
+    format: RenderFormat,
+) -> Result<String, RenderError> {
+    if format == RenderFormat::Json {
+        return canonical_json(slice);
+    }
+    render_reference_parts(
+        ReferenceGraphParts {
+            anchor: slice.anchor(),
+            diagnostics: slice.diagnostics(),
+            truncated: Some(slice.is_truncated()),
+            nodes: slice.nodes(),
+            edges: slice.edges(),
+        },
+        format,
+    )
+}
+
 struct GraphParts<'a> {
     anchor: &'a ViewAnchor,
     plan: PlanId,
@@ -125,6 +176,82 @@ struct GraphParts<'a> {
     truncated: Option<bool>,
     nodes: &'a [InspectionNode],
     edges: &'a [InspectionEdge],
+}
+
+struct ReferenceGraphParts<'a> {
+    anchor: &'a ReferenceInspectionAnchor,
+    diagnostics: &'a [ReferenceInspectionDiagnostic],
+    truncated: Option<bool>,
+    nodes: &'a [InspectionNode],
+    edges: &'a [InspectionEdge],
+}
+
+fn render_reference_parts(
+    parts: ReferenceGraphParts<'_>,
+    format: RenderFormat,
+) -> Result<String, RenderError> {
+    let node_indices = node_indices(parts.nodes);
+    validate_edges(parts.edges, &node_indices)?;
+    let anchor = canonical_value(parts.anchor)?;
+    let truncated = parts
+        .truncated
+        .map(|value| format!(", query truncated: {value}"))
+        .unwrap_or_default();
+
+    match format {
+        RenderFormat::Text => {
+            let mut output = String::from("Public ability reference inspection\n");
+            writeln!(output, "anchor: {anchor}")?;
+            writeln!(output, "disclosure: public-package-contract")?;
+            if let Some(truncated) = parts.truncated {
+                writeln!(output, "query truncated: {truncated}")?;
+            }
+            for diagnostic in parts.diagnostics {
+                writeln!(output, "limitation: {}", canonical_value(diagnostic)?)?;
+            }
+            writeln!(output, "nodes: {}", parts.nodes.len())?;
+            for (index, node) in parts.nodes.iter().enumerate() {
+                writeln!(output, "  n{index}: {}", canonical_value(node)?)?;
+            }
+            writeln!(output, "edges: {}", parts.edges.len())?;
+            for edge in parts.edges {
+                let from = node_indices
+                    .get(&edge.from)
+                    .ok_or(RenderError::MissingEndpoint)?;
+                let to = node_indices
+                    .get(&edge.to)
+                    .ok_or(RenderError::MissingEndpoint)?;
+                writeln!(
+                    output,
+                    "  n{from} -[{}]-> n{to}",
+                    relation_label(edge.relation)
+                )?;
+            }
+            Ok(output)
+        }
+        RenderFormat::Dot => {
+            let mut output = String::from("digraph ability_reference_inspection {\n");
+            writeln!(
+                output,
+                "  graph [label=\"{}\", labelloc=t];",
+                dot_escape(&format!("public package contract, {anchor}{truncated}"))
+            )?;
+            render_dot_nodes_and_edges(&mut output, parts.nodes, parts.edges, &node_indices)?;
+            output.push_str("}\n");
+            Ok(output)
+        }
+        RenderFormat::Mermaid => {
+            let mut output = String::from("flowchart TD\n");
+            writeln!(
+                output,
+                "  %% {}",
+                mermaid_comment_escape(&format!("public package contract, {anchor}{truncated}"))
+            )?;
+            render_mermaid_nodes_and_edges(&mut output, parts.nodes, parts.edges, &node_indices)?;
+            Ok(output)
+        }
+        RenderFormat::Json => unreachable!("JSON is rendered from its complete DTO"),
+    }
 }
 
 fn render_parts(parts: GraphParts<'_>, format: RenderFormat) -> Result<String, RenderError> {
@@ -265,6 +392,58 @@ fn validate_edges(
     Ok(())
 }
 
+fn render_dot_nodes_and_edges(
+    output: &mut String,
+    nodes: &[InspectionNode],
+    edges: &[InspectionEdge],
+    node_indices: &BTreeMap<NodeKey, usize>,
+) -> Result<(), RenderError> {
+    for (index, node) in nodes.iter().enumerate() {
+        let label = format!("{}\\n{}", node_kind(node), canonical_value(&node.key())?);
+        writeln!(output, "  n{index} [label=\"{}\"];", dot_escape(&label))?;
+    }
+    for edge in edges {
+        let from = node_indices
+            .get(&edge.from)
+            .ok_or(RenderError::MissingEndpoint)?;
+        let to = node_indices
+            .get(&edge.to)
+            .ok_or(RenderError::MissingEndpoint)?;
+        writeln!(
+            output,
+            "  n{from} -> n{to} [label=\"{}\"];",
+            relation_label(edge.relation)
+        )?;
+    }
+    Ok(())
+}
+
+fn render_mermaid_nodes_and_edges(
+    output: &mut String,
+    nodes: &[InspectionNode],
+    edges: &[InspectionEdge],
+    node_indices: &BTreeMap<NodeKey, usize>,
+) -> Result<(), RenderError> {
+    for (index, node) in nodes.iter().enumerate() {
+        let label = format!("{}: {}", node_kind(node), canonical_value(&node.key())?);
+        writeln!(output, "  n{index}[\"{}\"]", mermaid_escape(&label))?;
+    }
+    for edge in edges {
+        let from = node_indices
+            .get(&edge.from)
+            .ok_or(RenderError::MissingEndpoint)?;
+        let to = node_indices
+            .get(&edge.to)
+            .ok_or(RenderError::MissingEndpoint)?;
+        writeln!(
+            output,
+            "  n{from} -->|{}| n{to}",
+            relation_label(edge.relation)
+        )?;
+    }
+    Ok(())
+}
+
 fn graph_label(parts: &GraphParts<'_>) -> String {
     let projection = parts
         .projection
@@ -314,6 +493,7 @@ fn anchor_label(anchor: &ViewAnchor) -> String {
 fn node_kind(node: &InspectionNode) -> &'static str {
     match node {
         InspectionNode::Interface { .. } => "interface",
+        InspectionNode::InterfaceReference { .. } => "interface-reference",
         InspectionNode::Package { .. } => "package",
         InspectionNode::Request { .. } => "request",
         InspectionNode::Binding { .. } => "binding",

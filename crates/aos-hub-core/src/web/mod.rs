@@ -41,6 +41,7 @@
 //! under the reserved `/` and `/{slug}/-/…` paths, more specific than the
 //! machine-surface facade wildcard, so the two never collide.
 
+mod ability_reference_inspection;
 pub mod ability_reference_page;
 pub mod assets;
 pub mod browse;

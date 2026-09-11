@@ -23,6 +23,7 @@ pub mod explanation;
 pub mod operator_view;
 pub mod projection;
 pub mod query;
+pub mod reference;
 pub mod render;
 pub mod view;
 
@@ -65,7 +66,18 @@ pub use query::{
     INSPECTION_QUERY_MAX_DEPTH, INSPECTION_QUERY_MAX_NODES, INSPECTION_QUERY_MAX_ROOTS,
     INSPECTION_QUERY_SCHEMA, INSPECTION_SLICE_SCHEMA,
 };
-pub use render::{RenderError, RenderFormat, render, render_projection, render_slice};
+pub use reference::{
+    CheckedReferenceInspection, REFERENCE_GRAPH_SLICE_SCHEMA, REFERENCE_INSPECTION_INPUT_MAX_BYTES,
+    REFERENCE_INSPECTION_INPUT_SCHEMA, REFERENCE_INSPECTION_VIEW_MAX_BYTES,
+    REFERENCE_INSPECTION_VIEW_SCHEMA, ReferenceGraphSlice, ReferenceInspectionAnchor,
+    ReferenceInspectionDiagnostic, ReferenceInspectionDiagnosticCode,
+    ReferenceInspectionDisclosure, ReferenceInspectionError, ReferenceInspectionInput,
+    ReferenceInspectionView,
+};
+pub use render::{
+    RenderError, RenderFormat, render, render_projection, render_reference, render_reference_slice,
+    render_slice,
+};
 pub use view::{
     INSPECTION_VIEW_MAX_BYTES, INSPECTION_VIEW_MAX_ITEMS, INSPECTION_VIEW_SCHEMA, InspectionEdge,
     InspectionNode, InspectionRelation, InspectionView, InspectionViewError, NodeKey, ViewAnchor,

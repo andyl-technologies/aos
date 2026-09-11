@@ -5,6 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+aos-ability-inspect = { workspace = true }
 aos-ability-model = { workspace = true }
 aos-ability-plan = { workspace = true }
 aos-ability-runtime = { workspace = true }

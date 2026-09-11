@@ -6,9 +6,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use anyhow::{Context as _, Result, bail};
+#[cfg(test)]
+use aos_ability_inspect::ReferenceGraphSlice;
+use aos_ability_inspect::{
+    GraphQuery, InspectionNode, NodeKey, ReferenceInspectionInput, ReferenceInspectionView,
+};
+#[cfg(test)]
+use aos_ability_model::ValueSchema;
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase,
-    InterfaceKey, ValueExpression, ValueSchema,
+    InterfaceKey, ValueExpression,
 };
 use aos_ability_validate::validate_value;
 use aos_doc_model::{AbilityExportReference, PackageAbilityReference};
@@ -20,16 +28,19 @@ use serde_json::{Value, json};
 
 use crate::documentation::LoadedDocumentation;
 
-use super::{byte_offset_for_utf16, markdown_code_span, utf16_len, word_at_position};
+use super::{byte_offset_for_utf16, utf16_len, word_at_position};
+
+mod presentation;
+
+use presentation::{ability_markdown, ambiguity_markdown, selector, selector_matches};
 
 const MAX_RESULTS: usize = 256;
-const LIMITATIONS: [&str; 4] = [
+const COMPATIBILITY_LIMITATIONS: [&str; 4] = [
     "static-authenticated-reference-only",
     "conditional-requirements-not-evaluated",
     "authorization-not-evaluated",
     "runtime-availability-not-observed",
 ];
-
 const DEFINE_FIELDS: &[&str] = &[
     "interface",
     "abi",
@@ -81,25 +92,116 @@ const CONSTRUCTOR_FIELDS: &[(&str, &[&str])] = &[
 
 /// Provides editor projections over references already authenticated by the loader.
 pub(super) struct AbilityCatalog<'a> {
-    documents: &'a [LoadedDocumentation],
+    references: Vec<CheckedCatalogReference<'a>>,
+}
+
+struct CheckedCatalogReference<'a> {
+    reference: &'a PackageAbilityReference,
+    view: ReferenceInspectionView,
 }
 
 impl<'a> AbilityCatalog<'a> {
     pub(super) fn new(documents: &'a [LoadedDocumentation]) -> Self {
-        Self { documents }
+        let references = documents
+            .iter()
+            .filter_map(|document| document.ability_reference.as_ref())
+            .filter_map(|reference| {
+                let input = ReferenceInspectionInput::new(reference.clone()).ok()?;
+                let digest = aos_contract::Sha256Digest::of_bytes(&input.canonical_bytes().ok()?);
+                let checked = input.check(Some(digest)).ok()?;
+                let view = ReferenceInspectionView::from_checked(&checked).ok()?;
+                Some(CheckedCatalogReference { reference, view })
+            })
+            .collect();
+        Self { references }
     }
 
     fn abilities(
         &self,
     ) -> impl Iterator<Item = (&PackageAbilityReference, &AbilityExportReference)> {
-        self.documents.iter().flat_map(|document| {
-            document.ability_reference.iter().flat_map(|reference| {
-                reference
-                    .exports
-                    .iter()
-                    .map(move |export| (reference, export))
-            })
+        self.references.iter().flat_map(|entry| {
+            entry
+                .reference
+                .exports
+                .iter()
+                .filter(|export| {
+                    export.interface.interface_key().is_ok_and(|key| {
+                        entry.view.nodes().iter().any(|node| {
+                            matches!(
+                                node,
+                                InspectionNode::Interface { key: checked, .. } if checked == &key
+                            )
+                        })
+                    })
+                })
+                .map(move |export| (entry.reference, export))
         })
+    }
+
+    fn inspection(&self, reference: &PackageAbilityReference) -> Option<&ReferenceInspectionView> {
+        self.references
+            .iter()
+            .find(|entry| std::ptr::eq(entry.reference, reference))
+            .map(|entry| &entry.view)
+    }
+
+    fn inspection_diagnostics(&self, reference: &PackageAbilityReference) -> Value {
+        self.inspection(reference)
+            .and_then(|view| serde_json::to_value(view.diagnostics()).ok())
+            .unwrap_or_else(|| Value::Array(Vec::new()))
+    }
+
+    /// Executes a portable graph query over one exact authenticated reference.
+    pub(super) fn graph(&self, params: &Value) -> Result<Value> {
+        let package = params
+            .get("package")
+            .and_then(Value::as_str)
+            .context("ability graph query omitted package")?;
+        let version = params
+            .get("version")
+            .and_then(Value::as_str)
+            .context("ability graph query omitted version")?;
+        let matching = self
+            .references
+            .iter()
+            .filter(|entry| {
+                entry.reference.package.as_str() == package && entry.reference.version == version
+            })
+            .collect::<Vec<_>>();
+        let [entry] = matching.as_slice() else {
+            bail!("ability graph query does not select exactly one authenticated reference");
+        };
+        let query = if let Some(value) = params.get("query") {
+            let bytes = aos_contract::canonical::to_vec(value)
+                .context("encoding editor ability graph query")?;
+            GraphQuery::decode(&bytes).context("checking editor ability graph query")?
+        } else {
+            let root = NodeKey::Package(entry.reference.manifest_sha256);
+            let max_nodes = entry.view.nodes().len().max(1);
+            GraphQuery::new([root], 1, max_nodes)
+        };
+        let slice = entry
+            .view
+            .query(&query)
+            .context("querying authenticated editor ability graph")?;
+        serde_json::to_value(slice).context("encoding editor ability graph result")
+    }
+
+    #[cfg(test)]
+    pub(super) fn graph_slice(
+        &self,
+        package: &str,
+        version: &str,
+        query: &GraphQuery,
+    ) -> Result<ReferenceGraphSlice> {
+        let entry = self
+            .references
+            .iter()
+            .find(|entry| {
+                entry.reference.package.as_str() == package && entry.reference.version == version
+            })
+            .context("test reference is absent from checked editor catalog")?;
+        entry.view.query(query).map_err(Into::into)
     }
 
     pub(super) fn contextual_completions(
@@ -311,7 +413,8 @@ impl<'a> AbilityCatalog<'a> {
                         "selector": selector(reference, export, &key),
                         "interfaceDocument": export.interface,
                         "aggregation": export.aggregation,
-                        "limitations": LIMITATIONS
+                        "limitations": COMPATIBILITY_LIMITATIONS,
+                        "inspectionDiagnostics": self.inspection_diagnostics(reference)
                     }))
                 })
                 .take(MAX_RESULTS)
@@ -322,9 +425,9 @@ impl<'a> AbilityCatalog<'a> {
     pub(super) fn references(&self, params: &Value) -> Value {
         let package = params.get("package").and_then(Value::as_str);
         Value::Array(
-            self.documents
+            self.references
                 .iter()
-                .filter_map(|loaded| loaded.ability_reference.as_ref())
+                .map(|entry| entry.reference)
                 .filter(|reference| package.is_none_or(|name| reference.package.as_str() == name))
                 .take(MAX_RESULTS)
                 .filter_map(|reference| serde_json::to_value(reference).ok())
@@ -340,7 +443,8 @@ impl<'a> AbilityCatalog<'a> {
             "interfaceKey": key,
             "export": export,
             "reference": reference,
-            "limitations": LIMITATIONS
+            "limitations": COMPATIBILITY_LIMITATIONS,
+            "inspectionDiagnostics": self.inspection_diagnostics(reference)
         }))
     }
 
@@ -631,166 +735,6 @@ fn simple_entry(entry: KeyValue) -> Option<SimpleEntry> {
         value_range: value.text_range(),
         value,
     })
-}
-
-fn selector(
-    reference: &PackageAbilityReference,
-    export: &AbilityExportReference,
-    key: &InterfaceKey,
-) -> Value {
-    json!({
-        "package": reference.package.as_str(),
-        "version": reference.version,
-        "export": export.name.as_str(),
-        "interface": key.name.as_str(),
-        "abi": key.abi,
-        "descriptor": key.descriptor,
-        "manifestSha256": reference.manifest_sha256,
-        "packageDigest": reference.package_digest,
-        "implementation": export.implementation
-    })
-}
-
-fn selector_matches(
-    selected: &Value,
-    reference: &PackageAbilityReference,
-    export: &AbilityExportReference,
-    key: &InterfaceKey,
-) -> bool {
-    selected.get("package").and_then(Value::as_str) == Some(reference.package.as_str())
-        && selected.get("version").and_then(Value::as_str) == Some(&reference.version)
-        && selected.get("export").and_then(Value::as_str) == Some(export.name.as_str())
-        && selected.get("interface").and_then(Value::as_str) == Some(key.name.as_str())
-        && selected.get("abi").and_then(Value::as_u64) == Some(u64::from(key.abi.get()))
-        && selected.get("descriptor").and_then(Value::as_str)
-            == Some(key.descriptor.to_string().as_str())
-        && selected.get("manifestSha256").and_then(Value::as_str)
-            == Some(reference.manifest_sha256.to_string().as_str())
-        && selected.get("packageDigest").and_then(Value::as_str)
-            == Some(reference.package_digest.to_string().as_str())
-        && selected.get("implementation").and_then(Value::as_str)
-            == Some(export.implementation.to_string().as_str())
-}
-
-fn ability_markdown(
-    reference: &PackageAbilityReference,
-    export: &AbilityExportReference,
-) -> String {
-    let interface = &export.interface.interface;
-    let key = export.interface.interface_key().ok();
-    let methods = interface
-        .methods
-        .keys()
-        .map(|method| markdown_code_span(method.as_str()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let guarantees = interface
-        .guarantees
-        .iter()
-        .map(|guarantee| {
-            format!(
-                "{} v{} ({})",
-                markdown_code_span(guarantee.name.as_str()),
-                guarantee.version,
-                markdown_code_span(&guarantee.descriptor.to_string())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let request = schema_summary(&interface.request);
-    let configuration = interface
-        .configuration
-        .as_ref()
-        .map(schema_summary)
-        .unwrap_or_else(|| "none".to_string());
-    let outputs = interface
-        .outputs
-        .keys()
-        .map(|output| markdown_code_span(output.as_str()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "{} · ability ABI {}\n\nExport {} from package {} {}. Descriptor {}.\n\nRequest: {}. Configuration: {}. Outputs: {}. Methods: {}. Guarantees: {}.\n\nAuthenticated manifest {} · package contract {} · implementation {}. Static reference only; authorization and runtime availability require deployment/runtime evidence.",
-        markdown_code_span(interface.name.as_str()),
-        interface.abi,
-        markdown_code_span(export.name.as_str()),
-        markdown_code_span(reference.package.as_str()),
-        markdown_code_span(&reference.version),
-        markdown_code_span(
-            &key.map(|value| value.descriptor.to_string())
-                .unwrap_or_else(|| "invalid descriptor".to_string())
-        ),
-        request,
-        configuration,
-        if outputs.is_empty() { "none" } else { &outputs },
-        if methods.is_empty() { "none" } else { &methods },
-        if guarantees.is_empty() {
-            "none"
-        } else {
-            &guarantees
-        },
-        markdown_code_span(&reference.manifest_sha256.to_string()),
-        markdown_code_span(&reference.package_digest.to_string()),
-        markdown_code_span(&export.implementation.to_string()),
-    )
-}
-
-fn ambiguity_markdown(matches: &[(&PackageAbilityReference, &AbilityExportReference)]) -> String {
-    let mut markdown = String::from(
-        "Multiple authenticated ability contracts match this name. Select a package, version, export, ABI, and descriptor:\n",
-    );
-    for (reference, export) in matches {
-        let interface = &export.interface.interface;
-        let descriptor = export
-            .interface
-            .interface_key()
-            .map(|key| key.descriptor.to_string())
-            .unwrap_or_else(|_| "invalid descriptor".to_string());
-        markdown.push_str(&format!(
-            "\n- package {} {}, export {}, ABI {}, descriptor {}",
-            markdown_code_span(reference.package.as_str()),
-            markdown_code_span(&reference.version),
-            markdown_code_span(export.name.as_str()),
-            interface.abi,
-            markdown_code_span(&descriptor),
-        ));
-    }
-    markdown
-}
-
-fn schema_summary(schema: &ValueSchema) -> String {
-    match schema {
-        ValueSchema::Boolean => "boolean".to_string(),
-        ValueSchema::Integer { minimum, maximum } => format!("integer {minimum}..={maximum}"),
-        ValueSchema::String { max_length, syntax } => {
-            format!("string (max {max_length} bytes, syntax {syntax:?})")
-        }
-        ValueSchema::StringEnum { values } => format!("one of {}", values.join(", ")),
-        ValueSchema::List { max_items, .. } => format!("list (max {max_items} items)"),
-        ValueSchema::Map { max_entries, .. } => format!("map (max {max_entries} entries)"),
-        ValueSchema::Record { fields, .. } => format!(
-            "record {{{}}}",
-            fields
-                .keys()
-                .map(|field| field.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        ValueSchema::TaggedUnion { tag, variants } => format!(
-            "tagged union by {} ({})",
-            tag.as_str(),
-            variants
-                .keys()
-                .map(|variant| variant.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        ValueSchema::Optional { value } => format!("optional {}", schema_summary(value)),
-        ValueSchema::ArtifactReference => "artifact reference".to_string(),
-        ValueSchema::ResourceReference => "resource reference".to_string(),
-        ValueSchema::ProviderAssignment => "provider assignment".to_string(),
-        ValueSchema::OperationResultReference => "operation result reference".to_string(),
-    }
 }
 
 struct LiteralBudget {

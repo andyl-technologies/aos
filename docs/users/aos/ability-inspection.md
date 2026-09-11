@@ -16,7 +16,7 @@ The current command surface has four operations:
 
 | Command | Input | Result |
 | --- | --- | --- |
-| `inspect` | Portable inspection bundle | Checked full graph, projection, or bounded slice |
+| `inspect` | Portable checked-plan bundle or public-reference inspection input | Checked full graph or bounded slice; plan inputs also support semantic projections |
 | `operator` | Inspection bundle and single-focus query; optional observation | Desired and observed operator view as JSON or a loopback browser |
 | `diagnostic` | Retained system generation and transaction | Redacted or deployment-detail execution timeline |
 | `artifact-consumption` | Realized build-gate evidence | Exact consumer/provider relationship and retention explanation |
@@ -27,7 +27,8 @@ These commands keep reference, deployment, and observation authority distinct:
 
 | Input | What the command checks | What the input does not establish |
 | --- | --- | --- |
-| Signed package or release reference | Outside this command group, `apm` and Hub verify the release and expose its declared package reference | A selected deployment provider or observed runtime state |
+| Signed package or release reference | `apm` and Hub verify the release; those authenticated readers can wrap its declared contract as `aos.ability.reference-inspection-input/v1` | A selected deployment provider, deployment authorization, or observed runtime state |
+| Public-reference inspection input | Canonical encoding, supported public contract semantics, exact package and interface identities, and an optional external input commitment | Authentication of the source commitment, deployment values or grants, or live runtime availability |
 | Inspection bundle | Canonical encoding, supported schema, interface and plan semantics, and claimed plan identities | A signed release, reader authorization, current policy, or live execution |
 | Inspection bundle plus `--expected-digest` | The same checks plus an exact match to the independently supplied bundle commitment | That the source of the digest is trusted or that its policy is still current |
 | Operator observation | Canonical shape, exact plan linkage, known graph identities, and consistent generation comparisons | Authentication of the evidence source, freshness, or a live query of the machine |
@@ -38,7 +39,9 @@ Treat deployment bundles, queries, observations, and deployment-audience
 diagnostics as private deployment data. The CLI validates their structure; the
 system that supplies them must authenticate the source and authorize the
 reader. Public signed reference documentation remains available through
-`apm docs` and the release-scoped Hub documentation browser.
+`apm docs` and the release-scoped Hub documentation browser. Those surfaces
+authenticate the source before constructing the shared public graph; the
+portable wrapper alone does not add release or deployment authority.
 
 ## Inspect a checked plan
 
@@ -92,6 +95,20 @@ newline, and carry explicit direction, depth, and node bounds. Generate them
 through the shared `aos-ability-inspect` API or another canonical AOS JSON
 producer. The root identities must come from the checked bundle; illustrative
 placeholder identities will fail closed.
+
+The same command accepts canonical
+`aos.ability.reference-inspection-input/v1` data produced from an authenticated
+public package reference. It uses the same `--query`, `--expected-digest`, and
+four output formats. Plan-only `--projection` values do not apply. The result's
+`public-package-contract` disclosure and limitation diagnostics state that
+authorization, conditional deployment requirements, and runtime availability
+were not evaluated:
+
+```sh
+aos --json ability inspect public-reference-inspection.json \
+  --query reference-query.json \
+  --expected-digest sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
 
 ## Build a desired and observed operator view
 

@@ -463,9 +463,46 @@ fn evaluate_query(
     source: QuerySource<'_>,
     query: &GraphQuery,
 ) -> Result<GraphSlice, GraphQueryError> {
+    let selection = select_graph(source.nodes, source.edges, query)?;
+
+    Ok(GraphSlice {
+        schema: INSPECTION_SLICE_SCHEMA.to_string(),
+        required_features: Vec::new(),
+        anchor: source.anchor.clone(),
+        plan: source.plan,
+        binding_plan: source.binding_plan,
+        executable: source.executable,
+        projection: source.projection,
+        roots: query.roots.clone(),
+        direction: query.direction,
+        after: query.after.clone(),
+        max_depth: query.max_depth,
+        max_nodes: query.max_nodes,
+        truncated: selection.truncated,
+        nodes: selection.nodes,
+        edges: selection.edges,
+    })
+}
+
+/// Owns the common bounded selection used by every portable inspection view.
+pub(crate) struct GraphSelection {
+    /// Reports whether a reachable node was omitted by a query bound.
+    pub(crate) truncated: bool,
+    /// Retains selected nodes in canonical typed-identity order.
+    pub(crate) nodes: Vec<InspectionNode>,
+    /// Retains the induced edge set over selected nodes.
+    pub(crate) edges: Vec<InspectionEdge>,
+}
+
+/// Evaluates one graph query without attaching source-specific envelope data.
+pub(crate) fn select_graph(
+    source_nodes: &[InspectionNode],
+    source_edges: &[InspectionEdge],
+    query: &GraphQuery,
+) -> Result<GraphSelection, GraphQueryError> {
     query.validate_structure()?;
     let roots: BTreeSet<_> = query.roots.iter().cloned().collect();
-    let node_index: BTreeMap<_, _> = source.nodes.iter().map(|node| (node.key(), node)).collect();
+    let node_index: BTreeMap<_, _> = source_nodes.iter().map(|node| (node.key(), node)).collect();
     validate_roots(&roots, &node_index)?;
 
     let mut selected = roots.clone();
@@ -473,7 +510,7 @@ fn evaluate_query(
     let mut truncated = false;
 
     for depth in 0..=query.max_depth {
-        let mut candidates = neighbors(source.edges, &frontier, query.direction)
+        let mut candidates = neighbors(source_edges, &frontier, query.direction)
             .difference(&selected)
             .cloned()
             .collect::<BTreeSet<_>>();
@@ -508,26 +545,13 @@ fn evaluate_query(
         .iter()
         .filter_map(|key| node_index.get(key).map(|node| (*node).clone()))
         .collect();
-    let edges = source
-        .edges
+    let edges = source_edges
         .iter()
         .filter(|edge| selected.contains(&edge.from) && selected.contains(&edge.to))
         .cloned()
         .collect();
 
-    Ok(GraphSlice {
-        schema: INSPECTION_SLICE_SCHEMA.to_string(),
-        required_features: Vec::new(),
-        anchor: source.anchor.clone(),
-        plan: source.plan,
-        binding_plan: source.binding_plan,
-        executable: source.executable,
-        projection: source.projection,
-        roots: query.roots.clone(),
-        direction: query.direction,
-        after: query.after.clone(),
-        max_depth: query.max_depth,
-        max_nodes: query.max_nodes,
+    Ok(GraphSelection {
         truncated,
         nodes,
         edges,

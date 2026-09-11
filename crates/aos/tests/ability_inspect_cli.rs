@@ -176,6 +176,40 @@ fn json_mode_emits_only_the_canonical_checked_view() -> Result<(), Box<dyn std::
 }
 
 #[test]
+fn public_reference_query_emits_the_shared_golden_slice() -> Result<(), Box<dyn std::error::Error>>
+{
+    let workspace = tempfile::tempdir()?;
+    let input = include_bytes!("../../../tests/abilities/fixtures/reference-inspection-input.json");
+    let query = include_bytes!("../../../tests/abilities/fixtures/reference-inspection-query.json");
+    let expected =
+        include_bytes!("../../../tests/abilities/fixtures/reference-inspection-slice.json");
+    let input_path = workspace.path().join("reference-inspection-input.json");
+    let query_path = workspace.path().join("reference-inspection-query.json");
+    std::fs::write(&input_path, input)?;
+    std::fs::write(&query_path, query)?;
+    let digest = Sha256Digest::of_bytes(input).to_string();
+
+    let output = run(
+        workspace.path(),
+        &[
+            "--json",
+            "ability",
+            "inspect",
+            path_text(&input_path)?,
+            "--query",
+            path_text(&query_path)?,
+            "--expected-digest",
+            &digest,
+        ],
+    )?;
+
+    assert!(output.status.success(), "{}", stderr(&output)?);
+    assert_eq!(output.stdout, [expected.as_slice(), b"\n"].concat());
+    assert!(output.stderr.is_empty());
+    Ok(())
+}
+
+#[test]
 fn independent_digest_mismatch_fails_before_rendering() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = tempfile::tempdir()?;
     let bundle_path = workspace.path().join("inspection.json");

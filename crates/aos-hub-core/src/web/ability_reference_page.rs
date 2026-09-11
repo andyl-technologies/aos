@@ -60,6 +60,16 @@ pub fn section(
         return html;
     };
 
+    let checked_graph = match super::ability_reference_inspection::section(panel) {
+        Ok(graph) => graph,
+        Err(_) => {
+            html.push_str(
+                "<p class=\"warn\">The authenticated public contract could not be checked by the shared ability inspector.</p></section>",
+            );
+            return html;
+        }
+    };
+
     let reference = &panel.reference;
     let activation = match reference.activation_mode {
         AbilityActivationMode::ContractsOnly => "contracts only",
@@ -93,6 +103,8 @@ pub fn section(
         urlencode(&panel.release),
     );
 
+    html.push_str(&checked_graph);
+
     html.push_str("<h3>Provides</h3>");
     if reference.exports.is_empty() {
         html.push_str("<p class=\"dim\">This package publishes no provider interfaces.</p>");
@@ -108,7 +120,13 @@ pub fn section(
             escape(interface.name.as_str()),
             escape(&anchor),
             interface.abi,
-            hash_value(&export.interface.interface_key().map(|key| key.descriptor.to_string()).unwrap_or_else(|_| "invalid".into())),
+            hash_value(
+                &export
+                    .interface
+                    .interface_key()
+                    .map(|key| key.descriptor.to_string())
+                    .unwrap_or_else(|_| "invalid".into())
+            ),
             hash_value(&export.implementation.to_string()),
         );
         html.push_str("<h5>Request or contribution schema</h5>");
@@ -186,7 +204,11 @@ pub fn section(
                 "<h5>Contribution consumption</h5><p>Scoped per provider instance with key <code>{}</code> and controller group <code>{}</code>. Slot collisions are {}.</p>",
                 escape(aggregation.key.as_str()),
                 escape(aggregation.controller_group.as_str()),
-                if aggregation.reject_slot_collisions { "rejected" } else { "allowed" },
+                if aggregation.reject_slot_collisions {
+                    "rejected"
+                } else {
+                    "allowed"
+                },
             );
         }
         html.push_str("</article>");
@@ -382,11 +404,7 @@ fn scalar(value: &impl serde::Serialize) -> String {
 }
 
 const fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 #[cfg(test)]
@@ -401,6 +419,40 @@ mod tests {
     use aos_contract::Sha256Digest;
 
     use super::*;
+
+    #[test]
+    fn hub_uses_the_cross_frontend_golden_graph_slice() -> Result<(), Box<dyn std::error::Error>> {
+        let input_bytes =
+            include_bytes!("../../../../tests/abilities/fixtures/reference-inspection-input.json");
+        let input = aos_ability_inspect::ReferenceInspectionInput::decode(input_bytes)?;
+        let reference = input.reference().clone();
+        let canonical_json = reference.canonical_json()?;
+        let panel = PackageAbilityReferencePanel {
+            release: "golden".to_string(),
+            indexed_commit: "b".repeat(64),
+            platform: "x86_64-linux".to_string(),
+            locator: crate::db::PackageAbilityReferenceLocator {
+                indexed_commit: "b".repeat(64),
+                package_name: reference.package.as_str().to_string(),
+                package_version: reference.version.clone(),
+                platform: "x86_64-linux".to_string(),
+                manifest_sha256: reference.manifest_sha256.to_string(),
+                package_digest: reference.package_digest.to_string(),
+                canonical_json,
+            },
+            reference,
+        };
+        let query = aos_ability_inspect::GraphQuery::decode(include_bytes!(
+            "../../../../tests/abilities/fixtures/reference-inspection-query.json"
+        ))?;
+        let expected =
+            include_bytes!("../../../../tests/abilities/fixtures/reference-inspection-slice.json");
+
+        let slice = super::super::ability_reference_inspection::checked_slice(&panel, &query)?;
+
+        assert_eq!(slice.canonical_bytes()?, expected);
+        Ok(())
+    }
 
     fn key(value: &str) -> LocalKey {
         LocalKey::new(value).expect("valid local key")
@@ -430,35 +482,37 @@ mod tests {
             },
         };
         let interface_key = interface.interface_key().expect("interface key");
+        let reference = aos_doc_model::PackageAbilityReference {
+            schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.into(),
+            required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
+            package: key("demo"),
+            version: "1.2.3".into(),
+            manifest_sha256: Sha256Digest::of_bytes(b"manifest"),
+            package_digest: Sha256Digest::of_bytes(b"package"),
+            activation_mode: AbilityActivationMode::StructuredEffects,
+            exports: vec![aos_doc_model::AbilityExportReference {
+                name: key("server"),
+                interface,
+                aggregation: None,
+                implementation: Sha256Digest::of_bytes(b"implementation"),
+            }],
+            requirements: vec![RequirementDeclaration {
+                alias: key("network"),
+                accepted_interfaces: vec![interface_key],
+                methods: Vec::new(),
+                guarantees: Vec::new(),
+                strength: RequirementStrength::Required,
+                fallback: None,
+            }],
+            handlers: Vec::new(),
+            ownership: vec![ScopePath::new(vec![key("services")]).expect("scope")],
+        };
+        let canonical_json = reference.canonical_json().expect("canonical reference");
         PackageAbilityReferencePanel {
             release: "1.2.3".into(),
             indexed_commit: "a".repeat(64),
             platform: "x86_64-linux".into(),
-            reference: aos_doc_model::PackageAbilityReference {
-                schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.into(),
-                required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
-                package: key("demo"),
-                version: "1.2.3".into(),
-                manifest_sha256: Sha256Digest::of_bytes(b"manifest"),
-                package_digest: Sha256Digest::of_bytes(b"package"),
-                activation_mode: AbilityActivationMode::StructuredEffects,
-                exports: vec![aos_doc_model::AbilityExportReference {
-                    name: key("server"),
-                    interface,
-                    aggregation: None,
-                    implementation: Sha256Digest::of_bytes(b"implementation"),
-                }],
-                requirements: vec![RequirementDeclaration {
-                    alias: key("network"),
-                    accepted_interfaces: vec![interface_key],
-                    methods: Vec::new(),
-                    guarantees: Vec::new(),
-                    strength: RequirementStrength::Required,
-                    fallback: None,
-                }],
-                handlers: Vec::new(),
-                ownership: vec![ScopePath::new(vec![key("services")]).expect("scope")],
-            },
+            reference,
             locator: crate::db::PackageAbilityReferenceLocator {
                 indexed_commit: "a".repeat(64),
                 package_name: "demo".into(),
@@ -466,7 +520,7 @@ mod tests {
                 platform: "x86_64-linux".into(),
                 manifest_sha256: Sha256Digest::of_bytes(b"manifest").to_string(),
                 package_digest: Sha256Digest::of_bytes(b"package").to_string(),
-                canonical_json: Vec::new(),
+                canonical_json,
             },
         }
     }
@@ -554,9 +608,41 @@ mod tests {
     }
 
     #[test]
+    fn shared_inspector_rejection_hides_contract_and_deployment_projections() {
+        let mut reference = panel();
+        reference.reference.required_features =
+            vec![RequiredFeature::new("future-reference-semantics-v1").expect("feature")];
+        reference.locator.canonical_json = reference
+            .reference
+            .canonical_json()
+            .expect("canonical unsupported reference");
+        let deployment = deployment_panel(&reference);
+
+        let html = section("demo", Some(&reference), false, Some(&[deployment]), false);
+
+        assert_eq!(
+            html,
+            concat!(
+                "<section id=\"abilities\" class=\"package-abilities\"><h2>Abilities</h2>",
+                "<p class=\"warn\">The authenticated public contract could not be checked by ",
+                "the shared ability inspector.</p></section>",
+            )
+        );
+        assert!(!html.contains("future-reference-semantics-v1"));
+        assert!(!html.contains("Provides"));
+        assert!(!html.contains("Requires"));
+        assert!(!html.contains("Private deployment state"));
+        assert!(!html.contains("reporter-bearer:"));
+    }
+
+    #[test]
     fn states_when_an_interface_declares_no_operator_configuration() {
         let mut panel = panel();
         panel.reference.exports[0].interface.interface.configuration = None;
+        panel.locator.canonical_json = panel
+            .reference
+            .canonical_json()
+            .expect("canonical reference without configuration");
 
         let html = section("demo", Some(&panel), false, None, false);
 

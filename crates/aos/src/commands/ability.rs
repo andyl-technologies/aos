@@ -10,10 +10,12 @@ use aos_ability_inspect::{
     ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES, ArtifactConsumptionExplanation,
     ArtifactConsumptionQuery, CheckedArtifactConsumptionEvidence, DiagnosticBundle,
     DiagnosticBundleAudience, ExecutionTimeline, GraphQuery, INSPECTION_BUNDLE_MAX_BYTES,
-    INSPECTION_QUERY_MAX_BYTES, InspectionBundle, InspectionView, OPERATOR_OBSERVATION_MAX_BYTES,
-    OPERATOR_QUERY_MAX_BYTES, OperatorObservation, OperatorQuery, OperatorView,
-    PendingStateAvailability, ProjectionKind, RenderFormat, TimelineEventInput, TimelineEventKind,
-    TimelineProvenance, TimelineTiming, ViewAnchor, render, render_projection, render_slice,
+    INSPECTION_BUNDLE_SCHEMA, INSPECTION_QUERY_MAX_BYTES, InspectionBundle, InspectionView,
+    OPERATOR_OBSERVATION_MAX_BYTES, OPERATOR_QUERY_MAX_BYTES, OperatorObservation, OperatorQuery,
+    OperatorView, PendingStateAvailability, ProjectionKind, REFERENCE_INSPECTION_INPUT_SCHEMA,
+    ReferenceInspectionAnchor, ReferenceInspectionInput, ReferenceInspectionView, RenderFormat,
+    TimelineEventInput, TimelineEventKind, TimelineProvenance, TimelineTiming, ViewAnchor, render,
+    render_projection, render_reference, render_reference_slice, render_slice,
 };
 use aos_ability_model::{LocalKey, PlanNodeKey, RequiredFeature, TransactionId};
 use aos_ability_runtime::execution::{
@@ -294,6 +296,18 @@ fn inspect(args: &AbilityInspectArgs, printer: &Printer) -> Result<()> {
         .map(Sha256Digest::parse)
         .transpose()
         .context("parsing --expected-digest")?;
+    let schema = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .context("decoding ability inspection input JSON")?
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .context("ability inspection input has no schema discriminator")?;
+    if schema == REFERENCE_INSPECTION_INPUT_SCHEMA {
+        return inspect_reference(args, printer, query.as_ref(), &bytes, expected_digest);
+    }
+    if schema != INSPECTION_BUNDLE_SCHEMA {
+        bail!("ability inspection input has an unsupported schema discriminator");
+    }
     let checked = InspectionBundle::decode(&bytes)
         .context("decoding canonical ability inspection bundle")?
         .check(expected_digest)
@@ -337,6 +351,51 @@ fn inspect(args: &AbilityInspectArgs, printer: &Printer) -> Result<()> {
     if matches!(view.anchor(), ViewAnchor::UnanchoredBundle { .. }) {
         printer.warning(
             "the bundle was semantically checked without an independent digest; its captured environment and policy are not asserted current",
+        );
+    }
+    Ok(())
+}
+
+fn inspect_reference(
+    args: &AbilityInspectArgs,
+    printer: &Printer,
+    query: Option<&GraphQuery>,
+    bytes: &[u8],
+    expected_digest: Option<Sha256Digest>,
+) -> Result<()> {
+    if args.projection.is_some() {
+        bail!("semantic plan projections do not apply to public-reference inspection input");
+    }
+    let checked = ReferenceInspectionInput::decode(bytes)
+        .context("decoding canonical public-reference inspection input")?
+        .check(expected_digest)
+        .context("checking public-reference inspection input")?;
+    let view = ReferenceInspectionView::from_checked(&checked)
+        .context("projecting checked public-reference inspection view")?;
+    let format = args.format.map(Into::into).unwrap_or_else(|| {
+        if printer.mode() == OutputMode::Json {
+            RenderFormat::Json
+        } else {
+            RenderFormat::Text
+        }
+    });
+    let output = if let Some(query) = query {
+        let slice = view
+            .query(query)
+            .context("querying checked public-reference inspection view")?;
+        render_reference_slice(&slice, format)
+            .context("rendering checked public-reference graph slice")?
+    } else {
+        render_reference(&view, format).context("rendering checked public-reference graph")?
+    };
+    printer.raw(&output);
+
+    if matches!(
+        view.anchor(),
+        ReferenceInspectionAnchor::UnanchoredReference { .. }
+    ) {
+        printer.warning(
+            "the public reference was checked without an independent digest; deployment authorization and runtime availability were not evaluated",
         );
     }
     Ok(())
