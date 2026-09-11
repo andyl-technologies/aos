@@ -422,49 +422,71 @@ in
             #define VAL_CC "${llvm}/bin/clang"' \
               src/common/config_info.c
           ''
-          else ''
-            export LLVM_CONFIG=${
-              if isCross
-              then llvmConfigForBitcode
-              else llvm
-            }/bin/llvm-config
-            # PostgreSQL invokes Clang directly for LLVM bitcode, so retain
-            # the libc header path normally injected by the AOS GCC wrapper.
-            export CLANG=${clangForBitcode}/bin/clang
-            export TCLSH=${tcl}/bin/tclsh9.0
-            export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
-            ./configure \
-              --prefix=$out \
-              --enable-nls \
-              --with-llvm \
-              --with-icu \
-              --with-tcl \
-              --with-tclconfig=${tcl}/lib \
-              --with-gssapi \
-              --with-ldap \
-              --with-liburing \
-              --with-libnuma \
-              --with-system-tzdata=${tzdata}/share/zoneinfo \
-              --with-perl \
-              --with-python \
-              --with-pam \
-              --with-selinux \
-              --with-systemd \
-              --with-uuid=e2fs \
-              --with-libcurl \
-              --with-libxml \
-              --with-libxslt \
-              --with-lz4 \
-              --with-zstd \
-              --with-ssl=openssl
+          else
+            lib.optionalString (isCross && stdenv.hostPlatform.isLinux) ''
+              # The LLVM object shares the generated header dependency with
+              # the C object; emulated Perl exposes the upstream build race.
+              sed -i 's/^daitch_mokotoff\.o:/daitch_mokotoff.o daitch_mokotoff.bc:/' \
+                contrib/fuzzystrmatch/Makefile
 
-            for macro in \
-              ENABLE_GSS ENABLE_NLS HAVE_LIBNUMA USE_ICU USE_LDAP USE_LIBURING USE_LLVM \
-              USE_LIBCURL USE_LIBXML USE_LIBXSLT USE_LZ4 USE_OPENSSL USE_PAM \
-              USE_SYSTEMD USE_ZSTD HAVE_LIBSELINUX HAVE_UUID_E2FS; do
-              grep "^#define $macro 1$" src/include/pg_config.h
-            done
-          '';
+              # Embedded language configuration must describe the target
+              # interpreter and its headers and shared library.
+              export PERL=${perl}/bin/perl
+              export PYTHON=${python3}/bin/python3
+
+              # GCC treats an explicit -I path already in these variables as
+              # a system directory. Put target LLVM first so JIT initialization
+              # uses its architecture definitions instead of the build host's.
+              export C_INCLUDE_PATH="${llvm}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+              export CPLUS_INCLUDE_PATH="${llvm}/include''${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}"
+
+              # Native XML and mount utilities also carry library metadata.
+              # Installed PGXS flags must reference the target development API.
+              export PKG_CONFIG_PATH="${libxml2}/lib/pkgconfig:${libxslt}/lib/pkgconfig:${util-linux}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            ''
+            + ''
+              export LLVM_CONFIG=${
+                if isCross
+                then llvmConfigForBitcode
+                else llvm
+              }/bin/llvm-config
+              # PostgreSQL invokes Clang directly for LLVM bitcode, so retain
+              # the libc header path normally injected by the AOS GCC wrapper.
+              export CLANG=${clangForBitcode}/bin/clang
+              export TCLSH=${tcl}/bin/tclsh9.0
+              export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
+              ./configure \
+                --prefix=$out \
+                --enable-nls \
+                --with-llvm \
+                --with-icu \
+                --with-tcl \
+                --with-tclconfig=${tcl}/lib \
+                --with-gssapi \
+                --with-ldap \
+                --with-liburing \
+                --with-libnuma \
+                --with-system-tzdata=${tzdata}/share/zoneinfo \
+                --with-perl \
+                --with-python \
+                --with-pam \
+                --with-selinux \
+                --with-systemd \
+                --with-uuid=e2fs \
+                --with-libcurl \
+                --with-libxml \
+                --with-libxslt \
+                --with-lz4 \
+                --with-zstd \
+                --with-ssl=openssl
+
+              for macro in \
+                ENABLE_GSS ENABLE_NLS HAVE_LIBNUMA USE_ICU USE_LDAP USE_LIBURING USE_LLVM \
+                USE_LIBCURL USE_LIBXML USE_LIBXSLT USE_LZ4 USE_OPENSSL USE_PAM \
+                USE_SYSTEMD USE_ZSTD HAVE_LIBSELINUX HAVE_UUID_E2FS; do
+                grep "^#define $macro 1$" src/include/pg_config.h
+              done
+            '';
       }
       {
         name = "build";
