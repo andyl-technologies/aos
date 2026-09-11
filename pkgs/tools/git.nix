@@ -78,6 +78,10 @@
     then featureFlags
     else "PERL_PATH=${buildPerl}/bin/perl PYTHON_PATH=${buildPython3}/bin/python3";
   buildShellFlag = "SHELL_PATH=${buildBash}/bin/bash";
+  # Link the declared target library without executing curl-config, whose
+  # interpreter may be unavailable in the sandbox or on a cross builder.
+  curlLinkFlag = ''CURL_LDFLAGS="-L${curl}/lib -lcurl"'';
+
   # Git's Makefile runs uname independently of configure. Override the Linux
   # builder result so config.mak.uname selects the target Darwin capabilities.
   targetPlatformFlags = lib.optionalString isDarwinCross " uname_S=Darwin uname_M=${stdenv.hostPlatform.darwinArch} uname_R=22.1.0";
@@ -106,13 +110,12 @@ in
         pkg-config
         autoconf
         cargoBuildTool
+        # Translation catalogs need a compiler that runs on the builder.
+        buildPackages.gettext
       ]
       ++ lib.optionals (!minimal) [
         perl
         python3
-      ]
-      ++ lib.optionals isDarwinCross [
-        buildPackages.gettext
       ];
     runtimeDeps =
       [
@@ -173,6 +176,7 @@ in
           make -j$NIX_BUILD_CORES \
             NO_INSTALL_HARDLINKS=1${targetPlatformFlags} \
             ${buildShellFlag} \
+            ${curlLinkFlag} \
             ${cargoTargetFlags} \
             ${buildFeatureFlags}
         '';
@@ -183,6 +187,7 @@ in
           make install \
             NO_INSTALL_HARDLINKS=1${targetPlatformFlags} \
             ${buildShellFlag} \
+            ${curlLinkFlag} \
             ${cargoTargetFlags} \
             ${buildFeatureFlags}
           ${lib.optionalString isDarwinCross ''
