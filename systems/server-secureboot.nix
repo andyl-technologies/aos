@@ -25,10 +25,18 @@
   # publication transaction have required up to 528 MiB. Earlier complete
   # compressed fixtures reached 787 MiB; keep both allowances local to this test.
   aos.image.budgets = {
-    maxEspMiB = 544;
+    # AArch64 uses 184 MiB normal and 117 MiB recovery UKIs; retaining both
+    # recovery copies through an update requires up to 750 MiB on the ESP.
+    maxEspMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 768
+      else 544;
     maxDownloadMiB = 800;
-    # Uncompressed converted formats reach 885 MiB with all recovery UKIs.
-    maxConvertedDownloadMiB = 896;
+    # Converted VHDs reach 885 MiB on x86_64 and 1015 MiB on AArch64.
+    maxConvertedDownloadMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 1024
+      else 896;
   };
   aos.image.allowTestArtifacts = true;
 

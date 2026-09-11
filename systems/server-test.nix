@@ -42,8 +42,11 @@
   aos.image.budgets = {
     maxRootMiB = 704;
     maxDownloadMiB = 768;
-    # The uncompressed VHD reaches 825 MiB with the diagnostic runtime.
-    maxConvertedDownloadMiB = 832;
+    # Diagnostic VHDs reach 825 MiB on x86_64 and 863 MiB on AArch64.
+    maxConvertedDownloadMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 864
+      else 832;
   };
 
   # Guest agent for image machines (baked machines also get it from

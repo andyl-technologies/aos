@@ -156,8 +156,8 @@ writable `/var/lib/apm/config` overlay.
 
 ## Build an image
 
-The image pipeline currently targets `x86_64-linux` and produces a raw GPT
-disk, QCOW2, VMDK, and dynamic VHD from the same evaluated system:
+The image pipeline targets `x86_64-linux` and `aarch64-linux` and produces a
+raw GPT disk, QCOW2, VMDK, and dynamic VHD from the same evaluated system:
 
 ```sh
 git add systems/acme-server.nix
@@ -226,14 +226,37 @@ before deploying a payload that depends on larger root, verity, or ESP maxima.
 Use `aos profile closure systems.acme-server.build.toplevel` to attribute
 closure growth first.
 
+UKI assembly and signing tools execute on the build platform. The EFI stub
+and kernel match the target architecture, and runtime PE inspection uses the
+small target-hosted `pe-tools` package without retaining the full binutils.
+AArch64's uncompressed kernel makes its UKIs larger than the x86_64 images:
+
+| Default maximum (MiB) | x86_64 | AArch64 |
+| --- | ---: | ---: |
+| UKI | 160 | 192 |
+| ESP, including update workspace | 384 | 416 |
+| Runtime NAR closure | 768 | 896 |
+
+Recovery-enabled Secure Boot fixtures use ESP maxima of 544 MiB on x86_64
+and 768 MiB on AArch64, retaining both recovery copies throughout an update.
+The `server-2` HTTP fixture uses runtime closure maxima of 832 and 928 MiB,
+respectively. Development payload and forbidden-artifact checks remain the
+same on both architectures.
+
 The server and edge golden images cap compressed raw downloads at 768 MiB
 with `maxDownloadMiB`. The uncompressed qcow2, VMDK, and VHD encodings use
 `maxConvertedDownloadMiB`, which defaults to the raw limit. Secure Boot test
-fixtures allow 800 MiB compressed raw and 896 MiB converted objects because
-their recovery UKIs remain in the disk. The diagnostic `server-test` image
-allows 832 MiB converted objects while retaining its 768 MiB raw limit.
-Each format manifest records its own limit in `artifactBudgetsMiB.download`. Profile the closure and artifacts
-before changing either ceiling.
+fixtures allow 800 MiB compressed raw because their recovery UKIs remain in
+the disk. Converted limits follow the measured target payloads:
+
+| Converted maximum (MiB) | x86_64 | AArch64 |
+| --- | ---: | ---: |
+| Server, edge and server-2 | 768 | 800 |
+| Diagnostic server-test | 832 | 864 |
+| Secure Boot and recovery fixtures | 896 | 1024 |
+
+Each format manifest records its own limit in `artifactBudgetsMiB.download`.
+Profile the closure and artifacts before changing either ceiling.
 
 Inspect the evaluated option before building:
 

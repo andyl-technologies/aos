@@ -97,7 +97,7 @@
             byte_size=$(stat -c %s "$out/$filename")
             max_download_mib=${toString cfg.budgets.maxConvertedDownloadMiB}
             if [ "$byte_size" -gt $(( max_download_mib * 1048576 )) ]; then
-              echo "$IMAGE_FORMAT image exceeds its $max_download_mib MiB download contract" >&2
+              echo "$IMAGE_FORMAT image is $byte_size bytes and exceeds its $max_download_mib MiB download contract" >&2
               exit 1
             fi
             sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
@@ -321,9 +321,23 @@ in {
       # The recovery-capable runtime is 129 MiB after development-input pruning.
       # Keep its measured allowance below the independent UKI and ESP budgets.
       maxInitrdMiB = positiveMiB 132 "Maximum initrd artifact size before it is embedded in a UKI.";
-      maxUkiMiB = positiveMiB 160 "Maximum signed Unified Kernel Image size.";
-      maxEspMiB = positiveMiB 384 "EFI System Partition capacity, including two UKIs and update headroom.";
-      maxRuntimeClosureMiB = positiveMiB 768 "Maximum NAR size of the system toplevel runtime closure.";
+      # AArch64 carries an uncompressed kernel image, making its UKIs 183 MiB.
+      maxUkiMiB = positiveMiB (
+        if targetPlatform.constraints.cpu == "aarch64"
+        then 192
+        else 160
+      ) "Maximum signed Unified Kernel Image size.";
+      maxEspMiB = positiveMiB (
+        if targetPlatform.constraints.cpu == "aarch64"
+        then 416
+        else 384
+      ) "EFI System Partition capacity, including two UKIs and update headroom.";
+      # AArch64's kernel and system libraries bring the base closure to 833 MiB.
+      maxRuntimeClosureMiB = positiveMiB (
+        if targetPlatform.constraints.cpu == "aarch64"
+        then 896
+        else 768
+      ) "Maximum NAR size of the system toplevel runtime closure.";
       maxDevelopmentPayloadMiB = positiveMiB 48 "Maximum headers, static archives, and build metadata retained in the image runtime closure.";
       maxDownloadMiB = positiveMiB 640 "Maximum compressed raw disk-image object size.";
       maxConvertedDownloadMiB = positiveMiB cfg.budgets.maxDownloadMiB "Maximum uncompressed qcow2, VMDK, or VHD disk-image object size.";
