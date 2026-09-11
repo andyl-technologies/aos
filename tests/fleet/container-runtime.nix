@@ -45,6 +45,23 @@
     "${pkgs.kmod}/bin"
     "${pkgs.kmod}/sbin"
   ];
+
+  # The transfer service must unpack into the snapshotter selected by nerdctl.
+  # Its default unpack configuration covers only overlayfs.
+  containerPlatform =
+    if pkgs.stdenv.hostPlatform.isAarch64
+    then "linux/arm64"
+    else "linux/amd64";
+  containerdConfig = pkgs.writeTextFile {
+    name = "aos-container-runtime-test.toml";
+    text = ''
+      version = 3
+      [[plugins."io.containerd.transfer.v1.local".unpack_config]]
+        platform = "${containerPlatform}"
+        snapshotter = "native"
+    '';
+  };
+
   runtimeSystem = mkSystem [
     ../../systems/server-test.nix
     {
@@ -58,6 +75,7 @@
           Type = "notify";
           ExecStart =
             "${pkgs.containerd}/bin/containerd"
+            + " --config ${containerdConfig}"
             + " --address /run/aos-containerd/containerd.sock"
             + " --root /var/lib/aos-containerd"
             + " --state /run/aos-containerd";
