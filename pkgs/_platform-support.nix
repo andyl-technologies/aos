@@ -569,6 +569,7 @@ let
     "strace"
     "sudo"
     "systemd"
+    "systemd-measure"
     "tailscale"
     "tmux"
     "util-linux"

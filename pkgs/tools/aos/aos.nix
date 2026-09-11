@@ -26,6 +26,7 @@
   semodule-utils,
   sbsigntools,
   systemd,
+  systemd-measure,
   mtools,
   qemu-img,
   remove-references-to,
@@ -82,7 +83,9 @@
   # The caller's PATH is retained solely for explicit user-supplied commands;
   # internal subprocesses always use the corresponding hermetic PATH.
   aosRuntimeTools = [bash git-minimal nix qemu-img zstd];
-  aprRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img zstd];
+  aprRuntimeTools =
+    [bash nix openssl sbsigntools mtools qemu-img zstd]
+    ++ lib.optionals stdenv.hostPlatform.isLinux [systemd-measure];
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
   apmRuntimeTools =
     apmPortableRuntimeTools
@@ -108,6 +111,7 @@
   nonAosLinuxRuntimeDeps = builtins.filter (dependency: dependency != aos-landlock) linuxRuntimeDeps;
   aosForbiddenRuntimeDeps =
     [sbsigntools mtools tpm2-tools which]
+    ++ lib.optionals stdenv.hostPlatform.isLinux [systemd-measure]
     ++ lib.optionals (!isDarwinCross) ([systemd] ++ nonAosLinuxRuntimeDeps);
   aprForbiddenRuntimeDeps =
     [tpm2-tools which]
