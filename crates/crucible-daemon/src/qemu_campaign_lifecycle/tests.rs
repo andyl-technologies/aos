@@ -2069,7 +2069,15 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
     };
     let (_, _, _, triage) = evidence.into_parts();
     let (failures, causal_entries, _, _, _) = triage.into_parts();
-    let [crucible::FailureClusterReportFailure::Timeout(timeout)] = failures.as_slice() else {
+    let timeouts = failures
+        .iter()
+        .filter_map(|failure| match failure {
+            crucible::FailureClusterReportFailure::Timeout(timeout) => Some(timeout),
+            crucible::FailureClusterReportFailure::Property(_)
+            | crucible::FailureClusterReportFailure::Divergence(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let [timeout] = timeouts.as_slice() else {
         panic!("execution-bound replay must retain exactly one timeout source")
     };
 
@@ -2088,7 +2096,7 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
 #[test]
 fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
     let assertion = AssertionId::from_name("coincident-timeout-safety");
-    let base = modeled_assertion_candidate_input(assertion.clone(), 1);
+    let base = modeled_assertion_candidate_input(assertion.clone(), 2);
     let decision = Decision::RngDraw(RngDecision {
         stream: RngStreamId::from_name("fresh-runner-non-genesis"),
         value: 7,

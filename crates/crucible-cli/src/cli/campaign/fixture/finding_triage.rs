@@ -32,8 +32,9 @@ use crucible_campaign::{
     CampaignControlAction, CampaignHash, CampaignLineage, CampaignMode, CampaignName,
     CampaignPolicy, CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository,
     CampaignSeed, CampaignServiceOperation, ConfigurationId, ControlRequest, CoverageProjection,
-    ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingExactPins, FindingKind,
-    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
+    ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingExactPins,
+    FindingExactRetention, FindingExactRetentionDisposition, FindingExactRetentionIncomplete,
+    FindingKind, FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
     FindingSignatureMinimizationEvidence, FindingTarget, FindingTriageEvidenceSet,
     FindingTriageReplayEvidence, MeasurementSet, Observation, PropertyEvidence, PropertyVerdict,
     PropertyVerdictSet, RepositoryCampaignService, RetentionPolicy, ScenarioDefId, StopOutcome,
@@ -422,6 +423,22 @@ fn publish_campaign_finding_fixture(
     )?;
     let observation_snapshot =
         fixture_step("read campaign head", repository.head(CAMPAIGN))?.snapshot_id();
+    let retention_basis = fixture_step(
+        "read finding retention policy basis",
+        repository.attempt_retention_policy_basis_at(observation_snapshot, attempt),
+    )?;
+    let exact_retention = fixture_step(
+        "build incomplete finding exact retention",
+        FindingExactRetention::new(
+            retention_basis.snapshot(),
+            retention_basis.policy(),
+            retention_basis.admission(),
+            0,
+            FindingExactRetentionDisposition::Incomplete(
+                FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+            ),
+        ),
+    )?;
     let observed = fixture_step(
         "publish observation",
         repository.publish_observation(CAMPAIGN, observation_snapshot, &observation),
@@ -596,14 +613,16 @@ fn publish_campaign_finding_fixture(
     let verification_selected = triage_evidence.verification_selected();
     let bundle = fixture_step(
         "build finding candidate bundle",
-        FindingCandidateBundle::new_with_triage_evidence(
+        FindingCandidateBundle::new_with_exact_retention(
             observed.observation,
             signature,
             original,
             minimized,
             signature_minimization,
             FindingExactPins::default(),
-            triage_evidence,
+            Some(triage_evidence),
+            None,
+            exact_retention,
         ),
     )?;
     let bundle = fixture_step(
