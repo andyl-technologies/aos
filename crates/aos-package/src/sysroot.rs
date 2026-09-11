@@ -119,6 +119,7 @@ const RUNNING_CMDLINE: &str = "/proc/cmdline";
 const IMMUTABLE_ACTIVE_DB_CERTS: &str = "/usr/lib/aos/image-trust/active-db-certs.pem";
 const MAX_CONFIGURED_DB_CERTIFICATES: usize = 32;
 const MAX_INSTALLED_UKI_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_OS_RELEASE_BYTES: u64 = 64 * 1024;
 const SUPPORTED_RECOVERY_ABI: u32 = 1;
 
 /// Recoverable intent record for publishing a generation as current.
@@ -396,13 +397,8 @@ where
     }
     let os_release = std::fs::read_link(immutable_toplevel.join("os-release"))
         .context("reading immutable running os-release pointer")?;
-    let os_release_text = os_release
-        .to_str()
-        .context("immutable running os-release pointer is not UTF-8")?;
-    crate::config_eval::materialize::validate_canonical_store_path(os_release_text)
-        .context("validating immutable running os-release pointer")?;
-    let os_release = resolve_absolute_path_beneath(immutable_root, &os_release)?;
-    let fields = parse_os_release(&os_release)?;
+    let fields = read_immutable_os_release(immutable_root, &os_release)
+        .context("reading immutable running os-release identity")?;
     let abi = fields
         .get("AOS_MODULE_ABI")
         .context("running os-release has no AOS_MODULE_ABI")?
@@ -506,9 +502,27 @@ fn parse_kernel_cmdline(path: &Path) -> Result<std::collections::BTreeMap<String
     Ok(fields)
 }
 
-fn parse_os_release(path: &Path) -> Result<std::collections::BTreeMap<String, String>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading running image identity {}", path.display()))?;
+fn read_immutable_os_release(
+    immutable_root: &Path,
+    logical_path: &Path,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let logical_path_text = logical_path
+        .to_str()
+        .context("immutable os-release pointer is not UTF-8")?;
+    crate::config_eval::materialize::validate_canonical_store_member_path(logical_path_text)
+        .context("validating immutable os-release pointer")?;
+    let relative_path = logical_path
+        .strip_prefix("/")
+        .context("immutable os-release pointer is not absolute")?
+        .to_str()
+        .context("immutable os-release relative path is not UTF-8")?;
+    let bytes = crate::config_eval::materialize::read_bounded_bytes_beneath(
+        immutable_root,
+        relative_path,
+        MAX_OS_RELEASE_BYTES,
+    )?;
+    let text = std::str::from_utf8(&bytes).context("immutable os-release is not UTF-8")?;
+
     let mut fields = std::collections::BTreeMap::new();
     for line in text.lines() {
         let line = line.trim();
@@ -2805,6 +2819,7 @@ fn resolve_installed_uki_entry(boot_root: &Path, recorded: &str) -> Result<Strin
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ExhaustedEntry {
     Reject,
+    #[cfg(test)]
     Allow,
 }
 
@@ -5787,8 +5802,10 @@ mod tests {
             PathBuf::from(format!("/nix/store/{}-running-toplevel", "0".repeat(32)));
         let logical_base_lib =
             PathBuf::from(format!("/nix/store/{}-running-base-lib", "1".repeat(32)));
-        let logical_os_release =
-            PathBuf::from(format!("/nix/store/{}-running-os-release", "2".repeat(32)));
+        let logical_os_release = PathBuf::from(format!(
+            "/nix/store/{}-running-os-release/os-release",
+            "2".repeat(32)
+        ));
         let toplevel = resolve_absolute_path_beneath(&immutable_root, &logical_toplevel).unwrap();
         let os_release =
             resolve_absolute_path_beneath(&immutable_root, &logical_os_release).unwrap();
@@ -5939,6 +5956,74 @@ mod tests {
         )
         .expect("absolute store links must resolve beneath the mounted root");
         assert_eq!(loaded.toplevel, logical_toplevel.to_string_lossy());
+    }
+
+    #[test]
+    fn running_image_rejects_os_release_symlink_escape() {
+        let (tmp, image_profile, immutable_root, toplevel_link, cmdline) =
+            running_identity_fixture();
+        let logical_toplevel = std::fs::read_link(&toplevel_link).unwrap();
+        let physical_toplevel =
+            resolve_absolute_path_beneath(&immutable_root, &logical_toplevel).unwrap();
+        let logical_os_release = std::fs::read_link(physical_toplevel.join("os-release")).unwrap();
+        let physical_os_release =
+            resolve_absolute_path_beneath(&immutable_root, &logical_os_release).unwrap();
+        let outside = tmp.path().join("live-root-os-release");
+        std::fs::write(
+            &outside,
+            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:base\n",
+        )
+        .unwrap();
+        std::fs::remove_file(&physical_os_release).unwrap();
+        std::os::unix::fs::symlink(&outside, &physical_os_release).unwrap();
+
+        let error = load_running_image_generation_fixture(
+            &image_profile,
+            &immutable_root,
+            &toplevel_link,
+            &cmdline,
+        )
+        .expect_err("immutable identity reads must not follow a live-root symlink");
+
+        assert!(
+            format!("{error:#}").contains("opening"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn running_image_rejects_os_release_parent_symlink_escape() {
+        let (tmp, image_profile, immutable_root, toplevel_link, cmdline) =
+            running_identity_fixture();
+        let logical_toplevel = std::fs::read_link(&toplevel_link).unwrap();
+        let physical_toplevel =
+            resolve_absolute_path_beneath(&immutable_root, &logical_toplevel).unwrap();
+        let logical_os_release = std::fs::read_link(physical_toplevel.join("os-release")).unwrap();
+        let physical_os_release =
+            resolve_absolute_path_beneath(&immutable_root, &logical_os_release).unwrap();
+        let outside = tmp.path().join("live-root-store-object");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(
+            outside.join("os-release"),
+            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:base\n",
+        )
+        .unwrap();
+        std::fs::remove_file(&physical_os_release).unwrap();
+        std::fs::remove_dir(physical_os_release.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, physical_os_release.parent().unwrap()).unwrap();
+
+        let error = load_running_image_generation_fixture(
+            &image_profile,
+            &immutable_root,
+            &toplevel_link,
+            &cmdline,
+        )
+        .expect_err("immutable identity reads must reject a symlinked parent directory");
+
+        assert!(
+            format!("{error:#}").contains("symlink component"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]
