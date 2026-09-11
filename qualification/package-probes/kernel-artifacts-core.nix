@@ -119,7 +119,7 @@
   kernelParser = ''
     import pathlib, re, struct
 
-    def parse_boot_image(path, machine):
+    def parse_boot_image(path, machine, symbols=None):
         size = path.stat().st_size
         with path.open("rb") as stream:
             header = stream.read(0x240)
@@ -135,8 +135,16 @@
             if len(header) < 64 or struct.unpack_from("<I", header, 0x38)[0] != 0x644d5241:
                 raise ValueError("invalid arm64 Image header")
             image_size = struct.unpack_from("<Q", header, 0x10)[0]
-            if image_size and size < image_size:
-                raise ValueError("arm64 kernel payload is truncated")
+
+            # The header includes zero-initialized memory, which objcopy
+            # omits from Image. Check file and memory bounds independently.
+            if image_size and size > image_size:
+                raise ValueError("arm64 kernel exceeds its memory image")
+            if symbols is not None:
+                if size != symbols["_edata"] - symbols["_text"]:
+                    raise ValueError("arm64 payload size disagrees with System.map")
+                if image_size != symbols["_end"] - symbols["_text"]:
+                    raise ValueError("arm64 memory image size disagrees with System.map")
         else:
             raise ValueError("unsupported kernel architecture")
 
@@ -158,6 +166,7 @@
 
     def validate_symbol_map(path):
         wanted = {"_text", "linux_banner"}
+        symbols = {}
         previous = -1
         with path.open() as lines:
             for line in lines:
@@ -168,9 +177,12 @@
                 if address < previous:
                     raise ValueError("System.map is not address ordered")
                 previous = address
+                if fields[2] in {"_text", "_edata", "_end", "linux_banner"}:
+                    symbols[fields[2]] = address
                 wanted.discard(fields[2])
         if wanted:
             raise ValueError("System.map lacks required kernel symbols")
+        return symbols
   '';
 
   kernelArtifactScript = package: extraValidation: ''
@@ -187,11 +199,18 @@
     vmlinux_path = pathlib.Path("@output:vmlinux@/boot") / ("vmlinux-" + release)
 
     elf_type, machine, sections = parse_elf(vmlinux_path)
-    if elf_type != 2 or machine not in (62, 183) or ".text" not in sections:
-        raise ValueError("vmlinux is not an executable kernel ELF")
-    parse_boot_image(images[0], machine)
-    validate_symbol_map(map_path)
     settings = parse_config(config_path.read_text())
+
+    # Relocatable arm64 kernels use ET_DYN; x86 retains ET_EXEC.
+    expected_type = 3 if machine == 183 and settings.get("CONFIG_RELOCATABLE") == "y" else 2
+    if elf_type != expected_type or machine not in (62, 183) or ".text" not in sections:
+        raise ValueError("vmlinux is not an executable kernel ELF")
+
+    symbols = validate_symbol_map(map_path)
+    if machine == 183 and not {"_edata", "_end"} <= symbols.keys():
+        raise ValueError("System.map lacks arm64 image bounds")
+    parse_boot_image(images[0], machine, symbols)
+
     ${extraValidation}
     print("${package} artifact passed")
   '';
