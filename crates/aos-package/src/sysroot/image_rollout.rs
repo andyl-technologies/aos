@@ -13,8 +13,8 @@ use anyhow::{Context, Result, bail, ensure};
 use crate::types::{ImageGeneration, ImageGenerationState, ImageRollout, ImageRolloutStatus};
 
 use super::{
-    IMAGE_STATE_FILE, SystemTransitionMode, load_image_generation_state_pub, parse_os_release,
-    read_toplevel_meta, running_image_generation, write_atomic_durable,
+    IMAGE_STATE_FILE, SystemTransitionMode, load_image_generation_state_pub,
+    read_immutable_os_release, read_toplevel_meta, running_image_generation, write_atomic_durable,
 };
 
 const IMAGE_ROLLOUT_SCHEMA: &str = "aos.image-rollout/v1";
@@ -187,13 +187,8 @@ fn authenticate_legacy_running_state_version(
 
     let os_release = std::fs::read_link(toplevel.join("os-release"))
         .context("reading legacy immutable os-release pointer")?;
-    let os_release_text = os_release
-        .to_str()
-        .context("legacy immutable os-release path is not UTF-8")?;
-    crate::config_eval::materialize::validate_canonical_store_path(os_release_text)
-        .context("validating legacy immutable os-release identity")?;
-    let os_release = immutable_store_path_beneath(immutable_root, &os_release)?;
-    let fields = parse_os_release(&os_release)?;
+    let fields = read_immutable_os_release(immutable_root, &os_release)
+        .context("reading legacy immutable os-release identity")?;
     let os_abi = fields
         .get("AOS_MODULE_ABI")
         .context("legacy immutable os-release has no AOS_MODULE_ABI")?
@@ -514,8 +509,10 @@ mod tests {
                 PathBuf::from(format!("/nix/store/{}-legacy-toplevel", "0".repeat(32)));
             let legacy_base =
                 PathBuf::from(format!("/nix/store/{}-legacy-base-lib", "1".repeat(32)));
-            let legacy_os_release =
-                PathBuf::from(format!("/nix/store/{}-legacy-os-release", "2".repeat(32)));
+            let legacy_os_release = PathBuf::from(format!(
+                "/nix/store/{}-legacy-os-release/os-release",
+                "2".repeat(32)
+            ));
             let candidate_toplevel =
                 PathBuf::from(format!("/nix/store/{}-candidate-toplevel", "3".repeat(32)));
             let candidate_executor = format!("/nix/store/{}-aos-package-runtime", "4".repeat(32));
@@ -639,6 +636,13 @@ mod tests {
                 .join("meta")
                 .join(name)
         }
+
+        fn legacy_os_release(&self) -> PathBuf {
+            let toplevel =
+                immutable_store_path_beneath(&self.immutable_root, &self.legacy_toplevel).unwrap();
+            let logical = std::fs::read_link(toplevel.join("os-release")).unwrap();
+            immutable_store_path_beneath(&self.immutable_root, &logical).unwrap()
+        }
     }
 
     #[test]
@@ -669,6 +673,34 @@ mod tests {
             std::fs::read(fixture.image_profile.join(IMAGE_STATE_FILE)).unwrap(),
             durable
         );
+    }
+
+    #[test]
+    fn legacy_preflight_rejects_os_release_symlink_escape() {
+        let fixture = LegacyPreflightFixture::new();
+        let outside = fixture
+            .immutable_root
+            .parent()
+            .unwrap()
+            .join("live-root-os-release");
+        std::fs::write(
+            &outside,
+            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:legacy-base\nAOS_STATE_VERSION=1\n",
+        )
+        .unwrap();
+        let os_release = fixture.legacy_os_release();
+        std::fs::remove_file(&os_release).unwrap();
+        symlink(&outside, &os_release).unwrap();
+
+        let error = fixture
+            .preflight(true)
+            .expect_err("legacy identity reads must not follow a live-root symlink");
+
+        assert!(
+            format!("{error:#}").contains("opening"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(fixture.image_state().generations[0].state_version, None);
     }
 
     #[test]

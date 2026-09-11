@@ -1676,6 +1676,35 @@ pub(crate) fn validate_canonical_store_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validates a canonical Nix store root or a normalized path beneath one.
+///
+/// # Errors
+///
+/// Returns an error when `path` is outside `/nix/store`, has an invalid store
+/// root, or contains an empty, dot, or parent component beneath that root.
+pub(crate) fn validate_canonical_store_member_path(path: &str) -> Result<()> {
+    let root = store_path_root(path)
+        .ok_or_else(|| anyhow::anyhow!("store member path is outside /nix/store: {path:?}"))?;
+    validate_canonical_store_path(root).context("validating store member root")?;
+
+    if path == root {
+        return Ok(());
+    }
+
+    let relative = path
+        .strip_prefix(root)
+        .and_then(|suffix| suffix.strip_prefix('/'))
+        .context("store member path is not beneath its store root")?;
+    if relative
+        .split('/')
+        .any(|component| matches!(component, "" | "." | ".."))
+    {
+        bail!("store member path is not normalized: {path:?}");
+    }
+
+    Ok(())
+}
+
 /// Rejects an authenticated module's attempt to emit a store path that the
 /// manifest does not independently pin and assign ownership to.
 fn validate_emitted_store_paths(
@@ -2418,6 +2447,41 @@ pub(crate) fn write_bytes_beneath(
 /// Returns an error for an unsafe relative path, a symlink/non-directory path
 /// component, a non-regular final entry, or an I/O failure.
 pub(crate) fn read_bytes_beneath(root_path: &Path, path: &str) -> Result<Vec<u8>> {
+    let mut file = open_regular_file_beneath(root_path, path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("reading {path:?} beneath {}", root_path.display()))?;
+    Ok(bytes)
+}
+
+/// Reads one bounded regular file beneath a filesystem root without following
+/// any symlink in the path.
+///
+/// # Errors
+///
+/// Returns an error for an unsafe relative path, a symlink/non-directory path
+/// component, a non-regular final entry, a file larger than `maximum_bytes`, or
+/// an I/O failure.
+pub(crate) fn read_bounded_bytes_beneath(
+    root_path: &Path,
+    path: &str,
+    maximum_bytes: u64,
+) -> Result<Vec<u8>> {
+    let file = open_regular_file_beneath(root_path, path)?;
+    let read_limit = maximum_bytes
+        .checked_add(1)
+        .context("bounded file read limit overflowed")?;
+    let mut bytes = Vec::new();
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {path:?} beneath {}", root_path.display()))?;
+    if u64::try_from(bytes.len()).map_or(true, |length| length > maximum_bytes) {
+        bail!("file {path:?} exceeds the {maximum_bytes}-byte limit");
+    }
+    Ok(bytes)
+}
+
+fn open_regular_file_beneath(root_path: &Path, path: &str) -> Result<std::fs::File> {
     validate_relative_path(path, "staged file")?;
     let root = openat(
         rustix::fs::CWD,
@@ -2426,15 +2490,15 @@ pub(crate) fn read_bytes_beneath(root_path: &Path, path: &str) -> Result<Vec<u8>
         Mode::empty(),
     )
     .with_context(|| format!("opening staging root {}", root_path.display()))?;
-    let (parent, name) = open_parent_beneath(&root, path)?;
+    let (parent, name) = open_existing_parent_beneath(&root, path)?;
     let fd = openat(
         &parent,
         &name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
         Mode::empty(),
     )
     .with_context(|| format!("opening {path:?} beneath {}", root_path.display()))?;
-    let mut file = std::fs::File::from(fd);
+    let file = std::fs::File::from(fd);
     if !file
         .metadata()
         .with_context(|| format!("inspecting {path:?} beneath {}", root_path.display()))?
@@ -2442,10 +2506,7 @@ pub(crate) fn read_bytes_beneath(root_path: &Path, path: &str) -> Result<Vec<u8>
     {
         bail!("staged path {path:?} is not a regular file");
     }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .with_context(|| format!("reading {path:?} beneath {}", root_path.display()))?;
-    Ok(bytes)
+    Ok(file)
 }
 
 /// Creates a symlink at `dest` pointing at `target`, creating parent
@@ -2493,6 +2554,30 @@ fn open_parent_beneath(root: &OwnedFd, path: &str) -> Result<(OwnedFd, String)> 
                 });
             }
         }
+    }
+    Ok((directory, name))
+}
+
+fn open_existing_parent_beneath(root: &OwnedFd, path: &str) -> Result<(OwnedFd, String)> {
+    let mut components = path.split('/').collect::<Vec<_>>();
+    let name = components
+        .pop()
+        .context("materialization path has no final component")?
+        .to_string();
+    let mut directory = openat(
+        root,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    for component in components {
+        directory = openat(
+            &directory,
+            component,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .with_context(|| format!("refusing non-directory or symlink component {component:?}"))?;
     }
     Ok((directory, name))
 }
@@ -3460,6 +3545,53 @@ mod tests {
         }));
 
         assert_eq!(expose_config_schema_hash(&config).unwrap(), expected);
+    }
+
+    #[test]
+    fn canonical_store_member_validation_preserves_exact_root_validation() {
+        let root = format!("/nix/store/{}-etc-os-release", "0".repeat(32));
+
+        validate_canonical_store_member_path(&root).expect("store root is a valid member path");
+        validate_canonical_store_member_path(&format!("{root}/os-release"))
+            .expect("normalized child is a valid member path");
+        validate_canonical_store_member_path(&format!("{root}/share/aos/os-release"))
+            .expect("normalized descendant is a valid member path");
+
+        validate_canonical_store_path(&format!("{root}/os-release"))
+            .expect_err("manifest paths must remain exact store roots");
+    }
+
+    #[test]
+    fn canonical_store_member_validation_rejects_noncanonical_paths() {
+        let root = format!("/nix/store/{}-etc-os-release", "0".repeat(32));
+        for invalid in [
+            format!("{root}/"),
+            format!("{root}//os-release"),
+            format!("{root}/./os-release"),
+            format!("{root}/share/../os-release"),
+            "/nix/store/short-os-release/os-release".to_string(),
+            format!("/nix/store/{}-os-release/os-release", "e".repeat(32)),
+            "/etc/os-release".to_string(),
+        ] {
+            assert!(
+                validate_canonical_store_member_path(&invalid).is_err(),
+                "unexpectedly accepted noncanonical path {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_reader_enforces_the_exact_byte_ceiling() {
+        let root = tempdir();
+        std::fs::create_dir_all(root.join("nix/store/object")).unwrap();
+        std::fs::write(root.join("nix/store/object/os-release"), b"12345").unwrap();
+
+        assert_eq!(
+            read_bounded_bytes_beneath(&root, "nix/store/object/os-release", 5).unwrap(),
+            b"12345"
+        );
+        read_bounded_bytes_beneath(&root, "nix/store/object/os-release", 4)
+            .expect_err("the byte immediately above the ceiling must be rejected");
     }
 
     /// Creates a unique temp dir under the process temp root. Avoids a
