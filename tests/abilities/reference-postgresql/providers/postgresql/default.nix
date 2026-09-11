@@ -23,7 +23,7 @@ let
   postgresqlEffects = {
     name = "aos.postgresql-effects";
     abi = 1;
-    descriptor = "sha256:eefa74e5c1f7d9cbfd703919f7ab9514f973f32612b560157989f97941725972";
+    descriptor = "sha256:6a1e7d5fb03d9b91127144a64fb96e4c98f4995e7f4f0de258f79fb61fbb9fd6";
   };
   loopbackIngressGuarantee = {
     name = "aos.guarantee.loopback-tcp-ingress-enforcement";
@@ -49,7 +49,17 @@ let
     transport = "tcp";
   };
 
-  resourceEntriesFor = provider: contribution: let
+  validContribution = contribution:
+    contribution.value.cluster
+    == contribution.slot
+    && contribution.value.database != "postgres"
+    && contribution.value.database != "template0"
+    && contribution.value.database != "template1"
+    && contribution.value.role != "aos-ability-postgresql"
+    && builtins.match "^aos-ability-pg-.*" contribution.value.role == null;
+
+  resourceEntriesFor = context: contribution: let
+    provider = context.provider;
     cluster = contribution.slot;
     value = contribution.value;
     endpointRevision = digestRevision {
@@ -68,6 +78,7 @@ let
     };
     postgresqlRevision = digestRevision {
       inherit cluster endpointRevision policyRevision storageRevision;
+      implementation = context.implementation;
       database = value.database;
       role = value.role;
       credential_version = value.credential_version;
@@ -106,7 +117,7 @@ let
     resources =
       builtins.sort
       (left: right: left.resource.key < right.resource.key)
-      (builtins.concatMap (resourceEntriesFor context.provider) contributions);
+      (builtins.concatMap (resourceEntriesFor context) contributions);
     clusterFields = builtins.listToAttrs (builtins.map
       (contribution: {
         name = contribution.slot;
@@ -121,39 +132,42 @@ let
         };
       })
       contributions);
-  in {
-    schema = "aos.ability.composition-fragment/v1";
-    requests =
-      if contributions == []
-      then []
-      else requests;
-    contributions = [];
-    inherit resources;
-    outputs = [
-      {
-        aggregate = {
-          provider = context.provider;
-          group = "postgresql";
-        };
-        interface = context.interface;
-        port = "clusters";
-        value = {
-          source = "object";
-          fields = clusterFields;
-        };
-      }
-    ];
-    controllers =
-      builtins.map
-      (entry: {
-        inherit (entry) resource;
-        controller = {
-          provider = context.provider;
-          group = "postgresql";
-        };
-      })
-      resources;
-  };
+  in
+    if !(builtins.all validContribution contributions)
+    then throw "PostgreSQL contribution uses a reserved database or provider role"
+    else {
+      schema = "aos.ability.composition-fragment/v1";
+      requests =
+        if contributions == []
+        then []
+        else requests;
+      contributions = [];
+      inherit resources;
+      outputs = [
+        {
+          aggregate = {
+            provider = context.provider;
+            group = "postgresql";
+          };
+          interface = context.interface;
+          port = "clusters";
+          value = {
+            source = "object";
+            fields = clusterFields;
+          };
+        }
+      ];
+      controllers =
+        builtins.map
+        (entry: {
+          inherit (entry) resource;
+          controller = {
+            provider = context.provider;
+            group = "postgresql";
+          };
+        })
+        resources;
+    };
 
   transition = context: let
     postgresqlSuffix = "-postgresql";
@@ -205,11 +219,7 @@ let
           == "create"
           || change.kind == "update"
           || isReconciliation change
-          || (
-            change.kind
-            == "unchanged"
-            && clusterHasChildReconciliation (clusterFor change)
-          )
+          || change.kind == "unchanged"
         ))
       context.changes;
     removed =
@@ -363,6 +373,18 @@ let
     provision = change: let
       cluster = clusterFor change;
       contribution = contributionFor context.after cluster;
+      priorContribution =
+        if context.before == null
+        then null
+        else contributionFor context.before cluster;
+      identityChanged =
+        priorContribution
+        != null
+        && (
+          priorContribution.database
+          != contribution.database
+          || priorContribution.role != contribution.role
+        );
       configurationRevision = change.desired;
       endpointResource = resource cluster "endpoint";
       storageResource = resource cluster "storage";
@@ -373,6 +395,10 @@ let
       storageChange = changeFor storageResource;
       credentialChange = changeFor credentialResource;
       policyChange = changeFor policyResource;
+      noOp =
+        change.kind
+        == "unchanged"
+        && !clusterHasChildReconciliation cluster;
       endpointMethod = selectedAction endpointChange "materialize" "observe";
       storageMethod = selectedAction storageChange "ensure" "observe";
       credentialMethod = selectedAction credentialChange "deliver" "acquire";
@@ -535,48 +561,69 @@ let
         to = node to;
         inherit kind;
       };
-    in {
-      operations = [
-        credentialOperation
-        endpointOperation
-        lifecycleOperation
-        materializeOperation
-        observeOperation
-        policyOperation
-        storageOperation
-      ];
-      edges = [
-        (edge credentialKey materializeKey "data")
-        (edge credentialKey observeKey "data")
-        (edge endpointKey materializeKey "data")
-        (edge endpointKey observeKey "data")
-        (edge endpointKey policyKey "data")
-        (edge materializeKey lifecycleKey "required-success")
-        (edge policyKey lifecycleKey "required-success")
-        (edge lifecycleKey observeKey "required-success")
-        (edge storageKey materializeKey "data")
-        (edge storageKey observeKey "data")
-      ];
-      export = {
-        key = "ready-${cluster}";
-        kind = "completion";
-        node = node observeKey;
-        outputs = {
-          observed-revision = {
-            producer = node observeKey;
-            output = "observed-revision";
-          };
-          ready = {
-            producer = node observeKey;
-            output = "ready";
-          };
-          submitted-revision = {
-            producer = node observeKey;
-            output = "submitted-revision";
+    in
+      if change.kind == "update" && identityChanged
+      then throw "PostgreSQL database and role are immutable for an existing cluster"
+      else {
+        operations =
+          if noOp
+          then [
+            credentialOperation
+            endpointOperation
+            observeOperation
+            policyOperation
+            storageOperation
+          ]
+          else [
+            credentialOperation
+            endpointOperation
+            lifecycleOperation
+            materializeOperation
+            observeOperation
+            policyOperation
+            storageOperation
+          ];
+        edges =
+          if noOp
+          then [
+            (edge credentialKey observeKey "data")
+            (edge endpointKey observeKey "data")
+            (edge endpointKey policyKey "data")
+            (edge policyKey observeKey "required-success")
+            (edge storageKey observeKey "data")
+          ]
+          else [
+            (edge credentialKey materializeKey "data")
+            (edge credentialKey observeKey "data")
+            (edge endpointKey materializeKey "data")
+            (edge endpointKey observeKey "data")
+            (edge endpointKey policyKey "data")
+            (edge materializeKey lifecycleKey "required-success")
+            (edge policyKey lifecycleKey "required-success")
+            (edge lifecycleKey observeKey "required-success")
+            (edge storageKey materializeKey "data")
+            (edge storageKey observeKey "data")
+          ];
+        export = {
+          key = "ready-${cluster}";
+          kind = "completion";
+          node = node observeKey;
+          outputs = {
+            observed-revision = {
+              producer = node observeKey;
+              output = "observed-revision";
+            };
+            ready = {
+              producer = node observeKey;
+              output = "ready";
+            };
+            submitted-revision = {
+              producer = node observeKey;
+              output = "submitted-revision";
+            };
           };
         };
       };
-    };
     retire = change: let
       cluster = clusterFor change;
       contribution = beforeContributionFor cluster;
@@ -588,7 +635,8 @@ let
       postgresqlResource = resource cluster "postgresql";
       stopKey = "stop-${postgresqlResource.key}";
       policyKey = "remove-${policyResource.key}";
-      endpointKey = "release-${endpointResource.key}";
+      endpointRepairKey = "materialize-${endpointResource.key}";
+      endpointReleaseKey = "release-${endpointResource.key}";
       credentialKey = "release-${credentialResource.key}";
       storageKey = "release-${storageResource.key}";
       stopOperation = operation {
@@ -630,6 +678,21 @@ let
           endpoint = null;
           protocol = "tcp";
         };
+        access = "exclusive-write";
+        lifetime = "instance";
+      };
+      endpointRepairOperation = operation {
+        authorityRole = "teardown";
+        requestKey = "endpoint";
+        resourceId = endpointResource;
+        method = "materialize";
+        family = {
+          kind = "network-endpoint";
+          action = "materialize";
+        };
+        phase = "preparing";
+        inputPhase = "planning";
+        inputs = literal allocationContract;
         access = "exclusive-write";
         lifetime = "instance";
       };
@@ -689,16 +752,18 @@ let
     in {
       operations = [
         credentialOperation
+        endpointRepairOperation
         endpointOperation
         policyOperation
         stopOperation
         storageOperation
       ];
       edges = [
-        (edge policyKey endpointKey)
         (edge stopKey credentialKey)
-        (edge stopKey policyKey)
-        (edge stopKey storageKey)
+        (edge stopKey endpointRepairKey)
+        (edge endpointRepairKey policyKey)
+        (edge policyKey endpointReleaseKey)
+        (edge endpointReleaseKey storageKey)
       ];
     };
     provisioned = builtins.map provision changed;

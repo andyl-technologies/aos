@@ -172,6 +172,7 @@
     }) [
       "ability-native-activation"
       "ability-native-kubernetes"
+      "ability-native-postgresql"
       "ability-native-recovery"
     ]);
   recoveryPackage = builtins.head (
@@ -180,19 +181,21 @@
   coveredAndMissingPackageNames = builtins.sort builtins.lessThan (
     packageCoverage.implementedPackages ++ packageCoverage.missingPackages
   );
-  coveragePartitions = builtins.all (
-    platform: let
-      coverage = packageCoverage.platforms.${platform};
-      eligible = pkgs.platformSupport.publicationEligibleNames platform pkgs.allPackageNames;
-      coveredAndMissing = builtins.sort builtins.lessThan (
-        coverage.implementedPackages ++ coverage.missingPackages
-      );
-    in
-      coverage.total == builtins.length eligible
-      && coverage.total == coverage.implemented + builtins.length coverage.missingPackages
-      && coveredAndMissing == eligible
-  )
-  pkgs.platformSupport.canonicalSystems;
+  coveragePartitions =
+    builtins.all (
+      platform: let
+        coverage = packageCoverage.platforms.${platform};
+        eligible = pkgs.platformSupport.publicationEligibleNames platform pkgs.allPackageNames;
+        coveredAndMissing = builtins.sort builtins.lessThan (
+          coverage.implementedPackages ++ coverage.missingPackages
+        );
+      in
+        coverage.total
+        == builtins.length eligible
+        && coverage.total == coverage.implemented + builtins.length coverage.missingPackages
+        && coveredAndMissing == eligible
+    )
+    pkgs.platformSupport.canonicalSystems;
   composed = import ../../qualification/_eval.nix {
     inherit lib;
     packageNames = ["aos" "fixture"];
@@ -264,8 +267,28 @@ in
   == ["checks.fleet.ability-native-activation"];
   assert abilityRequirements.ability-native-kubernetes.regressions
   == ["checks.fleet.ability-native-kubernetes"];
+  assert abilityRequirements.ability-native-postgresql.regressions
+  == ["checks.fleet.ability-native-postgresql"];
+  assert abilityRequirements.ability-native-postgresql.checks
+  == [
+    "authenticated-provider-bindings-and-exact-handler-artifacts"
+    "exact-seven-operation-ten-edge-provisioning-graph"
+    "runtime-output-data-flow-and-schema-valid-observations"
+    "loopback-sql-readiness-and-enforced-non-loopback-denial"
+    "stopped-divergent-and-child-drift-reconciliation"
+    "exact-six-operation-five-edge-teardown-and-persistent-retention"
+  ];
   assert abilityRequirements.ability-native-recovery.regressions
   == ["checks.fleet.ability-native-power-loss"];
+  assert abilityRequirements.ability-native-recovery.checks
+  == [
+    "exact-boot-initrd-artifact-and-static-stage-handoff-contract"
+    "process-loss-after-external-effect-reconciles-before-retry"
+    "power-loss-after-external-effect-reconciles-after-boot"
+    "fresh-receiving-authority-and-resource-incarnations"
+    "retained-plan-journal-and-independent-service-observation"
+    "gc-after-crashed-unlocked-partial-activation-retains-recovery-set"
+  ];
   assert builtins.all (requirement:
     requirement.phase
     == "staging"
@@ -285,7 +308,8 @@ in
   packageCoverage.neverPublicationEligiblePackages;
   assert builtins.all (rule: rule.inherit_dependency_obligations) contract.package_rules;
   assert recoveryPackage.role == "system-integrity";
-  assert recoveryPackage.execution == {
+  assert recoveryPackage.execution
+  == {
     kind = "recovery-image";
     system_variant = "server";
   };
@@ -322,6 +346,7 @@ in
   == [
     "ability-native-activation"
     "ability-native-kubernetes"
+    "ability-native-postgresql"
     "ability-native-recovery"
     "claim-container-x86_64-linux-functional"
     "claim-container-x86_64-linux-qualified"
@@ -390,5 +415,9 @@ in
       text = builtins.toJSON contract;
       checkPhase = ''
         test -f ${declarativeProbeCheck}/result.json
+        ${pkgs.python3}/bin/python3 \
+          ${./ability-check-details.py} \
+          $out/contract.json \
+          ${../../lib/testing/qualification-ability.py}
       '';
     }
