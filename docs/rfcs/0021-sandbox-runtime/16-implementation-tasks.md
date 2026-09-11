@@ -7330,3 +7330,65 @@ lints. An earlier prohibited `nix develop -c cargo check` attempt began five
 dependency realizations but was interrupted before Cargo started; it supplies
 no validation evidence. No AOS package or VM qualification result was produced
 for this increment.
+
+### Network Prepared-to-Aborted retirement (source qualified)
+
+Commit `9c5aaa07` extends the sole existing Network creation-transaction v1
+format with authenticated phase code 4 for `Aborted`. This is an in-place hard
+cut, not a v2 format or compatibility ladder; unknown format versions and phase
+codes fail closed.
+
+Before any privileged creation effect, the broker completely validates the
+prospective worker dispatch: its request, protected resolved preparation,
+catalog, kernel plan, sealed effect, current DesiredState and operation fences,
+exact `Prepared` journal entry, and worker association. Only after every durable
+authority link agrees does it allocate the dispatch `Box`. Both complete
+validation and allocation precede the one protected paired-clock sample.
+Classification authenticates the sample provenance and boot, requires
+nondecreasing wall and BOOTTIME values with bounded drift, and treats the exact
+authenticated BOOTTIME deadline as expired. An inconsistent or discontinuous
+sample is a clock failure and grants neither dispatch nor retirement authority.
+
+A fresh sample atomically advances the exact entry to `Ambiguous`, then releases
+the already validated, move-only dispatch through an infallible operation; no
+fallible dispatch construction remains after the ambiguity boundary. The worker
+independently authenticates the dispatch and retains its own immediate
+pre-effect freshness check. An expired sample instead revalidates all terminal
+links and atomically writes a durable `Aborted` tombstone. That tombstone
+carries no execution authority and can acquire no namespace custody.
+
+An uncertain journal commit poisons the cached authority view. Phase lookup,
+recovery entries, recovery snapshots, and the composed coordinator projection
+are all fallible and remain unavailable until protected reopen determines the
+durable result. Reopen authenticates `Aborted` as terminal. Exact late replay
+checks the same request transport digest and request ID, sandbox, and
+authenticated protected resolved preparation, then returns the same aborted
+outcome without another journal write or restored authority. Once the request
+ID names an `Aborted` row, a mismatch in its sandbox, request transport digest,
+or protected resolution fails closed. `Aborted` cannot reopen for dispatch, and
+later plan, effect, custody, namespace-effect observation, commit, and
+publication paths fail closed.
+
+Preparation-handle history remains append-only. A successor may reuse a handle
+after aborted predecessors only for the exact same sandbox and resolved
+preparation; a different sandbox or resolution is rejected, and any
+`Prepared`, `Ambiguous`, or `Committed` member still excludes reuse. Aborted
+rows remain authenticated recovery history and preparation-handle lineage, but
+do not count as pending or contribute a physical namespace identity. They
+cannot enter custody, namespace-effect observation, commit, or publication and
+are excluded from ambiguous-effect recovery.
+
+This is source-only retirement machinery, not production enablement. The
+deployed Network service remains inventory-only and does not advertise Apply.
+No readiness state or implementation-task checkbox is changed by this
+increment.
+
+Scoped rustfmt and diff checks passed, as did the offline all-target Cargo
+check, deterministic Network library suite (297/297), all-target no-run build
+of the binaries and integration target, and no-deps Cargo doc. After the new
+lints were fixed, Clippy reached the Network crate and left only five
+pre-existing `too_many_arguments` failures; a broader run also surfaced
+pre-existing generated `aos-proto` diagnostics. One earlier parallel run
+transiently encountered `AlreadyLocked`, while its exact rerun and the full
+deterministic single-thread run passed. No Nix build, VM run, or AOS package
+qualification was performed.
