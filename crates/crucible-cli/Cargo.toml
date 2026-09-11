@@ -34,7 +34,6 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }
-crucible-cas = { path = "../crucible-cas" }
 crucible-daemon = { path = "../crucible-daemon" }
 crucible-session = { path = "../crucible-session" }
 rustix = { workspace = true, features = ["process", "termios"] }
@@ -48,6 +47,7 @@ url = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+crucible-cas = { path = "../crucible-cas" }
 crucible-core = { package = "crucible", path = "../crucible" }
 crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }
 crucible-device = { path = "../crucible-device" }

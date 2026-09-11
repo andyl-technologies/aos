@@ -250,6 +250,7 @@ where
     Ok(CampaignFindingObjectProof { request, response })
 }
 
+// crucible-lint: allow rust-allow -- occurrence capture receives every authenticated identity and retention input explicitly.
 #[allow(clippy::too_many_arguments)]
 fn capture_campaign_finding_occurrence_object<S>(
     client: &crucible_campaign::CampaignClient<S>,
@@ -933,6 +934,7 @@ fn authenticate_campaign_occurrences(
     Ok(())
 }
 
+// crucible-lint: allow rust-allow -- replay authentication checks every bound segment and evidence coordinate explicitly.
 #[allow(clippy::too_many_arguments)]
 fn authenticate_campaign_triage_replay(
     finding_index: usize,

@@ -459,6 +459,7 @@ impl FindingProductionReplayCaptureMaterial {
     /// Returns [`FindingProductionReplayCaptureError`] when the model, event
     /// sequence, terminal fingerprints, replay closure, signal trace, or
     /// lifecycle object closure is incomplete, inconsistent, or over `limits`.
+    // crucible-lint: allow rust-allow -- the replay result authenticates every terminal artifact and bound explicitly.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         finding: &FindingReproductionArtifact,
@@ -665,6 +666,7 @@ impl FindingProductionReplayCapture {
     /// Returns [`FindingProductionReplayCaptureError`] when the model, event
     /// sequence, terminal fingerprints, replay closure, signal trace, or
     /// lifecycle object closure is incomplete or inconsistent.
+    // crucible-lint: allow rust-allow -- the replay plan authenticates every terminal artifact and bound explicitly.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         finding: &FindingReproductionArtifact,
@@ -1154,6 +1156,7 @@ pub fn capture_finding_replay_lifecycle_objects_with_limits(
     )
 }
 
+// crucible-lint: allow rust-allow -- lifecycle capture receives every authenticated replay object and budget explicitly.
 #[allow(clippy::too_many_arguments)]
 fn capture_finding_replay_lifecycle_objects_with_budget(
     finding: &FindingReproductionArtifact,

@@ -54,6 +54,7 @@ thread_local! {
 // `System` unchanged. The additional atomics neither inspect nor retain any
 // allocation, so they do not alter the allocator contract.
 unsafe impl GlobalAlloc for CountingAllocator {
+    // SAFETY: the caller's layout is forwarded unchanged to `System`.
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         record_allocation(layout.size());
         // SAFETY: the caller supplied `layout` under the `GlobalAlloc` contract
@@ -61,6 +62,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         unsafe { System.alloc(layout) }
     }
 
+    // SAFETY: the caller's layout is forwarded unchanged to `System`.
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         record_allocation(layout.size());
         // SAFETY: the caller supplied `layout` under the `GlobalAlloc` contract
@@ -68,12 +70,14 @@ unsafe impl GlobalAlloc for CountingAllocator {
         unsafe { System.alloc_zeroed(layout) }
     }
 
+    // SAFETY: the caller's pointer and layout are forwarded unchanged to `System`.
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         // SAFETY: the exact pointer and layout are returned to the allocator
         // that produced them.
         unsafe { System.dealloc(pointer, layout) }
     }
 
+    // SAFETY: the caller's pointer, layout, and new size are forwarded unchanged to `System`.
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         record_allocation(new_size);
         // SAFETY: the exact prior pointer/layout and requested new size are

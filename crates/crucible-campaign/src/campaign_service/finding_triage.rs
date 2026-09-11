@@ -101,6 +101,7 @@ impl GetCampaignFindingTriageReplaySegmentRequest {
     ///
     /// Returns [`CampaignCodecError`] when the ordinal, content identity,
     /// segment index, or encoded request is invalid.
+    // crucible-lint: allow rust-allow -- the request binds every authenticated segment coordinate explicitly.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         principal: CampaignPrincipal,
@@ -291,6 +292,7 @@ impl GetCampaignFindingTriageReplaySegmentResponse {
     ///
     /// Returns [`CampaignCodecError`] when the request basis, role binding,
     /// storage description, segment boundary, proof, or message size is invalid.
+    // crucible-lint: allow rust-allow -- the response binds every authenticated segment coordinate explicitly.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         request: &GetCampaignFindingTriageReplaySegmentRequest,

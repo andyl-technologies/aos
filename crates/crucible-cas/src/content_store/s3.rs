@@ -691,6 +691,7 @@ impl S3BlobBackend {
         })
     }
 
+    // crucible-lint: allow rust-allow -- the observational constructor keeps every independently authenticated S3 namespace and bound explicit.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_observational(
         name: impl Into<String>,

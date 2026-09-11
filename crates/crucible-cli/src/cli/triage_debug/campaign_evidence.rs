@@ -9,19 +9,19 @@ mod ledger;
 #[path = "campaign_evidence/service.rs"]
 mod service;
 
-pub(super) use ledger::parse_failure_findings_ledger_v4_bytes;
-// crucible-lint: allow rust-allow -- the producer consumes these staged boundaries in the composed integration stack.
+#[cfg(test)]
+pub(crate) use guarded_export::{
+    guarded_finding_report, validate_guarded_finding_query_chain_parts,
+};
 #[cfg(test)]
 pub(crate) use ledger::failure_findings_ledger_v4_bytes_with_test_limit;
+pub(super) use ledger::parse_failure_findings_ledger_v4_bytes;
+// crucible-lint: allow rust-allow -- the producer consumes these staged boundaries in the composed integration stack.
 #[allow(unused_imports)]
 pub(crate) use ledger::{
     write_failure_findings_ledger_v4, write_guarded_campaign_finding_exports_v4,
 };
 // crucible-lint: allow rust-allow -- the producer consumes these staged boundaries in the composed integration stack.
-#[cfg(test)]
-pub(crate) use guarded_export::{
-    guarded_finding_report, validate_guarded_finding_query_chain_parts,
-};
 #[allow(unused_imports)]
 pub(crate) use service::{capture_campaign_finding_triage_replay, capture_campaign_triage_finding};
 
