@@ -240,6 +240,10 @@ in {
       assert images
       for image in images:
           data = image.read_bytes()
+          if image.name == "AAVMF_CODE.fd":
+              # ArmVirtQemu.fdf reserves the first page for its reset branch.
+              assert data[:4] == bytes.fromhex("00040014")
+              data = data[0x1000:]
           assert data[40:44] == b"_FVH"
           volume_length = struct.unpack_from("<Q", data, 32)[0]
           header_length = struct.unpack_from("<H", data, 48)[0]
