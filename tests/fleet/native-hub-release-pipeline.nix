@@ -127,8 +127,13 @@
       {
         # The canonical release publisher exercises the complete AOS CLI and
         # APR surface. Keep the closure audit enforced with narrow headroom
-        # above the measured 922 MiB closure with qualification adapters.
-        aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 928;
+        # above the measured 1050 MiB closure with qualification adapters and
+        # full Git's Python and Perl runtime helpers.
+        aos.image.budgets = {
+          maxRuntimeClosureMiB = lib.mkForce 1088;
+          # The same publishing tools produce a measured 782 MiB root image.
+          maxRootMiB = lib.mkForce 816;
+        };
         aos.security.pki.certificates = [caCertificate];
       }
     ];
