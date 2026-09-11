@@ -54,6 +54,7 @@
     pkgs = buildPackages;
     name = "container-${container.name}";
     roots = auditRoots;
+    inherit (container.runtimePolicy) allowTestArtifacts testArtifactRoots;
     inherit (container.budgets) maxClosureMiB maxDevelopmentPayloadMiB;
   };
   bakedRootInventory = pkgs.writeTextFile {

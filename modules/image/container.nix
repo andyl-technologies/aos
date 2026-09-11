@@ -54,7 +54,14 @@
       goldenRoots = config.environment.systemPackages;
       aosSystem = pkgs.stdenv.hostPlatform.system;
     })
-    .config;
+    .config
+    // {
+      # Only the system-derived definition inherits image fixture policy.
+      # Independently declared containers keep the schema's strict defaults.
+      runtimePolicy = {
+        inherit (config.aos.image) allowTestArtifacts testArtifactRoots;
+      };
+    };
   systemIdentity = {
     inherit
       (config.aos.system)
