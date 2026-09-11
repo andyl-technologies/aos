@@ -54,6 +54,7 @@ mod native_boundary_observer;
 mod native_cancellation;
 mod native_consumer_observation;
 pub(crate) mod native_dispatch;
+mod native_host_resources;
 mod native_provider_capability;
 pub mod native_resource_map;
 pub mod nginx_ability;

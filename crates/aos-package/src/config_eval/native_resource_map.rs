@@ -115,6 +115,11 @@ impl NativeResourceMap {
             (String, String, Option<String>, String),
             &ResourceId,
         > = BTreeMap::new();
+        let mut claimed_credential_views: BTreeMap<&str, &ResourceId> = BTreeMap::new();
+        let mut claimed_endpoint_ports: BTreeMap<u16, &ResourceId> = BTreeMap::new();
+        let mut claimed_storage: BTreeMap<(&str, &str), &ResourceId> = BTreeMap::new();
+        let mut claimed_policies: BTreeMap<&str, &ResourceId> = BTreeMap::new();
+        let mut claimed_postgresql_clusters: BTreeMap<&str, &ResourceId> = BTreeMap::new();
         for entry in &self.entries {
             validate_mapping(entry, &mut remaining_items)?;
 
@@ -160,6 +165,48 @@ impl NativeResourceMap {
                         ),
                         &entry.resource,
                         "Kubernetes object",
+                    )?;
+                }
+                NativeResourceQualification::CredentialDelivery { view } => {
+                    claim_physical(
+                        &mut claimed_credential_views,
+                        view.as_str(),
+                        &entry.resource,
+                        "credential view",
+                    )?;
+                }
+                NativeResourceQualification::NetworkEndpoint { port, .. } => {
+                    if *port != 0 {
+                        claim_physical(
+                            &mut claimed_endpoint_ports,
+                            *port,
+                            &entry.resource,
+                            "network endpoint port",
+                        )?;
+                    }
+                }
+                NativeResourceQualification::HostStorage { cluster, purpose } => {
+                    claim_physical(
+                        &mut claimed_storage,
+                        (cluster.as_str(), purpose.as_str()),
+                        &entry.resource,
+                        "host storage",
+                    )?;
+                }
+                NativeResourceQualification::HostNetworkPolicy { policy } => {
+                    claim_physical(
+                        &mut claimed_policies,
+                        policy.as_str(),
+                        &entry.resource,
+                        "host network policy",
+                    )?;
+                }
+                NativeResourceQualification::Postgresql { cluster, .. } => {
+                    claim_physical(
+                        &mut claimed_postgresql_clusters,
+                        cluster.as_str(),
+                        &entry.resource,
+                        "PostgreSQL cluster",
                     )?;
                 }
             }
@@ -259,6 +306,47 @@ pub enum NativeResourceQualification {
         object_json: NativeOutputLocator,
         /// Locates the logical resource reference authorizing the effect.
         resource_reference: NativeOutputLocator,
+    },
+    /// Delivers one credential version into a provider-owned workload view.
+    CredentialDelivery {
+        /// Names the protected workload view below the credential runtime root.
+        view: String,
+    },
+    /// Allocates or observes one provider-owned loopback TCP endpoint.
+    NetworkEndpoint {
+        /// Pins the only address supported by the native endpoint provider.
+        address: String,
+        /// Requests a concrete nonprivileged port, or zero for allocation.
+        port: u16,
+        /// Pins the supported transport.
+        transport: String,
+    },
+    /// Attaches persistent provider-owned host storage.
+    HostStorage {
+        /// Names the stable PostgreSQL cluster.
+        cluster: String,
+        /// Names the storage purpose within the cluster.
+        purpose: String,
+    },
+    /// Owns one host ingress-policy record for the logical resource.
+    HostNetworkPolicy {
+        /// Names the stable policy object below the protected runtime root.
+        policy: String,
+    },
+    /// Materializes and controls one persistent PostgreSQL cluster.
+    Postgresql {
+        /// Names the stable cluster.
+        cluster: String,
+        /// Identifies the signed production lifecycle control executable.
+        control: ArtifactReference,
+        /// Names the database created and observed by the provider.
+        database: String,
+        /// Identifies the exact PostgreSQL distribution used by the control path.
+        postgresql: ArtifactReference,
+        /// Pins the compatible on-disk PostgreSQL major version.
+        postgresql_major: u16,
+        /// Names the PostgreSQL role whose credential view is consumed.
+        role: String,
     },
 }
 
@@ -377,7 +465,77 @@ fn validate_mapping(mapping: &NativeResourceMapping, remaining_items: &mut u64) 
             validate_locator(object_json, remaining_items)?;
             validate_locator(resource_reference, remaining_items)?;
         }
+        NativeResourceQualification::CredentialDelivery { view } => {
+            consume_items(remaining_items, 2)?;
+            validate_local_key_text(view, "credential view")?;
+        }
+        NativeResourceQualification::NetworkEndpoint {
+            address,
+            port,
+            transport,
+        } => {
+            consume_items(remaining_items, 4)?;
+            ensure!(
+                address == "127.0.0.1" && transport == "tcp",
+                "native endpoint qualification must use 127.0.0.1 TCP"
+            );
+            ensure!(
+                *port == 0 || *port >= 1024,
+                "native endpoint qualification requests a privileged port"
+            );
+        }
+        NativeResourceQualification::HostStorage { cluster, purpose } => {
+            consume_items(remaining_items, 3)?;
+            validate_local_key_text(cluster, "storage cluster")?;
+            validate_local_key_text(purpose, "storage purpose")?;
+        }
+        NativeResourceQualification::HostNetworkPolicy { policy } => {
+            consume_items(remaining_items, 2)?;
+            validate_local_key_text(policy, "host network policy")?;
+        }
+        NativeResourceQualification::Postgresql {
+            cluster,
+            control,
+            database,
+            postgresql,
+            postgresql_major,
+            role,
+        } => {
+            consume_items(remaining_items, 7)?;
+            validate_local_key_text(cluster, "PostgreSQL cluster")?;
+            validate_string(
+                &control.store_path,
+                "PostgreSQL control artifact store path",
+            )?;
+            validate_local_key_text(database, "PostgreSQL database")?;
+            ensure!(
+                database.len() <= 63
+                    && !matches!(database.as_str(), "postgres" | "template0" | "template1"),
+                "PostgreSQL database is reserved or exceeds 63 bytes"
+            );
+            validate_string(
+                &postgresql.store_path,
+                "PostgreSQL distribution artifact store path",
+            )?;
+            ensure!(
+                *postgresql_major > 0,
+                "PostgreSQL major version must be positive"
+            );
+            validate_local_key_text(role, "PostgreSQL role")?;
+            ensure!(
+                role.len() <= 63
+                    && role != "aos-ability-postgresql"
+                    && !role.starts_with("aos-ability-pg-"),
+                "PostgreSQL role is reserved or exceeds 63 bytes"
+            );
+        }
     }
+    Ok(())
+}
+
+fn validate_local_key_text(value: &str, label: &str) -> Result<()> {
+    validate_string(value, label)?;
+    LocalKey::new(value).map_err(anyhow::Error::new)?;
     Ok(())
 }
 

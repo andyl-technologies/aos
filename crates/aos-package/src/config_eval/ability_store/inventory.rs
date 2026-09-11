@@ -178,6 +178,21 @@ impl NativeQualifiedResource {
         )
     }
 
+    /// Qualifies one production host-resource object selected by a sealed adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the class, authority, or object is outside the
+    /// closed production host-resource domains.
+    pub(crate) fn host_resource(
+        logical: ResourceId,
+        class: &str,
+        authority: &str,
+        object: &str,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        Self::new(logical, class, authority, object)
+    }
+
     fn new(
         logical: ResourceId,
         class: &str,
@@ -242,6 +257,32 @@ impl NativePhysicalResource {
                     ));
                 }
             }
+            ("credential-view", "aos-host-runtime")
+            | ("host-storage", "aos-host-runtime")
+            | ("postgresql-cluster", "aos-host-runtime") => {
+                validate_catalog_object(&self.object, "native host-resource path")?;
+            }
+            ("network-endpoint", "aos-host-runtime") => {
+                let endpoint: std::net::SocketAddr = self.object.parse().map_err(|_| {
+                    GenerationAbilityStoreError::Conflict(
+                        "native endpoint ledger identity is not a socket address".to_string(),
+                    )
+                })?;
+                if endpoint.ip() != std::net::Ipv4Addr::LOCALHOST || endpoint.port() < 1024 {
+                    return Err(GenerationAbilityStoreError::Conflict(
+                        "native endpoint ledger identity is not a nonprivileged IPv4 loopback socket"
+                            .to_string(),
+                    ));
+                }
+            }
+            ("network-endpoint-allocation", "aos-host-runtime")
+            | ("host-network-policy", "aos-host-runtime") => {
+                if self.object.starts_with('/') {
+                    return Err(GenerationAbilityStoreError::Conflict(
+                        "native host-resource ledger key must not be a path".to_string(),
+                    ));
+                }
+            }
             _ => {
                 return Err(GenerationAbilityStoreError::Conflict(
                     "native resource ledger contains an unsupported physical resource domain"
@@ -267,6 +308,9 @@ impl NativePhysicalResource {
             (self.class.as_str(), self.authority.as_str()),
             ("managed-configuration", "configuration-generation")
                 | ("nginx-validation-prefix", "nginx-runtime")
+                | ("credential-view", "aos-host-runtime")
+                | ("host-storage", "aos-host-runtime")
+                | ("postgresql-cluster", "aos-host-runtime")
         )
     }
 

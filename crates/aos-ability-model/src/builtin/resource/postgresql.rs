@@ -38,11 +38,12 @@ pub const POSTGRESQL_IDENTIFIER_MAX_BYTES: u64 = 63;
 
 /// Builds the production PostgreSQL materialization and lifecycle interface.
 ///
-/// The materialization method accepts a resolved runtime endpoint and optional
-/// secret-free credential view. Native execution renders the production
-/// PostgreSQL configuration and then invokes the package's ordinary control
-/// and service paths. Observation reports both the submitted revision and the
-/// revision seen through an actual SQL connection from the declared consumer.
+/// The materialization method requires a resolved runtime endpoint and a
+/// secret-free credential view. Native execution does not support PostgreSQL
+/// trust authentication. It renders the production configuration and then
+/// invokes the package's ordinary control and service paths. Observation
+/// reports both the submitted revision and the revision seen through an actual
+/// SQL connection from the declared consumer.
 ///
 /// # Errors
 ///
@@ -198,10 +199,10 @@ pub fn postgresql_provider(artifact: ArtifactReference) -> Result<ProviderImplem
 
 /// Returns the closed PostgreSQL materialization and lifecycle request schema.
 ///
-/// Endpoint, storage, and credential members use explicit null when unavailable
-/// because stop and observation can reconcile after an interrupted
-/// materialization. The native `materialize` action requires non-null endpoint
-/// and storage values before any filesystem effect.
+/// Endpoint, storage, and credential members can carry explicit null because
+/// stop and recovery may resume after an interrupted materialization. Native
+/// `materialize` requires non-null endpoint, storage, and credential values
+/// before any filesystem effect; a null credential never enables trust mode.
 ///
 /// # Errors
 ///

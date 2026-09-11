@@ -54,6 +54,7 @@ tar = { workspace = true }
 flate2 = { workspace = true }
 rayon = { workspace = true }
 rustix = { workspace = true, features = ["event", "net", "process"] }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 aos-ability-plan = { workspace = true, features = ["test-support"] }
