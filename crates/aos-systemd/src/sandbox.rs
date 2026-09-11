@@ -612,7 +612,7 @@ impl SandboxUnitSpec {
         })
     }
 
-    /// Constructs the Host 1.5 payload service bound to its immutable launch transaction.
+    /// Constructs the Host 1.0 payload service bound to its immutable launch transaction.
     ///
     /// # Errors
     ///
@@ -636,7 +636,7 @@ impl SandboxUnitSpec {
         Ok(spec)
     }
 
-    /// Binds an already compiled payload spec to one Host 1.5 transaction.
+    /// Binds an already compiled payload spec to one Host 1.0 transaction.
     ///
     /// # Errors
     ///
@@ -708,13 +708,13 @@ impl SandboxUnitSpec {
         PayloadRootContinuityPolicyV1 { _sealed: () }
     }
 
-    /// Returns the immutable Host 1.5 launch binding, when this is a bound spec.
+    /// Returns the immutable Host 1.0 launch binding, when this is a bound spec.
     #[must_use]
     pub const fn launch_binding(&self) -> Option<[u8; 32]> {
         self.launch_binding
     }
 
-    /// Computes the canonical Host 1.5 payload-spec semantics digest.
+    /// Computes the canonical Host 1.0 payload-spec semantics digest.
     ///
     /// Broker-local `/proc/PID/fd` aliases and the launch binding itself are
     /// intentionally excluded. Their live backing objects are bound by the
@@ -993,7 +993,7 @@ pub struct SandboxUnitObservation {
     pub supervisor_pid: Option<NonZeroU32>,
     /// Current systemd invocation identifier, absent when all zeroes.
     pub invocation_id: Option<[u8; 16]>,
-    /// Manager-retained Host 1.5 launch binding, when canonical and unique.
+    /// Manager-retained Host 1.0 launch binding, when canonical and unique.
     pub binding: Option<[u8; 32]>,
 }
 
@@ -1022,7 +1022,7 @@ impl SystemdClient {
         self.await_job(path).await
     }
 
-    /// Starts one Host 1.5 payload after a final synchronous authority guard.
+    /// Starts one Host 1.0 payload after a final synchronous authority guard.
     ///
     /// Descriptor/property preparation completes before `before_submission`
     /// runs. This is the last local authority check before the asynchronous

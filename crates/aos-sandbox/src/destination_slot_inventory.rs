@@ -320,7 +320,7 @@ impl DurableDestinationSlotInventorySnapshotV1 {
     ///
     /// Under the sole Mount 1.0 schema, a missing result means there is no
     /// current-boot Ready row for that logical generation or the requested
-    /// sandbox incarnation is unrelated. Such absence must block a Host 1.3
+    /// sandbox incarnation is unrelated. Such absence must block a Host 1.0
     /// launch that requires the anchor handle.
     #[must_use]
     pub fn attachment_anchor(

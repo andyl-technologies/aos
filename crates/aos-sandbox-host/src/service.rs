@@ -826,7 +826,7 @@ mod tests {
         let body = PublishHostCatalogRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 4,
+                protocol_minor: 0,
                 request_id: vec![1; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 20,
@@ -917,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_advertisement_negotiates_guardian_carrier() {
+    fn exact_host_session_advertises_apply_only_with_a_ready_backend() {
         let peer = aos_sandbox_protocol::PeerCredentials {
             uid: 100,
             gid: 200,
@@ -930,7 +930,7 @@ mod tests {
         };
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 5,
+            protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             required_features: vec![Feature {
                 namespace: SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
@@ -965,7 +965,7 @@ mod tests {
 
         assert_eq!(
             session.version(),
-            aos_sandbox_core::ProtocolVersion::new(1, 5)
+            aos_sandbox_core::ProtocolVersion::new(1, 0)
         );
         assert!(
             session
@@ -975,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_session_negotiates_both_non_authorizing_host_methods() {
+    fn observation_session_negotiates_both_non_authorizing_host_methods() {
         let peer = aos_sandbox_protocol::PeerCredentials {
             uid: 100,
             gid: 200,

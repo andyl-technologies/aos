@@ -98,7 +98,7 @@ fn run() -> Result<()> {
     // rollback-protected above. Its declared digests are not yet independently
     // verified, and the self-probe above does not prove ptrace access to a
     // shifted payload, so it cannot be promoted into BackendReadiness and
-    // Legacy and Host 1.5 Launch remain disabled. A Guardian profile alone is
+    // Host Launch remains disabled. A Guardian profile alone is
     // not sufficient to compile a payload; Apply is never advertised until a
     // production NspawnConfig can be built from complete readiness evidence.
     let broker = HostBroker::open(catalog, state, worker, None, authority)?.with_guardian(guardian);

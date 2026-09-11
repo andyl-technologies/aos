@@ -6,12 +6,8 @@
 //! magic[8] | version:u32-le | body-length:u64-le | sha256[32] | body
 //! ```
 //!
-//! Version 5 records authenticated Guardian-launch and composite-Stop
-//! executions. Version 4 may be upgraded only after every retained authority
-//! record authenticates and every execution is legacy; a version-4 Guardian or
-//! composite-Stop record requires an explicit migration before any live I/O.
-//! Versions 1 through 3 may be upgraded only when their fence and request
-//! tables are empty. Terminal observation counters survive those upgrades.
+//! Version 1 records authenticated Guardian-launch, composite-Stop, and direct
+//! lifecycle executions.
 //! JSON is an internal node-local format, not a portable or wire contract.
 //! Unknown fields, checksum failures, overlong bodies, duplicate identities,
 //! and invalid pending/completed records fail closed during startup.
@@ -25,7 +21,7 @@ use std::path::PathBuf;
 use aos_sandbox_broker::VerifiedBrokerAdmission;
 use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV2};
 use aos_sandbox_core::model::KeyUsage;
-use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb, ProtocolVersion};
+use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb};
 use aos_sandbox_protocol::ValidatedAssignmentFence;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -40,11 +36,11 @@ use crate::{HostError, Result};
 
 pub(crate) mod transition;
 
+pub(crate) use transition::HostAction;
 use transition::{DurableExecution, ExecutionContext};
-pub(crate) use transition::{HostAction, signed_authority_version};
 
 const MAGIC: &[u8; 8] = b"AOSHOST\0";
-const VERSION: u32 = 5;
+const VERSION: u32 = 1;
 const HEADER_BYTES: usize = 8 + 4 + 8 + 32;
 const MAXIMUM_STATE_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_REQUESTS: usize = 16_384;
@@ -112,7 +108,6 @@ pub struct HostState {
     fences: BTreeMap<[u8; 16], DurableFence>,
     requests: BTreeMap<[u8; 16], RequestRecord>,
     observation_sequences: BTreeMap<[u8; 16], u64>,
-    loaded_version: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -132,13 +127,10 @@ struct DurableFence {
 struct RequestRecord {
     request_id: [u8; 16],
     request_digest: [u8; 32],
-    carrier_major: u16,
-    carrier_minor: u16,
     fence: DurableFence,
     action: u8,
     execution: DurableExecution,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    execution_authentication: Option<Vec<u8>>,
+    execution_authentication: Vec<u8>,
     effect: Vec<u8>,
     receipt: Option<Vec<u8>>,
 }
@@ -148,14 +140,6 @@ struct RequestRecord {
 struct StateWire {
     fences: Vec<DurableFence>,
     requests: Vec<RequestRecord>,
-    observation_sequences: Vec<ObservationSequence>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PriorStateWire {
-    fences: Vec<serde_json::Value>,
-    requests: Vec<serde_json::Value>,
     observation_sequences: Vec<ObservationSequence>,
 }
 
@@ -250,33 +234,23 @@ impl HostState {
         for request in self.requests.values() {
             ensure_live_execution_enabled(&request.execution)?;
         }
-        if self.loaded_version == Some(4)
-            && self
-                .requests
-                .values()
-                .any(|request| !matches!(request.execution, DurableExecution::Legacy))
-        {
-            return Err(HostError::State(
-                "version-4 Guardian or composite-Stop authority requires explicit migration"
-                    .to_owned(),
-            ));
-        }
         Ok(())
     }
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "legacy admission commits one complete authenticated request atomically"
+        reason = "direct lifecycle admission commits one authenticated request atomically"
     )]
     pub(crate) fn admit(
         &mut self,
         fence: &ValidatedAssignmentFence,
         request_id: [u8; 16],
         request_digest: [u8; 32],
-        carrier: ProtocolVersion,
         action: u8,
         sealed_fence: Vec<u8>,
+        admitted: &VerifiedBrokerAdmission,
         sealed_effect: Vec<u8>,
+        authority: &HostAuthorityV1,
     ) -> Result<Admission> {
         if sealed_fence.is_empty()
             || sealed_effect.is_empty()
@@ -289,10 +263,7 @@ impl HostState {
         }
         self.ensure_incarnation_available(fence.sandbox_id(), fence.incarnation_id())?;
         if let Some(record) = self.requests.get_mut(&request_id) {
-            if record.request_digest != request_digest
-                || record.carrier_major != carrier.major()
-                || record.carrier_minor != carrier.minor()
-            {
+            if record.request_digest != request_digest || record.action != action {
                 return Err(HostError::Fence(
                     "request ID was reused with different bytes",
                 ));
@@ -314,12 +285,9 @@ impl HostState {
 
         let host_action = HostAction::from_code(action)
             .ok_or_else(|| HostError::State("durable host action is invalid".to_owned()))?;
-        let execution =
-            DurableExecution::current_legacy(carrier, host_action).ok_or_else(|| {
-                HostError::State(
-                    "current carrier cannot create a legacy execution record".to_owned(),
-                )
-            })?;
+        let execution = DurableExecution::direct_lifecycle(host_action).ok_or_else(|| {
+            HostError::State("direct lifecycle execution has an invalid action".to_owned())
+        })?;
         if self.requests.len() >= MAXIMUM_REQUESTS {
             return Err(HostError::State(
                 "durable host request table reached its fixed bound".to_owned(),
@@ -337,18 +305,34 @@ impl HostState {
         if let Some(current) = self.fences.get(fence.sandbox_id()) {
             current.validate_successor(&proposed)?;
         }
+        let context = execution_context_from_parts(
+            host_action,
+            request_id,
+            request_digest,
+            *fence.sandbox_id(),
+            *fence.incarnation_id(),
+            fence.assignment_epoch(),
+            fence.desired_generation(),
+            *fence.assignment_digest(),
+            false,
+        );
+        let stable = stable_authority_digest(&admitted.effect, &admitted.fence)?;
+        let digest = execution
+            .authentication_digest(context, stable)
+            .ok_or_else(|| {
+                HostError::State("lifecycle authentication input is too large".to_owned())
+            })?;
+        let execution_authentication = authority.seal_execution_record(&request_id, &digest)?;
         self.fences.insert(*fence.sandbox_id(), proposed.clone());
         self.requests.insert(
             request_id,
             RequestRecord {
                 request_id,
                 request_digest,
-                carrier_major: carrier.major(),
-                carrier_minor: carrier.minor(),
                 fence: proposed,
                 action,
                 execution,
-                execution_authentication: None,
+                execution_authentication,
                 effect: sealed_effect,
                 receipt: None,
             },
@@ -376,10 +360,11 @@ impl HostState {
                 fence,
                 request_id,
                 request_digest,
-                ProtocolVersion::new(1, 5),
                 HostAction::Launch.code(),
                 sealed_fence,
+                admitted,
                 sealed_effect,
+                authority,
             );
         }
         if sealed_fence.is_empty()
@@ -405,18 +390,17 @@ impl HostState {
             ));
         }
 
-        let context = ExecutionContext {
-            carrier: ProtocolVersion::new(1, 5),
-            action: HostAction::Launch,
+        let context = execution_context_from_parts(
+            HostAction::Launch,
             request_id,
             request_digest,
-            sandbox_id: *fence.sandbox_id(),
-            incarnation_id: *fence.incarnation_id(),
-            assignment_epoch: fence.assignment_epoch(),
-            desired_generation: fence.desired_generation(),
-            assignment_digest: *fence.assignment_digest(),
-            receipt_present: false,
-        };
+            *fence.sandbox_id(),
+            *fence.incarnation_id(),
+            fence.assignment_epoch(),
+            fence.desired_generation(),
+            *fence.assignment_digest(),
+            false,
+        );
         if !execution.validate(context) {
             return Err(HostError::State(
                 "Guardian execution contradicts its request".to_owned(),
@@ -428,7 +412,7 @@ impl HostState {
             .ok_or_else(|| {
                 HostError::State("Guardian authentication input is too large".to_owned())
             })?;
-        let execution_authentication = Some(authority.seal_execution_record(&request_id, &digest)?);
+        let execution_authentication = authority.seal_execution_record(&request_id, &digest)?;
 
         let proposed = DurableFence::from_validated(fence, request_id, sealed_fence);
         if let Some(current) = self.fences.get(fence.sandbox_id()) {
@@ -440,8 +424,6 @@ impl HostState {
             RequestRecord {
                 request_id,
                 request_digest,
-                carrier_major: 1,
-                carrier_minor: 5,
                 fence: proposed,
                 action: HostAction::Launch.code(),
                 execution,
@@ -604,10 +586,11 @@ impl HostState {
                 fence,
                 request_id,
                 request_digest,
-                ProtocolVersion::new(1, 5),
                 HostAction::Stop.code(),
                 sealed_fence,
+                admitted,
                 sealed_effect,
+                authority,
             );
         }
         if sealed_fence.is_empty()
@@ -633,18 +616,17 @@ impl HostState {
             ));
         }
 
-        let context = ExecutionContext {
-            carrier: ProtocolVersion::new(1, 5),
-            action: HostAction::Stop,
+        let context = execution_context_from_parts(
+            HostAction::Stop,
             request_id,
             request_digest,
-            sandbox_id: *fence.sandbox_id(),
-            incarnation_id: *fence.incarnation_id(),
-            assignment_epoch: fence.assignment_epoch(),
-            desired_generation: fence.desired_generation(),
-            assignment_digest: *fence.assignment_digest(),
-            receipt_present: false,
-        };
+            *fence.sandbox_id(),
+            *fence.incarnation_id(),
+            fence.assignment_epoch(),
+            fence.desired_generation(),
+            *fence.assignment_digest(),
+            false,
+        );
         if !execution.validate(context) {
             return Err(HostError::State(
                 "composite Stop execution contradicts its request".to_owned(),
@@ -656,7 +638,7 @@ impl HostState {
             .ok_or_else(|| {
                 HostError::State("composite Stop authentication input is too large".to_owned())
             })?;
-        let execution_authentication = Some(authority.seal_execution_record(&request_id, &digest)?);
+        let execution_authentication = authority.seal_execution_record(&request_id, &digest)?;
 
         let proposed = DurableFence::from_validated(fence, request_id, sealed_fence);
         if let Some(current) = self.fences.get(fence.sandbox_id()) {
@@ -668,8 +650,6 @@ impl HostState {
             RequestRecord {
                 request_id,
                 request_digest,
-                carrier_major: 1,
-                carrier_minor: 5,
                 fence: proposed,
                 action: HostAction::Stop.code(),
                 execution,
@@ -712,7 +692,7 @@ impl HostState {
             .get_mut(request_id)
             .ok_or_else(|| HostError::State("Guardian phase update lost its request".to_owned()))?;
         request.execution = execution;
-        request.execution_authentication = Some(authentication);
+        request.execution_authentication = authentication;
         Ok(())
     }
 
@@ -747,7 +727,7 @@ impl HostState {
             HostError::State("composite Stop phase update lost its request".to_owned())
         })?;
         request.execution = execution;
-        request.execution_authentication = Some(authentication);
+        request.execution_authentication = authentication;
         Ok(())
     }
 
@@ -856,7 +836,6 @@ impl HostState {
                         ));
                     }
                 }
-                None if matches!(launch.execution, DurableExecution::Legacy) => {}
                 Some(_) | None => {
                     return Err(HostError::State(
                         "composite Stop source has the wrong launch execution kind".to_owned(),
@@ -1023,9 +1002,7 @@ impl HostState {
     #[cfg(test)]
     pub(crate) fn tamper_execution_to_guardian(&mut self, request_id: &[u8; 16]) {
         if let Some(request) = self.requests.get_mut(request_id) {
-            request.carrier_minor = 5;
             request.execution = DurableExecution::guardian_fixture(ExecutionContext {
-                carrier: ProtocolVersion::new(request.carrier_major, request.carrier_minor),
                 action: HostAction::Launch,
                 request_id: request.request_id,
                 request_digest: request.request_digest,
@@ -1036,13 +1013,6 @@ impl HostState {
                 assignment_digest: request.fence.assignment_digest,
                 receipt_present: request.receipt.is_some(),
             });
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tamper_execution_to_composite_stop(&mut self, request_id: &[u8; 16]) {
-        if let Some(request) = self.requests.get_mut(request_id) {
-            request.execution = DurableExecution::composite_stop_fixture();
         }
     }
 
@@ -1180,37 +1150,6 @@ impl HostState {
             }
         }
         state.validate_execution_links()?;
-        Ok(state)
-    }
-
-    fn decode_version_four(bytes: &[u8]) -> Result<Self> {
-        let mut state = Self::decode(bytes)?;
-        state.loaded_version = Some(4);
-        Ok(state)
-    }
-
-    fn decode_prior(bytes: &[u8], version: u32) -> Result<Self> {
-        let wire: PriorStateWire =
-            serde_json::from_slice(bytes).map_err(|error| HostError::State(error.to_string()))?;
-        if !wire.fences.is_empty() || !wire.requests.is_empty() {
-            return Err(HostError::State(format!(
-                "version-{version} host authority requires explicit migration"
-            )));
-        }
-        let mut state = Self::default();
-        for observation in wire.observation_sequences {
-            if observation.incarnation_id == [0; 16]
-                || observation.sequence == 0
-                || state
-                    .observation_sequences
-                    .insert(observation.incarnation_id, observation.sequence)
-                    .is_some()
-            {
-                return Err(HostError::State(
-                    "invalid legacy observation sequence".to_owned(),
-                ));
-            }
-        }
         Ok(state)
     }
 }
@@ -1372,35 +1311,20 @@ fn validate_execution_authentication(
     request: &RequestRecord,
     stable_authority_digest: [u8; 32],
 ) -> Result<()> {
-    match (
-        &request.execution,
-        request.execution_authentication.as_deref(),
-    ) {
-        (DurableExecution::Legacy, None) => Ok(()),
-        (DurableExecution::Legacy, Some(_)) => Err(HostError::State(
-            "legacy Host execution unexpectedly carries future authentication".to_owned(),
-        )),
-        (_, None) => Err(HostError::State(
-            "future Host execution is missing authentication".to_owned(),
-        )),
-        (_, Some(sealed)) => {
-            let expected = request
-                .execution
-                .authentication_digest(execution_context(request)?, stable_authority_digest)
-                .ok_or_else(|| {
-                    HostError::State(
-                        "future Host execution authentication input is too large".to_owned(),
-                    )
-                })?;
-            let opened = authority.open_execution_record(&request.request_id, sealed)?;
-            if !fixed_digest_matches(opened, &expected) {
-                return Err(HostError::State(
-                    "future Host execution authentication contradicts its record".to_owned(),
-                ));
-            }
-            Ok(())
-        }
+    let expected = request
+        .execution
+        .authentication_digest(execution_context(request)?, stable_authority_digest)
+        .ok_or_else(|| {
+            HostError::State("Host execution authentication input is too large".to_owned())
+        })?;
+    let opened =
+        authority.open_execution_record(&request.request_id, &request.execution_authentication)?;
+    if !fixed_digest_matches(opened, &expected) {
+        return Err(HostError::State(
+            "Host execution authentication contradicts its record".to_owned(),
+        ));
     }
+    Ok(())
 }
 
 fn fixed_digest_matches(opened: &[u8], expected: &[u8; 32]) -> bool {
@@ -1416,7 +1340,7 @@ fn fixed_digest_matches(opened: &[u8], expected: &[u8; 32]) -> bool {
 
 fn ensure_live_execution_enabled(execution: &DurableExecution) -> Result<()> {
     match execution {
-        DurableExecution::Legacy
+        DurableExecution::DirectLifecycle
         | DurableExecution::GuardianLaunch(_)
         | DurableExecution::CompositeStop(_) => Ok(()),
     }
@@ -1425,18 +1349,45 @@ fn ensure_live_execution_enabled(execution: &DurableExecution) -> Result<()> {
 fn execution_context(request: &RequestRecord) -> Result<ExecutionContext> {
     let action = HostAction::from_code(request.action)
         .ok_or_else(|| HostError::State("durable host action is invalid".to_owned()))?;
-    Ok(ExecutionContext {
-        carrier: ProtocolVersion::new(request.carrier_major, request.carrier_minor),
+    Ok(execution_context_from_parts(
         action,
-        request_id: request.request_id,
-        request_digest: request.request_digest,
-        sandbox_id: request.fence.sandbox_id,
-        incarnation_id: request.fence.incarnation_id,
-        assignment_epoch: request.fence.assignment_epoch,
-        desired_generation: request.fence.desired_generation,
-        assignment_digest: request.fence.assignment_digest,
-        receipt_present: request.receipt.is_some(),
-    })
+        request.request_id,
+        request.request_digest,
+        request.fence.sandbox_id,
+        request.fence.incarnation_id,
+        request.fence.assignment_epoch,
+        request.fence.desired_generation,
+        request.fence.assignment_digest,
+        request.receipt.is_some(),
+    ))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the final durable execution context authenticates one closed fixed field set"
+)]
+fn execution_context_from_parts(
+    action: HostAction,
+    request_id: [u8; 16],
+    request_digest: [u8; 32],
+    sandbox_id: [u8; 16],
+    incarnation_id: [u8; 16],
+    assignment_epoch: u64,
+    desired_generation: u64,
+    assignment_digest: [u8; 32],
+    receipt_present: bool,
+) -> ExecutionContext {
+    ExecutionContext {
+        action,
+        request_id,
+        request_digest,
+        sandbox_id,
+        incarnation_id,
+        assignment_epoch,
+        desired_generation,
+        assignment_digest,
+        receipt_present,
+    }
 }
 
 fn retained_effect(request: &RequestRecord) -> Result<RetainedRuntimeEffect> {
@@ -1539,12 +1490,8 @@ fn validate_request(request: &RequestRecord) -> Result<()> {
         || request.request_digest == [0; 32]
         || request.effect.is_empty()
         || request.effect.len() > MAXIMUM_STATE_BYTES
-        || request
-            .execution_authentication
-            .as_ref()
-            .is_some_and(|sealed| {
-                sealed.is_empty() || sealed.len() > MAXIMUM_EXECUTION_AUTHENTICATION_BYTES
-            })
+        || request.execution_authentication.is_empty()
+        || request.execution_authentication.len() > MAXIMUM_EXECUTION_AUTHENTICATION_BYTES
         || request
             .receipt
             .as_ref()
@@ -1553,20 +1500,6 @@ fn validate_request(request: &RequestRecord) -> Result<()> {
         return Err(HostError::State(
             "durable host request record is invalid".to_owned(),
         ));
-    }
-    match (&request.execution, &request.execution_authentication) {
-        (DurableExecution::Legacy, None) => {}
-        (DurableExecution::Legacy, Some(_)) => {
-            return Err(HostError::State(
-                "legacy Host execution cannot carry future authentication".to_owned(),
-            ));
-        }
-        (_, Some(_)) => {}
-        (_, None) => {
-            return Err(HostError::State(
-                "future Host execution is missing authentication".to_owned(),
-            ));
-        }
     }
     if !request.execution.validate(execution_context(request)?) {
         return Err(HostError::State(
@@ -1709,7 +1642,7 @@ fn decode_envelope(bytes: &[u8]) -> Result<HostState> {
             .try_into()
             .map_err(|_| HostError::State("host state version field is truncated".to_owned()))?,
     );
-    if version != 1 && version != 2 && version != 3 && version != 4 && version != VERSION {
+    if version != VERSION {
         return Err(HostError::State(
             "host state version is unsupported".to_owned(),
         ));
@@ -1731,14 +1664,7 @@ fn decode_envelope(bytes: &[u8]) -> Result<HostState> {
     if Sha256::digest(body).as_slice() != expected {
         return Err(HostError::State("host state checksum mismatch".to_owned()));
     }
-    match version {
-        1..=3 => HostState::decode_prior(body, version),
-        4 => HostState::decode_version_four(body),
-        VERSION => HostState::decode(body),
-        _ => Err(HostError::State(
-            "host state version is unsupported".to_owned(),
-        )),
-    }
+    HostState::decode(body)
 }
 
 #[cfg(test)]
@@ -1747,7 +1673,7 @@ mod tests {
 
     use aos_proto::aos::sandbox::local::v1::{
         ApplyRuntimeRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerMethod,
-        BrokerRequestEnvelope, Feature, ResourceLimit, RuntimeAction,
+        BrokerRequestEnvelope, Feature, GuardianArmCompanionV1, ResourceLimit, RuntimeAction,
     };
     use aos_sandbox_core::format::{
         encode_broker_authorization_plan, encode_ownership_lease, encode_signature,
@@ -1758,11 +1684,11 @@ mod tests {
     };
     use aos_sandbox_core::{
         AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrant,
-        BrokerPlanTrustAnchor, DecodeLimits, DesiredGeneration, IncarnationId, LeaseAssignment,
-        MediaType, NodeId, ObjectDescriptor, ObjectDigest, OwnershipLease,
-        OwnershipLeaseTrustAnchor, PortableMediaType, ProtocolId, RawClockProvenance,
-        RawPairedClockSample, RevocationScopeId, SandboxId, TrustScopeId, descriptor_for_bytes,
-        sign_statement,
+        BrokerGrantTarget, BrokerPlanTrustAnchor, BrokerVerb, DecodeLimits, DesiredGeneration,
+        GuardianPlanBinding, IncarnationId, LeaseAssignment, MediaType, NodeId, ObjectDescriptor,
+        ObjectDigest, OwnershipLease, OwnershipLeaseTrustAnchor, PortableMediaType, ProtocolId,
+        ProtocolVersion, RawClockProvenance, RawPairedClockSample, RevocationScopeId, SandboxId,
+        TrustScopeId, descriptor_for_bytes, sign_statement,
     };
     use aos_sandbox_protocol::session::{
         ValidatedUntrustedAuthorizationArtifacts, decode_request_envelope,
@@ -1979,7 +1905,7 @@ mod tests {
             let plan = BrokerAuthorizationPlan::new(
                 BrokerAudience::Host,
                 ProtocolId::HostBroker,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 assignment,
                 NodeId::from_bytes([31; 16]),
                 self.lease_signer.clone(),
@@ -2114,10 +2040,11 @@ mod tests {
     }
 
     fn runtime_request() -> Vec<u8> {
+        let fixture = AdmissionFixture::new();
         let mut request = ApplyRuntimeRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 1;
+        header.protocol_minor = 0;
         header.request_id = vec![103; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 1_000;
@@ -2136,6 +2063,7 @@ mod tests {
         root.encoded_size = 10;
         plan.workspace_handle = vec![108; 32];
         plan.network_handle = vec![109; 32];
+        plan.attachment_anchor_handle = vec![110; 32];
         plan.uid_range_start = 65_536;
         plan.uid_range_size = 65_536;
         plan.limits = vec![
@@ -2166,10 +2094,89 @@ mod tests {
             minor: 0,
             ..Default::default()
         });
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes([104; 16]),
+            IncarnationId::from_bytes([105; 16]),
+            AssignmentEpoch::new(1),
+            DesiredGeneration::new(1),
+            ObjectDigest::from_bytes([106; 32]),
+        )
+        .unwrap();
+        let lease = OwnershipLease::new(
+            LeaseAssignment::new(
+                assignment.sandbox(),
+                assignment.incarnation(),
+                assignment.epoch(),
+                assignment.digest(),
+            )
+            .unwrap(),
+            NodeId::from_bytes([31; 16]),
+            1,
+            100,
+            300,
+            10,
+            [1; 16],
+        )
+        .unwrap();
+        let ownership_lease = encode_ownership_lease(&lease);
+        let lease_digest = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::OwnershipLease.as_str().to_owned()).unwrap(),
+            &ownership_lease,
+        )
+        .digest();
+        let binding = GuardianPlanBinding::new(
+            assignment,
+            NodeId::from_bytes([31; 16]),
+            test_clock().host_boot_id(),
+            1,
+            lease_digest,
+        )
+        .unwrap();
+        let guardian_plan = BrokerAuthorizationPlan::new(
+            BrokerAudience::Guardian,
+            ProtocolId::Guardian,
+            ProtocolVersion::new(1, 0),
+            assignment,
+            NodeId::from_bytes([31; 16]),
+            fixture.lease_signer.clone(),
+            vec![
+                BrokerGrant::new(
+                    BrokerVerb::GuardianArm,
+                    BrokerGrantTarget::Assignment,
+                    binding.commitment(),
+                    binding.encoded_len(),
+                    4,
+                )
+                .unwrap(),
+            ],
+            ObjectDigest::from_bytes([111; 32]),
+            fixture.revocation_scope,
+            100,
+            300,
+            Vec::new(),
+        )
+        .unwrap();
+        let broker_plan = encode_broker_authorization_plan(&guardian_plan);
+        let broker_plan_signature = signed_object(
+            &broker_plan,
+            PortableMediaType::BrokerAuthorizationPlan,
+            fixture.plan_scope,
+            fixture.plan_signer.clone(),
+            SignaturePurpose::BrokerAuthorization,
+            &fixture.plan_policy_descriptor,
+            &fixture.plan_key,
+            300,
+        );
+        request.guardian_arm = Some(GuardianArmCompanionV1 {
+            broker_plan,
+            broker_plan_signature,
+            ..Default::default()
+        })
+        .into();
         request.encode_to_vec()
     }
 
-    fn future_request() -> RequestRecord {
+    fn guardian_request_record() -> RequestRecord {
         let request_id = [51; 16];
         let request_digest = [52; 32];
         let fence = DurableFence {
@@ -2182,7 +2189,6 @@ mod tests {
             authorization: vec![58],
         };
         let execution = DurableExecution::guardian_fixture(ExecutionContext {
-            carrier: ProtocolVersion::new(1, 5),
             action: HostAction::Launch,
             request_id,
             request_digest,
@@ -2196,12 +2202,10 @@ mod tests {
         RequestRecord {
             request_id,
             request_digest,
-            carrier_major: 1,
-            carrier_minor: 5,
             fence,
             action: 1,
             execution,
-            execution_authentication: None,
+            execution_authentication: Vec::new(),
             effect: vec![59],
             receipt: None,
         }
@@ -2248,14 +2252,14 @@ mod tests {
                 &artifacts,
                 &request,
                 request_bytes,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 &test_clock(),
                 prior_fence,
             )
             .unwrap()
     }
 
-    fn authenticated_future_state(
+    fn authenticated_guardian_state(
         fixture: &AdmissionFixture,
         authority: &HostAuthorityV1,
         request_bytes: &[u8],
@@ -2276,39 +2280,33 @@ mod tests {
         let sealed_effect = authority
             .seal_effect(&request_id, &admitted.effect)
             .unwrap();
+        let context = ExecutionContext {
+            action: HostAction::Launch,
+            request_id,
+            request_digest,
+            sandbox_id: *request.fence().sandbox_id(),
+            incarnation_id: *request.fence().incarnation_id(),
+            assignment_epoch: request.fence().assignment_epoch(),
+            desired_generation: request.fence().desired_generation(),
+            assignment_digest: *request.fence().assignment_digest(),
+            receipt_present: false,
+        };
+        let execution = DurableExecution::guardian_fixture(context);
         let mut state = HostState::default();
         assert_eq!(
             state
-                .admit(
+                .admit_guardian(
                     request.fence(),
                     request_id,
                     request_digest,
-                    ProtocolVersion::new(1, 1),
-                    1,
+                    execution,
                     sealed_fence,
+                    &admitted,
                     sealed_effect,
+                    authority,
                 )
                 .unwrap(),
             Admission::New
-        );
-
-        state.tamper_execution_to_guardian(&request_id);
-        let stable = stable_authority_digest(&admitted.effect, &admitted.fence).unwrap();
-        let execution_digest = {
-            let record = state.requests.get(&request_id).unwrap();
-            record
-                .execution
-                .authentication_digest(execution_context(record).unwrap(), stable)
-                .unwrap()
-        };
-        state
-            .requests
-            .get_mut(&request_id)
-            .unwrap()
-            .execution_authentication = Some(
-            authority
-                .seal_execution_record(&request_id, &execution_digest)
-                .unwrap(),
         );
         state
     }
@@ -2372,6 +2370,7 @@ mod tests {
         fence.assignment_digest = assignment_digest.to_vec();
         request.action = action.into();
         request.launch_plan = None.into();
+        request.guardian_arm = None.into();
         request.encode_to_vec()
     }
 
@@ -2402,7 +2401,6 @@ mod tests {
             prior_fence.as_deref(),
         );
         let context = ExecutionContext {
-            carrier: ProtocolVersion::new(1, 5),
             action: HostAction::Launch,
             request_id,
             request_digest,
@@ -2454,11 +2452,9 @@ mod tests {
             .execution
             .authentication_digest(execution_context(record).unwrap(), stable)
             .unwrap();
-        record.execution_authentication = Some(
-            authority
-                .seal_execution_record(&request_id, &digest)
-                .unwrap(),
-        );
+        record.execution_authentication = authority
+            .seal_execution_record(&request_id, &digest)
+            .unwrap();
     }
 
     fn append_lifecycle(
@@ -2500,10 +2496,11 @@ mod tests {
                 request.fence(),
                 request_id,
                 request_digest,
-                ProtocolVersion::new(1, 1),
                 action.code(),
                 sealed_fence,
+                &admitted,
                 sealed_effect,
+                authority,
             )
             .unwrap();
         if !complete {
@@ -2559,7 +2556,6 @@ mod tests {
             prior_fence.as_deref(),
         );
         let context = ExecutionContext {
-            carrier: ProtocolVersion::new(1, 5),
             action: HostAction::Stop,
             request_id,
             request_digest,
@@ -2654,43 +2650,19 @@ mod tests {
     }
 
     #[test]
-    fn legacy_state_migrates_only_without_unauthenticated_authority() {
-        let terminal = serde_json::json!({
+    fn unknown_state_versions_fail_closed() {
+        let current = serde_json::json!({
             "fences": [],
             "requests": [],
             "observation_sequences": [{"incarnation_id": vec![7; 16], "sequence": 9}]
         });
-        let migrated =
-            decode_envelope(&legacy_envelope(&serde_json::to_vec(&terminal).unwrap())).unwrap();
-        assert_eq!(migrated.observation_sequences.get(&[7; 16]), Some(&9));
-        let migrated_v2 =
-            decode_envelope(&prior_envelope(2, &serde_json::to_vec(&terminal).unwrap())).unwrap();
-        assert_eq!(migrated_v2.observation_sequences.get(&[7; 16]), Some(&9));
-        let migrated_v3 =
-            decode_envelope(&prior_envelope(3, &serde_json::to_vec(&terminal).unwrap())).unwrap();
-        assert_eq!(migrated_v3.observation_sequences.get(&[7; 16]), Some(&9));
+        let body = serde_json::to_vec(&current).unwrap();
+        let decoded = decode_envelope(&envelope_with_version(VERSION, &body)).unwrap();
+        assert_eq!(decoded.observation_sequences.get(&[7; 16]), Some(&9));
 
-        let live = serde_json::json!({
-            "fences": [{"legacy": true}],
-            "requests": [],
-            "observation_sequences": []
-        });
-        assert!(decode_envelope(&legacy_envelope(&serde_json::to_vec(&live).unwrap())).is_err());
-        assert!(decode_envelope(&prior_envelope(2, &serde_json::to_vec(&live).unwrap())).is_err());
-        assert!(decode_envelope(&prior_envelope(3, &serde_json::to_vec(&live).unwrap())).is_err());
-
-        let completed_v3 = serde_json::json!({
-            "fences": [],
-            "requests": [{"receipt": [1]}],
-            "observation_sequences": []
-        });
-        assert!(
-            decode_envelope(&prior_envelope(
-                3,
-                &serde_json::to_vec(&completed_v3).unwrap()
-            ))
-            .is_err()
-        );
+        for version in [0, 2, 4, u32::MAX] {
+            assert!(decode_envelope(&envelope_with_version(version, &body)).is_err());
+        }
     }
 
     #[test]
@@ -2703,8 +2675,6 @@ mod tests {
             RequestRecord {
                 request_id,
                 request_digest,
-                carrier_major: 1,
-                carrier_minor: 1,
                 fence: DurableFence {
                     witness_request_id: request_id,
                     sandbox_id: [3; 16],
@@ -2714,9 +2684,9 @@ mod tests {
                     assignment_digest: [7; 32],
                     authorization: vec![8],
                 },
-                action: 1,
-                execution: DurableExecution::Legacy,
-                execution_authentication: None,
+                action: HostAction::Freeze.code(),
+                execution: DurableExecution::DirectLifecycle,
+                execution_authentication: vec![9],
                 effect: vec![9],
                 receipt: None,
             },
@@ -2774,20 +2744,17 @@ mod tests {
     fn guardian_execution_requires_exact_authentication_on_the_live_path() {
         let authority = authority();
         let stable_authority = stable_fields().digest().unwrap();
-        let mut request = future_request();
+        let mut request = guardian_request_record();
 
-        let missing = validate_request(&request).unwrap_err().to_string();
-        assert!(missing.contains("missing authentication"));
+        assert!(validate_request(&request).is_err());
 
         let digest = request
             .execution
             .authentication_digest(execution_context(&request).unwrap(), stable_authority)
             .unwrap();
-        request.execution_authentication = Some(
-            authority
-                .seal_execution_record(&request.request_id, &digest)
-                .unwrap(),
-        );
+        request.execution_authentication = authority
+            .seal_execution_record(&request.request_id, &digest)
+            .unwrap();
         validate_request(&request).unwrap();
         validate_execution_authentication(&authority, &request, stable_authority).unwrap();
 
@@ -2795,7 +2762,7 @@ mod tests {
 
         let mut changed_phase = request.clone();
         let DurableExecution::GuardianLaunch(record) = &mut changed_phase.execution else {
-            panic!("future fixture has the wrong execution kind");
+            panic!("Guardian fixture has the wrong execution kind");
         };
         record.phase = transition::GuardianLaunchPhase::GuardianStartIssued;
         assert!(
@@ -2810,7 +2777,7 @@ mod tests {
         );
 
         let mut tampered = request;
-        tampered.execution_authentication.as_mut().unwrap()[0] ^= 1;
+        tampered.execution_authentication[0] ^= 1;
         assert!(
             validate_execution_authentication(&authority, &tampered, stable_authority).is_err()
         );
@@ -2822,7 +2789,7 @@ mod tests {
         let authority = fixture.authority();
         let request_bytes = runtime_request();
         let request_id = [103; 16];
-        let state = authenticated_future_state(&fixture, &authority, &request_bytes);
+        let state = authenticated_guardian_state(&fixture, &authority, &request_bytes);
 
         state.validate_authenticated(&authority).unwrap();
 
@@ -2831,12 +2798,8 @@ mod tests {
             .requests
             .get_mut(&request_id)
             .unwrap()
-            .execution_authentication = None;
-        let missing_error = missing
-            .validate_authenticated(&authority)
-            .unwrap_err()
-            .to_string();
-        assert!(missing_error.contains("missing authentication"));
+            .execution_authentication = Vec::new();
+        assert!(missing.validate_authenticated(&authority).is_err());
         assert!(HostState::decode(&missing.encode().unwrap()).is_err());
 
         let mut oversized = state.clone();
@@ -2844,7 +2807,7 @@ mod tests {
             .requests
             .get_mut(&request_id)
             .unwrap()
-            .execution_authentication = Some(vec![1; MAXIMUM_EXECUTION_AUTHENTICATION_BYTES + 1]);
+            .execution_authentication = vec![1; MAXIMUM_EXECUTION_AUTHENTICATION_BYTES + 1];
         assert!(HostState::decode(&oversized.encode().unwrap()).is_err());
 
         let prior_fence = state.request_authorization(&request_id).unwrap().to_vec();
@@ -3024,21 +2987,29 @@ mod tests {
             GuardianLineage::Shadowed
         );
 
-        for (request_id, action, host_action) in [
-            (104, RuntimeAction::RUNTIME_ACTION_STOP, HostAction::Stop),
-            (105, RuntimeAction::RUNTIME_ACTION_KILL, HostAction::Kill),
-        ] {
-            let mut state = HostState::default();
-            append_completed_guardian(&mut state, &fixture, &authority, &guardian_request(103));
-            let terminal = lifecycle_request(request_id, action, [105; 16], 1, 2, [107; 32]);
-            append_completed_lifecycle(&mut state, &fixture, &authority, &terminal, host_action);
-            assert_eq!(
-                state
-                    .completed_guardian_lineage(&[104; 16], &[105; 16], &authority)
-                    .unwrap(),
-                GuardianLineage::Shadowed
-            );
-        }
+        let mut killed = HostState::default();
+        append_completed_guardian(&mut killed, &fixture, &authority, &guardian_request(103));
+        let terminal = lifecycle_request(
+            105,
+            RuntimeAction::RUNTIME_ACTION_KILL,
+            [105; 16],
+            1,
+            2,
+            [107; 32],
+        );
+        append_completed_lifecycle(
+            &mut killed,
+            &fixture,
+            &authority,
+            &terminal,
+            HostAction::Kill,
+        );
+        assert_eq!(
+            killed
+                .completed_guardian_lineage(&[104; 16], &[105; 16], &authority)
+                .unwrap(),
+            GuardianLineage::Shadowed
+        );
 
         let mut replacement = HostState::default();
         append_completed_guardian(
@@ -3128,15 +3099,6 @@ mod tests {
             GuardianLineage::Shadowed
         );
 
-        let stop = lifecycle_request(
-            106,
-            RuntimeAction::RUNTIME_ACTION_STOP,
-            [105; 16],
-            2,
-            3,
-            [109; 32],
-        );
-        append_completed_lifecycle(&mut reopened, &fixture, &authority, &stop, HostAction::Stop);
         let reopened = HostState::decode(&reopened.encode().unwrap()).unwrap();
         assert_eq!(
             reopened
@@ -3312,17 +3274,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_reopen_accepts_exact_outer_lease_refresh() {
+    fn final_schema_reopen_accepts_exact_outer_lease_refresh() {
         let fixture = AdmissionFixture::new();
         let authority = fixture.authority();
         let request_bytes = runtime_request();
         let request_id = [103; 16];
-        let mut state = authenticated_future_state(&fixture, &authority, &request_bytes);
-        let record = state.requests.get_mut(&request_id).unwrap();
-        record.carrier_minor = 1;
-        record.execution = DurableExecution::Legacy;
-        record.execution_authentication = None;
-
+        let state = authenticated_guardian_state(&fixture, &authority, &request_bytes);
         let state = HostState::decode(&state.encode().unwrap()).unwrap();
         state.validate_authenticated(&authority).unwrap();
         let prior_fence = state.request_authorization(&request_id).unwrap().to_vec();
@@ -3341,62 +3298,7 @@ mod tests {
         reopened.validate_authenticated(&authority).unwrap();
     }
 
-    #[test]
-    fn legacy_v4_wire_omits_future_authentication() {
-        let mut request = future_request();
-        request.carrier_minor = 4;
-        request.execution = DurableExecution::Legacy;
-
-        let encoded = serde_json::to_value(&request).unwrap();
-        assert!(encoded.get("execution_authentication").is_none());
-        let decoded: RequestRecord = serde_json::from_value(encoded).unwrap();
-        assert_eq!(decoded.execution_authentication, None);
-        validate_request(&decoded).unwrap();
-
-        request.execution_authentication = Some(vec![1]);
-        assert!(validate_request(&request).is_err());
-    }
-
-    #[test]
-    fn version_four_migrates_only_authenticated_legacy_execution() {
-        let fixture = AdmissionFixture::new();
-        let authority = fixture.authority();
-        let request_bytes = runtime_request();
-        let mut legacy = authenticated_future_state(&fixture, &authority, &request_bytes);
-        let request = legacy.requests.get_mut(&[103; 16]).unwrap();
-        request.carrier_minor = 4;
-        request.execution = DurableExecution::Legacy;
-        request.execution_authentication = None;
-
-        let body = legacy.encode().unwrap();
-        let loaded = decode_envelope(&prior_envelope(4, &body)).unwrap();
-        loaded.validate_authenticated(&authority).unwrap();
-        assert_eq!(loaded.loaded_version, Some(4));
-
-        let mut guardian = authenticated_future_state(&fixture, &authority, &request_bytes);
-        let body = guardian.encode().unwrap();
-        let loaded = decode_envelope(&prior_envelope(4, &body)).unwrap();
-        let error = loaded
-            .validate_authenticated(&authority)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("requires explicit migration"));
-
-        guardian.requests.get_mut(&[103; 16]).unwrap().effect[0] ^= 1;
-        let body = guardian.encode().unwrap();
-        let loaded = decode_envelope(&prior_envelope(4, &body)).unwrap();
-        let error = loaded
-            .validate_authenticated(&authority)
-            .unwrap_err()
-            .to_string();
-        assert!(!error.contains("requires explicit migration"));
-    }
-
-    fn legacy_envelope(body: &[u8]) -> Vec<u8> {
-        prior_envelope(1, body)
-    }
-
-    fn prior_envelope(version: u32, body: &[u8]) -> Vec<u8> {
+    fn envelope_with_version(version: u32, body: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&version.to_le_bytes());

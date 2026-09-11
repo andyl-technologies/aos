@@ -155,7 +155,7 @@ impl HostMountScopeClient {
             .map_err(|_| ProtocolValidationError::InvalidField("required mount-scope feature"))?;
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 3,
+            protocol_minor: 0,
             audience: Audience::AUDIENCE_ROOT_MOUNT.into(),
             required_features: vec![Feature {
                 namespace: SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
@@ -189,7 +189,7 @@ impl HostMountScopeClient {
             &hello_bytes,
             ProtocolId::HostBroker,
             Audience::AUDIENCE_ROOT_MOUNT,
-            ProtocolVersion::new(1, 3),
+            ProtocolVersion::new(1, 0),
             &[feature],
             &[METHOD],
             RESPONSE_BYTES,

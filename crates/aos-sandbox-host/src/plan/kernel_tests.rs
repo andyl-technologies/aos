@@ -11,6 +11,8 @@
     reason = "Explicit VM qualification assertions panic."
 )]
 
+use std::os::unix::fs::PermissionsExt as _;
+
 use aos_proto::aos::sandbox::local::v1::{
     ApplyRuntimeRequest, Audience, Feature, ResourceLimit, RuntimeAction,
 };
@@ -29,6 +31,8 @@ use crate::worker::{
 const INCARNATION: [u8; 16] = [0x61; 16];
 const WORKSPACE: &str = "/run/aos/sandbox-pins/workspaces/qualification";
 const NETWORK: &str = "/run/aos/sandbox-pins/netns/qualification";
+const ATTACHMENT_ANCHOR: &str =
+    "/run/aos/sandbox-pins/workspaces/qualification/var/qualification-attachment-anchor";
 
 fn directory(path: &str) -> OwnedFd {
     open(
@@ -63,6 +67,25 @@ fn resources() -> ResolvedLaunchResources {
     let network =
         ResolvedNetwork::from_pinned(NETWORK.to_owned(), identity.device, identity.inode, network)
             .unwrap();
+    std::fs::create_dir_all(ATTACHMENT_ANCHOR).unwrap();
+    std::fs::set_permissions(ATTACHMENT_ANCHOR, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let anchor = directory(ATTACHMENT_ANCHOR);
+    let anchor_identity = fstat(&anchor).unwrap();
+    let anchor_mount_id = aos_sandbox_linux::inventory::MountId::from_fd(anchor.as_fd())
+        .unwrap()
+        .get();
+    let anchor_directory = format!(
+        "{}60606060606060606060606060606060/61616161616161616161616161616161/0000000000000001",
+        aos_sandbox_protocol::ATTACHMENT_ANCHOR_PIN_PREFIX,
+    );
+    let attachment_anchor = ResolvedAttachmentAnchor::from_pinned(
+        anchor_directory,
+        anchor_identity.st_dev,
+        anchor_identity.st_ino,
+        anchor_mount_id,
+        anchor,
+    )
+    .unwrap();
     ResolvedLaunchResources {
         workspace,
         network,
@@ -71,7 +94,7 @@ fn resources() -> ResolvedLaunchResources {
             range_size: 65_536,
             catalog_generation: 1,
         },
-        attachment_anchor: None,
+        attachment_anchor,
     }
 }
 
@@ -79,7 +102,7 @@ fn launch_request(now: u64) -> Vec<u8> {
     let mut request = ApplyRuntimeRequest::default();
     let header = request.header.get_or_insert_default();
     header.protocol_major = 1;
-    header.protocol_minor = 2;
+    header.protocol_minor = 0;
     header.request_id = vec![0x62; 16];
     header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
     header.deadline_boottime_nanoseconds = now.checked_add(90_000_000_000).unwrap();
@@ -98,6 +121,7 @@ fn launch_request(now: u64) -> Vec<u8> {
     root.encoded_size = 10;
     plan.workspace_handle = vec![0x65; 32];
     plan.network_handle = vec![0x66; 32];
+    plan.attachment_anchor_handle = vec![0x67; 32];
     plan.uid_range_start = 655_360;
     plan.uid_range_size = 65_536;
     plan.limits = [

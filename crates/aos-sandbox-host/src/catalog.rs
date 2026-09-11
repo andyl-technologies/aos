@@ -184,37 +184,30 @@ impl HostCatalog for FileHostCatalog {
         )?;
         let network_pin =
             verify_network_pin(network.namespace_path(), network.device(), network.inode())?;
-        let attachment_anchor = plan
-            .attachment_anchor_handle()
-            .map(|handle| {
-                let anchor = snapshot
-                    .attachment_anchors()
-                    .binary_search_by_key(handle, |entry| *entry.handle())
-                    .ok()
-                    .map(|index| &snapshot.attachment_anchors()[index])
-                    .ok_or_else(|| {
-                        HostError::Catalog("unknown attachment-anchor handle".to_owned())
-                    })?;
-                if !anchor.assignment().matches_fence(fence) {
-                    return Err(HostError::Catalog(
-                        "attachment anchor does not bind the exact launch assignment".to_owned(),
-                    ));
-                }
-                let pin = verify_attachment_anchor_pin(
-                    anchor.directory(),
-                    anchor.device(),
-                    anchor.inode(),
-                    anchor.mount_id(),
-                )?;
-                ResolvedAttachmentAnchor::from_pinned(
-                    anchor.directory().to_owned(),
-                    anchor.device(),
-                    anchor.inode(),
-                    anchor.mount_id(),
-                    pin,
-                )
-            })
-            .transpose()?;
+        let anchor = snapshot
+            .attachment_anchors()
+            .binary_search_by_key(plan.attachment_anchor_handle(), |entry| *entry.handle())
+            .ok()
+            .map(|index| &snapshot.attachment_anchors()[index])
+            .ok_or_else(|| HostError::Catalog("unknown attachment-anchor handle".to_owned()))?;
+        if !anchor.assignment().matches_fence(fence) {
+            return Err(HostError::Catalog(
+                "attachment anchor does not bind the exact launch assignment".to_owned(),
+            ));
+        }
+        let pin = verify_attachment_anchor_pin(
+            anchor.directory(),
+            anchor.device(),
+            anchor.inode(),
+            anchor.mount_id(),
+        )?;
+        let attachment_anchor = ResolvedAttachmentAnchor::from_pinned(
+            anchor.directory().to_owned(),
+            anchor.device(),
+            anchor.inode(),
+            anchor.mount_id(),
+            pin,
+        )?;
         Ok(ResolvedLaunchResources {
             workspace: ResolvedWorkspace::from_pinned(
                 workspace.root_directory().to_owned(),
@@ -564,7 +557,7 @@ mod tests {
         ApplyRuntimeRequest, Audience, Feature, ResourceLimit, RuntimeAction,
     };
     use aos_sandbox_core::ObjectDescriptor;
-    use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_runtime_request};
+    use aos_sandbox_protocol::decode_runtime_template_v1;
     use buffa::Message as _;
 
     use super::*;
@@ -625,10 +618,10 @@ mod tests {
         let mut request = ApplyRuntimeRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 3;
+        header.protocol_minor = 0;
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
-        header.deadline_boottime_nanoseconds = 100;
+        header.deadline_boottime_nanoseconds = 0;
         header.maximum_response_bytes = 4096;
         let fence = request.fence.get_or_insert_default();
         fence.sandbox_id = vec![2; 16];
@@ -676,21 +669,7 @@ mod tests {
 
     #[test]
     fn one_snapshot_atomically_binds_workspace_network_and_attachments() {
-        let validated = decode_runtime_request(
-            &request(),
-            PeerCredentials {
-                uid: 1,
-                gid: 2,
-                pid: Some(3),
-            },
-            PeerPolicy {
-                uid: 1,
-                gid: Some(2),
-                audience: Audience::AUDIENCE_NODE_CONTROLLER,
-            },
-            1,
-        )
-        .unwrap();
+        let validated = decode_runtime_template_v1(&request()).unwrap();
         let fence = validated.fence();
         let plan = validated.launch_plan().unwrap();
         let assignment = CatalogAssignment::new([2; 16], [3; 16], 4, 5, [6; 32]).unwrap();

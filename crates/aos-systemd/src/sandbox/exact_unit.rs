@@ -1,6 +1,6 @@
 //! Reference-held observations and exact-target stop operations.
 //!
-//! Host protocol 1.5 binds both transient services to one authenticated
+//! Host protocol 1.0 binds both transient services to one authenticated
 //! launch digest retained in systemd's `Environment` property.  This module
 //! is the only place that parses that manager-retained value.  It also owns
 //! the `RefUnit`/`UnrefUnit` lifetime used while comparing an invocation and

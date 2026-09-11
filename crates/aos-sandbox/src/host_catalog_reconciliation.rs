@@ -8,7 +8,7 @@
 //! fresh Storage + Network + Mount + destination-slot snapshots
 //!     -> exact current-assignment projection
 //!     -> durable pending catalog
-//!     -> authenticated Host 1.4 publication
+//!     -> authenticated Host 1.0 publication
 //!     -> durable confirmed current catalog
 //! ```
 //!

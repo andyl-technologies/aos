@@ -833,7 +833,7 @@ fn request_body(
     Ok(ObservePayloadScopeRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
-            protocol_minor: 2,
+            protocol_minor: 0,
             request_id: request_id.to_vec(),
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             deadline_boottime_nanoseconds: deadline,

@@ -592,13 +592,12 @@ two-record completion; exact absence remains `AwaitFreshRepair` without a
 journal write. Recovery never converts that observer envelope into fresh
 mutation authority.
 
-Host-broker protocol 1.1 defines a generic request-envelope carrier for the
+Host-broker protocol 1.0 defines a generic request-envelope carrier for the
 exact canonical broker plan, detached plan signature, ownership lease, and
 detached lease signature. Host negotiates the carrier with
 `aos.sandbox.authorization.signed-plan-lease, 1, 0` and requires it on effect
-methods. Host 1.0 is observation/inventory-only and rejects the carrier; Host
-1.1 observation and inventory methods also reject it. Later Host carrier
-versions retain that method-specific authority split.
+methods. Observation and inventory methods reject the carrier. Every Host
+request uses exact protocol 1.0; unknown minor or major versions fail closed.
 
 Mount instead uses exact protocol 1.0. It negotiates the same signed-plan/lease
 feature and requires the carrier on every effect method, while its observation
@@ -611,20 +610,18 @@ quartet can later be placed in a distinct authenticated remote wrapper, but the
 local `SOCK_SEQPACKET` framing, peer credentials, and descriptor table are not
 a remote protocol.
 
-Host-broker protocol 1.2 adds `QueryRuntimeEffect`. The query carries a fresh
-1.2 header, zero descriptors, the same exact signed authorization quartet, and
-the byte-exact original protocol 1.1 or 1.2 `ApplyRuntimeRequest`; its outer
-request ID must equal the embedded Apply request ID. Apply's portable signed
-semantic authorization remains version 1.1 under either carrier version. The
+Host protocol 1.0 includes `QueryRuntimeEffect`. The query carries a fresh
+1.0 header, zero descriptors, the same exact signed authorization quartet, and
+the byte-exact original protocol 1.0 `ApplyRuntimeRequest`; its outer request
+ID must equal the embedded Apply request ID. Apply's portable signed semantic
+authorization is also exact protocol 1.0. The
 query returns `Absent`, `Pending`, or
 `Complete`, with `Complete` carrying the byte-exact durable response receipt.
-Protocol 1.2 negotiates a Host-query packet ceiling 64 bytes above the legacy
-generic ceiling, which is greater than the maximum protobuf growth from the
-additional query header and nested-body framing. Protocol 1.1 Apply retains its
-original full packet ceiling, while every accepted Apply and its unchanged
-quartet therefore fit in a later 1.2 query packet. Packets in the additive band
-must decode specifically as `QueryRuntimeEffect`; every other method retains
-the legacy ceiling. Query responses reject unknown status values and fields;
+The Host-query packet ceiling is 64 bytes above the generic ceiling, which is
+greater than the maximum protobuf growth from the additional query header and
+nested-body framing. Packets in the additive band must decode specifically as
+`QueryRuntimeEffect`; every other method retains the generic ceiling. Query
+responses reject unknown status values and fields;
 `Absent` and `Pending` require an empty receipt, while `Complete` requires a
 bounded, structurally valid `RuntimeObservation` whose fence exactly matches
 the original Apply.
@@ -634,10 +631,9 @@ effects are checked at their authenticated admission clock only to establish
 historical identity, never to grant new authority; an absent request must still
 be live at the current protected clock. The operation is strictly read-only:
 it does not admit or refresh a fence, write state, resolve a catalog handle, or
-invoke a worker. Protocol 1.0 and 1.1 do not advertise, negotiate, or accept the
-query method.
+invoke a worker.
 
-Host 1.2 also defines `ObservePayloadScope`, a live authority-bearing query
+Host 1.0 also defines `ObservePayloadScope`, a live authority-bearing query
 with zero request descriptors. Its exact signed plan must already grant the
 query semantic operation for the installed runtime; the complete admitted
 plan/lease fence must equal the installed durable fence. Unlike effect receipt
@@ -654,8 +650,7 @@ and Thaw successors in that same epoch preserve the lineage while permitting
 desired-generation and assignment-digest advancement. A pending transition,
 Stop or Kill history, replacement epoch or incarnation, missing or ambiguous
 launch, or any proof mismatch fails closed without starting, stopping, or
-adopting a process. Legacy runtimes without Guardian history retain their
-existing live-pin rules.
+adopting a process.
 
 A successful response echoes the exact assignment fence and runtime handle,
 adds a nonzero process-local opaque scope handle, and transfers exactly two
@@ -697,11 +692,11 @@ The proposal includes the non-authorizing opaque payload-scope handle so the
 successor Host plan can grant that exact retained execution; it contains no
 descriptor, lease, or reconstructed kernel authority.
 
-Host 1.3 adds `ObserveMountScope` for the privileged Mount broker. This keeps
+Host 1.0 includes `ObserveMountScope` for the privileged Mount broker. This keeps
 payload root and namespace descriptors out of the node controller. The Host
 accepts the method only from a root peer in the fixed Mount service cgroup;
-that peer cannot negotiate controller methods. The existing controller 1.2
-query and its two-descriptor response remain unchanged.
+that peer cannot negotiate controller methods. The controller query and its
+two-descriptor response remain unchanged.
 
 The request binds the assignment, deterministic runtime handle, and exact
 opaque payload-scope handle. A distinct canonical argument commitment binds
@@ -710,10 +705,8 @@ plan must already grant this exact query, and the supplied plan/lease fence
 must equal the installed fence. Querying cannot install or renew authority.
 A replacement payload scope, including after reboot, requires new authority
 for its new handle; the query cannot silently select the replacement.
-Host 1.2 and 1.3 are carrier versions; the separately signed broker-authority
-profile remains 1.1. Controller verification and Host admission therefore
-match the signed plan at 1.1 while independently requiring the newer query
-header and negotiated carrier.
+Controller verification and Host admission require the signed plan, query
+header, and negotiated carrier to use exact Host protocol 1.0.
 
 Success transfers the payload pidfd, payload-subtree cgroup, root directory,
 mount namespace, and user namespace in that order. Errors transfer none.
@@ -724,7 +717,7 @@ authorize a mount effect or continuously prove the payload's root/namespace
 selection: Mount admission and the worker's exact-resource checks remain
 mandatory before use.
 
-Host 1.5 makes a separately signed Guardian plan mandatory on every live
+Host 1.0 requires a separately signed Guardian plan on every live
 `Launch`. The deadline-free Host dispatch template must not contain that plan.
 Only after selecting the current ownership lease and sampling the current host
 boot may the controller derive the fixed Guardian arm commitment and request a
@@ -745,18 +738,15 @@ tick reserved for the Guardian's sample ordering. The expanded Host body is
 matched again against the Host grant and the complete encoded packet remains
 bounded before it becomes durable.
 
-The companion is forbidden in templates, non-Launch actions, and every Host
-version other than 1.5. A live Host 1.5 Launch without it is invalid. Host 1.4
-Launch remains structurally decodable for protocol compatibility, but the
-production controller publication/selection path rejects every pre-1.5 Host
-Launch because it cannot prove Guardian delivery. Structural companion decoding
-does not establish trust: the eventual Host and Guardian execution paths must
-still perform their protected signature, lease, clock, descriptor, and
-before-effect checks.
+The companion is forbidden in templates and non-Launch actions. A live Host
+1.0 Launch without it is invalid. Unknown Host versions are rejected rather
+than decoded as compatibility formats. Structural companion decoding does not
+establish trust: the Host and Guardian execution paths still perform their
+protected signature, lease, clock, descriptor, and before-effect checks.
 
 The controller exposes Guardian-plan preparation as a narrow executor hook
 whose input is already bound to the selected lease and boot. The default hook
-returns no plan, so Host 1.5 Launch remains disabled unless a concrete trusted
+returns no plan, so Host Launch remains disabled unless a concrete trusted
 signing adapter is installed. The hook starts no units and performs no external
 effect; the exact composite attempt must be committed first. An authenticated
 `Absent` result repeats current selection, Guardian signing, validation, and
@@ -766,7 +756,7 @@ authorizes construction of a different packet.
 Mount-broker protocol 1.0 includes `PrepareMountCatalog`. The authenticated node
 controller sends no descriptors and no outer Mount authorization. Its bounded
 body contains a complete prospective `ApplyMountRequest` plus a complete
-authorized Host 1.3 `ObserveMountScope` envelope. The outer request, prospective
+authorized Host 1.0 `ObserveMountScope` envelope. The outer request, prospective
 Apply, and Host query must use the same request ID, deadline, and assignment
 fence; the Host query remains separately bound to the RootMount audience,
 runtime handle, and opaque payload-scope handle. A release action cannot be

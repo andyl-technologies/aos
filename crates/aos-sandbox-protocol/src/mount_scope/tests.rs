@@ -11,7 +11,7 @@ fn fixture() -> ObserveMountScopeRequest {
     ObserveMountScopeRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
-            protocol_minor: 3,
+            protocol_minor: 0,
             request_id: vec![1; 16],
             audience: Audience::AUDIENCE_ROOT_MOUNT.into(),
             deadline_boottime_nanoseconds: 101,
@@ -52,12 +52,12 @@ fn decode(bytes: &[u8]) -> Result<ValidatedMountScopeRequest, ProtocolValidation
 }
 
 #[test]
-fn request_requires_root_mount_new_carrier_and_nonzero_exact_scope() {
+fn request_requires_root_mount_exact_host_version_and_nonzero_scope() {
     let raw = fixture();
     assert!(decode(&raw.encode_to_vec()).is_ok());
 
     for mutate in [
-        (|r: &mut ObserveMountScopeRequest| r.header.get_or_insert_default().protocol_minor = 2)
+        (|r: &mut ObserveMountScopeRequest| r.header.get_or_insert_default().protocol_minor = 1)
             as fn(&mut ObserveMountScopeRequest),
         |r| r.header.get_or_insert_default().audience = Audience::AUDIENCE_NODE_CONTROLLER.into(),
         |r| r.payload_scope_handle = vec![0; 32],

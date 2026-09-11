@@ -43,7 +43,7 @@ use crate::state::transition::{
 };
 use crate::state::{
     Admission, CompletedGuardianLineage, GuardianLineage, HostAction, HostState, HostStateStore,
-    RuntimeEffectQuery, signed_authority_version,
+    RuntimeEffectQuery,
 };
 use crate::worker::{
     CompletedRuntimeProof, GuardianObservation, GuardianObservedState, HostRuntimeIdentity,
@@ -199,7 +199,7 @@ where
         W: Sync,
     {
         self.ensure_healthy()?;
-        if !host_apply_carrier_version(protocol_version) {
+        if !is_exact_host_protocol(protocol_version) {
             return Err(HostError::Authority(
                 aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
             ));
@@ -212,13 +212,8 @@ where
                 aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
             ));
         }
-        let guardian_launch = protocol_version == ProtocolVersion::new(1, 5)
-            && replay_request.action() == RuntimeAction::RUNTIME_ACTION_LAUNCH;
-        let composite_stop = protocol_version == ProtocolVersion::new(1, 5)
-            && replay_request.action() == RuntimeAction::RUNTIME_ACTION_STOP;
-        if protocol_version == ProtocolVersion::new(1, 5) && !guardian_launch && !composite_stop {
-            return Err(request_mismatch());
-        }
+        let guardian_launch = replay_request.action() == RuntimeAction::RUNTIME_ACTION_LAUNCH;
+        let composite_stop = replay_request.action() == RuntimeAction::RUNTIME_ACTION_STOP;
         let request_id = *replay_request.header().request_id();
         let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
 
@@ -234,19 +229,9 @@ where
             }
         }
 
-        let legacy_launch = protocol_version.major() == 1
-            && (1..=4).contains(&protocol_version.minor())
-            && replay_request.action() == RuntimeAction::RUNTIME_ACTION_LAUNCH;
-        if legacy_launch {
-            return Err(request_mismatch());
-        }
-
-        let legacy_backend = protocol_version.major() == 1
-            && (1..=4).contains(&protocol_version.minor())
-            && self.nspawn.is_some();
         let guardian_backend = guardian_launch && self.guardian.is_some() && self.nspawn.is_some();
         let composite_stop_backend = composite_stop && self.guardian.is_some();
-        if !legacy_backend && !guardian_backend && !composite_stop_backend {
+        if (guardian_launch && !guardian_backend) || (composite_stop && !composite_stop_backend) {
             return Err(request_mismatch());
         }
 
@@ -258,11 +243,6 @@ where
             admission_clock.boottime_nanoseconds(),
         )?;
         let action = action_code(request.action());
-        let authority_version = signed_authority_version(
-            protocol_version,
-            HostAction::from_code(action).ok_or_else(request_mismatch)?,
-        )
-        .ok_or_else(request_mismatch)?;
 
         let operation = if guardian_launch || composite_stop {
             None
@@ -290,7 +270,7 @@ where
             artifacts,
             &request,
             request_bytes,
-            authority_version,
+            protocol_version,
             &admission_clock,
             prior_fence_bytes,
         )?;
@@ -374,10 +354,11 @@ where
                 request.fence(),
                 request_id,
                 request_digest,
-                protocol_version,
                 action,
                 sealed_fence,
+                &admitted,
                 sealed_effect,
+                &self.authority,
             )? {
                 Admission::New | Admission::Pending => {}
                 Admission::Complete(_) => {
@@ -418,7 +399,7 @@ where
                 .await;
         }
         let operation = operation.ok_or_else(|| {
-            HostError::State("legacy request lost its compiled operation".to_owned())
+            HostError::State("direct lifecycle request lost its compiled operation".to_owned())
         })?;
         let observation = {
             let authority = &self.authority;
@@ -481,7 +462,7 @@ where
             maximum_response_bytes,
         } = context;
         let located = decode_runtime_request(original_request_bytes, peer, policy, 0)?;
-        if !host_apply_carrier_version(located.header().protocol_version())
+        if !is_exact_host_protocol(located.header().protocol_version())
             || located.header().request_id() != &query_request_id
         {
             return Err(HostError::Authority(
@@ -505,11 +486,6 @@ where
             policy,
             verification_clock.boottime_nanoseconds(),
         )?;
-        let action =
-            HostAction::from_code(action_code(request.action())).ok_or_else(request_mismatch)?;
-        let authority_version =
-            signed_authority_version(request.header().protocol_version(), action)
-                .ok_or_else(request_mismatch)?;
         let prior_fence = existing_effect.as_ref().map_or_else(
             || self.state.prior_authorization(request.fence().sandbox_id()),
             |_| self.state.request_authorization(&query_request_id),
@@ -518,7 +494,7 @@ where
             artifacts,
             &request,
             original_request_bytes,
-            authority_version,
+            request.header().protocol_version(),
             &verification_clock,
             prior_fence,
         )?;
@@ -684,7 +660,6 @@ where
                 let companion = request.guardian_arm().ok_or_else(request_mismatch)?;
                 let lease = admitted.effect.local_lease_record();
                 let context = ExecutionContext {
-                    carrier: ProtocolVersion::new(1, 5),
                     action: HostAction::Launch,
                     request_id: *request.header().request_id(),
                     request_digest: transport_request_digest,
@@ -1125,8 +1100,8 @@ fn historical_clock(effect: &BrokerEffectIntentV2) -> Result<RawPairedClockSampl
     .map_err(|_| HostError::State("durable effect admission clock is invalid".to_owned()))
 }
 
-fn host_apply_carrier_version(version: ProtocolVersion) -> bool {
-    matches!(version.minor(), 1..=5) && version.major() == 1
+fn is_exact_host_protocol(version: ProtocolVersion) -> bool {
+    version == ProtocolVersion::new(1, 0)
 }
 
 fn guardian_credential_role(role: ProtectedBrokerPublicCredentialRole) -> GuardianCredentialRole {
@@ -1553,39 +1528,34 @@ mod tests {
             )
             .unwrap();
             let network_identity = network_pin.identity();
-            let attachment_anchor = plan
-                .attachment_anchor_handle()
-                .map(|handle| {
-                    if handle != &[12; 32] {
-                        return Err(HostError::Catalog("unknown attachment anchor".to_owned()));
-                    }
-                    let pin = rustix::fs::open(
-                        "/",
-                        rustix::fs::OFlags::PATH
-                            | rustix::fs::OFlags::DIRECTORY
-                            | rustix::fs::OFlags::CLOEXEC,
-                        rustix::fs::Mode::empty(),
-                    )
-                    .unwrap();
-                    let identity = rustix::fs::fstat(&pin).unwrap();
-                    let mount_id = aos_sandbox_linux::inventory::MountId::from_fd(
-                        std::os::fd::AsFd::as_fd(&pin),
-                    )
-                    .unwrap()
-                    .get();
-                    ResolvedAttachmentAnchor::from_pinned(
-                        format!(
-                            "/run/aos/sandbox-mount-catalog/slots/{}/{}/0000000000000007",
-                            crate::catalog::encode_hex(fence.sandbox_id()),
-                            crate::catalog::encode_hex(fence.incarnation_id()),
-                        ),
-                        identity.st_dev,
-                        identity.st_ino,
-                        mount_id,
-                        pin,
-                    )
-                })
-                .transpose()?;
+            if plan.attachment_anchor_handle() != &[12; 32] {
+                return Err(HostError::Catalog("unknown attachment anchor".to_owned()));
+            }
+            let anchor_pin = rustix::fs::open(
+                "/",
+                rustix::fs::OFlags::PATH
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .unwrap();
+            let anchor_identity = rustix::fs::fstat(&anchor_pin).unwrap();
+            let anchor_mount_id = aos_sandbox_linux::inventory::MountId::from_fd(
+                std::os::fd::AsFd::as_fd(&anchor_pin),
+            )
+            .unwrap()
+            .get();
+            let attachment_anchor = ResolvedAttachmentAnchor::from_pinned(
+                format!(
+                    "/run/aos/sandbox-mount-catalog/slots/{}/{}/0000000000000007",
+                    crate::catalog::encode_hex(fence.sandbox_id()),
+                    crate::catalog::encode_hex(fence.incarnation_id()),
+                ),
+                anchor_identity.st_dev,
+                anchor_identity.st_ino,
+                anchor_mount_id,
+                anchor_pin,
+            )?;
             Ok(ResolvedLaunchResources {
                 workspace: ResolvedWorkspace::from_pinned(
                     "/run/aos/sandbox-pins/workspaces/test-root".to_owned(),
@@ -1638,7 +1608,7 @@ mod tests {
                             .map(|byte| format!("{byte:02x}"))
                             .collect::<String>()
                     );
-                    let mut expected_arguments = vec![
+                    let expected_arguments = vec![
                         "--boot",
                         "--quiet",
                         "--keep-unit",
@@ -1655,11 +1625,9 @@ mod tests {
                         "--system-call-filter=~@mount @module @raw-io @reboot bpf perf_event_open ptrace setns unshare",
                         "--aos-payload-seccomp-profile=aos-sandbox-payload-v1",
                         "--aos-lifecycle-profile=aos-sandbox-lifecycle-v1",
+                        "--aos-attachment-anchor-fd=aos-sandbox-attachment-anchor-v1",
                     ];
-                    if pins.attachment_anchor().is_some() {
-                        expected_arguments
-                            .push("--aos-attachment-anchor-fd=aos-sandbox-attachment-anchor-v1");
-                    }
+                    let _attachment_anchor = pins.attachment_anchor();
                     assert_eq!(spec.arguments(), expected_arguments);
                     assert!(spec.root_directory().starts_with(&descriptor_prefix));
                     assert!(
@@ -1840,7 +1808,7 @@ mod tests {
                 }
                 WorkerOperation::Launch { .. } => {
                     return Err(HostError::Worker(
-                        "Guardian integration test reached legacy payload launch".to_owned(),
+                        "Guardian integration test reached direct payload launch".to_owned(),
                     ));
                 }
             };
@@ -2305,7 +2273,7 @@ mod tests {
             let plan = BrokerAuthorizationPlan::new(
                 BrokerAudience::Host,
                 ProtocolId::HostBroker,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 assignment,
                 TEST_NODE,
                 lease_signer.clone(),
@@ -2448,7 +2416,7 @@ mod tests {
                 &self.plan_key,
             );
 
-            let base_request = request_at_protocol(request_id, 2, ProtocolVersion::new(1, 5));
+            let base_request = request_at_protocol(request_id, 2, ProtocolVersion::new(1, 0));
             let request = encode_host_guardian_companion_v1(
                 &base_request,
                 &guardian_plan,
@@ -2464,7 +2432,7 @@ mod tests {
             let host_plan = BrokerAuthorizationPlan::new(
                 BrokerAudience::Host,
                 ProtocolId::HostBroker,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 assignment,
                 TEST_NODE,
                 self.lease_signer.clone(),
@@ -2617,7 +2585,7 @@ mod tests {
             .apply_runtime(
                 request_bytes,
                 &artifacts,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -2644,67 +2612,6 @@ mod tests {
             .await
     }
 
-    fn retain_historical_legacy_launch(
-        broker: &mut HostBroker<FixedCatalog, MemoryStore, FakeWorker>,
-        fixture: &AuthorityFixture,
-        request_bytes: &[u8],
-        receipt: Option<Vec<u8>>,
-    ) {
-        let protocol_version = ProtocolVersion::new(1, 1);
-        let request =
-            decode_runtime_request(request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
-                .unwrap();
-        let request_id = *request.header().request_id();
-        let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
-        let artifacts = fixture.artifacts(request_bytes, 1);
-        let admitted = broker
-            .authority
-            .admit(
-                &artifacts,
-                &request,
-                request_bytes,
-                protocol_version,
-                &clock(),
-                None,
-            )
-            .unwrap();
-        let sealed_fence = broker
-            .authority
-            .seal_fence(request.fence().sandbox_id(), &admitted.fence)
-            .unwrap();
-        let sealed_effect = broker
-            .authority
-            .seal_effect(&request_id, &admitted.effect)
-            .unwrap();
-
-        let mut state = broker.state.clone();
-        assert_eq!(
-            state
-                .admit(
-                    request.fence(),
-                    request_id,
-                    request_digest,
-                    protocol_version,
-                    HostAction::Launch.code(),
-                    sealed_fence,
-                    sealed_effect,
-                )
-                .unwrap(),
-            Admission::New
-        );
-        if let Some(receipt) = receipt {
-            let completed = admitted.effect.complete(receipt.clone()).unwrap();
-            let sealed_completed = broker
-                .authority
-                .seal_effect(&request_id, &completed)
-                .unwrap();
-            state
-                .complete(request_id, request_digest, sealed_completed, receipt)
-                .unwrap();
-        }
-        broker.commit_state(&state).unwrap();
-    }
-
     fn runtime_identity(request_bytes: &[u8]) -> HostRuntimeIdentity {
         let request =
             decode_runtime_request(request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
@@ -2726,30 +2633,11 @@ mod tests {
         let header = request.header.get_or_insert_default();
         header.protocol_major = u32::from(protocol_version.major());
         header.protocol_minor = u32::from(protocol_version.minor());
-        if protocol_version.major() == 1 && protocol_version.minor() >= 3 {
-            request
-                .launch_plan
-                .get_or_insert_default()
-                .attachment_anchor_handle = vec![12; 32];
-        }
+        request
+            .launch_plan
+            .get_or_insert_default()
+            .attachment_anchor_handle = vec![12; 32];
         request.encode_to_vec()
-    }
-
-    fn request_with_identity(
-        request_id: u8,
-        generation: u64,
-        digest: u8,
-        uid_range_start: u32,
-        uid_range_size: u32,
-    ) -> Vec<u8> {
-        launch_request_with_sandbox(
-            request_id,
-            generation,
-            digest,
-            2,
-            uid_range_start,
-            uid_range_size,
-        )
     }
 
     fn request_with_sandbox(
@@ -2785,7 +2673,7 @@ mod tests {
         let mut request = ApplyRuntimeRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 1;
+        header.protocol_minor = 0;
         header.request_id = vec![request_id; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 1000;
@@ -2963,7 +2851,7 @@ mod tests {
                 .apply_runtime(
                     &bytes,
                     &unavailable_artifacts,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     policy(),
                     || {
@@ -2980,7 +2868,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unavailable_legacy_backend_denies_new_request_before_effect() {
+    async fn direct_lifecycle_does_not_require_the_launch_backend() {
         let fixture = AuthorityFixture::new();
         let store = MemoryStore::default();
         let worker = FakeWorker::default();
@@ -2994,14 +2882,13 @@ mod tests {
         )
         .unwrap();
 
-        assert!(matches!(
-            apply(&mut broker, &fixture, &request(1, 1, 4)).await,
-            Err(HostError::Authority(
-                aos_sandbox_broker::BrokerAdmissionError::RequestMismatch
-            ))
-        ));
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert!(store.load().unwrap().effect(&[1; 16]).is_none());
+        assert!(
+            apply(&mut broker, &fixture, &request(1, 1, 4))
+                .await
+                .is_ok()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(store.load().unwrap().effect(&[1; 16]).is_some());
 
         let pending_store = MemoryStore::default();
         let failing_worker = FakeWorker::default();
@@ -3033,12 +2920,12 @@ mod tests {
         .unwrap();
         let pending_artifacts = fixture.artifacts(&pending_request, 1);
         let pending_clock_calls = AtomicUsize::new(0);
-        assert!(matches!(
+        assert!(
             denied
                 .apply_runtime(
                     &pending_request,
                     &pending_artifacts,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     policy(),
                     || {
@@ -3046,13 +2933,11 @@ mod tests {
                         Ok(clock())
                     },
                 )
-                .await,
-            Err(HostError::Authority(
-                aos_sandbox_broker::BrokerAdmissionError::RequestMismatch
-            ))
-        ));
-        assert_eq!(pending_clock_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(denied_calls.load(Ordering::SeqCst), 0);
+                .await
+                .is_ok()
+        );
+        assert!(pending_clock_calls.load(Ordering::SeqCst) > 0);
+        assert_eq!(denied_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -3137,17 +3022,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_and_kill_observations_remain_known_without_worker_calls() {
-        for (action, expected_intent) in [
-            (
-                RuntimeAction::RUNTIME_ACTION_STOP,
-                crate::recovery::RetainedRuntimeIntent::Stop,
-            ),
-            (
-                RuntimeAction::RUNTIME_ACTION_KILL,
-                crate::recovery::RetainedRuntimeIntent::Kill,
-            ),
-        ] {
+    async fn kill_observation_remains_known_without_worker_calls() {
+        for (action, expected_intent) in [(
+            RuntimeAction::RUNTIME_ACTION_KILL,
+            crate::recovery::RetainedRuntimeIntent::Kill,
+        )] {
             let fixture = AuthorityFixture::new();
             let worker = FakeWorker::default();
             let calls = worker.calls.clone();
@@ -3399,7 +3278,7 @@ mod tests {
             .apply_runtime(
                 &bytes,
                 &artifacts,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -3410,7 +3289,7 @@ mod tests {
             .apply_runtime(
                 &bytes,
                 &artifacts,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || {
@@ -3448,7 +3327,7 @@ mod tests {
                 .apply_runtime(
                     &bytes,
                     &artifacts,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     policy(),
                     || Ok(clock_at(TEST_WALL_SECONDS, 1_000)),
@@ -3492,7 +3371,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_launches_are_rejected_before_clock_state_or_worker() {
+    async fn later_host_versions_are_rejected_before_clock_state_or_worker() {
         let fixture = AuthorityFixture::new();
         let store = MemoryStore::default();
         let worker = FakeWorker::default();
@@ -3510,9 +3389,10 @@ mod tests {
 
         for (request_id, minor) in (1_u8..=4).zip(1_u16..=4) {
             let protocol_version = ProtocolVersion::new(1, minor);
+            let authorized_request = request(request_id, 1, 4);
+            let artifacts = fixture.artifacts(&authorized_request, 1);
             let request =
                 request_at_protocol(request_id, request_id.wrapping_add(1), protocol_version);
-            let artifacts = fixture.artifacts(&request, 1);
 
             assert!(matches!(
                 broker
@@ -3537,109 +3417,6 @@ mod tests {
         assert_eq!(clock_calls.load(Ordering::SeqCst), 0);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(store.load().unwrap(), initial_state);
-    }
-
-    #[tokio::test]
-    async fn pending_historical_legacy_launch_is_never_redispatched() {
-        let fixture = AuthorityFixture::new();
-        let store = MemoryStore::default();
-        let request = request_at_protocol(31, 32, ProtocolVersion::new(1, 1));
-        let mut seeding = HostBroker::open(
-            FixedCatalog,
-            store.clone(),
-            FakeWorker::default(),
-            Some(nspawn()),
-            fixture.authority(),
-        )
-        .unwrap();
-        retain_historical_legacy_launch(&mut seeding, &fixture, &request, None);
-        let retained_state = store.load().unwrap();
-
-        let worker = FakeWorker::default();
-        let calls = worker.calls.clone();
-        let clock_calls = AtomicUsize::new(0);
-        let artifacts = fixture.artifacts(&request, 1);
-        let mut broker = HostBroker::open(
-            FixedCatalog,
-            store.clone(),
-            worker,
-            Some(nspawn()),
-            fixture.authority(),
-        )
-        .unwrap();
-
-        assert!(matches!(
-            broker
-                .apply_runtime(
-                    &request,
-                    &artifacts,
-                    ProtocolVersion::new(1, 1),
-                    peer(),
-                    policy(),
-                    || {
-                        clock_calls.fetch_add(1, Ordering::SeqCst);
-                        Ok(clock())
-                    },
-                )
-                .await,
-            Err(HostError::Authority(
-                aos_sandbox_broker::BrokerAdmissionError::RequestMismatch
-            ))
-        ));
-        assert_eq!(clock_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(store.load().unwrap(), retained_state);
-    }
-
-    #[tokio::test]
-    async fn completed_historical_legacy_launch_receipt_remains_replayable() {
-        let fixture = AuthorityFixture::new();
-        let store = MemoryStore::default();
-        let request = request_at_protocol(41, 42, ProtocolVersion::new(1, 1));
-        let receipt = vec![91];
-        let mut seeding = HostBroker::open(
-            FixedCatalog,
-            store.clone(),
-            FakeWorker::default(),
-            Some(nspawn()),
-            fixture.authority(),
-        )
-        .unwrap();
-        retain_historical_legacy_launch(&mut seeding, &fixture, &request, Some(receipt.clone()));
-        let retained_state = store.load().unwrap();
-
-        let worker = FakeWorker::default();
-        let calls = worker.calls.clone();
-        let artifacts = fixture.artifacts(&request, 1);
-        let mut broker = HostBroker::open(
-            FixedCatalog,
-            store.clone(),
-            worker,
-            Some(nspawn()),
-            fixture.authority(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            broker
-                .apply_runtime(
-                    &request,
-                    &artifacts,
-                    ProtocolVersion::new(1, 1),
-                    peer(),
-                    policy(),
-                    || {
-                        Err(HostError::State(
-                            "completed legacy replay unexpectedly sampled the clock".to_owned(),
-                        ))
-                    },
-                )
-                .await
-                .unwrap(),
-            receipt
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(store.load().unwrap(), retained_state);
     }
 
     #[tokio::test]
@@ -3981,15 +3758,11 @@ mod tests {
             fixture.authority(),
         )
         .unwrap();
+        let (launch, _) = fixture.guardian_request_and_artifacts(1);
         assert!(
-            apply_protocol(
-                &mut broker,
-                &fixture,
-                &request_at_protocol(1, 2, ProtocolVersion::new(1, 1)),
-                ProtocolVersion::new(1, 1),
-            )
-            .await
-            .is_err()
+            apply_protocol(&mut broker, &fixture, &launch, ProtocolVersion::new(1, 0),)
+                .await
+                .is_err()
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(store.load().unwrap(), HostState::default());
@@ -4006,9 +3779,16 @@ mod tests {
             fixture.authority(),
         )
         .unwrap();
-        let request = request_with_identity(1, 1, 4, 131_072, 65_536);
-        let request =
-            decode_runtime_request(&request, peer(), policy(), TEST_BOOTTIME_NANOSECONDS).unwrap();
+        let (request, _) = fixture.guardian_request_and_artifacts(1);
+        let mut request = ApplyRuntimeRequest::decode_from_slice(&request).unwrap();
+        request.launch_plan.get_or_insert_default().uid_range_start = 131_072;
+        let request = decode_runtime_request(
+            &request.encode_to_vec(),
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
 
         assert!(broker.compile_operation(&request).is_err());
     }
@@ -4043,7 +3823,7 @@ mod tests {
                 .apply_runtime(
                     &bytes,
                     &wrong_signature,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     policy(),
                     || Ok(clock()),
@@ -4056,7 +3836,7 @@ mod tests {
                 .apply_runtime(
                     &bytes,
                     &valid,
-                    ProtocolVersion::new(1, 0),
+                    ProtocolVersion::new(1, 1),
                     peer(),
                     policy(),
                     || Ok(clock()),
@@ -4069,7 +3849,7 @@ mod tests {
                 .apply_runtime(
                     &request(2, 1, 5),
                     &valid,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     policy(),
                     || Ok(clock()),
@@ -4101,7 +3881,7 @@ mod tests {
             .apply_runtime(
                 &bytes,
                 &artifacts,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || {
@@ -4133,7 +3913,7 @@ mod tests {
                 .apply_runtime(
                     &bytes,
                     &artifacts,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     policy(),
                     || Ok(clock_at(300, TEST_BOOTTIME_NANOSECONDS)),
@@ -4165,7 +3945,7 @@ mod tests {
                 .apply_runtime(
                     &bytes,
                     &artifacts,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     policy(),
                     || {
@@ -4215,7 +3995,7 @@ mod tests {
                 .apply_runtime(
                     &bytes,
                     &rollback,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     policy(),
                     || Ok(clock()),
@@ -4229,7 +4009,7 @@ mod tests {
                 .apply_runtime(
                     &bytes,
                     &substituted,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     policy(),
                     || Ok(clock()),
@@ -4302,7 +4082,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unauthenticated_future_execution_variants_fail_closed_on_restart() {
+    async fn unauthenticated_guardian_execution_fails_closed_on_restart() {
         let fixture = AuthorityFixture::new();
 
         let guardian_store = MemoryStore::default();
@@ -4330,35 +4110,6 @@ mod tests {
             HostBroker::open(
                 FixedCatalog,
                 guardian_store,
-                FakeWorker::default(),
-                Some(nspawn()),
-                fixture.authority(),
-            )
-            .is_err()
-        );
-
-        let stop_store = MemoryStore::default();
-        let stop_worker = FakeWorker::default();
-        stop_worker.fail_next.store(true, Ordering::SeqCst);
-        let mut stop_broker = HostBroker::open(
-            FixedCatalog,
-            stop_store.clone(),
-            stop_worker,
-            Some(nspawn()),
-            fixture.authority(),
-        )
-        .unwrap();
-        let stop = request_with_action(2, 1, 5, RuntimeAction::RUNTIME_ACTION_STOP);
-        assert!(apply(&mut stop_broker, &fixture, &stop).await.is_err());
-        stop_store
-            .0
-            .lock()
-            .unwrap()
-            .tamper_execution_to_composite_stop(&[2; 16]);
-        assert!(
-            HostBroker::open(
-                FixedCatalog,
-                stop_store,
                 FakeWorker::default(),
                 Some(nspawn()),
                 fixture.authority(),

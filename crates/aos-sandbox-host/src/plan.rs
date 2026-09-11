@@ -234,8 +234,8 @@ pub struct ResolvedLaunchResources {
     pub network: ResolvedNetwork,
     /// Incarnation-bound private user-namespace allocation.
     pub identity: ResolvedIdentityAllocation,
-    /// Broker-owned destination anchor, required by Host 1.3 launches.
-    pub attachment_anchor: Option<ResolvedAttachmentAnchor>,
+    /// Broker-owned destination anchor, required by Host 1.0 launches.
+    pub attachment_anchor: ResolvedAttachmentAnchor,
 }
 
 /// Retains the exact workspace and network objects resolved for one launch.
@@ -249,7 +249,7 @@ pub struct LaunchPins {
     executable: Arc<OwnedFd>,
     workspace: OwnedFd,
     network: NamespaceFd,
-    attachment_anchor: Option<OwnedFd>,
+    attachment_anchor: OwnedFd,
 }
 
 impl LaunchPins {
@@ -271,19 +271,24 @@ impl LaunchPins {
         &self.network
     }
 
-    /// Returns the pinned attachment-anchor descriptor when present.
+    /// Returns the pinned attachment-anchor descriptor.
     #[must_use]
-    pub fn attachment_anchor(&self) -> Option<BorrowedFd<'_>> {
-        self.attachment_anchor.as_ref().map(AsFd::as_fd)
+    pub fn attachment_anchor(&self) -> BorrowedFd<'_> {
+        self.attachment_anchor.as_fd()
     }
 
     #[cfg(test)]
-    pub(crate) fn for_tests(executable: OwnedFd, workspace: OwnedFd, network: NamespaceFd) -> Self {
+    pub(crate) fn for_tests(
+        executable: OwnedFd,
+        workspace: OwnedFd,
+        network: NamespaceFd,
+        attachment_anchor: OwnedFd,
+    ) -> Self {
         Self {
             executable: Arc::new(executable),
             workspace,
             network,
-            attachment_anchor: None,
+            attachment_anchor,
         }
     }
 }
@@ -1031,11 +1036,6 @@ impl NspawnConfig {
         let workspace = resolved.workspace;
         let network = resolved.network;
         let attachment_anchor = resolved.attachment_anchor;
-        if plan.attachment_anchor_handle().is_some() != attachment_anchor.is_some() {
-            return Err(HostError::InvalidPlan(
-                "attachment-anchor handle did not resolve to exactly one descriptor".to_owned(),
-            ));
-        }
         validate_resolved_identity(&resolved.identity, plan)?;
         validate_published_pin(
             &workspace.root_directory,
@@ -1087,13 +1087,12 @@ impl NspawnConfig {
             resolved.identity.range_size,
         )
         .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let mut paths = SandboxResolvedPaths::from_descriptors(root_path, network_path);
-        if let Some(anchor) = &attachment_anchor {
-            validate_attachment_anchor_path(&anchor.directory)?;
-            let anchor_path = SandboxDescriptorPath::for_current_process(anchor.pin.as_fd())
+        validate_attachment_anchor_path(&attachment_anchor.directory)?;
+        let attachment_anchor_path =
+            SandboxDescriptorPath::for_current_process(attachment_anchor.pin.as_fd())
                 .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-            paths = paths.with_attachment_anchor(anchor_path);
-        }
+        let paths = SandboxResolvedPaths::from_descriptors(root_path, network_path)
+            .with_attachment_anchor(attachment_anchor_path);
         let spec = SandboxUnitSpec::new_nspawn(
             SandboxUnitName::from_incarnation(*fence.incarnation_id()),
             command,
@@ -1131,13 +1130,11 @@ impl NspawnConfig {
             identity_range_start: resolved.identity.range_start,
             identity_range_size: resolved.identity.range_size,
             identity_catalog_generation: resolved.identity.catalog_generation,
-            attachment_anchor: attachment_anchor
-                .as_ref()
-                .map(|anchor| PinnedObjectSnapshot {
-                    device: anchor.device,
-                    inode: anchor.inode,
-                    mount_id: anchor.mount_id,
-                }),
+            attachment_anchor: PinnedObjectSnapshot {
+                device: attachment_anchor.device,
+                inode: attachment_anchor.inode,
+                mount_id: attachment_anchor.mount_id,
+            },
             spec_semantic_digest: spec.semantic_digest_v1(),
         };
         Ok(PreparedLaunch {
@@ -1147,7 +1144,7 @@ impl NspawnConfig {
                 executable: Arc::clone(&self.executable_pin),
                 workspace: workspace.pin,
                 network: network.pin,
-                attachment_anchor: attachment_anchor.map(|anchor| anchor.pin),
+                attachment_anchor: attachment_anchor.pin,
             },
         })
     }

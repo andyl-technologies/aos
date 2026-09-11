@@ -5,6 +5,7 @@
     reason = "The VM-only cleanup guard invokes the hermetic systemctl fixture."
 )]
 
+use std::os::fd::AsFd as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -24,8 +25,8 @@ use rustix::time::{ClockId, clock_gettime};
 use super::*;
 use crate::KERNEL_CLOCK_PROVENANCE;
 use crate::plan::{
-    GuardianConfig, LaunchPins, NspawnConfig, ResolvedIdentityAllocation, ResolvedLaunchResources,
-    ResolvedNetwork, ResolvedWorkspace,
+    GuardianConfig, LaunchPins, NspawnConfig, ResolvedAttachmentAnchor, ResolvedIdentityAllocation,
+    ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace,
 };
 use crate::state::FileHostStateStore;
 use crate::worker::{
@@ -46,6 +47,8 @@ const AUTHORITY_LIFETIME_SECONDS: i64 = 120;
 const MAXIMUM_CLOCK_SKEW_SECONDS: u64 = 1;
 const QUALIFICATION_WORKSPACE: &str = "/run/aos/sandbox-pins/workspaces/qualification";
 const QUALIFICATION_NETWORK: &str = "/run/aos/sandbox-pins/netns/qualification";
+const QUALIFICATION_ANCHOR: &str =
+    "/run/aos/sandbox-pins/workspaces/qualification/var/qualification-attachment-anchor";
 const QUALIFICATION_UID_START: u32 = 655_360;
 
 #[derive(Default)]
@@ -246,12 +249,12 @@ struct QualificationCatalog;
 impl HostCatalog for QualificationCatalog {
     fn resolve(
         &self,
-        _fence: &ValidatedAssignmentFence,
+        fence: &ValidatedAssignmentFence,
         plan: &aos_sandbox_protocol::ValidatedRuntimePlan,
     ) -> Result<ResolvedLaunchResources> {
         if plan.workspace_handle() != &[6; 32]
             || plan.network_handle() != &[7; 32]
-            || plan.attachment_anchor_handle().is_some()
+            || plan.attachment_anchor_handle() != &[12; 32]
             || plan.uid_range_start() != QUALIFICATION_UID_START
             || plan.uid_range_size() != 65_536
         {
@@ -259,7 +262,7 @@ impl HostCatalog for QualificationCatalog {
                 "qualification launch resources changed".to_owned(),
             ));
         }
-        qualification_resources()
+        qualification_resources(fence)
     }
 }
 
@@ -349,7 +352,7 @@ async fn production_worker_enforces_guardian_before_payload_across_restart_and_d
         .apply_runtime(
             &expired.bytes,
             &expired.artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || {
@@ -415,7 +418,7 @@ async fn production_worker_enforces_guardian_before_payload_across_restart_and_d
         .apply_runtime(
             &death.bytes,
             &death.artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || {
@@ -492,7 +495,7 @@ async fn production_worker_enforces_guardian_before_payload_across_restart_and_d
         .apply_runtime(
             &live.bytes,
             &live.artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(current_clock()),
@@ -558,7 +561,7 @@ async fn production_worker_enforces_guardian_before_payload_across_restart_and_d
         .apply_runtime(
             &live.bytes,
             &live.artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(current_clock()),
@@ -645,7 +648,7 @@ async fn production_worker_enforces_guardian_before_payload_across_restart_and_d
         .apply_runtime(
             &freeze.bytes,
             &freeze.artifacts,
-            ProtocolVersion::new(1, 4),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(current_clock()),
@@ -715,7 +718,7 @@ async fn production_worker_enforces_guardian_before_payload_across_restart_and_d
         .apply_runtime(
             &live.bytes,
             &live.artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || panic!("completed restart replay sampled the clock"),
@@ -747,7 +750,7 @@ fn qualification_nspawn(executable: &str) -> NspawnConfig {
         .unwrap()
 }
 
-fn qualification_resources() -> Result<ResolvedLaunchResources> {
+fn qualification_resources(fence: &ValidatedAssignmentFence) -> Result<ResolvedLaunchResources> {
     let workspace_directory = open(
         QUALIFICATION_WORKSPACE,
         OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -787,6 +790,33 @@ fn qualification_resources() -> Result<ResolvedLaunchResources> {
     )
     .unwrap();
 
+    std::fs::create_dir_all(QUALIFICATION_ANCHOR).unwrap();
+    std::fs::set_permissions(QUALIFICATION_ANCHOR, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let anchor = open(
+        QUALIFICATION_ANCHOR,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .unwrap();
+    let anchor_identity = fstat(&anchor).unwrap();
+    let anchor_mount_id = aos_sandbox_linux::inventory::MountId::from_fd(anchor.as_fd())
+        .unwrap()
+        .get();
+    let anchor_directory = format!(
+        "{}{}/{}/0000000000000001",
+        aos_sandbox_protocol::ATTACHMENT_ANCHOR_PIN_PREFIX,
+        crate::catalog::encode_hex(fence.sandbox_id()),
+        crate::catalog::encode_hex(fence.incarnation_id()),
+    );
+    let attachment_anchor = ResolvedAttachmentAnchor::from_pinned(
+        anchor_directory,
+        anchor_identity.st_dev,
+        anchor_identity.st_ino,
+        anchor_mount_id,
+        anchor,
+    )
+    .unwrap();
+
     Ok(ResolvedLaunchResources {
         workspace,
         network,
@@ -795,7 +825,7 @@ fn qualification_resources() -> Result<ResolvedLaunchResources> {
             range_size: 65_536,
             catalog_generation: 1,
         },
-        attachment_anchor: None,
+        attachment_anchor,
     })
 }
 
@@ -1104,7 +1134,7 @@ fn live_guardian_request(
     let mut base = ApplyRuntimeRequest::decode_from_slice(&request_at_protocol(
         request_id,
         sandbox_id,
-        ProtocolVersion::new(1, 5),
+        ProtocolVersion::new(1, 0),
     ))
     .unwrap();
     base.header
@@ -1126,7 +1156,7 @@ fn live_guardian_request(
     let host_plan = BrokerAuthorizationPlan::new(
         BrokerAudience::Host,
         ProtocolId::HostBroker,
-        ProtocolVersion::new(1, 5),
+        ProtocolVersion::new(1, 0),
         assignment,
         TEST_NODE,
         fixture.lease_signer.clone(),
@@ -1193,7 +1223,7 @@ fn live_lifecycle_request(
     let mut request = ApplyRuntimeRequest::decode_from_slice(&request_at_protocol(
         request_id,
         sandbox_id,
-        ProtocolVersion::new(1, 4),
+        ProtocolVersion::new(1, 0),
     ))
     .unwrap();
     request
@@ -1252,7 +1282,7 @@ fn live_lifecycle_request(
     let host_plan = BrokerAuthorizationPlan::new(
         BrokerAudience::Host,
         ProtocolId::HostBroker,
-        ProtocolVersion::new(1, 4),
+        ProtocolVersion::new(1, 0),
         assignment,
         TEST_NODE,
         fixture.lease_signer.clone(),

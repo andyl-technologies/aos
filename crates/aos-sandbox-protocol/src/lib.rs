@@ -81,11 +81,10 @@ pub use session::{
 pub use source_binding::{SourceBindingError, SourceRealizationBindingV1};
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyGuardianRequest, ApplyGuestExecutionRequest, ApplyMountRequest, ApplyNetworkRequest,
-    ApplyRuntimeRequest, ApplyStorageRequest, AssignmentFence, Audience, BrokerClientHello,
-    BrokerErrorCode, BrokerRequestEnvelope, BrokerResponseEnvelope, Descriptor, MountAction,
-    MountSourceConsistency, PrepareStorageCatalogRequest, RequestHeader, RuntimeAction,
-    RuntimePlan,
+    ApplyGuestExecutionRequest, ApplyMountRequest, ApplyNetworkRequest, ApplyRuntimeRequest,
+    ApplyStorageRequest, AssignmentFence, Audience, BrokerClientHello, BrokerErrorCode,
+    BrokerRequestEnvelope, BrokerResponseEnvelope, Descriptor, MountAction, MountSourceConsistency,
+    PrepareStorageCatalogRequest, RequestHeader, RuntimeAction, RuntimePlan,
 };
 use aos_sandbox_core::{
     DecodeLimits, DescriptorRole, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest,
@@ -262,7 +261,7 @@ pub struct ValidatedRuntimePlan {
     limits: Vec<ValidatedResourceLimit>,
     attachment_handles: Vec<[u8; OPAQUE_HANDLE_BYTES]>,
     required_features: Vec<FeatureRef>,
-    attachment_anchor_handle: Option<[u8; OPAQUE_HANDLE_BYTES]>,
+    attachment_anchor_handle: [u8; OPAQUE_HANDLE_BYTES],
 }
 
 impl ValidatedRuntimePlan {
@@ -314,10 +313,10 @@ impl ValidatedRuntimePlan {
         &self.required_features
     }
 
-    /// Returns the broker-minted attachment-anchor handle when required by the carrier.
+    /// Returns the required broker-minted attachment-anchor handle.
     #[must_use]
-    pub const fn attachment_anchor_handle(&self) -> Option<&[u8; OPAQUE_HANDLE_BYTES]> {
-        self.attachment_anchor_handle.as_ref()
+    pub const fn attachment_anchor_handle(&self) -> &[u8; OPAQUE_HANDLE_BYTES] {
+        &self.attachment_anchor_handle
     }
 }
 
@@ -356,7 +355,7 @@ impl ValidatedRuntimeRequest {
         self.launch_plan.as_ref()
     }
 
-    /// Returns the exact untrusted Guardian plan pair on a Host 1.5 launch.
+    /// Returns the exact untrusted Guardian plan pair on a Host launch.
     #[must_use]
     pub const fn guardian_arm(&self) -> Option<&ValidatedGuardianArmCompanionV1> {
         self.guardian_arm.as_ref()
@@ -690,8 +689,7 @@ pub fn decode_runtime_request(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
-    let template =
-        runtime_template::validate_live_runtime_body(&request, header.protocol_version())?;
+    let template = runtime_template::validate_live_runtime_body(&request)?;
 
     Ok(ValidatedRuntimeRequest {
         header,
@@ -1094,7 +1092,6 @@ pub(crate) fn validate_fence(
 
 fn validate_runtime_plan(
     plan: &RuntimePlan,
-    protocol_version: ProtocolVersion,
 ) -> Result<ValidatedRuntimePlan, ProtocolValidationError> {
     if !plan.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
@@ -1126,22 +1123,15 @@ fn validate_runtime_plan(
     let limits = validate_resource_limits(&plan.limits)?;
     let attachment_handles = validate_attachment_handles(&plan.attachment_handles)?;
     let required_features = validate_features(&plan.required_features)?;
-    let attachment_anchor_handle = match plan.attachment_anchor_handle.as_slice() {
-        [] if protocol_version.minor() < 3 => None,
-        [] => {
-            return Err(ProtocolValidationError::MissingField(
-                "launch_plan.attachment_anchor_handle",
-            ));
-        }
-        bytes if protocol_version.minor() >= 3 => Some(exact_nonzero::<OPAQUE_HANDLE_BYTES>(
-            bytes,
+    let attachment_anchor_handle = if plan.attachment_anchor_handle.is_empty() {
+        return Err(ProtocolValidationError::MissingField(
             "launch_plan.attachment_anchor_handle",
-        )?),
-        _ => {
-            return Err(ProtocolValidationError::InvalidField(
-                "launch_plan.attachment_anchor_handle",
-            ));
-        }
+        ));
+    } else {
+        exact_nonzero::<OPAQUE_HANDLE_BYTES>(
+            &plan.attachment_anchor_handle,
+            "launch_plan.attachment_anchor_handle",
+        )?
     };
 
     Ok(ValidatedRuntimePlan {
@@ -1321,7 +1311,6 @@ pub fn exercise_malformed_request_decoders(bytes: &[u8]) {
     let _ = PrepareStorageCatalogRequest::decode_from_slice(bytes);
     let _ = ApplyMountRequest::decode_from_slice(bytes);
     let _ = ApplyNetworkRequest::decode_from_slice(bytes);
-    let _ = ApplyGuardianRequest::decode_from_slice(bytes);
     let _ = aos_proto::aos::sandbox::local::v1::GuestHandshakeRequest::decode_from_slice(bytes);
     let _ = ApplyGuestExecutionRequest::decode_from_slice(bytes);
     let _ = BrokerClientHello::decode_from_slice(bytes);
@@ -1363,6 +1352,7 @@ mod tests {
             request.action = action.into();
             if action != RuntimeAction::RUNTIME_ACTION_LAUNCH {
                 request.launch_plan = None.into();
+                request.guardian_arm = None.into();
             }
             let live = decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 100)
                 .unwrap_or_else(|error| panic!("live fixture failed: {error}"));
@@ -1371,6 +1361,7 @@ mod tests {
                 .header
                 .get_or_insert_default()
                 .deadline_boottime_nanoseconds = 0;
+            request.guardian_arm = None.into();
             let bytes = request.encode_to_vec();
             let template = decode_runtime_template_v1(&bytes)
                 .unwrap_or_else(|error| panic!("template fixture failed: {error}"));
@@ -1389,6 +1380,7 @@ mod tests {
     #[test]
     fn runtime_template_rejects_unknown_fields_and_malformed_nested_inputs() {
         let mut base = valid_runtime_request();
+        base.guardian_arm = None.into();
         base.header
             .get_or_insert_default()
             .deadline_boottime_nanoseconds = 0;
@@ -1441,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn guardian_companion_matrix_is_closed_over_profile_action_and_host_version() {
+    fn guardian_companion_matrix_is_closed_over_profile_and_action_at_host_one_zero() {
         let (broker_plan, broker_plan_signature) = guardian_plan_pair();
         let actions = [
             RuntimeAction::RUNTIME_ACTION_LAUNCH,
@@ -1451,49 +1443,39 @@ mod tests {
             RuntimeAction::RUNTIME_ACTION_KILL,
         ];
 
-        for minor in [4, 5] {
-            for action in actions {
-                for has_companion in [false, true] {
-                    let mut request = valid_runtime_request();
-                    request.header.get_or_insert_default().protocol_minor = minor;
-                    request
-                        .launch_plan
-                        .get_or_insert_default()
-                        .attachment_anchor_handle = vec![9; OPAQUE_HANDLE_BYTES];
-                    request.action = action.into();
-                    if action != RuntimeAction::RUNTIME_ACTION_LAUNCH {
-                        request.launch_plan = None.into();
-                    }
-                    if has_companion {
-                        let companion = request.guardian_arm.get_or_insert_default();
-                        companion.broker_plan.clone_from(&broker_plan);
-                        companion
-                            .broker_plan_signature
-                            .clone_from(&broker_plan_signature);
-                    }
-
-                    let live_valid =
-                        decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 100)
-                            .is_ok();
-                    assert_eq!(
-                        live_valid,
-                        (minor == 5
-                            && has_companion == (action == RuntimeAction::RUNTIME_ACTION_LAUNCH))
-                            || (minor == 4 && !has_companion),
-                        "live minor={minor} action={action:?} companion={has_companion}",
-                    );
-
-                    request
-                        .header
-                        .get_or_insert_default()
-                        .deadline_boottime_nanoseconds = 0;
-                    let template_valid =
-                        decode_runtime_template_v1(&request.encode_to_vec()).is_ok();
-                    assert_eq!(
-                        template_valid, !has_companion,
-                        "template minor={minor} action={action:?} companion={has_companion}",
-                    );
+        for action in actions {
+            for has_companion in [false, true] {
+                let mut request = valid_runtime_request();
+                request.guardian_arm = None.into();
+                request.action = action.into();
+                if action != RuntimeAction::RUNTIME_ACTION_LAUNCH {
+                    request.launch_plan = None.into();
                 }
+                if has_companion {
+                    let companion = request.guardian_arm.get_or_insert_default();
+                    companion.broker_plan.clone_from(&broker_plan);
+                    companion
+                        .broker_plan_signature
+                        .clone_from(&broker_plan_signature);
+                }
+
+                let live_valid =
+                    decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 100).is_ok();
+                assert_eq!(
+                    live_valid,
+                    has_companion == (action == RuntimeAction::RUNTIME_ACTION_LAUNCH),
+                    "live action={action:?} companion={has_companion}",
+                );
+
+                request
+                    .header
+                    .get_or_insert_default()
+                    .deadline_boottime_nanoseconds = 0;
+                let template_valid = decode_runtime_template_v1(&request.encode_to_vec()).is_ok();
+                assert_eq!(
+                    template_valid, !has_companion,
+                    "template action={action:?} companion={has_companion}",
+                );
             }
         }
     }
@@ -1502,11 +1484,7 @@ mod tests {
     fn guardian_companion_encoder_enforces_live_header_and_unknown_field_bounds() {
         let (broker_plan, broker_plan_signature) = guardian_plan_pair();
         let mut request = valid_runtime_request();
-        request.header.get_or_insert_default().protocol_minor = 5;
-        request
-            .launch_plan
-            .get_or_insert_default()
-            .attachment_anchor_handle = vec![9; OPAQUE_HANDLE_BYTES];
+        request.guardian_arm = None.into();
 
         let encoded = encode_host_guardian_companion_v1(
             &request.encode_to_vec(),
@@ -1567,9 +1545,13 @@ mod tests {
     }
 
     #[test]
-    fn host_1_3_requires_one_nonzero_attachment_anchor_handle() {
+    fn host_launch_requires_one_nonzero_attachment_anchor_handle() {
         let mut request = valid_runtime_request();
-        request.header.get_or_insert_default().protocol_minor = 3;
+        request
+            .launch_plan
+            .get_or_insert_default()
+            .attachment_anchor_handle
+            .clear();
         assert!(matches!(
             decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 0),
             Err(ProtocolValidationError::MissingField(
@@ -1585,15 +1567,19 @@ mod tests {
             decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 0).unwrap();
         assert_eq!(
             validated.launch_plan().unwrap().attachment_anchor_handle(),
-            Some(&[9; OPAQUE_HANDLE_BYTES])
+            &[9; OPAQUE_HANDLE_BYTES]
         );
 
-        request.header.get_or_insert_default().protocol_minor = 2;
+        request
+            .launch_plan
+            .get_or_insert_default()
+            .attachment_anchor_handle = vec![0; OPAQUE_HANDLE_BYTES];
         assert!(matches!(
             decode_runtime_request(&request.encode_to_vec(), peer(), policy(), 0),
-            Err(ProtocolValidationError::InvalidField(
-                "launch_plan.attachment_anchor_handle"
-            ))
+            Err(ProtocolValidationError::InvalidFixedBytes {
+                field: "launch_plan.attachment_anchor_handle",
+                bytes: OPAQUE_HANDLE_BYTES,
+            })
         ));
     }
 
@@ -1631,6 +1617,7 @@ mod tests {
                 });
         }
         plan.attachment_handles.push(vec![8; OPAQUE_HANDLE_BYTES]);
+        plan.attachment_anchor_handle = vec![9; OPAQUE_HANDLE_BYTES];
         plan.required_features
             .push(aos_proto::aos::sandbox::local::v1::Feature {
                 namespace: "aos.sandbox.runtime.linux-systemd".to_owned(),
@@ -1638,10 +1625,17 @@ mod tests {
                 minor: 0,
                 ..Default::default()
             });
+        let (broker_plan, broker_plan_signature) = guardian_plan_pair();
+        request.guardian_arm = Some(aos_proto::aos::sandbox::local::v1::GuardianArmCompanionV1 {
+            broker_plan,
+            broker_plan_signature,
+            ..Default::default()
+        })
+        .into();
         request
     }
 
-    fn guardian_plan_pair() -> (Vec<u8>, Vec<u8>) {
+    pub(crate) fn guardian_plan_pair() -> (Vec<u8>, Vec<u8>) {
         let assignment = BrokerAssignment::new(
             SandboxId::from_bytes([1; 16]),
             IncarnationId::from_bytes([2; 16]),

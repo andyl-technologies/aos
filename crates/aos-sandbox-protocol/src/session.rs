@@ -48,9 +48,9 @@ pub const MAXIMUM_BROKER_PLAN_BYTES: usize = 768 * 1024;
 pub const MAXIMUM_OWNERSHIP_LEASE_BYTES: usize = 64 * 1024;
 /// Maximum canonical detached-signature bytes carried in one local request.
 pub const MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES: usize = 64 * 1024;
-/// Maximum protobuf growth when an exact Host Apply is wrapped by a 1.2 query.
+/// Maximum protobuf growth when an exact Host Apply is wrapped by a query.
 pub const HOST_QUERY_WRAPPER_OVERHEAD_BYTES: usize = 64;
-/// Maximum encoded Host 1.2 query packet accepted before protobuf decoding.
+/// Maximum encoded Host query packet accepted before protobuf decoding.
 pub const MAXIMUM_HOST_QUERY_PACKET_BYTES: usize =
     MAXIMUM_REQUEST_BYTES + HOST_QUERY_WRAPPER_OVERHEAD_BYTES;
 /// Maximum exact completed Host Apply receipt carried by an effect query.
@@ -451,7 +451,7 @@ pub fn negotiate_client_hello(
     let advertised_methods = advertised_methods
         .iter()
         .copied()
-        .filter(|method| method_available_in_version(*method, version))
+        .filter(|method| method_available_in_version(*method, protocol, version))
         .collect::<Vec<_>>();
     let required_features =
         validate_feature_set(&hello.required_features, "hello.required_features")?;
@@ -540,7 +540,7 @@ pub fn decode_server_hello(
     validate_role_methods(audience, required_methods)?;
     let advertised_methods =
         validate_proto_methods(&hello.methods, protocol, "server_hello.methods")?;
-    validate_methods_available(&advertised_methods, offered_version)?;
+    validate_methods_available(&advertised_methods, protocol, offered_version)?;
     ensure_method_subset(required_methods, &advertised_methods)?;
     validate_negotiated_authorization_profile(
         protocol,
@@ -1032,7 +1032,7 @@ fn validate_negotiated_authorization_profile(
     if version.minor() == 0
         && !matches!(
             protocol,
-            ProtocolId::MountBroker | ProtocolId::StorageBroker
+            ProtocolId::HostBroker | ProtocolId::MountBroker | ProtocolId::StorageBroker
         )
     {
         if feature_required || requires_effect_authority {
@@ -1060,7 +1060,7 @@ fn validate_authorization_profile(
         if (version.minor() < 1
             && !matches!(
                 protocol,
-                ProtocolId::MountBroker | ProtocolId::StorageBroker
+                ProtocolId::HostBroker | ProtocolId::MountBroker | ProtocolId::StorageBroker
             ))
             || !required_features.iter().any(is_signed_plan_lease_feature)
         {
@@ -1569,25 +1569,22 @@ fn validate_method(
     Ok(method)
 }
 
-fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -> bool {
-    if method == BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES {
+fn method_available_in_version(
+    method: BrokerMethod,
+    protocol: ProtocolId,
+    version: ProtocolVersion,
+) -> bool {
+    if protocol == ProtocolId::NetworkBroker
+        && method == BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
+    {
         return version.minor() >= 2;
     }
-    if method == BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG {
-        return version.minor() >= 4;
-    }
-    if method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE {
-        return version.minor() >= 3;
-    }
-    !matches!(
-        method,
-        BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
-            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
-    ) || version.minor() >= 2
+
+    true
 }
 
-const fn maximum_request_bytes(protocol: ProtocolId, version: ProtocolVersion) -> usize {
-    if matches!(protocol, ProtocolId::HostBroker) && version.minor() >= 2 {
+const fn maximum_request_bytes(protocol: ProtocolId, _version: ProtocolVersion) -> usize {
+    if matches!(protocol, ProtocolId::HostBroker) {
         MAXIMUM_HOST_QUERY_PACKET_BYTES
     } else if matches!(protocol, ProtocolId::MountBroker) {
         MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
@@ -1598,11 +1595,12 @@ const fn maximum_request_bytes(protocol: ProtocolId, version: ProtocolVersion) -
 
 fn validate_methods_available(
     methods: &[BrokerMethod],
+    protocol: ProtocolId,
     version: ProtocolVersion,
 ) -> Result<(), ProtocolValidationError> {
     if methods
         .iter()
-        .all(|method| method_available_in_version(*method, version))
+        .all(|method| method_available_in_version(*method, protocol, version))
     {
         Ok(())
     } else {
@@ -1862,35 +1860,26 @@ mod tests {
     }
 
     #[test]
-    fn payload_scope_requires_authority_new_carrier_and_exact_response_roles() {
+    fn host_scope_queries_require_authority_and_exact_response_roles() {
         assert_scope_response_profile(
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
-            2,
             &crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES,
         );
         assert_scope_response_profile(
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE,
-            3,
             &crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES,
         );
     }
 
-    fn assert_scope_response_profile(
-        method: BrokerMethod,
-        minimum_minor: u16,
-        roles: &[BrokerDescriptorRole],
-    ) {
+    fn assert_scope_response_profile(method: BrokerMethod, roles: &[BrokerDescriptorRole]) {
         assert!(method_requires_authorization(method));
-        assert!(!method_available_in_version(
-            method,
-            ProtocolVersion::new(1, minimum_minor - 1)
-        ));
         assert!(method_available_in_version(
             method,
-            ProtocolVersion::new(1, minimum_minor)
+            ProtocolId::HostBroker,
+            ProtocolVersion::new(1, 0)
         ));
 
-        let version = ProtocolVersion::new(1, minimum_minor);
+        let version = ProtocolVersion::new(1, 0);
         assert!(
             validate_negotiated_authorization_profile(
                 ProtocolId::HostBroker,
@@ -2706,7 +2695,7 @@ mod tests {
         ];
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 1,
+            protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: 8_192,
             required_methods: methods.iter().copied().map(Into::into).collect(),
@@ -3217,7 +3206,7 @@ mod tests {
     }
 
     #[test]
-    fn host_query_is_available_only_in_protocol_1_2_and_requires_authorization() {
+    fn host_query_is_available_at_exact_baseline_and_requires_authorization() {
         use aos_proto::aos::sandbox::local::v1::RuntimeEffectStatus;
 
         assert_eq!(RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_ABSENT as i32, 1);
@@ -3233,7 +3222,7 @@ mod tests {
         ];
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 2,
+            protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             required_features: features.iter().map(proto_feature).collect(),
             maximum_response_bytes: 8192,
@@ -3248,8 +3237,8 @@ mod tests {
             &features,
             &methods,
         )
-        .unwrap_or_else(|error| panic!("valid host 1.2 query hello failed: {error}"));
-        assert_eq!(session.version(), ProtocolVersion::new(1, 2));
+        .unwrap_or_else(|error| panic!("valid Host query hello failed: {error}"));
+        assert_eq!(session.version(), ProtocolVersion::new(1, 0));
         assert_eq!(
             session.maximum_request_bytes(),
             MAXIMUM_HOST_QUERY_PACKET_BYTES
@@ -3281,65 +3270,31 @@ mod tests {
                 .is_err()
         );
 
-        let mut legacy = hello;
-        legacy.protocol_minor = 1;
-        assert_eq!(
+        let mut unsupported = hello;
+        unsupported.protocol_minor = 1;
+        assert!(matches!(
             negotiate_client_hello(
-                &legacy.encode_to_vec(),
+                &unsupported.encode_to_vec(),
                 peer(),
                 policy(),
                 ProtocolId::HostBroker,
                 &features,
                 &methods,
             ),
-            Err(ProtocolValidationError::MethodMismatch)
-        );
+            Err(ProtocolValidationError::Protocol(_))
+        ));
 
-        legacy.required_methods = vec![BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME.into()];
-        let legacy_session = negotiate_client_hello(
-            &legacy.encode_to_vec(),
-            peer(),
-            policy(),
-            ProtocolId::HostBroker,
-            &features,
-            &methods,
-        )
-        .unwrap_or_else(|error| panic!("valid host 1.1 hello failed: {error}"));
-        assert_eq!(
-            legacy_session.advertised_methods(),
-            [BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME]
-        );
-        assert_eq!(
-            legacy_session.maximum_request_bytes(),
-            MAXIMUM_REQUEST_BYTES
-        );
-        let mut invalid_server = legacy_session.server_hello();
-        invalid_server
-            .methods
-            .push(BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT.into());
-        assert_eq!(
-            decode_server_hello(
-                &invalid_server.encode_to_vec(),
-                ProtocolId::HostBroker,
-                Audience::AUDIENCE_NODE_CONTROLLER,
-                ProtocolVersion::new(1, 1),
-                legacy_session.required_features(),
-                legacy_session.required_methods(),
-                8192,
-            ),
-            Err(ProtocolValidationError::MethodMismatch)
-        );
-        let mut invalid_bound = legacy_session.server_hello();
+        let mut invalid_bound = session.server_hello();
         invalid_bound.maximum_request_bytes =
-            u32::try_from(MAXIMUM_HOST_QUERY_PACKET_BYTES).unwrap();
+            u32::try_from(MAXIMUM_HOST_QUERY_PACKET_BYTES + 1).unwrap();
         assert_eq!(
             decode_server_hello(
                 &invalid_bound.encode_to_vec(),
                 ProtocolId::HostBroker,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                ProtocolVersion::new(1, 1),
-                legacy_session.required_features(),
-                legacy_session.required_methods(),
+                ProtocolVersion::new(1, 0),
+                session.required_features(),
+                session.required_methods(),
                 8192,
             ),
             Err(ProtocolValidationError::InvalidResponseBound)
@@ -3533,20 +3488,17 @@ mod tests {
     }
 
     #[test]
-    fn host_catalog_publication_is_available_only_in_host_one_four() {
+    fn host_catalog_publication_is_available_at_exact_baseline() {
         let method = BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG;
-        assert!(!method_available_in_version(
-            method,
-            ProtocolVersion::new(1, 3)
-        ));
         assert!(method_available_in_version(
             method,
-            ProtocolVersion::new(1, 4)
+            ProtocolId::HostBroker,
+            ProtocolVersion::new(1, 0)
         ));
 
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 4,
+            protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: 4096,
             required_methods: vec![method.into()],
@@ -3577,19 +3529,19 @@ mod tests {
         .unwrap();
         assert!(session.decode_request(&packet, 1).is_ok());
 
-        let mut legacy = hello;
-        legacy.protocol_minor = 3;
-        assert_eq!(
+        let mut unsupported = hello;
+        unsupported.protocol_minor = 1;
+        assert!(matches!(
             negotiate_client_hello(
-                &legacy.encode_to_vec(),
+                &unsupported.encode_to_vec(),
                 peer(),
                 policy(),
                 ProtocolId::HostBroker,
                 &client_features(),
                 &[method],
             ),
-            Err(ProtocolValidationError::MethodMismatch)
-        );
+            Err(ProtocolValidationError::Protocol(_))
+        ));
     }
 
     #[test]
@@ -3600,10 +3552,12 @@ mod tests {
         );
         assert!(!method_available_in_version(
             method,
+            protocol,
             ProtocolVersion::new(1, 1)
         ));
         assert!(method_available_in_version(
             method,
+            protocol,
             ProtocolVersion::new(1, 2)
         ));
 
@@ -3647,6 +3601,7 @@ mod tests {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES;
         assert!(method_available_in_version(
             method,
+            ProtocolId::StorageBroker,
             ProtocolVersion::new(1, 0)
         ));
         let hello = BrokerClientHello {
@@ -3694,6 +3649,7 @@ mod tests {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG;
         assert!(method_available_in_version(
             method,
+            ProtocolId::StorageBroker,
             ProtocolVersion::new(1, 0)
         ));
 
@@ -3832,6 +3788,7 @@ mod tests {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_APPLY;
         assert!(method_available_in_version(
             method,
+            ProtocolId::StorageBroker,
             ProtocolVersion::new(1, 0)
         ));
     }
@@ -3841,6 +3798,7 @@ mod tests {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN;
         assert!(method_available_in_version(
             method,
+            ProtocolId::StorageBroker,
             ProtocolVersion::new(1, 0)
         ));
 

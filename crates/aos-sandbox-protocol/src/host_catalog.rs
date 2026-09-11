@@ -1,4 +1,4 @@
-//! Host 1.4 launch-catalog publication messages.
+//! Host launch-catalog publication messages.
 //!
 //! The fixed node-controller peer sends one sealed memfd containing a complete
 //! canonical Host catalog. The request binds its generation, byte length, and
@@ -17,11 +17,11 @@ use crate::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedHeader, validate_request_header,
 };
 
-/// Maximum canonical Host catalog carried by protocol 1.4.
+/// Maximum canonical Host catalog carried by the protocol.
 pub const MAXIMUM_HOST_CATALOG_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum protobuf request body describing one sealed catalog memfd.
 pub const MAXIMUM_HOST_CATALOG_PUBLICATION_BODY_BYTES: usize = 64 * 1024;
-/// Maximum enveloped Host 1.4 publication packet.
+/// Maximum enveloped Host publication packet.
 pub const MAXIMUM_HOST_CATALOG_PUBLICATION_PACKET_BYTES: usize =
     MAXIMUM_HOST_CATALOG_PUBLICATION_BODY_BYTES + 64 * 1024;
 /// Exact ancillary descriptor sequence for Host catalog publication.
@@ -105,7 +105,7 @@ impl ValidatedHostCatalogPublicationResponse {
 /// # Errors
 ///
 /// Returns [`ProtocolValidationError`] for an oversized or malformed message,
-/// unknown fields, a non-1.4 Host header, peer/audience mismatch, elapsed
+/// unknown fields, a non-1.0 Host header, peer/audience mismatch, elapsed
 /// deadline, generation zero, an empty or oversized catalog length, or a
 /// digest not exactly 32 bytes.
 pub fn decode_host_catalog_publication_request(
@@ -132,9 +132,6 @@ pub fn decode_host_catalog_publication_request(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
-    if header.protocol_version().minor() < 4 {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
     if request.catalog_generation == 0 {
         return Err(ProtocolValidationError::InvalidField("catalog_generation"));
     }
@@ -230,7 +227,7 @@ mod tests {
         PublishHostCatalogRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 4,
+                protocol_minor: 0,
                 request_id: vec![1; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 20,
@@ -246,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn request_requires_host_one_four_and_bounded_catalog_commitment() {
+    fn request_requires_exact_host_version_and_bounded_catalog_commitment() {
         let valid = request().encode_to_vec();
         let decoded =
             decode_host_catalog_publication_request(&valid, credentials(), policy(), 10).unwrap();
@@ -254,11 +251,11 @@ mod tests {
         assert_eq!(decoded.catalog_bytes(), 2);
         assert_eq!(decoded.catalog_digest(), ObjectDigest::from_bytes([3; 32]));
 
-        let mut legacy = request();
-        legacy.header.get_or_insert_default().protocol_minor = 3;
+        let mut later = request();
+        later.header.get_or_insert_default().protocol_minor = 1;
         assert!(
             decode_host_catalog_publication_request(
-                &legacy.encode_to_vec(),
+                &later.encode_to_vec(),
                 credentials(),
                 policy(),
                 10,

@@ -1,7 +1,7 @@
 //! Read-only Mount catalog preparation from an authenticated Host scope.
 //!
 //! A preparation request contains a complete prospective Mount request and a
-//! complete authorized Host 1.3 `ObserveMountScope` envelope. The controller
+//! complete authorized Host 1.0 `ObserveMountScope` envelope. The controller
 //! supplies neither paths nor descriptors. Mount validates both nested
 //! requests, acquires the Host-owned descriptors itself, and returns only an
 //! opaque node-local catalog commitment.

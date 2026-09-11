@@ -8,11 +8,10 @@
 //! the no-effect case where they disappeared before recovery.
 //!
 //! Composite Stop uses the same exact binding, invocation, manager-reference,
-//! and cgroup-quiescence evidence rather than falling back to a legacy payload-
-//! only lifecycle effect.
+//! and cgroup-quiescence evidence.
 
 use aos_sandbox_broker::BrokerEffectIntentV2;
-use aos_sandbox_core::{ProtocolVersion, RawPairedClockSample};
+use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimeRequest};
 use aos_systemd::{ExactUnitRole, GuardianUnitSpec};
 
@@ -93,13 +92,6 @@ where
                     }
                     CompositeStopTarget::Absent
                 }
-                Some((_, HostAction::Launch, incarnation_id, DurableExecution::Legacy))
-                    if incarnation_id == *request.fence().incarnation_id() =>
-                {
-                    return Err(HostError::State(
-                        "legacy runtime requires a legacy Stop carrier".to_owned(),
-                    ));
-                }
                 Some(_) | None => {
                     let payload = self.worker.observe_bound_payload(&identity).await?;
                     let guardian = self.worker.observe_guardian(&identity).await?;
@@ -113,7 +105,6 @@ where
             }
         };
         let context = ExecutionContext {
-            carrier: ProtocolVersion::new(1, 5),
             action: HostAction::Stop,
             request_id: *request.header().request_id(),
             request_digest,

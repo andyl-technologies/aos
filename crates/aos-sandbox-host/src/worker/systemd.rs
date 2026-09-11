@@ -111,7 +111,7 @@ impl SystemdOneShotWorker {
         identity: &HostRuntimeIdentity,
     ) -> Result<BoundPayloadVerification> {
         let expected_binding = spec.launch_binding().ok_or_else(|| {
-            HostError::Worker("Host 1.5 payload spec lost its launch binding".to_owned())
+            HostError::Worker("Host 1.0 payload spec lost its launch binding".to_owned())
         })?;
         let exact_before = self.observe_bound_payload(identity).await?;
         if exact_before.binding != Some(expected_binding)

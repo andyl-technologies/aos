@@ -1,4 +1,4 @@
-//! Host compatibility facade for portable runtime authority semantics.
+//! Host re-export facade for portable runtime authority semantics.
 //!
 //! The byte-exact compiler is owned by
 //! [`aos_sandbox_protocol::semantics::host`]. This module preserves the host

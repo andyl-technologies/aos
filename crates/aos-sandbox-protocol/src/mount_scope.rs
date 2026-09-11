@@ -75,7 +75,7 @@ impl ValidatedMountScopeRequest {
 /// # Errors
 ///
 /// Rejects malformed, unknown, or oversized fields, a non-RootMount peer policy,
-/// invalid headers, Host versions before 1.3, and sentinel or mismatched handles.
+/// invalid headers, and sentinel or mismatched handles.
 pub fn decode_mount_scope_request(
     bytes: &[u8],
     peer: PeerCredentials,
@@ -105,10 +105,6 @@ pub fn decode_mount_scope_request(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
-    if header.protocol_version().minor() < 3 {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
-
     let fence = validate_fence(
         request
             .fence

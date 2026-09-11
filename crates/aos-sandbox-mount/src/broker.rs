@@ -3387,7 +3387,7 @@ mod tests {
         );
 
         let mut host_header = mount.header.as_option().unwrap().clone();
-        host_header.protocol_minor = 3;
+        host_header.protocol_minor = 0;
         host_header.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
         host_header.maximum_response_bytes = 16 * 1024;
         let host = ObserveMountScopeRequest {

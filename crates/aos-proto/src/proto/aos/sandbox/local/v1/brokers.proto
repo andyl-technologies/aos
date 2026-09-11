@@ -205,11 +205,11 @@ message RuntimePlan {
   repeated ResourceLimit limits = 6;
   repeated bytes attachment_handles = 7;
   repeated Feature required_features = 8;
-  // Host 1.3: one broker-minted handle for the namespace-generation anchor.
+  // Host 1.0: one broker-minted handle for the namespace-generation anchor.
   bytes attachment_anchor_handle = 9;
 }
 
-// Host 1.5 launch-only carrier for the separately signed Guardian plan.
+// Host 1.0 launch-only carrier for the separately signed Guardian plan.
 // The Guardian reuses the exact ownership lease and lease signature from the
 // enclosing Host authorization quartet; duplicating them here is forbidden.
 message GuardianArmCompanionV1 {
@@ -222,7 +222,7 @@ message ApplyRuntimeRequest {
   AssignmentFence fence = 2;
   RuntimeAction action = 3;
   RuntimePlan launch_plan = 4; // Present only for launch.
-  GuardianArmCompanionV1 guardian_arm = 5; // Host 1.5 launch only.
+  GuardianArmCompanionV1 guardian_arm = 5; // Host 1.0 launch only.
 }
 
 message RuntimeObservation {
@@ -269,7 +269,7 @@ message ObservePayloadScopeResponse {
   bytes leader_cgroup_hint = 4; // At most 4096 bytes; empty exact, otherwise strict relative.
 }
 
-// Host 1.3 RootMount-only acquisition. Requires a separately committed
+// Host 1.0 RootMount-only acquisition. Requires a separately committed
 // HostObserve grant and the exact current retained payload-scope handle.
 // The node controller cannot request or receive these descriptors.
 message ObserveMountScopeRequest {
@@ -312,7 +312,7 @@ message QueryRuntimeEffectResponse {
   bytes receipt = 2; // Exact prior RuntimeObservation bytes only for Complete.
 }
 
-// Host 1.4 publication carries one sealed memfd containing a complete canonical
+// Host 1.0 publication carries one sealed memfd containing a complete canonical
 // node-local launch catalog. The fixed controller peer derives these physical
 // bindings through trusted reconciliation; hostd validates the sealed bytes,
 // generation, digest, and identity-allocation continuity before making the
@@ -512,7 +512,7 @@ message ApplyMountRequest {
 
 // Mount 1.0 read-only preparation. The nested Mount request selects the exact
 // catalog behavior later committed by a signed Apply grant. host_request_packet
-// is a complete authorized Host 1.3 ObserveMountScope envelope; the controller
+// is a complete authorized Host 1.0 ObserveMountScope envelope; the controller
 // cannot receive or nominate any of the returned descriptors.
 message PrepareMountCatalogRequest {
   RequestHeader header = 1;
@@ -859,55 +859,6 @@ service NetworkBroker {
   rpc InventoryNetworks(InventoryNetworksRequest) returns (InventoryNetworksResponse);
   rpc InventoryNetworkResources(InventoryNetworksRequest)
       returns (InventoryNetworkResourcesResponse);
-}
-
-enum GuardianAction {
-  GUARDIAN_ACTION_UNSPECIFIED = 0;
-  GUARDIAN_ACTION_ARM = 1;
-  GUARDIAN_ACTION_RENEW = 2;
-  GUARDIAN_ACTION_FENCE = 3;
-  GUARDIAN_ACTION_RELEASE = 4;
-}
-
-message OwnershipLease {
-  AssignmentFence fence = 1;
-  bytes node_id = 2;
-  uint64 lease_generation = 3;
-  int64 authority_issued_seconds = 4;
-  int64 authority_expires_seconds = 5;
-  uint64 maximum_clock_skew_nanoseconds = 6;
-  bytes renewal_nonce = 7;
-  bytes authority_signature = 8;
-}
-
-message ApplyGuardianRequest {
-  RequestHeader header = 1;
-  GuardianAction action = 2;
-  OwnershipLease lease = 3;
-  bytes runtime_handle = 4;
-  bytes network_handle = 5;
-  bytes host_boot_id = 6;
-}
-
-message GuardianResult {
-  AssignmentFence fence = 1;
-  GuardianState state = 2;
-  uint64 lease_generation = 3;
-  uint64 fail_stop_boottime_nanoseconds = 4;
-  BrokerError error = 5;
-}
-
-enum GuardianState {
-  GUARDIAN_STATE_UNSPECIFIED = 0;
-  GUARDIAN_STATE_DISARMED = 1;
-  GUARDIAN_STATE_ARMED = 2;
-  GUARDIAN_STATE_FENCING = 3;
-  GUARDIAN_STATE_FENCED = 4;
-  GUARDIAN_STATE_FAILED = 5;
-}
-
-service GuardianBroker {
-  rpc ApplyGuardian(ApplyGuardianRequest) returns (GuardianResult);
 }
 
 message GuestHandshakeRequest {

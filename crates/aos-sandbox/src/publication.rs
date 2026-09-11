@@ -965,7 +965,7 @@ pub(crate) fn validate_durable_effect_attempt(
     {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
-    let reconstructed = if template.plan().protocol_version() == ProtocolVersion::new(1, 5)
+    let reconstructed = if template.plan().protocol_version() == ProtocolVersion::new(1, 0)
         && template.semantics().verb() == BrokerVerb::HostLaunch
     {
         let host_boot_id = prepared_effect
@@ -1154,7 +1154,7 @@ impl<'a> AuthorityPublicationStore<'a> {
             return Ok(None);
         }
         if template.audience != BrokerAudience::Host
-            || template.plan().protocol_version() != ProtocolVersion::new(1, 5)
+            || template.plan().protocol_version() != ProtocolVersion::new(1, 0)
         {
             return Err(AuthorityPublicationError::GuardianRequired);
         }
@@ -1207,7 +1207,7 @@ impl<'a> AuthorityPublicationStore<'a> {
         let attempt = match (host_launch, guardian_plan) {
             (true, Some(guardian_plan))
                 if template.audience == BrokerAudience::Host
-                    && template.plan().protocol_version() == ProtocolVersion::new(1, 5) =>
+                    && template.plan().protocol_version() == ProtocolVersion::new(1, 0) =>
             {
                 BrokerDispatchAttemptV1::from_recovered_current_with_guardian(
                     template,

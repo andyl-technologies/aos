@@ -1,4 +1,4 @@
-//! Authenticated Host 1.2 payload-scope observations over a real local connection.
+//! Authenticated Host 1.0 payload-scope observations over a real local connection.
 //!
 //! The client authenticates kernel-authorized response subjects, not the Unix
 //! listener creator: socket activation commonly makes the latter PID 1. A
@@ -75,8 +75,8 @@ pub(crate) use namespace_target::{
     validate_namespace as validate_namespace_target_namespace,
 };
 
-const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
-const AUTHORITY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 1);
+const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+const AUTHORITY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE;
 const RESPONSE_BYTES: u32 = 16 * 1024;
 
@@ -149,7 +149,7 @@ impl RuntimeScopeClient {
         })
     }
 
-    /// Observes one runtime using an exact Host 1.2 body and signed authority quartet.
+    /// Observes one runtime using an exact Host 1.0 body and signed authority quartet.
     ///
     /// The body is bounded and decoded before exchange; the host independently
     /// verifies its authority. This single-use client closes the channel on all
@@ -191,7 +191,7 @@ impl RuntimeScopeClient {
         ];
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 2,
+            protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             required_features: vec![Feature {
                 namespace: SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),

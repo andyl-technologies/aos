@@ -35,13 +35,12 @@ fn completed_guardian_state(
             &artifacts,
             &request,
             &request_bytes,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             &clock(),
             None,
         )
         .unwrap();
     let context = ExecutionContext {
-        carrier: ProtocolVersion::new(1, 5),
         action: HostAction::Launch,
         request_id,
         request_digest,
@@ -107,7 +106,7 @@ fn composite_stop_request(request_id: u8, generation: u64, digest: u8) -> Vec<u8
     let mut request = ApplyRuntimeRequest::decode_from_slice(&request_at_protocol(
         request_id,
         2,
-        ProtocolVersion::new(1, 5),
+        ProtocolVersion::new(1, 0),
     ))
     .unwrap();
     let fence = request.fence.get_or_insert_default();
@@ -198,8 +197,8 @@ async fn retained_payload_scope_sandwich_rejects_guardian_death_and_replacement(
         .is_err()
     );
 
-    // A legacy runtime with no Guardian history retains its existing payload-
-    // only live-pin rule and does not invoke the Guardian observer.
+    // A runtime without completed Guardian lineage uses the payload-only
+    // live-pin rule and does not invoke the Guardian observer.
     worker.ordering_events.lock().unwrap().clear();
     guard_payload_scope_refresh(&worker, &identity, None, || async { Ok(()) })
         .await
@@ -302,7 +301,7 @@ async fn run_freeze_thaw_composite_stop(reopen_before_stop: bool) {
     }
 
     let stop = composite_stop_request(64, 4, 7);
-    let receipt = apply_protocol(&mut broker, &fixture, &stop, ProtocolVersion::new(1, 5))
+    let receipt = apply_protocol(&mut broker, &fixture, &stop, ProtocolVersion::new(1, 0))
         .await
         .unwrap();
     assert_absent_receipt(&receipt);
@@ -332,11 +331,8 @@ async fn freeze_thaw_composite_stop_uses_launch_lineage_before_and_after_reopen(
 }
 
 #[tokio::test]
-async fn completed_legacy_stop_and_kill_shadow_payload_scope_recovery() {
-    for (request_id, action) in [
-        (62, RuntimeAction::RUNTIME_ACTION_STOP),
-        (63, RuntimeAction::RUNTIME_ACTION_KILL),
-    ] {
+async fn completed_kill_shadows_payload_scope_recovery() {
+    for (request_id, action) in [(63, RuntimeAction::RUNTIME_ACTION_KILL)] {
         let fixture = AuthorityFixture::new();
         let authority = fixture.authority();
         let (state, _, _) = completed_guardian_state(&fixture, &authority);
@@ -401,7 +397,7 @@ async fn guardian_reducer_failed_absent_start_completes_durable_compensation() {
         .apply_runtime(
             &request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -441,7 +437,7 @@ async fn composite_stop_accepts_an_exactly_absent_compensated_launch() {
         .apply_runtime(
             &launch,
             &launch_artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -452,7 +448,7 @@ async fn composite_stop_accepts_an_exactly_absent_compensated_launch() {
     let mut stop = ApplyRuntimeRequest::decode_from_slice(&request_at_protocol(
         62,
         2,
-        ProtocolVersion::new(1, 5),
+        ProtocolVersion::new(1, 0),
     ))
     .unwrap();
     stop.fence.get_or_insert_default().desired_generation = 2;
@@ -465,7 +461,7 @@ async fn composite_stop_accepts_an_exactly_absent_compensated_launch() {
         .apply_runtime(
             &stop,
             &stop_artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -503,7 +499,7 @@ async fn guardian_reducer_ambiguous_absent_start_expires_on_replay() {
             .apply_runtime(
                 &request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -528,7 +524,7 @@ async fn guardian_reducer_ambiguous_absent_start_expires_on_replay() {
         .apply_runtime(
             &request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock_at(301, TEST_BOOTTIME_NANOSECONDS + 151_000_000_000)),
@@ -572,7 +568,7 @@ async fn guardian_reducer_terminal_start_persists_cleanup_before_replay_stop() {
             .apply_runtime(
                 &request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -598,7 +594,7 @@ async fn guardian_reducer_terminal_start_persists_cleanup_before_replay_stop() {
         .apply_runtime(
             &request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -647,7 +643,7 @@ async fn guardian_reducer_post_payload_expiry_or_death_enters_exact_cleanup() {
             .apply_runtime(
                 &request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || {
@@ -711,7 +707,7 @@ async fn guardian_reducer_failed_payload_with_both_units_absent_completes() {
         .apply_runtime(
             &request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -766,7 +762,7 @@ async fn root_guardian_apply_completes_bound_payload_and_replays_receipt() {
         .apply_runtime(
             &guardian_request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -775,27 +771,28 @@ async fn root_guardian_apply_completes_bound_payload_and_replays_receipt() {
         .unwrap();
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     assert_eq!(payload_effects.load(Ordering::SeqCst), 1);
-    let phases = store.phases.lock().unwrap();
-    assert_eq!(phases.len(), 6);
-    assert!(matches!(phases[0], GuardianLaunchPhase::Authorized));
-    assert!(matches!(
-        phases[1],
-        GuardianLaunchPhase::GuardianStartIssued
-    ));
-    assert!(matches!(
-        phases[2],
-        GuardianLaunchPhase::GuardianReady { .. }
-    ));
-    assert!(matches!(
-        phases[3],
-        GuardianLaunchPhase::PayloadStartIssued { .. }
-    ));
-    assert!(matches!(
-        phases[4],
-        GuardianLaunchPhase::PayloadVerified { .. }
-    ));
-    assert!(matches!(phases[5], GuardianLaunchPhase::Complete { .. }));
-    drop(phases);
+    {
+        let phases = store.phases.lock().unwrap();
+        assert_eq!(phases.len(), 6);
+        assert!(matches!(phases[0], GuardianLaunchPhase::Authorized));
+        assert!(matches!(
+            phases[1],
+            GuardianLaunchPhase::GuardianStartIssued
+        ));
+        assert!(matches!(
+            phases[2],
+            GuardianLaunchPhase::GuardianReady { .. }
+        ));
+        assert!(matches!(
+            phases[3],
+            GuardianLaunchPhase::PayloadStartIssued { .. }
+        ));
+        assert!(matches!(
+            phases[4],
+            GuardianLaunchPhase::PayloadVerified { .. }
+        ));
+        assert!(matches!(phases[5], GuardianLaunchPhase::Complete { .. }));
+    }
     let request_digest: [u8; 32] = Sha256::digest(&guardian_request).into();
     assert_eq!(
         store
@@ -811,7 +808,7 @@ async fn root_guardian_apply_completes_bound_payload_and_replays_receipt() {
             .apply_runtime(
                 &guardian_request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -826,7 +823,7 @@ async fn root_guardian_apply_completes_bound_payload_and_replays_receipt() {
     let mut stop = ApplyRuntimeRequest::decode_from_slice(&request_at_protocol(
         62,
         2,
-        ProtocolVersion::new(1, 5),
+        ProtocolVersion::new(1, 0),
     ))
     .unwrap();
     stop.fence.get_or_insert_default().desired_generation = 2;
@@ -838,7 +835,7 @@ async fn root_guardian_apply_completes_bound_payload_and_replays_receipt() {
         .apply_runtime(
             &stop_request,
             &stop_artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -859,7 +856,7 @@ async fn root_guardian_apply_completes_bound_payload_and_replays_receipt() {
             .apply_runtime(
                 &stop_request,
                 &stop_artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -869,41 +866,6 @@ async fn root_guardian_apply_completes_bound_payload_and_replays_receipt() {
         stop_receipt
     );
     assert_eq!(stop_roles.lock().unwrap().len(), 2);
-
-    let legacy_store = GuardianRecordingStore::default();
-    let legacy_worker = GuardianWorker::new(legacy_store.clone());
-    let legacy_starts = legacy_worker.starts.clone();
-    let legacy_payload_effects = legacy_worker.payload_effects.clone();
-    let legacy_authority = HostAuthorityV1::from_protected_directory(credentials.path()).unwrap();
-    let mut guardian_only = HostBroker::open(
-        FixedCatalog,
-        legacy_store.clone(),
-        legacy_worker,
-        None,
-        legacy_authority,
-    )
-    .unwrap()
-    .with_guardian(guardian.clone());
-    let legacy_request = request(71, 1, 4);
-    let legacy_artifacts = fixture.artifacts(&legacy_request, 1);
-    assert!(matches!(
-        guardian_only
-            .apply_runtime(
-                &legacy_request,
-                &legacy_artifacts,
-                ProtocolVersion::new(1, 1),
-                peer(),
-                policy(),
-                || Ok(clock()),
-            )
-            .await,
-        Err(HostError::Authority(
-            aos_sandbox_broker::BrokerAdmissionError::RequestMismatch
-        ))
-    ));
-    assert!(legacy_store.load().unwrap().effect(&[71; 16]).is_none());
-    assert_eq!(legacy_starts.load(Ordering::SeqCst), 0);
-    assert_eq!(legacy_payload_effects.load(Ordering::SeqCst), 0);
 
     println!("AOS_GUARDIAN_BROKER_ROOT_INTEGRATION_OK");
 }
@@ -927,7 +889,7 @@ async fn guardian_completion_does_not_commit_before_runtime_retention_succeeds()
             .apply_runtime(
                 &request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -951,7 +913,7 @@ async fn guardian_completion_does_not_commit_before_runtime_retention_succeeds()
         .apply_runtime(
             &request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -1010,7 +972,7 @@ async fn root_guardian_recovers_payload_start_from_observation_only_proof() {
             .apply_runtime(
                 &request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -1047,7 +1009,7 @@ async fn root_guardian_recovers_payload_start_from_observation_only_proof() {
         .apply_runtime(
             &request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || {
@@ -1128,7 +1090,7 @@ async fn root_guardian_recovered_proof_cannot_complete_after_lease_expiry() {
             .apply_runtime(
                 &request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -1165,7 +1127,7 @@ async fn root_guardian_recovered_proof_cannot_complete_after_lease_expiry() {
         .apply_runtime(
             &request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || {
@@ -1244,7 +1206,7 @@ async fn root_guardian_recovery_commits_compensation_when_both_units_are_absent(
             .apply_runtime(
                 &request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -1281,7 +1243,7 @@ async fn root_guardian_recovery_commits_compensation_when_both_units_are_absent(
         .apply_runtime(
             &request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -1345,7 +1307,7 @@ async fn root_guardian_recovery_never_restarts_payload_that_disappears_during_pr
             .apply_runtime(
                 &request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -1373,7 +1335,7 @@ async fn root_guardian_recovery_never_restarts_payload_that_disappears_during_pr
         .apply_runtime(
             &request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock_at(301, TEST_BOOTTIME_NANOSECONDS + 151_000_000_000)),
@@ -1435,7 +1397,7 @@ async fn root_payload_verified_recovery_requires_live_fresh_guardian_pair() {
                 .apply_runtime(
                     &request,
                     &artifacts,
-                    ProtocolVersion::new(1, 5),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     policy(),
                     || Ok(clock()),
@@ -1475,7 +1437,7 @@ async fn root_payload_verified_recovery_requires_live_fresh_guardian_pair() {
             .apply_runtime(
                 &request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || {
@@ -1551,7 +1513,7 @@ async fn root_guardian_payload_failure_completes_exact_compensation() {
         .apply_runtime(
             &request,
             &artifacts,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -1586,7 +1548,7 @@ async fn root_guardian_payload_failure_completes_exact_compensation() {
             .apply_runtime(
                 &request,
                 &artifacts,
-                ProtocolVersion::new(1, 5),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),

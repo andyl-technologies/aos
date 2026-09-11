@@ -70,7 +70,7 @@ fn root_mount_client_accepts_exact_kernel_scope_and_rejects_response_substitutio
             ..Default::default()
         };
         let header = query.header.get_or_insert_default();
-        header.protocol_minor = 3;
+        header.protocol_minor = 0;
         header.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
         header.deadline_boottime_nanoseconds = boottime() + 10_000_000_000;
         header.maximum_response_bytes = 16 * 1024;
@@ -101,7 +101,7 @@ fn assert_prepared_catalog(
     artifacts: &ValidatedUntrustedAuthorizationArtifacts,
 ) {
     let header = mount_wire.header.get_or_insert_default();
-    header.protocol_minor = 2;
+    header.protocol_minor = 0;
     header.deadline_boottime_nanoseconds = observed.valid_until_boottime_nanoseconds();
     let mount = decode_mount_request(
         &mount_wire.encode_to_vec(),

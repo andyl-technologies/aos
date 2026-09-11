@@ -240,33 +240,14 @@ fn signed_host_control_plan_with_scope(
     action: RuntimeAction,
     observe_scope: bool,
 ) -> (SignedBrokerPlan, BrokerDispatchSemanticIdentityV1, Vec<u8>) {
-    signed_host_control_plan_with_version(manifest, lease_signer, action, observe_scope, None)
-}
-
-fn signed_host_control_plan_with_version(
-    manifest: &CanonicalAssignmentManifestV1,
-    lease_signer: KeyReference,
-    action: RuntimeAction,
-    observe_scope: bool,
-    protocol_minor_override: Option<u32>,
-) -> (SignedBrokerPlan, BrokerDispatchSemanticIdentityV1, Vec<u8>) {
     let key = SigningKey::from_bytes(&[40; 32]);
     let assignment = manifest
         .broker_assignment()
         .unwrap_or_else(|error| panic!("test broker assignment failed: {error}"));
-    let request_protocol_minor = protocol_minor_override.unwrap_or_else(|| {
-        if action == RuntimeAction::RUNTIME_ACTION_LAUNCH {
-            5
-        } else if observe_scope {
-            2
-        } else {
-            1
-        }
-    });
     let mut request = ApplyRuntimeRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
-            protocol_minor: request_protocol_minor,
+            protocol_minor: 0,
             request_id: vec![0x44; 16],
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             deadline_boottime_nanoseconds: 0,
@@ -347,17 +328,10 @@ fn signed_host_control_plan_with_version(
         grants.push(payload_scope_grant(assignment));
         grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
     }
-    // Payload observation uses the Host 1.2 carrier under the original 1.1
-    // authority plan. Launch is the only action whose authority version moves.
-    let authority_protocol_minor = if action == RuntimeAction::RUNTIME_ACTION_LAUNCH {
-        request_protocol_minor
-    } else {
-        1
-    };
     let plan = BrokerAuthorizationPlan::new(
         BrokerAudience::Host,
         ProtocolId::HostBroker,
-        ProtocolVersion::new(1, authority_protocol_minor as u16),
+        ProtocolVersion::new(1, 0),
         assignment,
         manifest.manifest().node(),
         lease_signer,
@@ -385,7 +359,7 @@ fn payload_scope_grant(assignment: BrokerAssignment) -> BrokerGrant {
     let request = ObservePayloadScopeRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
-            protocol_minor: 2,
+            protocol_minor: 0,
             request_id: vec![1; 16],
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             deadline_boottime_nanoseconds: 101,
@@ -622,42 +596,6 @@ pub(crate) fn descriptor_free_launch_activation_fixture(
         lease_generation,
         RuntimeAction::RUNTIME_ACTION_LAUNCH,
     )
-}
-
-fn legacy_host_launch_activation_fixture()
--> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
-    let mut source = proposal(1, 190);
-    let lease_signer = source.lease.signer().clone();
-    let (plan, semantics, body) = signed_host_control_plan_with_version(
-        &source.manifest,
-        lease_signer,
-        RuntimeAction::RUNTIME_ACTION_LAUNCH,
-        false,
-        Some(4),
-    );
-    source.templates = vec![
-        BrokerDispatchTemplateV1::new(
-            plan,
-            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-            body,
-            Vec::new(),
-            semantics,
-        )
-        .unwrap_or_else(|error| panic!("legacy Host launch template failed: {error}")),
-    ];
-    source.required_audiences = vec![BrokerAudience::Host];
-    let lease = source.lease.clone();
-    let draft = AuthorityPublicationDraftV1::new(
-        source.manifest,
-        source.required_audiences,
-        source.templates,
-    )
-    .unwrap_or_else(|error| panic!("legacy Host launch draft failed: {error}"));
-    let prepared = draft
-        .clone()
-        .bind_lease(&activation_claim(&draft, 1), lease)
-        .unwrap_or_else(|error| panic!("legacy Host launch bind failed: {error}"));
-    (draft, prepared)
 }
 
 pub(crate) fn descriptor_free_stop_draft_with_node(node: u8) -> AuthorityPublicationDraftV1 {
@@ -1810,51 +1748,6 @@ fn selection_rejects_substitution_wrong_audience_and_stale_publication() {
             clock(150, 1_000),
         ),
         Err(AuthorityPublicationError::StaleCurrent)
-    ));
-}
-
-#[test]
-fn production_selection_rejects_a_legacy_host_launch_without_guardian() {
-    let directory = TestDirectory::new();
-    let (draft, prepared) = legacy_host_launch_activation_fixture();
-    let template = &draft.templates()[0];
-    let sandbox = draft.manifest().manifest().sandbox();
-    let (mut journal, _) = Journal::open(directory.journal(), Default::default())
-        .unwrap_or_else(|error| panic!("test journal failed: {error}"));
-    let mut store = AuthorityPublicationStore::new(&mut journal);
-    store
-        .publish(
-            &prepared,
-            &IdempotencyKey::new(b"legacy-host-launch".to_vec())
-                .unwrap_or_else(|error| panic!("test key failed: {error}")),
-            OperationId::from_bytes([0xa1; 16]),
-            [0xa2; 16],
-        )
-        .unwrap_or_else(|error| panic!("test publish failed: {error}"));
-
-    assert!(matches!(
-        store.select_bound_guardian_plan_request(
-            sandbox,
-            prepared.digest(),
-            draft.digest(),
-            BrokerAudience::Host,
-            template.digest(),
-            [0xa3; 16],
-        ),
-        Err(AuthorityPublicationError::GuardianRequired)
-    ));
-    assert!(matches!(
-        store.select_bound_current_attempt(
-            sandbox,
-            prepared.digest(),
-            draft.digest(),
-            BrokerAudience::Host,
-            template.digest(),
-            None,
-            2_000,
-            clock(150, 1_000),
-        ),
-        Err(AuthorityPublicationError::GuardianRequired)
     ));
 }
 

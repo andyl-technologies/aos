@@ -94,7 +94,7 @@ impl ValidatedPayloadScopeResponse {
 /// # Errors
 ///
 /// Rejects oversized or malformed bodies, unknown fields, invalid peer/header
-/// bindings, carriers older than Host 1.2, or an inconsistent fence/handle.
+/// bindings, or an inconsistent fence/handle.
 pub fn decode_payload_scope_request(
     bytes: &[u8],
     peer: PeerCredentials,
@@ -117,9 +117,6 @@ pub fn decode_payload_scope_request(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
-    if header.protocol_version().minor() < 2 {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
     let fence = validate_fence(
         request
             .fence
@@ -255,7 +252,7 @@ mod tests {
         ObservePayloadScopeRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 2,
+                protocol_minor: 0,
                 request_id: vec![1; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 101,
@@ -295,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_requests_bind_full_fence_and_carrier() {
+    fn strict_requests_bind_full_fence_and_exact_host_version() {
         let raw = fixture();
         let request = decode(&raw.encode_to_vec()).unwrap();
         let original = canonical_payload_scope_semantics_v1(&request).unwrap();

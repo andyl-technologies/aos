@@ -3,7 +3,7 @@
 //! Trusted reconciliation constructs one complete canonical catalog and opens
 //! the configured Host socket. The client pins the responding service through
 //! per-record kernel credentials, pidfds, and exact cgroup membership before it
-//! sends the publication. Host protocol 1.4 then returns the generation and
+//! sends the publication. Host protocol 1.0 then returns the generation and
 //! digest of the exact bytes made visible.
 //!
 //! This module does not derive physical bindings. In particular, accepting a
@@ -40,7 +40,7 @@ use buffa::Message as _;
 use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
 
-const HOST_VERSION: ProtocolVersion = ProtocolVersion::new(1, 4);
+const HOST_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const HOST_METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG;
 const RESPONSE_BYTES: u32 = 4 * 1024;
 

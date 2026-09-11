@@ -193,29 +193,33 @@ mod tests {
     }
 
     #[test]
-    fn observe_accepts_legacy_and_current_headers_with_exact_opaque_identity() {
-        for minor in [0, 1] {
-            let request = ObserveRuntimeRequest {
-                header: Some(header(minor)).into(),
-                fence: Some(AssignmentFence {
-                    sandbox_id: vec![2; 16],
-                    incarnation_id: vec![3; 16],
-                    assignment_epoch: 4,
-                    desired_generation: 5,
-                    assignment_digest: vec![6; 32],
-                    ..Default::default()
-                })
-                .into(),
-                runtime_handle: vec![7; 32],
+    fn observe_accepts_exact_host_version_and_rejects_later_versions() {
+        let mut request = ObserveRuntimeRequest {
+            header: Some(header(0)).into(),
+            fence: Some(AssignmentFence {
+                sandbox_id: vec![2; 16],
+                incarnation_id: vec![3; 16],
+                assignment_epoch: 4,
+                desired_generation: 5,
+                assignment_digest: vec![6; 32],
                 ..Default::default()
-            };
-            let validated =
-                decode_observe_runtime_request(&request.encode_to_vec(), peer(), policy(), 100)
-                    .unwrap();
-            assert_eq!(validated.header.protocol_version().minor(), minor as u16);
-            assert_eq!(validated.identity.sandbox_id(), &[2; 16]);
-            assert_eq!(validated.runtime_handle, [7; 32]);
-        }
+            })
+            .into(),
+            runtime_handle: vec![7; 32],
+            ..Default::default()
+        };
+        let validated =
+            decode_observe_runtime_request(&request.encode_to_vec(), peer(), policy(), 100)
+                .unwrap();
+        assert_eq!(validated.header.protocol_version().minor(), 0);
+        assert_eq!(validated.identity.sandbox_id(), &[2; 16]);
+        assert_eq!(validated.runtime_handle, [7; 32]);
+
+        request.header.get_or_insert_default().protocol_minor = 1;
+        assert!(
+            decode_observe_runtime_request(&request.encode_to_vec(), peer(), policy(), 100)
+                .is_err()
+        );
     }
 
     #[test]
@@ -236,7 +240,7 @@ mod tests {
     #[test]
     fn query_requires_a_bounded_exact_original_apply_body() {
         let request = QueryRuntimeEffectRequest {
-            header: Some(header(2)).into(),
+            header: Some(header(0)).into(),
             original_apply_request: vec![7; 128],
             ..Default::default()
         };
@@ -246,7 +250,7 @@ mod tests {
         assert_eq!(validated.original_apply_request, vec![7; 128]);
 
         let empty = QueryRuntimeEffectRequest {
-            header: Some(header(2)).into(),
+            header: Some(header(0)).into(),
             ..Default::default()
         };
         assert!(

@@ -437,7 +437,7 @@ completes. The Git history remains authoritative for code details.
   cross-boot, or nonreciprocal edges, and descriptor-store keys are canonical
   to mount handles. Bounded tombstone retirement remains open.
 - `0f7688335` — foundation toward `SBX-BPROTO-04`, `SBX-HOST-01`, and
-  `SBX-MOUNT-01`: Host 1.1 and exact Mount 1.0 carry an exact bounded signed
+  `SBX-MOUNT-01`: exact Host 1.0 and Mount 1.0 carry an exact bounded signed
   plan/lease quartet as explicitly untrusted input; effect methods fail closed
   without the negotiated feature. Broker signature verification, semantic
   matching, durable intersection admission, and immediate pre-effect expiry
@@ -780,21 +780,20 @@ completes. The Git history remains authoritative for code details.
   doctests, strict Clippy, warning-denied rustdoc, formatting, and independent
   adversarial review.
 - `09bac05fe` — foundation toward `SBX-BPROTO-04`, `SBX-CTRL-03`, and
-  `SBX-HOST-01`: Host protocol 1.2 adds a strictly read-only
-  `QueryRuntimeEffect` operation carrying the exact original 1.1-or-1.2 Apply
+  `SBX-HOST-01`: Host protocol 1.0 includes a strictly read-only
+  `QueryRuntimeEffect` operation carrying the exact original 1.0 Apply
   body and signed authorization quartet with zero descriptors. The broker
   reauthenticates historical admission, durable fence, effect, derived runtime
   handle, and byte-exact receipt, then reports `Absent`, `Pending`, or
   `Complete` without admitting state, resolving a catalog, writing the journal,
   or invoking a worker. A hostile response decoder enforces the closed status
-  and receipt shape. Host 1.2 negotiates a query-specific packet ceiling with
-  bounded wrapper headroom while retaining the full legacy 1.1 Apply ceiling;
-  only Query may use the additive band. Host StateWire V3 binds every current
+  and receipt shape. Host 1.0 negotiates a query-specific packet ceiling with
+  bounded wrapper headroom while retaining the full Apply ceiling; only Query
+  may use the additive band. Host StateWire V1 binds every current
   fence to the exact latest admitting request ID, so deleting a later request
   cannot be hidden by an older request with byte-identical assignment authority;
-  nonempty V1/V2 authority state requires explicit migration. Protocol 1.0/1.1
-  remain closed to Query, and Apply authorization semantics remain pinned to
-  1.1 independently of the 1.1/1.2 carrier. The slice passes 140 core, 59
+  nonempty state outside the final V1 schema is rejected. Apply and Query
+  authorization semantics are both pinned to the exact 1.0 carrier. The slice passes 140 core, 59
   protocol, and 65 host tests plus proto/doctests, strict Clippy,
   warning-denied rustdoc, formatting, and two-round adversarial review. A
   controller broker client and effect-template binding remain open.
@@ -1797,7 +1796,7 @@ and publication admission/effects remain unqualified by this gate.
 
 ### Live payload-scope handoff (in progress)
 
-Host 1.2 `ObservePayloadScope` now carries a fresh signed query against the
+Host 1.0 `ObservePayloadScope` now carries a fresh signed query against the
 exact installed plan/lease fence. The broker exports only launch-retained
 payload PID-1 and cgroup objects after refreshing the same invocation,
 supervisor, root, namespaces, and subtree membership. Process-local scope
@@ -1962,7 +1961,7 @@ The controller now has a distinct acquisition API that accepts an authenticated
 holder selector, not caller-selected assignment, lease, plan, or cgroup facts.
 Under one exclusive journal borrow it resolves the current Bound holder and
 publication, recovers the exact activated ownership claim, cryptographically
-reverifies the lease and transaction receipt, and verifies the selected Host 1.2
+reverifies the lease and transaction receipt, and verifies the selected Host 1.0
 plan against independently configured trust anchors. The signed plan must grant
 the exact payload-scope query and its request bounds. The real authenticated
 Host exchange alone constructs the non-cloneable `CurrentRuntimeScope`.
@@ -2547,7 +2546,7 @@ qualification is claimed for this protocol/publication increment.
 
 The Host broker can now export a launched payload's root and namespaces
 directly to the privileged Mount broker, without sending those descriptors
-through the node controller. Host protocol 1.3 adds a RootMount-only query
+through the node controller. Host protocol 1.0 includes a RootMount-only query
 with an exact retained-scope grant. Exact Mount protocol 1.0 includes a
 read-only catalog preparation request: the controller supplies a prospective
 Mount operation and the complete authorized Host query, Mount performs the Host
@@ -3487,14 +3486,14 @@ namespace VM qualification, and end-to-end attachment reconciliation remain.
 
 ### Assignment-bound attachment anchors at launch
 
-Host protocol 1.3 launch plans now require one nonzero broker-minted
+Host protocol 1.0 launch plans require one nonzero broker-minted
 attachment-anchor handle, and the signed Host semantics bind that handle
 independently from ordinary attachment handles. The Host catalog maps it to
 one exact assignment and the broker-derived sandbox, incarnation, and
 namespace-generation directory. Resolution pins that directory and rechecks
 its device, inode, kernel-unique mount ID, root ownership, and fixed mode before
-the launch compiler can consume it. Host 1.1 and 1.2 carriers remain compatible
-and reject the new field instead of silently ignoring it.
+the launch compiler can consume it. There is no predecessor Host carrier;
+missing or malformed anchor bindings fail exact 1.0 validation.
 
 The transient unit passes the root and attachment anchor as two exact named
 setup descriptors. The packaged nspawn accepts the anchor only with the AOS
@@ -3583,7 +3582,7 @@ remain open.
 
 ### Authenticated Host catalog publication dispatch
 
-Host protocol 1.4 now exposes the protected catalog publisher only to the fixed
+Host protocol 1.0 exposes the protected catalog publisher only to the fixed
 node-controller peer. The request envelope binds one nonzero catalog generation,
 exact byte length, SHA-256 digest, and a single `HOST_CATALOG` descriptor role.
 The complete catalog travels in a fully write/grow/shrink/seal-protected memfd,
@@ -3601,16 +3600,15 @@ kernel record credentials, a retained pidfd, and exact membership in the
 deployment-selected service cgroup. It verifies the same Host execution again
 immediately before transferring the sealed catalog and around the final reply,
 then accepts success only when the descriptor disposition, generation, and
-digest exactly match its draft. Host 1.1 through 1.3 remain compatible for their
-existing methods, and Host Apply accepts the 1.4 carrier without changing its
-1.1 signed semantics. The packaged host daemon opens the same protected root
+digest exactly match its draft. Every Host method and its signed semantics use
+the exact 1.0 carrier. The packaged host daemon opens the same protected root
 for its reader and publisher and advertises publication only when that publisher
 is configured.
 
 Focused coverage includes protocol-version and descriptor-role separation,
 bounded request and receipt decoding, canonical Host JSON rejection, sealed-file
-generation and digest matching, protected published/replay receipts, 1.1-through-
-1.4 Apply compatibility, and a three-MiB in-process catalog transfer that
+generation and digest matching, protected published/replay receipts, exact 1.0
+Apply compatibility, and a three-MiB in-process catalog transfer that
 authenticates the responding service and verifies the mapped bytes. All 339
 hermetic `aos-sandbox` tests pass; its 340th real-cgroup exchange passes in the
 explicit all-feature kernel suite. All 95 `aos-sandbox-host` and 88
@@ -3703,7 +3701,7 @@ controller-side catalog projection and advances `SBX-BPROTO-04`, `SBX-CTRL-03`,
 and `SBX-HOST-01`. It does not claim combined production publication: Storage
 and Network still need authoritative current-resource inventories, and the
 controller still needs durable whole-catalog generation and tombstone
-reconciliation before it can schedule the existing Host 1.4 dispatch.
+reconciliation before it can schedule the existing Host 1.0 dispatch.
 
 ### Exact Storage and Network resource inventory contracts
 
@@ -3804,7 +3802,7 @@ Catalog publication is now an explicit durable effect. The controller commits
 the complete canonical successor as an `AOSHCR01` pending record before Host
 I/O, including its source snapshot commitments and predecessor catalog digest.
 Recovery returns those exact bytes without consulting newer broker state. Only
-an authenticated Host 1.4 published-or-replayed receipt for the same generation
+an authenticated Host 1.0 published-or-replayed receipt for the same generation
 and SHA-256 digest atomically advances the pending record to current. Changed,
 missing, malformed, unrelated-predecessor, generation-skipping, and oversized
 history fails closed during controller startup. The durable payload ceiling
@@ -6860,167 +6858,68 @@ remain open.
 
 ### Guardian-bound Host dispatch and effect recovery (partial)
 
-Commit `3149a1f3a` adds the controller-side protocol and durable-dispatch half
-of Guardian-gated launch. Host protocol 1.5 adds a launch-only companion that
-carries exactly one canonical Guardian plan and detached signature. Templates,
-non-Launch actions, and other Host versions reject the companion, while a live
-Host 1.5 Launch requires it. The enclosing Host authorization quartet remains
-the only carrier for the exact ownership lease and lease signature. Host 1.4
-Launch stays structurally decodable for compatibility, but production
-publication selection refuses to dispatch a pre-1.5 Launch.
+The current implementation uses one exact Host protocol 1.0 profile. Apply,
+effect query, payload-scope observation, Mount-scope observation, inventory,
+catalog publication, and workspace-pin repair share that version. Effect
+methods require the signed Host plan, detached plan signature, ownership lease,
+and detached lease signature; observation-only methods reject that carrier.
+Every signed Host plan also names protocol 1.0. Unknown Host major or minor
+versions fail closed instead of selecting an older carrier or authority shape.
 
+Every live Launch requires one broker-minted attachment-anchor handle and a
+launch-only companion containing exactly one canonical Guardian 1.0 plan and
+detached signature. Templates and non-Launch requests forbid the companion.
 After current publication and lease selection, the reconciler constructs a
-`GuardianPlanRequestV1` that binds the Host assignment, node, desired
-generation, ownership signer, current host boot, and exact lease generation and
-digest. The executor's narrow signing hook may return a signed Guardian 1.0
-plan; the controller then reselects current state and rejects every stale or
-substituted result. The accepted plan has one assignment-target `GuardianArm`
-grant covering the 160-byte binding with zero actual descriptors. Its expiry
-and the ownership lease jointly cap the Host BOOTTIME deadline, including the
-one-wall-tick reserve required by Guardian sampling order. The controller
-inserts the exact Guardian pair, rechecks the expanded body against the Host
-grant and packet ceiling, and preserves the same lease pair in the outer Host
-envelope.
+`GuardianPlanRequestV1` bound to the assignment, node, desired generation,
+ownership signer, current host boot, and exact lease generation and digest. It
+reselects current state after signing and rejects stale or substituted results.
+The accepted plan contains one assignment-target `GuardianArm` grant over the
+160-byte boot-and-lease binding with zero actual descriptors. Guardian and
+ownership expiry jointly cap the Host BOOTTIME deadline with the required
+wall-clock sampling reserve. The complete expanded request is checked against
+the Host grant and packet ceiling before durable admission.
 
-The authority-bearing effect record advances from V2 to V3 to retain the host
-boot paired with its preparation wall-time and BOOTTIME scalars. An ambiguous
-V3 Applying attempt must match a fresh executor boot before observation or
-Apply I/O. Recovery redecodes the nested Guardian plan, rederives its complete
-boot-and-lease binding, rebuilds the Host body and outer packet, and compares
-the whole attempt with durable bytes. Completed V3 history remains readable
-across reboot. A Planned V2 record has no dispatch and advances directly to a
-fresh boot-bearing V3 attempt. A dispatch-bearing completed or permanently
-blocked V2 record remains historical input but cannot be re-encoded; a
-dispatch-bearing V2 Applying record fails with `MigrationRequired` before I/O.
-Generic V1 effects and the existing V2 binding digest stay unchanged.
+Host durable state has one version-1 schema containing the complete final
+execution model. Every retained execution is authenticated at its exact request
+location under the `AOSHOSTEXECV0001` domain and binds the request and semantic
+digests, action, assignment tuple, stable Host authority, and complete execution
+evidence. Launch retains the signed Guardian inputs, protected descriptor
+snapshots, executable identity, service-manager invocation identities, and
+runtime proof. Stop retains its exact composite target and ordered cleanup
+progress. Freeze, Thaw, and Kill use the authenticated direct-lifecycle shape.
+Missing or malformed authentication, record relocation, evidence mutation,
+authority substitution, or an unknown state version fails before worker I/O.
+There is no prior Host state decoder, compatibility row, or migration path.
 
-Initial dispatch and authenticated `Absent` retry use the same ordering:
-select current, request the exact Guardian signature, reselect current, commit
-the composite attempt, then permit Host I/O. A refreshed attempt is durable
-before Apply, so crash recovery queries that exact replacement. `Pending` and
-transport ambiguity retain the existing packet and never authorize an
-unrecorded replacement.
+Initial dispatch and authenticated Absent retry use the same ordering: select
+current state, obtain the exact Guardian signature, reselect, commit the
+authenticated attempt, and only then permit Host I/O. Pending and ambiguous
+results retain the committed packet. Guardian starts before the payload;
+recovery validates exact manager and kernel identities, and cleanup never
+rewinds. Stop freezes the committed target before payload-then-Guardian cleanup.
+Completed Freeze and Thaw preserve same-epoch Guardian lineage, while Stop,
+Kill, epoch replacement, or ambiguous lineage prevents live-scope reuse.
+Completed effects replay their byte-exact receipts without resampling the clock
+or redispatching the worker.
 
-Pinned development-shell validation passes all 368 `aos-sandbox` library
-tests, all 190 core tests, all 116 protocol tests, and the complete Guardian
-package run with one library test and nine integration tests. Coverage includes
-real Ed25519 Host and Guardian plans, boot and Guardian-expiry substitution,
-lease renewal with stale-plan rejection, initial and Absent-retry ordering,
-durable body/packet/boot mutation, V2 migration and historical compatibility,
-and completed V3 recovery across reboot.
+The protected Host authority retains and revalidates all six public source
+descriptors while excluding the journal MAC key. Dynamic request credentials
+are anonymous, fully sealed, and reopened read-only. The typed systemd adapter
+transfers the exact ordered ten-descriptor activation set and revalidates every
+snapshot immediately before D-Bus transfer. The Guardian startup path rejects
+unexpected inherited descriptors. The public protobuf surface contains only
+the live Guardian identity, Host companion, and readiness integration; Guardian
+execution remains a local typed Host/systemd operation rather than a second
+broker RPC.
 
-Commit `803ba708a` adds the descriptor-custody boundary needed by the future
-Host handoff. A Linux helper creates anonymous dynamic credentials with the
-complete write, grow, shrink, and seal seals, then reopens them read-only
-without retaining a writable description. The typed systemd adapter accepts
-exactly ten ordered descriptors: six creator-owned, singly linked, read-only
-protected files with exact mode and repeated content/metadata checks, followed
-by four anonymous fully sealed read-only credentials. It revalidates every
-retained snapshot immediately before D-Bus transfer. The Guardian startup path
-proves it is single-threaded, rejects any inherited descriptor outside stdio
-and the exact ten-name activation set, and duplicates descriptors without
-taking ownership of the caller's raw descriptor number. Focused and complete
-development-shell runs passed 113 Linux tests plus eight doctests, 42 systemd
-tests, and 14 Guardian tests, including exact-binary missing, renamed, and
-extra-descriptor startup failures. This is source-level custody validation;
-Host does not yet retain the six protected input descriptors or assemble the
-four request artifacts into this typed set.
-
-Commit `b26875ac0` adds Host state format 4 and a pure Guardian/Stop transition
-model without enabling effects. Each future launch record retains the exact
-dynamic artifact bytes, six protected-input snapshots, a content-digested
-pinned executable identity, and a recomputed attempt binding. Its closed phases
-distinguish authorization, issued Guardian and payload starts, current-job
-Guardian readiness, worker proof, exact-owned cleanup, and historical
-completion. An arbitrary active unit cannot become readiness evidence. The
-Stop model separately records authorized planning and an issued frozen target
-set, so expiry permits only completion of already-issued exact operations;
-every stop rechecks the current binding and invocation, payload-before-Guardian
-progress never rewinds, foreign or indeterminate observations quarantine, and
-recording cleanup completion requires both units currently absent. Later
-replay of a completed record is a historical receipt, not a claim of current
-liveness. Exhaustive pair matrices cover exact, wrong-invocation,
-wrong-binding, indeterminate, and absent observations in every cleanup phase.
-Host carriers 1.1 through 1.4 continue to use signed Host 1.1 authority, while
-the future matrix assigns only Host 1.5 Launch to signed 1.5 authority and
-leaves lifecycle actions at signed 1.1. Apply and Query share that selector.
-Versions 1 through 3 migrate only with empty fence and request tables, and
-production reopen explicitly rejects the future execution variants because
-their domain-separated protected-authority authentication is not integrated
-yet. Focused validation passed all 17 transition tests, the migration test, the
-Apply/Query carrier matrix, and the authenticated-reopen tamper test.
-
-Commit `fe8b6f661` preserves the six public Guardian authority descriptors from
-the exact opens used to construct protected Host authority. The retained typed
-set excludes `journal-mac-key` and records device, inode, mode, owner, link
-count, size, modification/change timestamps, and the exact repeated-read
-SHA-256 content snapshot. Its all-or-nothing borrowed accessor revalidates
-those properties and content before a future handoff. Directly constructed
-test authority deliberately has no descriptor custody. Journal namespace 36
-is appended as `HostExecution`; the Host adapter seals nonempty execution
-payloads under the fixed `AOSHOSTEXECV0001` domain and exact nonzero 16-byte
-request key, with the existing authenticated-record bounds. Tamper, request
-relocation, domain substitution, zero identity, empty payload, and oversized
-payload fail closed.
-
-The pinned development shell passed the production Broker/Host library and
-Host binary check, all 24 Broker and 118 Host library tests, and focused runs
-of eight protected-configuration tests, the namespace compatibility test, and
-three Host custody/MAC tests. The retained-FD regressions use actual
-descriptors with successful positive controls, then reject an equal-length
-in-place rewrite and atomic replacement that drops the retained inode's link
-count to zero. Their ordinary cargo-test hook uses unprivileged metadata
-inspection in place of the protected-object gate; it still exercises retained
-descriptors, repeated reads, `fstat`, and original-snapshot comparison. This is
-not a root-provisioned or VM transfer test.
-
-Commit `5ef8462e8` connects those foundations to Host state format 4 without
-opening a live effect. The all-six custody result now releases role-ordered
-device, inode, length, and content-digest snapshots beside the same borrowed
-public descriptors only after every retained credential passes current
-revalidation; the journal secret remains absent. A deterministic version-1
-execution digest uses explicit tag-and-`u64`-length framing over request ID and
-transport digest, carrier and action, the assignment tuple, the exact future
-execution evidence and phase, and a separately framed stable-authority
-commitment. That stable commitment covers the fields enforced by pending
-replay: transport and semantic request digests, Host verb, exact target,
-assignment, node, plan digest, and ownership stable key ID, generation,
-public-key digest, and usage. It excludes refreshed outer sealed bytes and
-lease, status, and receipt fields; those remain independently MAC-opened, with
-equal plan expiry and exact fence/effect local-lease records, effect lease
-digest, status, and receipt cross-checked on every reopen. Exact historical
-Guardian attempt lease artifacts remain inside the execution record and
-therefore inside its MAC.
-
-Legacy V4 rows omit execution authentication and remain readable. Future
-Guardian and Stop rows require a nonempty bounded `HostExecution` seal at the
-exact request location. Missing, oversized, tampered, relocated, phase-mutated,
-context-mutated, and stable-authority-substituted records fail before use. A
-genuine signed-plan and signed-lease recovery test proves a byte-identical
-execution seal survives a newer outer ownership lease when stable semantics are
-unchanged; effect-only lease replacement fails the exact-record cross-check.
-Even a correctly authenticated future record reaches and is rejected by the
-separate final live-disabled gate.
-
-The earlier production Broker and Host library and Host binary check passes.
-The final focused source runs pass one protected-snapshot test, nine Host state
-tests, one transition-authentication test, three Host custody and MAC tests,
-and the existing Legacy broker renewal test. Complete post-change Broker and
-Host suites have not yet been rerun.
-
-This remains controller and source-level Host progress. The signing hook
-defaults to unavailable and has no production controller authority adapter.
-The Host 1.5 carrier guard and format-4 live execution gate remain closed. Host
-now retains and revalidates static descriptor evidence and authenticates future
-durable execution state across stable outer-lease renewal, but live admission
-still emits only Legacy records and no effect path consumes the custody and
-evidence bridge. No live path assembles and transfers the dynamic credentials,
-starts the exact Guardian before the payload, observes manager-retained launch
-bindings, or performs the final protected before-effect checks for both starts.
-Live exact-unit retry and compensation, composite Stop integration, renewal,
-early freeze, Network default-drop coupling, and a VM test proving expiry or
-Guardian death contains the payload also remain open. No `SBX-GUARD-01` or
-end-to-end Host task is closed by these slices.
+Coverage includes signed Host and Guardian plans, lease and boot substitution,
+launch retry and recovery ordering, descriptor custody, authenticated reopen
+tamper cases, exact-unit observation matrices, composite Stop, all three direct
+lifecycle actions, state-version rejection, and Guardian-backed scope lineage.
+The signing hook still requires a production authority adapter. Renewal,
+early-freeze policy, Network default-drop coupling, and a VM proof that expiry
+or Guardian death contains the payload remain open, so this slice does not
+close `SBX-GUARD-01` or end-to-end Host readiness.
 
 ### Qualified fleet firmware-variable stores (harness foundation)
 

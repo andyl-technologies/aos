@@ -576,7 +576,7 @@ mod tests {
         ));
 
         let original = plan();
-        assert!(
+        assert!(matches!(
             BrokerAuthorizationPlan::new(
                 original.audience(),
                 original.protocol(),
@@ -590,9 +590,9 @@ mod tests {
                 original.issued_seconds(),
                 original.expires_seconds(),
                 original.required_features().to_vec(),
-            )
-            .is_ok()
-        );
+            ),
+            Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch)
+        ));
         assert!(matches!(
             BrokerAuthorizationPlan::new(
                 original.audience(),

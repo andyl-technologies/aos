@@ -1,9 +1,9 @@
-//! Version-5 durable execution evidence and pure transition decisions.
+//! Version-one durable execution evidence and pure transition decisions.
 //!
 //! The host-state envelope stores this module's tagged records beneath each
-//! request. Host 1.1 through 1.4 continue to use the `legacy` kind. Host 1.5
-//! Launch persists the Guardian and bound payload transaction through complete
-//! live proof. Host 1.5 Stop persists exact payload-before-Guardian teardown.
+//! request. Launch persists the Guardian and bound payload transaction through
+//! complete live proof. Stop persists exact payload-before-Guardian teardown,
+//! while Freeze, Thaw, and Kill use the authenticated direct-lifecycle shape.
 //!
 //! ```text
 //! { "kind": "guardian_launch", "state": { "evidence": ..., "phase": ... } }
@@ -23,7 +23,6 @@ use std::os::fd::BorrowedFd;
 use aos_sandbox_broker::{
     ProtectedBrokerPublicCredentialRole, ProtectedBrokerPublicCredentialSnapshot,
 };
-use aos_sandbox_core::ProtocolVersion;
 use aos_systemd::GuardianExecutableSnapshot;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -71,28 +70,6 @@ impl HostAction {
     }
 }
 
-/// Selects the signed Host authority version independently of the carrier.
-///
-/// Carriers 1.1 through 1.4 retain the established Host 1.1 semantics. The
-/// 1.5 carrier upgrades only Launch; lifecycle operations remain signed under
-/// Host 1.1 and are rejected by the current live 1.5 Apply boundary.
-pub(crate) const fn signed_authority_version(
-    carrier: ProtocolVersion,
-    action: HostAction,
-) -> Option<ProtocolVersion> {
-    if carrier.major() != 1 {
-        return None;
-    }
-    match (carrier.minor(), action) {
-        (1..=4, _) => Some(ProtocolVersion::new(1, 1)),
-        (5, HostAction::Launch) => Some(ProtocolVersion::new(1, 5)),
-        (5, HostAction::Stop | HostAction::Freeze | HostAction::Thaw | HostAction::Kill) => {
-            Some(ProtocolVersion::new(1, 1))
-        }
-        _ => None,
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     tag = "kind",
@@ -101,43 +78,31 @@ pub(crate) const fn signed_authority_version(
     deny_unknown_fields
 )]
 pub(crate) enum DurableExecution {
-    Legacy,
+    DirectLifecycle,
     GuardianLaunch(Box<GuardianLaunchRecord>),
     CompositeStop(CompositeStopRecord),
 }
 
 impl DurableExecution {
-    /// Creates the execution kind emitted by legacy Host carriers.
-    pub(crate) fn current_legacy(carrier: ProtocolVersion, action: HostAction) -> Option<Self> {
-        matches!(carrier.major(), 1)
-            .then_some(carrier.minor())
-            .filter(|minor| (1..=4).contains(minor))?;
-        signed_authority_version(carrier, action)?;
-        Some(Self::Legacy)
+    /// Creates the execution kind for an authenticated direct lifecycle action.
+    pub(crate) const fn direct_lifecycle(action: HostAction) -> Option<Self> {
+        match action {
+            HostAction::Freeze | HostAction::Thaw | HostAction::Kill => Some(Self::DirectLifecycle),
+            HostAction::Launch | HostAction::Stop => None,
+        }
     }
 
     pub(crate) fn validate(&self, context: ExecutionContext) -> bool {
         match self {
-            Self::Legacy => {
-                (1..=4).contains(&context.carrier.minor())
-                    && context.carrier.major() == 1
-                    && signed_authority_version(context.carrier, context.action)
-                        == Some(ProtocolVersion::new(1, 1))
-            }
+            Self::DirectLifecycle => matches!(
+                context.action,
+                HostAction::Freeze | HostAction::Thaw | HostAction::Kill
+            ),
             Self::GuardianLaunch(record) => {
-                context.action == HostAction::Launch
-                    && context.carrier == ProtocolVersion::new(1, 5)
-                    && signed_authority_version(context.carrier, context.action)
-                        == Some(ProtocolVersion::new(1, 5))
-                    && record.validate(context)
+                context.action == HostAction::Launch && record.validate(context)
             }
             Self::CompositeStop(record) => {
-                context.action == HostAction::Stop
-                    && context.carrier.major() == 1
-                    && (1..=5).contains(&context.carrier.minor())
-                    && signed_authority_version(context.carrier, context.action)
-                        == Some(ProtocolVersion::new(1, 1))
-                    && record.validate(context.receipt_present)
+                context.action == HostAction::Stop && record.validate(context.receipt_present)
             }
         }
     }
@@ -164,30 +129,28 @@ impl DurableExecution {
         )?;
         update_authentication_field(&mut hash, 2, &context.request_id)?;
         update_authentication_field(&mut hash, 3, &context.request_digest)?;
-        update_authentication_field(&mut hash, 4, &context.carrier.major().to_be_bytes())?;
-        update_authentication_field(&mut hash, 5, &context.carrier.minor().to_be_bytes())?;
-        update_authentication_field(&mut hash, 6, &[context.action.code()])?;
-        update_authentication_field(&mut hash, 7, &context.sandbox_id)?;
-        update_authentication_field(&mut hash, 8, &context.incarnation_id)?;
-        update_authentication_field(&mut hash, 9, &context.assignment_epoch.to_be_bytes())?;
-        update_authentication_field(&mut hash, 10, &context.desired_generation.to_be_bytes())?;
-        update_authentication_field(&mut hash, 11, &context.assignment_digest)?;
-        update_authentication_field(&mut hash, 12, &stable_authority_digest)?;
-        update_authentication_field(&mut hash, 13, &execution)?;
+        update_authentication_field(&mut hash, 4, &[context.action.code()])?;
+        update_authentication_field(&mut hash, 5, &context.sandbox_id)?;
+        update_authentication_field(&mut hash, 6, &context.incarnation_id)?;
+        update_authentication_field(&mut hash, 7, &context.assignment_epoch.to_be_bytes())?;
+        update_authentication_field(&mut hash, 8, &context.desired_generation.to_be_bytes())?;
+        update_authentication_field(&mut hash, 9, &context.assignment_digest)?;
+        update_authentication_field(&mut hash, 10, &stable_authority_digest)?;
+        update_authentication_field(&mut hash, 11, &execution)?;
         Some(hash.finalize().into())
     }
 
     pub(crate) fn guardian_binding(&self) -> Option<[u8; 32]> {
         match self {
             Self::GuardianLaunch(record) => Some(record.evidence.binding),
-            Self::Legacy | Self::CompositeStop(_) => None,
+            Self::DirectLifecycle | Self::CompositeStop(_) => None,
         }
     }
 
     pub(crate) fn stop_source(&self) -> Option<StopSourceReference> {
         match self {
             Self::CompositeStop(record) => record.target.source(),
-            Self::Legacy | Self::GuardianLaunch(_) => None,
+            Self::DirectLifecycle | Self::GuardianLaunch(_) => None,
         }
     }
 
@@ -402,7 +365,6 @@ fn update_authentication_field(hash: &mut Sha256, tag: u16, value: &[u8]) -> Opt
 
 #[derive(Clone, Copy)]
 pub(crate) struct ExecutionContext {
-    pub(crate) carrier: ProtocolVersion,
     pub(crate) action: HostAction,
     pub(crate) request_id: [u8; 16],
     pub(crate) request_digest: [u8; 32],
@@ -528,7 +490,7 @@ pub(crate) struct PayloadLaunchSnapshot {
     pub(crate) identity_range_start: u32,
     pub(crate) identity_range_size: u32,
     pub(crate) identity_catalog_generation: u64,
-    pub(crate) attachment_anchor: Option<PinnedObjectSnapshot>,
+    pub(crate) attachment_anchor: PinnedObjectSnapshot,
     pub(crate) spec_semantic_digest: [u8; 32],
 }
 
@@ -545,10 +507,7 @@ impl PayloadLaunchSnapshot {
                 .checked_add(self.identity_range_size)
                 .is_some()
             && self.identity_catalog_generation != 0
-            && self
-                .attachment_anchor
-                .as_ref()
-                .is_none_or(PinnedObjectSnapshot::validate)
+            && self.attachment_anchor.validate()
             && self.spec_semantic_digest != [0; 32]
     }
 
@@ -560,13 +519,7 @@ impl PayloadLaunchSnapshot {
         hash.update(self.identity_range_start.to_be_bytes());
         hash.update(self.identity_range_size.to_be_bytes());
         hash.update(self.identity_catalog_generation.to_be_bytes());
-        match &self.attachment_anchor {
-            Some(anchor) => {
-                hash.update([1]);
-                anchor.update_binding(hash);
-            }
-            None => hash.update([0]),
-        }
+        self.attachment_anchor.update_binding(hash);
         hash.update(self.spec_semantic_digest);
     }
 
@@ -588,8 +541,12 @@ impl PayloadLaunchSnapshot {
             identity_range_start: 65_536,
             identity_range_size: 65_536,
             identity_catalog_generation: 41,
-            attachment_anchor: None,
-            spec_semantic_digest: [42; 32],
+            attachment_anchor: PinnedObjectSnapshot {
+                device: 42,
+                inode: 43,
+                mount_id: 44,
+            },
+            spec_semantic_digest: [45; 32],
         }
     }
 }
@@ -886,11 +843,6 @@ impl CompositeStopRecord {
 #[serde(tag = "shape", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum CompositeStopTarget {
     Absent,
-    LegacyPayload {
-        source_launch_request_id: [u8; 16],
-        incarnation_id: [u8; 16],
-        payload: StopUnitTarget,
-    },
     GuardianComposite {
         source_launch_request_id: [u8; 16],
         incarnation_id: [u8; 16],
@@ -904,15 +856,6 @@ impl CompositeStopTarget {
     fn validate(&self) -> bool {
         match self {
             Self::Absent => true,
-            Self::LegacyPayload {
-                source_launch_request_id,
-                incarnation_id,
-                payload,
-            } => {
-                *source_launch_request_id != [0; 16]
-                    && *incarnation_id != [0; 16]
-                    && payload.validate(None)
-            }
             Self::GuardianComposite {
                 source_launch_request_id,
                 incarnation_id,
@@ -933,15 +876,6 @@ impl CompositeStopTarget {
     fn source(&self) -> Option<StopSourceReference> {
         match self {
             Self::Absent => None,
-            Self::LegacyPayload {
-                source_launch_request_id,
-                incarnation_id,
-                ..
-            } => Some(StopSourceReference {
-                request_id: *source_launch_request_id,
-                incarnation_id: *incarnation_id,
-                guardian_binding: None,
-            }),
             Self::GuardianComposite {
                 source_launch_request_id,
                 incarnation_id,
@@ -958,16 +892,14 @@ impl CompositeStopTarget {
     pub(crate) fn payload(&self) -> StopUnitTarget {
         match self {
             Self::Absent => StopUnitTarget::Absent,
-            Self::LegacyPayload { payload, .. } | Self::GuardianComposite { payload, .. } => {
-                payload.clone()
-            }
+            Self::GuardianComposite { payload, .. } => payload.clone(),
         }
     }
 
     pub(crate) fn guardian(&self) -> StopUnitTarget {
         match self {
             Self::GuardianComposite { guardian, .. } => guardian.clone(),
-            Self::Absent | Self::LegacyPayload { .. } => StopUnitTarget::Absent,
+            Self::Absent => StopUnitTarget::Absent,
         }
     }
 }
@@ -1850,9 +1782,8 @@ fn stop_target(target: &ExactUnitTarget) -> StopUnitTarget {
 mod tests {
     use super::*;
 
-    fn context(carrier_minor: u16, action: HostAction, receipt_present: bool) -> ExecutionContext {
+    fn context(action: HostAction, receipt_present: bool) -> ExecutionContext {
         ExecutionContext {
-            carrier: ProtocolVersion::new(1, carrier_minor),
             action,
             request_id: [1; 16],
             request_digest: [2; 32],
@@ -1867,7 +1798,7 @@ mod tests {
 
     fn evidence() -> GuardianLaunchEvidence {
         let DurableExecution::GuardianLaunch(record) =
-            DurableExecution::guardian_fixture(context(5, HostAction::Launch, false))
+            DurableExecution::guardian_fixture(context(HostAction::Launch, false))
         else {
             panic!("Guardian fixture has the wrong execution kind");
         };
@@ -2214,51 +2145,9 @@ mod tests {
     }
 
     #[test]
-    fn carrier_and_signed_authority_versions_are_independent() {
-        let actions = [
-            HostAction::Launch,
-            HostAction::Stop,
-            HostAction::Freeze,
-            HostAction::Thaw,
-            HostAction::Kill,
-        ];
-        for minor in 1..=4 {
-            for action in actions {
-                assert_eq!(
-                    signed_authority_version(ProtocolVersion::new(1, minor), action),
-                    Some(ProtocolVersion::new(1, 1))
-                );
-            }
-        }
-        assert_eq!(
-            signed_authority_version(ProtocolVersion::new(1, 5), HostAction::Launch),
-            Some(ProtocolVersion::new(1, 5))
-        );
-        for action in [
-            HostAction::Stop,
-            HostAction::Freeze,
-            HostAction::Thaw,
-            HostAction::Kill,
-        ] {
-            assert_eq!(
-                signed_authority_version(ProtocolVersion::new(1, 5), action),
-                Some(ProtocolVersion::new(1, 1))
-            );
-        }
-        assert_eq!(
-            signed_authority_version(ProtocolVersion::new(2, 1), HostAction::Launch),
-            None
-        );
-        assert_eq!(
-            signed_authority_version(ProtocolVersion::new(1, 6), HostAction::Launch),
-            None
-        );
-    }
-
-    #[test]
     fn execution_authentication_binds_context_stable_authority_and_attempt_evidence() {
-        let execution = DurableExecution::guardian_fixture(context(5, HostAction::Launch, false));
-        let baseline_context = context(5, HostAction::Launch, false);
+        let execution = DurableExecution::guardian_fixture(context(HostAction::Launch, false));
+        let baseline_context = context(HostAction::Launch, false);
         let stable_authority = [40; 32];
         let baseline = execution
             .authentication_digest(baseline_context, stable_authority)
@@ -2270,9 +2159,6 @@ mod tests {
         contexts.push(changed);
         changed = baseline_context;
         changed.request_digest[0] ^= 1;
-        contexts.push(changed);
-        changed = baseline_context;
-        changed.carrier = ProtocolVersion::new(1, 4);
         contexts.push(changed);
         changed = baseline_context;
         changed.action = HostAction::Stop;
@@ -2327,46 +2213,69 @@ mod tests {
             execution.authentication_digest(baseline_context, stable_authority),
             Some(baseline)
         );
+
+        let direct = DurableExecution::DirectLifecycle;
+        let direct_context = context(HostAction::Freeze, false);
+        let direct_digest = direct
+            .authentication_digest(direct_context, stable_authority)
+            .unwrap_or_else(|| panic!("cannot authenticate direct lifecycle execution"));
+        let mut changed_direct_context = direct_context;
+        changed_direct_context.action = HostAction::Thaw;
+        assert_ne!(
+            direct.authentication_digest(changed_direct_context, stable_authority),
+            Some(direct_digest)
+        );
     }
 
     #[test]
     fn execution_kind_matrix_rejects_impossible_action_pairs() {
+        for action in [HostAction::Freeze, HostAction::Thaw, HostAction::Kill] {
+            let direct = DurableExecution::direct_lifecycle(action)
+                .unwrap_or_else(|| panic!("direct lifecycle action was rejected"));
+            assert!(direct.validate(context(action, false)));
+        }
+        assert!(DurableExecution::direct_lifecycle(HostAction::Launch).is_none());
+        assert!(DurableExecution::direct_lifecycle(HostAction::Stop).is_none());
+        assert!(!DurableExecution::DirectLifecycle.validate(context(HostAction::Launch, false)));
+        assert!(!DurableExecution::DirectLifecycle.validate(context(HostAction::Stop, false)));
         assert!(
-            DurableExecution::current_legacy(ProtocolVersion::new(1, 4), HostAction::Launch)
-                .is_some()
+            guardian_record(GuardianLaunchPhase::Authorized)
+                .validate(context(HostAction::Launch, false))
         );
         assert!(
-            DurableExecution::current_legacy(ProtocolVersion::new(1, 5), HostAction::Launch)
-                .is_none()
+            !guardian_record(GuardianLaunchPhase::Authorized)
+                .validate(context(HostAction::Stop, false))
         );
-        assert!(
-            guardian_record(GuardianLaunchPhase::Authorized).validate(context(
-                5,
-                HostAction::Launch,
-                false
-            ))
-        );
-        assert!(
-            !guardian_record(GuardianLaunchPhase::Authorized).validate(context(
-                5,
-                HostAction::Stop,
-                false
-            ))
-        );
+        let composite = DurableExecution::composite_stop_fixture();
+        assert!(composite.validate(context(HostAction::Stop, false)));
+        assert!(!composite.validate(context(HostAction::Launch, false)));
     }
 
     #[test]
-    fn binding_is_recomputed_from_artifact_and_executable_content_evidence() {
+    fn binding_is_recomputed_from_artifact_executable_and_attachment_evidence() {
         let original = evidence();
-        assert!(original.validate(context(5, HostAction::Launch, false)));
+        assert!(original.validate(context(HostAction::Launch, false)));
 
         let mut changed_artifact = original.clone();
         changed_artifact.broker_plan[0] ^= 1;
-        assert!(!changed_artifact.validate(context(5, HostAction::Launch, false)));
+        assert!(!changed_artifact.validate(context(HostAction::Launch, false)));
 
-        let mut changed_executable = original;
+        let mut changed_executable = original.clone();
         changed_executable.guardian_executable.sha256_content[0] ^= 1;
-        assert!(!changed_executable.validate(context(5, HostAction::Launch, false)));
+        assert!(!changed_executable.validate(context(HostAction::Launch, false)));
+
+        let mut changed_attachment = original;
+        changed_attachment.payload.attachment_anchor.mount_id ^= 1;
+        assert!(!changed_attachment.validate(context(HostAction::Launch, false)));
+    }
+
+    #[test]
+    fn payload_snapshot_rejects_invalid_attachment_anchor_with_matching_binding() {
+        let mut changed = evidence();
+        changed.payload.attachment_anchor.mount_id = 0;
+        changed.binding = changed.recompute_binding();
+
+        assert!(!changed.validate(context(HostAction::Launch, false)));
     }
 
     #[test]
@@ -2943,6 +2852,17 @@ mod tests {
         let decoded: DurableExecution = serde_json::from_slice(&bytes)
             .unwrap_or_else(|error| panic!("cannot decode execution fixture: {error}"));
         assert_eq!(decoded, execution);
+
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|error| panic!("cannot decode execution JSON: {error}"));
+        value
+            .pointer_mut("/state/evidence/payload")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|payload| payload.remove("attachment_anchor"))
+            .unwrap_or_else(|| panic!("execution JSON omitted the attachment-anchor fixture"));
+        let missing_attachment = serde_json::to_vec(&value)
+            .unwrap_or_else(|error| panic!("cannot encode incomplete execution: {error}"));
+        assert!(serde_json::from_slice::<DurableExecution>(&missing_attachment).is_err());
 
         let mut value: serde_json::Value = serde_json::from_slice(&bytes)
             .unwrap_or_else(|error| panic!("cannot decode execution JSON: {error}"));

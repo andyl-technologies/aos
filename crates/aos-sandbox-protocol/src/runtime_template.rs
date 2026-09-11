@@ -17,7 +17,7 @@ use crate::{
     validate_runtime_plan,
 };
 
-const HOST_GUARDIAN_COMPANION_VERSION: ProtocolVersion = ProtocolVersion::new(1, 5);
+const HOST_GUARDIAN_COMPANION_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
 /// Preserves the exact structurally valid but untrusted Guardian plan pair.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,7 +84,7 @@ impl ValidatedRuntimeTemplateV1 {
         self.launch_plan.as_ref()
     }
 
-    /// Returns the launch-only Guardian companion when validating a live Host 1.5 request.
+    /// Returns the launch-only Guardian companion when validating a live Host request.
     #[must_use]
     pub const fn guardian_arm(&self) -> Option<&ValidatedGuardianArmCompanionV1> {
         self.guardian_arm.as_ref()
@@ -117,7 +117,7 @@ pub fn decode_runtime_template_v1(
     if !header.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    let protocol_version = validate_header_protocol(header, ProtocolId::HostBroker)?;
+    validate_header_protocol(header, ProtocolId::HostBroker)?;
     exact_nonzero::<16>(&header.request_id, "header.request_id")?;
     if header.audience.as_known() != Some(Audience::AUDIENCE_NODE_CONTROLLER)
         || header.deadline_boottime_nanoseconds != 0
@@ -129,19 +129,17 @@ pub fn decode_runtime_template_v1(
     if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&header.maximum_response_bytes) {
         return Err(ProtocolValidationError::InvalidResponseBound);
     }
-    validate_runtime_body(&request, protocol_version, RuntimeBodyProfile::Template)
+    validate_runtime_body(&request, RuntimeBodyProfile::Template)
 }
 
 pub(super) fn validate_live_runtime_body(
     request: &ApplyRuntimeRequest,
-    protocol_version: ProtocolVersion,
 ) -> Result<ValidatedRuntimeTemplateV1, ProtocolValidationError> {
-    validate_runtime_body(request, protocol_version, RuntimeBodyProfile::Live)
+    validate_runtime_body(request, RuntimeBodyProfile::Live)
 }
 
 fn validate_runtime_body(
     request: &ApplyRuntimeRequest,
-    protocol_version: ProtocolVersion,
     profile: RuntimeBodyProfile,
 ) -> Result<ValidatedRuntimeTemplateV1, ProtocolValidationError> {
     if !request.__buffa_unknown_fields.is_empty() {
@@ -159,9 +157,7 @@ fn validate_runtime_body(
         .filter(|action| *action != RuntimeAction::RUNTIME_ACTION_UNSPECIFIED)
         .ok_or(ProtocolValidationError::UnknownAction)?;
     let launch_plan = match (action, request.launch_plan.as_option()) {
-        (RuntimeAction::RUNTIME_ACTION_LAUNCH, Some(plan)) => {
-            Some(validate_runtime_plan(plan, protocol_version)?)
-        }
+        (RuntimeAction::RUNTIME_ACTION_LAUNCH, Some(plan)) => Some(validate_runtime_plan(plan)?),
         (RuntimeAction::RUNTIME_ACTION_LAUNCH, None) => {
             return Err(ProtocolValidationError::MissingField("launch_plan"));
         }
@@ -173,25 +169,17 @@ fn validate_runtime_body(
         .as_option()
         .map(validate_guardian_arm)
         .transpose()?;
-    match (profile, action, protocol_version, guardian_arm.is_some()) {
-        (RuntimeBodyProfile::Template, _, _, true) => {
+    match (profile, action, guardian_arm.is_some()) {
+        (RuntimeBodyProfile::Template, _, true) => {
             return Err(ProtocolValidationError::InvalidField("guardian_arm"));
         }
-        (RuntimeBodyProfile::Template, _, _, false) => {}
-        (
-            RuntimeBodyProfile::Live,
-            RuntimeAction::RUNTIME_ACTION_LAUNCH,
-            HOST_GUARDIAN_COMPANION_VERSION,
-            false,
-        ) => return Err(ProtocolValidationError::MissingField("guardian_arm")),
-        (
-            RuntimeBodyProfile::Live,
-            RuntimeAction::RUNTIME_ACTION_LAUNCH,
-            HOST_GUARDIAN_COMPANION_VERSION,
-            true,
-        )
-        | (RuntimeBodyProfile::Live, _, _, false) => {}
-        (RuntimeBodyProfile::Live, _, _, true) => {
+        (RuntimeBodyProfile::Template, _, false) => {}
+        (RuntimeBodyProfile::Live, RuntimeAction::RUNTIME_ACTION_LAUNCH, false) => {
+            return Err(ProtocolValidationError::MissingField("guardian_arm"));
+        }
+        (RuntimeBodyProfile::Live, RuntimeAction::RUNTIME_ACTION_LAUNCH, true)
+        | (RuntimeBodyProfile::Live, _, false) => {}
+        (RuntimeBodyProfile::Live, _, true) => {
             return Err(ProtocolValidationError::InvalidField("guardian_arm"));
         }
     }
@@ -221,7 +209,7 @@ fn validate_guardian_arm(
     })
 }
 
-/// Decodes the exact Guardian plan pair from a live Host 1.5 launch body.
+/// Decodes the exact Guardian plan pair from a live Host launch body.
 ///
 /// This structural helper has no peer or clock authority. It exists so a
 /// controller can revalidate byte-exact durable packets; Host still performs
@@ -230,7 +218,7 @@ fn validate_guardian_arm(
 /// # Errors
 ///
 /// Returns [`ProtocolValidationError`] unless the input is one bounded,
-/// deadline-bearing Host 1.5 launch with exactly one valid companion.
+/// deadline-bearing Host 1.0 launch with exactly one valid companion.
 pub fn decode_host_guardian_companion_v1(
     live_launch_body: &[u8],
 ) -> Result<ValidatedGuardianArmCompanionV1, ProtocolValidationError> {
@@ -244,17 +232,13 @@ pub fn decode_host_guardian_companion_v1(
         .as_option()
         .ok_or(ProtocolValidationError::MissingField("header"))?;
     validate_live_host_guardian_header(&request, header)?;
-    let validated = validate_runtime_body(
-        &request,
-        HOST_GUARDIAN_COMPANION_VERSION,
-        RuntimeBodyProfile::Live,
-    )?;
+    let validated = validate_runtime_body(&request, RuntimeBodyProfile::Live)?;
     validated
         .guardian_arm
         .ok_or(ProtocolValidationError::MissingField("guardian_arm"))
 }
 
-/// Adds the sole Host 1.5 Guardian companion to a live deadline-bearing launch body.
+/// Adds the sole Host Guardian companion to a live deadline-bearing launch body.
 ///
 /// The plan pair is structurally checked but remains untrusted. The Host and
 /// Guardian independently verify it against protected trust and the enclosing
@@ -263,7 +247,7 @@ pub fn decode_host_guardian_companion_v1(
 /// # Errors
 ///
 /// Returns [`ProtocolValidationError`] unless the input is a companion-free,
-/// deadline-bearing Host 1.5 launch body and the resulting request is bounded.
+/// deadline-bearing Host 1.0 launch body and the resulting request is bounded.
 pub fn encode_host_guardian_companion_v1(
     live_launch_body: &[u8],
     broker_plan: &[u8],
@@ -292,11 +276,7 @@ pub fn encode_host_guardian_companion_v1(
     };
     validate_guardian_arm(&companion)?;
     request.guardian_arm = Some(companion).into();
-    validate_runtime_body(
-        &request,
-        HOST_GUARDIAN_COMPANION_VERSION,
-        RuntimeBodyProfile::Live,
-    )?;
+    validate_runtime_body(&request, RuntimeBodyProfile::Live)?;
     let encoded = request.encode_to_vec();
     if encoded.len() > MAXIMUM_REQUEST_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);

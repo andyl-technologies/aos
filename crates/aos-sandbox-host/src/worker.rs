@@ -683,7 +683,7 @@ pub struct GuardianStartObservation {
     pub observation: GuardianObservation,
 }
 
-/// Returns a fully revalidated Host 1.5 payload and kernel proof.
+/// Returns a fully revalidated Host 1.0 payload and kernel proof.
 #[derive(Debug)]
 pub struct BoundPayloadVerification {
     /// Exact binding observed from the manager after the job.
@@ -810,7 +810,7 @@ pub trait HostWorker {
         ))
     }
 
-    /// Observes the manager-retained Host 1.5 payload binding and invocation.
+    /// Observes the manager-retained Host 1.0 payload binding and invocation.
     async fn observe_bound_payload(
         &self,
         _identity: &HostRuntimeIdentity,
@@ -820,7 +820,7 @@ pub trait HostWorker {
         ))
     }
 
-    /// Starts and fully verifies one already-committed Host 1.5 payload.
+    /// Starts and fully verifies one already-committed Host 1.0 payload.
     async fn start_bound_payload(
         &self,
         _spec: &SandboxUnitSpec,
@@ -1346,7 +1346,13 @@ mod tests {
         )
         .unwrap();
         let network = NamespaceFd::from_owned(network, NamespaceKind::Network).unwrap();
-        LaunchPins::for_tests(executable, workspace, network)
+        let attachment_anchor = rustix::fs::open(
+            "/",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        LaunchPins::for_tests(executable, workspace, network, attachment_anchor)
     }
 
     fn current_payload_proof() -> PinnedPayloadLeader {
@@ -1488,7 +1494,13 @@ mod tests {
         )
         .unwrap();
         let network = NamespaceFd::from_owned(network, NamespaceKind::Network).unwrap();
-        let pins = LaunchPins::for_tests(executable, workspace, network);
+        let attachment_anchor = rustix::fs::open(
+            "/",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let pins = LaunchPins::for_tests(executable, workspace, network, attachment_anchor);
         let pid = NonZeroU32::new(std::process::id()).unwrap();
         let leader = PinnedLeader {
             handle: [1; 32],

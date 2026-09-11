@@ -131,9 +131,7 @@ fn canonical_semantics(
             features.extend_from_slice(&feature.minor().to_be_bytes());
         }
         encoder.field(17, &features)?;
-        if let Some(handle) = plan.attachment_anchor_handle() {
-            encoder.field(18, handle)?;
-        }
+        encoder.field(18, plan.attachment_anchor_handle())?;
     } else {
         for tag in 10..=17 {
             encoder.field(tag, &[])?;
@@ -281,7 +279,8 @@ mod tests {
     use crate::{PeerCredentials, PeerPolicy, decode_runtime_request};
 
     fn request(action: RuntimeAction, deadline: u64) -> ValidatedRuntimeRequest {
-        request_with_anchor(action, deadline, None)
+        let anchor = (action == RuntimeAction::RUNTIME_ACTION_LAUNCH).then_some(11);
+        request_with_anchor(action, deadline, anchor)
     }
 
     fn request_with_anchor(
@@ -292,7 +291,7 @@ mod tests {
         let mut request = ApplyRuntimeRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = if anchor.is_some() { 3 } else { 1 };
+        header.protocol_minor = 0;
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = deadline;
@@ -331,6 +330,14 @@ mod tests {
                 major: 1,
                 ..Default::default()
             });
+            let (broker_plan, broker_plan_signature) = crate::tests::guardian_plan_pair();
+            request.guardian_arm =
+                Some(aos_proto::aos::sandbox::local::v1::GuardianArmCompanionV1 {
+                    broker_plan,
+                    broker_plan_signature,
+                    ..Default::default()
+                })
+                .into();
         }
         decode_runtime_request(
             &request.encode_to_vec(),

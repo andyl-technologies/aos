@@ -27,7 +27,7 @@ fn mount_scope_requires_distinct_signed_authority_for_the_exact_retained_scope()
         payload_scope_handle: vec![72; 32],
         ..Default::default()
     };
-    raw.header.get_or_insert_default().protocol_minor = 3;
+    raw.header.get_or_insert_default().protocol_minor = 0;
     raw.header.get_or_insert_default().audience = Audience::AUDIENCE_ROOT_MOUNT.into();
 
     let decode = |raw: &ObserveMountScopeRequest| {
@@ -112,7 +112,7 @@ fn query_for(launch: &[u8]) -> (Vec<u8>, ValidatedPayloadScopeRequest) {
         fence: launch.fence,
         ..Default::default()
     };
-    query.header.get_or_insert_default().protocol_minor = 2;
+    query.header.get_or_insert_default().protocol_minor = 0;
     query.header.get_or_insert_default().request_id = vec![91; 16];
     query
         .header
@@ -173,7 +173,7 @@ fn scope_artifacts(
     let plan = BrokerAuthorizationPlan::new(
         BrokerAudience::Host,
         ProtocolId::HostBroker,
-        ProtocolVersion::new(1, 1),
+        ProtocolVersion::new(1, 0),
         assignment,
         TEST_NODE,
         fixture.lease_signer.clone(),
@@ -250,7 +250,7 @@ fn install_fence(
             artifacts,
             &launch,
             launch_bytes,
-            ProtocolVersion::new(1, 1),
+            ProtocolVersion::new(1, 0),
             &clock(),
             None,
         )
@@ -374,7 +374,7 @@ async fn payload_scope_query_rejects_uninstalled_renewal_without_mutating_state(
         .apply_runtime(
             &launch,
             &original,
-            ProtocolVersion::new(1, 1),
+            ProtocolVersion::new(1, 0),
             peer(),
             policy(),
             || Ok(clock()),

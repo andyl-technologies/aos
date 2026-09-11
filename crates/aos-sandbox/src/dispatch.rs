@@ -374,7 +374,7 @@ impl BrokerDispatchAttemptV1 {
         })
     }
 
-    /// Binds a Host 1.5 launch and its Guardian arm plan to one exact lease.
+    /// Binds a Host 1.0 launch and its Guardian arm plan to one exact lease.
     ///
     /// The Guardian pair is inserted only after lease selection because its
     /// sole grant commits the current host boot and that lease's generation
@@ -384,7 +384,7 @@ impl BrokerDispatchAttemptV1 {
     /// # Errors
     ///
     /// Returns [`BrokerDispatchAttemptError`] unless the template is a
-    /// companion-free Host 1.5 launch, both plans and the lease have one exact
+    /// companion-free Host 1.0 launch, both plans and the lease have one exact
     /// assignment/node/ownership authority, the Guardian plan has one exact
     /// boot-and-lease-bound arm grant, and all validity and size bounds hold.
     #[cfg(test)]
@@ -402,7 +402,7 @@ impl BrokerDispatchAttemptV1 {
         if template.method != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
             || host_plan.audience() != BrokerAudience::Host
             || host_plan.protocol() != ProtocolId::HostBroker
-            || host_plan.protocol_version() != ProtocolVersion::new(1, 5)
+            || host_plan.protocol_version() != ProtocolVersion::new(1, 0)
             || host_template.action() != RuntimeAction::RUNTIME_ACTION_LAUNCH
             || host_template.guardian_arm().is_some()
         {
@@ -582,7 +582,7 @@ impl BrokerDispatchAttemptV1 {
         )
     }
 
-    /// Reconstructs a durable Host 1.5 launch with its exact Guardian companion.
+    /// Reconstructs a durable Host 1.0 launch with its exact Guardian companion.
     ///
     /// The persisted body is input only: this method extracts its structurally
     /// canonical Guardian pair, rederives the boot-and-lease grant, then
@@ -768,7 +768,7 @@ pub enum BrokerDispatchAttemptError {
     /// Lease assignment or node differs from the immutable plan.
     #[error("ownership lease does not match the dispatch template")]
     LeaseContextMismatch,
-    /// Host template is not the sole companion-free Host 1.5 launch shape.
+    /// Host template is not the sole companion-free Host 1.0 launch shape.
     #[error("dispatch template cannot carry a Guardian arm companion")]
     InvalidHostGuardianTemplate,
     /// Guardian plan differs from the Host plan, lease, or current boot.
@@ -882,7 +882,7 @@ fn validate_recovered_host_launch_template(
     if template.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
         || plan.audience() != BrokerAudience::Host
         || plan.protocol() != ProtocolId::HostBroker
-        || plan.protocol_version() != ProtocolVersion::new(1, 5)
+        || plan.protocol_version() != ProtocolVersion::new(1, 0)
         || body.action() != RuntimeAction::RUNTIME_ACTION_LAUNCH
         || body.guardian_arm().is_some()
     {
@@ -1637,7 +1637,7 @@ mod tests {
         let mut request = ApplyRuntimeRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 5;
+        header.protocol_minor = 0;
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.maximum_response_bytes = 4096;
@@ -1695,7 +1695,7 @@ mod tests {
         let host_plan = BrokerAuthorizationPlan::new(
             BrokerAudience::Host,
             ProtocolId::HostBroker,
-            ProtocolVersion::new(1, 5),
+            ProtocolVersion::new(1, 0),
             fixture.assignment,
             fixture.node,
             fixture.lease_authority.clone(),

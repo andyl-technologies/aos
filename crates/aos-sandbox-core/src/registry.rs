@@ -433,8 +433,9 @@ impl ProtocolVersion {
 
 /// Negotiates one protocol independently from every other compatibility domain.
 ///
-/// Mount and Storage have single exact baselines. Other domains retain their
-/// existing same-major compatibility policy until their independent cutovers.
+/// Host, Mount, and Storage have single exact baselines. Other domains retain
+/// their existing same-major compatibility policy until their independent
+/// cutovers.
 ///
 /// # Errors
 ///
@@ -447,7 +448,7 @@ pub fn negotiate_protocol(
     let local = protocol_version(protocol);
     let compatible = if matches!(
         protocol,
-        ProtocolId::MountBroker | ProtocolId::StorageBroker
+        ProtocolId::HostBroker | ProtocolId::MountBroker | ProtocolId::StorageBroker
     ) {
         offered == local
     } else {
@@ -468,7 +469,7 @@ pub fn negotiate_protocol(
 
 const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
     match protocol {
-        ProtocolId::HostBroker => ProtocolVersion::new(1, 5),
+        ProtocolId::HostBroker => ProtocolVersion::new(1, 0),
         ProtocolId::MountBroker => ProtocolVersion::new(1, 0),
         ProtocolId::StorageBroker => ProtocolVersion::new(1, 0),
         ProtocolId::NetworkBroker => ProtocolVersion::new(1, 2),
@@ -621,29 +622,15 @@ mod tests {
             ));
         }
         assert_eq!(
-            negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 1)),
-            Ok(ProtocolVersion::new(1, 1))
+            negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 0)),
+            Ok(ProtocolVersion::new(1, 0))
         );
-        assert_eq!(
-            negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 2)),
-            Ok(ProtocolVersion::new(1, 2))
-        );
-        assert_eq!(
-            negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 3)),
-            Ok(ProtocolVersion::new(1, 3))
-        );
-        assert_eq!(
-            negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 4)),
-            Ok(ProtocolVersion::new(1, 4))
-        );
-        assert_eq!(
-            negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 5)),
-            Ok(ProtocolVersion::new(1, 5))
-        );
-        assert!(matches!(
-            negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 6)),
-            Err(RegistryError::IncompatibleProtocol { .. })
-        ));
+        for version in [ProtocolVersion::new(1, 1), ProtocolVersion::new(2, 0)] {
+            assert!(matches!(
+                negotiate_protocol(ProtocolId::HostBroker, version),
+                Err(RegistryError::IncompatibleProtocol { .. })
+            ));
+        }
         assert_eq!(
             negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 0)),
             Ok(ProtocolVersion::new(1, 0))

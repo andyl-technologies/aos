@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! CurrentNamespaceTarget + Mount intent
-//!     -> authorized Host 1.3 ObserveMountScope packet
+//!     -> authorized Host 1.0 ObserveMountScope packet
 //!     -> unauthenticated Mount 1.0 PrepareMountCatalog packet
 //!     -> opaque commitment + unchanged exclusive deadline
 //! ```
@@ -57,7 +57,7 @@ use crate::{BrokerDispatchTemplateError, BrokerDispatchTemplateV1, SignedBrokerP
 pub(crate) mod transport;
 
 const MOUNT_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
-const HOST_VERSION: ProtocolVersion = ProtocolVersion::new(1, 3);
+const HOST_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const MOUNT_METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG;
 const HOST_METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE;
 const RESPONSE_BYTES: u32 = 16 * 1024;
