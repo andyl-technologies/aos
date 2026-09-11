@@ -102,6 +102,7 @@ pub(super) fn build(
                 capabilities: None,
                 environment: None,
                 assessment: None,
+                native_adapter_matrix: None,
                 case_digest: case.digest()?,
                 executor_digest,
                 environment_digest: Sha256Digest::separated(

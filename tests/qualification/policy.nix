@@ -331,10 +331,13 @@ in
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
   assert nativeAdapterMatrix.cell_count == 1316;
-  assert nativeAdapterMatrix.missing_production_vm_cells == 1316;
+  assert nativeAdapterMatrix.required_production_vm_cells == 1316;
+  assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
+  assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.cells;
   assert abilityRequirements.ability-native-adapter-matrix.checks == [nativeAdapterMatrix.check];
   assert rejectsNativeMatrix {cells = remainingNativeCells;};
   assert rejectsNativeMatrix {cells = [firstNativeCell] ++ nativeCells;};
+  assert rejectsNativeMatrix {cells = [(builtins.elemAt nativeCells 1) firstNativeCell] ++ lib.drop 2 nativeCells;};
   assert rejectsNativeMatrix {subject = nativeAdapterMatrix.subject // {surface_digest = "sha256:stale";};};
   assert rejectsNativeMatrix {
     surface =
@@ -353,12 +356,6 @@ in
     regressions =
       builtins.filter (regression: regression != "checks.fleet.ability-native-postgresql")
       abilityRequirements.ability-native-adapter-matrix.regressions;
-  };
-  assert rejectsNativeMatrix {
-    cells = replaceFirstNativeCell (firstNativeCell
-      // {
-        subject = firstNativeCell.subject // {surface_digest = "sha256:stale";};
-      });
   };
   assert rejectsNativeMatrix {
     cells = replaceFirstNativeCell (firstNativeCell
@@ -382,13 +379,17 @@ in
   assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {method = "foreign";});};
   assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {scope = "host-manager";});};
   assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {boundary = "deadline";});};
-  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {failure = "none";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {failure = "foreign";});};
   assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {predecessor = "foreign";});};
   assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {candidate = "foreign";});};
   assert rejectsNativeMatrix {
     cells = replaceFirstNativeCell (firstNativeCell
       // {
-        evidence = firstNativeCell.evidence // {regressions = ["checks.fleet.foreign"];};
+        evidence = {
+          environment = "production-vm";
+          status = "passed";
+          regressions = ["checks.fleet.foreign"];
+        };
       });
   };
   assert builtins.all (requirement:

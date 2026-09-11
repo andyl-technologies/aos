@@ -43,13 +43,14 @@
     adapter_count = 12;
     method_count = 47;
     scenario_count = 28;
-    interfaces =
+    interfaces = builtins.sort (left: right: builtins.lessThan left.name right.name) (
       map (adapter: {
         name = adapter.interface_name;
         abi = adapter.interface_abi;
         descriptor = adapter.interface_descriptor;
       })
-      surface.adapters;
+      surface.adapters
+    );
   };
   selectedSubject =
     if subject == null
@@ -92,7 +93,6 @@
   cellFor = pair: scenario: {
     id = "${pair.adapter.adapter}/${pair.adapter.interface_name}/abi-${toString pair.adapter.interface_abi}/${pair.method.method}/${scenario.id}";
     matrix_schema = surface.matrix_schema;
-    subject = canonicalSubject;
     adapter = pair.adapter.adapter;
     interface = {
       name = pair.adapter.interface_name;
@@ -114,33 +114,28 @@
       reconcile = pair.method.reconcile;
       cancel = pair.method.cancel;
     };
-    evidence = {
-      environment = "production-vm";
-      status = "missing";
-      regressions = [];
-    };
     invalidated_by = requiredInvalidation;
   };
-  expectedCells = builtins.concatMap (pair: map (cellFor pair) surface.scenarios) adapterMethods;
-  matrixDigest = builtins.hashString "sha256" (builtins.toJSON expectedCells);
+  expectedCells = builtins.sort (left: right: builtins.lessThan left.id right.id) (
+    builtins.concatMap (pair: map (cellFor pair) surface.scenarios) adapterMethods
+  );
   selectedCells =
     if cells == null
     then expectedCells
     else cells;
-  expectedById = builtins.listToAttrs (map (cell: {
-      name = cell.id;
-      value = cell;
-    })
-    expectedCells);
+  matrixSpec = {
+    schema = "aos.qualification.native-adapter-matrix-spec/v1";
+    inherit surface;
+    subject = canonicalSubject;
+    cells = selectedCells;
+  };
+  matrixDigest = builtins.hashString "sha256" (builtins.toJSON matrixSpec);
   selectedIds = map (cell: cell.id or "") selectedCells;
   exactCells =
     builtins.length selectedCells
     == builtins.length expectedCells
     && unique selectedIds
-    && builtins.all (cell:
-      builtins.hasAttr (cell.id or "") expectedById
-      && cell == expectedById.${cell.id})
-    selectedCells;
+    && selectedCells == expectedCells;
   validMethod = method:
     builtins.attrNames method
     == expectedMethodKeys
@@ -222,12 +217,11 @@ in
   assert exactCells; {
     schema = surface.matrix_schema;
     subject = canonicalSubject;
+    spec = matrixSpec;
     matrix_digest = "sha256:${matrixDigest}";
     cells = selectedCells;
     cell_count = builtins.length selectedCells;
-    missing_production_vm_cells = builtins.length (
-      builtins.filter (cell: cell.evidence.status == "missing") selectedCells
-    );
+    required_production_vm_cells = builtins.length selectedCells;
     inherit check;
     requirement = {
       phase = "staging";

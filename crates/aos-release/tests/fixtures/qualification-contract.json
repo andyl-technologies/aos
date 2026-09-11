@@ -161,7 +161,7 @@
     },
     {
       "checks": [
-        "native-adapter-matrix-v1-sha256-17ea1abb4ab4c2e76981ba77d8959cfc8167be9f520f8c05672ad01ed4870c16"
+        "native-adapter-matrix-v1-sha256-e14d9a93689128fe502a5099abb8159c3984b9190ce815e817be22725812f03e"
       ],
       "id": "ability-native-adapter-matrix",
       "invalidated_by": [

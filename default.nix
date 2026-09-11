@@ -358,6 +358,7 @@
     inherit lib;
     packageNames = qualificationPackageNames;
   };
+  nativeAdapterMatrix = import ./qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
   qualificationReportScenario = testing.mkQualificationReportScenario {
     name = "aos-qualification-${hostPlatform.system}-report";
@@ -430,6 +431,12 @@
       inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+    ability-native-adapter-matrix = testing.mkQualificationNativeAdapterMatrixScenario {
+      name = "aos-qualification-ability-native-adapter-matrix";
+      identity = qualificationExecutorIdentity;
+      matrixSpec = nativeAdapterMatrix.spec;
+      matrixCheck = nativeAdapterMatrix.check;
+    };
     ability-native-activation =
       mkNativeAbilityScenario
       "ability-native-activation"

@@ -36,6 +36,10 @@ mod qualification_fixture;
 #[path = "qualification/assurance_tests.rs"]
 mod assurance_tests;
 
+#[cfg(test)]
+#[path = "qualification/native_adapter_matrix_tests.rs"]
+mod native_adapter_matrix_tests;
+
 pub mod artifact;
 pub mod artifact_profile;
 pub mod build;

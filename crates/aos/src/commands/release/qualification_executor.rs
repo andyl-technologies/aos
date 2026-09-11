@@ -27,7 +27,11 @@ use aos_release::platform::Platform;
 use aos_release::qualification::QualificationPhase;
 use aos_release::qualification::claims::CompatibilityAssessment;
 use aos_release::qualification::environment::EnvironmentInventory;
-use aos_release::qualification_evidence::{CheckObservation, QualificationObservation};
+use aos_release::qualification_evidence::{
+    CheckObservation, NATIVE_ADAPTER_MATRIX_REQUIREMENT, NativeAdapterMatrixObservation,
+    QualificationObservation, native_adapter_matrix_check,
+    validate_native_adapter_matrix_observation,
+};
 use reqwest::header::{CONTENT_RANGE, RANGE};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -52,6 +56,7 @@ struct ScenarioRegistry {
 
 /// Common evidence fields embedded in every canonical native scenario report.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ScenarioReport {
     schema_version: String,
     registry: String,
@@ -70,6 +75,8 @@ struct ScenarioReport {
     assessment: Option<CompatibilityAssessment>,
     #[serde(default)]
     capabilities: Option<aos_release::qualification::capabilities::CapabilityEvidence>,
+    #[serde(default)]
+    native_adapter_matrix: Option<NativeAdapterMatrixObservation>,
 }
 
 #[derive(Serialize)]
@@ -224,16 +231,42 @@ fn build_response(
             .context("scenario report lacks its execution environment inventory")?;
         Sha256Digest::of_bytes(&canonical::canonical_json(value)?)
     };
-    let passed = fields.checks.values().all(|check| check.passed);
+    let executor_digest = Sha256Digest::of_bytes(registry_bytes);
+    let (checks, native_adapter_matrix) =
+        if case.requirement_id == NATIVE_ADAPTER_MATRIX_REQUIREMENT {
+            let matrix = fields.native_adapter_matrix.ok_or_else(|| {
+                anyhow::anyhow!("native adapter matrix report lacks exact per-cell evidence")
+            })?;
+            let passed = validate_native_adapter_matrix_observation(
+                case,
+                environment_digest,
+                executor_digest,
+                &matrix,
+            )?;
+            let check_name = case.checks.first().ok_or_else(|| {
+                anyhow::anyhow!("native adapter matrix case lacks its policy check")
+            })?;
+            (
+                BTreeMap::from([(
+                    check_name.clone(),
+                    native_adapter_matrix_check(&matrix, passed)?,
+                )]),
+                Some(matrix),
+            )
+        } else {
+            (fields.checks, None)
+        };
+    let passed = checks.values().all(|check| check.passed);
     let evidence = EvidenceRecord {
         qualification: Some(QualificationObservation {
             capabilities: fields.capabilities,
             environment,
             assessment: fields.assessment,
+            native_adapter_matrix,
             case_digest: case.digest()?,
-            executor_digest: Sha256Digest::of_bytes(&registry_bytes),
+            executor_digest,
             environment_digest,
-            checks: fields.checks,
+            checks,
             observed_seconds: fields.observed_seconds,
             operations: fields.operations,
             predecessor: case.predecessor.clone(),
@@ -281,21 +314,28 @@ fn validate_report_fields(
     {
         bail!("scenario report identity differs from the exact qualification request");
     }
-    let required = case
-        .checks
-        .iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    let actual = report
-        .checks
-        .keys()
-        .collect::<std::collections::BTreeSet<_>>();
-    if actual != required
-        || report
+    if case.requirement_id == NATIVE_ADAPTER_MATRIX_REQUIREMENT {
+        if !report.checks.is_empty() || report.native_adapter_matrix.is_none() {
+            bail!("native adapter matrix report must leave its aggregate check to the coordinator");
+        }
+    } else {
+        let required = case
             .checks
-            .values()
-            .any(|check| check.detail.trim().is_empty())
-    {
-        bail!("scenario report checks differ from the exact qualification case");
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual = report
+            .checks
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>();
+        if report.native_adapter_matrix.is_some()
+            || actual != required
+            || report
+                .checks
+                .values()
+                .any(|check| check.detail.trim().is_empty())
+        {
+            bail!("scenario report checks differ from the exact qualification case");
+        }
     }
     let start = humantime::parse_rfc3339(&report.started_at)?;
     let finish = humantime::parse_rfc3339(&report.finished_at)?;
@@ -686,6 +726,9 @@ fn select<'a>(
 mod tests {
     use super::*;
 
+    const MATRIX_REGISTRY_BYTES: &[u8] =
+        br#"{"schema_version":"aos.release.qualification-scenarios/v2"}"#;
+
     fn package_case() -> aos_release::qualification_evidence::QualificationCase {
         aos_release::qualification_evidence::QualificationCase {
             schema_version: Some("aos.release.qualification-case/v2".into()),
@@ -759,6 +802,214 @@ mod tests {
                 "platform": "x86_64-linux"
             }
         })
+    }
+
+    fn matrix_spec() -> Result<aos_release::qualification_evidence::NativeAdapterMatrixSpec> {
+        use aos_release::qualification_evidence::NativeAdapterSurfaceSpec;
+
+        let interface = serde_json::json!({
+            "name": "aos.fixture-effects",
+            "abi": 1,
+            "descriptor": Sha256Digest::of_bytes(b"interface descriptor"),
+        });
+        let surface = serde_json::from_value::<NativeAdapterSurfaceSpec>(serde_json::json!({
+            "adapters": [{
+                "adapter": "fixture",
+                "interface_abi": 1,
+                "interface_descriptor": Sha256Digest::of_bytes(b"interface descriptor"),
+                "interface_name": "aos.fixture-effects",
+                "methods": [{
+                    "cancel": null,
+                    "effect_class": "mutation",
+                    "method": "apply",
+                    "reconcile": "apply",
+                }],
+                "scope": "host-resource",
+            }],
+            "limits": {
+                "max_adapters": 1,
+                "max_methods": 1,
+                "max_scenarios": 1,
+            },
+            "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+            "scenarios": [{
+                "boundary": "before-external-effect",
+                "candidate": "same",
+                "failure": "injected-interruption",
+                "id": "interruption",
+                "predecessor": "same",
+            }],
+            "schema": "aos.qualification.native-adapter-surface/v1",
+            "subject_schema": "aos.qualification.native-adapter-subject/v1",
+        }))?;
+        let surface_digest = Sha256Digest::of_bytes(canonical::to_vec(&surface)?);
+        Ok(serde_json::from_value(serde_json::json!({
+            "schema": "aos.qualification.native-adapter-matrix-spec/v1",
+            "surface": surface,
+            "subject": {
+                "schema": "aos.qualification.native-adapter-subject/v1",
+                "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+                "surface_digest": surface_digest,
+                "adapter_count": 1,
+                "method_count": 1,
+                "scenario_count": 1,
+                "interfaces": [interface.clone()],
+            },
+            "cells": [{
+                "id": "fixture/aos.fixture-effects/abi-1/apply/interruption",
+                "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+                "adapter": "fixture",
+                "interface": interface,
+                "method": "apply",
+                "effect_class": "mutation",
+                "scope": "host-resource",
+                "boundary": "before-external-effect",
+                "failure": "injected-interruption",
+                "predecessor": "same",
+                "candidate": "same",
+                "postconditions": [
+                    "durable-attempt-state-classified",
+                    "at-most-one-resource-owner",
+                    "foreign-resources-unchanged",
+                    "dependent-effects-not-executed",
+                ],
+                "recovery": {"reconcile": "apply", "cancel": null},
+                "invalidated_by": ["subject", "policy", "executor", "environment"],
+            }],
+        }))?)
+    }
+
+    fn matrix_case() -> Result<aos_release::qualification_evidence::QualificationCase> {
+        let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&matrix_spec()?)?);
+        let mut case = package_case();
+        case.id = "ability-native-adapter-matrix/release".into();
+        case.requirement_id = NATIVE_ADAPTER_MATRIX_REQUIREMENT.into();
+        case.package_role = None;
+        case.subjects = vec!["package/example/x86_64-linux".into()];
+        case.checks = vec![format!(
+            "native-adapter-matrix-v1-sha256-{}",
+            spec_digest.hex()
+        )];
+        case.predecessor = Some(
+            aos_release::qualification_evidence::QualificationPredecessor {
+                registry: "andyl/testing".into(),
+                release_id: "release-2026.8.0".into(),
+                manifest_digest: Sha256Digest::of_bytes(b"predecessor manifest"),
+            },
+        );
+        Ok(case)
+    }
+
+    fn matrix_report() -> Result<serde_json::Value> {
+        use aos_release::qualification_evidence::{
+            NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NativeAdapterCellObservation,
+            NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
+            NativeAdapterMatrixObservation,
+        };
+
+        let case = matrix_case()?;
+        let spec = matrix_spec()?;
+        let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&spec)?);
+        let environment = NativeAdapterMatrixEnvironment {
+            schema_version: "aos.release.native-adapter-matrix-environment/v1".into(),
+            status: NativeAdapterMatrixEnvironmentStatus::Unqualified,
+            platform: Platform::X86_64Linux,
+            spec_digest,
+            scenario_registry_digest: Sha256Digest::of_bytes(MATRIX_REGISTRY_BYTES),
+            candidate_subjects_digest: case.subjects_digest,
+            predecessor_manifest_digest: case
+                .predecessor
+                .as_ref()
+                .context("matrix fixture case lacks its predecessor")?
+                .manifest_digest,
+            unqualified_reason: Some("production cohort unavailable".into()),
+            cohort: None,
+            qemu: None,
+            firmware: None,
+            guest_kernel: None,
+            fault_injection_tool: None,
+            harness: None,
+        };
+        let environment_digest = Sha256Digest::of_bytes(canonical::to_vec(&environment)?);
+        let cells = spec
+            .cells
+            .iter()
+            .map(|cell| {
+                Ok(NativeAdapterCellObservation {
+                    id: cell.id.clone(),
+                    cell_digest: Sha256Digest::of_bytes(canonical::to_vec(cell)?),
+                    environment_digest,
+                    postconditions: cell
+                        .postconditions
+                        .iter()
+                        .map(|postcondition| {
+                            (
+                                postcondition.clone(),
+                                CheckObservation {
+                                    passed: false,
+                                    detail: "unqualified fixture cell".into(),
+                                },
+                            )
+                        })
+                        .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let matrix = NativeAdapterMatrixObservation {
+            schema_version: NATIVE_ADAPTER_MATRIX_OBSERVATION_V1.into(),
+            spec,
+            spec_digest,
+            environment: environment.clone(),
+            cells,
+        };
+        let mut report = package_report();
+        report["case_digest"] = serde_json::to_value(case.digest()?)?;
+        report["checks"] = serde_json::json!({});
+        let postcondition_count = matrix
+            .cells
+            .iter()
+            .map(|cell| cell.postconditions.len())
+            .sum::<usize>();
+        report["operations"] = serde_json::json!({
+            "matrix_cells_reported": matrix.cells.len(),
+            "matrix_postconditions_reported": postcondition_count,
+        });
+        report["environment"] = serde_json::to_value(environment)?;
+        report["native_adapter_matrix"] = serde_json::to_value(matrix)?;
+        Ok(report)
+    }
+
+    fn matrix_request() -> Result<QualificationExecutorRequestV1> {
+        let case = matrix_case()?;
+        let mut request = package_request()?;
+        request.policy_id.clone_from(&case.requirement_id);
+        request.policy_digest = case.policy_digest;
+        request.subjects.clone_from(&case.subjects);
+        request.qualification_case = Some(case);
+        request.schema_version = aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V3.into();
+        request.retained_predecessor = Some(aos_release::evidence::QualificationRetainedBundleV1 {
+            bundle_path: "/srv/aos/predecessor".into(),
+            objects: vec![
+                aos_release::evidence::QualificationRetainedObjectV1 {
+                    artifact_id: "control/release-manifest-envelope".into(),
+                    source_path: "/srv/aos/predecessor/release-manifest.json".into(),
+                    size_bytes: 40,
+                    sha256: Sha256Digest::of_bytes(b"manifest envelope"),
+                },
+                aos_release::evidence::QualificationRetainedObjectV1 {
+                    artifact_id: "package/example/x86_64-linux".into(),
+                    source_path: "/srv/aos/predecessor/example.nar.zst".into(),
+                    size_bytes: 42,
+                    sha256: Sha256Digest::of_bytes(b"predecessor nar"),
+                },
+            ],
+            trusted_keys: vec![aos_release::evidence::QualificationTrustedKeyV1 {
+                key_id: "release-2026".into(),
+                public_key_hex: "11".repeat(32),
+            }],
+        });
+        request.validate()?;
+        Ok(request)
     }
 
     #[test]
@@ -1001,6 +1252,118 @@ mod tests {
         report["manifest_digest"] = serde_json::json!(Sha256Digest::of_bytes(b"other"));
         let fields: ScenarioReport = serde_json::from_value(report)?;
         assert!(validate_report_fields(&request, &case, &fields).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn matrix_report_reserves_the_aggregate_check_for_the_coordinator() -> Result<()> {
+        let case = matrix_case()?;
+        let request = matrix_request()?;
+
+        let report = matrix_report()?;
+        let fields: ScenarioReport = serde_json::from_value(report.clone())?;
+        validate_report_fields(&request, &case, &fields)?;
+
+        let mut claimed = report;
+        claimed["checks"] = serde_json::to_value(BTreeMap::from([(
+            case.checks[0].clone(),
+            CheckObservation {
+                passed: true,
+                detail: "producer supplied an aggregate status".into(),
+            },
+        )]))?;
+        let fields: ScenarioReport = serde_json::from_value(claimed)?;
+        assert!(validate_report_fields(&request, &case, &fields).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_matrix_response_is_retained_but_cannot_claim_success() -> Result<()> {
+        let request = matrix_request()?;
+        let report = matrix_report()?;
+        let report_bytes = canonical::to_vec(&report)?;
+        let fields: ScenarioReport = serde_json::from_value(report.clone())?;
+        let mut response = build_response(
+            &request,
+            MATRIX_REGISTRY_BYTES,
+            &report_bytes,
+            report,
+            fields,
+            "linux-x86-v1",
+        )?;
+
+        assert_eq!(response.evidence.result, GateResult::Failed);
+
+        let changed_registry =
+            br#"{"schema_version":"aos.release.qualification-scenarios/v2","scenarios":{}}"#;
+        assert_ne!(
+            Sha256Digest::of_bytes(MATRIX_REGISTRY_BYTES),
+            Sha256Digest::of_bytes(changed_registry),
+        );
+        assert!(
+            qualification_run::verify_executor_response(&request, "linux-x86-v1", &response,)
+                .is_ok()
+        );
+        let changed_report = matrix_report()?;
+        let changed_report_bytes = canonical::to_vec(&changed_report)?;
+        let changed_fields: ScenarioReport = serde_json::from_value(changed_report.clone())?;
+        assert!(
+            build_response(
+                &request,
+                changed_registry,
+                &changed_report_bytes,
+                changed_report,
+                changed_fields,
+                "linux-x86-v1",
+            )
+            .is_err()
+        );
+
+        response.evidence.result = GateResult::Passed;
+        assert!(
+            qualification_run::verify_executor_response(&request, "linux-x86-v1", &response,)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_nonmatrix_blocking_response_remains_rejected() -> Result<()> {
+        let request = package_request()?;
+        let mut report = package_report();
+        report["checks"]["functional-behavior"]["passed"] = serde_json::Value::Bool(false);
+        let report_bytes = canonical::to_vec(&report)?;
+        let fields: ScenarioReport = serde_json::from_value(report.clone())?;
+        let registry_bytes = br#"{"schema_version":"aos.release.qualification-scenarios/v1"}"#;
+
+        assert!(
+            build_response(
+                &request,
+                registry_bytes,
+                &report_bytes,
+                report,
+                fields,
+                "linux-x86-v1",
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scenario_report_rejects_inapplicable_matrix_and_unknown_fields() -> Result<()> {
+        let case = package_case();
+        let request = package_request()?;
+
+        let mut report = matrix_report()?;
+        report["case_digest"] = serde_json::to_value(case.digest()?)?;
+        report["checks"] = package_report()["checks"].clone();
+        let fields: ScenarioReport = serde_json::from_value(report)?;
+        assert!(validate_report_fields(&request, &case, &fields).is_err());
+
+        let mut report = package_report();
+        report["passed"] = serde_json::Value::Bool(true);
+        assert!(serde_json::from_value::<ScenarioReport>(report).is_err());
         Ok(())
     }
 }
