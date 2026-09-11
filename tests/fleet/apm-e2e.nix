@@ -316,7 +316,9 @@ in {
           # `anonymous_read = true`.
           with_store_namespace ${pkgs.aos}/bin/aos cache push ${storePath} \\
             --to http://127.0.0.1:15000/default --token "$PROV" 2>&1
-          chown -R aos-gitd:aos-gitd "$AOS_ROOT/store" "$AOS_ROOT/var/nix"
+          cache_owner=$(id -u aos-gitd):$(id -g aos-gitd)
+          with_store_namespace ${pkgs.coreutils}/bin/chown -R "$cache_owner" \\
+            "$AOS_ROOT/store" "$AOS_ROOT/var/nix"
           NARINFO=$(curl -sf \\
             "http://127.0.0.1:15000/default/${testPkg.storeHash}.narinfo")
           NAR_HASH=$(echo "$NARINFO" | awk '/^NarHash:/ {{print $2}}')
