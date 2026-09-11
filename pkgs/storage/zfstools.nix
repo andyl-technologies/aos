@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   ruby,
   zfs,
   coreutils,
@@ -42,7 +44,11 @@ in
 
           for script in "$out"/bin/*; do
             sed -i '1c #!${ruby}/bin/ruby' "$script"
-            chmod 0755 "$script"
+            ${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # GetoptLong is a bundled gem; activate its loader explicitly
+            # when the cross-built interpreter omits automatic gem startup.
+            sed -i '2i require "rubygems"' "$script"
+          ''}chmod 0755 "$script"
           done
 
           # The upstream library intentionally invokes the ZFS and optional
