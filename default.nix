@@ -1323,6 +1323,10 @@ in {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
+    image-matrix = testing.mkImageMatrix {
+      systems = discoverSystems;
+      sourceIdentity = toString ./.;
+    };
     qualification = import ./tests/qualification {
       inherit pkgs lib build fleet container;
       packageCoverage = qualificationPackageCoverageReport;
