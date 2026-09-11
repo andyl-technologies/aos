@@ -476,7 +476,10 @@ in {
           interface = validation.interface;
           method = "validate";
         };
-        cancel = null;
+        cancel = {
+          interface = validation.interface;
+          method = "validate";
+        };
         compensate = null;
       };
     };
@@ -516,7 +519,10 @@ in {
           interface = validation.interface;
           method = "record";
         };
-        cancel = null;
+        cancel = {
+          interface = validation.interface;
+          method = "record";
+        };
         compensate = null;
       };
     };
@@ -561,7 +567,15 @@ in {
             method = "observe";
           }
           else null;
-        cancel = null;
+        # Active state cannot prove that start or reload took effect. A stopped
+        # state is an exact postcondition for cancelling Stop.
+        cancel =
+          if action == "stop"
+          then {
+            interface = serviceTerminal.interface;
+            method = "observe";
+          }
+          else null;
         compensate = null;
       };
     };
@@ -600,7 +614,10 @@ in {
           interface = serviceTerminal.interface;
           method = "observe";
         };
-        cancel = null;
+        cancel = {
+          interface = serviceTerminal.interface;
+          method = "observe";
+        };
         compensate = null;
       };
     };
@@ -640,7 +657,10 @@ in {
           interface = validation.interface;
           method = "release";
         };
-        cancel = null;
+        cancel = {
+          interface = validation.interface;
+          method = "release";
+        };
         compensate = null;
       };
     };

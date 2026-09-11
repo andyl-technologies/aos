@@ -1092,6 +1092,84 @@ fn boundary_source_error_survives_and_reopens_into_fresh_reconciliation()
     Ok(())
 }
 
+#[test]
+fn checked_cancellation_reports_exact_admitted_boundaries() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = RuntimeFixture::with_plan(checked_cancellation_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let mut adapter = RecoveryAdapter::default();
+    let cancellation = CancellationToken::default();
+    let admitted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &TestClock,
+        )
+        .map_err(admission_error)?;
+    let expected_transaction = admitted.transaction().clone();
+    let expected_operation = admitted.operation_id().clone();
+    let expected_attempt = admitted.attempt();
+    let mut observer = RecordingBoundaryObserver::default();
+    assert_eq!(
+        transaction.drive_admitted(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &cancellation,
+        )?,
+        ExecutionStep::Indeterminate
+    );
+    cancellation.cancel();
+
+    let step = transaction.cancel_admitted_with_observer(
+        &admitted,
+        &mut adapter,
+        &mut policy,
+        &TestClock,
+        &cancellation,
+        &mut observer,
+    )?;
+
+    assert_eq!(step, ExecutionStep::Indeterminate);
+    assert_eq!(
+        observer.observations,
+        [
+            (
+                expected_transaction.clone(),
+                expected_operation.clone(),
+                expected_attempt,
+                InvocationPurpose::Cancel,
+                crate::execution::Boundary::CancellationIntentDurable,
+            ),
+            (
+                expected_transaction.clone(),
+                expected_operation.clone(),
+                expected_attempt,
+                InvocationPurpose::Cancel,
+                crate::execution::Boundary::CancellationReturned,
+            ),
+            (
+                expected_transaction,
+                expected_operation,
+                expected_attempt,
+                InvocationPurpose::Cancel,
+                crate::execution::Boundary::CancellationOutcomeDurable,
+            ),
+        ]
+    );
+    assert!(matches!(
+        transaction.history(fixture.operation())?.state(),
+        OperationState::Indeterminate { attempt, .. } if *attempt == expected_attempt
+    ));
+    Ok(())
+}
+
 fn reconcile_published_effect(
     fixture: &RuntimeFixture,
     store: &mut TestStore,
@@ -2173,6 +2251,19 @@ fn checked_recovery_plan() -> aos_ability_validate::CheckedEffectPlan {
         .expect("reconcilable runtime fixture must pass production validation")
 }
 
+fn checked_cancellation_plan() -> aos_ability_validate::CheckedEffectPlan {
+    let mut fixture = recovery_plan_fixture(0);
+    let operation = &mut fixture.effect_plan.operations[0];
+    operation.recovery.cancel = Some(MethodReference {
+        interface: operation.interface.clone(),
+        method: operation.method.clone(),
+    });
+    fixture.refresh_interface();
+    fixture
+        .validate()
+        .expect("cancellation runtime fixture must pass production validation")
+}
+
 fn checked_terminal_compensation_plan() -> aos_ability_validate::CheckedEffectPlan {
     let mut fixture = recovery_plan_fixture(0);
     let operation = &mut fixture.effect_plan.operations[0];
@@ -2572,6 +2663,34 @@ impl AdapterCompletion for TestRecord {
 #[derive(Default)]
 struct HaltAfterEffectReturn {
     effect_returned: Option<(TransactionId, OperationId)>,
+}
+
+#[derive(Default)]
+struct RecordingBoundaryObserver {
+    observations: Vec<(
+        TransactionId,
+        OperationId,
+        NonZeroU32,
+        InvocationPurpose,
+        crate::execution::Boundary,
+    )>,
+}
+
+impl ExecutionBoundaryObserver for RecordingBoundaryObserver {
+    fn observe(
+        &mut self,
+        observation: ExecutionBoundaryObservation<'_>,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        self.observations.push((
+            observation.transaction().clone(),
+            observation.operation().clone(),
+            observation.attempt(),
+            observation.purpose(),
+            observation.boundary(),
+        ));
+        Ok(ExecutionBoundaryControl::Continue)
+    }
 }
 
 impl ExecutionBoundaryObserver for HaltAfterEffectReturn {
