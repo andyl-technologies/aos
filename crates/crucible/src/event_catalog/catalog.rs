@@ -173,16 +173,16 @@ pub(super) static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: &["boundary"],
     },
     EventKindCatalogEntry {
-        kind: "execution_budget_exhausted",
-        class: SchedulerEventLogClass::Causal,
-        sources: &["engine"],
-        attributes: &["budget_kind"],
-    },
-    EventKindCatalogEntry {
         kind: "event_activated",
         class: SchedulerEventLogClass::Causal,
         sources: &["scenario"],
         attributes: &["event", "summary"],
+    },
+    EventKindCatalogEntry {
+        kind: "execution_budget_exhausted",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: &["budget_kind"],
     },
     EventKindCatalogEntry {
         kind: "fault_opportunity",
@@ -505,8 +505,8 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
             "effect_committed",
             "effect_rejected",
             "evaluation_boundary",
-            "execution_budget_exhausted",
             "event_activated",
+            "execution_budget_exhausted",
             "fault_opportunity",
             "fork",
             "io_completion",

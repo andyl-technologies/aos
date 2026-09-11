@@ -13,7 +13,7 @@ use crucible::{
 };
 
 const EXPECTED_CATALOG_HASH: &str =
-    "ea64dd51eab1e49435c28fd9eeb6d94dafd6d4cd2089f4cba509035ec81facde";
+    "50c440576c24fb6b5a10359c231fb551e7b63e7b7f26ae231fd9f421db0aa139";
 
 #[test]
 fn event_kind_catalog_is_versioned_sorted_and_single_source_for_classes() {

@@ -23,7 +23,7 @@
 //! checkpoint-parallel replay, [`native_event_segment`] decodes retained
 //! production event segments for bounded diagnostics, and [`spec_index`] owns
 //! the crate-to-RFC map.
-//! The package also contains an unshipped native event collector binary for
+//! The package also contains an unshipped native event collector example for
 //! bounded, read-only inspection of preserved production run-state trees.
 
 #![forbid(unsafe_code)]

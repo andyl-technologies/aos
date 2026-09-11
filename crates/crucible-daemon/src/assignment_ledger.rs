@@ -1976,15 +1976,15 @@ impl AssignmentRetentionAdmin for DirectoryAssignmentLedger {
 impl AssignmentRetentionAdmin for DirectoryAssignmentRetentionReader {
     type Error = AssignmentLedgerError;
 
-    fn acquire_retention_fence(
-        &mut self,
-    ) -> Result<Box<dyn AssignmentRetentionFence<BackendError = Self::Error> + '_>, Self::Error>
-    {
+    fn acquire_retention_fence(&mut self) -> AssignmentRetentionFenceResult<'_, Self::Error> {
         Ok(Box::new(DirectoryAssignmentRetentionReaderFence {
             state: &mut self.state,
         }))
     }
 }
+
+type AssignmentRetentionFenceResult<'a, BackendError> =
+    Result<Box<dyn AssignmentRetentionFence<BackendError = BackendError> + 'a>, BackendError>;
 
 struct DirectoryAssignmentRetentionFence<'a> {
     ledger: &'a mut DirectoryAssignmentLedger,
