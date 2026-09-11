@@ -26,15 +26,16 @@
 ##! node headers offline; `python3` + the ccWrapper gcc/`gnumake` satisfy the
 ##! toolchain; the result lands at `build/Release/better_sqlite3.node`.
 ##!
-##! ## Darwin cross builds
+##! ## Cross builds
 ##!
 ##! The fixed npm tree is produced on Linux and therefore contains optional
-##! Linux workerd, esbuild, and sharp/libvips binaries. Darwin builds remove all
-##! of those ELFs. Their wrappers select the source-built target `workerd` and
+##! Linux workerd, esbuild, and sharp/libvips binaries. Cross builds remove those
+##! build-platform binaries. Their wrappers select source-built target `workerd` and
 ##! Go-built target esbuild through the tools' supported environment variables;
 ##! sharp retains its target-neutral WASM implementation. node-gyp itself runs
 ##! with native AOS Node/Python/make, while the ccWrapper and target Node headers
-##! produce the Mach-O `better_sqlite3.node` addon.
+##! produce the target `better_sqlite3.node` addon. Darwin additionally models
+##! the Xcode discovery queries required by gyp using the AOS SDK.
 {
   mkDerivation,
   mkGoPackage,
@@ -75,8 +76,9 @@
   };
 
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   targetNodeArch =
-    if stdenv.hostPlatform.darwinArch == "arm64"
+    if stdenv.hostPlatform.darwinArch == "arm64" || stdenv.hostPlatform.system == "aarch64-linux"
     then "arm64"
     else "x64";
   targetMachArch =
@@ -121,12 +123,12 @@ in
     src = null;
 
     buildDeps =
-      if isDarwinCross
+      if isDarwinCross || isLinuxCross
       then [buildPackages.nodejs buildPackages.python3 buildPackages.gnumake buildPackages.file]
       else [nodejs python3 gnumake];
     runtimeDeps =
       [nodejs]
-      ++ lib.optionals isDarwinCross [bash workerd targetEsbuild];
+      ++ lib.optionals (isDarwinCross || isLinuxCross) [bash workerd targetEsbuild];
 
     phases = [
       {
@@ -295,6 +297,81 @@ in
               printf '%s\n' 'exec ${nodejs}/bin/node "'"$NM"'/miniflare/bootstrap.js" "$@"'
             } > $out/bin/miniflare
             chmod +x $out/bin/miniflare
+          ''
+          else if isLinuxCross
+          then ''
+            mkdir -p "$out/lib" "$out/bin"
+            cp -a ${nodeModules} "$out/lib/node_modules"
+            chmod -R u+w "$out/lib/node_modules"
+            NM=$out/lib/node_modules
+
+            # The vendored optional binaries belong to the build platform.
+            # Select source-built target tools and Sharp's portable WASM backend.
+            rm -rf \
+              "$NM"/@cloudflare/workerd-linux-* \
+              "$NM"/wrangler/node_modules/@cloudflare/workerd-linux-* \
+              "$NM"/@esbuild/linux-* \
+              "$NM"/@img/sharp-linux-* \
+              "$NM"/@img/sharp-linuxmusl-* \
+              "$NM"/@img/sharp-libvips-linux-* \
+              "$NM"/@img/sharp-libvips-linuxmusl-*
+            test -d "$NM/@img/sharp-wasm32"
+
+            # Wrangler imports workerd's npm resolver before consulting
+            # Miniflare's override. Give that resolver a source-built binary
+            # in the target optional package's standard lookup location.
+            workerd_package="$NM/@cloudflare/workerd-linux-${
+              if targetNodeArch == "arm64"
+              then "arm64"
+              else "64"
+            }"
+            mkdir -p "$workerd_package/bin"
+            ln -s ${workerd}/bin/workerd "$workerd_package/bin/workerd"
+
+            nodeGyp=${buildPackages.nodejs}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js
+            (
+              cd "$NM/better-sqlite3"
+              export npm_config_platform=linux
+              export npm_config_arch=${targetNodeArch}
+              ${buildPackages.nodejs}/bin/node "$nodeGyp" rebuild \
+                --release \
+                --arch=${targetNodeArch} \
+                --nodedir=${nodejs} \
+                --python=${buildPackages.python3}/bin/python3
+            )
+
+            # Node only loads the addon. Generated makefiles and intermediates
+            # retain build compiler paths and must not enter the runtime closure.
+            addon="$NM/better-sqlite3/build/Release/better_sqlite3.node"
+            cp "$addon" "$TMPDIR/better_sqlite3.node"
+            rm -rf "$NM/better-sqlite3/build"
+            mkdir -p "$NM/better-sqlite3/build/Release"
+            cp "$TMPDIR/better_sqlite3.node" "$addon"
+
+            # Native addons fall outside the generic shared-library scrub.
+            # Keep their linked runtime libraries, but remove compiler-header
+            # references embedded in C++ assertion diagnostics.
+            set --
+            for runtime_path in $(patchelf --print-rpath "$addon" | tr ':' ' '); do
+              case "$runtime_path" in
+                /nix/store/*) set -- "$@" -e "$runtime_path" ;;
+              esac
+            done
+            nuke-refs "$@" "$addon"
+
+            for command in wrangler miniflare; do
+              case "$command" in
+                wrangler) entry=wrangler/bin/wrangler.js ;;
+                miniflare) entry=miniflare/bootstrap.js ;;
+              esac
+              {
+                printf '%s\n' '#!${bash}/bin/bash'
+                printf '%s\n' 'export MINIFLARE_WORKERD_PATH="${workerd}/bin/workerd"'
+                printf '%s\n' 'export ESBUILD_BINARY_PATH="${targetEsbuild}/bin/esbuild"'
+                printf 'exec %s "%s/%s" "$@"\n' '${nodejs}/bin/node' "$NM" "$entry"
+              } > "$out/bin/$command"
+              chmod +x "$out/bin/$command"
+            done
           ''
           else ''
             mkdir -p $out/lib $out/bin

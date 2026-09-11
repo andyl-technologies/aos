@@ -290,8 +290,8 @@ in {
   miniflare = mkProbe {
     package = "miniflare";
     primaryInput = "A local module Worker configuration and source file.";
-    primaryOperation = "Generate project TypeScript declarations through the bundled Wrangler CLI.";
-    primaryExpected = "Wrangler reads the configuration and emits declarations for the Worker module.";
+    primaryOperation = "Generate project TypeScript declarations and execute a query through the bundled SQLite addon.";
+    primaryExpected = "Wrangler emits Worker module declarations, and the native SQLite addon returns the expected query value.";
     primaryFiles."wrangler.toml" = ''
       name = "qualification"
       main = "worker.js"
@@ -310,6 +310,18 @@ in {
       assert result.returncode == 0, (result.stdout, result.stderr)
       declarations = pathlib.Path("output.d.ts").read_text()
       assert 'mainModule: typeof import("./worker")' in declarations
+
+      # Loading the addon with the target Node proves its architecture and
+      # runtime library closure, beyond Wrangler's JavaScript-only operation.
+      sqlite = subprocess.run([
+          "node", "-e",
+          "const Database = require('@out@/lib/node_modules/better-sqlite3');"
+          "const db = new Database(':memory:');"
+          "console.log(db.prepare('SELECT 6 * 7 AS answer').get().answer);"
+          "db.close();",
+      ], capture_output=True, text=True, env=environment)
+      assert sqlite.returncode == 0, (sqlite.stdout, sqlite.stderr)
+      assert sqlite.stdout.strip() == "42"
       print("miniflare operation passed")
     '';
     badInput = "A Wrangler configuration containing an unterminated TOML array.";
