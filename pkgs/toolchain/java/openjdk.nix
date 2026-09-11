@@ -43,8 +43,10 @@
         file
         ;
     };
+
+  # Boot Java executes build-time generators; target compilers still build the JVM.
   bootJdk =
-    if isDarwinCross
+    if isDarwinCross || (stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64)
     then buildPackages.openjdk-24
     else openjdk-24;
   nativeMig =
@@ -412,7 +414,7 @@ in
           else ''
             # OpenJDK configure requires bash
             $CONFIG_SHELL configure \
-              --with-boot-jdk=${openjdk-24} \
+              --with-boot-jdk=${bootJdk} \
               --enable-headless-only \
               --with-native-debug-symbols=none \
               --disable-warnings-as-errors \

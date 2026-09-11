@@ -53,8 +53,10 @@
         file
         ;
     };
+
+  # Boot Java executes build-time generators; target compilers still build the JVM.
   bootJdk =
-    if isDarwinCross
+    if isDarwinCross || (stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64)
     then builtins.getAttr "openjdk-${toString (major - 1)}" buildPackages
     else prevJdk;
   buildJdk =
@@ -1160,7 +1162,7 @@ in
             # with pre-C23 native code whose empty parameter lists retain
             # their historical unspecified-argument meaning under C17.
             $CONFIG_SHELL configure \
-              --with-boot-jdk=${prevJdk} \
+              --with-boot-jdk=${bootJdk} \
               --enable-headless-only \
               --with-native-debug-symbols=none \
               --disable-warnings-as-errors \
