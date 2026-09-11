@@ -1250,6 +1250,10 @@
         message = "mkPackageOption default";
       }
       {
+        ok = import ./type-addcheck.nix {inherit lib;};
+        message = "additional type predicates validate merged, default, and nested values";
+      }
+      {
         ok = pathInStoreAccepts && pathInStoreRejectsHost && pathInStoreRejectsRelative && pathInStoreRejectsNumber;
         message = "pathInStore validation";
       }
