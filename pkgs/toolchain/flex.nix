@@ -75,6 +75,21 @@ in
                 's/^libfl_la_LDFLAGS = \(.*\)$/libfl_la_LDFLAGS = \1 -Wl,-undefined,dynamic_lookup/' \
                 src/Makefile.in
             ''
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then ''
+              # AOS glibc returns nonnull allocations for malloc(0) and
+              # realloc(NULL, 0); Flex's cross defaults incorrectly assume no.
+              export ac_cv_func_malloc_0_nonnull=yes
+              export ac_cv_func_realloc_0_nonnull=yes
+
+              # stage1flex always compiles this fallback during cross builds,
+              # even when the target libc needs no allocation replacement.
+              sed -i 's/void \*malloc ();/#include <stdlib.h>/' lib/malloc.c
+
+              # The installed generator executes m4 at runtime. PATH contains
+              # build tools, so configure must record the target dependency.
+              export M4=${m4}/bin/m4
+            ''
             else ""
           )
           + ''
