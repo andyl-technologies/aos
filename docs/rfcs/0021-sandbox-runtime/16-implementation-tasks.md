@@ -7221,3 +7221,28 @@ the target private-userns range.
 Production constructs `StorageApplyReadiness::WorkspaceBackendUnavailable`, so
 Apply remains unadvertised. `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, and
 `SBX-P0-10` remain open.
+
+### Retained Host nspawn readiness descriptor (source qualified)
+
+Commit `13bc708ed` makes `BackendReadiness` noncloneable and gives it ownership
+of the admitted `systemd-nspawn` descriptor plus its complete nine-field
+metadata snapshot: device, inode, size, UID, mode, and seconds/nanoseconds for
+both mtime and ctime. `NspawnConfig::from_readiness` consumes that token,
+revalidates every snapshot field and the separately declared device/inode
+identity, and transfers the exact descriptor into the immutable launch
+configuration without reopening its pathname. Descriptor substitution and
+post-admission metadata drift fail closed.
+
+This is a type-state and descriptor-custody step, not production readiness.
+`BackendReadiness` still has no production constructor, and protected phase-0
+evidence has no conversion into it, so production cannot construct the
+`NspawnConfig` and Host Apply remains closed. Three readiness blockers remain:
+independent phase-0 claim verification; real shifted-payload pidfd namespace
+inspection in the deployed Host; and deployed root-continuity, MAC, and property
+proof. No checkbox is closed by this increment.
+
+Validation passed the focused readiness suite (6/6), the complete Host suite
+(161 unit tests, one integration test, and two doctests), strict no-deps
+all-target/all-feature Clippy, warning-denied rustdoc, rustfmt, and diff checks.
+Dependency-inclusive Clippy reported only pre-existing generated `aos-proto`
+`HashMap` disallowed-types warnings. No Nix build or VM qualification was run.
