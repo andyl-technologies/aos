@@ -1,6 +1,8 @@
 ##! aos-var-policy-migrate — recovery-authorized TPM enrollment replacement
 {
   mkDerivation,
+  lib,
+  stdenv,
   bash,
   coreutils,
   cryptsetup,
@@ -14,13 +16,16 @@ mkDerivation {
   src = null;
 
   buildDeps = [];
-  runtimeDeps = [
-    coreutils
-    cryptsetup
-    jq
-    systemd
-    util-linux
-  ];
+  runtimeDeps =
+    [
+      coreutils
+      cryptsetup
+      jq
+      systemd
+      util-linux
+    ]
+    # The installed script needs the target shell after reference scrubbing.
+    ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash];
   propagatedDeps = [];
 
   phases = [
