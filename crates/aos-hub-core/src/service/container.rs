@@ -437,12 +437,13 @@ fn verified_publication_unavailable() -> RpcError {
 }
 
 fn validate_initial_release(release: &ContainerRelease) -> Result<(), RpcError> {
-    if release.identity.package != "aos"
-        || release.identity.image != "aos"
-        || release.nix.definition.attribute != "containerImages.aos"
-    {
+    if !crate::container_catalog::admits_base_image_definition(
+        &release.identity.package,
+        &release.identity.image,
+        &release.nix.definition.attribute,
+    ) {
         return Err(RpcError::invalid(
-            "the initial catalog admits only the aos package and containerImages.aos definition",
+            "the initial catalog admits only the aos package and server base-image definition",
         ));
     }
     Ok(())
