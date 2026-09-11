@@ -45,7 +45,7 @@ use crate::config_eval::ability_store::{
 use crate::config_eval::native_ability_fs::{RootedDirectory, RootedFile};
 
 const INTERFACE_NAME: &str = "aos.nginx-validation";
-const INTERFACE_DESCRIPTOR: &str =
+pub(super) const INTERFACE_DESCRIPTOR: &str =
     "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372";
 const HANDLER_KEY: &str = "nginx-terminal";
 const ENTRY_POINT: &str = "bin/nginx";

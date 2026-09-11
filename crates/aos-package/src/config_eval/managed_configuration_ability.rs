@@ -42,7 +42,7 @@ use crate::config_eval::native_ability_fs::{
 };
 
 const INTERFACE_NAME: &str = "aos.managed-configuration-effects";
-const INTERFACE_DESCRIPTOR: &str =
+pub(super) const INTERFACE_DESCRIPTOR: &str =
     "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab";
 const HANDLER_KEY: &str = "managed-configuration-terminal";
 const ENTRY_POINT: &str = "bin/.aos-package-runtime-unwrapped";

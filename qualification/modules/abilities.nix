@@ -5,6 +5,7 @@
   ...
 }: let
   cfg = config.qualification;
+  nativeAdapterMatrix = import ./_native-adapter-matrix.nix {inherit lib;};
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
   requiredChecks = {
     ability-native-activation = [
@@ -39,12 +40,21 @@
       "retained-plan-journal-and-independent-service-observation"
       "gc-after-crashed-unlocked-partial-activation-retains-recovery-set"
     ];
+    ability-native-adapter-matrix = [nativeAdapterMatrix.check];
   };
   requiredRegressions = {
     ability-native-activation = ["checks.fleet.ability-native-activation"];
     ability-native-kubernetes = ["checks.fleet.ability-native-kubernetes"];
     ability-native-postgresql = ["checks.fleet.ability-native-postgresql"];
     ability-native-recovery = ["checks.fleet.ability-native-power-loss"];
+    ability-native-adapter-matrix = nativeAdapterMatrix.requirement.regressions;
+  };
+  requiredProductionOnly = {
+    ability-native-activation = false;
+    ability-native-kubernetes = false;
+    ability-native-postgresql = false;
+    ability-native-recovery = false;
+    ability-native-adapter-matrix = true;
   };
   preservesRequiredValues = id: let
     requirement = cfg.requirements.${id};
@@ -53,7 +63,7 @@
     == "staging"
     && requirement.scope == "release"
     && requirement.method == "automated"
-    && !requirement.production_only
+    && requirement.production_only == requiredProductionOnly.${id}
     && builtins.all (value: builtins.elem value requirement.invalidated_by) requiredInvalidation
     && builtins.all (value: builtins.elem value requirement.checks) requiredChecks.${id}
     && builtins.all (value: builtins.elem value requirement.regressions) requiredRegressions.${id};
@@ -99,11 +109,19 @@ in {
         regressions = requiredRegressions.ability-native-recovery;
         invalidated_by = requiredInvalidation;
       };
+      ability-native-adapter-matrix = nativeAdapterMatrix.requirement;
     };
     assertions = [
       {
         assertion = builtins.all preservesRequiredValues (builtins.attrNames requiredRegressions);
         message = "Ability qualification must retain staging release subjects, direct execution and its source regression coverage.";
+      }
+      {
+        assertion =
+          nativeAdapterMatrix.cell_count
+          == 1064
+          && nativeAdapterMatrix.missing_production_vm_cells == nativeAdapterMatrix.cell_count;
+        message = "Every native adapter method and failure boundary must retain a mandatory production-VM qualification cell.";
       }
     ];
   };

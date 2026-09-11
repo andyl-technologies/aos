@@ -11,6 +11,9 @@ use aos_ability_runtime::adapter::InvocationPurpose;
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
+use super::super::native_adapter_surface::{
+    adapter_interface_descriptor, host_adapter_id, supports_any_route,
+};
 use super::super::native_resource_map::NativeResourceQualification;
 use super::{
     CREDENTIAL_ROOT, NativeHostResourceKind, STORAGE_ROOT, decode_input, invalid, store_error,
@@ -323,23 +326,19 @@ pub(super) fn method_supported(
     method: &str,
     purpose: InvocationPurpose,
 ) -> bool {
-    let effect = match kind {
-        NativeHostResourceKind::Credential => matches!(method, "acquire" | "deliver" | "release"),
-        NativeHostResourceKind::Endpoint => matches!(method, "materialize" | "observe" | "release"),
-        NativeHostResourceKind::Storage => matches!(method, "ensure" | "observe" | "release"),
-        NativeHostResourceKind::NetworkPolicy => matches!(method, "apply" | "observe" | "remove"),
-        NativeHostResourceKind::Postgresql => {
-            matches!(
-                method,
-                "materialize" | "observe" | "start" | "restart" | "stop"
-            )
-        }
+    let adapter = host_adapter_id(kind);
+    let Some(interface_descriptor) = adapter_interface_descriptor(adapter) else {
+        return false;
     };
-    effect
-        && matches!(
-            purpose,
-            InvocationPurpose::Effect | InvocationPurpose::Reconcile | InvocationPurpose::Cancel
-        )
+
+    supports_any_route(
+        adapter,
+        kind.interface_name(),
+        1,
+        interface_descriptor,
+        method,
+        purpose,
+    )
 }
 
 pub(super) fn validate_credential_view(view: &CredentialView) -> Result<(), io::Error> {
@@ -405,6 +404,58 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn every_host_adapter_preserves_same_method_reconcile_and_cancel_routes() {
+        let contracts: &[(NativeHostResourceKind, &[&str])] = &[
+            (
+                NativeHostResourceKind::Credential,
+                &["acquire", "deliver", "release"],
+            ),
+            (
+                NativeHostResourceKind::Endpoint,
+                &["materialize", "observe", "release"],
+            ),
+            (
+                NativeHostResourceKind::Storage,
+                &["ensure", "observe", "release"],
+            ),
+            (
+                NativeHostResourceKind::NetworkPolicy,
+                &["apply", "observe", "remove"],
+            ),
+            (
+                NativeHostResourceKind::Postgresql,
+                &["materialize", "observe", "restart", "start", "stop"],
+            ),
+        ];
+
+        for (kind, methods) in contracts {
+            for method in *methods {
+                for purpose in [
+                    InvocationPurpose::Effect,
+                    InvocationPurpose::Reconcile,
+                    InvocationPurpose::Cancel,
+                ] {
+                    assert!(
+                        method_supported(*kind, method, purpose),
+                        "{}:{method} lost its {purpose:?} route",
+                        kind.interface_name(),
+                    );
+                }
+                assert!(!method_supported(
+                    *kind,
+                    method,
+                    InvocationPurpose::Compensate,
+                ));
+            }
+            assert!(!method_supported(
+                *kind,
+                "foreign-method",
+                InvocationPurpose::Effect,
+            ));
+        }
+    }
 
     #[test]
     fn postgresql_materialize_rejects_a_null_credential_before_intent()

@@ -39,23 +39,30 @@
   imageRecovery = builtins.head (
     builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
   );
+  nativeAdapterMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  nativeAdapterMatrixArtifact = pkgs.writeTextFile {
+    name = "aos-qualification-native-adapter-matrix";
+    destination = "/matrix.json";
+    text = builtins.toJSON nativeAdapterMatrix;
+  };
 in
   assert builtins.elem "checks.fleet.measured-boot" imageRecovery.regressions;
   assert (resolve "checks.fleet.measured-boot").drvPath == fleet.measured-boot.drvPath;
-  groups
-  // {
-    policy = import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;};
-    all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;})] ++ builtins.attrValues groups);
-    # Evaluating this inventory resolves every reference, including sparse
-    # groups, before an expensive VM campaign starts.
-    inventory = builtins.listToAttrs (map (requirement: {
-        name = requirement.id;
-        value =
-          map (path: {
-            inherit path;
-            derivation = (resolve path).drvPath;
-          })
-          requirement.regressions;
-      })
-      contract.requirements);
-  }
+    groups
+    // {
+      policy = import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;};
+      native-adapter-matrix = nativeAdapterMatrixArtifact;
+      all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;})] ++ builtins.attrValues groups);
+      # Evaluating this inventory resolves every reference, including sparse
+      # groups, before an expensive VM campaign starts.
+      inventory = builtins.listToAttrs (map (requirement: {
+          name = requirement.id;
+          value =
+            map (path: {
+              inherit path;
+              derivation = (resolve path).drvPath;
+            })
+            requirement.regressions;
+        })
+        contract.requirements);
+    }

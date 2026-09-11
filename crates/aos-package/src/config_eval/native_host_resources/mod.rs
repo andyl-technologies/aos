@@ -81,14 +81,6 @@ use validation::{
     validate_inputs,
 };
 
-pub(crate) fn native_host_method_supported(
-    kind: NativeHostResourceKind,
-    method: &str,
-    purpose: InvocationPurpose,
-) -> bool {
-    method_supported(kind, method, purpose)
-}
-
 /// Supplies the static qualification and desired revision for one logical resource.
 #[derive(Clone, Debug)]
 pub(crate) struct NativeHostResourceSpec {
