@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   autoconf,
   automake,
   libtool,
@@ -27,7 +28,7 @@ in
     };
 
     buildDeps = [autoconf automake libtool gnumake bison pkg-config];
-    runtimeDeps = [libevent ncurses utf8proc libutempter systemd glibc-locales];
+    runtimeDeps = [bash libevent ncurses utf8proc libutempter systemd glibc-locales];
     propagatedDeps = [];
 
     phases = [
@@ -64,7 +65,20 @@ in
       }
       {
         name = "install";
-        script = ''make install'';
+        script = ''
+          make install
+
+          # Retain UTF-8 locale data in the executable's runtime closure. An
+          # explicitly supplied LOCPATH, including an empty one, remains valid.
+          mkdir -p "$out/libexec"
+          mv "$out/bin/tmux" "$out/libexec/tmux"
+          cat > "$out/bin/tmux" <<EOF
+          #!${bash}/bin/bash
+          export LOCPATH="\''${LOCPATH-${glibc-locales}/lib/locale}"
+          exec "$out/libexec/tmux" "\$@"
+          EOF
+          chmod +x "$out/bin/tmux"
+        '';
       }
     ];
 

@@ -23,7 +23,10 @@
 # see a parseable one) but Nix's reference scanner no longer sees the
 # target as a closure edge. Works on text files and on ELF DT_RUNPATH
 # byte strings alike — the replacement is byte-for-byte length-preserving.
-{writeShellScriptBin}:
+{
+  writeShellScriptBin,
+  sed,
+}:
 (writeShellScriptBin "remove-references-to" ''
   set -e
 
@@ -32,7 +35,7 @@
   while getopts t: o; do
     case "$o" in
       t)
-        storeId=$(echo "$OPTARG" | sed -n "s|^${builtins.storeDir}/\([a-z0-9]\{32\}\)-.*|\1|p")
+        storeId=$(echo "$OPTARG" | ${sed}/bin/sed -n "s|^${builtins.storeDir}/\([a-z0-9]\{32\}\)-.*|\1|p")
         if [ -z "$storeId" ]; then
           echo "remove-references-to: -t argument must be a Nix store path, got: $OPTARG" >&2
           exit 1
@@ -56,7 +59,7 @@
   fi
 
   for target in "''${targets[@]}"; do
-    sed -i -e "s|$target|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" "''${regions[@]}"
+    ${sed}/bin/sed -i -e "s|$target|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" "''${regions[@]}"
   done
 '')
 .overrideAttrs (_: {

@@ -20,7 +20,7 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
     # The upstream project predates CMake 4's minimum policy version.
-    cmakeFlags = "-DMINIMAL=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5";
+    cmakeFlags = "-DMINIMAL=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5";
 
     postInstall = ''
       test -x "$out/bin/tini"
