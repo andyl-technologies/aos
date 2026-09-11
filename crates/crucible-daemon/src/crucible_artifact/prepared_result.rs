@@ -253,6 +253,27 @@ impl PreparedSemanticAttemptResult {
         Ok(finding)
     }
 
+    /// Prepares a replacement finding bound to policy-authenticated exact retention.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this result has no finding or replay capture roots,
+    /// or when the rebuilt candidate is inconsistent with its observation.
+    pub(crate) fn prepare_bound_finding_exact_retention(
+        &self,
+        exact_pins: crucible_campaign::FindingExactPins,
+        exact_retention: crucible_campaign::FindingExactRetention,
+        evidence: Option<crucible_campaign::FindingExactRetentionEvidence>,
+    ) -> Result<PreparedCrucibleFindingCandidate, PreparedSemanticResultCodecError> {
+        let mut finding = self
+            .finding
+            .clone()
+            .ok_or_else(|| inconsistent("finding exact retention owner"))?;
+        finding.bind_exact_retention(exact_pins, exact_retention, evidence)?;
+        validate_pair(&self.observation, Some(&finding))?;
+        Ok(finding)
+    }
+
     /// Installs a replacement already validated against this observation.
     pub(crate) fn commit_bound_production_replay_finding(
         &mut self,

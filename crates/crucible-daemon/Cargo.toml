@@ -25,6 +25,8 @@ crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-shmem = { path = "../crucible-shmem" }
 crucible-s3-store = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
 rustix = { workspace = true, features = ["event", "net", "time"] }
 serde = { workspace = true }
 thiserror = { workspace = true }

@@ -1,6 +1,9 @@
 //! Executor driver lifecycle and response validation tests.
 
 use super::*;
+use crate::{
+    FindingExactRetention, FindingExactRetentionDisposition, FindingExactRetentionIncomplete,
+};
 
 #[cfg(feature = "destructive-recovery-faults")]
 use std::{
@@ -292,13 +295,29 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
         vec![Some(signature.clone())],
     )
     .expect("signature minimization evidence");
-    let bundle = FindingCandidateBundle::new(
+    let retention_basis = repository
+        .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
+        .expect("retention policy basis");
+    let exact_retention = FindingExactRetention::new(
+        retention_basis.snapshot(),
+        retention_basis.policy(),
+        retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )
+    .expect("incomplete exact retention");
+    let bundle = FindingCandidateBundle::new_with_exact_retention(
         observation_id,
         signature,
         original,
         minimized,
         signature_minimization,
         FindingExactPins::default(),
+        None,
+        None,
+        exact_retention,
     )
     .expect("finding candidate bundle");
     let finding_candidate = repository

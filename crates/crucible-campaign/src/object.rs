@@ -256,7 +256,7 @@ impl CampaignRecordKind {
             Self::ObjectiveEvaluation | Self::RankingExplanation => 2,
             Self::ReproductionArtifact => 2,
             Self::Finding => 4,
-            Self::FindingCandidateBundle => 3,
+            Self::FindingCandidateBundle => 5,
             Self::FindingTriageReplayEvidence => 2,
             Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,
@@ -798,7 +798,7 @@ impl ObjectEnvelope {
             || record_kind == CampaignRecordKind::Finding
                 && matches!(envelope.schema_version(), 1..=3)
             || record_kind == CampaignRecordKind::FindingCandidateBundle
-                && matches!(envelope.schema_version(), 1..=2)
+                && matches!(envelope.schema_version(), 1..=4)
             || record_kind == CampaignRecordKind::FindingTriageReplayEvidence
                 && matches!(envelope.schema_version(), 1..=2)
             || record_kind == CampaignRecordKind::FindingTriageReplayEvidenceChunk

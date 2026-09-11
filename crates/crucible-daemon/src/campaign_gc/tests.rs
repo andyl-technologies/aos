@@ -1399,6 +1399,7 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
         execution: ExecutionId::from_bytes([0x64; 16]).expect("execution"),
         observation,
         finding_candidate: CompletedFindingCandidate::Pending(candidate),
+        prepared_result_digest: None,
     };
     {
         let mut ledger =
@@ -1523,6 +1524,7 @@ fn incorporated_finding_releases_exact_candidate_root_across_restart() {
             execution,
             observation,
             finding_candidate: CompletedFindingCandidate::Pending(candidate),
+            prepared_result_digest: None,
         };
         let mut ledger =
             DirectoryAssignmentLedger::open(&ledger_root).expect("open assignment ledger");
@@ -1624,6 +1626,7 @@ fn incorporated_finding_releases_exact_candidate_root_across_restart() {
         DirectoryAssignmentLedger::open(&ledger_root).expect("restart after release");
     let replayed = incorporate_and_acknowledge_finding_candidate(
         &repository,
+        None,
         &mut replayed_ledger,
         &campaign,
         expected_snapshot,
@@ -1631,6 +1634,7 @@ fn incorporated_finding_releases_exact_candidate_root_across_restart() {
         execution,
         observation,
         candidate,
+        None,
     )
     .expect("replay incorporated and acknowledged candidate");
     assert!(replayed.publication().replayed);
@@ -1710,6 +1714,7 @@ fn pending_finding_restart_publishes_observation_before_finding_and_release() {
         execution,
         observation,
         finding_candidate: CompletedFindingCandidate::Pending(candidate),
+        prepared_result_digest: None,
     };
     let mut ledger = MemoryAssignmentLedger::default();
     assert_eq!(
@@ -1720,7 +1725,7 @@ fn pending_finding_restart_publishes_observation_before_finding_and_release() {
     );
 
     let campaign = CampaignName::new(CAMPAIGN).expect("campaign name");
-    let summary = reconcile_pending_finding_candidates(&repository, &mut ledger, &campaign)
+    let summary = reconcile_pending_finding_candidates(&repository, None, &mut ledger, &campaign)
         .expect("restart publishes the complete observation and finding handoff");
     assert_eq!(summary.pending(), 1);
     assert_eq!(summary.remaining(), 0);
@@ -1997,6 +2002,7 @@ fn finding_acknowledgement_and_gc_follow_directory_ref_before_ledger_lock_order(
         execution,
         observation,
         finding_candidate: CompletedFindingCandidate::Pending(candidate),
+        prepared_result_digest: None,
     };
     let mut directory_ledger =
         DirectoryAssignmentLedger::open(storage.path().join("ledger")).expect("directory ledger");
@@ -2104,6 +2110,7 @@ fn completed_status_and_control_fail_closed_on_missing_candidate_descendant() {
         execution,
         observation,
         finding_candidate: CompletedFindingCandidate::Pending(candidate),
+        prepared_result_digest: None,
     };
     let mut ledger = MemoryAssignmentLedger::default();
     assert_eq!(

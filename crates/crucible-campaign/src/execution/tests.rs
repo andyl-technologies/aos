@@ -833,6 +833,70 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
         request.execution_basis_digest()
     );
 
+    let policy_basis = AttemptRetentionPolicyBasis::new(
+        CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignSnapshot,
+            2,
+            b"materialized-start-policy-snapshot",
+        ))
+        .expect("policy snapshot"),
+        AttemptAdmissionId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignFact,
+            1,
+            b"materialized-start-policy-admission",
+        ))
+        .expect("policy admission"),
+        Some(
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"materialized-start-policy",
+            ))
+            .expect("policy"),
+        ),
+    );
+    let policy_assignment = assignment
+        .clone()
+        .with_retention_policy_basis(policy_basis)
+        .expect("policy-bound fresh assignment");
+    let policy_resume = ResumeAttemptExecutionRequest::new_from_materialized_start(
+        &policy_assignment,
+        prior_execution,
+        checkpoint,
+        configuration,
+    )
+    .expect("policy-bound materialized-start resume");
+    let policy_bytes = policy_resume.canonical_bytes();
+    assert_eq!(&policy_bytes[..4], &6_u32.to_be_bytes());
+    let decoded_policy_resume = ResumeAttemptExecutionRequest::from_canonical_bytes(&policy_bytes)
+        .expect("decode policy-bound materialized-start resume");
+    assert_eq!(decoded_policy_resume, policy_resume);
+    assert_eq!(
+        decoded_policy_resume.retention_policy_basis(),
+        Some(policy_basis)
+    );
+    assert_eq!(decoded_policy_resume.prior_retention_policy_basis(), None);
+    assert_eq!(
+        decoded_policy_resume
+            .assignment_request()
+            .expect("reconstruct fresh policy-bound assignment"),
+        policy_assignment
+    );
+    assert_eq!(
+        decoded_policy_resume.prior_execution_basis_digest(),
+        attempt_execution_basis_digest_for_start_mode(
+            assignment.lineage(),
+            assignment.attempt(),
+            assignment.resources(),
+            assignment.retention(),
+            AttemptStartMode::CaptureMaterializedStart { configuration },
+        )
+    );
+    assert_eq!(
+        decoded_policy_resume.execution_basis_digest(),
+        policy_assignment.execution_basis_digest()
+    );
+
     let standard = ResumeAttemptExecutionRequest::new(&assignment, prior_execution, checkpoint)
         .expect("standard resume request");
     assert_eq!(
@@ -956,7 +1020,7 @@ fn selected_savepoint_resume_preserves_the_semantic_start_authority() {
     );
 
     let mut unsupported_version = bytes;
-    unsupported_version[..4].copy_from_slice(&5_u32.to_be_bytes());
+    unsupported_version[..4].copy_from_slice(&7_u32.to_be_bytes());
     assert_eq!(
         ResumeAttemptExecutionRequest::from_canonical_bytes(&unsupported_version),
         Err(CampaignCodecError::InvalidValue {

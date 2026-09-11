@@ -3,6 +3,11 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crucible::ContentHash;
+use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignHash,
     CampaignLineageId, ConfigurationArtifact, ConfigurationId, DaemonEpoch,
@@ -10,12 +15,56 @@ use crucible_campaign::{
     GetAttemptExecutionDisposition, GetAttemptExecutionRequest, ObservationId, ScenarioArtifact,
     ScenarioDefId, SubmitAttemptDisposition, SubmitAttemptRequest,
 };
+use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
 
 use super::*;
+use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::{
     AllowAllAttemptAdmission, AssignmentLedger, AttemptExecutionKey, AttemptExecutionOrigin,
     AttemptRuntimeState, ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger,
 };
+
+#[derive(Clone, Copy)]
+enum ScriptedCheckpointHandoffResult {
+    Retryable,
+    Terminal,
+    PrepareThenTerminal,
+}
+
+struct ScriptedCheckpointHandoff {
+    result: ScriptedCheckpointHandoffResult,
+    calls: Arc<AtomicUsize>,
+    checkpoints: ExactCheckpointStore,
+}
+
+impl std::fmt::Debug for ScriptedCheckpointHandoff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ScriptedCheckpointHandoff")
+            .field("calls", &self.calls.load(Ordering::SeqCst))
+            .finish_non_exhaustive()
+    }
+}
+
+impl AttemptCheckpointHandoff for ScriptedCheckpointHandoff {
+    fn prepare_and_stage(
+        &self,
+        capture: &CapturedAttemptCheckpoint,
+    ) -> Result<PreparedAttemptCheckpoint, CheckpointHandoffFailure> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        match self.result {
+            ScriptedCheckpointHandoffResult::Retryable => Err(CheckpointHandoffFailure::Retryable),
+            ScriptedCheckpointHandoffResult::Terminal => Err(CheckpointHandoffFailure::Terminal),
+            ScriptedCheckpointHandoffResult::PrepareThenTerminal => {
+                let _prepared = self
+                    .checkpoints
+                    .prepare_attempt_checkpoint(capture.reopenable_copy())
+                    .map_err(|_| CheckpointHandoffFailure::Terminal)?;
+                Err(CheckpointHandoffFailure::Terminal)
+            }
+        }
+    }
+}
 
 #[test]
 fn execution_quantum_budget_is_shared_and_refuses_the_exact_exhausted_boundary() {
@@ -77,6 +126,108 @@ fn execution_quantum_budget_refuses_saturated_accounting_without_wrapping() {
         context.process_resources(),
         Err(ExecutionQuantumBudgetError)
     );
+}
+
+#[test]
+fn checkpoint_handoff_failures_leave_production_retirement_with_the_caller() {
+    assert_context_rejection_retains_production_capture(true);
+    assert_context_rejection_retains_production_capture(false);
+    assert_handoff_rejection_retains_production_capture(ScriptedCheckpointHandoffResult::Retryable);
+    assert_handoff_rejection_retains_production_capture(ScriptedCheckpointHandoffResult::Terminal);
+    assert_handoff_rejection_retains_production_capture(
+        ScriptedCheckpointHandoffResult::PrepareThenTerminal,
+    );
+}
+
+fn assert_context_rejection_retains_production_capture(canceled: bool) {
+    let run_state = tempfile::tempdir().expect("production handoff run state");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+        .expect("production handoff fixture");
+    let capture = CapturedAttemptCheckpoint::from(fixture.closure().clone());
+    let retirement = capture
+        .native_retirement()
+        .expect("production capture retirement");
+    let cancellation = ExecutionCancellation::default();
+    if canceled {
+        cancellation.cancel_for_test();
+    }
+    let scenario = if canceled {
+        capture.scenario()
+    } else {
+        ContentHash::from_bytes(b"foreign-checkpoint-scenario")
+    };
+    let context = AttemptExecutionContext::new(
+        AttemptResourceLimits::new(1, 1024, 2048, 2).expect("resources"),
+        ExecutionRetentionIntent::Discard,
+        cancellation,
+        ExecutionCheckpointRequest::default(),
+    )
+    .with_checkpoint_handoff(scenario, None);
+
+    let failure = context
+        .prepare_and_stage_checkpoint(&capture)
+        .expect_err("context must reject the production capture");
+
+    assert!(if canceled {
+        matches!(failure, AttemptWorkerFailure::Canceled(_))
+    } else {
+        matches!(failure, AttemptWorkerFailure::Terminal(_))
+    });
+    assert!(capture.native_retirement().is_some());
+    let report = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("retire caller-owned production capture");
+    assert!(report.retired());
+}
+
+fn assert_handoff_rejection_retains_production_capture(result: ScriptedCheckpointHandoffResult) {
+    let run_state = tempfile::tempdir().expect("production handoff run state");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(run_state.path())
+        .expect("production handoff fixture");
+    let capture = CapturedAttemptCheckpoint::from(fixture.closure().clone());
+    let retirement = capture
+        .native_retirement()
+        .expect("production capture retirement");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let checkpoint_directory = tempfile::tempdir()
+        .expect("scripted checkpoint directory")
+        .keep();
+    let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+        "scripted-production-handoff",
+        checkpoint_directory,
+    ));
+    let checkpoints = ExactCheckpointStore::new(checkpoint_backend, 64 * 1024 * 1024)
+        .expect("scripted checkpoint store");
+    let handoff = ExecutionCheckpointHandoff::new(Arc::new(ScriptedCheckpointHandoff {
+        result,
+        calls: Arc::clone(&calls),
+        checkpoints,
+    }));
+    let context = AttemptExecutionContext::new(
+        AttemptResourceLimits::new(1, 1024, 2048, 2).expect("resources"),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+    )
+    .with_checkpoint_handoff(capture.scenario(), Some(handoff));
+
+    let failure = context
+        .prepare_and_stage_checkpoint(&capture)
+        .expect_err("handoff must reject the production capture");
+
+    assert!(match result {
+        ScriptedCheckpointHandoffResult::Retryable => {
+            matches!(failure, AttemptWorkerFailure::Retryable(_))
+        }
+        ScriptedCheckpointHandoffResult::Terminal
+        | ScriptedCheckpointHandoffResult::PrepareThenTerminal => {
+            matches!(failure, AttemptWorkerFailure::Terminal(_))
+        }
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(capture.native_retirement().is_some());
+    let report = crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("retire caller-owned production capture");
+    assert!(report.retired());
 }
 
 #[test]

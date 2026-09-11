@@ -89,6 +89,7 @@ fn fixed_promotion_worker_promotes_raw_restart_work_without_semantic_execution()
         }],
         checkpoint_observer,
         None,
+        None,
     )
     .expect("start promotion-enabled pool");
     let service = pool.service();

@@ -1674,10 +1674,8 @@ fn derive_physical_retention(
         }
     }
 
-    let mut by_node = BTreeMap::<
-        StoreNodeId,
-        BTreeMap<ObjectKind, StoreGraphPhysicalRetention>,
-    >::new();
+    let mut by_node =
+        BTreeMap::<StoreNodeId, BTreeMap<ObjectKind, StoreGraphPhysicalRetention>>::new();
     for ((node, kind), role) in roles {
         by_node.entry(node).or_default().insert(kind, role);
     }

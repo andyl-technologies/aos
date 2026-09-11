@@ -25,7 +25,7 @@ use crucible_campaign::{
     ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId,
 };
 use crucible_cas::content_store::{
-    BackendCapabilities, BlobHandle, BlobSource, ByteRange, ImmutableBlobBackend,
+    BackendCapabilities, BlobHandle, BlobSource, ByteRange, ContentId, ImmutableBlobBackend,
     MemoryBlobBackend, MemoryRefBackend, ObjectKind, PlacementReceipt, PutReceipt, StoreError,
     StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
@@ -87,6 +87,32 @@ fn optional_exact_pin_reader_treats_only_a_missing_root_as_empty() {
             .next()
             .is_none()
     );
+}
+
+#[test]
+fn finding_exact_pin_inventory_accepts_4096_and_rejects_4097_candidates() {
+    let checkpoint = |ordinal: u32| {
+        ExactCheckpointId::try_from(ContentId::for_bytes(
+            ObjectKind::ExactManifest,
+            4,
+            &ordinal.to_be_bytes(),
+        ))
+        .expect("bounded exact checkpoint ID")
+    };
+    let boundaries =
+        FindingExactPinBoundaries::new(2_048, Some(1_024)).expect("ordered finding boundaries");
+    let mut candidates = (0_u32..4_096)
+        .map(|ordinal| (checkpoint(ordinal), u64::from(ordinal)))
+        .collect::<BTreeMap<_, _>>();
+
+    select_finding_exact_pins_from_event_counts(boundaries, &candidates)
+        .expect("accept exact 4,096-candidate inventory");
+
+    candidates.insert(checkpoint(4_096), 4_096);
+    assert!(matches!(
+        select_finding_exact_pins_from_event_counts(boundaries, &candidates),
+        Err(ExactPinRetentionError::FindingCandidateLimit)
+    ));
 }
 
 #[test]

@@ -2291,6 +2291,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crucible-cas",
+ "ed25519-dalek",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -2359,6 +2360,8 @@ dependencies = [
  "crucible-s3-store",
  "crucible-session",
  "crucible-shmem",
+ "ed25519-dalek",
+ "rand 0.9.4",
  "rustix 1.1.4",
  "serde",
  "tempfile",

@@ -407,7 +407,7 @@ fn executable_archive_import_authenticates_checkpoint_and_routes_selected_origin
     let store = CampaignExecutorStore::new(Arc::clone(&destination));
     let model = CrucibleExecutionModel::new(store.clone(), router);
     let mut worker = RepositoryAttemptWorker::new(store, model);
-    let (_, result) = worker.execute(queued).into_parts();
+    let (_, result, _) = worker.execute(queued).into_parts();
     let product = result.expect("route imported checkpoint through test lifecycle");
 
     assert!(matches!(product, AttemptExecutionProduct::Observation(_)));
@@ -482,7 +482,7 @@ fn executable_archive_import_authenticates_checkpoint_and_routes_selected_origin
     let store = CampaignExecutorStore::new(Arc::clone(&destination));
     let model = CrucibleExecutionModel::new(store.clone(), router);
     let mut worker = RepositoryAttemptWorker::new(store, model);
-    let (_, result) = worker.execute(fallback_queued).into_parts();
+    let (_, result, _) = worker.execute(fallback_queued).into_parts();
     let product = result.expect("route imported continuation without source ledger");
 
     assert!(matches!(product, AttemptExecutionProduct::Observation(_)));

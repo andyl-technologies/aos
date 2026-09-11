@@ -1068,8 +1068,13 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .publish_observation(campaign.as_str(), observation_parent, &observation_record)
         .expect("incorporate paired observation");
     let mut ledger = supervisor.into_ledger();
+    let replayed_bundle = executor_store
+        .publish_executor_finding_candidate(&expected_bundle)
+        .expect("replay typed candidate publication");
+    assert_eq!(replayed_bundle, expected);
     let handoff = incorporate_and_acknowledge_finding_candidate(
         &repository,
+        None,
         &mut ledger,
         &campaign,
         incorporated_observation.new_snapshot,
@@ -1077,6 +1082,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         execution,
         observation,
         expected,
+        None,
     )
     .expect("incorporate and acknowledge exact finding pair");
     let crate::FindingCandidateRetentionOutcome::Released(acknowledgement) =

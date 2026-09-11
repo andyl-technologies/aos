@@ -910,6 +910,11 @@ pub trait CrucibleExecutionRunner {
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>>;
 
+    /// Takes native checkpoint cleanup authority retained by the last failed execution.
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        None
+    }
+
     /// Reconciles operational authority retained after one successful result.
     ///
     /// Runners without a retained process or template use the default no-op.
@@ -1021,6 +1026,10 @@ where
         let (product, materialization) = outcome.into_parts();
         self.last_materialization = Some(materialization);
         Ok(product)
+    }
+
+    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
+        self.runner.take_abandoned_native_checkpoint()
     }
 
     fn reconcile_execution(

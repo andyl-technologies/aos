@@ -22,25 +22,400 @@
 //! hash followed by the bounded minimization and verification sequences. Each
 //! sequence element is an optional complete `FindingSignature` observed by the
 //! replay oracle. Version 3 additionally retains four manifest-rooted portable
-//! production replay capture outcomes.
+//! production replay capture outcomes. Version 4 binds the source snapshot,
+//! execution-basis admission, active campaign policy, and bounded outcome for
+//! automatic exact retention. Version 5 adds the bounded authenticated
+//! checkpoint inventory, captured-boundary evidence, selected exact pins, and
+//! executor attestation needed to verify a complete retention decision.
 
 use crucible_cas::content_store::ContentId;
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
-    CampaignCodecError, CampaignHash, CampaignRecordKind, FindingCandidateBundleId,
-    FindingExactPins, FindingKind, FindingMinimizationEvidence, FindingReplayCaptureEvidenceId,
-    FindingSignature, FindingTarget, FindingTriageReplayEvidenceId,
-    MAX_FINDING_MINIMIZATION_ATTEMPTS, ObjectEnvelope, ObservationId, ReproductionArtifactId,
+    AttemptAdmissionId, CampaignCodecError, CampaignHash, CampaignPolicyId, CampaignRecordKind,
+    CampaignSnapshotId, ExactCheckpointId, FindingCandidateBundleId, FindingExactPins, FindingKind,
+    FindingMinimizationEvidence, FindingReplayCaptureEvidenceId, FindingSignature, FindingTarget,
+    FindingTriageReplayEvidenceId, MAX_FINDING_MINIMIZATION_ATTEMPTS, ObjectEnvelope,
+    ObservationId, ReproductionArtifactId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
 const TRIAGE_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 const PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 3;
+const EXACT_RETENTION_SCHEMA_VERSION: u32 = 4;
+const AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION: u32 = 5;
 const REPLAY_SIGNATURE_SCHEMA_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SIGNATURE_REPLAYS_PER_PASS: usize = MAX_FINDING_MINIMIZATION_ATTEMPTS + 1;
+
+/// Maximum authenticated exact-checkpoint candidates considered for one finding.
+pub const MAX_FINDING_EXACT_RETENTION_CANDIDATES: u32 = 4_096;
+
+/// Stable reason automatic exact retention could not complete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindingExactRetentionIncomplete {
+    /// No producer could capture the required canonical safe-stop boundaries.
+    MissingSafeBoundaryCapture,
+    /// The protected operational candidate inventory could not be read.
+    CandidateInventoryUnavailable,
+    /// More candidates existed than the bounded selector may authenticate.
+    CandidateLimitExceeded,
+    /// A candidate failed exact configuration or scheduler authentication.
+    CandidateAuthenticationFailed,
+    /// Deterministic role selection failed after candidate authentication.
+    SelectionFailed,
+    /// Selected roots could not be durable before operational protection ended.
+    DurableStagingFailed,
+    /// The admission closure cannot authenticate one governing campaign policy.
+    MissingAuthenticatedPolicyBasis,
+}
+
+impl Canonical for FindingExactRetentionIncomplete {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u8(match self {
+            Self::MissingSafeBoundaryCapture => 0,
+            Self::CandidateInventoryUnavailable => 1,
+            Self::CandidateLimitExceeded => 2,
+            Self::CandidateAuthenticationFailed => 3,
+            Self::SelectionFailed => 4,
+            Self::DurableStagingFailed => 5,
+            Self::MissingAuthenticatedPolicyBasis => 6,
+        });
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::MissingSafeBoundaryCapture),
+            1 => Ok(Self::CandidateInventoryUnavailable),
+            2 => Ok(Self::CandidateLimitExceeded),
+            3 => Ok(Self::CandidateAuthenticationFailed),
+            4 => Ok(Self::SelectionFailed),
+            5 => Ok(Self::DurableStagingFailed),
+            6 => Ok(Self::MissingAuthenticatedPolicyBasis),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "finding-exact-retention-incomplete",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Closed outcome of the active policy's automatic exact-retention decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindingExactRetentionDisposition {
+    /// The active policy did not request exact finding retention.
+    Disabled,
+    /// Every safely eligible requested role was captured, selected, and staged.
+    Complete,
+    /// Thin evidence remains publishable, but exact retention did not complete.
+    Incomplete(FindingExactRetentionIncomplete),
+}
+
+impl Canonical for FindingExactRetentionDisposition {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Disabled => encoder.u8(0),
+            Self::Complete => encoder.u8(1),
+            Self::Incomplete(reason) => {
+                encoder.u8(2);
+                reason.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Disabled),
+            1 => Ok(Self::Complete),
+            2 => Ok(Self::Incomplete(FindingExactRetentionIncomplete::decode(
+                decoder,
+            )?)),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "finding-exact-retention-disposition",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Active-policy basis and bounded outcome for automatic exact finding retention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindingExactRetention {
+    snapshot: CampaignSnapshotId,
+    policy: Option<CampaignPolicyId>,
+    admission: AttemptAdmissionId,
+    authenticated_candidates: u32,
+    disposition: FindingExactRetentionDisposition,
+}
+
+impl FindingExactRetention {
+    /// Builds one policy-bound automatic exact-retention outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::LimitExceeded`] when the authenticated
+    /// candidate count exceeds 4,096.
+    pub fn new(
+        snapshot: CampaignSnapshotId,
+        policy: Option<CampaignPolicyId>,
+        admission: AttemptAdmissionId,
+        authenticated_candidates: u32,
+        disposition: FindingExactRetentionDisposition,
+    ) -> Result<Self, CampaignCodecError> {
+        if authenticated_candidates > MAX_FINDING_EXACT_RETENTION_CANDIDATES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "finding-exact-retention-candidate-count",
+            });
+        }
+        if disposition == FindingExactRetentionDisposition::Disabled
+            && authenticated_candidates != 0
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "disabled finding exact retention has authenticated candidates",
+            });
+        }
+        if matches!(disposition, FindingExactRetentionDisposition::Incomplete(_))
+            && authenticated_candidates != 0
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "incomplete finding exact retention has authenticated candidates",
+            });
+        }
+        let missing_policy = matches!(
+            disposition,
+            FindingExactRetentionDisposition::Incomplete(
+                FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis
+            )
+        );
+        if missing_policy != policy.is_none() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "finding exact retention policy basis disagrees with disposition",
+            });
+        }
+
+        Ok(Self {
+            snapshot,
+            policy,
+            admission,
+            authenticated_candidates,
+            disposition,
+        })
+    }
+
+    /// Returns the immutable snapshot that selected the execution-basis admission.
+    #[must_use]
+    pub const fn snapshot(self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the authenticated active policy that decided retention.
+    #[must_use]
+    pub const fn policy(self) -> Option<CampaignPolicyId> {
+        self.policy
+    }
+
+    /// Returns the execution-basis admission governed by the policy decision.
+    #[must_use]
+    pub const fn admission(self) -> AttemptAdmissionId {
+        self.admission
+    }
+
+    /// Returns the number of exact candidates authenticated by the selector.
+    #[must_use]
+    pub const fn authenticated_candidates(self) -> u32 {
+        self.authenticated_candidates
+    }
+
+    /// Returns the closed exact-retention outcome.
+    #[must_use]
+    pub const fn disposition(self) -> FindingExactRetentionDisposition {
+        self.disposition
+    }
+}
+
+impl Canonical for FindingExactRetention {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.snapshot.encode(encoder);
+        self.policy.encode(encoder);
+        self.admission.encode(encoder);
+        self.authenticated_candidates.encode(encoder);
+        self.disposition.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            CampaignSnapshotId::decode(decoder)?,
+            Option::<CampaignPolicyId>::decode(decoder)?,
+            AttemptAdmissionId::decode(decoder)?,
+            u32::decode(decoder)?,
+            FindingExactRetentionDisposition::decode(decoder)?,
+        )
+    }
+}
+
+/// One production checkpoint and its authenticated scheduler event boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindingExactRetentionCandidate {
+    checkpoint: ExactCheckpointId,
+    event_count: u64,
+}
+
+impl FindingExactRetentionCandidate {
+    /// Creates one candidate projection authenticated from immutable checkpoint bytes.
+    #[must_use]
+    pub const fn new(checkpoint: ExactCheckpointId, event_count: u64) -> Self {
+        Self {
+            checkpoint,
+            event_count,
+        }
+    }
+
+    /// Returns the production checkpoint root.
+    #[must_use]
+    pub const fn checkpoint(self) -> ExactCheckpointId {
+        self.checkpoint
+    }
+
+    /// Returns the scheduler event count at the checkpoint boundary.
+    #[must_use]
+    pub const fn event_count(self) -> u64 {
+        self.event_count
+    }
+}
+
+impl Canonical for FindingExactRetentionCandidate {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.checkpoint.encode(encoder);
+        self.event_count.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self::new(
+            ExactCheckpointId::decode(decoder)?,
+            u64::decode(decoder)?,
+        ))
+    }
+}
+
+/// Authenticated candidate inventory and deterministic exact-pin selection proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FindingExactRetentionEvidence {
+    candidates: Vec<FindingExactRetentionCandidate>,
+    captured_failure: ExactCheckpointId,
+    failure_events: u64,
+    measurement_boundary_events: Option<u64>,
+    selected: FindingExactPins,
+}
+
+impl FindingExactRetentionEvidence {
+    /// Builds a bounded canonical selector proof over production roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for an empty, unsorted, duplicate, or
+    /// oversized inventory, a missing captured root, or invalid boundaries.
+    pub fn new(
+        candidates: Vec<FindingExactRetentionCandidate>,
+        captured_failure: ExactCheckpointId,
+        failure_events: u64,
+        measurement_boundary_events: Option<u64>,
+        selected: FindingExactPins,
+    ) -> Result<Self, CampaignCodecError> {
+        if candidates.is_empty()
+            || candidates.len() > MAX_FINDING_EXACT_RETENTION_CANDIDATES as usize
+        {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "finding-exact-retention-candidate-count",
+            });
+        }
+        if candidates
+            .windows(2)
+            .any(|pair| pair[0].checkpoint() >= pair[1].checkpoint())
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "finding exact retention candidates are not strictly sorted",
+            });
+        }
+        if candidates
+            .iter()
+            .filter(|candidate| candidate.checkpoint() == captured_failure)
+            .count()
+            != 1
+            || !candidates.iter().any(|candidate| {
+                candidate.checkpoint() == captured_failure
+                    && candidate.event_count() == failure_events
+            })
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "finding exact retention captured failure boundary is invalid",
+            });
+        }
+        if measurement_boundary_events.is_some_and(|events| events > failure_events) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "finding exact retention measurement boundary follows failure",
+            });
+        }
+
+        Ok(Self {
+            candidates,
+            captured_failure,
+            failure_events,
+            measurement_boundary_events,
+            selected,
+        })
+    }
+
+    /// Returns the complete sorted eligible candidate inventory.
+    #[must_use]
+    pub fn candidates(&self) -> &[FindingExactRetentionCandidate] {
+        &self.candidates
+    }
+
+    /// Returns the checkpoint captured at the failure boundary.
+    #[must_use]
+    pub const fn captured_failure(&self) -> ExactCheckpointId {
+        self.captured_failure
+    }
+
+    /// Returns the authenticated failure event boundary.
+    #[must_use]
+    pub const fn failure_events(&self) -> u64 {
+        self.failure_events
+    }
+
+    /// Returns the authenticated successful-measurement boundary.
+    #[must_use]
+    pub const fn measurement_boundary_events(&self) -> Option<u64> {
+        self.measurement_boundary_events
+    }
+
+    /// Returns the role selection derived by the producer.
+    #[must_use]
+    pub const fn selected(&self) -> &FindingExactPins {
+        &self.selected
+    }
+}
+
+impl Canonical for FindingExactRetentionEvidence {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.candidates.encode(encoder);
+        self.captured_failure.encode(encoder);
+        self.failure_events.encode(encoder);
+        self.measurement_boundary_events.encode(encoder);
+        self.selected.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            Vec::<FindingExactRetentionCandidate>::decode(decoder)?,
+            ExactCheckpointId::decode(decoder)?,
+            u64::decode(decoder)?,
+            Option::<u64>::decode(decoder)?,
+            FindingExactPins::decode(decoder)?,
+        )
+    }
+}
 
 /// Stable category of the modeled target reported by a finding replay.
 ///
@@ -716,6 +1091,8 @@ pub struct FindingCandidateBundle {
     exact_pins: FindingExactPins,
     triage_evidence: Option<FindingTriageEvidenceSet>,
     replay_captures: Option<FindingReplayCaptureSet>,
+    exact_retention: Option<FindingExactRetention>,
+    exact_retention_evidence: Option<FindingExactRetentionEvidence>,
 }
 
 impl FindingCandidateBundle {
@@ -747,6 +1124,8 @@ impl FindingCandidateBundle {
             exact_pins,
             None,
             None,
+            None,
+            None,
         )
     }
 
@@ -773,6 +1152,8 @@ impl FindingCandidateBundle {
             signature_minimization,
             exact_pins,
             Some(triage_evidence),
+            None,
+            None,
             None,
         )
     }
@@ -803,6 +1184,76 @@ impl FindingCandidateBundle {
             exact_pins,
             triage_evidence,
             Some(replay_captures),
+            None,
+            None,
+        )
+    }
+
+    /// Builds a candidate with policy-bound exact retention and optional replay captures.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the evidence shape, retention
+    /// disposition, or another candidate invariant is invalid.
+    // crucible-lint: allow rust-allow -- every immutable finding handoff field remains explicit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_exact_retention(
+        observation: ObservationId,
+        signature: FindingSignature,
+        reproduction: ReproductionArtifactId,
+        minimized: ReproductionArtifactId,
+        signature_minimization: FindingSignatureMinimizationEvidence,
+        exact_pins: FindingExactPins,
+        triage_evidence: Option<FindingTriageEvidenceSet>,
+        replay_captures: Option<FindingReplayCaptureSet>,
+        exact_retention: FindingExactRetention,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            EXACT_RETENTION_SCHEMA_VERSION,
+            observation,
+            signature,
+            reproduction,
+            minimized,
+            signature_minimization,
+            exact_pins,
+            triage_evidence,
+            replay_captures,
+            Some(exact_retention),
+            None,
+        )
+    }
+
+    /// Builds a version-five candidate with independently verifiable selection evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the complete retention disposition,
+    /// candidate count, selected pins, or evidence shape disagree.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_authenticated_exact_retention(
+        observation: ObservationId,
+        signature: FindingSignature,
+        reproduction: ReproductionArtifactId,
+        minimized: ReproductionArtifactId,
+        signature_minimization: FindingSignatureMinimizationEvidence,
+        exact_pins: FindingExactPins,
+        triage_evidence: Option<FindingTriageEvidenceSet>,
+        replay_captures: Option<FindingReplayCaptureSet>,
+        exact_retention: FindingExactRetention,
+        evidence: FindingExactRetentionEvidence,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION,
+            observation,
+            signature,
+            reproduction,
+            minimized,
+            signature_minimization,
+            exact_pins,
+            triage_evidence,
+            replay_captures,
+            Some(exact_retention),
+            Some(evidence),
         )
     }
 
@@ -818,6 +1269,8 @@ impl FindingCandidateBundle {
         exact_pins: FindingExactPins,
         triage_evidence: Option<FindingTriageEvidenceSet>,
         replay_captures: Option<FindingReplayCaptureSet>,
+        exact_retention: Option<FindingExactRetention>,
+        exact_retention_evidence: Option<FindingExactRetentionEvidence>,
     ) -> Result<Self, CampaignCodecError> {
         if reproduction.content_id().schema_version() != 1
             || minimized.content_id().schema_version() != 2
@@ -828,17 +1281,72 @@ impl FindingCandidateBundle {
         }
         signature_minimization.validate_signature_basis(&signature)?;
         let evidence_shape = match schema_version {
-            RECORD_SCHEMA_VERSION => triage_evidence.is_none() && replay_captures.is_none(),
-            TRIAGE_EVIDENCE_SCHEMA_VERSION => {
-                triage_evidence.is_some() && replay_captures.is_none()
+            RECORD_SCHEMA_VERSION => {
+                triage_evidence.is_none() && replay_captures.is_none() && exact_retention.is_none()
             }
-            PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION => replay_captures.is_some(),
+            TRIAGE_EVIDENCE_SCHEMA_VERSION => {
+                triage_evidence.is_some() && replay_captures.is_none() && exact_retention.is_none()
+            }
+            PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION => {
+                replay_captures.is_some() && exact_retention.is_none()
+            }
+            EXACT_RETENTION_SCHEMA_VERSION => {
+                exact_retention.is_some() && exact_retention_evidence.is_none()
+            }
+            AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION => {
+                exact_retention.is_some() && exact_retention_evidence.is_some()
+            }
             _ => false,
         };
         if !evidence_shape {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "finding candidate schema disagrees with replay evidence",
             });
+        }
+        if let Some(retention) = exact_retention {
+            match retention.disposition() {
+                FindingExactRetentionDisposition::Disabled if !exact_pins.all().is_empty() => {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "disabled finding exact retention has exact pins",
+                    });
+                }
+                FindingExactRetentionDisposition::Complete
+                    if retention.authenticated_candidates() == 0
+                        || exact_pins.all().is_empty()
+                        || exact_pins.all().len()
+                            > retention.authenticated_candidates() as usize
+                        || exact_pins.pre_failure().len() > 1
+                        || exact_pins.measurement_boundary().len() > 1
+                        || exact_pins.post_failure().len() != 1
+                        || !exact_pins.additional().is_empty() =>
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "complete finding exact retention has invalid selected checkpoints",
+                    });
+                }
+                FindingExactRetentionDisposition::Incomplete(_)
+                    if retention.authenticated_candidates() != 0
+                        || !exact_pins.all().is_empty() =>
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "incomplete finding exact retention has selected checkpoints",
+                    });
+                }
+                _ => {}
+            }
+        }
+        if let Some(evidence) = &exact_retention_evidence {
+            let retention = exact_retention.ok_or(CampaignCodecError::InvalidValue {
+                reason: "finding exact retention evidence has no disposition",
+            })?;
+            if retention.disposition() != FindingExactRetentionDisposition::Complete
+                || retention.authenticated_candidates() as usize != evidence.candidates().len()
+                || &exact_pins != evidence.selected()
+            {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "authenticated finding exact retention evidence disagrees with outcome",
+                });
+            }
         }
 
         let value = Self {
@@ -851,6 +1359,8 @@ impl FindingCandidateBundle {
             exact_pins,
             triage_evidence,
             replay_captures,
+            exact_retention,
+            exact_retention_evidence,
         };
         codec::ensure_encoded_size(
             &value,
@@ -914,6 +1424,18 @@ impl FindingCandidateBundle {
         self.replay_captures
     }
 
+    /// Returns the active-policy exact-retention outcome, when recorded.
+    #[must_use]
+    pub const fn exact_retention(&self) -> Option<FindingExactRetention> {
+        self.exact_retention
+    }
+
+    /// Returns independently verifiable selector evidence for a version-five bundle.
+    #[must_use]
+    pub const fn exact_retention_evidence(&self) -> Option<&FindingExactRetentionEvidence> {
+        self.exact_retention_evidence.as_ref()
+    }
+
     /// Returns strict canonical record-body bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
@@ -967,6 +1489,19 @@ impl FindingCandidateBundle {
         if let Some(replay_captures) = self.replay_captures {
             children.extend(replay_captures.content_children());
         }
+        if let Some(exact_retention) = self.exact_retention {
+            children.push((
+                "exact-retention.snapshot".to_owned(),
+                exact_retention.snapshot().content_id(),
+            ));
+            if let Some(policy) = exact_retention.policy() {
+                children.push(("exact-retention.policy".to_owned(), policy.content_id()));
+            }
+            children.push((
+                "exact-retention.admission".to_owned(),
+                exact_retention.admission().content_id(),
+            ));
+        }
         children
     }
 }
@@ -982,12 +1517,29 @@ impl Canonical for FindingCandidateBundle {
         self.exact_pins.encode(encoder);
         if matches!(
             self.schema_version,
-            TRIAGE_EVIDENCE_SCHEMA_VERSION | PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
+            TRIAGE_EVIDENCE_SCHEMA_VERSION
+                | PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
+                | EXACT_RETENTION_SCHEMA_VERSION
+                | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
         ) {
             self.triage_evidence.encode(encoder);
         }
-        if self.schema_version == PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION {
+        if matches!(
+            self.schema_version,
+            PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
+                | EXACT_RETENTION_SCHEMA_VERSION
+                | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
+        ) {
             self.replay_captures.encode(encoder);
+        }
+        if matches!(
+            self.schema_version,
+            EXACT_RETENTION_SCHEMA_VERSION | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
+        ) {
+            self.exact_retention.encode(encoder);
+        }
+        if self.schema_version == AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION {
+            self.exact_retention_evidence.encode(encoder);
         }
     }
 
@@ -998,6 +1550,8 @@ impl Canonical for FindingCandidateBundle {
             RECORD_SCHEMA_VERSION
                 | TRIAGE_EVIDENCE_SCHEMA_VERSION
                 | PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
+                | EXACT_RETENTION_SCHEMA_VERSION
+                | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported finding candidate bundle schema version",
@@ -1013,14 +1567,35 @@ impl Canonical for FindingCandidateBundle {
             FindingExactPins::decode(decoder)?,
             if matches!(
                 schema_version,
-                TRIAGE_EVIDENCE_SCHEMA_VERSION | PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
+                TRIAGE_EVIDENCE_SCHEMA_VERSION
+                    | PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
+                    | EXACT_RETENTION_SCHEMA_VERSION
+                    | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
             ) {
                 Option::<FindingTriageEvidenceSet>::decode(decoder)?
             } else {
                 None
             },
-            if schema_version == PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION {
+            if matches!(
+                schema_version,
+                PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
+                    | EXACT_RETENTION_SCHEMA_VERSION
+                    | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
+            ) {
                 Option::<FindingReplayCaptureSet>::decode(decoder)?
+            } else {
+                None
+            },
+            if matches!(
+                schema_version,
+                EXACT_RETENTION_SCHEMA_VERSION | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
+            ) {
+                Option::<FindingExactRetention>::decode(decoder)?
+            } else {
+                None
+            },
+            if schema_version == AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION {
+                Option::<FindingExactRetentionEvidence>::decode(decoder)?
             } else {
                 None
             },
@@ -1229,6 +1804,54 @@ mod tests {
         assert_eq!(decoded_captured.triage_evidence(), Some(triage_evidence));
         assert_eq!(decoded_captured.replay_captures(), Some(replay_captures));
         assert_eq!(decoded_captured.content_children().len(), 8);
+
+        let policy = CampaignPolicyId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Policy,
+            4,
+            b"finding-exact-retention-policy",
+        ))
+        .expect("policy ID");
+        let admission = AttemptAdmissionId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignFact,
+            2,
+            b"finding-exact-retention-admission",
+        ))
+        .expect("admission ID");
+        let exact_retention = FindingExactRetention::new(
+            CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignSnapshot,
+                3,
+                b"finding-exact-retention-snapshot",
+            ))
+            .expect("snapshot ID"),
+            Some(policy),
+            admission,
+            0,
+            FindingExactRetentionDisposition::Incomplete(
+                FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+            ),
+        )
+        .expect("exact retention diagnostic");
+        let retained_bundle = FindingCandidateBundle::new_with_exact_retention(
+            bundle.observation(),
+            bundle.signature().clone(),
+            bundle.reproduction(),
+            bundle.minimized(),
+            bundle.signature_minimization().clone(),
+            bundle.exact_pins().clone(),
+            Some(triage_evidence),
+            Some(replay_captures),
+            exact_retention,
+        )
+        .expect("policy-bound finding candidate bundle");
+
+        let decoded_retained =
+            FindingCandidateBundle::from_canonical_bytes(&retained_bundle.canonical_bytes())
+                .expect("decode policy-bound finding candidate bundle");
+        assert_eq!(decoded_retained, retained_bundle);
+        assert_eq!(decoded_retained.schema_version(), 4);
+        assert_eq!(decoded_retained.exact_retention(), Some(exact_retention));
+        assert_eq!(decoded_retained.content_children().len(), 11);
     }
 
     #[test]
